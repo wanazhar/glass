@@ -106,6 +106,14 @@ navigation boundary are recorded in the
 [slice 765 task](../plan/tasks/native-engine-browser-765.md);
 process-backed evidence remains in the
 [slice 764 task](../plan/tasks/native-engine-browser-764.md).
+Slice 766 implements Enter activation for focused native `<a href>` links in
+local and process-backed documents. Local and HTTP-backed regressions cover
+event order, keydown/click cancellation, post-click `href` changes, Space
+non-activation, and same-origin child-frame navigation. The worker mutation
+protocol now preserves the click's allowed/canceled result across IPC. Exact
+local evidence and exclusions are recorded in the
+[slice 766 task](../plan/tasks/native-engine-browser-766.md); this does not
+claim complete keyboard conformance or issue #40 completion.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and

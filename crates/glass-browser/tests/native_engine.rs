@@ -13252,7 +13252,7 @@ async fn native_content_process_form_post_target_preserves_payload() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for _ in 0..2 {
+        for _ in 0..3 {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
             let path = request.split_whitespace().nth(1).unwrap();
@@ -18180,6 +18180,101 @@ async fn native_local_keyboard_button_activation_preserves_key_phases_and_shortc
     assert_eq!(
         engine.evaluate_async("globalThis.events").await.unwrap(),
         serde_json::json!(["keydown:Enter", "click", "keyup:Enter"])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_keyboard_link_activation_obeys_cancelation_and_live_href() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://local-keyboard-link",
+            "<a id='link' role='button' href='fixture://wrong-destination'>Open</a><script>globalThis.events = []; globalThis.cancelKeydown = false; globalThis.cancelClick = false; globalThis.mutateHref = false; const link = document.getElementById('link'); link.addEventListener('keydown', event => { events.push('keydown:' + event.key); if (cancelKeydown && event.key === 'Enter') event.preventDefault(); }); link.addEventListener('click', event => { events.push('click'); if (cancelClick) event.preventDefault(); if (mutateHref) link.setAttribute('href', 'fixture://keyboard-link-destination'); }); link.addEventListener('keyup', event => events.push('keyup:' + event.key));</script>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://keyboard-link-destination",
+            "<p id='destination'>Keyboard destination</p>",
+        )
+        .unwrap()
+        .with_fixture("fixture://wrong-destination", "<p>Wrong destination</p>")
+        .unwrap()
+        .with_initial_url("fixture://local-keyboard-link");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async("document.getElementById('link').focus()")
+        .await
+        .unwrap();
+
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["keydown: ", "keyup: "])
+    );
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://local-keyboard-link"
+    );
+
+    engine
+        .evaluate_async("globalThis.events = []; globalThis.cancelKeydown = true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["keydown:Enter", "keyup:Enter"])
+    );
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://local-keyboard-link"
+    );
+
+    engine
+        .evaluate_async("globalThis.events = []; globalThis.cancelKeydown = false; globalThis.cancelClick = true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["keydown:Enter", "click", "keyup:Enter"])
+    );
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://local-keyboard-link"
+    );
+
+    engine
+        .evaluate_async(
+            "globalThis.events = []; globalThis.cancelClick = false; globalThis.mutateHref = true",
+        )
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://keyboard-link-destination"
+    );
+    assert_eq!(
+        engine.snapshot().unwrap().visible_text,
+        "Keyboard destination"
     );
     engine.close_async().await.unwrap();
 }
@@ -65087,12 +65182,151 @@ async fn native_content_process_keyboard_button_activation_resets_forms_and_hono
 }
 
 #[tokio::test]
-async fn native_content_process_keyboard_button_activation_in_same_origin_frames() {
+async fn native_content_process_keyboard_link_activation_uses_live_href_and_event_order() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for _ in 0..2 {
+        for _ in 0..4 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("keyboard-link navigation request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let body = match request.split_whitespace().nth(1) {
+                Some("/page") => {
+                    "<!doctype html><body><a id='link' href='/wrong-destination'>Open</a><script>window.name = ''; globalThis.events = []; globalThis.cancelKeydown = false; globalThis.cancelClick = false; globalThis.mutateHref = false; const link = document.getElementById('link'); link.addEventListener('keydown', event => { events.push('keydown:' + event.key); if (globalThis.cancelKeydown && event.key === 'Enter') event.preventDefault(); window.name = JSON.stringify(events); }); link.addEventListener('click', event => { events.push('click'); if (globalThis.cancelClick) event.preventDefault(); events.push('prevented:' + event.defaultPrevented + ':' + globalThis.cancelClick); if (globalThis.mutateHref) link.setAttribute('href', '/keyboard-link-destination'); window.name = JSON.stringify(events); }); link.addEventListener('keyup', event => { events.push('keyup:' + event.key); window.name = JSON.stringify(events); });</script>"
+                }
+                Some("/keyboard-link-destination") => {
+                    "<!doctype html><body><p id='destination'>Keyboard destination</p></body>"
+                }
+                Some("/wrong-destination") => {
+                    "<!doctype html><body><p id='wrong'>Wrong destination</p></body>"
+                }
+                other => panic!("unexpected keyboard-link request: {other:?}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .await
+    .unwrap();
+    session
+        .script("document.getElementById('link').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("JSON.parse(window.name)")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["keydown: ", "keyup: "])
+    );
+
+    session
+        .script("globalThis.events = []; window.name = ''; globalThis.cancelKeydown = true; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("location.pathname").await.unwrap().value,
+        serde_json::json!("/page")
+    );
+    assert_eq!(
+        session
+            .script("JSON.parse(window.name)")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["keydown:Enter", "keyup:Enter"])
+    );
+
+    session
+        .script("globalThis.events = []; window.name = ''; globalThis.cancelKeydown = false; globalThis.cancelClick = true; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("JSON.parse(window.name)")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([
+            "keydown:Enter",
+            "click",
+            "prevented:true:true",
+            "keyup:Enter",
+        ])
+    );
+    assert_eq!(
+        session.script("location.pathname").await.unwrap().value,
+        serde_json::json!("/page")
+    );
+    session
+        .script("globalThis.events = []; window.name = ''; globalThis.cancelClick = false; globalThis.mutateHref = true; document.getElementById('link').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({url: location.href, events: JSON.parse(window.name), text: document.body.textContent.trim()})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "url": format!("http://{address}/keyboard-link-destination"),
+            "events": [
+                "keydown:Enter",
+                "click",
+                "prevented:false:false",
+                "keyup:Enter",
+            ],
+            "text": "Keyboard destination",
+        })
+    );
+
+    session.close().await.unwrap();
+    server.abort();
+    let _ = server.await;
+}
+
+#[tokio::test]
+async fn native_content_process_keyboard_link_activation_in_same_origin_frames() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
             let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
                 .await
                 .expect("same-origin reset-button request")
@@ -65103,7 +65337,10 @@ async fn native_content_process_keyboard_button_activation_in_same_origin_frames
                     "<!doctype html><body><iframe id='child' src='/child'></iframe></body>"
                 }
                 Some("/child") => {
-                    "<!doctype html><body><form id='frame-form'><input id='frame-value' value='frame-default'><button id='frame-reset' type='reset'>Reset</button></form></body>"
+                    "<!doctype html><body><form id='frame-form'><input id='frame-value' value='frame-default'><button id='frame-reset' type='reset'>Reset</button></form><a id='frame-link' href='/frame-destination'>Open child destination</a></body>"
+                }
+                Some("/frame-destination") => {
+                    "<!doctype html><body><p id='frame-destination'>Child destination</p></body>"
                 }
                 other => panic!("unexpected same-origin reset-button path: {other:?}"),
             };
@@ -65173,6 +65410,33 @@ async fn native_content_process_keyboard_button_activation_in_same_origin_frames
             "value": "frame-default",
             "trace": ["keydown: ", "keyup: ", "click"],
         })
+    );
+
+    session
+        .script("document.getElementById('frame-link').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({url: location.href, text: document.body.textContent.trim()})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "url": format!("http://{address}/frame-destination"),
+            "text": "Child destination",
+        })
+    );
+    session.select_frame("native-context:main").await.unwrap();
+    assert_eq!(
+        session.script("location.pathname").await.unwrap().value,
+        serde_json::json!("/parent")
     );
 
     session.close().await.unwrap();

@@ -7005,6 +7005,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         json!({
                             "kind": "mutated",
                             "id": id,
+                            "allowed": mutation.allowed,
                             "mutation_history": mutation.history,
                             "scroll_commands": mutation.scroll_commands,
                             "document_base64": base64::engine::general_purpose::STANDARD
@@ -10111,6 +10112,7 @@ fn mutate_key_event_with_event_bridge(
             reason: "key event target is not the focused page target".into(),
         });
     }
+    let keyboard_link_target = current.has_native_keyboard_link_activation(node_id);
     let mut next = current.clone();
     let mut history = Vec::new();
     let mut scroll_commands = Vec::new();
@@ -10168,9 +10170,13 @@ fn mutate_key_event_with_event_bridge(
         apply_pending_meta_content_security_policies(&mut next, loader, document_url)?;
         refresh_inline_style_policy(&mut next, loader, document_url)?;
     }
+    let enter_target_remains_activatable = next.has_native_keyboard_button_activation(node_id)
+        || (key == "Enter"
+            && keyboard_link_target
+            && next.has_native_keyboard_link_activation(node_id));
     let should_activate = event_allowed
         && next.focused_node() == node_id
-        && next.has_native_keyboard_button_activation(node_id)
+        && enter_target_remains_activatable
         && ((kind == NativeEventKind::KeyDown && key == "Enter")
             || (kind == NativeEventKind::KeyUp && key == " " && activate_space_on_keyup));
     if should_activate {
@@ -10300,6 +10306,8 @@ fn mutate_key_shortcut_with_event_bridge(
         });
     }
     let keyboard_button_target = current.has_native_keyboard_button_activation(node_id);
+    let keyboard_link_target =
+        key == "Enter" && current.has_native_keyboard_link_activation(node_id);
     let mut next = current.clone();
     let mut history = Vec::new();
     let mut scroll_commands = Vec::new();
@@ -10386,9 +10394,9 @@ fn mutate_key_shortcut_with_event_bridge(
     }
     if keydown_allowed
         && key == "Enter"
-        && keyboard_button_target
         && next.focused_node() == node_id
-        && next.has_native_keyboard_button_activation(node_id)
+        && ((keyboard_button_target && next.has_native_keyboard_button_activation(node_id))
+            || (keyboard_link_target && next.has_native_keyboard_link_activation(node_id)))
     {
         dispatch_scroll_events(
             &mut next,

@@ -282,6 +282,17 @@ pub struct NativeActionResult {
     pub accepted: bool,
 }
 
+enum NativeLocalKeyboardNavigation {
+    Link {
+        target: NativeNodeId,
+        href: String,
+    },
+    FormSubmit {
+        form_id: NativeNodeId,
+        submitter: NativeNodeId,
+    },
+}
+
 /// Bounded native effects observed since a caller's revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeEffectsSnapshot {
@@ -3978,7 +3989,7 @@ impl NativeEngine {
                     && !href.is_empty()
                 {
                     if self.javascript.is_some() {
-                        self.preflight_local_link_navigation(id, &href)?;
+                        self.preflight_local_link_navigation(&self.document, id, &href)?;
                         return self.action_local_click_with_event_preflight(id);
                     }
                     return self.activate_link(id, &href, false);
@@ -4443,7 +4454,13 @@ impl NativeEngine {
                 validate_native_key(&key)?;
                 let key = normalize_native_keyboard_key(key);
                 self.document_has_sticky_activation = true;
-                let node_index = self.document.focused_node().index();
+                let focused_node = self.document.focused_node();
+                let keyboard_link_target = (key == "Enter"
+                    && self
+                        .document
+                        .has_native_keyboard_link_activation(focused_node))
+                .then_some(focused_node);
+                let node_index = focused_node.index();
                 let mutation = {
                     let process =
                         self.content_process
@@ -4461,7 +4478,8 @@ impl NativeEngine {
                         )
                         .await?
                 };
-                self.apply_keyboard_mutation_async(mutation).await
+                self.apply_keyboard_mutation_async(mutation, keyboard_link_target)
+                    .await
             }
             NativeAction::KeyUp { key } => {
                 validate_native_key(&key)?;
@@ -4484,12 +4502,18 @@ impl NativeEngine {
                         )
                         .await?
                 };
-                self.apply_keyboard_mutation_async(mutation).await
+                self.apply_keyboard_mutation_async(mutation, None).await
             }
             NativeAction::Shortcut { shortcut } => {
                 let (modifiers, key) = parse_native_shortcut(&shortcut)?;
                 self.document_has_sticky_activation = true;
-                let node_index = self.document.focused_node().index();
+                let focused_node = self.document.focused_node();
+                let keyboard_link_target = (key == "Enter"
+                    && self
+                        .document
+                        .has_native_keyboard_link_activation(focused_node))
+                .then_some(focused_node);
+                let node_index = focused_node.index();
                 let default_allowed = should_apply_native_key_default(&key, modifiers);
                 let apply_default = default_allowed
                     && (key == "Tab"
@@ -4514,7 +4538,8 @@ impl NativeEngine {
                         )
                         .await?
                 };
-                self.apply_keyboard_mutation_async(mutation).await
+                self.apply_keyboard_mutation_async(mutation, keyboard_link_target)
+                    .await
             }
             NativeAction::KeyPress { key } => {
                 validate_native_edit_key(&key)?;
@@ -6554,12 +6579,11 @@ impl NativeEngine {
     /// effects, or a revision behind merely because the handler ran first.
     fn preflight_local_link_navigation(
         &self,
+        document: &NativeDocument,
         id: NativeNodeId,
         href: &str,
     ) -> Result<(), NativeEngineError> {
-        if self.document.link_download_attribute(id).is_some()
-            || self.document.link_opens_new_target(id)
-        {
+        if document.link_download_attribute(id).is_some() || document.link_opens_new_target(id) {
             return Ok(());
         }
         let target_url = self.resolve_link_href(href)?;
@@ -6710,14 +6734,17 @@ impl NativeEngine {
         })
     }
 
-    fn apply_local_keyboard_button_activation(
+    fn apply_local_keyboard_activation(
         &mut self,
         document: &mut NativeDocument,
         id: NativeNodeId,
         events: &mut Vec<(NativeNodeId, NativeEventKind)>,
         history_commands: &mut Vec<NativeScriptCommand>,
-    ) -> Result<Option<(NativeNodeId, NativeNodeId)>, NativeEngineError> {
-        if document.focused_node() != id || !document.has_native_keyboard_button_activation(id) {
+    ) -> Result<Option<NativeLocalKeyboardNavigation>, NativeEngineError> {
+        if document.focused_node() != id
+            || (!document.has_native_keyboard_button_activation(id)
+                && !document.has_native_keyboard_link_activation(id))
+        {
             return Ok(None);
         }
 
@@ -6744,10 +6771,17 @@ impl NativeEngine {
             )?);
         }
 
-        let mut submit_navigation = None;
+        let mut navigation = None;
         if click_allowed {
             events.extend(document.apply_click(id)?);
-            if let Some(form_id) = document.reset_control_form(id) {
+            if let Some(href) = document
+                .link_href(id)
+                .filter(|href| !href.is_empty())
+                .map(str::to_owned)
+            {
+                self.preflight_local_link_navigation(document, id, &href)?;
+                navigation = Some(NativeLocalKeyboardNavigation::Link { target: id, href });
+            } else if let Some(form_id) = document.reset_control_form(id) {
                 if let Some(javascript) = self.javascript.as_ref() {
                     javascript.set_scroll_offset(self.scroll_offset);
                     javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
@@ -6812,7 +6846,10 @@ impl NativeEngine {
                         )?);
                     }
                     if submit_allowed {
-                        submit_navigation = Some((form_id, id));
+                        navigation = Some(NativeLocalKeyboardNavigation::FormSubmit {
+                            form_id,
+                            submitter: id,
+                        });
                     }
                 } else {
                     let invalid_events = invalid
@@ -6843,17 +6880,17 @@ impl NativeEngine {
                 events.len(),
             ));
         }
-        if submit_navigation.is_some()
+        if navigation.is_some()
             && history_commands.iter().any(|command| {
                 matches!(command, NativeScriptCommand::HistoryGo { delta } if *delta != 0)
             })
         {
             return Err(NativeEngineError::TargetNotActionable {
-                reason: "history traversal cannot share keyboard activation with form navigation"
+                reason: "history traversal cannot share keyboard activation with navigation"
                     .into(),
             });
         }
-        Ok(submit_navigation)
+        Ok(navigation)
     }
 
     fn finish_local_keyboard_action(
@@ -6861,7 +6898,7 @@ impl NativeEngine {
         document: NativeDocument,
         events: Vec<(NativeNodeId, NativeEventKind)>,
         history_commands: &[NativeScriptCommand],
-        submit_navigation: Option<(NativeNodeId, NativeNodeId)>,
+        navigation: Option<NativeLocalKeyboardNavigation>,
     ) -> Result<NativeActionResult, NativeEngineError> {
         let next_revision = self.next_revision()?;
         let mut document = document;
@@ -6874,19 +6911,25 @@ impl NativeEngine {
             self.apply_local_history_commands_at(history_commands, next_revision)?;
         self.record_effects(events);
 
-        if let Some((form_id, submitter)) = submit_navigation {
-            let request = self.document.form_submission_request_with_submitter(
-                form_id,
-                &self.url,
-                Some(submitter),
-            )?;
-            if self.loader.allows_navigation(
-                &self.url,
-                &request.url,
-                NativeNavigationPolicyKind::FormAction,
-            )? {
-                return self.navigate_local_form_request(request);
+        match navigation {
+            Some(NativeLocalKeyboardNavigation::Link { target, href }) => {
+                return self.activate_link(target, &href, true);
             }
+            Some(NativeLocalKeyboardNavigation::FormSubmit { form_id, submitter }) => {
+                let request = self.document.form_submission_request_with_submitter(
+                    form_id,
+                    &self.url,
+                    Some(submitter),
+                )?;
+                if self.loader.allows_navigation(
+                    &self.url,
+                    &request.url,
+                    NativeNavigationPolicyKind::FormAction,
+                )? {
+                    return self.navigate_local_form_request(request);
+                }
+            }
+            None => {}
         }
         if let Some(delta) = history_traversal
             && delta != 0
@@ -6911,6 +6954,7 @@ impl NativeEngine {
         let mut history_commands = Vec::new();
         let mut events = vec![(id, kind)];
         let was_button = document.has_native_keyboard_button_activation(id);
+        let was_link = document.has_native_keyboard_link_activation(id);
         let evaluation =
             self.evaluate_local_key_event_with_modifiers(&document, id, kind, key, modifiers)?;
         let event_allowed = evaluation
@@ -6944,7 +6988,7 @@ impl NativeEngine {
                 && document.focused_node() == id
                 && document.has_native_keyboard_button_activation(id)
             {
-                submit_navigation = self.apply_local_keyboard_button_activation(
+                submit_navigation = self.apply_local_keyboard_activation(
                     &mut document,
                     id,
                     &mut events,
@@ -6953,12 +6997,13 @@ impl NativeEngine {
             }
         } else if kind == NativeEventKind::KeyDown
             && key == "Enter"
-            && was_button
+            && (was_button || was_link)
             && event_allowed
             && document.focused_node() == id
-            && document.has_native_keyboard_button_activation(id)
+            && (document.has_native_keyboard_button_activation(id)
+                || (was_link && document.has_native_keyboard_link_activation(id)))
         {
-            submit_navigation = self.apply_local_keyboard_button_activation(
+            submit_navigation = self.apply_local_keyboard_activation(
                 &mut document,
                 id,
                 &mut events,
@@ -6988,6 +7033,8 @@ impl NativeEngine {
         let mut history_commands = Vec::new();
         let mut events = vec![(id, NativeEventKind::KeyDown)];
         let keyboard_button_target = document.has_native_keyboard_button_activation(id);
+        let keyboard_link_target =
+            key == "Enter" && document.has_native_keyboard_link_activation(id);
         let keydown = self.evaluate_local_key_event_with_modifiers(
             &document,
             id,
@@ -7041,11 +7088,12 @@ impl NativeEngine {
         let mut submit_navigation = None;
         if keydown_allowed
             && key == "Enter"
-            && keyboard_button_target
+            && (keyboard_button_target || keyboard_link_target)
             && document.focused_node() == id
-            && document.has_native_keyboard_button_activation(id)
+            && ((keyboard_button_target && document.has_native_keyboard_button_activation(id))
+                || (keyboard_link_target && document.has_native_keyboard_link_activation(id)))
         {
-            submit_navigation = self.apply_local_keyboard_button_activation(
+            submit_navigation = self.apply_local_keyboard_activation(
                 &mut document,
                 id,
                 &mut events,
@@ -7073,7 +7121,7 @@ impl NativeEngine {
             && document.focused_node() == id
             && document.has_native_keyboard_button_activation(id)
         {
-            submit_navigation = self.apply_local_keyboard_button_activation(
+            submit_navigation = self.apply_local_keyboard_activation(
                 &mut document,
                 id,
                 &mut events,
@@ -7097,8 +7145,15 @@ impl NativeEngine {
     async fn apply_keyboard_mutation_async(
         &mut self,
         mutation: NativeContentMutation,
+        keyboard_link_target: Option<NativeNodeId>,
     ) -> Result<NativeActionResult, NativeEngineError> {
         let navigation = mutation.navigation.clone();
+        let activated_link = keyboard_link_target.filter(|target| {
+            mutation.allowed
+                && mutation.events.iter().any(|event| {
+                    event.node_index == target.index() && event.kind == NativeEventKind::Click
+                })
+        });
         let next_revision = self.next_revision()?;
         let outcome = self
             .apply_content_process_mutation_async_at(next_revision, mutation)
@@ -7110,7 +7165,73 @@ impl NativeEngine {
                 accepted: true,
             });
         }
+        if let Some(target) = activated_link {
+            return self
+                .finish_content_keyboard_link_activation_async(target, outcome)
+                .await;
+        }
         Ok(outcome)
+    }
+
+    async fn finish_content_keyboard_link_activation_async(
+        &mut self,
+        target: NativeNodeId,
+        outcome: NativeActionResult,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        let Some(href) = self
+            .document
+            .link_href(target)
+            .filter(|href| !href.is_empty())
+            .map(str::to_owned)
+        else {
+            return Ok(outcome);
+        };
+        let download_attribute = self
+            .document
+            .link_download_attribute(target)
+            .map(str::to_owned);
+        if download_attribute.is_some()
+            && self.pending_downloads.len() >= MAX_NATIVE_PENDING_DOWNLOADS
+        {
+            return Err(NativeEngineError::limit(
+                "native pending downloads",
+                MAX_NATIVE_PENDING_DOWNLOADS,
+                self.pending_downloads.len().saturating_add(1),
+            ));
+        }
+        let target_url = self.resolve_link_href(&href)?;
+        let opens_new_target = self.document.link_opens_new_target(target);
+        let special_navigation = download_attribute.is_some() || opens_new_target;
+        if special_navigation
+            && !self
+                .allows_top_level_navigation_async(&target_url, true)
+                .await?
+        {
+            return Ok(NativeActionResult {
+                revision: self.revision,
+                accepted: outcome.accepted,
+            });
+        }
+        if let Some(download_attribute) = download_attribute {
+            self.queue_download(target_url, &download_attribute)?;
+            return Ok(NativeActionResult {
+                revision: self.revision,
+                accepted: outcome.accepted,
+            });
+        }
+        if opens_new_target {
+            self.queue_popup(target_url)?;
+            return Ok(NativeActionResult {
+                revision: self.revision,
+                accepted: outcome.accepted,
+            });
+        }
+        self.navigate_request_async(NativeNavigationRequest::get(target_url), 0)
+            .await?;
+        Ok(NativeActionResult {
+            revision: self.revision,
+            accepted: outcome.accepted,
+        })
     }
 
     fn apply_content_process_mutation(

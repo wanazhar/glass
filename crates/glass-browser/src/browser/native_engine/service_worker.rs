@@ -1423,6 +1423,7 @@ impl NativeServiceWorkerRegistry {
                 commands: pending.into_iter().collect(),
                 top_level_await_pending: continuation.awaiting
                     || evaluation.top_level_await_pending,
+                worker_script_error: None,
             };
             let settlement = if worker_is_waiting {
                 let worker = self

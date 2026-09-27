@@ -22813,7 +22813,8 @@ fn worker_bootstrap(
     if (typeof handler === "function") {{
       let result;
       try {{ result = handler.call(globalThis, event); }} catch (_error) {{}}
-      if (type === "message" && result === false) event.defaultPrevented = true;
+      if ((type === "message" || type === "connect") && result === false)
+        event.defaultPrevented = true;
     }}
     const callbacks = listeners.get(type) || [];
     for (const callback of callbacks.slice()) {{
@@ -28125,13 +28126,33 @@ const NATIVE_SHARED_WORKER_BOOTSTRAP: &str = r###"
   globalThis.__glassDispatchSharedWorkerConnect = (payload) => {
     if (closed) return null;
     const envelope = glassMessageDecodeEnvelope(payload || {});
-    const event = {
-      type: "connect",
-      ports: envelope.ports,
-      target: globalThis,
-      currentTarget: globalThis,
-    };
+    const ports = Object.freeze(Array.isArray(envelope.ports) ? envelope.ports.slice() : []);
+    const source = ports[0] || null;
+    const MessageEventConstructor = globalThis.__glassWorkerMessageEventConstructor || globalThis.MessageEvent;
+    const event = new MessageEventConstructor("connect", {
+      data: "",
+      ports,
+      source,
+      origin: "",
+      bubbles: false,
+      cancelable: false,
+    });
+    Object.defineProperty(event, "ports", {
+      configurable: false,
+      enumerable: true,
+      value: ports,
+    });
+    Object.defineProperty(event, "source", {
+      configurable: false,
+      enumerable: true,
+      value: source,
+    });
+    event.target = globalThis;
+    event.currentTarget = globalThis;
+    event.eventPhase = 2;
     dispatch("connect", event);
+    event.currentTarget = null;
+    event.eventPhase = 0;
     return null;
   };
 "###;

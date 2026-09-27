@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-786
 scope: glass-browser/shared-worker-connect-message-event
-status: in_progress
+status: completed
 depends-on: [native-engine-browser-785]
 ---
 
@@ -65,4 +65,18 @@ or transferred-port ownership.
 
 ## Verification
 
-Pending implementation and focused verification.
+Passed locally:
+
+- `rustfmt --edition 2024 --check crates/glass-browser/src/browser/native_engine/javascript.rs crates/glass-browser/tests/native_engine.rs`
+- `cargo check -p glass-browser --test native_engine --locked --quiet`
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_local_shared_worker_reuses_named_runtime_and_ports --exact --test-threads=1`
+  (1 passed; two connections verify worker-realm `MessageEvent` shape, frozen
+  port/source identity, exact-false handler state before later listeners, and
+  existing port request/reply behavior)
+- `python3 scripts/check-documentation-coverage.py`
+  (1,414 Markdown files; coverage validated)
+- `git diff --check`
+
+The scoped Cargo check/test pass with existing dead-code warnings in the
+native DOM module. Remote CI, full worker/WPT conformance, cross-platform
+certification, and issue #40 native-only production gates remain open.

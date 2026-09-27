@@ -23152,6 +23152,11 @@ fn worker_bootstrap(
   let onMessage = typeof globalThis.__glassWorkerOnMessage === "function"
     ? globalThis.__glassWorkerOnMessage
     : null;
+  const existingMessageErrorHandlerSlot = globalThis.__glassWorkerMessageErrorHandlerSlot;
+  let messageErrorHandlerSlot = existingMessageErrorHandlerSlot
+      && existingMessageErrorHandlerSlot.active === true
+    ? existingMessageErrorHandlerSlot
+    : null;
   let onError = typeof globalThis.__glassWorkerOnError === "function"
     ? globalThis.__glassWorkerOnError
     : null;
@@ -23184,8 +23189,15 @@ fn worker_bootstrap(
     }}
     const callbacks = listeners.get(type) || [];
     for (const callback of callbacks.slice()) {{
-      try {{ callback.call(globalThis, event); }} catch (error) {{
-        if (type === "message" && reportMessageCallbackErrors)
+      try {{
+        if (callback && callback.__glassWorkerMessageErrorHandlerSlot === true) {{
+          if (!callback.active || typeof callback.value !== "function") continue;
+          callback.value.call(globalThis, event);
+        }} else {{
+          callback.call(globalThis, event);
+        }}
+      }} catch (error) {{
+        if ((type === "message" || type === "messageerror") && reportMessageCallbackErrors)
           reportWorkerCallbackException(error, forwardMessageCallbackErrors);
         else if (type === "connect" && captureConnectCallbackErrors)
           reportWorkerCallbackException(error, false);
@@ -28294,8 +28306,27 @@ fn worker_bootstrap(
     if (closed) return null;
     if (payload && Array.isArray(payload.object_urls))
       globalThis.__glassInstallObjectUrlTransfers(payload.object_urls);
-    const envelope = glassMessageDecodeEnvelope(payload);
     const MessageEventConstructor = globalThis.__glassWorkerMessageEventConstructor || globalThis.MessageEvent;
+    let envelope;
+    try {{
+      envelope = glassMessageDecodeEnvelope(payload);
+    }} catch (_error) {{
+      const event = new MessageEventConstructor("messageerror", {{
+        data: null,
+        ports: [],
+        origin: "",
+        source: null,
+        bubbles: false,
+        cancelable: false,
+      }});
+      event.target = globalThis;
+      event.currentTarget = globalThis;
+      event.eventPhase = 2;
+      dispatch("messageerror", event);
+      event.currentTarget = null;
+      event.eventPhase = 0;
+      return null;
+    }}
     const event = new MessageEventConstructor("message", {{
       data: envelope.data,
       ports: envelope.ports,
@@ -28403,6 +28434,7 @@ fn worker_bootstrap(
   }};
   globalThis.__glassWorkerListeners = listeners;
   globalThis.__glassWorkerOnMessage = onMessage;
+  globalThis.__glassWorkerMessageErrorHandlerSlot = messageErrorHandlerSlot;
   globalThis.__glassWorkerOnError = onError;
   globalThis.__glassWorkerOnConnect = onConnect;
   globalThis.__glassWorkerOnSecurityPolicyViolation = onSecurityPolicyViolation;
@@ -28413,6 +28445,40 @@ fn worker_bootstrap(
     enumerable: true,
     get() {{ return onMessage; }},
     set(value) {{ onMessage = typeof value === "function" ? value : null; globalThis.__glassWorkerOnMessage = onMessage; }},
+  }});
+  Object.defineProperty(globalThis, "onmessageerror", {{
+    configurable: true,
+    enumerable: true,
+    get() {{ return messageErrorHandlerSlot ? messageErrorHandlerSlot.value : null; }},
+    set(value) {{
+      const handlerValue = value !== null && value !== undefined
+          && (typeof value === "object" || typeof value === "function")
+        ? value
+        : null;
+      if (handlerValue === null) {{
+        if (messageErrorHandlerSlot) {{
+          messageErrorHandlerSlot.active = false;
+          const callbacks = listeners.get("messageerror") || [];
+          listeners.set(
+            "messageerror",
+            callbacks.filter((callback) => callback !== messageErrorHandlerSlot),
+          );
+          messageErrorHandlerSlot = null;
+        }}
+      }} else if (messageErrorHandlerSlot) {{
+        messageErrorHandlerSlot.value = handlerValue;
+      }} else {{
+        messageErrorHandlerSlot = {{
+          __glassWorkerMessageErrorHandlerSlot: true,
+          active: true,
+          value: handlerValue,
+        }};
+        const callbacks = listeners.get("messageerror") || [];
+        callbacks.push(messageErrorHandlerSlot);
+        listeners.set("messageerror", callbacks);
+      }}
+      globalThis.__glassWorkerMessageErrorHandlerSlot = messageErrorHandlerSlot;
+    }},
   }});
   Object.defineProperty(globalThis, "onerror", {{
     configurable: true,

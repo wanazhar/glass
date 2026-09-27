@@ -345,8 +345,17 @@ pub(crate) fn parse_native_shortcut(
             "must contain exactly one non-modifier key",
         )
     })?;
+    let key = normalize_native_keyboard_key(key);
     validate_native_key(&key)?;
     Ok((modifiers, key))
+}
+
+pub(crate) fn normalize_native_keyboard_key(key: String) -> String {
+    if key.eq_ignore_ascii_case("space") || key.eq_ignore_ascii_case("spacebar") {
+        " ".to_owned()
+    } else {
+        key
+    }
 }
 
 /// Bounded native effect metadata. It never contains raw input or form values.

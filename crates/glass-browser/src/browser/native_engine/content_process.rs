@@ -4713,6 +4713,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut stdout = tokio::io::stdout();
     let mut running = false;
     let mut document: Option<NativeDocument> = None;
+    let mut pending_space_activation: Option<NativeNodeId> = None;
     let mut document_url = None;
     let mut document_origin = None;
     let mut viewport = Viewport::default();
@@ -6925,7 +6926,25 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         } else {
                             NativeEventKind::KeyUp
                         };
-                        mutate_key_event_with_event_bridge(
+                        if pending_space_activation
+                            .is_some_and(|target| target.generation() != current.generation())
+                        {
+                            pending_space_activation = None;
+                        }
+                        let target_id = NativeNodeId::from_parts(current.generation(), node_index);
+                        let is_space = key == " ";
+                        let was_pending_space = kind == NativeEventKind::KeyUp
+                            && is_space
+                            && pending_space_activation == Some(target_id);
+                        let eligible_on_keydown = kind == NativeEventKind::KeyDown
+                            && is_space
+                            && current.has_native_keyboard_button_activation(target_id);
+                        if is_space && kind == NativeEventKind::KeyDown {
+                            pending_space_activation = None;
+                        } else if is_space && kind == NativeEventKind::KeyUp {
+                            pending_space_activation = None;
+                        }
+                        let result = mutate_key_event_with_event_bridge(
                             current,
                             runtime,
                             &mut committed_url,
@@ -6935,8 +6954,19 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             key,
                             kind,
                             modifiers,
+                            was_pending_space,
                             resource_loader.as_mut(),
-                        )
+                        );
+                        if eligible_on_keydown
+                            && result.as_ref().is_ok_and(|(next, mutation)| {
+                                mutation.allowed
+                                    && next.focused_node() == target_id
+                                    && next.has_native_keyboard_button_activation(target_id)
+                            })
+                        {
+                            pending_space_activation = Some(target_id);
+                        }
+                        result
                     }
                     ("mutate_key_shortcut", "shortcut") => mutate_key_shortcut_with_event_bridge(
                         current,
@@ -6983,6 +7013,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
                             })).collect::<Vec<_>>(),
+                            "navigation": mutation.navigation.as_ref().map(content_navigation_json),
                         })
                     }
                     Err(error) => content_error_response(id, error),
@@ -10064,6 +10095,7 @@ fn mutate_key_event_with_event_bridge(
     key: &str,
     kind: NativeEventKind,
     modifiers: i64,
+    activate_space_on_keyup: bool,
     mut loader: Option<&mut NativeResourceLoader>,
 ) -> Result<(NativeDocument, NativeContentMutation), NativeEngineError> {
     validate_native_key(key)?;
@@ -10094,6 +10126,15 @@ fn mutate_key_event_with_event_bridge(
         document_origin,
         viewport,
     )?;
+    let event_allowed = evaluation
+        .value
+        .as_array()
+        .and_then(|values| values.first())
+        .and_then(Value::as_bool)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "content process key event".into(),
+            reason: "native key event result was invalid".into(),
+        })?;
     apply_content_event_history(
         &evaluation.commands,
         document_url,
@@ -10127,6 +10168,31 @@ fn mutate_key_event_with_event_bridge(
         apply_pending_meta_content_security_policies(&mut next, loader, document_url)?;
         refresh_inline_style_policy(&mut next, loader, document_url)?;
     }
+    let should_activate = event_allowed
+        && next.focused_node() == node_id
+        && next.has_native_keyboard_button_activation(node_id)
+        && ((kind == NativeEventKind::KeyDown && key == "Enter")
+            || (kind == NativeEventKind::KeyUp && key == " " && activate_space_on_keyup));
+    if should_activate {
+        let (clicked, click_mutation) = mutate_click_with_event_preflight(
+            &next,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
+            node_index,
+            loader.as_deref_mut(),
+        )?;
+        let mutation = prepend_native_key_effects(click_mutation, events, history, scroll_commands);
+        if mutation.events.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "content-process keyboard activation effects",
+                MAX_NATIVE_EFFECTS,
+                mutation.events.len(),
+            ));
+        }
+        return Ok((clicked, mutation));
+    }
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process key event effects",
@@ -10148,7 +10214,7 @@ fn mutate_key_event_with_event_bridge(
                 .collect(),
             navigation: None,
             csp_violations: Vec::new(),
-            allowed: true,
+            allowed: event_allowed,
             history,
             scroll_commands,
             storage_events: Vec::new(),
@@ -10161,6 +10227,45 @@ fn mutate_key_event_with_event_bridge(
             window_name: String::new(),
         },
     ))
+}
+
+fn prepend_native_key_effects(
+    mut mutation: NativeContentMutation,
+    events: Vec<(NativeNodeId, NativeEventKind)>,
+    mut history: Vec<NativeScriptCommand>,
+    mut scroll_commands: Vec<NativeScriptCommand>,
+) -> NativeContentMutation {
+    let mut events = events
+        .into_iter()
+        .map(|(node, kind)| NativeContentEvent {
+            node_index: node.index(),
+            kind,
+        })
+        .collect::<Vec<_>>();
+    events.append(&mut mutation.events);
+    mutation.events = events;
+    history.append(&mut mutation.history);
+    mutation.history = history;
+    scroll_commands.append(&mut mutation.scroll_commands);
+    mutation.scroll_commands = scroll_commands;
+    mutation
+}
+
+fn append_native_key_effects(
+    mut mutation: NativeContentMutation,
+    mut events: Vec<(NativeNodeId, NativeEventKind)>,
+    mut history: Vec<NativeScriptCommand>,
+    mut scroll_commands: Vec<NativeScriptCommand>,
+) -> NativeContentMutation {
+    mutation
+        .events
+        .extend(events.drain(..).map(|(node, kind)| NativeContentEvent {
+            node_index: node.index(),
+            kind,
+        }));
+    mutation.history.append(&mut history);
+    mutation.scroll_commands.append(&mut scroll_commands);
+    mutation
 }
 
 fn mutate_key_shortcut_with_event_bridge(
@@ -10194,9 +10299,11 @@ fn mutate_key_shortcut_with_event_bridge(
             reason: "shortcut target is not the focused page target".into(),
         });
     }
+    let keyboard_button_target = current.has_native_keyboard_button_activation(node_id);
     let mut next = current.clone();
     let mut history = Vec::new();
     let mut scroll_commands = Vec::new();
+    let mut activation_mutation = None;
     let keydown_event_batch =
         host_key_event_batch_with_modifiers(node_index, NativeEventKind::KeyDown, key, modifiers)?
             .ok_or_else(|| NativeEngineError::Worker {
@@ -10277,6 +10384,39 @@ fn mutate_key_shortcut_with_event_bridge(
             events.extend(effects);
         }
     }
+    if keydown_allowed
+        && key == "Enter"
+        && keyboard_button_target
+        && next.focused_node() == node_id
+        && next.has_native_keyboard_button_activation(node_id)
+    {
+        dispatch_scroll_events(
+            &mut next,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
+            &mut scroll_commands,
+            &mut events,
+            &mut history,
+        )?;
+        let (clicked, click_mutation) = mutate_click_with_event_preflight(
+            &next,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
+            node_index,
+            loader.as_deref_mut(),
+        )?;
+        activation_mutation = Some(prepend_native_key_effects(
+            click_mutation,
+            std::mem::take(&mut events),
+            std::mem::take(&mut history),
+            std::mem::take(&mut scroll_commands),
+        ));
+        next = clicked;
+    }
     let keyup_event_batch =
         host_key_event_batch_with_modifiers(node_index, NativeEventKind::KeyUp, key, modifiers)?
             .ok_or_else(|| NativeEngineError::Worker {
@@ -10309,6 +10449,39 @@ fn mutate_key_shortcut_with_event_bridge(
         false,
     )?;
     events.extend(effects);
+    if keydown_allowed
+        && key == " "
+        && keyboard_button_target
+        && next.focused_node() == node_id
+        && next.has_native_keyboard_button_activation(node_id)
+    {
+        dispatch_scroll_events(
+            &mut next,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
+            &mut scroll_commands,
+            &mut events,
+            &mut history,
+        )?;
+        let (clicked, click_mutation) = mutate_click_with_event_preflight(
+            &next,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
+            node_index,
+            loader.as_deref_mut(),
+        )?;
+        activation_mutation = Some(prepend_native_key_effects(
+            click_mutation,
+            std::mem::take(&mut events),
+            std::mem::take(&mut history),
+            std::mem::take(&mut scroll_commands),
+        ));
+        next = clicked;
+    }
     dispatch_scroll_events(
         &mut next,
         runtime,
@@ -10329,6 +10502,19 @@ fn mutate_key_shortcut_with_event_bridge(
             MAX_NATIVE_EFFECTS,
             events.len(),
         ));
+    }
+    if let Some(activation_mutation) = activation_mutation {
+        let mut mutation =
+            append_native_key_effects(activation_mutation, events, history, scroll_commands);
+        mutation.document = next.to_content_wire();
+        if mutation.events.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "content-process shortcut activation effects",
+                MAX_NATIVE_EFFECTS,
+                mutation.events.len(),
+            ));
+        }
+        return Ok((next, mutation));
     }
     Ok((
         next.clone(),

@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-764
 scope: glass-browser/native-keyboard-button-activation
-status: planned
+status: done
 depends-on: [native-engine-browser-763]
 ---
 
@@ -21,8 +21,8 @@ depends-on: [native-engine-browser-763]
 ## Objective
 
 Implement Enter and Space activation for focused, enabled native button
-controls. Reuse the click/default-action path in top-level and same-origin
-frame Documents.
+controls in the process-backed content path used by network documents. Reuse
+the click/default-action path in top-level and same-origin child Documents.
 
 ## Contract
 
@@ -44,25 +44,28 @@ frame Documents.
   before defaults run. Reset buttons use the shared reset lifecycle. Submit
   buttons use current validation, submit-event cancellation, submitter data,
   and the normal form navigation path.
-- The same contract applies in the top-level Document and selected
-  same-origin-frame Document. A frame-local focus or pending key state must not
-  activate a top-level control.
+- The same contract applies in the top-level content process and selected
+  same-origin child-frame content process. A frame-local focus or pending key
+  state must not activate a top-level control.
 - Keyboard event cancellation and click cancellation are distinct: canceling
   keydown suppresses click dispatch; canceling the synthesized click suppresses
   its reset/submit default.
 
 ## Tradeoffs and boundaries
 
-This slice models one outstanding Space press per content Document. It does not
-add key repeat, IME/composition, keyboard activation for anchors or arbitrary
-`role="button"` elements, or text-field implicit form submission. Those
-behaviors remain separate profile work. The slice uses the existing Glass
-keyboard action vocabulary and does not add a new public action type.
+This slice models one outstanding Space press per process-backed content
+Document. It does not add key repeat, IME/composition, keyboard activation for
+anchors or arbitrary `role="button"` elements, or text-field implicit form
+submission. The in-process/local `NativeEngine::action()` path remains a
+tracked parity gap in [slice 765](native-engine-browser-765.md). The slice
+uses the existing Glass keyboard action vocabulary and does not add a new
+public action type.
 
 ## Paths
 
 - `crates/glass-browser/src/browser/native_engine/dom.rs`
 - `crates/glass-browser/src/browser/native_engine/interaction.rs`
+- `crates/glass-browser/src/browser/native_engine/javascript.rs`
 - `crates/glass-browser/src/browser/native_engine/content_process.rs`
 - `crates/glass-browser/src/browser/native_engine/engine.rs`
 - `crates/glass-browser/tests/native_engine.rs`
@@ -73,9 +76,17 @@ keyboard action vocabulary and does not add a new public action type.
 
 ## Verification
 
-Pending implementation. Required evidence includes focused process-backed
-tests for Enter and Space phase order, canceled keydown/click, reset and submit
-defaults, and top-level/same-origin-frame behavior; scoped package checking;
-formatting; and the maintainer documentation gates. Local checks do not
-establish remote CI, cross-platform certification, full keyboard conformance,
-or issue #40 completion.
+Passed locally:
+
+- `cargo check -p glass-browser --lib --test native_engine --locked --quiet`
+- `cargo test -p glass-browser --test native_engine native_content_process_keyboard_button_activation --locked --quiet`
+  (3 tests: Enter/Space phase and cancellation, form reset/submit defaults,
+  and same-origin-frame routing)
+- `cargo fmt --all -- --check`
+- `git diff --check`
+- Maintainer documentation gates: release-documentation audit,
+  documentation-depth audit, TUI shortcut inventory, and documentation
+  coverage.
+
+These local checks do not establish remote CI, cross-platform certification,
+full keyboard conformance, inline/local-engine parity, or issue #40 completion.

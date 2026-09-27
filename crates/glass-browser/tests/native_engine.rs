@@ -24930,7 +24930,7 @@ async fn native_content_process_script_form_submit_sends_post_controls() {
 }
 
 #[tokio::test]
-async fn native_content_process_semantic_submit_button_owns_get_navigation() {
+async fn native_content_process_keyboard_button_activation_submits_form() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -24959,13 +24959,25 @@ async fn native_content_process_semantic_submit_button_owns_get_navigation() {
     )
     .unwrap();
     engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async("globalThis.__keyboardSubmitTrace = []; const record = value => { globalThis.__keyboardSubmitTrace.push(value); sessionStorage.setItem('native-keyboard-submit-trace', JSON.stringify(globalThis.__keyboardSubmitTrace)); }; const button = document.getElementById('go'); button.focus(); button.addEventListener('keydown', event => record('keydown:' + event.key)); button.addEventListener('click', () => record('click')); button.addEventListener('keyup', event => record('keyup:' + event.key)); document.querySelector('form').addEventListener('submit', () => record('submit')); document.activeElement.id")
+        .await
+        .map(|active_element| assert_eq!(active_element, serde_json::json!("go")))
+        .unwrap();
     let result = engine
-        .action_async(NativeAction::Click {
-            target: "id=go".into(),
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
         })
         .await
         .unwrap();
     assert!(result.accepted);
+    assert_eq!(
+        engine
+            .evaluate_async("sessionStorage.getItem('native-keyboard-submit-trace')")
+            .await
+            .unwrap(),
+        serde_json::json!(r#"["keydown:Enter","click","submit","keyup:Enter"]"#)
+    );
     assert_eq!(
         engine.snapshot().unwrap().url,
         format!("http://{address}/result?query=hello")
@@ -64308,6 +64320,8 @@ fn native_reset_button_setup_script() -> &'static str {
       const promote = document.getElementById('promote-reset');
       const trace = { mainReset: 0, otherReset: 0, submit: 0, invalid: 0 };
       globalThis.__glassResetButtonTrace = trace;
+      globalThis.__glassResetButtonEvents = [];
+      globalThis.__glassCancelKeyboardEnter = false;
       globalThis.__glassResetButtonInitialHref = location.href;
       main.addEventListener('reset', () => { trace.mainReset += 1; });
       other.addEventListener('reset', event => {
@@ -64322,6 +64336,21 @@ fn native_reset_button_setup_script() -> &'static str {
       }
       for (const id of ['reset-required', 'other-required']) {
         document.getElementById(id).addEventListener('invalid', () => { trace.invalid += 1; });
+      }
+      for (const id of ['input-reset', 'button-reset', 'click-cancel']) {
+        const control = document.getElementById(id);
+        control.addEventListener('keydown', event => {
+          globalThis.__glassResetButtonEvents.push('keydown:' + id + ':' + event.key);
+          if (id === 'input-reset' && globalThis.__glassCancelKeyboardEnter && event.key === 'Enter') {
+            event.preventDefault();
+          }
+        });
+        control.addEventListener('keyup', event => {
+          globalThis.__glassResetButtonEvents.push('keyup:' + id + ':' + event.key);
+        });
+        control.addEventListener('click', () => {
+          globalThis.__glassResetButtonEvents.push('click:' + id);
+        });
       }
       clickCancel.addEventListener('click', event => event.preventDefault());
       promote.addEventListener('click', () => {
@@ -64344,7 +64373,7 @@ fn native_reset_button_state_script() -> &'static str {
 }
 
 #[tokio::test]
-async fn native_content_process_activates_reset_buttons_after_click_default() {
+async fn native_content_process_keyboard_button_activation_resets_forms_and_honors_cancellation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -64452,12 +64481,130 @@ async fn native_content_process_activates_reset_buttons_after_click_default() {
         })
     );
 
+    session
+        .script("document.getElementById('main-value').value = 'dirty-enter'; document.getElementById('input-reset').focus(); globalThis.__glassResetButtonEvents.length = 0; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({value: document.getElementById('main-value').value, resets: globalThis.__glassResetButtonTrace.mainReset, events: globalThis.__glassResetButtonEvents})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "value": "main-default",
+            "resets": 3,
+            "events": [
+                "keydown:input-reset:Enter",
+                "click:input-reset",
+                "keyup:input-reset:Enter",
+            ],
+        })
+    );
+
+    session
+        .script("document.getElementById('main-value').value = 'dirty-space'; document.getElementById('button-reset').focus(); globalThis.__glassResetButtonEvents.length = 0; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::KeyDown { key: " ".into() })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({value: document.getElementById('main-value').value, resets: globalThis.__glassResetButtonTrace.mainReset, events: globalThis.__glassResetButtonEvents})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "value": "dirty-space",
+            "resets": 3,
+            "events": ["keydown:button-reset: "],
+        })
+    );
+    session
+        .action(SemanticAction::KeyUp { key: " ".into() })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({value: document.getElementById('main-value').value, resets: globalThis.__glassResetButtonTrace.mainReset, events: globalThis.__glassResetButtonEvents})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "value": "main-default",
+            "resets": 4,
+            "events": [
+                "keydown:button-reset: ",
+                "keyup:button-reset: ",
+                "click:button-reset",
+            ],
+        })
+    );
+
+    session
+        .script("document.getElementById('main-value').value = 'dirty-canceled-key'; document.getElementById('input-reset').focus(); globalThis.__glassCancelKeyboardEnter = true; globalThis.__glassResetButtonEvents.length = 0; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({value: document.getElementById('main-value').value, resets: globalThis.__glassResetButtonTrace.mainReset, events: globalThis.__glassResetButtonEvents})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "value": "dirty-canceled-key",
+            "resets": 4,
+            "events": ["keydown:input-reset:Enter", "keyup:input-reset:Enter"],
+        })
+    );
+
+    session
+        .script("globalThis.__glassCancelKeyboardEnter = false; document.getElementById('click-cancel').focus(); globalThis.__glassResetButtonEvents.length = 0; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({value: document.getElementById('main-value').value, resets: globalThis.__glassResetButtonTrace.mainReset, events: globalThis.__glassResetButtonEvents})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "value": "dirty-canceled-key",
+            "resets": 4,
+            "events": [
+                "keydown:click-cancel:Enter",
+                "click:click-cancel",
+                "keyup:click-cancel:Enter",
+            ],
+        })
+    );
+
     session.close().await.unwrap();
     server.await.unwrap();
 }
 
 #[tokio::test]
-async fn native_content_process_activates_reset_buttons_in_same_origin_frames() {
+async fn native_content_process_keyboard_button_activation_in_same_origin_frames() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -64521,6 +64668,28 @@ async fn native_content_process_activates_reset_buttons_in_same_origin_frames() 
             .unwrap()
             .value,
         serde_json::json!("frame-default")
+    );
+
+    session
+        .script("globalThis.__frameKeyboardTrace = []; const input = document.getElementById('frame-value'); const button = document.getElementById('frame-reset'); button.addEventListener('keydown', event => __frameKeyboardTrace.push('keydown:' + event.key)); button.addEventListener('keyup', event => __frameKeyboardTrace.push('keyup:' + event.key)); button.addEventListener('click', () => __frameKeyboardTrace.push('click')); input.value = 'frame-space-dirty'; button.focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({value: document.getElementById('frame-value').value, trace: globalThis.__frameKeyboardTrace})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "value": "frame-default",
+            "trace": ["keydown: ", "keyup: ", "click"],
+        })
     );
 
     session.close().await.unwrap();

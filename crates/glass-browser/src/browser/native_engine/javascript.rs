@@ -1078,6 +1078,38 @@ fn execute_classic_worker_script<'js>(
     Ok(NativeClassicWorkerScriptExecution::Completed)
 }
 
+fn report_worker_script_exception<'js>(
+    ctx: &Ctx<'js>,
+    exception: Value<'js>,
+) -> Result<Option<String>, NativeEngineError> {
+    let reporter: Function = ctx
+        .globals()
+        .get("__glassReportWorkerScriptError")
+        .map_err(|error| NativeEngineError::Worker {
+            operation: "report native Worker script error".into(),
+            reason: format!(
+                "native Worker error reporter was unavailable: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })?;
+    let report_json: String =
+        reporter
+            .call((exception,))
+            .map_err(|error| NativeEngineError::Worker {
+                operation: "report native Worker script error".into(),
+                reason: format!(
+                    "native Worker error event could not be dispatched: {}",
+                    CaughtError::from_error(ctx, error)
+                ),
+            })?;
+    let report: NativeWorkerScriptErrorReport =
+        serde_json::from_str(&report_json).map_err(|_| NativeEngineError::Worker {
+            operation: "report native Worker script error".into(),
+            reason: "native Worker error reporter returned invalid data".into(),
+        })?;
+    Ok((!report.handled).then_some(report.message))
+}
+
 /// A same-origin DOM operation emitted by one page realm for a different
 /// embedded browsing context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1436,6 +1468,7 @@ impl NativeDedicatedWorker {
                 source,
                 &self.module_sources,
                 &self.module_base_urls,
+                true,
             )
         } else {
             self.runtime.evaluate_worker_prepared(
@@ -1482,6 +1515,7 @@ impl NativeDedicatedWorker {
                 source,
                 &self.module_sources,
                 &self.module_base_urls,
+                false,
             )
         } else {
             self.runtime
@@ -14939,7 +14973,7 @@ impl NativeJavaScriptRuntime {
             false,
         )?;
         self.evaluate_worker_source_with_bootstrap_and_event_impl(
-            worker_id, worker_url, None, source, bootstrap, false, false, None, true,
+            worker_id, worker_url, None, source, bootstrap, false, false, None, true, false,
         )
     }
 
@@ -14954,6 +14988,7 @@ impl NativeJavaScriptRuntime {
         source: &str,
         module_sources: &BTreeMap<String, String>,
         module_base_urls: &BTreeMap<String, String>,
+        capture_startup_runtime_errors: bool,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         if module_name.is_empty() {
             return Err(NativeEngineError::invalid(
@@ -14973,12 +15008,19 @@ impl NativeJavaScriptRuntime {
                 reason: "Worker module referrer could not be encoded".into(),
             })?;
         let source = rewrite_runtime_dynamic_module_imports(source, &referrer)?;
-        self.evaluate_worker_source(
+        let bootstrap =
+            worker_bootstrap(worker_id, worker_url, self.now_ms(), &BTreeMap::new(), true)?;
+        self.evaluate_worker_source_with_bootstrap_and_event_impl(
             worker_id,
             worker_url,
             Some(module_name),
             &source,
-            &BTreeMap::new(),
+            bootstrap,
+            false,
+            false,
+            None,
+            false,
+            capture_startup_runtime_errors,
         )
     }
 
@@ -15193,6 +15235,7 @@ impl NativeJavaScriptRuntime {
             await_promise,
             dispatch,
             false,
+            false,
         )
     }
 
@@ -15208,6 +15251,7 @@ impl NativeJavaScriptRuntime {
         await_promise: bool,
         dispatch: Option<NativeWorkerDispatch<'_>>,
         capture_classic_worker_error: bool,
+        capture_module_worker_error: bool,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         if worker_id == 0 {
             return Err(NativeEngineError::invalid(
@@ -15346,6 +15390,50 @@ impl NativeJavaScriptRuntime {
                         });
                     }
                 }
+            } else if capture_module_worker_error && let Some(module_name) = module_name {
+                let module = Module::declare(ctx.clone(), module_name, source).map_err(|error| {
+                    NativeEngineError::Worker {
+                        operation: "evaluate native Worker module".into(),
+                        reason: format!(
+                            "native Worker module evaluation failed: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    }
+                })?;
+                let (_module, promise) = module.eval().map_err(|error| {
+                    NativeEngineError::Worker {
+                        operation: "evaluate native Worker module".into(),
+                        reason: format!(
+                            "native Worker module evaluation failed: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    }
+                })?;
+                match promise.finish::<()>() {
+                    Ok(()) => {}
+                    Err(Error::Exception) => {
+                        worker_script_error =
+                            report_worker_script_exception(&ctx, ctx.catch())?;
+                    }
+                    Err(error) => {
+                        return Err(NativeEngineError::Worker {
+                            operation: "evaluate native Worker module".into(),
+                            reason: format!(
+                                "native Worker module evaluation failed: {}",
+                                CaughtError::from_error(&ctx, error)
+                            ),
+                        });
+                    }
+                }
+                ctx.eval::<Value, _>("undefined").map_err(|error| {
+                    NativeEngineError::Worker {
+                        operation: "serialize native Worker result".into(),
+                        reason: format!(
+                            "native Worker result could not be created: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    }
+                })?
             } else if let Some(module_name) = module_name {
                 Module::evaluate(ctx.clone(), module_name, source)
                     .and_then(|promise| promise.finish::<()>())
@@ -15378,36 +15466,8 @@ impl NativeJavaScriptRuntime {
                         })?
                     }
                     NativeClassicWorkerScriptExecution::RuntimeError(exception) => {
-                        let reporter: Function = ctx
-                            .globals()
-                            .get("__glassReportWorkerScriptError")
-                            .map_err(|error| NativeEngineError::Worker {
-                                operation: "report native Worker script error".into(),
-                                reason: format!(
-                                    "native Worker error reporter was unavailable: {}",
-                                    CaughtError::from_error(&ctx, error)
-                                ),
-                            })?;
-                        let report_json: String = reporter
-                            .call((exception,))
-                            .map_err(|error| NativeEngineError::Worker {
-                                operation: "report native Worker script error".into(),
-                                reason: format!(
-                                    "native Worker error event could not be dispatched: {}",
-                                    CaughtError::from_error(&ctx, error)
-                                ),
-                            })?;
-                        let report: NativeWorkerScriptErrorReport =
-                            serde_json::from_str(&report_json).map_err(|_| {
-                                NativeEngineError::Worker {
-                                    operation: "report native Worker script error".into(),
-                                    reason: "native Worker error reporter returned invalid data"
-                                        .into(),
-                                }
-                            })?;
-                        if !report.handled {
-                            worker_script_error = Some(report.message);
-                        }
+                        worker_script_error =
+                            report_worker_script_exception(&ctx, exception)?;
                         ctx.eval::<Value, _>("undefined").map_err(|error| {
                             NativeEngineError::Worker {
                                 operation: "serialize native Worker result".into(),

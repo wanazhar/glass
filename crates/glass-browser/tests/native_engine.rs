@@ -70093,6 +70093,118 @@ fn native_focus_transition_events() -> serde_json::Value {
     ])
 }
 
+const NATIVE_GLOBAL_EVENT_HANDLER_TYPES: &[&str] = &[
+    "abort",
+    "auxclick",
+    "beforeinput",
+    "beforematch",
+    "beforetoggle",
+    "blur",
+    "cancel",
+    "canplay",
+    "canplaythrough",
+    "change",
+    "click",
+    "close",
+    "command",
+    "contextlost",
+    "contextmenu",
+    "contextrestored",
+    "copy",
+    "cuechange",
+    "cut",
+    "dblclick",
+    "drag",
+    "dragend",
+    "dragenter",
+    "dragleave",
+    "dragover",
+    "dragstart",
+    "drop",
+    "durationchange",
+    "emptied",
+    "ended",
+    "error",
+    "focus",
+    "formdata",
+    "input",
+    "invalid",
+    "keydown",
+    "keypress",
+    "keyup",
+    "load",
+    "loadeddata",
+    "loadedmetadata",
+    "loadstart",
+    "mousedown",
+    "mouseenter",
+    "mouseleave",
+    "mousemove",
+    "mouseout",
+    "mouseover",
+    "mouseup",
+    "paste",
+    "pause",
+    "play",
+    "playing",
+    "progress",
+    "ratechange",
+    "reset",
+    "resize",
+    "scroll",
+    "scrollend",
+    "securitypolicyviolation",
+    "seeked",
+    "seeking",
+    "select",
+    "slotchange",
+    "stalled",
+    "submit",
+    "suspend",
+    "timeupdate",
+    "toggle",
+    "volumechange",
+    "waiting",
+    "webkitanimationend",
+    "webkitanimationiteration",
+    "webkitanimationstart",
+    "webkittransitionend",
+    "wheel",
+];
+
+fn native_html_global_event_handler_surface_script() -> String {
+    let types = serde_json::to_string(NATIVE_GLOBAL_EVENT_HANDLER_TYPES).unwrap();
+    format!(
+        "(() => {{ const element = document.getElementById('first') || document.getElementById('child').contentDocument.getElementById('first'); const types = {types}; return [types.filter(type => !(\"on\" + type in element)), types.filter(type => element[\"on\" + type] !== null), types.filter(type => Object.prototype.hasOwnProperty.call(element, \"on\" + type))]; }})()"
+    )
+}
+
+fn native_global_event_handler_dispatch_script() -> &'static str {
+    r#"(() => {
+      const first = document.getElementById('first');
+      globalThis.commonEventHandlerEvents = [];
+      first.onclick = function(event) {
+        commonEventHandlerEvents.push([
+          'click',
+          this === event.currentTarget,
+          event.target === event.currentTarget,
+        ]);
+      };
+      first.oninput = function(event) {
+        commonEventHandlerEvents.push([
+          'input',
+          this === event.currentTarget,
+          event.target === event.currentTarget,
+        ]);
+      };
+      first.dispatchEvent(new Event('click', { bubbles: true }));
+      first.dispatchEvent(new Event('input', { bubbles: true }));
+      first.onclick = null;
+      first.oninput = null;
+      return [commonEventHandlerEvents, first.onclick, first.oninput];
+    })()"#
+}
+
 fn native_projected_focus_handler_setup_script() -> &'static str {
     r#"(() => {
       const child = document.getElementById('child').contentDocument;
@@ -70101,6 +70213,7 @@ fn native_projected_focus_handler_setup_script() -> &'static str {
       const second = child.getElementById('second');
       globalThis.projectedFocusEvents = [];
       globalThis.projectedIdlFocusEvents = [];
+      globalThis.projectedIdlClickEvents = [];
       const record = event => projectedFocusEvents.push([
         event.type,
         event.target.id,
@@ -70109,6 +70222,12 @@ fn native_projected_focus_handler_setup_script() -> &'static str {
       ]);
       for (const type of ['blur', 'focus']) outer.addEventListener(type, record, true);
       for (const type of ['focusout', 'focusin']) outer.addEventListener(type, record);
+      first.onclick = function(event) {
+        projectedIdlClickEvents.push([
+          this === event.currentTarget,
+          event.target === event.currentTarget,
+        ]);
+      };
       first.onfocus = () => projectedIdlFocusEvents.push(['replaced']);
       first.onfocus = function(event) {
         projectedIdlFocusEvents.push([
@@ -70142,6 +70261,18 @@ fn native_projected_focus_handler_setup_script() -> &'static str {
     })()"#
 }
 
+fn native_projected_global_handler_dispatch_script() -> &'static str {
+    r#"(() => {
+      const child = document.getElementById('child').contentDocument;
+      const first = child.getElementById('first');
+      globalThis.projectedIdlClickEvents = [];
+      const handler = first.onclick;
+      first.dispatchEvent(new Event('click', { bubbles: true }));
+      first.onclick = null;
+      return [typeof handler, first.onclick, projectedIdlClickEvents];
+    })()"#
+}
+
 fn native_projected_focus_handler_clear_script() -> &'static str {
     "(() => { const child = document.getElementById('child').contentDocument; const first = child.getElementById('first'); const second = child.getElementById('second'); first.onfocus = null; second.onblur = null; return [first.onfocus, second.onblur]; })()"
 }
@@ -70156,6 +70287,20 @@ async fn native_local_focusin_focusout_bubble_with_related_targets() {
     )
     .unwrap();
     engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(&native_html_global_event_handler_surface_script())
+            .await
+            .unwrap(),
+        serde_json::json!([[], [], []])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(native_global_event_handler_dispatch_script())
+            .await
+            .unwrap(),
+        serde_json::json!([[["click", true, true], ["input", true, true]], null, null,])
+    );
     assert_eq!(
         engine
             .evaluate_async(native_focus_event_listener_script())
@@ -70257,11 +70402,35 @@ async fn native_http_focusin_focusout_persist_in_same_origin_frame() {
         .expect("same-origin child frame")
         .id
         .clone();
+    assert_eq!(
+        session
+            .script(&native_html_global_event_handler_surface_script())
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([[], [], []])
+    );
     session
         .script(native_projected_focus_handler_setup_script())
         .await
         .unwrap();
     session.native_select_frame(&child_id).await.unwrap();
+    assert_eq!(
+        session
+            .script(&native_html_global_event_handler_surface_script())
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([[], [], []])
+    );
+    assert_eq!(
+        session
+            .script(native_global_event_handler_dispatch_script())
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([[["click", true, true], ["input", true, true]], null, null,])
+    );
     assert_eq!(
         session
             .script(native_focus_event_listener_script())
@@ -70350,6 +70519,14 @@ async fn native_http_focusin_focusout_persist_in_same_origin_frame() {
             ["blur-first", true, true],
             ["focus-second", true, true],
         ])
+    );
+    assert_eq!(
+        session
+            .script(native_projected_global_handler_dispatch_script())
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["function", null, [[true, true]],])
     );
     session.native_select_frame(&child_id).await.unwrap();
     assert_eq!(

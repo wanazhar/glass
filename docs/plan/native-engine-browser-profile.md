@@ -133,18 +133,19 @@ parent-frame projection tests cover direct focus, Tab, ordering, propagation,
 and related targets. This is not complete focus-event Web IDL or reentrant
 focus-algorithm conformance; see the [slice 777 task](tasks/native-engine-browser-777.md).
 
-Ordinary HTML elements expose the `onfocus` and `onblur` event-handler IDL
-properties. Function replacement retains the handler's position relative to
-`addEventListener` listeners, and assigning null clears it. Handler state uses
-the stable native event owner so refreshed same-origin frame projections read
-and update the same handler. Local,
-HTTP(S) content-process, and same-origin parent-frame projection tests cover
-handler `this`/target identity at dispatch, replacement, clearing, and listener
-order. Native elements already route generic `on*` content attributes through
-the inline-handler path; this slice does not change or independently verify
-focus-specific CSP behavior or same-origin parent-projection parity.
-`body`/`frameset` Window-target remapping remains open; see the
-[slice 778 task](tasks/native-engine-browser-778.md).
+Ordinary HTML elements expose the current `GlobalEventHandlers` IDL property
+set from the shared HTML element prototype, including `onfocus` and `onblur`.
+State is allocated only when a handler is assigned and keyed by the native
+event owner, so refreshed same-origin frame projections read, replace, and
+clear the same handler. Function replacement retains its listener position
+relative to `addEventListener`; null clears it. Local, HTTP(S) content-process,
+and same-origin parent-projection tests cover the complete property-name
+surface and representative click/input/focus dispatch, `this`/target identity,
+replacement, clearing, and listener order. The existing generic `on*`
+content-attribute path is unchanged; focus-specific CSP/projection parity is
+not established. `Window`/`Document` handler sets and `body`/`frameset`
+Window-target remapping remain open; see the [slice 779 task](tasks/native-engine-browser-779.md)
+and [slice 778 task](tasks/native-engine-browser-778.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus

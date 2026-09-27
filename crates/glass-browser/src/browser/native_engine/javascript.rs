@@ -37522,17 +37522,18 @@ fn document_bootstrap(
     callbacks.splice(index, 1);
     if (callbacks.length === 0) listeners.delete(key);
   }};
-  const installEventHandlerProperty = (element, type) => {{
-    const keyForElement = () => listenerKey(ownerFor(element), type);
-    const createState = () => {{
+  const installEventHandlerProperty = (element, type, onPrototype = false) => {{
+    const targetFor = (receiver) => onPrototype ? receiver : element;
+    const keyForTarget = (target) => listenerKey(ownerFor(target), type);
+    const createState = (target) => {{
       const state = {{ handler: null, active: false, registered: null }};
       state.registered = event => {{
         const handler = state.handler;
         if (!handler) return;
-        const target = event.currentTarget || element;
-        if (target === globalThis && type === "error") {{
+        const currentTarget = event.currentTarget || target;
+        if (currentTarget === globalThis && type === "error") {{
           return handler.call(
-            target,
+            currentTarget,
             event.message || "",
             event.filename || "",
             Number(event.lineno) || 0,
@@ -37540,32 +37541,33 @@ fn document_bootstrap(
             event.error || null,
           );
         }}
-        return handler.call(target, event);
+        return handler.call(currentTarget, event);
       }};
       return state;
     }};
     Object.defineProperty(element, "on" + type, {{
       enumerable: true,
-      configurable: false,
+      configurable: onPrototype,
       get() {{
-        const state = eventHandlers.get(keyForElement());
+        const state = eventHandlers.get(keyForTarget(targetFor(this)));
         return state ? state.handler : null;
       }},
       set(next) {{
-        const key = keyForElement();
+        const target = targetFor(this);
+        const key = keyForTarget(target);
         const handler = typeof next === "function" ? next : null;
         let state = eventHandlers.get(key);
         if (!state && !handler) return;
         if (!state) {{
-          state = createState();
+          state = createState(target);
           eventHandlers.set(key, state);
         }}
         state.handler = handler;
         if (handler && !state.active) {{
-          addListener(ownerFor(element), type, state.registered, false);
+          addListener(ownerFor(target), type, state.registered, false);
           state.active = true;
         }} else if (!handler && state.active) {{
-          removeListener(ownerFor(element), type, state.registered, false);
+          removeListener(ownerFor(target), type, state.registered, false);
           eventHandlers.delete(key);
         }}
       }},
@@ -38496,8 +38498,6 @@ fn document_bootstrap(
     }});
   }};
   const installCommonAttributeProperties = (element, state = {{}}, baseUrl = host.url) => {{
-    installEventHandlerProperty(element, "focus");
-    installEventHandlerProperty(element, "blur");
     installReflectedAttributeProperties(element);
     installTabIndexProperty(element);
     for (const [property, attribute] of [
@@ -38579,8 +38579,6 @@ fn document_bootstrap(
           try {{ return new URLNative(value, baseUrl).href; }} catch (_error) {{ return value; }}
         }},
       }});
-      installEventHandlerProperty(element, "load");
-      installEventHandlerProperty(element, "error");
     }}
     if (["AUDIO", "VIDEO"].includes(element.tagName)) {{
       const mediaState = () => ({{
@@ -38809,12 +38807,6 @@ fn document_bootstrap(
           set(_next) {{ throw new DOMExceptionNative("srcObject is unsupported", "NotSupportedError"); }},
         }},
       }});
-      for (const type of [
-        "loadstart", "durationchange", "loadedmetadata", "loadeddata", "canplay",
-        "canplaythrough", "play", "playing", "pause", "ended", "timeupdate",
-        "progress", "error", "stalled", "suspend", "waiting", "seeking", "seeked",
-        "ratechange", "volumechange",
-      ]) installEventHandlerProperty(element, type);
       element.load = () => {{
         resetMediaState();
         if (typeof state.mediaLoad === "function") state.mediaLoad();
@@ -46337,6 +46329,25 @@ fn document_bootstrap(
   const ElementNative = ensureNativeConstructor("Element", NodeNative);
   const HTMLElementNative = ensureNativeConstructor("HTMLElement", ElementNative);
   const HTMLMediaElementNative = ensureNativeConstructor("HTMLMediaElement", HTMLElementNative);
+  const nativeGlobalEventHandlerTypes = [
+    "abort", "auxclick", "beforeinput", "beforematch", "beforetoggle", "blur",
+    "cancel", "canplay", "canplaythrough", "change", "click", "close", "command",
+    "contextlost", "contextmenu", "contextrestored", "copy", "cuechange", "cut",
+    "dblclick", "drag", "dragend", "dragenter", "dragleave", "dragover", "dragstart",
+    "drop", "durationchange", "emptied", "ended", "error", "focus", "formdata",
+    "input", "invalid", "keydown", "keypress", "keyup", "load", "loadeddata",
+    "loadedmetadata", "loadstart", "mousedown", "mouseenter", "mouseleave", "mousemove",
+    "mouseout", "mouseover", "mouseup", "paste", "pause", "play", "playing",
+    "progress", "ratechange", "reset", "resize", "scroll", "scrollend",
+    "securitypolicyviolation", "seeked", "seeking", "select", "slotchange", "stalled",
+    "submit", "suspend", "timeupdate", "toggle", "volumechange", "waiting",
+    "webkitanimationend", "webkitanimationiteration", "webkitanimationstart",
+    "webkittransitionend", "wheel",
+  ];
+  for (const type of nativeGlobalEventHandlerTypes) {{
+    if (!Object.prototype.hasOwnProperty.call(HTMLElementNative.prototype, "on" + type))
+      installEventHandlerProperty(HTMLElementNative.prototype, type, true);
+  }}
   const WindowNative = ensureNativeConstructor("Window", null);
   const LocationNative = ensureNativeConstructor("Location", null);
   const NodeListNative = ensureNativeConstructor("NodeList", null);

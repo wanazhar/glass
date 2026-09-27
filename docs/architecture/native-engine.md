@@ -5335,6 +5335,20 @@ parity. It does not remap `body`/`frameset` handlers to Window and is not a
 complete `GlobalEventHandlers` implementation. See
 [`native-engine-browser-778`](../plan/tasks/native-engine-browser-778.md).
 
+### Element `GlobalEventHandlers` IDL properties (slice 779)
+
+The current `GlobalEventHandlers` event-handler properties are inherited from
+the shared HTML element prototype, rather than allocated as own properties on
+every node. Handler state is created only on assignment and keyed by native
+event owner, preserving replacement order, null removal, and behavior across
+same-origin frame projection refreshes. Local and process/frame tests check
+the full property-name surface plus click/input and focus dispatch. This does
+not mean every event source or default action is implemented; Window and
+Document handler sets, body/frameset Window-target routing, and complete event
+conformance remain separate. The existing inline `on*` content-attribute path
+is unchanged. See
+[`native-engine-browser-779`](../plan/tasks/native-engine-browser-779.md).
+
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,

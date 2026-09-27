@@ -3736,6 +3736,19 @@ Event-handler attributes, rejected-lifetime certification, complete lifecycle
 semantics, and WPT conformance remain open; see
 [task 797](../tasks/native-engine-browser-797.md).
 
+Slice 798 adds only the required Service Worker global `oninstall` and
+`onactivate` handler properties. Each is registered in the same ordered
+listener collection, retains its position on replacement, and is removed on
+nullish/primitive deactivation; reactivation appends a fresh slot. Handler
+slots persist in worker-global state across native bootstrap re-entry. A
+process-backed HTTP regression covers callable invocation/`this`/type,
+replacement and clear/reactivation order, legacy object no-op conversion,
+global exception report/continuation, fulfilled lifecycle waits, controlled
+page state, and absence of client errors. Other Worker globals, lifecycle
+event shape, rejected-wait certification, complete Web IDL/EventTarget
+semantics, and WPT remain separate issue #40 work; see
+[task 798](../tasks/native-engine-browser-798.md).
+
 Slice 793 installs the dedicated-owner forwarding mode of the worker error
 reporter for native MessagePorts in DedicatedWorker realms. The process-backed
 transferred-port test covers exact-`true` global cancellation, one uncanceled

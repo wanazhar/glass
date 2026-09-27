@@ -316,6 +316,17 @@ events. It does not add `oninstall`/`onactivate` handler attributes or certify
 rejected-lifetime, full lifecycle, or WPT conformance; see the
 [slice 797 task](tasks/native-engine-browser-797.md).
 
+Slice 798 exposes callable `oninstall` and `onactivate` handlers on the
+Service Worker global and runs them in listener-registration order. Replacing
+an active handler preserves its slot; clearing and reactivation removes the
+old slot and appends a new one. Handler state survives lifecycle bootstrap
+re-entry. Process-backed HTTP coverage verifies both callback contexts, the
+ordering transitions, non-callable-object no-op conversion, global error
+reporting/continuation, fulfilled install/activate waits, worker activation,
+page control, and no page error event. Full Web IDL/EventTarget, rejected
+lifetime, platform, remote-CI, and WPT conformance remain open; see the
+[slice 798 task](tasks/native-engine-browser-798.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

@@ -3742,6 +3742,19 @@ error events. The lifecycle dispatch still settles from its existing
 lifecycle-promise certification remain separate. See
 [task 797](../plan/tasks/native-engine-browser-797.md).
 
+Slice 798 exposes `ServiceWorkerGlobalScope.oninstall` and `.onactivate` as
+ordered event-handler properties. Their active listener slots survive native
+bootstrap re-entry; replacing a handler keeps its slot, while nullish/primitive
+clearing removes it and later assignment reactivates at the new position.
+Non-callable objects are retained as EventHandler values and invoked as no-ops.
+The process-backed HTTP regression verifies both callable handlers' `this` and
+event type, install-handler replacement order, activate-handler
+clear/reactivation order, global exception reporting and continuation,
+fulfilled `skipWaiting()`/`clients.claim()`, activation, page control, and no
+page error event. See
+[task 798](../plan/tasks/native-engine-browser-798.md); full Web IDL,
+EventTarget, and WPT conformance remain open.
+
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
 operation and delivers them in the owning page turn; EventSource carries

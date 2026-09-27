@@ -107,11 +107,19 @@ for the standard focus-default element set and the first `summary` child of a
 `long` conversion and writes the canonical integer to the content attribute,
 so subsequent focus traversal observes the same live mutation.
 
+Form-associated autonomous custom elements are excluded from sequential and
+programmatic focus while disabled by their own `disabled` attribute or a
+disabled fieldset ancestor, except when they are descendants of that fieldset's
+first `legend` child. The disabled result is shared from the custom-element
+lifecycle owner with the native focus owner, including content-process and
+same-origin-frame routes. An ordinary custom element's `disabled` attribute
+does not confer disabled-control behavior.
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
-inertness, form-associated custom-element disabled focus state,
-browser/platform sequential-focus preferences, focus-chain handoff, and
-complete focus Web Platform Test conformance remain separate profile
-requirements.
+inertness, browser/platform sequential-focus preferences, focus-chain handoff,
+and complete focus Web Platform Test conformance remain separate profile
+requirements. See the [slice 775 task](tasks/native-engine-browser-775.md) for
+the local evidence and exact remaining boundaries.
 
 ### XHR document responses
 

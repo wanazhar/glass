@@ -81,6 +81,16 @@ setter applies Web IDL `long` conversion and mutates the shared live attribute.
 Local, HTTP(S) content-process, and same-origin-frame evidence is in the
 [slice 774 task](tasks/native-engine-browser-774.md). Full Web IDL and focus
 conformance remain open.
+Slice 775 carries form-associated custom-element disabled state from the
+existing lifecycle reconciler into Rust-owned focus traversal. Sequential and
+programmatic focus now exclude a disabled form-associated custom element,
+including disabled-fieldset descendants outside its first legend, while
+preserving that legend exception and leaving ordinary custom elements with a
+`disabled` attribute focusable. Local and same-origin-frame process-backed
+regressions cover state changes and persistence; see the
+[slice 775 task](tasks/native-engine-browser-775.md). Full focus-chain,
+shadow-scope, inertness, keyboard, WPT, platform, and remote-CI conformance
+remain open.
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

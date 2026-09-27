@@ -16,7 +16,8 @@ use super::css::{
 use super::diagnostics::NativeDiagnostic;
 use super::dialog::NativeDialogControlPlane;
 use super::dom::{
-    NativeDocument, NativeNodeId, NativePageScriptSource, NativeScriptDocumentSnapshot,
+    NativeCheckableKind, NativeDocument, NativeNodeId, NativePageScriptSource,
+    NativeScriptDocumentSnapshot,
 };
 use super::environment::{NativeEnvironmentOverrides, NativeGeolocation, NativeNetworkConditions};
 use super::error::NativeEngineError;
@@ -432,7 +433,7 @@ pub struct NativeEngine {
     pending_lifecycle_effects: Vec<(NativeNodeId, NativeEventKind)>,
     skip_next_navigation_lifecycle: bool,
     document_has_sticky_activation: bool,
-    pending_space_activation: Option<NativeNodeId>,
+    pending_space_activation: Option<(NativeNodeId, Option<NativeCheckableKind>)>,
     outgoing_lifecycle_dispatch_depth: usize,
 }
 
@@ -6438,6 +6439,8 @@ impl NativeEngine {
             )?);
         }
 
+        let checkable_pre_activation = document.pre_activate_checkable(id)?;
+
         let click_evaluation = self
             .evaluate_local_events(&document, &[(id, NativeEventKind::Click)])?
             .ok_or_else(|| NativeEngineError::Worker {
@@ -6461,7 +6464,29 @@ impl NativeEngine {
         let mut navigation: Option<(NativeNodeId, NativeNodeId)> = None;
         let mut link_navigation = None;
         if click_allowed {
-            events.extend(document.apply_click(id)?);
+            let click_events = if checkable_pre_activation.is_some() {
+                document.apply_click_after_checkable_pre_activation(id)?
+            } else {
+                document.apply_click(id)?
+            };
+            let input_change_events = click_events
+                .iter()
+                .copied()
+                .filter(|(_, kind)| {
+                    matches!(kind, NativeEventKind::Input | NativeEventKind::Change)
+                })
+                .collect::<Vec<_>>();
+            events.extend(click_events);
+            if !input_change_events.is_empty()
+                && let Some(evaluation) =
+                    self.evaluate_local_events(&document, &input_change_events)?
+            {
+                events.extend(self.apply_local_evaluation_commands(
+                    &mut document,
+                    &evaluation.commands,
+                    &mut history_commands,
+                )?);
+            }
             if let Some(href) = document.link_href(id).filter(|href| !href.is_empty()) {
                 link_navigation = Some(href.to_owned());
             } else if let Some(form_id) = document.submit_control_form(id) {
@@ -6511,6 +6536,9 @@ impl NativeEngine {
                 }
             }
         } else {
+            if let Some(checkable_pre_activation) = checkable_pre_activation {
+                document.restore_checkable_pre_activation(checkable_pre_activation)?;
+            }
             events.push((id, NativeEventKind::Click));
         }
         if events.len() > MAX_NATIVE_EFFECTS {
@@ -6743,10 +6771,13 @@ impl NativeEngine {
     ) -> Result<Option<NativeLocalKeyboardNavigation>, NativeEngineError> {
         if document.focused_node() != id
             || (!document.has_native_keyboard_button_activation(id)
-                && !document.has_native_keyboard_link_activation(id))
+                && !document.has_native_keyboard_link_activation(id)
+                && !document.has_native_keyboard_checkable_activation(id))
         {
             return Ok(None);
         }
+
+        let checkable_pre_activation = document.pre_activate_checkable(id)?;
 
         let click_evaluation =
             self.evaluate_local_events(document, &[(id, NativeEventKind::Click)])?;
@@ -6773,7 +6804,29 @@ impl NativeEngine {
 
         let mut navigation = None;
         if click_allowed {
-            events.extend(document.apply_click(id)?);
+            let click_events = if checkable_pre_activation.is_some() {
+                document.apply_click_after_checkable_pre_activation(id)?
+            } else {
+                document.apply_click(id)?
+            };
+            let input_change_events = click_events
+                .iter()
+                .copied()
+                .filter(|(_, kind)| {
+                    matches!(kind, NativeEventKind::Input | NativeEventKind::Change)
+                })
+                .collect::<Vec<_>>();
+            events.extend(click_events);
+            if !input_change_events.is_empty()
+                && let Some(evaluation) =
+                    self.evaluate_local_events(document, &input_change_events)?
+            {
+                events.extend(self.apply_local_evaluation_commands(
+                    document,
+                    &evaluation.commands,
+                    history_commands,
+                )?);
+            }
             if let Some(href) = document
                 .link_href(id)
                 .filter(|href| !href.is_empty())
@@ -6870,6 +6923,9 @@ impl NativeEngine {
                 }
             }
         } else {
+            if let Some(checkable_pre_activation) = checkable_pre_activation {
+                document.restore_checkable_pre_activation(checkable_pre_activation)?;
+            }
             events.push((id, NativeEventKind::Click));
         }
 
@@ -6955,6 +7011,7 @@ impl NativeEngine {
         let mut events = vec![(id, kind)];
         let was_button = document.has_native_keyboard_button_activation(id);
         let was_link = document.has_native_keyboard_link_activation(id);
+        let was_checkable_kind = document.keyboard_checkable_kind(id);
         let evaluation =
             self.evaluate_local_key_event_with_modifiers(&document, id, kind, key, modifiers)?;
         let event_allowed = evaluation
@@ -6974,19 +7031,27 @@ impl NativeEngine {
         let mut submit_navigation = None;
         if kind == NativeEventKind::KeyDown && key == " " {
             self.pending_space_activation = None;
-            if was_button
-                && event_allowed
-                && document.focused_node() == id
-                && document.has_native_keyboard_button_activation(id)
-            {
-                self.pending_space_activation = Some(id);
+            if event_allowed && document.focused_node() == id {
+                if was_button && document.has_native_keyboard_button_activation(id) {
+                    self.pending_space_activation = Some((id, None));
+                } else if let Some(expected) = was_checkable_kind
+                    && document.keyboard_checkable_kind(id) == Some(expected)
+                {
+                    self.pending_space_activation = Some((id, Some(expected)));
+                }
             }
         } else if kind == NativeEventKind::KeyUp && key == " " {
             let pending = self.pending_space_activation.take();
-            if pending == Some(id)
-                && event_allowed
+            let pending_checkable = pending.is_some_and(|(target, expected)| {
+                target == id
+                    && expected.is_some_and(|expected| {
+                        document.keyboard_checkable_kind(id) == Some(expected)
+                    })
+            });
+            let pending_button =
+                pending == Some((id, None)) && document.has_native_keyboard_button_activation(id);
+            if (pending_button && event_allowed || pending_checkable)
                 && document.focused_node() == id
-                && document.has_native_keyboard_button_activation(id)
             {
                 submit_navigation = self.apply_local_keyboard_activation(
                     &mut document,
@@ -7033,6 +7098,7 @@ impl NativeEngine {
         let mut history_commands = Vec::new();
         let mut events = vec![(id, NativeEventKind::KeyDown)];
         let keyboard_button_target = document.has_native_keyboard_button_activation(id);
+        let keyboard_checkable_kind = document.keyboard_checkable_kind(id);
         let keyboard_link_target =
             key == "Enter" && document.has_native_keyboard_link_activation(id);
         let keydown = self.evaluate_local_key_event_with_modifiers(
@@ -7115,11 +7181,14 @@ impl NativeEngine {
                 &mut history_commands,
             )?);
         }
+        let keyboard_checkable_target_remains = modifiers == 0
+            && keyboard_checkable_kind
+                .is_some_and(|expected| document.keyboard_checkable_kind(id) == Some(expected));
         if keydown_allowed
             && key == " "
-            && keyboard_button_target
             && document.focused_node() == id
-            && document.has_native_keyboard_button_activation(id)
+            && ((keyboard_button_target && document.has_native_keyboard_button_activation(id))
+                || keyboard_checkable_target_remains)
         {
             submit_navigation = self.apply_local_keyboard_activation(
                 &mut document,

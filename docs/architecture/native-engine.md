@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-763`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-768`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -121,6 +121,15 @@ separate Tokio task to keep popup layout's stack independent of the initiating
 action. Exact test evidence and scheduler tradeoff are in the [slice 767
 task](../plan/tasks/native-engine-browser-767.md); this remains bounded
 behavior, not full keyboard conformance.
+Slice 768 adds Space activation for focused native checkbox and radio inputs
+through the shared checkable-state and click/default-action owner. The
+implementation carries checkbox indeterminateness through local and
+process-backed document snapshots, exposes it in same-origin frame projections,
+performs legacy checked-state pre-activation and cancellation rollback, and
+dispatches accepted bubbling `input` then `change` events. The scoped package
+check and four focused local/process/frame tests pass; issue #40 and complete
+keyboard/form conformance remain open. See the
+[slice 768 task](../plan/tasks/native-engine-browser-768.md).
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and

@@ -553,6 +553,10 @@ pub(crate) enum NativeScriptCommand {
         node_index: u32,
         checked: bool,
     },
+    SetIndeterminate {
+        node_index: u32,
+        indeterminate: bool,
+    },
     SetSelected {
         node_index: u32,
         selected: bool,
@@ -11930,6 +11934,7 @@ pub(crate) fn validate_frame_script_command(
                 | NativeScriptCommand::CanvasCommit { .. }
                 | NativeScriptCommand::MediaLoad { .. }
                 | NativeScriptCommand::SetChecked { .. }
+                | NativeScriptCommand::SetIndeterminate { .. }
                 | NativeScriptCommand::SetSelected { .. }
                 | NativeScriptCommand::SetAttribute { .. }
                 | NativeScriptCommand::RemoveAttribute { .. }
@@ -11978,6 +11983,7 @@ fn is_frame_script_batch_command(command: &NativeScriptCommand) -> bool {
             | NativeScriptCommand::CanvasCommit { .. }
             | NativeScriptCommand::MediaLoad { .. }
             | NativeScriptCommand::SetChecked { .. }
+            | NativeScriptCommand::SetIndeterminate { .. }
             | NativeScriptCommand::SetSelected { .. }
             | NativeScriptCommand::SetAttribute { .. }
             | NativeScriptCommand::RemoveAttribute { .. }
@@ -39249,6 +39255,7 @@ fn document_bootstrap(
         : entry.value,
       get files() {{ return files; }},
       checked: entry.checked,
+      indeterminate: Boolean(entry.indeterminate),
       selected: entry.selected,
       multiple,
       disabled,
@@ -40090,6 +40097,17 @@ fn document_bootstrap(
         pushCommand({{ kind: "setChecked", node_index: entry.nodeIndex, checked }});
       }}
     }});
+    let indeterminate = Boolean(element.indeterminate);
+    Object.defineProperty(element, "indeterminate", {{
+      enumerable: true,
+      configurable: false,
+      get() {{ return indeterminate; }},
+      set(next) {{
+        if (entry.tagName.toLowerCase() !== "input") throw new TypeError("indeterminate requires an input element");
+        indeterminate = Boolean(next);
+        pushCommand({{ kind: "setIndeterminate", node_index: entry.nodeIndex, indeterminate }});
+      }}
+    }});
     let selected = element.selected;
     Object.defineProperty(element, "selected", {{
       enumerable: true,
@@ -40163,6 +40181,7 @@ fn document_bootstrap(
         selectionEnd = nextEntry.selectionEnd;
         selectionDirection = nextEntry.selectionDirection || "none";
         checked = nextEntry.checked;
+        indeterminate = Boolean(nextEntry.indeterminate);
         selected = nextEntry.selected;
         files = makeNativeFileList(nextEntry.files);
         imageComplete = nextEntry.imageComplete === undefined
@@ -40219,6 +40238,7 @@ fn document_bootstrap(
       value: null,
       files: [],
       checked: false,
+      indeterminate: false,
       selected: false,
       disabled: false,
       hidden: false,
@@ -41255,6 +41275,7 @@ fn document_bootstrap(
       case "setSelection": element.setSelectionRange(command.start, command.end, command.direction); break;
       case "mediaLoad": if (typeof element.load === "function") element.load(); else throw new TypeError("native media load is unsupported"); break;
       case "setChecked": element.checked = Boolean(command.checked); break;
+      case "setIndeterminate": element.indeterminate = Boolean(command.indeterminate); break;
       case "setSelected": element.selected = Boolean(command.selected); break;
       case "setAttribute":
         if (command.namespace_uri) {{ element.setAttributeNS(command.namespace_uri, command.name, command.value); }}
@@ -47447,7 +47468,7 @@ fn document_bootstrap(
   }};
   globalThis.__glassRouteTransferredNativeCommand = routeTransferredNativeCommand;
   const frameBatchableCommand = (command) => command && [
-    "setValue", "setSelection", "setChecked", "setSelected", "mediaLoad",
+    "setValue", "setSelection", "setChecked", "setIndeterminate", "setSelected", "mediaLoad",
     "setAttribute", "removeAttribute", "setTextContent", "setInnerHtml",
     "removeNode", "createElement", "createTextNode", "createComment", "createDocumentType", "appendChild",
     "insertBefore", "setCustomValidity",
@@ -47743,6 +47764,7 @@ fn document_bootstrap(
       const namespaceURI = namespaceUriForEntry(entry);
       let value = entry.value == null ? "" : entry.value;
       let checked = Boolean(entry.checked);
+      let indeterminate = Boolean(entry.indeterminate);
       let selected = Boolean(entry.selected);
       let disabled = Boolean(entry.disabled);
       let hidden = Boolean(entry.hidden);
@@ -47812,6 +47834,7 @@ fn document_bootstrap(
         className: attributes.class || "",
         value,
         checked,
+        indeterminate,
         selected,
         disabled,
         hidden,
@@ -48261,6 +48284,16 @@ fn document_bootstrap(
           queueFrameCommand(currentBinding, {{ kind: "setChecked", node_index: entry.nodeIndex, checked }});
         }},
       }});
+      Object.defineProperty(projected, "indeterminate", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return indeterminate; }},
+        set(nextValue) {{
+          if (String(entry.tagName || "").toLowerCase() !== "input") throw new TypeError("indeterminate requires an input element");
+          indeterminate = Boolean(nextValue);
+          queueFrameCommand(currentBinding, {{ kind: "setIndeterminate", node_index: entry.nodeIndex, indeterminate }});
+        }},
+      }});
       Object.defineProperty(projected, "selected", {{
         enumerable: true,
         configurable: false,
@@ -48342,6 +48375,7 @@ fn document_bootstrap(
           templateContentIndex = nextEntry.templateContentIndex == null ? null : Number(nextEntry.templateContentIndex);
           value = nextEntry.value == null ? "" : nextEntry.value;
           checked = Boolean(nextEntry.checked);
+          indeterminate = Boolean(nextEntry.indeterminate);
           selected = Boolean(nextEntry.selected);
           disabled = Boolean(nextEntry.disabled);
           hidden = Boolean(nextEntry.hidden);
@@ -48568,6 +48602,7 @@ fn document_bootstrap(
       let templateContent = null;
       let value = "";
       let checked = false;
+      let indeterminate = false;
       let selected = false;
       let disabled = false;
       let hidden = false;
@@ -48635,6 +48670,7 @@ fn document_bootstrap(
         className: "",
         value: "",
         checked: false,
+        indeterminate: false,
         selected: false,
         disabled,
         hidden,
@@ -48888,6 +48924,7 @@ fn document_bootstrap(
           templateContentIndex = nextEntry.templateContentIndex == null ? null : Number(nextEntry.templateContentIndex);
           value = nextEntry.value == null ? "" : nextEntry.value;
           checked = Boolean(nextEntry.checked);
+          indeterminate = Boolean(nextEntry.indeterminate);
           selected = Boolean(nextEntry.selected);
           disabled = Boolean(nextEntry.disabled);
           hidden = Boolean(nextEntry.hidden);
@@ -48994,6 +49031,7 @@ fn document_bootstrap(
       }});
       Object.defineProperty(projected, "value", {{ enumerable: true, configurable: false, get() {{ return value; }}, set(next) {{ value = String(next); queueFrameCommand(currentBinding, {{ kind: "setValue", node_index: nodeIndex, value }}); }} }});
       Object.defineProperty(projected, "checked", {{ enumerable: true, configurable: false, get() {{ return checked; }}, set(next) {{ checked = Boolean(next); queueFrameCommand(currentBinding, {{ kind: "setChecked", node_index: nodeIndex, checked }}); }} }});
+      Object.defineProperty(projected, "indeterminate", {{ enumerable: true, configurable: false, get() {{ return indeterminate; }}, set(next) {{ if (String(projected.tagName || "").toLowerCase() !== "input") throw new TypeError("indeterminate requires an input element"); indeterminate = Boolean(next); queueFrameCommand(currentBinding, {{ kind: "setIndeterminate", node_index: nodeIndex, indeterminate }}); }} }});
       Object.defineProperty(projected, "selected", {{ enumerable: true, configurable: false, get() {{ return selected; }}, set(next) {{ selected = Boolean(next); queueFrameCommand(currentBinding, {{ kind: "setSelected", node_index: nodeIndex, selected }}); }} }});
       Object.defineProperty(projected, "__glassSetFormResetState", {{
         enumerable: false,
@@ -49787,6 +49825,7 @@ fn document_bootstrap(
       innerText: String(entry.text || ""),
       value: entry.value == null ? "" : entry.value,
       checked: Boolean(entry.checked),
+      indeterminate: Boolean(entry.indeterminate),
       selected: Boolean(entry.selected),
       disabled: Boolean(entry.disabled),
       hidden: Boolean(entry.hidden),

@@ -216,9 +216,20 @@ activation on keyup through the shared checkable-control owner. It covers
 cancellation-safe checked state, checkbox indeterminateness clearing, radio
 non-toggle/group semantics, and bubbling input/change effects for accepted
 activation across local, process-backed, and same-origin-frame paths. The
-scoped package check and four focused regressions pass; see the
+scoped package check passed; the task records the focused test setup correction
+and exact rerun alongside the initial group results. See the
 [slice 768 task](tasks/native-engine-browser-768.md). This remains a narrow
 checkpoint, not complete keyboard or form conformance.
+
+For native radio inputs, the profile adopts the WAI-ARIA Authoring Practices
+radio-group keyboard convention: Right/Down select the next enabled member,
+Left/Up select the previous member, focus follows selection, and navigation
+wraps within the HTML radio group. A canceled keydown suppresses the default;
+actual selection changes emit bubbling `input` then `change`. This is an
+explicit Glass profile choice because the HTML Standard defines radio groups
+and activation events but not directional-key mapping. The behavior is
+planned in [slice 769](tasks/native-engine-browser-769.md); it does not
+cover toolbar-specific or ARIA-authored radio widgets.
 Slice 764 implements keyboard activation for focused native button controls
 in process-backed network documents: Enter activates on keydown and Space on
 keyup after an uncanceled keydown. The shared click/default path handles reset

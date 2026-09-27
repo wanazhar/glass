@@ -36,9 +36,13 @@ remaining boundaries. Slice 768 implements Space activation for focused
 native checkbox and radio inputs through the shared checkable-state owner,
 including pre-activation rollback, indeterminateness, radio grouping, and
 accepted bubbling `input`/`change` events across local, process-backed, and
-same-origin-frame paths. Its package check and four focused tests pass; see
-the [`native-engine-browser-768` task](tasks/native-engine-browser-768.md) for
-evidence and boundaries.
+same-origin-frame paths. Its scoped package check passed; the task records the
+initial filtered-run fixture issue and the passing exact rerun transparently.
+See the [`native-engine-browser-768` task](tasks/native-engine-browser-768.md)
+for exact evidence and boundaries. The next bounded task,
+[`native-engine-browser-769`](tasks/native-engine-browser-769.md), adopts the
+approved WAI-ARIA Authoring Practices arrow-key convention for native radio
+groups; it does not claim complete keyboard conformance.
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

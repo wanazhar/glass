@@ -127,9 +127,16 @@ implementation carries checkbox indeterminateness through local and
 process-backed document snapshots, exposes it in same-origin frame projections,
 performs legacy checked-state pre-activation and cancellation rollback, and
 dispatches accepted bubbling `input` then `change` events. The scoped package
-check and four focused local/process/frame tests pass; issue #40 and complete
+check passed; the task records the focused test setup correction and exact
+rerun alongside the initial group results. Issue #40 and complete
 keyboard/form conformance remain open. See the
 [slice 768 task](../plan/tasks/native-engine-browser-768.md).
+The next bounded keyboard task adopts the approved WAI-ARIA Authoring
+Practices convention for native radio groups: Right/Down advance, Left/Up
+move backward, selection follows focus, and navigation wraps. The HTML
+Standard does not prescribe this key mapping; the profile makes it an explicit
+Glass convention. It is planned in the
+[slice 769 task](../plan/tasks/native-engine-browser-769.md).
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and

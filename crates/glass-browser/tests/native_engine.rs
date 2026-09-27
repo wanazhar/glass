@@ -7310,6 +7310,175 @@ async fn native_content_process_worker_message_delivery_preserves_large_payloads
 }
 
 #[tokio::test]
+async fn native_content_process_worker_dispatches_messageerror_and_recovers() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let page = r#"<script>
+globalThis.workerMessages = [];
+globalThis.workerErrors = [];
+globalThis.worker = new Worker('/worker-messageerror.js');
+worker.onmessage = event => workerMessages.push(event.data);
+worker.onerror = event => { workerErrors.push(event.message); event.preventDefault(); };
+</script><main>worker messageerror</main>"#;
+    let worker_script = r#"
+const messageErrorTrace = [];
+let currentMessageErrorEvent = null;
+const malformedEnvelope = {
+  data: {
+    __glassMessageClone: 'glass-native-structured-clone-v1',
+    root: { ref: 0 },
+    nodes: [{ type: 'invalid-node' }],
+  },
+  transfer_ports: [],
+};
+const observeMessageError = (kind, event) => {
+  if (currentMessageErrorEvent === null) currentMessageErrorEvent = event;
+  messageErrorTrace.push({
+    kind,
+    sameEvent: currentMessageErrorEvent === event,
+    targetIsGlobal: event.target === self,
+    currentTargetIsGlobal: event.currentTarget === self,
+    eventPhase: event.eventPhase,
+    type: event.type,
+    dataIsNull: event.data === null,
+    portsLength: event.ports.length,
+    origin: event.origin,
+    sourceIsNull: event.source === null,
+    bubbles: event.bubbles,
+    cancelable: event.cancelable,
+  });
+};
+const messageErrorHandler = function(event) {
+  observeMessageError('handler', event);
+  globalThis.messageErrorThisIsGlobal = this === self;
+};
+onmessageerror = messageErrorHandler;
+onmessage = event => {
+  if (event.data.kind === 'malformed') {
+    self.__glassDispatchWorkerMessage(malformedEnvelope);
+    postMessage({
+      kind: 'decode',
+      handlerReadback: onmessageerror === messageErrorHandler,
+      handlerThisIsGlobal: messageErrorThisIsGlobal,
+      events: messageErrorTrace.splice(0),
+    });
+    currentMessageErrorEvent = null;
+    return;
+  }
+  postMessage({ kind: 'valid', data: event.data });
+};
+addEventListener('messageerror', event => observeMessageError('listener', event));
+"#;
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            ("/worker-messageerror-page", "text/html", page),
+            ("/worker-messageerror.js", "text/javascript", worker_script),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/worker-messageerror-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async("worker.postMessage({ kind: 'malformed' }); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    let mut decode_result = None;
+    for _ in 0..8 {
+        decode_result = engine
+            .evaluate_async("workerMessages.find(message => message.kind === 'decode')")
+            .await
+            .unwrap()
+            .as_object()
+            .cloned();
+        if decode_result.is_some() {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        decode_result.map(serde_json::Value::Object),
+        Some(serde_json::json!({
+            "kind": "decode",
+            "handlerReadback": true,
+            "handlerThisIsGlobal": true,
+            "events": [
+                {
+                    "kind": "handler", "sameEvent": true,
+                    "targetIsGlobal": true, "currentTargetIsGlobal": true,
+                    "eventPhase": 2, "type": "messageerror", "dataIsNull": true,
+                    "portsLength": 0, "origin": "", "sourceIsNull": true,
+                    "bubbles": false, "cancelable": false,
+                },
+                {
+                    "kind": "listener", "sameEvent": true,
+                    "targetIsGlobal": true, "currentTargetIsGlobal": true,
+                    "eventPhase": 2, "type": "messageerror", "dataIsNull": true,
+                    "portsLength": 0, "origin": "", "sourceIsNull": true,
+                    "bubbles": false, "cancelable": false,
+                },
+            ],
+        }))
+    );
+    assert_eq!(
+        engine.evaluate_async("workerErrors").await.unwrap(),
+        serde_json::json!([])
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async("worker.postMessage({ kind: 'valid-after-error' }); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    let mut valid_result = None;
+    for _ in 0..8 {
+        valid_result = engine
+            .evaluate_async("workerMessages.find(message => message.kind === 'valid')")
+            .await
+            .unwrap()
+            .as_object()
+            .cloned();
+        if valid_result.is_some() {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        valid_result.map(serde_json::Value::Object),
+        Some(serde_json::json!({
+            "kind": "valid", "data": { "kind": "valid-after-error" },
+        }))
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_worker_blob_object_urls_cross_realm_messages() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -10425,6 +10594,50 @@ globalThis.registrationPromise = navigator.serviceWorker.register('/sw-global-me
 const reports = [];
 let traceStart = 0;
 let reportStart = 0;
+const messageErrorTrace = [];
+let currentMessageErrorEvent = null;
+let messageErrorResult = null;
+let messageErrorHandlerThisIsGlobal = false;
+let messageErrorReactivatedThisIsGlobal = false;
+let reassignMessageErrorDuringDispatch = false;
+let snapshotReactivationHandler = null;
+const malformedMessageErrorEnvelope = {
+  data: {
+    __glassMessageClone: 'glass-native-structured-clone-v1',
+    root: { ref: 0 },
+    nodes: [{ type: 'invalid-node' }],
+  },
+  transfer_ports: [],
+};
+const observeMessageError = (kind, event) => {
+  if (currentMessageErrorEvent === null) currentMessageErrorEvent = event;
+  messageErrorTrace.push({
+    kind,
+    sameEvent: currentMessageErrorEvent === event,
+    targetIsGlobal: event.target === self,
+    currentTargetIsGlobal: event.currentTarget === self,
+    eventPhase: event.eventPhase,
+    type: event.type,
+    dataIsNull: event.data === null,
+    portsLength: event.ports.length,
+    origin: event.origin,
+    sourceIsNull: event.source === null,
+    bubbles: event.bubbles,
+    cancelable: event.cancelable,
+  });
+};
+const messageErrorInitiallyNull = onmessageerror === null;
+addEventListener('messageerror', event => {
+  observeMessageError('listener-one', event);
+  if (reassignMessageErrorDuringDispatch) {
+    reassignMessageErrorDuringDispatch = false;
+    onmessageerror = null;
+    onmessageerror = snapshotReactivationHandler;
+  }
+});
+const nonCallableMessageErrorHandler = {};
+onmessageerror = nonCallableMessageErrorHandler;
+const nonCallableMessageErrorHandlerRetained = onmessageerror === nonCallableMessageErrorHandler;
 addEventListener('install', event => event.waitUntil(self.skipWaiting()));
 addEventListener('activate', event => event.waitUntil(self.clients.claim()));
 onerror = (message, filename, line, column, error) => {
@@ -10447,6 +10660,62 @@ onmessage = event => {
   reportStart = reports.length;
   trace.push('global:onmessage:' + kind);
   if (kind === 'handled') throw new Error('handled service worker message error');
+  if (kind === 'decode') {
+    self.__glassDispatchWorkerMessage(malformedMessageErrorEnvelope);
+    const first = messageErrorTrace.splice(0);
+    currentMessageErrorEvent = null;
+
+    onmessageerror = 1;
+    const primitiveAssignmentCleared = onmessageerror === null;
+    onmessageerror = function oldMessageErrorHandler(event) {
+      observeMessageError('replaced-handler', event);
+    };
+    addEventListener('messageerror', event => observeMessageError('listener-two', event));
+    const replacementHandler = function messageErrorHandler(event) {
+      messageErrorHandlerThisIsGlobal = this === self;
+      observeMessageError('handler', event);
+      throw new Error('messageerror callback failure');
+    };
+    onmessageerror = replacementHandler;
+    const replacementReadback = onmessageerror === replacementHandler;
+    self.__glassDispatchWorkerMessage(malformedMessageErrorEnvelope);
+    const second = messageErrorTrace.splice(0);
+    currentMessageErrorEvent = null;
+
+    onmessageerror = null;
+    const nullAssignmentCleared = onmessageerror === null;
+    const reactivatedHandler = function reactivatedMessageErrorHandler(event) {
+      messageErrorReactivatedThisIsGlobal = this === self;
+      observeMessageError('reactivated-handler', event);
+    };
+    onmessageerror = reactivatedHandler;
+    const reactivatedReadback = onmessageerror === reactivatedHandler;
+    self.__glassDispatchWorkerMessage(malformedMessageErrorEnvelope);
+    const third = messageErrorTrace.splice(0);
+    currentMessageErrorEvent = null;
+    snapshotReactivationHandler = function snapshotReactivatedMessageErrorHandler(event) {
+      observeMessageError('snapshot-reactivated-handler', event);
+    };
+    reassignMessageErrorDuringDispatch = true;
+    self.__glassDispatchWorkerMessage(malformedMessageErrorEnvelope);
+    const fourth = messageErrorTrace.splice(0);
+    currentMessageErrorEvent = null;
+    messageErrorResult = {
+      initiallyNull: messageErrorInitiallyNull,
+      nonCallableRetained: nonCallableMessageErrorHandlerRetained,
+      primitiveAssignmentCleared,
+      replacementReadback,
+      nullAssignmentCleared,
+      reactivatedReadback,
+      handlerThisIsGlobal: messageErrorHandlerThisIsGlobal,
+      reactivatedThisIsGlobal: messageErrorReactivatedThisIsGlobal,
+      snapshotReactivationReadback: onmessageerror === snapshotReactivationHandler,
+      first,
+      second,
+      third,
+      fourth,
+    };
+  }
 };
 addEventListener('message', event => {
   const kind = event.data.kind;
@@ -10458,10 +10727,12 @@ addEventListener('message', async event => {
   trace.push('message:listener-two:' + kind);
   const clients = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
   const client = clients.find(candidate => candidate.url.endsWith('/service-global-message-errors'));
-  client?.postMessage({
+  const reply = {
     kind: 'reply', request: kind,
     trace: trace.slice(traceStart), reports: reports.slice(reportStart),
-  });
+  };
+  if (kind === 'decode') reply.messageError = messageErrorResult;
+  client?.postMessage(reply);
 });"#;
     let server = tokio::spawn(async move {
         for (path, content_type, body) in [
@@ -10499,6 +10770,15 @@ addEventListener('message', async event => {
         serde_json::json!(["activated", true])
     );
 
+    let message_error_observation = |kind| {
+        serde_json::json!({
+            "kind": kind, "sameEvent": true,
+            "targetIsGlobal": true, "currentTargetIsGlobal": true,
+            "eventPhase": 2, "type": "messageerror", "dataIsNull": true,
+            "portsLength": 0, "origin": "", "sourceIsNull": true,
+            "bubbles": false, "cancelable": false,
+        })
+    };
     for (kind, trace, reports) in [
         (
             "handled",
@@ -10531,6 +10811,24 @@ addEventListener('message', async event => {
                 { "phase": "onerror", "message": "unhandled service worker message error", "cancel": false, "errorIsError": false },
                 {
                     "phase": "error-listener", "message": "unhandled service worker message error",
+                    "defaultPrevented": false, "cancelable": true,
+                    "targetIsGlobal": true, "currentTargetIsGlobal": true,
+                },
+            ]),
+        ),
+        (
+            "decode",
+            vec![
+                "global:onmessage:decode",
+                "global:onerror:messageerror callback failure",
+                "global:error:messageerror callback failure",
+                "message:listener-one:decode",
+                "message:listener-two:decode",
+            ],
+            serde_json::json!([
+                { "phase": "onerror", "message": "messageerror callback failure", "cancel": false, "errorIsError": true },
+                {
+                    "phase": "error-listener", "message": "messageerror callback failure",
                     "defaultPrevented": false, "cancelable": true,
                     "targetIsGlobal": true, "currentTargetIsGlobal": true,
                 },
@@ -10580,11 +10878,37 @@ addEventListener('message', async event => {
                 .unwrap();
         }
         let response = response.expect("Service Worker client reply arrives in bounded page turns");
+        let mut expected_response = serde_json::json!({
+            "kind": "reply", "request": kind, "trace": trace, "reports": reports,
+        });
+        if kind == "decode" {
+            expected_response["messageError"] = serde_json::json!({
+                "initiallyNull": true,
+                "nonCallableRetained": true,
+                "primitiveAssignmentCleared": true,
+                "replacementReadback": true,
+                "nullAssignmentCleared": true,
+                "reactivatedReadback": true,
+                "handlerThisIsGlobal": true,
+                "reactivatedThisIsGlobal": true,
+                "snapshotReactivationReadback": true,
+                "first": [message_error_observation("listener-one")],
+                "second": [
+                    message_error_observation("listener-one"),
+                    message_error_observation("handler"),
+                    message_error_observation("listener-two"),
+                ],
+                "third": [
+                    message_error_observation("listener-one"),
+                    message_error_observation("listener-two"),
+                    message_error_observation("reactivated-handler"),
+                ],
+                "fourth": [message_error_observation("listener-one"),
+                    message_error_observation("listener-two")],
+            });
+        }
         assert_eq!(
-            response,
-            serde_json::json!({
-                "kind": "reply", "request": kind, "trace": trace, "reports": reports,
-            }),
+            response, expected_response,
             "Service Worker global callback recovery for {kind}",
         );
         let page_state = engine

@@ -3721,6 +3721,16 @@ DedicatedWorker, SharedWorker, and MessagePort regressions pass; full worker
 and WPT conformance remain open. See
 [task 795](../plan/tasks/native-engine-browser-795.md).
 
+Slice 796 reports synchronous Service Worker `onfetch` and registered fetch
+callback exceptions at the worker global, then continues later callbacks.
+Exact-`true` `onerror` cancellation does not alter fetch dispatch. A later
+listener can supply the response; if none responds, the request reaches the
+ordinary network fallback. The process-backed regression verifies both paths,
+global report state, a healthy subsequent controlled fetch, and no client error
+event. Existing async response/body regressions pass; complete Service Worker
+Fetch and WPT conformance remain open. See
+[task 796](../plan/tasks/native-engine-browser-796.md).
+
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
 operation and delivers them in the owning page turn; EventSource carries

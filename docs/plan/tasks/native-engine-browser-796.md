@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-796
 scope: glass-browser/service-worker-fetch-callback-errors
-status: in_progress
+status: completed
 depends-on: [native-engine-browser-795]
 ---
 
@@ -93,7 +93,32 @@ and preserve the FetchEvent's existing response/fallback behavior.
 
 ## Implementation and verification
 
-Commit this contract before implementation. Record the exact process-backed
-regression and scoped local verification commands here after implementation.
-Remote CI and complete Service Worker Fetch/WPT conformance remain issue #40
-gates.
+Contract checkpoint: `7a030d7f`; implementation and process-backed regression:
+`1f888e14`.
+
+The Service Worker fetch dispatcher now catches each `onfetch`/listener callback
+exception independently and reports it through the global-only worker error
+reporter. It continues the callback snapshot and preserves `respondWith()`
+state. With no response, settlement returns the existing not-handled outcome
+and the loader performs normal network fallback. Rejection of a supplied
+response Promise and `waitUntil()` settlement are unchanged.
+
+The process-backed regression
+`native_content_process_service_worker_fetch_callback_errors_continue_and_fallback`
+uses a claimed HTTP(S) page. It verifies a handled `onfetch` Error followed by
+a response-supplying listener; an uncanceled primitive from an earlier fetch
+listener followed by a response-supplying listener; an uncanceled callback
+throw with no response reaching the real upstream network; a subsequent
+healthy controlled fetch; active worker state; and no client/container/
+ServiceWorker-object error event.
+
+Passed locally:
+
+- `cargo check -p glass-browser --test native_engine --locked --quiet`
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_content_process_service_worker_fetch_callback_errors_continue_and_fallback --exact --test-threads=1` (1 passed).
+- Direct regressions from the rebuilt native-engine test binary: `native_content_process_service_worker_replays_cloned_request_body` and `native_content_process_service_worker_dispatches_large_fetch_request_as_data` (1 passed each).
+- Rustfmt check for both touched Rust files and `git diff --check`.
+
+The integration target emits existing native-DOM dead-code warnings. Remote CI
+and complete Service Worker Fetch, DOM, HTML error-reporting, and WPT
+conformance remain issue #40 gates.

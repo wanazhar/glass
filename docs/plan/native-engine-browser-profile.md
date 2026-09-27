@@ -298,6 +298,15 @@ client error events are covered by a process-backed controlled-page regression.
 This focused slice is not complete Service Worker or WPT conformance; see the
 [slice 795 task](tasks/native-engine-browser-795.md).
 
+Slice 796 reports synchronous exceptions thrown by Service Worker `onfetch`
+and registered `fetch` callbacks at the Service Worker global and continues
+later listeners. A subsequent callback may supply `respondWith()`; if no
+listener responds, the normal network fallback remains available. Its
+process-backed regression verifies error-event cancellation state, callback
+order, fallback, worker survival, and a later healthy controlled fetch. This
+focused slice does not establish complete Service Worker Fetch or WPT
+conformance; see the [slice 796 task](tasks/native-engine-browser-796.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

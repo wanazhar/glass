@@ -5404,19 +5404,23 @@ coverage exercises IDL and content-attribute handlers, non-cancelable events,
 continued listeners, non-false returns, and the Window error exception. See
 the [`native-engine-browser-783` task](../plan/tasks/native-engine-browser-783.md).
 
-### Typed `onbeforeunload` return handling (slice 784, in progress)
+### Typed `onbeforeunload` return handling (slice 784)
 
-The native navigation owner and host prompt are already implemented, but the
-Window `onbeforeunload` event-handler slot does not yet apply its nullable
-`DOMString` return conversion. This slice gives host-generated
-`beforeunload` events the `BeforeUnloadEvent` interface and converts handler
-returns so `null`/`undefined` do not cancel, while every other value cancels;
-the first non-empty return value is stored only when `returnValue` is still
-empty. Explicit `returnValue` assignment also performs `DOMString`
-conversion. This only feeds the existing canceled-state/prompt path: sticky
-activation, generic browser-controlled prompt copy, authorization, and host
-decisions do not change. A plain `Event("beforeunload")` is not treated as a
-`BeforeUnloadEvent`. Conversion exception reporting remains separate. See the
+Host-generated Window `beforeunload` events now expose `BeforeUnloadEvent` and
+its initially empty, DOMString-converting `returnValue`. Window handler returns
+of `null`/`undefined` do not cancel; any other value is converted to
+`DOMString` and cancels, including an empty string. A converted callback return
+fills `returnValue` only when it is empty, preserving an explicit value already
+set by the handler. The beforeunload brand map persists across document-script
+bootstrap refreshes so cached event-handler listeners and newly created host
+events share the same brand. A plain `Event("beforeunload")` does not take the
+special path and retains ordinary exact-`false` handler cancellation.
+
+This only feeds the existing canceled-state/prompt path: sticky activation,
+generic browser-controlled prompt copy, authorization, and host decisions do
+not change. Conversion exception reporting remains separate. The
+process-backed regression covers conversions, body/Window aliasing, synthetic
+plain events, and both prompt dismissal and acceptance. See the
 [`native-engine-browser-784` task](../plan/tasks/native-engine-browser-784.md).
 
 The first executable browser-complete batch is recorded in

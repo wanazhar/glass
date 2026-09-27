@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-784
 scope: glass-browser/window-onbeforeunload-return-value
-status: in_progress
+status: completed
 depends-on: [native-engine-browser-783]
 ---
 
@@ -31,6 +31,8 @@ eligible to prompt or how the host obtains a user decision.
 
 - Host-generated Window `beforeunload` events are `BeforeUnloadEvent` objects
   with an initially empty `returnValue` and the existing cancelable setting.
+- The event-brand WeakMap persists at realm scope, matching the lifetime of
+  cached Window event-handler callbacks across bootstrap refreshes.
 - `window.onbeforeunload` and body/frameset aliases receive the event object
   with Window as `this`.
 - `null` and `undefined` callback returns do not cancel. Any other callback
@@ -72,4 +74,15 @@ eligible to prompt or how the host obtains a user decision.
 
 ## Verification
 
-Pending implementation and focused verification.
+Passed locally:
+
+- `cargo check -p glass-browser --test native_engine --locked --quiet` passed.
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_content_process_beforeunload_waits_for_exact_user_decision --exact --test-threads=1`
+  (1 passed; conversions, body alias, synthetic events, and prompt accept/dismiss)
+- `rustfmt --edition 2024 --check crates/glass-browser/src/browser/native_engine/javascript.rs crates/glass-browser/tests/native_engine.rs`
+- `python3 scripts/check-documentation-coverage.py`
+  (1,412 Markdown files; coverage validated)
+- `git diff --check` passed.
+
+Remote CI, full WPT, cross-platform certification, and issue #40's native-only
+production gates remain open.

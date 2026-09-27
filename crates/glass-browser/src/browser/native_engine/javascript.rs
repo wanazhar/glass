@@ -37561,6 +37561,14 @@ fn document_bootstrap(
       }},
     }});
   }};
+  const beforeUnloadEventReturnValues = globalThis.__glassBeforeUnloadEventReturnValues instanceof WeakMap
+    ? globalThis.__glassBeforeUnloadEventReturnValues
+    : new WeakMap();
+  globalThis.__glassBeforeUnloadEventReturnValues = beforeUnloadEventReturnValues;
+  const beforeUnloadDOMString = (value) => {{
+    if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol value to a DOMString");
+    return `${{value}}`;
+  }};
   const createEvent = (type, options) => {{
     const settings = options && typeof options === "object" ? options : {{}};
     const event = {{
@@ -37601,6 +37609,16 @@ fn document_bootstrap(
     }});
     if (typeof globalThis.Event === "function" && globalThis.Event.prototype) {{
       try {{ Object.setPrototypeOf(event, globalThis.Event.prototype); }} catch (_error) {{}}
+    }}
+    return event;
+  }};
+  const createBeforeUnloadEvent = (type, options) => {{
+    const event = createEvent(type, options);
+    beforeUnloadEventReturnValues.set(event, "");
+    delete event.returnValue;
+    const constructor = globalThis.__glassBeforeUnloadEventConstructor;
+    if (typeof constructor === "function" && constructor.prototype) {{
+      try {{ Object.setPrototypeOf(event, constructor.prototype); }} catch (_error) {{}}
     }}
     return event;
   }};
@@ -37653,9 +37671,14 @@ fn document_bootstrap(
         }}
         if (specialWindowError && result === true) {{
           event.defaultPrevented = true;
-        }} else if (type === "beforeunload") {{
-          if (state.contentAttribute && result === false
-              && event && typeof event.preventDefault === "function") event.preventDefault();
+        }} else if (type === "beforeunload" && beforeUnloadEventReturnValues.has(event)) {{
+          const returnValue = result === null || result === undefined
+            ? null
+            : beforeUnloadDOMString(result);
+          if (returnValue !== null) {{
+            event.defaultPrevented = true;
+            if (event.returnValue === "") event.returnValue = returnValue;
+          }}
         }} else if (!specialWindowError && result === false) {{
           event.defaultPrevented = true;
         }}
@@ -37834,7 +37857,9 @@ fn document_bootstrap(
         if (eventState.stopped || eventState.immediate) break;
       }}
     }}
-    if (event.type === "beforeunload" && event.returnValue !== "") event.defaultPrevented = true;
+    if (event.type === "beforeunload"
+        && beforeUnloadEventReturnValues.has(event)
+        && event.returnValue !== "") event.defaultPrevented = true;
     event.currentTarget = null;
     event.eventPhase = 0;
     eventState.dispatching = false;
@@ -44326,7 +44351,11 @@ fn document_bootstrap(
       if (!target) throw new TypeError("native event target is detached");
       const eventType = String(descriptor.type);
       const focusEvent = ["blur", "focusout", "focus", "focusin"].includes(eventType);
-      const eventFactory = focusEvent ? createFocusEvent : createEvent;
+      const eventFactory = focusEvent
+        ? createFocusEvent
+        : eventType === "beforeunload"
+          ? createBeforeUnloadEvent
+          : createEvent;
       const event = eventFactory(eventType, {{
         bubbles: Boolean(descriptor.bubbles),
         cancelable: Boolean(descriptor.cancelable),
@@ -50729,6 +50758,29 @@ fn document_bootstrap(
     try {{ Object.setPrototypeOf(event, ErrorEventNative.prototype); }} catch (_error) {{}}
     return event;
   }};
+  const BeforeUnloadEventNative = function BeforeUnloadEvent() {{
+    throw new TypeError("Illegal constructor");
+  }};
+  BeforeUnloadEventNative.prototype = Object.create(EventNative.prototype);
+  BeforeUnloadEventNative.prototype.constructor = BeforeUnloadEventNative;
+  Object.defineProperty(BeforeUnloadEventNative.prototype, "returnValue", {{
+    configurable: true,
+    enumerable: true,
+    get() {{
+      if (!beforeUnloadEventReturnValues.has(this)) throw new TypeError("Illegal invocation");
+      return beforeUnloadEventReturnValues.get(this);
+    }},
+    set(value) {{
+      if (!beforeUnloadEventReturnValues.has(this)) throw new TypeError("Illegal invocation");
+      beforeUnloadEventReturnValues.set(this, beforeUnloadDOMString(value));
+    }},
+  }});
+  if (typeof Symbol === "function" && Symbol.toStringTag) {{
+    Object.defineProperty(BeforeUnloadEventNative.prototype, Symbol.toStringTag, {{
+      configurable: true,
+      value: "BeforeUnloadEvent",
+    }});
+  }}
   const PromiseRejectionEventNative = globalThis.__glassPromiseRejectionEventConstructor || function PromiseRejectionEvent(type, options) {{
     const event = globalThis.__glassCreateEvent(type, options);
     const settings = options && typeof options === "object" ? options : {{}};
@@ -50764,6 +50816,7 @@ fn document_bootstrap(
   globalThis.__glassCustomEventConstructor = CustomEventNative;
   globalThis.__glassStorageEventConstructor = StorageEventNative;
   globalThis.__glassErrorEventConstructor = ErrorEventNative;
+  globalThis.__glassBeforeUnloadEventConstructor = BeforeUnloadEventNative;
   globalThis.__glassPromiseRejectionEventConstructor = PromiseRejectionEventNative;
   globalThis.__glassSecurityPolicyViolationEventConstructor = SecurityPolicyViolationEventNative;
   globalThis.__glassCreateEvent = createEvent;
@@ -50774,6 +50827,7 @@ fn document_bootstrap(
   globalThis.CustomEvent = CustomEventNative;
   globalThis.StorageEvent = StorageEventNative;
   globalThis.ErrorEvent = ErrorEventNative;
+  globalThis.BeforeUnloadEvent = BeforeUnloadEventNative;
   globalThis.PromiseRejectionEvent = PromiseRejectionEventNative;
   globalThis.SecurityPolicyViolationEvent = SecurityPolicyViolationEventNative;
   {message_channel_script}

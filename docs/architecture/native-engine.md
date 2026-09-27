@@ -5272,6 +5272,22 @@ the getter, setter, persisted attribute, and resulting focus order. This is not
 complete focus or Web IDL conformance; see the
 [slice 774 task](../plan/tasks/native-engine-browser-774.md).
 
+### Form-associated custom-element disabled focus state (slice 775)
+
+The custom-element lifecycle reconciler publishes its computed disabled state
+through a bounded native script command. Rust retains that state in the
+document node and content-process wire projection, and both Tab traversal and
+programmatic focus consult it. The JavaScript focus projection also keeps a
+disabled form-associated custom element from becoming locally focused before
+the command reaches the Rust owner. Fieldset inheritance follows the existing
+first-legend exception; ordinary custom elements remain focusable even if
+their markup contains a `disabled` attribute. Local and same-origin-frame
+process-backed regressions cover initialization, dynamic disable/enable, and
+the command-state persistence boundary. See
+[`native-engine-browser-775`](../plan/tasks/native-engine-browser-775.md).
+This is not full focus-chain, shadow-scope, inertness, keyboard, WPT, platform,
+or remote-CI conformance.
+
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,

@@ -178,6 +178,7 @@ pub(crate) struct NativeElementState {
     hovered: bool,
     user_interacted: bool,
     selected: bool,
+    form_associated_disabled: Option<bool>,
     custom_validity: String,
     selection_start: Option<usize>,
     selection_end: Option<usize>,
@@ -205,6 +206,7 @@ impl NativeElementState {
             user_interacted: false,
             hovered: false,
             selected: attributes.contains_key("selected"),
+            form_associated_disabled: None,
             custom_validity: String::new(),
             selection_start: None,
             selection_end: None,
@@ -473,6 +475,8 @@ pub(crate) struct NativeElementStateWire {
     pub(crate) user_interacted: bool,
     #[serde(default)]
     pub(crate) selected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) form_associated_disabled: Option<bool>,
     pub(crate) custom_validity: String,
     #[serde(default)]
     pub(crate) selection_start: Option<usize>,
@@ -3178,6 +3182,7 @@ impl NativeDocument {
                     hovered: node.state.hovered,
                     user_interacted: node.state.user_interacted,
                     selected: node.state.selected,
+                    form_associated_disabled: node.state.form_associated_disabled,
                     custom_validity: node.state.custom_validity.clone(),
                     selection_start: node.state.selection_start,
                     selection_end: node.state.selection_end,
@@ -3661,6 +3666,20 @@ impl NativeDocument {
             } else {
                 None
             };
+            if wire_node.state.form_associated_disabled.is_some()
+                && !matches!(
+                    (&kind, namespace_uri.as_deref()),
+                    (
+                        NativeNodeKind::Element { name, .. },
+                        Some(HTML_NAMESPACE_URI)
+                    ) if name.contains('-')
+                )
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned form-disabled state for a non-HTML or non-hyphenated element".into(),
+                });
+            }
             let attribute_namespaces = if matches!(&kind, NativeNodeKind::Element { .. }) {
                 wire_node
                     .state
@@ -3695,6 +3714,7 @@ impl NativeDocument {
                     hovered: wire_node.state.hovered,
                     user_interacted: wire_node.state.user_interacted,
                     selected: wire_node.state.selected,
+                    form_associated_disabled: wire_node.state.form_associated_disabled,
                     custom_validity: wire_node.state.custom_validity.clone(),
                     selection_start: wire_node.state.selection_start,
                     selection_end: wire_node.state.selection_end,
@@ -7197,6 +7217,16 @@ impl NativeDocument {
                 } => {
                     self.apply_script_custom_validity(*node_index, message, &script_nodes)?;
                 }
+                NativeScriptCommand::SetFormAssociatedDisabledState {
+                    node_index,
+                    disabled,
+                } => {
+                    self.apply_script_form_associated_disabled_state(
+                        *node_index,
+                        *disabled,
+                        &script_nodes,
+                    )?;
+                }
                 NativeScriptCommand::CheckValidity { node_index }
                 | NativeScriptCommand::ReportValidity { node_index } => {
                     let id = NativeNodeId::from_parts(self.generation, *node_index);
@@ -7348,6 +7378,29 @@ impl NativeDocument {
             });
         }
         node.state.custom_validity = message.to_owned();
+        Ok(())
+    }
+
+    fn apply_script_form_associated_disabled_state(
+        &mut self,
+        node_index: u32,
+        disabled: bool,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
+    ) -> Result<(), NativeEngineError> {
+        let id = self.resolve_script_node_id(node_index, script_nodes);
+        let node = self
+            .script_node_mut(id, script_nodes)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if node.namespace_uri() != Some(HTML_NAMESPACE_URI)
+            || !node.element_name().is_some_and(|name| name.contains('-'))
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason:
+                    "form-associated disabled state requires a hyphenated HTML custom-element name"
+                        .into(),
+            });
+        }
+        node.state.form_associated_disabled = Some(disabled);
         Ok(())
     }
 
@@ -10854,6 +10907,9 @@ impl NativeDocument {
         let Some(node) = self.node(id) else {
             return true;
         };
+        if node.state.form_associated_disabled == Some(true) {
+            return true;
+        }
         let tag_name = node.element_name().unwrap_or_default();
         let supports_disabled = matches!(
             tag_name,

@@ -69642,3 +69642,232 @@ async fn native_http_generic_explicit_tabindex_focus_routes_through_same_origin_
     session.close().await.unwrap();
     server.await.unwrap();
 }
+
+fn native_form_associated_focus_markup() -> &'static str {
+    "<div id='zero-first' tabindex='0'></div><x-focus-field id='enabled' tabindex='1'></x-focus-field><x-focus-field id='own-disabled' disabled tabindex='1'></x-focus-field><fieldset disabled><legend><x-focus-field id='legend-enabled' tabindex='2'></x-focus-field></legend><x-focus-field id='fieldset-disabled' tabindex='2'></x-focus-field></fieldset><x-plain-field id='ordinary-disabled' disabled tabindex='3'></x-plain-field>"
+}
+
+fn native_form_associated_focus_definition() -> &'static str {
+    r##"class FocusField extends HTMLElement {
+      static formAssociated = true;
+      constructor() { super(); this.attachInternals(); }
+      get disabled() { return false; }
+    }
+    customElements.define('x-focus-field', FocusField);
+    class PlainField extends HTMLElement {
+      get disabled() { return false; }
+    }
+    customElements.define('x-plain-field', PlainField);
+    true"##
+}
+
+#[tokio::test]
+async fn native_local_form_associated_custom_element_disabled_focus_state() {
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://form-associated-focus",
+                native_form_associated_focus_markup(),
+            )
+            .unwrap()
+            .with_initial_url("fixture://form-associated-focus"),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(native_form_associated_focus_definition())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "document.getElementById('zero-first').focus(); document.getElementById('own-disabled').focus(); document.getElementById('fieldset-disabled').focus(); document.activeElement.id",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("zero-first")
+    );
+
+    for expected in ["enabled"] {
+        engine
+            .action_async(NativeAction::Shortcut {
+                shortcut: "Tab".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            engine
+                .evaluate_async("document.activeElement.id")
+                .await
+                .unwrap(),
+            serde_json::json!(expected)
+        );
+    }
+    engine
+        .evaluate_async("document.getElementById('enabled').setAttribute('disabled', ''); true")
+        .await
+        .unwrap();
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.activeElement.id")
+            .await
+            .unwrap(),
+        serde_json::json!("legend-enabled")
+    );
+    engine
+        .evaluate_async("document.getElementById('enabled').removeAttribute('disabled'); true")
+        .await
+        .unwrap();
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Shift+Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.activeElement.id")
+            .await
+            .unwrap(),
+        serde_json::json!("enabled")
+    );
+    for expected in ["legend-enabled", "ordinary-disabled"] {
+        engine
+            .action_async(NativeAction::Shortcut {
+                shortcut: "Tab".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            engine
+                .evaluate_async("document.activeElement.id")
+                .await
+                .unwrap(),
+            serde_json::json!(expected)
+        );
+    }
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_http_form_associated_disabled_focus_state_persists_in_frame_owner() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let markup = native_form_associated_focus_markup();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("native form-associated focus document request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = if path == "/parent" {
+                "<iframe id='child' src='/child'></iframe>"
+            } else if path == "/child" {
+                markup
+            } else {
+                panic!("unexpected native form-associated focus request: {path}");
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    let frames = session.native_list_frames().await.unwrap();
+    let child_id = frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("same-origin child frame")
+        .id
+        .clone();
+    session.native_select_frame(&child_id).await.unwrap();
+    session
+        .script(native_form_associated_focus_definition())
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script(
+                "document.getElementById('zero-first').focus(); document.getElementById('own-disabled').focus(); document.getElementById('fieldset-disabled').focus(); document.activeElement.id",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("zero-first")
+    );
+    for expected in ["enabled", "legend-enabled"] {
+        if expected == "legend-enabled" {
+            session
+                .script("document.getElementById('enabled').setAttribute('disabled', '')")
+                .await
+                .unwrap();
+        }
+        session
+            .action(SemanticAction::Shortcut {
+                shortcut: "Tab".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .script("document.activeElement.id")
+                .await
+                .unwrap()
+                .value,
+            serde_json::json!(expected)
+        );
+    }
+    session
+        .script("document.getElementById('enabled').removeAttribute('disabled')")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Shift+Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("enabled")
+    );
+    for expected in ["legend-enabled", "ordinary-disabled"] {
+        session
+            .action(SemanticAction::Shortcut {
+                shortcut: "Tab".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .script("document.activeElement.id")
+                .await
+                .unwrap()
+                .value,
+            serde_json::json!(expected)
+        );
+    }
+    session.close().await.unwrap();
+    server.await.unwrap();
+}

@@ -632,6 +632,10 @@ pub(crate) enum NativeScriptCommand {
         node_index: u32,
         message: String,
     },
+    SetFormAssociatedDisabledState {
+        node_index: u32,
+        disabled: bool,
+    },
     CheckValidity {
         node_index: u32,
     },
@@ -11972,6 +11976,7 @@ pub(crate) fn validate_frame_script_command(
                 | NativeScriptCommand::AppendChild { .. }
                 | NativeScriptCommand::InsertBefore { .. }
                 | NativeScriptCommand::SetCustomValidity { .. }
+                | NativeScriptCommand::SetFormAssociatedDisabledState { .. }
                 | NativeScriptCommand::CheckValidity { .. }
                 | NativeScriptCommand::ReportValidity { .. }
                 | NativeScriptCommand::ResetForm { .. }
@@ -12021,6 +12026,7 @@ fn is_frame_script_batch_command(command: &NativeScriptCommand) -> bool {
             | NativeScriptCommand::AppendChild { .. }
             | NativeScriptCommand::InsertBefore { .. }
             | NativeScriptCommand::SetCustomValidity { .. }
+            | NativeScriptCommand::SetFormAssociatedDisabledState { .. }
     )
 }
 
@@ -31982,6 +31988,10 @@ fn document_bootstrap(
       globalThis.__glassRecordMutationCommand(command);
     }}
   }};
+  let nativeFormAssociatedDisabledStatesForFocus = null;
+  const nativeFormAssociatedDisabledForFocus = (element) =>
+    nativeFormAssociatedDisabledStatesForFocus instanceof WeakMap
+      && nativeFormAssociatedDisabledStatesForFocus.get(element) === true;
   const timers = globalThis.__glassTimers instanceof Map
     ? globalThis.__glassTimers
     : new Map();
@@ -39444,7 +39454,7 @@ fn document_bootstrap(
         return dispatchTarget(this, event);
       }},
       focus() {{
-        if (this.disabled || this.hidden) return;
+        if (this.disabled || this.hidden || nativeFormAssociatedDisabledForFocus(this)) return;
         setLocalFocus(this);
       }},
       blur() {{
@@ -41385,6 +41395,13 @@ fn document_bootstrap(
       case "setInnerHtml": element.innerHTML = String(command.value); break;
       case "removeNode": element.remove(); break;
       case "setCustomValidity": element.setCustomValidity(command.message); break;
+      case "setFormAssociatedDisabledState":
+        pushCurrentDocumentCommand({{
+          kind: "setFormAssociatedDisabledState",
+          node_index: nodeIndex,
+          disabled: Boolean(command.disabled),
+        }});
+        break;
       case "checkValidity": element.checkValidity(); break;
       case "reportValidity": element.reportValidity(); break;
       case "activateFormReset":
@@ -46394,6 +46411,7 @@ fn document_bootstrap(
   if (!(nativeCustomElementState.formDisabledStates instanceof WeakMap)) {{
     nativeCustomElementState.formDisabledStates = new WeakMap();
   }}
+  nativeFormAssociatedDisabledStatesForFocus = nativeCustomElementState.formDisabledStates;
   if (!(nativeCustomElementState.formResetting instanceof WeakSet)) {{
     nativeCustomElementState.formResetting = new WeakSet();
   }}
@@ -46507,6 +46525,17 @@ fn document_bootstrap(
       ancestor = ancestor.parentElement;
     }}
     return false;
+  }};
+  const nativeFormAssociatedRecordDisabledState = (element, disabled) => {{
+    const nodeIndex = Number(element.nodeIndex);
+    if (!Number.isSafeInteger(nodeIndex) || nodeIndex < 0) {{
+      throw new RangeError("form-associated custom-element node index is invalid");
+    }}
+    pushCommand({{
+      kind: "setFormAssociatedDisabledState",
+      node_index: nodeIndex,
+      disabled: Boolean(disabled),
+    }});
   }};
   const nativeFormAssociatedTreeRootFor = (element) => {{
     let root = element;
@@ -46914,9 +46943,11 @@ fn document_bootstrap(
         const disabledStates = nativeCustomElementState.formDisabledStates;
         if (!disabledStates.has(element)) {{
           disabledStates.set(element, disabled);
+          nativeFormAssociatedRecordDisabledState(element, disabled);
           if (disabled) nativeCustomElementQueueCallback(element, "formDisabledCallback", [true]);
         }} else if (disabledStates.get(element) !== disabled) {{
           disabledStates.set(element, disabled);
+          nativeFormAssociatedRecordDisabledState(element, disabled);
           nativeCustomElementQueueCallback(element, "formDisabledCallback", [disabled]);
         }}
       }}
@@ -47571,7 +47602,7 @@ fn document_bootstrap(
     "setValue", "setSelection", "setChecked", "setIndeterminate", "setSelected", "mediaLoad",
     "setAttribute", "removeAttribute", "setTextContent", "setInnerHtml",
     "removeNode", "createElement", "createTextNode", "createComment", "createDocumentType", "appendChild",
-    "insertBefore", "setCustomValidity",
+    "insertBefore", "setCustomValidity", "setFormAssociatedDisabledState",
   ].includes(String(command.kind));
   const queueFrameCommand = (binding, command) => {{
     if (!binding || binding.sameOrigin !== true) throw crossOriginSecurityError("document");
@@ -47992,7 +48023,7 @@ fn document_bootstrap(
             tokens.every((token) => String(candidate.className).split(/\s+/).includes(token))));
         }},
         focus() {{
-          if (this.disabled || this.hidden) return;
+          if (this.disabled || this.hidden || nativeFormAssociatedDisabledForFocus(this)) return;
           dispatchTarget(this, createEvent("focus"));
           queueFrameCommand(currentBinding, {{ kind: "focus", node_index: entry.nodeIndex }});
         }},

@@ -46,12 +46,17 @@ behavior, and existing loader bounds.
   script's response policy to the already-running worker global.
 - Report-only declarations emit the correctly attributed bounded violation,
   but never change whether the worker or imported script loads.
+- A service-worker registration or update whose root/import graph is blocked
+  rejects that API promise with the loading error; it must not terminate the
+  owning page content process. A failed update leaves the previously installed
+  registration intact.
 - Keep redirects, MIME checks, integrity behavior, cookies, source bounds,
   structured errors, and rooted-file admission unchanged.
 - Cover worker-src precedence and each fallback edge, plus a real HTTP(S)
   worker whose response policy allows `worker-src` but denies a script import
   through `script-src`; add report-only evidence that observes but does not
-  block the same import.
+  block the same import. Also cover a module Service Worker whose denied static
+  import rejects `register()` while a later page evaluation still succeeds.
 
 ## Boundaries and tradeoffs
 

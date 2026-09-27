@@ -185,8 +185,10 @@ worker and specialized EventTarget dispatch remain outside this slice. See the
 [slice 789 task](tasks/native-engine-browser-789.md).
 Slice 790 is the next planned CSP correction: worker creation keeps its
 `worker-src` destination and fallback chain, while scripts fetched by worker
-imports use script-source policy. It includes enforced and report-only
-regressions and does not claim full CSP/WPT conformance; see the
+imports use script-source policy. A blocked Service Worker registration/update
+must reject its promise without terminating the page process. It includes
+enforced and report-only regressions and does not claim full CSP/WPT
+conformance; see the
 [slice 790 task](tasks/native-engine-browser-790.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the

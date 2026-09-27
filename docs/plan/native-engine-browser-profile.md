@@ -246,9 +246,12 @@ survival. See the
 Slice 790 corrects worker CSP destination selection: root worker creation uses
 the `worker-src` → `child-src` → `script-src` → `default-src` fallback chain,
 while `importScripts()` and worker module dependencies use the active worker's
-script-source policy. Report-only events keep their effective-directive
-metadata without changing the request result. This does not claim complete CSP
-or WPT conformance; see the [slice 790 task](tasks/native-engine-browser-790.md).
+script-source policy. A blocked Service Worker registration or update rejects
+its API promise without terminating the owning page process; a failed update
+retains the installed registration. Report-only events keep their
+effective-directive metadata without changing the request result. This does
+not claim complete CSP or WPT conformance; see the
+[slice 790 task](tasks/native-engine-browser-790.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus

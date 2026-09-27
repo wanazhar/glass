@@ -3755,6 +3755,20 @@ page error event. See
 [task 798](../plan/tasks/native-engine-browser-798.md); full Web IDL,
 EventTarget, and WPT conformance remain open.
 
+Slice 799 catches structured-clone decode failures in direct worker-global
+message delivery and emits `messageerror` rather than a partial `message`.
+Worker globals expose an ordered `onmessageerror` slot with HTML-style
+replacement, clearing, and reactivation behavior; callback errors follow the
+existing worker-global reporting policy and dispatch snapshots skip a slot
+deactivated during delivery. HTTP(S) process regressions verify Dedicated
+Worker and current Service Worker dispatch recovery plus later valid work.
+The Service Worker path still uses its existing generic `MessageEvent` shell
+and lacks required `ExtendableMessageEvent` identity, client `source`/`origin`,
+and `waitUntil()` lifetime handling; those remain explicit issue #40 work, not
+conformance evidence. MessagePort and page-side Worker proxy decode failures
+are separate. See
+[task 799](../plan/tasks/native-engine-browser-799.md).
+
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
 operation and delivers them in the owning page turn; EventSource carries

@@ -69871,3 +69871,164 @@ async fn native_http_form_associated_disabled_focus_state_persists_in_frame_owne
     session.close().await.unwrap();
     server.await.unwrap();
 }
+
+fn native_inert_focus_markup() -> &'static str {
+    "<button id='first' tabindex='1'>First</button><section id='panel' inert><button id='implicit-blocked'>Implicit</button><div id='explicit-blocked' tabindex='2'></div></section><div id='natural' tabindex='0'></div>"
+}
+
+#[tokio::test]
+async fn native_local_inert_focus_state_blocks_programmatic_and_sequential_focus() {
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_fixture("fixture://inert-focus", native_inert_focus_markup())
+            .unwrap()
+            .with_initial_url("fixture://inert-focus"),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const panel = document.getElementById('panel'); const explicit = document.getElementById('explicit-blocked'); const implicit = document.getElementById('implicit-blocked'); document.getElementById('first').focus(); explicit.focus(); implicit.focus(); const initial = [panel.inert, panel.hasAttribute('inert'), explicit.inert, document.activeElement.id]; panel.inert = false; const removed = [panel.inert, panel.hasAttribute('inert')]; document.getElementById('first').focus(); return { initial, removed }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "initial": [true, true, false, "first"],
+            "removed": [false, false],
+        })
+    );
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.activeElement.id")
+            .await
+            .unwrap(),
+        serde_json::json!("explicit-blocked")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const panel = document.getElementById('panel'); panel.inert = true; document.getElementById('explicit-blocked').focus(); document.getElementById('implicit-blocked').focus(); return [panel.inert, panel.hasAttribute('inert'), document.activeElement.id]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, true, "explicit-blocked"])
+    );
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.activeElement.id")
+            .await
+            .unwrap(),
+        serde_json::json!("first")
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_http_inert_focus_state_persists_in_same_origin_frame() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let markup = native_inert_focus_markup();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("native inert-focus document request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = if path == "/parent" {
+                "<iframe id='child' src='/child'></iframe>"
+            } else if path == "/child" {
+                markup
+            } else {
+                panic!("unexpected native inert-focus request: {path}");
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    let frames = session.native_list_frames().await.unwrap();
+    let child_id = frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("same-origin child frame")
+        .id
+        .clone();
+    session.native_select_frame(&child_id).await.unwrap();
+    assert_eq!(
+        session
+            .script(
+                "(() => { const panel = document.getElementById('panel'); const explicit = document.getElementById('explicit-blocked'); const implicit = document.getElementById('implicit-blocked'); document.getElementById('first').focus(); explicit.focus(); implicit.focus(); const initial = [panel.inert, panel.hasAttribute('inert'), explicit.inert, document.activeElement.id]; panel.inert = false; const removed = [panel.inert, panel.hasAttribute('inert')]; document.getElementById('first').focus(); return { initial, removed }; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "initial": [true, true, false, "first"],
+            "removed": [false, false],
+        })
+    );
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("explicit-blocked")
+    );
+    assert_eq!(
+        session
+            .script(
+                "(() => { const panel = document.getElementById('panel'); panel.inert = true; document.getElementById('explicit-blocked').focus(); document.getElementById('implicit-blocked').focus(); return [panel.inert, panel.hasAttribute('inert'), document.activeElement.id]; })()",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([true, true, "explicit-blocked"])
+    );
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("first")
+    );
+    session.close().await.unwrap();
+    server.await.unwrap();
+}

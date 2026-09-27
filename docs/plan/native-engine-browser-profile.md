@@ -115,11 +115,20 @@ lifecycle owner with the native focus owner, including content-process and
 same-origin-frame routes. An ordinary custom element's `disabled` attribute
 does not confer disabled-control behavior.
 
+An element with the `inert` attribute, and its light-DOM descendants, are not
+programmatically or sequentially focusable. The `HTMLElement.inert` property
+reflects the boolean content attribute, and live property/attribute changes
+affect subsequent focus decisions. This is the focus-specific baseline only;
+it does not claim the complete flat-tree inert model or the broader effects of
+inertness on hit testing, editing, selection, or accessibility.
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
-inertness, browser/platform sequential-focus preferences, focus-chain handoff,
-and complete focus Web Platform Test conformance remain separate profile
-requirements. See the [slice 775 task](tasks/native-engine-browser-775.md) for
-the local evidence and exact remaining boundaries.
+flat-tree and modal-dialog inertness, browser/platform sequential-focus
+preferences, focus-chain handoff, and complete focus Web Platform Test
+conformance remain separate profile requirements. See the
+[slice 775 task](tasks/native-engine-browser-775.md) and
+[slice 776 task](tasks/native-engine-browser-776.md) for local evidence and
+exact remaining boundaries.
 
 ### XHR document responses
 

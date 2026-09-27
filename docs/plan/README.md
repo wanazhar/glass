@@ -91,6 +91,13 @@ regressions cover state changes and persistence; see the
 [slice 775 task](tasks/native-engine-browser-775.md). Full focus-chain,
 shadow-scope, inertness, keyboard, WPT, platform, and remote-CI conformance
 remain open.
+Slice 776 implements the attribute-driven light-DOM portion of inert focus:
+`HTMLElement.inert` reflects its boolean attribute, inert elements and their
+descendants are skipped by sequential focus, and programmatic focus is a
+no-op. Dynamic property changes take effect in the same local or
+same-origin-frame operation. Modal-dialog/flat-tree exceptions and inert
+effects on pointer input, editing, selection, and accessibility remain open;
+see the [slice 776 task](tasks/native-engine-browser-776.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

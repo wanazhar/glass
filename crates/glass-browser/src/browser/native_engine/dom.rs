@@ -6345,7 +6345,7 @@ impl NativeDocument {
             let Some(node) = self.node(id) else {
                 continue;
             };
-            if !self.is_attached(id) {
+            if !self.is_attached(id) || self.is_inert(id) {
                 continue;
             }
             let explicit_tab_index = node.attribute("tabindex").and_then(parse_native_tab_index);
@@ -6367,6 +6367,9 @@ impl NativeDocument {
                     continue;
                 }
                 for anchor in self.image_map_area_focus_anchors(id) {
+                    if self.is_inert(anchor) {
+                        continue;
+                    }
                     let Some(anchor_order) = usize::try_from(anchor.index())
                         .ok()
                         .and_then(|index| order_by_node.get(index))
@@ -7430,6 +7433,9 @@ impl NativeDocument {
         let Some(node) = self.node(id) else {
             return Err(NativeEngineError::DetachedTarget);
         };
+        if self.is_inert(id) {
+            return Ok(Vec::new());
+        }
         if node.element_name() != Some("area")
             && node
                 .attribute("tabindex")
@@ -7478,13 +7484,13 @@ impl NativeDocument {
             });
         }
         if self.node(id).and_then(NativeNode::element_name) == Some("area") {
-            let anchor = self
+            let Some(anchor) = self
                 .image_map_area_focus_anchors(id)
                 .into_iter()
-                .next()
-                .ok_or_else(|| NativeEngineError::TargetNotActionable {
-                    reason: "image-map link has no focusable rendered shape".into(),
-                })?;
+                .find(|anchor| !self.is_inert(*anchor))
+            else {
+                return Ok(Vec::new());
+            };
             return Ok(self.focus_element_with_anchor(id, Some(anchor)));
         }
         Ok(self.focus_element(id))
@@ -10972,6 +10978,7 @@ impl NativeDocument {
         };
         if !self.is_attached(id)
             || self.is_hidden(id)
+            || self.is_inert(id)
             || self.is_actually_disabled_native_focus_target(id)
             || node.element_name() == Some("area")
         {
@@ -11035,6 +11042,20 @@ impl NativeDocument {
                 return true;
             }
             if self.computed_style_for_layout(current_id).hidden() {
+                return true;
+            }
+            current = node.parent();
+        }
+        false
+    }
+
+    fn is_inert(&self, id: NativeNodeId) -> bool {
+        let mut current = Some(id);
+        while let Some(current_id) = current {
+            let Some(node) = self.node(current_id) else {
+                break;
+            };
+            if node.attribute_in_namespace(None, "inert").is_some() {
                 return true;
             }
             current = node.parent();

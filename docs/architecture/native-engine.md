@@ -5438,6 +5438,17 @@ specialized XHR, WebSocket, EventSource, and other worker EventTarget dispatch
 wrappers. See the
 [`native-engine-browser-785` task](../plan/tasks/native-engine-browser-785.md).
 
+### Shared-worker connect `MessageEvent` (slice 786, in progress)
+
+The shared-worker bridge currently supplies a hand-built object to `onconnect`.
+This slice replaces it with the worker-realm `MessageEvent` required by the
+HTML connection algorithm: empty `data`, the inside `MessagePort` as both
+`source` and the sole member of a frozen `ports` array, and worker-global event
+targets. It also applies exact-false cancellation from `onconnect` before
+later listeners, without changing shared-worker connection scheduling or port
+ownership. See the
+[`native-engine-browser-786` task](../plan/tasks/native-engine-browser-786.md).
+
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,

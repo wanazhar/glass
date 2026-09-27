@@ -5209,6 +5209,18 @@ Slice 770 threads these flags through the semantic action and native click
 event path, including local, process-backed, and same-origin-frame documents.
 It does not claim full pointer-event conformance or complete browser input.
 
+### Image-map hit testing and activation (slice 771)
+
+The planned image-map path keeps one source of truth: `NativeLayoutSnapshot`
+owns the displayed image box; `NativeDocument` resolves that image's live
+`usemap` association and area geometry; the existing semantic click owner
+dispatches the cancelable event and processes link defaults. Geometry is
+derived from the current document on each action so map/area mutations cannot
+leave stale hit targets. Earlier `<area>` elements win overlapping hits, in
+accordance with the HTML image-map processing model. Linked areas reuse the
+native hyperlink, URL-policy, target/download, and accessibility-name paths;
+there is no separate popup or navigation implementation for image maps.
+
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,

@@ -3711,6 +3711,16 @@ focused regression pass locally; complete Service Worker, MessagePort, and
 WPT conformance remain open. See
 [task 794](../plan/tasks/native-engine-browser-794.md).
 
+Slice 795 reports Service Worker global `onmessage` and registered
+`message`-listener exceptions at ServiceWorkerGlobalScope, with dedicated-owner
+forwarding disabled. Exact-`true` global `onerror` cancellation and uncanceled
+error-listener state are verified; later listeners and client replies still
+run, and a later message succeeds while the worker stays active. The
+process-backed test observes no client/container/ServiceWorker error event.
+DedicatedWorker, SharedWorker, and MessagePort regressions pass; full worker
+and WPT conformance remain open. See
+[task 795](../plan/tasks/native-engine-browser-795.md).
+
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
 operation and delivers them in the owning page turn; EventSource carries

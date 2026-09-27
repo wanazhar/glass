@@ -290,6 +290,14 @@ active worker state, and absence of client-side error events. This focused
 slice is not complete Service Worker, MessagePort, or WPT conformance; see the
 [slice 794 task](tasks/native-engine-browser-794.md).
 
+Slice 795 reports exceptions from a Service Worker global `onmessage` handler
+or registered `message` listener at that global, without forwarding them to
+clients. Global `onerror` exact-`true` cancellation, later listener execution,
+client replies, a later healthy message, active worker state, and absence of
+client error events are covered by a process-backed controlled-page regression.
+This focused slice is not complete Service Worker or WPT conformance; see the
+[slice 795 task](tasks/native-engine-browser-795.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

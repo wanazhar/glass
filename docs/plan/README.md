@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is locally complete through
-`native-engine-browser-794`. Slice 767 verifies native hyperlink Enter
+`native-engine-browser-795`. Slice 767 verifies native hyperlink Enter
 activation through local and process-backed `_blank` target and download
 defaults, including cancellation and opener preservation; see the
 [slice 767 task](tasks/native-engine-browser-767.md) for local evidence and
@@ -225,12 +225,17 @@ state, and absence of client-side error events. The scoped native-engine check,
 focused regression, and Service Worker port round-trip passed locally. This
 does not claim complete Service Worker, MessagePort, or WPT conformance; see
 the [slice 794 task](tasks/native-engine-browser-794.md).
-Slice 795 is scoped to exceptions thrown by ServiceWorkerGlobalScope
-`onmessage` and registered `message` listeners. It will report failures at the
-Service Worker global, preserve later listener and message delivery, and keep
-errors from being forwarded to clients. It does not change MessagePort callback
-handling, Service Worker fetch/lifecycle behavior, or other worker modes. See
-the [slice 795 contract](tasks/native-engine-browser-795.md).
+Slice 795 reports exceptions from ServiceWorkerGlobalScope `onmessage` and
+registered `message` listeners through its global error path, without
+dedicated-worker forwarding. Its process-backed controlled-page regression
+checks exact-`true` cancellation, uncanceled global error state, later
+listeners, replies, a subsequent message, active state, and absence of
+container/ServiceWorker error events. DedicatedWorker, SharedWorker,
+MessagePort, and general scheduler behavior remain unchanged; complete worker
+and WPT conformance remains open. The scoped check, focused test, related
+worker-mode regressions, formatting, and diff checks passed locally. See the
+[slice 795 task](tasks/native-engine-browser-795.md) for exact evidence and
+initial test-harness corrections.
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

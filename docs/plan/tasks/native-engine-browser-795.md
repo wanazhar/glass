@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-795
 scope: glass-browser/service-worker-message-callback-errors
-status: in_progress
+status: completed
 depends-on: [native-engine-browser-794]
 ---
 
@@ -85,7 +85,34 @@ listeners and later message events without forwarding these errors to clients.
 
 ## Implementation and verification
 
-Commit this contract before implementation. Record the exact process-backed
-regression and scoped local verification commands here after implementation.
-Remote CI and complete Service Worker/worker conformance remain issue #40
-gates.
+Contract checkpoint: `3fa1ac97`; implementation and process-backed regression:
+`6ec47c4c`.
+
+The worker bootstrap separates global exception reporting from dedicated-owner
+forwarding. DedicatedWorker retains both behaviors, SharedWorker retains its
+global-only connect behavior, and Service Worker global `message` and
+MessagePort callback errors use global-only reporting. The regression
+`native_content_process_service_worker_message_callback_errors_stay_global`
+uses a controlled HTTP(S) page and verifies an exact-`true` handled Error from
+`onmessage`, an uncanceled primitive from a registered listener, global error
+order/state, later listener client replies, a later healthy message, active
+worker state, and no client/container/ServiceWorker-object error event.
+
+The first test run found the fixture had not claimed the registering page; the
+fixture now performs `skipWaiting()` and `clients.claim()`. A second run showed
+that awaiting a page promise for a posted Service Worker message leaves no
+native host operation pending within that script evaluation. The test now
+sends the message synchronously and pumps bounded page turns while awaiting a
+client reply. Both were test-harness issues; the corrected regression passes.
+
+Passed locally:
+
+- `cargo check -p glass-browser --test native_engine --locked --quiet`
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_content_process_service_worker_message_callback_errors_stay_global --exact --test-threads=1` (1 passed).
+- Direct process-backed regressions from the rebuilt native-engine test binary: `native_content_process_shared_worker_message_port_callback_errors_recover`, `native_content_process_service_worker_message_port_callback_errors_stay_global`, `native_content_process_dedicated_worker_message_port_callback_errors_report_and_forward`, and `native_content_process_reports_shared_worker_connect_callback_errors_at_global` (1 passed each).
+- Direct DedicatedWorker global-message regression `native_local_dedicated_worker_message_callback_errors_report_and_forward_in_order` (1 passed).
+- Rustfmt check for both touched Rust files and `git diff --check`.
+
+The integration target emits existing native-DOM dead-code warnings. Remote CI
+and complete Service Worker, Worker, HTML error-reporting, EventTarget, and WPT
+conformance remain issue #40 gates.

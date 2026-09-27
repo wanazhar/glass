@@ -140,6 +140,10 @@ the legacy `Window.onerror` rule that an exact `true` return cancels only an
 `ErrorEvent` dispatched at Window. A local regression covers actual script
 reports, plain `Event("error")`, return values, and the body alias; see the
 [slice 782 task](tasks/native-engine-browser-782.md).
+Slice 783 tracks ordinary event-handler `return false` cancellation for both
+IDL and content-attribute handlers, including non-cancelable events, without
+collapsing the legacy Window `onerror` and `onbeforeunload` paths; see the
+[slice 783 task](tasks/native-engine-browser-783.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

@@ -5390,6 +5390,18 @@ callback-exception reporting, and `onbeforeunload` remain outside this bounded
 change. See the
 [`native-engine-browser-782` task](../plan/tasks/native-engine-browser-782.md).
 
+### Ordinary event-handler `false` cancellation (slice 783, in progress)
+
+Ordinary `EventHandler` callbacks installed through IDL properties and
+content attributes are required to set the event's canceled flag when they
+return exactly `false`, independently of the event's `cancelable` flag. The
+current implementation only calls `preventDefault()` for content-attribute
+handlers, so IDL handlers miss cancellation and non-cancelable events cannot
+reflect it. Slice 783 unifies this ordinary return rule while preserving the
+special Window `onerror` and `onbeforeunload` paths. Cancellation must not stop
+later listeners or propagation. See the
+[`native-engine-browser-783` task](../plan/tasks/native-engine-browser-783.md).
+
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,

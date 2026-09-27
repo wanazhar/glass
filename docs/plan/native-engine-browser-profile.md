@@ -174,6 +174,14 @@ alias, and uncaught script reports. General error-reporting policy and
 remaining `onbeforeunload` behavior are separate work. See the
 [slice 782 task](tasks/native-engine-browser-782.md).
 
+Ordinary event-handler callbacks have a remaining return-value gap: exactly
+`false` must set the event's canceled flag for both IDL and content-attribute
+handlers, even when the event is non-cancelable. The current content-attribute
+path only calls `preventDefault()` and IDL callbacks do not apply the rule.
+Slice 783 addresses this without conflating Window `onerror`'s exact-`true`
+rule or `onbeforeunload`'s string return type. See the
+[slice 783 task](tasks/native-engine-browser-783.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

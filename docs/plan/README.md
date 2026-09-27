@@ -43,8 +43,10 @@ for exact evidence and boundaries. Slice 769 implements the approved
 WAI-ARIA Authoring Practices arrow-key convention for native radio groups,
 including wrapping, focus and checkedness movement, cancellation, and
 revalidation after keydown listeners across local, process-backed, and
-same-origin-frame paths. Its task remains in progress for independent review;
-this does not claim complete keyboard conformance.
+same-origin-frame paths. Its scoped package check and focused tests pass, and
+independent review found no blocking issue. The task records exact evidence
+and a nonblocking test-coverage note; this does not claim complete keyboard
+conformance.
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

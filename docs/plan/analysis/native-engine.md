@@ -3715,6 +3715,16 @@ DedicatedWorker, SharedWorker, and Service Worker MessagePort regressions pass.
 This does not establish full worker or WPT conformance; see
 [task 795](../tasks/native-engine-browser-795.md).
 
+Slice 796 handles synchronous exceptions per Service Worker fetch callback
+instead of rejecting the entire dispatch and skipping later listeners. Global
+error reporting remains ServiceWorkerGlobalScope-only. Later callbacks retain
+the opportunity to call `respondWith()`; when nobody responds, the engine uses
+the ordinary network path. A controlled HTTP(S) regression verifies handled
+and unhandled throws, callback order, fallback, worker survival, and a later
+healthy fetch. Existing asynchronous response regressions pass. This does not
+claim full Service Worker Fetch or WPT conformance; see
+[task 796](../tasks/native-engine-browser-796.md).
+
 Slice 793 installs the dedicated-owner forwarding mode of the worker error
 reporter for native MessagePorts in DedicatedWorker realms. The process-backed
 transferred-port test covers exact-`true` global cancellation, one uncanceled

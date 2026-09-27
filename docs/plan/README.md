@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is locally complete through
-`native-engine-browser-795`. Slice 767 verifies native hyperlink Enter
+`native-engine-browser-796`. Slice 767 verifies native hyperlink Enter
 activation through local and process-backed `_blank` target and download
 defaults, including cancellation and opener preservation; see the
 [slice 767 task](tasks/native-engine-browser-767.md) for local evidence and
@@ -236,13 +236,15 @@ and WPT conformance remains open. The scoped check, focused test, related
 worker-mode regressions, formatting, and diff checks passed locally. See the
 [slice 795 task](tasks/native-engine-browser-795.md) for exact evidence and
 initial test-harness corrections.
-Slice 796 is scoped to synchronous exceptions thrown by Service Worker fetch
-callbacks. It will report each exception at the Service Worker global and
-continue later fetch listeners, preserving a response supplied by a later
-listener or the ordinary network fallback when no listener calls
-`respondWith()`. Promise rejection from an already supplied response and
-`waitUntil()` lifecycle remain unchanged. See the
-[slice 796 contract](tasks/native-engine-browser-796.md).
+Slice 796 reports synchronous exceptions from Service Worker `onfetch` and
+registered `fetch` callbacks at ServiceWorkerGlobalScope and continues later
+listeners. A later listener can still supply `respondWith()`, while an event
+with no response follows normal network fallback. Its process-backed HTTP test
+checks exact-`true` cancellation, uncanceled error state, both callback
+continuations, real upstream fallback, worker survival, and a later healthy
+controlled fetch. Existing asynchronous response and large-request regressions
+pass; `respondWith()` promise rejection and `waitUntil()` behavior were not
+changed. See the [slice 796 task](tasks/native-engine-browser-796.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

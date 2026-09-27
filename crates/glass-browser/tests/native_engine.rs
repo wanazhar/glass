@@ -10275,6 +10275,182 @@ addEventListener('connect', event => {
 }
 
 #[tokio::test]
+async fn native_content_process_shared_worker_message_port_callback_errors_recover() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let page = r#"<script>
+globalThis.sharedEvents = [];
+globalThis.ownerErrors = [];
+globalThis.shared = new SharedWorker('/shared-port-errors.js', { name: 'glass-shared-port-errors' });
+shared.onerror = event => ownerErrors.push('handler:' + event.message);
+shared.addEventListener('error', event => ownerErrors.push('listener:' + event.message));
+shared.port.onmessage = event => sharedEvents.push(event.data);
+shared.port.start();
+</script><main>shared worker message port callback errors</main>"#;
+    let worker_script = r#"const reports = [];
+const callbackTrace = [];
+let connectReportStart = 0;
+let messageReportStart = 0;
+let messageTraceStart = 0;
+onerror = (message, filename, line, column, error) => {
+  const cancel = message === 'port onmessage failure';
+  reports.push({ phase: 'onerror', message, cancel, errorIsError: error instanceof Error });
+  callbackTrace.push('onerror:' + message);
+  return cancel;
+};
+addEventListener('error', event => {
+  reports.push({
+    phase: 'error-listener', message: event.message, defaultPrevented: event.defaultPrevented,
+    cancelable: event.cancelable, targetIsGlobal: event.target === globalThis,
+    currentTargetIsGlobal: event.currentTarget === globalThis,
+  });
+  callbackTrace.push('error-listener:' + event.message);
+});
+onconnect = () => {
+  connectReportStart = reports.length;
+  throw new Error('connect callback failure');
+};
+addEventListener('connect', event => {
+  const port = event.ports[0];
+  port.onmessage = message => {
+    messageReportStart = reports.length;
+    messageTraceStart = callbackTrace.length;
+    callbackTrace.push('onmessage:' + message.data.kind);
+    if (message.data.kind === 'throw-handler') throw new Error('port onmessage failure');
+  };
+  port.addEventListener('message', message => {
+    const kind = message.data.kind;
+    callbackTrace.push('listener-one:' + kind);
+    if (kind === 'throw-listener') throw 'port listener failure';
+  });
+  port.addEventListener('message', message => {
+    const kind = message.data.kind;
+    callbackTrace.push('listener-two:' + kind);
+    port.postMessage({
+      kind: 'reply', request: kind, trace: callbackTrace.slice(messageTraceStart),
+      reports: reports.slice(messageReportStart),
+    });
+  });
+  port.start();
+  port.postMessage({ kind: 'ready', reports: reports.slice(connectReportStart) });
+});"#;
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            ("/shared-port-page", "text/html", page),
+            ("/shared-port-errors.js", "text/javascript", worker_script),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/shared-port-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let ready_event = serde_json::json!({
+        "kind": "ready",
+        "reports": [
+            { "phase": "onerror", "message": "connect callback failure", "cancel": false, "errorIsError": true },
+            {
+                "phase": "error-listener", "message": "connect callback failure",
+                "defaultPrevented": false, "cancelable": true,
+                "targetIsGlobal": true, "currentTargetIsGlobal": true,
+            },
+        ],
+    });
+    assert_eq!(
+        engine.evaluate_async("sharedEvents").await.unwrap(),
+        serde_json::json!([ready_event.clone()])
+    );
+    let mut expected_events = vec![ready_event];
+
+    for (kind, expected_report, trace) in [
+        (
+            "throw-handler",
+            serde_json::json!([
+                { "phase": "onerror", "message": "port onmessage failure", "cancel": true, "errorIsError": true },
+                {
+                    "phase": "error-listener", "message": "port onmessage failure",
+                    "defaultPrevented": true, "cancelable": true,
+                    "targetIsGlobal": true, "currentTargetIsGlobal": true,
+                },
+            ]),
+            vec![
+                "onmessage:throw-handler",
+                "onerror:port onmessage failure",
+                "error-listener:port onmessage failure",
+                "listener-one:throw-handler",
+                "listener-two:throw-handler",
+            ],
+        ),
+        (
+            "throw-listener",
+            serde_json::json!([
+                { "phase": "onerror", "message": "port listener failure", "cancel": false, "errorIsError": false },
+                {
+                    "phase": "error-listener", "message": "port listener failure",
+                    "defaultPrevented": false, "cancelable": true,
+                    "targetIsGlobal": true, "currentTargetIsGlobal": true,
+                },
+            ]),
+            vec![
+                "onmessage:throw-listener",
+                "listener-one:throw-listener",
+                "onerror:port listener failure",
+                "error-listener:port listener failure",
+                "listener-two:throw-listener",
+            ],
+        ),
+        (
+            "alive",
+            serde_json::json!([]),
+            vec![
+                "onmessage:alive",
+                "listener-one:alive",
+                "listener-two:alive",
+            ],
+        ),
+    ] {
+        assert_eq!(
+            engine
+                .evaluate_async(&format!(
+                    "shared.port.postMessage({{ kind: '{kind}' }}); true"
+                ))
+                .await
+                .unwrap(),
+            serde_json::json!(true),
+            "page-to-worker MessagePort delivery for {kind}",
+        );
+        expected_events.push(serde_json::json!({
+            "kind": "reply", "request": kind, "trace": trace,
+            "reports": expected_report,
+        }));
+        assert_eq!(
+            engine.evaluate_async("sharedEvents").await.unwrap(),
+            serde_json::Value::Array(expected_events.clone()),
+            "worker reply and callback recovery after {kind}",
+        );
+    }
+    assert_eq!(
+        engine.evaluate_async("ownerErrors").await.unwrap(),
+        serde_json::json!([]),
+        "SharedWorker-global callback errors must not fan out to page owners",
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_shared_worker_reuses_named_runtime_and_ports() {
     let config = NativeEngineConfig::default()
         .with_fixture(

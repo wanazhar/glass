@@ -18716,7 +18716,7 @@ async fn native_local_radio_group_arrow_navigation_revalidates_keydown_defaults(
             })
             .unwrap();
         let state = engine
-            .evaluate_async("({active: document.activeElement.id, a: globalThis.__radioA ? __radioA.checked : document.getElementById('radio-a')?.checked, c: document.getElementById('radio-c').checked, trace: __radioArrowTrace})")
+            .evaluate_async("({active: document.activeElement?.id ?? null, a: globalThis.__radioA ? __radioA.checked : document.getElementById('radio-a')?.checked, c: document.getElementById('radio-c').checked, trace: __radioArrowTrace})")
             .await
             .unwrap();
         assert_eq!(state["c"], false, "radio moved during {mode} invalidation");

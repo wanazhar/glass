@@ -28553,6 +28553,8 @@ fn service_worker_bootstrap_script() -> String {
 }
 
 const NATIVE_SHARED_WORKER_BOOTSTRAP: &str = r###"
+  globalThis.__glassReportSharedWorkerMessagePortCallbackException = (error) =>
+    reportWorkerCallbackException(error, false);
   globalThis.__glassDispatchSharedWorkerConnect = (payload) => {
     if (closed) return null;
     const envelope = glassMessageDecodeEnvelope(payload || {});
@@ -29957,14 +29959,18 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     event.eventPhase = 2;
     const handler = target["on" + type];
     if (typeof handler === "function") {
-      try { handler.call(target, event); } catch (_error) {}
+      try { handler.call(target, event); } catch (error) {
+        glassMessageReportSharedWorkerCallbackException(target, error);
+      }
     }
     const listeners = target.__glassMessageListeners instanceof Map
       ? target.__glassMessageListeners
       : new Map();
     const records = (listeners.get(type) || []).slice();
     for (const record of records) {
-      try { glassMessageInvoke(record.callback, target, event); } catch (_error) {}
+      try { glassMessageInvoke(record.callback, target, event); } catch (error) {
+        glassMessageReportSharedWorkerCallbackException(target, error);
+      }
       if (record.once) {
         const current = listeners.get(type) || [];
         listeners.set(type, current.filter(candidate => candidate !== record));
@@ -29974,6 +29980,12 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     event.currentTarget = null;
     event.eventPhase = 0;
     return event.defaultPrevented !== true;
+  };
+  const glassMessageReportSharedWorkerCallbackException = (target, error) => {
+    if (!target || !Number.isSafeInteger(target.__glassMessagePortId)) return;
+    const report = globalThis.__glassReportSharedWorkerMessagePortCallbackException;
+    if (typeof report !== "function") return;
+    try { report(error); } catch (_reportingError) {}
   };
   const glassMessageEvent = (target, data, ports) => {
     const event = new GlassMessageEvent("message", {

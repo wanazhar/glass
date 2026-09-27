@@ -232,13 +232,15 @@ its existing `WouldBlock` handling and is not sent through the new error
 reporter. See the
 [slice 788 task](tasks/native-engine-browser-788.md).
 
-Slice 789 specifies runtime-error reporting for exceptions thrown by
+Slice 789 implements runtime-error reporting for exceptions thrown by
 `onmessage` and registered listeners during dedicated-worker message dispatch.
 Each callback exception is reported at the worker global before dispatch
 continues to later listeners; an uncanceled report is forwarded to the owning
 `Worker` in the existing ordered message channel. The contract is limited to
 dedicated-worker message events and leaves shared/service-worker and
-specialized EventTarget dispatch unchanged. See the
+specialized EventTarget dispatch unchanged. Focused classic/module local
+regressions cover cancellation, forwarding order, later listeners, and worker
+survival. See the
 [slice 789 task](tasks/native-engine-browser-789.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,

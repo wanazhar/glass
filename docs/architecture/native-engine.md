@@ -5480,20 +5480,21 @@ shared/service-worker errors, and later event-turn exceptions remain separate.
 See the
 [`native-engine-browser-788` task](../plan/tasks/native-engine-browser-788.md).
 
-### Dedicated-worker message callback exceptions (slice 789, in progress)
+### Dedicated-worker message callback exceptions (slice 789, completed locally)
 
-The contract for dedicated-worker `message` delivery reports each exception
-thrown by the `onmessage` handler or an `addEventListener("message", …)`
-callback at that worker's global through the existing cancelable `ErrorEvent`
-reporter. Worker-global `onerror` and registered `error` listeners run before
-the original message dispatch continues; each later message listener still
-runs unless the worker is closed by existing lifecycle behavior. Exact-`true`
-worker-global `onerror` cancellation suppresses forwarding for that exception;
-otherwise an owner-side `ErrorEvent` is queued in command order relative to
-messages posted by the callbacks. The contract applies to classic and module
-dedicated workers and does not generalize to shared/service workers, MessagePort
-dispatch, promise rejections, or specialized XHR/WebSocket/EventSource targets.
-The implementation and focused regression are pending in the
+Dedicated-worker `message` delivery reports each exception thrown by the
+`onmessage` handler or an `addEventListener("message", …)` callback at that
+worker's global through the existing cancelable `ErrorEvent` reporter.
+Worker-global `onerror` and registered `error` listeners run before the
+original message dispatch continues, and later message listeners still run.
+Exact-`true` worker-global `onerror` cancellation suppresses forwarding for
+that exception; otherwise an owner-side `ErrorEvent` is queued in command
+order relative to messages posted by the callbacks. Focused classic/module
+regressions verify callback order, cancellation, forwarding, and worker
+survival. The contract does not generalize to shared/service workers,
+MessagePort dispatch, promise rejections, or specialized
+XHR/WebSocket/EventSource targets. This local slice is not browser-completion
+evidence; remote CI and issue #40 gates remain open. See the
 [`native-engine-browser-789` task](../plan/tasks/native-engine-browser-789.md).
 
 The first executable browser-complete batch is recorded in

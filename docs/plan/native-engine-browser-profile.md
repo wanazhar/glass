@@ -211,7 +211,8 @@ Slice 786 gives shared-worker `connect` dispatch a worker-realm
 and a frozen `ports` array containing that same port. `onconnect` exact-false
 cancellation is visible to later listeners even though the event is
 non-cancelable; ordinary listener returns remain ignored. Connection task
-ordering and ownership are unchanged. See the
+ordering and ownership are unchanged. The focused two-connection regression
+and scoped package check pass locally. See the
 [slice 786 task](tasks/native-engine-browser-786.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,

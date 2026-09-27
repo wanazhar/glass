@@ -5438,16 +5438,19 @@ specialized XHR, WebSocket, EventSource, and other worker EventTarget dispatch
 wrappers. See the
 [`native-engine-browser-785` task](../plan/tasks/native-engine-browser-785.md).
 
-### Shared-worker connect `MessageEvent` (slice 786, in progress)
+### Shared-worker connect `MessageEvent` (slice 786)
 
-The shared-worker bridge currently supplies a hand-built object to `onconnect`.
-This slice replaces it with the worker-realm `MessageEvent` required by the
-HTML connection algorithm: empty `data`, the inside `MessagePort` as both
-`source` and the sole member of a frozen `ports` array, and worker-global event
-targets. It also applies exact-false cancellation from `onconnect` before
-later listeners, without changing shared-worker connection scheduling or port
-ownership. See the
-[`native-engine-browser-786` task](../plan/tasks/native-engine-browser-786.md).
+Shared-worker `connect` dispatch now creates the worker-realm `MessageEvent`
+required by the HTML connection algorithm: empty `data`, the inside
+`MessagePort` as both `source` and the sole member of a frozen `ports` array,
+and worker-global event targets. The event is non-bubbling and non-cancelable;
+an exact-false `onconnect` result is nevertheless visible as canceled state to
+later listeners, while listener callback returns remain ignored. Two local
+connections verify the event shape, cancellation ordering, and existing port
+request/reply behavior. Connection scheduling, port ownership, broader worker
+EventTarget semantics, and WPT conformance are unchanged or remain open; see
+the [`native-engine-browser-786` task](../plan/tasks/native-engine-browser-786.md)
+for exact local evidence.
 
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its

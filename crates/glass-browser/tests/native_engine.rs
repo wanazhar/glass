@@ -9628,12 +9628,12 @@ async fn native_local_shared_worker_reuses_named_runtime_and_ports() {
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://shared-worker-page",
-            "<script>globalThis.sharedEvents = []; globalThis.shared = new SharedWorker('fixture://shared-worker-script', { name: 'glass-shared' }); globalThis.sharedAgain = new SharedWorker('fixture://shared-worker-script', { name: 'glass-shared' }); shared.port.onmessage = event => sharedEvents.push({ port: 'one', kind: event.data.kind, value: event.data.value, connections: event.data.connections }); sharedAgain.port.onmessage = event => sharedEvents.push({ port: 'two', kind: event.data.kind, value: event.data.value, connections: event.data.connections }); shared.port.start(); sharedAgain.port.start();</script><main>shared worker</main>",
+            "<script>globalThis.sharedEvents = []; const capture = (port, event) => sharedEvents.push(Object.assign({ port }, event.data)); globalThis.shared = new SharedWorker('fixture://shared-worker-script', { name: 'glass-shared' }); globalThis.sharedAgain = new SharedWorker('fixture://shared-worker-script', { name: 'glass-shared' }); shared.port.onmessage = event => capture('one', event); sharedAgain.port.onmessage = event => capture('two', event); shared.port.start(); sharedAgain.port.start();</script><main>shared worker</main>",
         )
         .unwrap()
         .with_fixture(
             "fixture://shared-worker-script",
-            "let connections = 0; onconnect = event => { const port = event.ports[0]; const connection = ++connections; port.onmessage = message => port.postMessage({ kind: 'reply', value: Number(message.data.value) + connection }); port.start(); port.postMessage({ kind: 'ready', connections: connection }); };",
+            "let connections = 0; onconnect = function(event) { const port = event.ports[0]; const connection = ++connections; globalThis.sharedConnectNumber = connection; globalThis.sharedConnectHandlerThis = this === self; port.onmessage = message => port.postMessage({ kind: 'reply', value: Number(message.data.value) + connection }); port.start(); return connection === 1 ? false : 0; }; addEventListener('connect', event => { const port = event.source; port.postMessage({ kind: 'ready', connections: globalThis.sharedConnectNumber, eventType: event.type, messageEvent: event instanceof MessageEvent, data: event.data, sourceMatches: event.source === port, portsMatch: event.ports.length === 1 && event.ports[0] === port, portsFrozen: Object.isFrozen(event.ports), bubbles: event.bubbles, cancelable: event.cancelable, defaultPrevented: event.defaultPrevented, targetIsWorker: event.target === self, currentTargetIsWorker: event.currentTarget === self, handlerThis: globalThis.sharedConnectHandlerThis }); return false; });",
         )
         .unwrap()
         .with_initial_url("fixture://shared-worker-page");
@@ -9642,8 +9642,20 @@ async fn native_local_shared_worker_reuses_named_runtime_and_ports() {
     assert_eq!(
         engine.evaluate_async("sharedEvents").await.unwrap(),
         serde_json::json!([
-            {"port": "one", "kind": "ready", "connections": 1},
-            {"port": "two", "kind": "ready", "connections": 2},
+            {
+                "port": "one", "kind": "ready", "connections": 1,
+                "eventType": "connect", "messageEvent": true, "data": "",
+                "sourceMatches": true, "portsMatch": true, "portsFrozen": true,
+                "bubbles": false, "cancelable": false, "defaultPrevented": true,
+                "targetIsWorker": true, "currentTargetIsWorker": true, "handlerThis": true,
+            },
+            {
+                "port": "two", "kind": "ready", "connections": 2,
+                "eventType": "connect", "messageEvent": true, "data": "",
+                "sourceMatches": true, "portsMatch": true, "portsFrozen": true,
+                "bubbles": false, "cancelable": false, "defaultPrevented": false,
+                "targetIsWorker": true, "currentTargetIsWorker": true, "handlerThis": true,
+            },
         ])
     );
     assert_eq!(
@@ -9656,8 +9668,20 @@ async fn native_local_shared_worker_reuses_named_runtime_and_ports() {
     assert_eq!(
         engine.evaluate_async("sharedEvents").await.unwrap(),
         serde_json::json!([
-            {"port": "one", "kind": "ready", "connections": 1},
-            {"port": "two", "kind": "ready", "connections": 2},
+            {
+                "port": "one", "kind": "ready", "connections": 1,
+                "eventType": "connect", "messageEvent": true, "data": "",
+                "sourceMatches": true, "portsMatch": true, "portsFrozen": true,
+                "bubbles": false, "cancelable": false, "defaultPrevented": true,
+                "targetIsWorker": true, "currentTargetIsWorker": true, "handlerThis": true,
+            },
+            {
+                "port": "two", "kind": "ready", "connections": 2,
+                "eventType": "connect", "messageEvent": true, "data": "",
+                "sourceMatches": true, "portsMatch": true, "portsFrozen": true,
+                "bubbles": false, "cancelable": false, "defaultPrevented": false,
+                "targetIsWorker": true, "currentTargetIsWorker": true, "handlerThis": true,
+            },
             {"port": "one", "kind": "reply", "value": 5},
             {"port": "two", "kind": "reply", "value": 9},
         ])

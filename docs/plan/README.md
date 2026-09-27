@@ -158,7 +158,8 @@ rule to specialized resource dispatchers; see the
 [slice 785 task](tasks/native-engine-browser-785.md).
 Slice 786 corrects shared-worker `connect` delivery to the standard
 worker-realm `MessageEvent` shape and honors `onconnect` exact-false
-cancellation before later listeners; see the
+cancellation before later listeners. Its focused two-connection regression
+and scoped package check pass locally; see the
 [slice 786 task](tasks/native-engine-browser-786.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the

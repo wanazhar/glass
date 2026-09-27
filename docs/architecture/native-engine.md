@@ -5423,6 +5423,19 @@ process-backed regression covers conversions, body/Window aliasing, synthetic
 plain events, and both prompt dismissal and acceptance. See the
 [`native-engine-browser-784` task](../plan/tasks/native-engine-browser-784.md).
 
+### Worker-global message handler cancellation (slice 785, in progress)
+
+The worker bootstrap has a dedicated worker-global dispatcher for host-delivered
+messages. This slice makes it construct a worker-realm `MessageEvent` and apply
+the ordinary HTML `EventHandler` exact-`false` cancellation rule to
+`WorkerGlobalScope.onmessage` before continuing through registered listeners.
+The worker message event is non-cancelable, but an exact-false handler still
+sets its canceled state; later listeners run and observe that state. Returns
+from ordinary `addEventListener` callbacks remain ignored. This does not change
+worker scheduling or extend the rule to specialized XHR, WebSocket, EventSource,
+or other worker EventTarget dispatch wrappers. See the
+[`native-engine-browser-785` task](../plan/tasks/native-engine-browser-785.md).
+
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,

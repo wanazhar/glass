@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-785
 scope: glass-browser/dedicated-worker-message-handler-cancellation
-status: in_progress
+status: completed
 depends-on: [native-engine-browser-784]
 ---
 
@@ -43,10 +43,10 @@ EventHandler return processing to ordinary listener callbacks.
 ## Boundaries and tradeoffs
 
 - This covers the dedicated worker's host-delivered `message` event path. It
-  does not complete all `WorkerGlobalScope` handler attributes, shared-worker
-  `connect` event construction, worker error reporting, callback exception
-  reporting, EventTarget propagation/options, worker event scheduling, or
-  specialized XHR/WebSocket/EventSource dispatchers.
+  does not complete other `WorkerGlobalScope` handler attributes, shared-worker
+  `connect` event construction or cancellation, worker CSP/error handling,
+  callback exception reporting, EventTarget propagation/options, worker event
+  scheduling, or specialized XHR/WebSocket/EventSource dispatchers.
 - Full worker and Web Platform Test conformance and issue #40 production gates
   remain open.
 
@@ -61,4 +61,16 @@ EventHandler return processing to ordinary listener callbacks.
 
 ## Verification
 
-Pending implementation and focused verification.
+Passed locally:
+
+- `rustfmt --edition 2024 --check crates/glass-browser/src/browser/native_engine/javascript.rs crates/glass-browser/tests/native_engine.rs`
+- `cargo check -p glass-browser --test native_engine --locked --quiet`
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_local_dedicated_worker_onmessage_false_cancels_before_listeners --exact --test-threads=1`
+  (1 passed; worker `MessageEvent`, non-cancelable exact-false cancellation,
+  later-listener ordering, ignored listener return, and non-false result)
+- `python3 scripts/check-documentation-coverage.py`
+  (1,413 Markdown files; coverage validated)
+- `git diff --check`
+
+Remote CI, full worker/WPT conformance, cross-platform certification, and issue
+#40 native-only production gates remain open.

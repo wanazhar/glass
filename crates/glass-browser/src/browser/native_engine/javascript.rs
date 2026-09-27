@@ -22811,7 +22811,9 @@ fn worker_bootstrap(
           ? onSecurityPolicyViolation
           : null;
     if (typeof handler === "function") {{
-      try {{ handler.call(globalThis, event); }} catch (_error) {{}}
+      let result;
+      try {{ result = handler.call(globalThis, event); }} catch (_error) {{}}
+      if (type === "message" && result === false) event.defaultPrevented = true;
     }}
     const callbacks = listeners.get(type) || [];
     for (const callback of callbacks.slice()) {{
@@ -27921,7 +27923,21 @@ fn worker_bootstrap(
     if (payload && Array.isArray(payload.object_urls))
       globalThis.__glassInstallObjectUrlTransfers(payload.object_urls);
     const envelope = glassMessageDecodeEnvelope(payload);
-    dispatch("message", {{ type: "message", data: envelope.data, ports: envelope.ports, origin: "", source: null, target: globalThis, currentTarget: globalThis }});
+    const MessageEventConstructor = globalThis.__glassWorkerMessageEventConstructor || globalThis.MessageEvent;
+    const event = new MessageEventConstructor("message", {{
+      data: envelope.data,
+      ports: envelope.ports,
+      origin: "",
+      source: null,
+      bubbles: false,
+      cancelable: false,
+    }});
+    event.target = globalThis;
+    event.currentTarget = globalThis;
+    event.eventPhase = 2;
+    dispatch("message", event);
+    event.currentTarget = null;
+    event.eventPhase = 0;
     return null;
   }};
   globalThis.__glassDispatchWorkerCspViolations = (violations) => {{

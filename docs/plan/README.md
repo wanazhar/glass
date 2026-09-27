@@ -152,8 +152,9 @@ local process-backed coverage retains the existing prompt policy. See the
 [slice 784 task](tasks/native-engine-browser-784.md).
 Slice 785 makes dedicated worker message delivery use worker-realm
 `MessageEvent`s and preserves exact-false `onmessage` cancellation before
-later listeners. It does not apply the rule to ordinary listener returns or
-specialized resource dispatchers; see the
+later listeners. A focused local integration regression covers that ordering
+and confirms ordinary listener returns remain ignored. It does not apply the
+rule to specialized resource dispatchers; see the
 [slice 785 task](tasks/native-engine-browser-785.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the

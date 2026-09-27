@@ -3461,6 +3461,55 @@ async fn native_local_script_runs_dedicated_worker_and_delivers_messages() {
 }
 
 #[tokio::test]
+async fn native_local_dedicated_worker_onmessage_false_cancels_before_listeners() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-handler-page",
+            "<html><body><main>Worker event handler</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-handler-script",
+            "onmessage = function(event) { globalThis.workerHandlerThis = this === self; return event.data === 'cancel' ? false : 0; }; addEventListener('message', () => false); addEventListener('message', event => postMessage([event.data, event instanceof MessageEvent, event.cancelable, event.defaultPrevented, event.target === self, event.currentTarget === self, globalThis.workerHandlerThis]));",
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-handler-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.workerMessages = []; globalThis.worker = new Worker('fixture://worker-handler-script'); worker.onmessage = event => workerMessages.push(event.data); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("worker.postMessage('cancel'); worker.postMessage('continue'); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+
+    let expected = serde_json::json!([
+        ["cancel", true, false, true, true, true, true],
+        ["continue", true, false, false, true, true, true],
+    ]);
+    let mut messages = serde_json::Value::Null;
+    for _ in 0..8 {
+        messages = engine.evaluate_async("workerMessages").await.unwrap();
+        if messages == expected {
+            break;
+        }
+    }
+    assert_eq!(messages, expected);
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_worker_message_delivery_preserves_large_payloads() {
     let config = NativeEngineConfig::default()
         .with_fixture(

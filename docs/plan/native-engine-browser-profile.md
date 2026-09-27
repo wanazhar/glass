@@ -225,6 +225,14 @@ Slice 770 implements the modifier-aware action path across local,
 process-backed, and same-origin-frame behavior; focused local tests pass. See
 [`native-engine-browser-770`](tasks/native-engine-browser-770.md) for exact
 evidence. This is not complete pointer-input conformance.
+
+Slice 771 is in progress to bring client-side `<img usemap>` regions into
+native point hit testing and link activation. The planned map/area association,
+shape geometry, topmost-area selection, click cancellation, link defaults, and
+`alt`-derived accessible name follow the existing document and navigation owners; see
+[`native-engine-browser-771`](tasks/native-engine-browser-771.md). This does
+not claim complete image-map keyboard or WPT conformance.
+
 Slice 768 implements the bounded keyboard-input contract: unmodified
 Space on a focused, enabled native checkbox or radio synthesizes click
 activation on keyup through the shared checkable-control owner. It covers

@@ -30,8 +30,9 @@ use crate::browser::session::{
 };
 use crate::browser::{BackendFactory, CdpSessionBackend};
 use crate::browser_backend::{
-    ActionRequest, BackendProfile, BrowserBackendDispatcher, BrowserCapability, ContextRequest,
-    EffectsRequest, EvidenceLevel, EvidenceRequest, NavigationRequest, SemanticAction,
+    ActionRequest, BackendProfile, BrowserBackendDispatcher, BrowserCapability, ClickModifiers,
+    ContextRequest, EffectsRequest, EvidenceLevel, EvidenceRequest, NavigationRequest,
+    SemanticAction,
 };
 use crate::capabilities::GlassCapabilityManifest;
 use crate::extraction::ExtractionRequest;
@@ -1243,11 +1244,21 @@ async fn run_alternative_runtime_command(
         Commands::Click {
             target,
             expected_revision,
+            alt,
+            control,
+            meta,
+            shift,
         } => alternative_json_output(
             &native_or_portable_action(
                 session,
-                SemanticAction::Click {
+                SemanticAction::ClickWithModifiers {
                     target: target.clone(),
+                    modifiers: ClickModifiers {
+                        alt: *alt,
+                        control: *control,
+                        meta: *meta,
+                        shift: *shift,
+                    },
                 },
                 *expected_revision,
             )
@@ -1618,10 +1629,27 @@ async fn run_alternative_runtime_command(
             #[cfg(not(feature = "native-engine"))]
             unreachable!("native runtime is feature-gated")
         }
-        Commands::ClickAt { x, y } if session.runtime().is_native() => {
+        Commands::ClickAt {
+            x,
+            y,
+            alt,
+            control,
+            meta,
+            shift,
+        } if session.runtime().is_native() => {
             let target = native_point_locator(*x, *y)?;
             alternative_json_output(
-                &session.action(SemanticAction::Click { target }).await?,
+                &session
+                    .action(SemanticAction::ClickWithModifiers {
+                        target,
+                        modifiers: ClickModifiers {
+                            alt: *alt,
+                            control: *control,
+                            meta: *meta,
+                            shift: *shift,
+                        },
+                    })
+                    .await?,
                 response_mode,
             )
         }
@@ -3765,7 +3793,14 @@ async fn run_command(
         Commands::Click {
             target,
             expected_revision,
+            alt,
+            control,
+            meta,
+            shift,
         } => {
+            if *alt || *control || *meta || *shift {
+                return Err("modifier-aware clicks require the native browser runtime".into());
+            }
             if let Some(expected_revision) = expected_revision {
                 print_json(
                     &session
@@ -3779,7 +3814,17 @@ async fn run_command(
         Commands::Preflight { target, action } => {
             print_json(&session.preflight_with_action(target, *action).await)?;
         }
-        Commands::ClickAt { x, y } => {
+        Commands::ClickAt {
+            x,
+            y,
+            alt,
+            control,
+            meta,
+            shift,
+        } => {
+            if *alt || *control || *meta || *shift {
+                return Err("modifier-aware clicks require the native browser runtime".into());
+            }
             print_json(&session.click_at(*x, *y).await?)?;
         }
         Commands::ClickExpectPopup {

@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-770
 scope: glass-browser/native-hyperlink-modifier-clicks
-status: in-progress
+status: complete
 depends-on: [native-engine-browser-769]
 ---
 
@@ -75,21 +75,35 @@ are outside this slice.
 - `crates/glass-browser/src/cli/runner.rs`
 - `crates/glass-browser/src/mcp/server.rs`
 - `crates/glass-browser/tests/native_engine.rs`
+- `docs/actions.md`
+- `docs/cli.md`
+- `docs/features.md`
+- `docs/mcp-tools.md`
+- `docs/rust-sdk.md`
 - `docs/architecture/native-engine.md`
 - `docs/plan/README.md`
 - `docs/plan/native-engine-browser-profile.md`
 - `docs/plan/tasks/native-engine-browser-770.md`
 
-## Verification
+## Results
 
-- Add action-level tests for modifier serialization/defaults, event modifier
-  visibility, cancellation, exact-once target creation, current `href`,
-  download precedence, and non-link behavior.
-- Cover local, HTTP(S) content-process, and same-origin-frame execution through
-  the native browser action path.
-- Cover CLI and MCP modifier parsing, plus explicit unsupported behavior on
-  external runtimes.
-- Run `cargo fmt --all -- --check`, `git diff --check`, then
-  `cargo check -p glass-browser --lib --test native_engine --locked --quiet`
-  before focused modifier-click tests. Do not run workspace/all-targets tests,
-  remote CI, or clean Cargo artifacts for this bounded slice.
+- `cargo fmt --all -- --check` and `git diff --check` pass.
+- `cargo check -p glass-browser --lib --test native_engine --locked --quiet`
+  and `cargo check -p glass-dev --lib --bins --locked --quiet` pass.
+- `cargo test -p glass-browser --lib modifier --locked --quiet --
+  --test-threads=1` passes: 8 tests, including action/event modifiers, CLI and
+  MCP parsing, and fail-closed behavior on adapters that cannot preserve click
+  modifier state.
+- `cargo test -p glass-browser --test native_engine modifier --locked --quiet
+  -- --test-threads=1` passes: 4 tests covering local activation/cancellation,
+  content-process target/download behavior, same-origin frame routing, and the
+  keyboard modifier-event contract.
+- The download test creates and removes its exact unique destination
+  directory. The keyboard trace expects `shiftKey=true` for the observed
+  `Shift+Tab` keyup.
+- Documentation release audit passes for 1,398 Markdown files with 0 current-
+  claim failures; depth audit validates 93 guides and 19 substantive contracts;
+  shortcut inventory validates 15 implementation keys and 63 doc markers.
+
+These are local focused results only. Remote CI, cross-platform certification,
+WPT conformance, complete pointer input, and issue #40 completion remain open.

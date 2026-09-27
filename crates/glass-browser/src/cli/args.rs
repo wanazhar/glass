@@ -503,6 +503,14 @@ pub enum Commands {
         target: String,
         #[arg(long)]
         expected_revision: Option<u64>,
+        #[arg(long)]
+        alt: bool,
+        #[arg(long)]
+        control: bool,
+        #[arg(long)]
+        meta: bool,
+        #[arg(long)]
+        shift: bool,
     },
 
     /// Resolve a target and report clickability without performing an action.
@@ -513,7 +521,18 @@ pub enum Commands {
     },
 
     /// Click exact viewport coordinates for canvas/map surfaces.
-    ClickAt { x: f64, y: f64 },
+    ClickAt {
+        x: f64,
+        y: f64,
+        #[arg(long)]
+        alt: bool,
+        #[arg(long)]
+        control: bool,
+        #[arg(long)]
+        meta: bool,
+        #[arg(long)]
+        shift: bool,
+    },
 
     /// Click an element expected to open exactly one causally verified popup.
     ClickExpectPopup {
@@ -2064,6 +2083,47 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::ClickExpectPopup { target, .. }) if target == "css=#popup"
+        ));
+    }
+
+    #[test]
+    fn click_command_accepts_explicit_modifier_flags() {
+        let cli = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                Cli::try_parse_from(["glass", "click", "id=open", "--control", "--shift"]).unwrap()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Click {
+                control: true,
+                shift: true,
+                alt: false,
+                meta: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn click_at_command_accepts_explicit_modifier_flags() {
+        let cli = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| Cli::try_parse_from(["glass", "click-at", "10", "20", "--meta"]).unwrap())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::ClickAt {
+                x: 10.0,
+                y: 20.0,
+                meta: true,
+                ..
+            })
         ));
     }
 

@@ -221,10 +221,10 @@ attribute behavior and URL/security policy take precedence. Alt alone does not
 implicitly download an arbitrary link. Because Glass exposes browsing contexts
 rather than desktop windows/tabs, Shift uses the same background-target model
 as Control and Meta. Right/middle-button gestures remain outside this slice.
-Slice 770 implements the modifier-aware action path and tests local,
-process-backed, and same-origin-frame behavior; see
-[`native-engine-browser-770`](tasks/native-engine-browser-770.md). This is not
-complete pointer-input conformance.
+Slice 770 implements the modifier-aware action path across local,
+process-backed, and same-origin-frame behavior; focused local tests pass. See
+[`native-engine-browser-770`](tasks/native-engine-browser-770.md) for exact
+evidence. This is not complete pointer-input conformance.
 Slice 768 implements the bounded keyboard-input contract: unmodified
 Space on a focused, enabled native checkbox or radio synthesizes click
 activation on keyup through the shared checkable-control owner. It covers

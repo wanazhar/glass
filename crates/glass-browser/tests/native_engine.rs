@@ -24,9 +24,9 @@ use glass_browser::browser::{NativeDialogController, NativeDialogResolution, Nat
 use glass_browser::browser_backend::{
     ActionRequest, BROWSER_BACKEND_SCHEMA_VERSION, BackendSelectionRequest,
     BrowserBackendDispatcher, BrowserBackendError, BrowserCapability, CaptureFormat,
-    CaptureRequest, CertificationLevel, EffectsRequest, EvidenceLevel, EvidenceRequest,
-    NavigationRequest, PromptDecision, ScriptRequest, SemanticAction, StorageOperation,
-    StorageRequest, StorageScope, SupportLevel,
+    CaptureRequest, CertificationLevel, ClickModifiers, EffectsRequest, EvidenceLevel,
+    EvidenceRequest, NavigationRequest, PromptDecision, ScriptRequest, SemanticAction,
+    StorageOperation, StorageRequest, StorageScope, SupportLevel,
 };
 use glass_browser::{BackendFactory, BrowserRuntime, BrowserRuntimeSession, NativeEngineBackend};
 use glass_browser::{
@@ -40,7 +40,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, oneshot};
@@ -13155,6 +13155,98 @@ async fn native_runtime_opener_links_create_routable_popup_targets() {
 }
 
 #[tokio::test]
+async fn native_modifier_link_clicks_open_one_background_target_and_honor_cancellation() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://modifier-parent",
+            "<title>Modifier opener</title><a id='control' href='fixture://modifier-child'>Control link</a><a id='blank' target='_blank' href='fixture://modifier-blank'>Blank link</a><a id='cancel' href='fixture://modifier-canceled'>Canceled link</a><script>globalThis.__modifierTrace = []; for (const id of ['control', 'blank', 'cancel']) document.getElementById(id).addEventListener('click', event => { globalThis.__modifierTrace.push([id, event.altKey, event.ctrlKey, event.metaKey, event.shiftKey]); if (id === 'cancel') event.preventDefault(); });</script>",
+        )
+        .unwrap()
+        .with_fixture("fixture://modifier-child", "<title>Modifier child</title>")
+        .unwrap()
+        .with_fixture("fixture://modifier-blank", "<title>Blank child</title>")
+        .unwrap()
+        .with_fixture("fixture://modifier-canceled", "<title>Canceled child</title>")
+        .unwrap()
+        .with_initial_url("fixture://modifier-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    session
+        .action(SemanticAction::ClickWithModifiers {
+            target: "id=control".into(),
+            modifiers: ClickModifiers {
+                alt: true,
+                control: true,
+                ..ClickModifiers::default()
+            },
+        })
+        .await
+        .unwrap();
+    let first_targets = session.native_list_targets().await.unwrap();
+    assert_eq!(first_targets.len(), 2);
+    assert!(
+        first_targets
+            .iter()
+            .any(|target| target.active && target.id == "native-context")
+    );
+    assert!(first_targets.iter().any(|target| {
+        !target.active
+            && target.url == "fixture://modifier-child"
+            && target.opener_id.as_deref() == Some("native-context")
+    }));
+
+    session
+        .action(SemanticAction::ClickWithModifiers {
+            target: "id=blank".into(),
+            modifiers: ClickModifiers {
+                meta: true,
+                shift: true,
+                ..ClickModifiers::default()
+            },
+        })
+        .await
+        .unwrap();
+    let second_targets = session.native_list_targets().await.unwrap();
+    assert_eq!(second_targets.len(), 3);
+    assert_eq!(
+        second_targets
+            .iter()
+            .filter(|target| target.url == "fixture://modifier-blank")
+            .count(),
+        1,
+        "modifier activation and target=_blank must create exactly one target"
+    );
+
+    session
+        .action(SemanticAction::ClickWithModifiers {
+            target: "id=cancel".into(),
+            modifiers: ClickModifiers {
+                control: true,
+                ..ClickModifiers::default()
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 3);
+    assert_eq!(
+        session
+            .script("({url: location.href, trace: globalThis.__modifierTrace})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "url": "fixture://modifier-parent",
+            "trace": [
+                ["control", true, true, false, false],
+                ["blank", false, false, true, true],
+                ["cancel", false, true, false, false],
+            ],
+        })
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_form_targets_keep_opener_and_reuse_named_targets() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -13422,6 +13514,120 @@ async fn native_external_blank_link_creates_popup_target() {
     let popup = targets.iter().find(|target| !target.active).unwrap();
     assert_eq!(popup.title, "HTTP popup");
     assert_eq!(popup.opener_id.as_deref(), Some("native-context"));
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_modifier_click_opens_background_target_and_exposes_flags() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("modifier-click navigation request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1);
+            let (content_type, extra_headers, body) = match path {
+                Some("/parent") => (
+                    "text/html",
+                    "",
+                    "<title>HTTP modifier opener</title><a id='open' href='/child'>Open child</a><a id='download' download='modifier.txt' href='/download'>Download</a><script>globalThis.__modifierFlags = null; document.getElementById('open').addEventListener('click', event => { globalThis.__modifierFlags = [event.altKey, event.ctrlKey, event.metaKey, event.shiftKey]; });</script>",
+                ),
+                Some("/child") => (
+                    "text/html",
+                    "",
+                    "<title>HTTP modifier child</title><p>background target</p>",
+                ),
+                Some("/download") => (
+                    "application/octet-stream",
+                    "Content-Disposition: attachment; filename=modifier.txt\r\n",
+                    "native modifier download bytes",
+                ),
+                other => panic!("unexpected modifier-click request path: {other:?}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    session
+        .action(SemanticAction::ClickWithModifiers {
+            target: "id=open".into(),
+            modifiers: ClickModifiers {
+                control: true,
+                shift: true,
+                ..ClickModifiers::default()
+            },
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        session.evidence(EvidenceLevel::Compact).await.unwrap().url,
+        format!("http://{address}/parent")
+    );
+    assert_eq!(
+        session
+            .script("globalThis.__modifierFlags")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([false, true, false, true])
+    );
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    let child = targets.iter().find(|target| !target.active).unwrap();
+    assert_eq!(child.title, "HTTP modifier child");
+    assert_eq!(child.opener_id.as_deref(), Some("native-context"));
+
+    let before_download_targets = targets.len();
+    session
+        .action(SemanticAction::ClickWithModifiers {
+            target: "id=download".into(),
+            modifiers: ClickModifiers {
+                control: true,
+                ..ClickModifiers::default()
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session.native_list_targets().await.unwrap().len(),
+        before_download_targets,
+        "the explicit download default must take precedence over modifier target creation"
+    );
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let download_directory = std::env::temp_dir().join(format!(
+        "glass-native-modifier-download-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&download_directory).unwrap();
+    let destination = download_directory.join("modifier.txt");
+    session
+        .native_wait_for_download(&download_directory, Duration::from_secs(10))
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"native modifier download bytes"
+    );
+    std::fs::remove_file(destination).unwrap();
+    std::fs::remove_dir(download_directory).unwrap();
     session.close().await.unwrap();
     server.await.unwrap();
 }
@@ -20350,7 +20556,7 @@ async fn native_content_process_keyboard_actions_preserve_event_and_modifier_con
                 ["input", ""],
                 ["up", "Backspace", "Backspace", false, false, false, false],
                 ["down", "Tab", "Tab", false, false, false, false],
-                ["up", "Tab", "Tab", false, false, false, false],
+                ["up", "Tab", "Tab", false, false, false, true],
                 ["down", "Enter", "Enter", false, false, false, false],
                 ["up", "Enter", "Enter", false, false, false, false],
             ],
@@ -66715,6 +66921,89 @@ async fn native_content_process_keyboard_link_activation_in_same_origin_frames()
         serde_json::json!("/parent")
     );
 
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_modifier_link_click_routes_through_same_origin_frame() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("same-origin modifier-click request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let body = match request.split_whitespace().nth(1) {
+                Some("/parent") => {
+                    "<title>Frame modifier opener</title><iframe id='child' src='/child'></iframe>"
+                }
+                Some("/child") => {
+                    "<title>Frame source</title><a id='open' href='/popup'>Open popup</a><script>globalThis.__modifierFlags = null; document.getElementById('open').addEventListener('click', event => { globalThis.__modifierFlags = [event.altKey, event.ctrlKey, event.metaKey, event.shiftKey]; });</script>"
+                }
+                Some("/popup") => {
+                    "<title>Frame modifier popup</title><p>popup opened from frame</p>"
+                }
+                other => panic!("unexpected same-origin modifier-click path: {other:?}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    let child_id = session
+        .native_list_frames()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("same-origin modifier-click frame")
+        .id;
+    session.select_frame(&child_id).await.unwrap();
+    session
+        .action(SemanticAction::ClickWithModifiers {
+            target: "id=open".into(),
+            modifiers: ClickModifiers {
+                meta: true,
+                ..ClickModifiers::default()
+            },
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        session.script("location.pathname").await.unwrap().value,
+        serde_json::json!("/child")
+    );
+    assert_eq!(
+        session
+            .script("globalThis.__modifierFlags")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([false, false, true, false])
+    );
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    let popup = targets.iter().find(|target| !target.active).unwrap();
+    assert_eq!(popup.title, "Frame modifier popup");
+    assert_eq!(popup.opener_id.as_deref(), Some("native-context"));
+    session.select_frame("native-context:main").await.unwrap();
+    assert_eq!(
+        session.script("location.pathname").await.unwrap().value,
+        serde_json::json!("/parent")
+    );
     session.close().await.unwrap();
     server.await.unwrap();
 }

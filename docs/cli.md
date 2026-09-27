@@ -196,9 +196,9 @@ The complete browser command inventory is:
 ```text
 navigate URL
 recover [--expected-revision N]
-click TARGET
+click TARGET [--alt] [--control] [--meta] [--shift]
 preflight TARGET
-click-at X Y
+click-at X Y [--alt] [--control] [--meta] [--shift]
 click-expect-popup TARGET
 double-click TARGET
 hover TARGET
@@ -480,8 +480,18 @@ Prefer a revisioned reference for automation. Pass the revision from
 
 ```console
 glass click r7:b42 --expected-revision 7
+glass click r7:b43 --control
+glass click-at 240 180 --meta
 glass type 'hello' --target r7:b43 --expected-revision 7
 ```
+
+Modifier flags are passed to the page's cancelable click event. On the native
+runtime, Control, Meta, or Shift on a hyperlink opens one background browsing
+context while keeping the source selected. The modifier convention is
+documented in the [native Core Web Profile](plan/native-engine-browser-profile.md);
+the explicit `download` attribute remains required for link downloads. These
+flags require the native runtime; external adapters reject them rather than
+silently dropping input state.
 
 Glass rejects a stale revision before it sends the browser action. The result
 contains typed status, previous and current revisions, an execution ID, and

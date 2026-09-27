@@ -217,13 +217,20 @@ impl ProofBackend {
                     SemanticAction::Click { target } if target == PROOF_CLICK_TARGET => {
                         state.clicked = true;
                     }
+                    SemanticAction::ClickWithModifiers { target, modifiers }
+                        if target == PROOF_CLICK_TARGET && modifiers.is_empty() =>
+                    {
+                        state.clicked = true;
+                    }
                     SemanticAction::Type { target, text } if target == PROOF_TYPE_TARGET => {
                         if text.len() > PROOF_MAX_TYPED_BYTES {
                             return Err(invalid_action("typed proof text exceeds bounded state"));
                         }
                         state.typed_text = text;
                     }
-                    SemanticAction::Click { .. } | SemanticAction::Type { .. } => {
+                    SemanticAction::Click { .. }
+                    | SemanticAction::ClickWithModifiers { .. }
+                    | SemanticAction::Type { .. } => {
                         return Err(invalid_action("unknown proof target"));
                     }
                     SemanticAction::Clear { .. }

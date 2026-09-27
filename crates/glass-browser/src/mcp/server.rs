@@ -204,6 +204,7 @@ enum ToolInvocation<'a> {
     },
     Click {
         target: Cow<'a, str>,
+        modifiers: crate::browser_backend::ClickModifiers,
         expected_revision: Option<u64>,
     },
     Preflight {
@@ -213,6 +214,7 @@ enum ToolInvocation<'a> {
     ClickAt {
         x: f64,
         y: f64,
+        modifiers: crate::browser_backend::ClickModifiers,
     },
     ClickExpectPopup {
         target: Cow<'a, str>,
@@ -2401,8 +2403,12 @@ async fn call_tool(
         }
         ToolInvocation::Click {
             target,
+            modifiers,
             expected_revision,
         } => {
+            if !modifiers.is_empty() {
+                return Err("modifier-aware clicks require the native browser runtime".into());
+            }
             if let Some(expected_revision) = expected_revision {
                 action_result(
                     session
@@ -2416,7 +2422,12 @@ async fn call_tool(
         ToolInvocation::Preflight { target, action } => {
             serialized_result(&session.preflight_with_action(target.as_ref(), action).await)
         }
-        ToolInvocation::ClickAt { x, y } => serialized_result(&session.click_at(x, y).await?),
+        ToolInvocation::ClickAt { x, y, modifiers } => {
+            if !modifiers.is_empty() {
+                return Err("modifier-aware clicks require the native browser runtime".into());
+            }
+            serialized_result(&session.click_at(x, y).await?)
+        }
         ToolInvocation::ClickExpectPopup {
             target,
             expected_revision,
@@ -3254,6 +3265,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         }),
         "click" => Ok(ToolInvocation::Click {
             target: required_target(arguments)?,
+            modifiers: optional_click_modifiers(arguments)?,
             expected_revision: optional_u64_value(arguments, "expectedRevision")?,
         }),
         "preflight" => Ok(ToolInvocation::Preflight {
@@ -3270,6 +3282,7 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
         "clickAt" => Ok(ToolInvocation::ClickAt {
             x: required_number(arguments, "x")?,
             y: required_number(arguments, "y")?,
+            modifiers: optional_click_modifiers(arguments)?,
         }),
         "clickExpectPopup" => Ok(ToolInvocation::ClickExpectPopup {
             target: required_target(arguments)?,
@@ -5038,12 +5051,14 @@ async fn native_mcp_action(
     match invocation {
         ToolInvocation::Click {
             target,
+            modifiers,
             expected_revision,
         } => {
             native_action_result(
                 session,
-                crate::browser_backend::SemanticAction::Click {
+                crate::browser_backend::SemanticAction::ClickWithModifiers {
                     target: target.into_owned(),
+                    modifiers,
                 },
                 expected_revision,
                 response_mode,
@@ -5249,11 +5264,11 @@ async fn native_mcp_action(
                 response_mode,
             )
         }
-        ToolInvocation::ClickAt { x, y } => {
+        ToolInvocation::ClickAt { x, y, modifiers } => {
             let target = native_mcp_point_target(x, y)?;
             native_action_result(
                 session,
-                crate::browser_backend::SemanticAction::Click { target },
+                crate::browser_backend::SemanticAction::ClickWithModifiers { target, modifiers },
                 None,
                 response_mode,
             )
@@ -5584,12 +5599,14 @@ async fn call_native_tool_on_session_impl(
         }
         ToolInvocation::Click {
             target,
+            modifiers,
             expected_revision,
         } => {
             native_action_result(
                 session,
-                crate::browser_backend::SemanticAction::Click {
+                crate::browser_backend::SemanticAction::ClickWithModifiers {
                     target: target.into_owned(),
+                    modifiers,
                 },
                 expected_revision,
                 response_mode,
@@ -5821,11 +5838,11 @@ async fn call_native_tool_on_session_impl(
                 response_mode,
             )
         }
-        ToolInvocation::ClickAt { x, y } => {
+        ToolInvocation::ClickAt { x, y, modifiers } => {
             let target = native_mcp_point_target(x, y)?;
             native_action_result(
                 session,
-                crate::browser_backend::SemanticAction::Click { target },
+                crate::browser_backend::SemanticAction::ClickWithModifiers { target, modifiers },
                 None,
                 response_mode,
             )
@@ -6381,10 +6398,10 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "click",
-            description: "Click one uniquely resolved ref/name/role+name/text/CSS/ordinal locator.",
+            description: "Click one uniquely resolved locator; optional modifier flags are exposed to the page and Control/Meta/Shift may open a background native browsing context.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}, "expectedRevision":{"type":"integer","minimum":0}, "includeTrace": {"type":"boolean", "default":false}},
+                "properties": {"target": {"type": "string"}, "selector": {"type": "string"}, "modifiers": {"type":"object", "properties":{"alt":{"type":"boolean"},"control":{"type":"boolean"},"meta":{"type":"boolean"},"shift":{"type":"boolean"}}, "additionalProperties":false}, "expectedRevision":{"type":"integer","minimum":0}, "includeTrace": {"type":"boolean", "default":false}},
                 "anyOf": [{"required": ["target"]}, {"required": ["selector"]}]
             }),
         },
@@ -6888,10 +6905,10 @@ fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "clickAt",
-            description: "Click exact viewport coordinates for canvas or map surfaces; policy-gated and never retargeted.",
+            description: "Click exact viewport coordinates for canvas or map surfaces; policy-gated and never retargeted. Optional modifier flags are passed to the page click event.",
             input_schema: json!({
                 "type": "object",
-                "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+                "properties": {"x": {"type": "number"}, "y": {"type": "number"}, "modifiers": {"type":"object", "properties":{"alt":{"type":"boolean"},"control":{"type":"boolean"},"meta":{"type":"boolean"},"shift":{"type":"boolean"}}, "additionalProperties":false}},
                 "required": ["x", "y"]
             }),
         },
@@ -7269,6 +7286,18 @@ fn required_target(arguments: &Value) -> BrowserResult<Cow<'_, str>> {
         "css={}",
         required_string(arguments, "selector")?
     )))
+}
+
+fn optional_click_modifiers(
+    arguments: &Value,
+) -> BrowserResult<crate::browser_backend::ClickModifiers> {
+    match arguments.get("modifiers") {
+        None => Ok(crate::browser_backend::ClickModifiers::default()),
+        Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
+            "modifiers must be an object with optional alt, control, meta, and shift booleans"
+                .into()
+        }),
+    }
 }
 
 fn optional_string<'a>(arguments: &'a Value, name: &str) -> BrowserResult<Option<&'a str>> {
@@ -10945,9 +10974,45 @@ document.body.textContent = window.dialogTrace.join("|");
             legacy,
             ToolInvocation::Click {
                 expected_revision: None,
+                modifiers: crate::browser_backend::ClickModifiers {
+                    alt: false,
+                    control: false,
+                    meta: false,
+                    shift: false
+                },
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn parses_click_modifier_flags_and_rejects_unknown_modifier_keys() {
+        let params = json!({
+            "name": "click",
+            "arguments": {
+                "target": "id=open",
+                "modifiers": {"control": true, "shift": true}
+            }
+        });
+        assert!(matches!(
+            parse_tool_invocation(&params).unwrap(),
+            ToolInvocation::Click { modifiers, .. }
+                if modifiers.control && modifiers.shift && !modifiers.alt && !modifiers.meta
+        ));
+
+        let click_at = json!({
+            "name": "clickAt",
+            "arguments": {"x": 10, "y": 20, "modifiers": {"meta": true}}
+        });
+        assert!(matches!(
+            parse_tool_invocation(&click_at).unwrap(),
+            ToolInvocation::ClickAt { modifiers, .. } if modifiers.meta
+        ));
+        let invalid = json!({
+            "name": "click",
+            "arguments": {"target": "id=open", "modifiers": {"super": true}}
+        });
+        assert!(parse_tool_invocation(&invalid).is_err());
     }
 
     #[test]

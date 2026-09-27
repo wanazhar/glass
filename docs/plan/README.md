@@ -120,6 +120,15 @@ replacement order and null removal; local/frame tests check the full property
 surface plus representative event delivery. Window/Document handler sets,
 `body`/`frameset` Window-target routing, and full event conformance remain
 open; see the [slice 779 task](tasks/native-engine-browser-779.md).
+Slice 780 exposes the current `GlobalEventHandlers` IDL properties on native
+`Window` and `Document` objects, adds `WindowEventHandlers` to `Window`, and
+adds the two Document-specific properties. `body` and `frameset` expose the
+Window-specific properties, with IDL handlers routed to the owning Document's
+`defaultView` for those properties and the six Window-reflecting names. Local,
+process-backed, and same-origin parent-projection checks cover surface,
+dispatch, and ownership. Generic inline content attributes do not yet share
+the body/frameset Window-target mapping; complete event/Web IDL and WPT
+conformance remain open. See the [slice 780 task](tasks/native-engine-browser-780.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

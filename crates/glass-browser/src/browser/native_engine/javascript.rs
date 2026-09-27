@@ -37522,8 +37522,29 @@ fn document_bootstrap(
     callbacks.splice(index, 1);
     if (callbacks.length === 0) listeners.delete(key);
   }};
+  const nativeWindowEventHandlerTypes = [
+    "afterprint", "beforeprint", "beforeunload", "hashchange", "languagechange",
+    "message", "messageerror", "offline", "online", "pagehide", "pagereveal",
+    "pageshow", "pageswap", "popstate", "rejectionhandled", "storage",
+    "unhandledrejection", "unload",
+  ];
+  const nativeWindowReflectingBodyEventHandlerTypes = new Set([
+    "blur", "error", "focus", "load", "resize", "scroll",
+  ]);
+  const nativeWindowTargetedBodyEventHandlerTypes = new Set([
+    ...nativeWindowEventHandlerTypes,
+    ...nativeWindowReflectingBodyEventHandlerTypes,
+  ]);
+  const nativeEventHandlerTargetFor = (exposedTarget, type) => {{
+    if (!exposedTarget || !nativeWindowTargetedBodyEventHandlerTypes.has(type)) return exposedTarget;
+    const tagName = String(exposedTarget.tagName || "").toUpperCase();
+    if (exposedTarget.namespaceURI !== HTML_NAMESPACE || !["BODY", "FRAMESET"].includes(tagName))
+      return exposedTarget;
+    const ownerDocument = exposedTarget.ownerDocument;
+    return ownerDocument && ownerDocument.defaultView ? ownerDocument.defaultView : null;
+  }};
   const installEventHandlerProperty = (element, type, onPrototype = false) => {{
-    const targetFor = (receiver) => onPrototype ? receiver : element;
+    const targetFor = (receiver) => nativeEventHandlerTargetFor(onPrototype ? receiver : element, type);
     const keyForTarget = (target) => listenerKey(ownerFor(target), type);
     const createState = (target) => {{
       const state = {{ handler: null, active: false, registered: null }};
@@ -37549,11 +37570,14 @@ fn document_bootstrap(
       enumerable: true,
       configurable: onPrototype,
       get() {{
-        const state = eventHandlers.get(keyForTarget(targetFor(this)));
+        const target = targetFor(this);
+        if (!target) return null;
+        const state = eventHandlers.get(keyForTarget(target));
         return state ? state.handler : null;
       }},
       set(next) {{
         const target = targetFor(this);
+        if (!target) return;
         const key = keyForTarget(target);
         const handler = typeof next === "function" ? next : null;
         let state = eventHandlers.get(key);
@@ -44084,6 +44108,11 @@ fn document_bootstrap(
       return asNodeList(liveDocumentElements().filter((element) => element.getAttribute("name") === value));
     }},
   }};
+  Object.defineProperty(document, "__glassEventOwner", {{
+    enumerable: false,
+    configurable: false,
+    value: "document",
+  }});
   Object.defineProperty(document, "__glassChildren", {{
     enumerable: false,
     configurable: false,
@@ -46349,6 +46378,14 @@ fn document_bootstrap(
       installEventHandlerProperty(HTMLElementNative.prototype, type, true);
   }}
   const WindowNative = ensureNativeConstructor("Window", null);
+  for (const type of [...nativeGlobalEventHandlerTypes, ...nativeWindowEventHandlerTypes]) {{
+    if (!Object.prototype.hasOwnProperty.call(WindowNative.prototype, "on" + type))
+      installEventHandlerProperty(WindowNative.prototype, type, true);
+  }}
+  for (const type of [...nativeGlobalEventHandlerTypes, "readystatechange", "visibilitychange"]) {{
+    if (!Object.prototype.hasOwnProperty.call(DocumentNative.prototype, "on" + type))
+      installEventHandlerProperty(DocumentNative.prototype, type, true);
+  }}
   const LocationNative = ensureNativeConstructor("Location", null);
   const NodeListNative = ensureNativeConstructor("NodeList", null);
   const HtmlCollectionNative = ensureNativeConstructor("HTMLCollection", null);
@@ -46450,6 +46487,7 @@ fn document_bootstrap(
     HTMLUnknownElement: HTMLElementNative,
     HTMLHtmlElement: HTMLElementNative,
     HTMLBodyElement: HTMLElementNative,
+    HTMLFrameSetElement: HTMLElementNative,
     HTMLFormElement: HTMLElementNative,
     HTMLInputElement: HTMLElementNative,
     HTMLTextAreaElement: HTMLElementNative,
@@ -46468,9 +46506,17 @@ fn document_bootstrap(
   for (const name of Object.keys(elementConstructors)) {{
     elementConstructors[name] = ensureNativeConstructor(name, elementConstructors[name]);
   }}
+  for (const name of ["HTMLBodyElement", "HTMLFrameSetElement"]) {{
+    const prototype = elementConstructors[name].prototype;
+    for (const type of nativeWindowEventHandlerTypes) {{
+      if (!Object.prototype.hasOwnProperty.call(prototype, "on" + type))
+        installEventHandlerProperty(prototype, type, true);
+    }}
+  }}
   const elementInterfaceNameFor = (tagName) => ({{
       HTML: "HTMLHtmlElement",
       BODY: "HTMLBodyElement",
+      FRAMESET: "HTMLFrameSetElement",
       FORM: "HTMLFormElement",
       INPUT: "HTMLInputElement",
       TEXTAREA: "HTMLTextAreaElement",

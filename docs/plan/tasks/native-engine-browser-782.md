@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-782
 scope: glass-browser/window-onerror-return-cancellation
-status: in_progress
+status: completed
 depends-on: [native-engine-browser-781]
 ---
 
@@ -64,4 +64,16 @@ script errors delivered to Window `onerror`, without changing ordinary
 
 ## Verification
 
-Pending implementation and focused verification.
+Passed locally:
+
+- `rustfmt --edition 2024 --check crates/glass-browser/tests/native_engine.rs`
+- `cargo check -p glass-browser --test native_engine --locked --quiet`
+  (existing parser/dead-code warnings only)
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_local_inline_script_failure_dispatches_error_without_aborting_document --exact --test-threads=1`
+  (1 passed; actual uncaught scripts plus direct special/ordinary dispatch)
+- `python3 scripts/check-documentation-coverage.py`
+  (1,410 Markdown files; coverage validated)
+- `git diff --check`
+
+Remote CI, full WPT, cross-platform certification, and issue #40's
+native-only production gates were not run and remain open.

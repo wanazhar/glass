@@ -25725,6 +25725,7 @@ async fn native_local_inline_script_failure_dispatches_error_without_aborting_do
                     globalThis.inlineEvents = [];
                     globalThis.windowEvents = [];
                     globalThis.onerrorEvents = [];
+                    globalThis.windowCancelledEvents = [];
                     window.addEventListener('error', event => windowEvents.push([
                         event.message,
                         event.filename,
@@ -25732,14 +25733,19 @@ async fn native_local_inline_script_failure_dispatches_error_without_aborting_do
                         event.colno,
                         event.error instanceof Error,
                         event.target === window,
+                        event.cancelable,
                     ]));
-                    window.onerror = (message, filename, line, column, error) => onerrorEvents.push([
-                        message,
-                        filename,
-                        line,
-                        column,
-                        error instanceof Error,
-                    ]);
+                    window.onerror = (message, filename, line, column, error) => {
+                        onerrorEvents.push([
+                            message,
+                            filename,
+                            line,
+                            column,
+                            error instanceof Error,
+                        ]);
+                        return true;
+                    };
+                    window.addEventListener('error', event => windowCancelledEvents.push(event.defaultPrevented));
                     const brokenClassic = document.getElementById('broken-classic');
                     brokenClassic.addEventListener('error', event => inlineEvents.push([
                         'classic',
@@ -25791,13 +25797,13 @@ async fn native_local_inline_script_failure_dispatches_error_without_aborting_do
     assert_eq!(
         engine
             .evaluate_async(
-                "globalThis.windowEvents.map(event => [event[0].includes('inline classic boom'), event[1], event[2], event[3], event[4], event[5]])",
+                "globalThis.windowEvents.map(event => [event[0].includes('inline classic boom'), event[1], event[2], event[3], event[4], event[5], event[6]])",
             )
             .await
         .unwrap(),
         serde_json::json!([
-            [true, "fixture://inline-script-error", 0, 0, true, true],
-            [false, "fixture://inline-script-error", 0, 0, true, true],
+            [true, "fixture://inline-script-error", 0, 0, true, true, true],
+            [false, "fixture://inline-script-error", 0, 0, true, true, true],
         ])
     );
     assert_eq!(
@@ -25810,6 +25816,30 @@ async fn native_local_inline_script_failure_dispatches_error_without_aborting_do
         serde_json::json!([
             [true, "fixture://inline-script-error", 0, 0, true],
             [false, "fixture://inline-script-error", 0, 0, true],
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.windowCancelledEvents")
+            .await
+            .unwrap(),
+        serde_json::json!([true, true])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(native_window_onerror_return_semantics_script())
+            .await
+            .unwrap(),
+        serde_json::json!([
+            [
+                false,
+                true,
+                false,
+                [true, "reported value", "native.js", 3, 7, true]
+            ],
+            [true, false],
+            [true, false, [true, "error", true]],
+            [true, false, true, true],
         ])
     );
     assert_eq!(
@@ -70459,6 +70489,51 @@ fn native_window_routed_content_attribute_script() -> &'static str {
       return [initialAlias, idlAlias, idlOrder, attributeAlias, attributeOrder,
         removedAlias, afterRemoveOrder, framesetAlias, framesetOrder,
         framesetCleared, clicks];
+    })()"#
+}
+
+fn native_window_onerror_return_semantics_script() -> &'static str {
+    r#"(() => {
+      const error = new Error('reported value');
+      const argumentsSeen = [];
+      window.onerror = function(message, filename, lineno, colno, reportedError) {
+        argumentsSeen.push([this === window, message, filename, lineno, colno, reportedError === error]);
+        return true;
+      };
+      const specialEvent = new ErrorEvent('error', {
+        message: 'reported value', filename: 'native.js', lineno: 3, colno: 7, error,
+      });
+      const specialResult = window.dispatchEvent(specialEvent);
+      const specialCase = [specialEvent.cancelable, specialEvent.defaultPrevented, specialResult, argumentsSeen[0]];
+
+      window.onerror = () => false;
+      const falseEvent = new ErrorEvent('error', { cancelable: true });
+      const falseResult = window.dispatchEvent(falseEvent);
+      const falseCase = [falseResult, falseEvent.defaultPrevented];
+
+      let plainArguments;
+      window.onerror = function(event) {
+        plainArguments = [event instanceof Event, event.type, this === window];
+        return true;
+      };
+      const plainEvent = new Event('error', { cancelable: true });
+      const plainResult = window.dispatchEvent(plainEvent);
+      const plainCase = [plainResult, plainEvent.defaultPrevented, plainArguments];
+
+      const body = document.body;
+      body.setAttribute('onerror', 'globalThis.bodyErrorThis = this === window; return true;');
+      const attributeAliasesWindow = body.onerror === window.onerror;
+      const attributeEvent = new ErrorEvent('error', { cancelable: true });
+      const attributeResult = window.dispatchEvent(attributeEvent);
+      const attributeCase = [
+        attributeAliasesWindow,
+        attributeResult,
+        attributeEvent.defaultPrevented,
+        globalThis.bodyErrorThis,
+      ];
+      body.removeAttribute('onerror');
+      window.onerror = null;
+      return [specialCase, falseCase, plainCase, attributeCase];
     })()"#
 }
 

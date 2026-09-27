@@ -37630,8 +37630,16 @@ fn document_bootstrap(
         const handler = state.handler;
         if (!handler) return;
         const currentTarget = event.currentTarget || target;
+        const errorEventConstructor = globalThis.__glassErrorEventConstructor || globalThis.ErrorEvent;
+        let specialWindowError = false;
+        try {{
+          specialWindowError = currentTarget === globalThis
+            && type === "error"
+            && typeof errorEventConstructor === "function"
+            && event instanceof errorEventConstructor;
+        }} catch (_error) {{}}
         let result;
-        if (currentTarget === globalThis && type === "error") {{
+        if (specialWindowError) {{
           result = handler.call(
             currentTarget,
             event.message || "",
@@ -37643,7 +37651,9 @@ fn document_bootstrap(
         }} else {{
           result = handler.call(currentTarget, event);
         }}
-        if (state.contentAttribute && result === false
+        if (specialWindowError && result === true) {{
+          event.defaultPrevented = true;
+        }} else if (!specialWindowError && state.contentAttribute && result === false
             && event && typeof event.preventDefault === "function") event.preventDefault();
         return result;
       }};
@@ -44351,8 +44361,9 @@ fn document_bootstrap(
         lineno: line,
         colno: column,
         error,
+        cancelable: true,
       }});
-      const event = createEvent("error", {{ bubbles: false, cancelable: false }});
+      const event = createEvent("error", {{ bubbles: false, cancelable: true }});
       event.message = message;
       event.filename = filename;
       event.lineno = line;

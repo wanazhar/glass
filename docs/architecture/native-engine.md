@@ -88,17 +88,23 @@ for exact verification evidence. Slice 763 connects reset buttons to this
 shared algorithm through native semantic clicks, JavaScript `.click()`, and
 same-origin frame routing. Focused tests cover click/reset cancellation,
 post-listener type and form-owner changes, absence of submission/validation/
-navigation, and frame state persistence. Process-backed keyboard-generated
-button activation is implemented in slice 764; inline/local parity is tracked
-in slice 765. See the
+navigation, and frame state persistence. Keyboard-generated button activation
+is implemented in slice 764 for process-backed documents, and slice 765 adds
+the same bounded Enter/Space contract to local/in-process actions. See the
 [slice 763 task](../plan/tasks/native-engine-browser-763.md).
 Slice 764 implements keyboard activation for focused native button controls
 in process-backed network documents: Enter activates on keydown and Space on
 keyup after an uncanceled keydown. The shared click/default path handles reset
 and submit controls in top-level and same-origin child Documents. The
-in-process/local `NativeEngine::action()` route remains a parity gap tracked by
-[slice 765](../plan/tasks/native-engine-browser-765.md). Exact local evidence
-and boundaries are recorded in the
+in-process/local `NativeEngine::action()` route now shares the Enter-on-keydown
+and Space-on-keyup behavior, click/default lifecycle, and one-revision
+non-navigating `Shortcut` contract; successful form defaults retain the normal
+navigation commit path. Local regressions cover raw Space focus/disabled/
+detachment and document replacement, reset and submit behavior, dynamic button
+type/form ownership, and fixture navigation. Exact evidence and the local
+navigation boundary are recorded in the
+[slice 765 task](../plan/tasks/native-engine-browser-765.md);
+process-backed evidence remains in the
 [slice 764 task](../plan/tasks/native-engine-browser-764.md).
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,

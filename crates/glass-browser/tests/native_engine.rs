@@ -18103,6 +18103,449 @@ async fn native_local_keypress_edits_focused_text_and_honors_keydown_cancel() {
 }
 
 #[tokio::test]
+async fn native_local_keyboard_button_activation_preserves_key_phases_and_shortcut_revision() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://local-keyboard-button",
+            "<button id='button' type='button'>Activate</button><button id='other' type='button'>Other</button><script>globalThis.events = []; globalThis.cancelEnter = false; globalThis.cancelClick = false; const button = document.getElementById('button'); button.addEventListener('keydown', event => { events.push('keydown:' + event.key); if (cancelEnter && event.key === 'Enter') event.preventDefault(); }); button.addEventListener('keyup', event => events.push('keyup:' + event.key)); button.addEventListener('click', event => { events.push('click'); if (cancelClick) event.preventDefault(); });</script>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://local-keyboard-button");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async("document.getElementById('button').focus()")
+        .await
+        .unwrap();
+
+    let before_enter = engine.revision();
+    let enter = engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .unwrap();
+    assert!(enter.accepted);
+    assert_eq!(enter.revision, before_enter + 1);
+    assert_eq!(engine.revision(), before_enter + 1);
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["keydown:Enter", "click", "keyup:Enter"])
+    );
+
+    engine
+        .evaluate_async("globalThis.events = []")
+        .await
+        .unwrap();
+    let before_space = engine.revision();
+    let space = engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .unwrap();
+    assert!(space.accepted);
+    assert_eq!(space.revision, before_space + 1);
+    assert_eq!(engine.revision(), before_space + 1);
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["keydown: ", "keyup: ", "click"])
+    );
+
+    engine
+        .evaluate_async("globalThis.events = []; globalThis.cancelEnter = true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["keydown:Enter", "keyup:Enter"])
+    );
+
+    engine
+        .evaluate_async(
+            "globalThis.events = []; globalThis.cancelEnter = false; globalThis.cancelClick = true",
+        )
+        .await
+        .unwrap();
+    let before_canceled_click = engine.revision();
+    let canceled_click = engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .unwrap();
+    assert_eq!(canceled_click.revision, before_canceled_click + 1);
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["keydown:Enter", "click", "keyup:Enter"])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_keyboard_button_activation_raw_space_is_focus_bound() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://local-raw-space",
+            "<button id='first' type='button'>First</button><button id='second' type='button'>Second</button><script>globalThis.events = []; for (const button of document.querySelectorAll('button')) { button.addEventListener('keydown', event => events.push(button.id + ':down:' + event.key)); button.addEventListener('keyup', event => events.push(button.id + ':up:' + event.key)); button.addEventListener('click', () => events.push(button.id + ':click')); }</script>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://raw-space-replaced",
+            "<button id='new' type='button'>New</button><script>globalThis.clicks = 0; document.getElementById('new').addEventListener('click', () => clicks++);</script>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://local-raw-space");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async("document.getElementById('first').focus()")
+        .await
+        .unwrap();
+
+    let before_down = engine.revision();
+    let down = engine
+        .action(NativeAction::KeyDown {
+            key: "Space".into(),
+        })
+        .unwrap();
+    assert_eq!(down.revision, before_down + 1);
+    let up = engine
+        .action(NativeAction::KeyUp {
+            key: "Space".into(),
+        })
+        .unwrap();
+    assert_eq!(up.revision, before_down + 2);
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["first:down: ", "first:up: ", "first:click"])
+    );
+
+    engine
+        .evaluate_async("globalThis.events = []; document.getElementById('first').focus()")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::KeyDown {
+            key: "Space".into(),
+        })
+        .unwrap();
+    engine
+        .evaluate_async("document.getElementById('second').focus()")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::KeyUp {
+            key: "Space".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["first:down: ", "second:up: "])
+    );
+
+    engine
+        .evaluate_async("document.getElementById('first').focus()")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::KeyDown {
+            key: "Space".into(),
+        })
+        .unwrap();
+    engine
+        .evaluate_async("document.getElementById('first').disabled = true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::KeyUp {
+            key: "Space".into(),
+        })
+        .unwrap();
+    assert!(
+        !engine
+            .evaluate_async("globalThis.events.includes('first:click')")
+            .await
+            .unwrap()
+            .as_bool()
+            .unwrap()
+    );
+
+    engine
+        .evaluate_async("document.getElementById('first').disabled = false; document.getElementById('first').focus(); globalThis.events = []")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::KeyDown {
+            key: "Space".into(),
+        })
+        .unwrap();
+    engine
+        .evaluate_async("document.getElementById('first').remove()")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::KeyUp {
+            key: "Space".into(),
+        })
+        .unwrap();
+    assert!(
+        !engine
+            .evaluate_async("globalThis.events.includes('first:click')")
+            .await
+            .unwrap()
+            .as_bool()
+            .unwrap()
+    );
+
+    engine
+        .navigate_async("fixture://local-raw-space")
+        .await
+        .unwrap();
+    engine
+        .evaluate_async("document.getElementById('first').focus()")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::KeyDown {
+            key: "Space".into(),
+        })
+        .unwrap();
+    engine
+        .navigate_async("fixture://raw-space-replaced")
+        .await
+        .unwrap();
+    engine
+        .evaluate_async("document.getElementById('new').focus()")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::KeyUp {
+            key: "Space".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.clicks").await.unwrap(),
+        serde_json::json!(0)
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_keyboard_button_activation_runs_reset_validation_and_submit_defaults() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://local-keyboard-form",
+            "<form id='form' action='fixture://local-keyboard-result'><input id='query' name='query' required value='initial'><button id='reset' type='reset'>Reset</button><button id='submit' name='action' value='go' type='submit'>Go</button></form><script>globalThis.events = []; globalThis.cancelReset = false; globalThis.cancelClick = false; globalThis.cancelSubmit = false; globalThis.changeResetType = false; const form = document.getElementById('form'); const reset = document.getElementById('reset'); reset.addEventListener('click', event => { events.push('click:reset'); if (cancelClick) event.preventDefault(); if (changeResetType) reset.type = 'button'; }); form.addEventListener('reset', event => { events.push('reset'); if (cancelReset) event.preventDefault(); }); form.addEventListener('submit', event => { events.push('submit:' + event.submitter.id); if (cancelSubmit) event.preventDefault(); }); document.getElementById('query').addEventListener('invalid', () => events.push('invalid:query'));</script>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://local-keyboard-result?query=ready&action=go",
+            "<title>Keyboard submitted</title><p>Done</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://local-keyboard-form");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    engine
+        .evaluate_async(
+            "document.getElementById('query').value = 'changed'; document.getElementById('reset').focus(); globalThis.events = []; globalThis.cancelClick = true",
+        )
+        .await
+        .unwrap();
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('query').value")
+            .await
+            .unwrap(),
+        serde_json::json!("changed")
+    );
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["click:reset"])
+    );
+
+    engine
+        .evaluate_async(
+            "globalThis.events = []; globalThis.cancelClick = false; globalThis.cancelReset = true",
+        )
+        .await
+        .unwrap();
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('query').value")
+            .await
+            .unwrap(),
+        serde_json::json!("changed")
+    );
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["click:reset", "reset"])
+    );
+
+    engine
+        .evaluate_async(
+            "globalThis.events = []; globalThis.cancelReset = false; globalThis.changeResetType = true",
+        )
+        .await
+        .unwrap();
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('query').value")
+            .await
+            .unwrap(),
+        serde_json::json!("changed")
+    );
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["click:reset"])
+    );
+
+    engine
+        .evaluate_async(
+            "globalThis.events = []; globalThis.changeResetType = false; document.getElementById('reset').type = 'reset'",
+        )
+        .await
+        .unwrap();
+    let before_reset = engine.revision();
+    let reset = engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(reset.revision, before_reset + 1);
+    assert_eq!(engine.revision(), before_reset + 1);
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('query').value")
+            .await
+            .unwrap(),
+        serde_json::json!("initial")
+    );
+
+    engine
+        .evaluate_async(
+            "document.getElementById('query').value = ''; globalThis.events = []; document.getElementById('submit').focus()",
+        )
+        .await
+        .unwrap();
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://local-keyboard-form"
+    );
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["invalid:query"])
+    );
+
+    engine
+        .evaluate_async(
+            "document.getElementById('query').value = 'ready'; globalThis.events = []; globalThis.cancelSubmit = true",
+        )
+        .await
+        .unwrap();
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://local-keyboard-form"
+    );
+    assert_eq!(
+        engine.evaluate_async("globalThis.events").await.unwrap(),
+        serde_json::json!(["submit:submit"])
+    );
+
+    engine
+        .evaluate_async("globalThis.events = []; globalThis.cancelSubmit = false")
+        .await
+        .unwrap();
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://local-keyboard-result?query=ready&action=go"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Keyboard submitted");
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_keyboard_button_activation_uses_live_form_owner() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://local-dynamic-form-owner",
+            "<form id='original' action='fixture://wrong-form-owner'><button id='submit' form='original' name='source' value='button' type='submit'>Go</button></form><form id='destination' action='fixture://dynamic-form-owner-result'></form><script>globalThis.events = []; const submitter = document.getElementById('submit'); submitter.addEventListener('click', () => { events.push('click'); submitter.setAttribute('form', 'destination'); }); document.getElementById('original').addEventListener('submit', () => events.push('original-submit')); document.getElementById('destination').addEventListener('submit', event => events.push('destination-submit:' + event.submitter.id));</script>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://dynamic-form-owner-result?source=button",
+            "<title>Dynamic owner</title><p>Submitted</p>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://wrong-form-owner?source=button",
+            "<title>Wrong owner</title>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://local-dynamic-form-owner");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async("document.getElementById('submit').focus()")
+        .await
+        .unwrap();
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://dynamic-form-owner-result?source=button"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Dynamic owner");
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_script_click_owns_fixture_navigation() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -19022,6 +19465,46 @@ async fn native_local_semantic_submit_button_navigates_without_script_realm() {
         "fixture://semantic-result?query=hello"
     );
     assert_eq!(engine.snapshot().unwrap().title, "Result");
+}
+
+#[tokio::test]
+async fn native_local_keyboard_button_activation_submits_without_script_realm() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://keyboard-no-script-form",
+            "<form action='fixture://keyboard-no-script-result'><input name='query' value='hello'><button id='go' name='action' value='search' type='submit'>Go</button></form>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://keyboard-no-script-result?query=hello&action=search",
+            "<title>Keyboard result</title><p>Submitted</p>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://keyboard-no-script-form");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .unwrap();
+    let result = engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .unwrap();
+
+    assert!(result.accepted);
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://keyboard-no-script-result?query=hello&action=search"
+    );
+    assert_eq!(engine.snapshot().unwrap().title, "Keyboard result");
 }
 
 #[tokio::test]

@@ -187,8 +187,13 @@ implements native activation of form-associated reset buttons through semantic c
 JavaScript `.click()`, and same-origin frame routing. Local tests cover event
 cancellation, form-owner changes, and no submit/validation/navigation.
 Process-backed keyboard-generated button activation is implemented in
-[slice 764](tasks/native-engine-browser-764.md); inline/local parity remains
-tracked in [slice 765](tasks/native-engine-browser-765.md). See the
+[slice 764](tasks/native-engine-browser-764.md), with inline/local parity in
+[slice 765](tasks/native-engine-browser-765.md). Together these bounded slices
+cover Enter/Space phases, cancellation, reset and submit defaults, and native
+button target eligibility across Glass action paths. Slice 765's local form
+navigation evidence uses configured `fixture://` URLs and the existing
+`NativeResourceLoader` form-action policy; it does not establish external
+HTTP(S) navigation or full keyboard conformance. See the
 [slice 762](tasks/native-engine-browser-762.md) and
 [slice 763](tasks/native-engine-browser-763.md) contracts.
 Slice 764 implements keyboard activation for focused native button controls

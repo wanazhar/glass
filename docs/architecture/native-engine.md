@@ -91,6 +91,10 @@ post-listener type and form-owner changes, absence of submission/validation/
 navigation, and frame state persistence. General keyboard-generated button
 activation remains open. See the
 [slice 763 task](../plan/tasks/native-engine-browser-763.md).
+Slice 764 defines Enter/Space activation timing for mapped native button
+controls through the same click/default-action path. Its implementation and
+verification remain pending; see the
+[slice 764 task](../plan/tasks/native-engine-browser-764.md).
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and

@@ -3705,6 +3705,16 @@ pass locally. Global Service Worker `message` callbacks and complete worker,
 MessagePort, and WPT conformance remain open; see
 [task 794](../tasks/native-engine-browser-794.md).
 
+Slice 795 separates worker-global message exception reporting from
+dedicated-owner forwarding, enabling the global-only mode for Service Worker
+`onmessage` and registered `message` listeners. A process-backed controlled
+page verifies handled and uncanceled throws, report order and cancellation
+state, continued listeners/client replies, a later message, active worker
+state, and no client-facing error event. The focused check/test and adjacent
+DedicatedWorker, SharedWorker, and Service Worker MessagePort regressions pass.
+This does not establish full worker or WPT conformance; see
+[task 795](../tasks/native-engine-browser-795.md).
+
 Slice 793 installs the dedicated-owner forwarding mode of the worker error
 reporter for native MessagePorts in DedicatedWorker realms. The process-backed
 transferred-port test covers exact-`true` global cancellation, one uncanceled

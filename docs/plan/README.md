@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is complete through
-`native-engine-browser-763`. Slices 758 and 759 implement the autonomous and
+`native-engine-browser-765`. Slices 758 and 759 implement the autonomous and
 customized-built-in custom-element contracts for the currently mapped HTML
 interfaces. Slice 760 implements bounded `ElementInternals` form values and
 `FormData(form)` integration; slice 761 implements form-owner and disabled-
@@ -48,9 +48,14 @@ Slice 764 implements Enter/Space activation for focused native button controls
 in process-backed network documents through the shared click/default-action
 path. Its focused regressions cover Enter-on-keydown and Space-on-keyup order,
 keydown/click cancellation, reset/submit defaults, and same-origin-frame
-routing. Inline/local `NativeEngine::action()` parity is the next tracked task,
-[slice 765](tasks/native-engine-browser-765.md); exact slice-764 evidence is in
-the [task record](tasks/native-engine-browser-764.md).
+routing. Slice 765 implements matching Enter/Space activation in the local
+`NativeEngine::action()` path. Its regressions cover event phases, shortcut
+revision atomicity for non-navigating shortcuts, raw Space focus, disablement,
+detachment, and document-replacement suppression, reset and submit defaults,
+validation/cancellation, dynamic type and form ownership, and local fixture
+navigation. Exact evidence and URL-policy boundaries are in the
+[slice-765 task](tasks/native-engine-browser-765.md); process-backed evidence
+is in the [slice-764 task](tasks/native-engine-browser-764.md).
 Slice 755 implements target-document-aware `Document.importNode()` for live
 top-level, same-origin-frame, and inert template-owner Documents. Its focused
 process-backed regression passes locally; this remains a bounded DOM slice,

@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-765
 scope: glass-browser/inline-keyboard-button-activation
-status: ready
+status: done
 depends-on: [native-engine-browser-764]
 ---
 
@@ -36,8 +36,9 @@ behavior for supported controls.
 - Synthesized clicks preserve click listeners and their cancellation, dynamic
   type/form-owner changes, reset lifecycle, form validation, submit-event
   cancellation, submitter data, and allowed local form navigation.
-- Existing one-action/one-revision behavior is retained for a complete
-  `Shortcut`; raw keydown and keyup remain separate actions.
+- Non-navigating complete `Shortcut` actions retain one action revision; raw
+  keydown and keyup remain separate actions. Successful form defaults retain
+  the existing event-then-navigation commit behavior.
 - The work does not broaden targets beyond the native controls listed in
   slice 764 or add anchors, arbitrary ARIA roles, IME/composition, key repeat,
   or implicit text-field submission.
@@ -61,9 +62,23 @@ regressed against slice 764.
 
 ## Verification
 
-Required evidence includes local synchronous and asynchronous native-engine
-regressions for Enter/Space event order, cancellation, reset and submit
-defaults, target/focus changes, and the one-revision `Shortcut` contract;
-scoped package checking; formatting; and the maintainer documentation gates.
-Record local URL and navigation-policy boundaries explicitly. Local checks do
-not establish remote CI, cross-platform certification, or issue #40 completion.
+Passed locally:
+
+- `cargo check -p glass-browser --lib --test native_engine --locked --quiet`
+- `cargo test -p glass-browser --test native_engine native_local_keyboard_button_activation --locked --quiet`
+  (5 tests covering synchronous/asynchronous actions, Enter/Space event order,
+  keydown/click cancellation, raw Space focus/disablement/detachment/document
+  replacement guards, live type/form-owner changes, reset cancellation/defaults,
+  invalid/submit cancellation, submitter serialization, and fixture navigation)
+- `cargo fmt --all -- --check`
+- `git diff --check`
+- Maintainer documentation gates: release-documentation audit,
+  documentation-depth audit, TUI shortcut inventory, and documentation
+  coverage.
+
+The navigation regressions use only configured `fixture://` URLs. Form actions
+still pass through the existing `NativeResourceLoader` form-action policy and
+the local current-context navigation path; this slice does not add external
+HTTP(S) transport, popup/context behavior, or broader URL-policy coverage.
+Local checks do not establish remote CI, cross-platform certification, full
+keyboard conformance, or issue #40 completion.

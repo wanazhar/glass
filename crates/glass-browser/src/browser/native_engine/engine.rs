@@ -421,6 +421,7 @@ pub struct NativeEngine {
     pending_lifecycle_effects: Vec<(NativeNodeId, NativeEventKind)>,
     skip_next_navigation_lifecycle: bool,
     document_has_sticky_activation: bool,
+    pending_space_activation: Option<NativeNodeId>,
     outgoing_lifecycle_dispatch_depth: usize,
 }
 
@@ -541,6 +542,7 @@ impl NativeEngine {
             pending_lifecycle_effects: Vec::new(),
             skip_next_navigation_lifecycle: false,
             document_has_sticky_activation: false,
+            pending_space_activation: None,
             outgoing_lifecycle_dispatch_depth: 0,
         })
     }
@@ -6708,6 +6710,195 @@ impl NativeEngine {
         })
     }
 
+    fn apply_local_keyboard_button_activation(
+        &mut self,
+        document: &mut NativeDocument,
+        id: NativeNodeId,
+        events: &mut Vec<(NativeNodeId, NativeEventKind)>,
+        history_commands: &mut Vec<NativeScriptCommand>,
+    ) -> Result<Option<(NativeNodeId, NativeNodeId)>, NativeEngineError> {
+        if document.focused_node() != id || !document.has_native_keyboard_button_activation(id) {
+            return Ok(None);
+        }
+
+        let click_evaluation =
+            self.evaluate_local_events(document, &[(id, NativeEventKind::Click)])?;
+        let click_allowed = if let Some(evaluation) = click_evaluation.as_ref() {
+            evaluation
+                .value
+                .as_array()
+                .and_then(|values| values.first())
+                .and_then(serde_json::Value::as_bool)
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: "native keyboard click preflight".into(),
+                    reason: "native click event result was invalid".into(),
+                })?
+        } else {
+            true
+        };
+        if let Some(evaluation) = click_evaluation {
+            events.extend(self.apply_local_evaluation_commands(
+                document,
+                &evaluation.commands,
+                history_commands,
+            )?);
+        }
+
+        let mut submit_navigation = None;
+        if click_allowed {
+            events.extend(document.apply_click(id)?);
+            if let Some(form_id) = document.reset_control_form(id) {
+                if let Some(javascript) = self.javascript.as_ref() {
+                    javascript.set_scroll_offset(self.scroll_offset);
+                    javascript.set_nested_scroll_offsets(self.nested_scroll_offsets.clone());
+                    self.sync_javascript_history();
+                    javascript.set_sync_xhr_loader(&self.loader);
+                    let command = serde_json::json!({
+                        "kind": "activateFormReset",
+                        "node_index": form_id.index(),
+                    });
+                    let command =
+                        serde_json::to_string(&command).map_err(|_| NativeEngineError::Worker {
+                            operation: "activate native keyboard reset button".into(),
+                            reason: "reset form target could not be encoded".into(),
+                        })?;
+                    let evaluation_result = javascript.evaluate(
+                        &format!("globalThis.__glassApplyNativeCommand({command})"),
+                        document,
+                        &self.url,
+                        &self.origin,
+                        self.config.viewport,
+                    );
+                    if let Some(updated_loader) = javascript.take_sync_xhr_loader() {
+                        self.loader.merge_fetch_task_state(updated_loader)?;
+                    }
+                    let evaluation = evaluation_result?;
+                    events.extend(self.apply_local_evaluation_commands(
+                        document,
+                        &evaluation.commands,
+                        history_commands,
+                    )?);
+                    self.drain_local_popups()?;
+                    self.drain_local_dialogs()?;
+                    self.persist_local_script_state()?;
+                } else {
+                    events.push((form_id, NativeEventKind::Reset));
+                    document.reset_form_controls(form_id)?;
+                }
+            } else if let Some(form_id) = document.submit_control_form(id) {
+                let invalid = document.invalid_form_controls(form_id, Some(id))?;
+                if invalid.is_empty() {
+                    let submit_evaluation =
+                        self.evaluate_local_submit_event(document, form_id, Some(id))?;
+                    let submit_allowed = if let Some(evaluation) = submit_evaluation.as_ref() {
+                        evaluation
+                            .value
+                            .as_array()
+                            .and_then(|values| values.first())
+                            .and_then(serde_json::Value::as_bool)
+                            .ok_or_else(|| NativeEngineError::Worker {
+                                operation: "native keyboard submit event".into(),
+                                reason: "native submit event result was invalid".into(),
+                            })?
+                    } else {
+                        true
+                    };
+                    events.push((form_id, NativeEventKind::Submit));
+                    if let Some(evaluation) = submit_evaluation {
+                        events.extend(self.apply_local_evaluation_commands(
+                            document,
+                            &evaluation.commands,
+                            history_commands,
+                        )?);
+                    }
+                    if submit_allowed {
+                        submit_navigation = Some((form_id, id));
+                    }
+                } else {
+                    let invalid_events = invalid
+                        .iter()
+                        .copied()
+                        .map(|invalid_id| (invalid_id, NativeEventKind::Invalid))
+                        .collect::<Vec<_>>();
+                    events.extend(invalid_events.iter().copied());
+                    if let Some(evaluation) =
+                        self.evaluate_local_events(document, &invalid_events)?
+                    {
+                        events.extend(self.apply_local_evaluation_commands(
+                            document,
+                            &evaluation.commands,
+                            history_commands,
+                        )?);
+                    }
+                }
+            }
+        } else {
+            events.push((id, NativeEventKind::Click));
+        }
+
+        if events.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native keyboard activation effects",
+                MAX_NATIVE_EFFECTS,
+                events.len(),
+            ));
+        }
+        if submit_navigation.is_some()
+            && history_commands.iter().any(|command| {
+                matches!(command, NativeScriptCommand::HistoryGo { delta } if *delta != 0)
+            })
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "history traversal cannot share keyboard activation with form navigation"
+                    .into(),
+            });
+        }
+        Ok(submit_navigation)
+    }
+
+    fn finish_local_keyboard_action(
+        &mut self,
+        document: NativeDocument,
+        events: Vec<(NativeNodeId, NativeEventKind)>,
+        history_commands: &[NativeScriptCommand],
+        submit_navigation: Option<(NativeNodeId, NativeNodeId)>,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        let next_revision = self.next_revision()?;
+        let mut document = document;
+        document.set_revision(next_revision);
+        self.document = document;
+        self.revision = next_revision;
+        self.history
+            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
+        let history_traversal =
+            self.apply_local_history_commands_at(history_commands, next_revision)?;
+        self.record_effects(events);
+
+        if let Some((form_id, submitter)) = submit_navigation {
+            let request = self.document.form_submission_request_with_submitter(
+                form_id,
+                &self.url,
+                Some(submitter),
+            )?;
+            if self.loader.allows_navigation(
+                &self.url,
+                &request.url,
+                NativeNavigationPolicyKind::FormAction,
+            )? {
+                return self.navigate_local_form_request(request);
+            }
+        }
+        if let Some(delta) = history_traversal
+            && delta != 0
+        {
+            self.traverse_history_delta(delta)?;
+        }
+        Ok(NativeActionResult {
+            revision: next_revision,
+            accepted: true,
+        })
+    }
+
     fn action_local_key_event(
         &mut self,
         id: NativeNodeId,
@@ -6719,15 +6910,62 @@ impl NativeEngine {
         let mut document = self.document.clone();
         let mut history_commands = Vec::new();
         let mut events = vec![(id, kind)];
-        if let Some(evaluation) =
-            self.evaluate_local_key_event_with_modifiers(&document, id, kind, key, modifiers)?
-        {
+        let was_button = document.has_native_keyboard_button_activation(id);
+        let evaluation =
+            self.evaluate_local_key_event_with_modifiers(&document, id, kind, key, modifiers)?;
+        let event_allowed = evaluation
+            .as_ref()
+            .and_then(|evaluation| evaluation.value.as_array())
+            .and_then(|values| values.first())
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        if let Some(evaluation) = evaluation {
             events.extend(self.apply_local_evaluation_commands(
                 &mut document,
                 &evaluation.commands,
                 &mut history_commands,
             )?);
         }
+
+        let mut submit_navigation = None;
+        if kind == NativeEventKind::KeyDown && key == " " {
+            self.pending_space_activation = None;
+            if was_button
+                && event_allowed
+                && document.focused_node() == id
+                && document.has_native_keyboard_button_activation(id)
+            {
+                self.pending_space_activation = Some(id);
+            }
+        } else if kind == NativeEventKind::KeyUp && key == " " {
+            let pending = self.pending_space_activation.take();
+            if pending == Some(id)
+                && event_allowed
+                && document.focused_node() == id
+                && document.has_native_keyboard_button_activation(id)
+            {
+                submit_navigation = self.apply_local_keyboard_button_activation(
+                    &mut document,
+                    id,
+                    &mut events,
+                    &mut history_commands,
+                )?;
+            }
+        } else if kind == NativeEventKind::KeyDown
+            && key == "Enter"
+            && was_button
+            && event_allowed
+            && document.focused_node() == id
+            && document.has_native_keyboard_button_activation(id)
+        {
+            submit_navigation = self.apply_local_keyboard_button_activation(
+                &mut document,
+                id,
+                &mut events,
+                &mut history_commands,
+            )?;
+        }
+
         if events.len() > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(
                 "native key event effects",
@@ -6735,24 +6973,7 @@ impl NativeEngine {
                 events.len(),
             ));
         }
-        let next_revision = self.next_revision()?;
-        document.set_revision(next_revision);
-        self.document = document;
-        self.revision = next_revision;
-        self.history
-            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
-        let history_traversal =
-            self.apply_local_history_commands_at(&history_commands, next_revision)?;
-        self.record_effects(events);
-        if let Some(delta) = history_traversal
-            && delta != 0
-        {
-            self.traverse_history_delta(delta)?;
-        }
-        Ok(NativeActionResult {
-            revision: next_revision,
-            accepted: true,
-        })
+        self.finish_local_keyboard_action(document, events, &history_commands, submit_navigation)
     }
 
     fn action_local_key_sequence(
@@ -6766,6 +6987,7 @@ impl NativeEngine {
         let mut document = self.document.clone();
         let mut history_commands = Vec::new();
         let mut events = vec![(id, NativeEventKind::KeyDown)];
+        let keyboard_button_target = document.has_native_keyboard_button_activation(id);
         let keydown = self.evaluate_local_key_event_with_modifiers(
             &document,
             id,
@@ -6816,6 +7038,21 @@ impl NativeEngine {
             }
         }
 
+        let mut submit_navigation = None;
+        if keydown_allowed
+            && key == "Enter"
+            && keyboard_button_target
+            && document.focused_node() == id
+            && document.has_native_keyboard_button_activation(id)
+        {
+            submit_navigation = self.apply_local_keyboard_button_activation(
+                &mut document,
+                id,
+                &mut events,
+                &mut history_commands,
+            )?;
+        }
+
         events.push((id, NativeEventKind::KeyUp));
         if let Some(evaluation) = self.evaluate_local_key_event_with_modifiers(
             &document,
@@ -6830,6 +7067,22 @@ impl NativeEngine {
                 &mut history_commands,
             )?);
         }
+        if keydown_allowed
+            && key == " "
+            && keyboard_button_target
+            && document.focused_node() == id
+            && document.has_native_keyboard_button_activation(id)
+        {
+            submit_navigation = self.apply_local_keyboard_button_activation(
+                &mut document,
+                id,
+                &mut events,
+                &mut history_commands,
+            )?;
+        }
+        if key == " " {
+            self.pending_space_activation = None;
+        }
         if events.len() > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(
                 "native key press effects",
@@ -6838,24 +7091,7 @@ impl NativeEngine {
             ));
         }
 
-        let next_revision = self.next_revision()?;
-        document.set_revision(next_revision);
-        self.document = document;
-        self.revision = next_revision;
-        self.history
-            .update_current_scroll(self.scroll_offset, &self.nested_scroll_offsets);
-        let history_traversal =
-            self.apply_local_history_commands_at(&history_commands, next_revision)?;
-        self.record_effects(events);
-        if let Some(delta) = history_traversal
-            && delta != 0
-        {
-            self.traverse_history_delta(delta)?;
-        }
-        Ok(NativeActionResult {
-            revision: next_revision,
-            accepted: true,
-        })
+        self.finish_local_keyboard_action(document, events, &history_commands, submit_navigation)
     }
 
     async fn apply_keyboard_mutation_async(
@@ -7297,6 +7533,7 @@ impl NativeEngine {
         if !click_already_applied {
             let _events = self.document.apply_click(id)?;
         }
+        self.pending_space_activation = None;
         self.document = prepared.document;
         self.document_has_sticky_activation = false;
         self.javascript = None;
@@ -7818,6 +8055,7 @@ impl NativeEngine {
         )?;
         self.run_commit_task(NativeTask::CommitNavigation, "navigation")?;
         let revision = prepared.document.revision();
+        self.pending_space_activation = None;
         self.document = prepared.document;
         self.document_has_sticky_activation = false;
         self.workers.clear();
@@ -8001,6 +8239,7 @@ impl NativeEngine {
         self.run_commit_task_async(NativeTask::CommitNavigation, "navigation", worker)
             .await?;
         let revision = prepared.document.revision();
+        self.pending_space_activation = None;
         self.document = prepared.document;
         self.document_has_sticky_activation = false;
         self.workers.clear();
@@ -8345,6 +8584,7 @@ impl NativeEngine {
         let dialogs = prepared.dialogs;
         self.run_commit_task(NativeTask::TraverseHistory, "history traversal")?;
         let revision = prepared.document.revision();
+        self.pending_space_activation = None;
         self.document = prepared.document;
         self.document_has_sticky_activation = false;
         self.javascript = None;
@@ -8397,6 +8637,7 @@ impl NativeEngine {
         self.run_commit_task_async(NativeTask::TraverseHistory, "history traversal", worker)
             .await?;
         let revision = prepared.document.revision();
+        self.pending_space_activation = None;
         self.document = prepared.document;
         self.document_has_sticky_activation = false;
         self.javascript = None;

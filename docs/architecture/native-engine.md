@@ -114,6 +114,13 @@ protocol now preserves the click's allowed/canceled result across IPC. Exact
 local evidence and exclusions are recorded in the
 [slice 766 task](../plan/tasks/native-engine-browser-766.md); this does not
 claim complete keyboard conformance or issue #40 completion.
+Slice 767 verifies Enter activation through the existing `_blank` popup and
+download owners in local and process-backed paths, including click
+cancellation and opener preservation. New target initialization runs in a
+separate Tokio task to keep popup layout's stack independent of the initiating
+action. Exact test evidence and scheduler tradeoff are in the [slice 767
+task](../plan/tasks/native-engine-browser-767.md); this remains bounded
+behavior, not full keyboard conformance.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and

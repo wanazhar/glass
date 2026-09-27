@@ -2967,34 +2967,77 @@ impl NativeEngineBackend {
         } else {
             config
         };
-        let mut engine = NativeEngine::new_with_dialog_control(config, self.dialog_control.clone())
-            .map_err(native_error)?;
-        if let Err(error) = engine.initialize_async().await {
-            let _ = engine.close_async().await;
-            return Err(native_error(error));
-        }
-        if navigation.method == NativeNavigationMethod::Post || navigation.object_url.is_some() {
-            if let Err(error) = engine.navigate_request_async(navigation.clone(), 0).await {
+        let dialog_control = self.dialog_control.clone();
+        let navigation = navigation.clone();
+        let task_target_id = target_id.clone();
+        let task_opener_id = opener_id.clone();
+        let (
+            mut engine,
+            target,
+            target_name,
+            nested,
+            nested_messages,
+            nested_window_closes,
+            nested_window_navigations,
+            nested_service_worker_open_windows,
+            nested_service_worker_client_messages,
+            nested_page_message_port_commands,
+        ) = tokio::spawn(async move {
+            let mut engine = NativeEngine::new_with_dialog_control(config, dialog_control)
+                .map_err(native_error)?;
+            if let Err(error) = engine.initialize_async().await {
                 let _ = engine.close_async().await;
                 return Err(native_error(error));
             }
-        }
-        let nested = engine.take_pending_popups();
-        let nested_messages = engine.take_pending_post_messages();
-        let nested_window_closes = engine.take_pending_window_closes();
-        let nested_window_navigations = engine.take_pending_window_navigations();
-        let nested_service_worker_open_windows = engine.take_pending_service_worker_open_windows();
-        let nested_service_worker_client_messages =
-            engine.take_pending_service_worker_client_messages();
-        let nested_page_message_port_commands = engine.take_pending_page_message_port_commands();
-        let target_name = native_window_name(&engine.config().window_name);
-        let target = match project_native_target(&engine, &target_id, opener_id.clone(), false) {
-            Ok(target) => target,
-            Err(error) => {
-                let _ = engine.close_async().await;
-                return Err(error);
+            if navigation.method == NativeNavigationMethod::Post || navigation.object_url.is_some()
+            {
+                if let Err(error) = engine.navigate_request_async(navigation, 0).await {
+                    let _ = engine.close_async().await;
+                    return Err(native_error(error));
+                }
             }
-        };
+            let nested = engine.take_pending_popups();
+            let nested_messages = engine.take_pending_post_messages();
+            let nested_window_closes = engine.take_pending_window_closes();
+            let nested_window_navigations = engine.take_pending_window_navigations();
+            let nested_service_worker_open_windows =
+                engine.take_pending_service_worker_open_windows();
+            let nested_service_worker_client_messages =
+                engine.take_pending_service_worker_client_messages();
+            let nested_page_message_port_commands =
+                engine.take_pending_page_message_port_commands();
+            let target_name = native_window_name(&engine.config().window_name);
+            let target = match project_native_target(
+                &engine,
+                &task_target_id,
+                task_opener_id.clone(),
+                false,
+            ) {
+                Ok(target) => target,
+                Err(error) => {
+                    let _ = engine.close_async().await;
+                    return Err(error);
+                }
+            };
+            Ok::<_, BrowserBackendError>((
+                engine,
+                target,
+                target_name,
+                nested,
+                nested_messages,
+                nested_window_closes,
+                nested_window_navigations,
+                nested_service_worker_open_windows,
+                nested_service_worker_client_messages,
+                nested_page_message_port_commands,
+            ))
+        })
+        .await
+        .map_err(|_| BrowserBackendError::Lifecycle {
+            operation: "create native page target".into(),
+            state: "initialization-task-failed".into(),
+            reason: "target initialization task terminated before returning".into(),
+        })??;
         let mut targets = self.lock_targets(BackendOperation::Contexts)?;
         if targets.target_count() >= NATIVE_MAX_TARGETS || targets.parked.contains_key(&target_id) {
             let _ = engine.close_async().await;

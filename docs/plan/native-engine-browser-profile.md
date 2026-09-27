@@ -202,6 +202,14 @@ same-origin frame paths. Regressions cover cancellation, live post-click
 `href`, event order, and Space non-activation. The profile remains unsatisfied
 for link modifier gestures, image-map areas, complete keyboard conformance, and
 the broader Core Web Profile; see the [slice 766 task](tasks/native-engine-browser-766.md).
+Slice 767 verifies that Enter activation preserves native hyperlink default
+actions: local and process-backed `_blank` links keep the opener active and
+create an opener-owned target, canceled clicks suppress that target, and
+download links retain their suggested filename and bytes without navigating
+the opener. Target initialization runs in a separate Tokio task so popup
+layout does not inherit the initiating action's stack. See the
+[slice 767 task](tasks/native-engine-browser-767.md). Modifier gestures,
+image-map areas, and complete keyboard conformance remain open.
 Slice 764 implements keyboard activation for focused native button controls
 in process-backed network documents: Enter activates on keydown and Space on
 keyup after an uncanceled keydown. The shared click/default path handles reset

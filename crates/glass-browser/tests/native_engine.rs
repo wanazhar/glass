@@ -10338,7 +10338,7 @@ async fn native_content_process_service_worker_transfers_message_port_round_trip
             (
                 "/sw.js",
                 "application/javascript",
-                "self.addEventListener('message', event => { const port = event.ports[0]; if (!port) return; port.onmessage = message => { try { const xhr = new XMLHttpRequest(); xhr.open('GET', message.data.url, false); xhr.send(); const blob = new Blob(['sw-port-body'], { type: 'text/sw-port' }); port.postMessage({ kind: 'reply', value: Number(message.data.value) + 1, sourceText: xhr.responseText, sourceType: xhr.getResponseHeader('content-type'), url: URL.createObjectURL(blob) }); } catch (error) { port.postMessage({ kind: 'error', error: String(error) }); } }; port.start(); port.postMessage({ kind: 'ready', value: 1 }); });",
+                "self.addEventListener('message', event => { const port = event.ports[0]; if (!port) return; port.onmessage = message => { try { const xhr = new XMLHttpRequest(); xhr.open('GET', message.data.url, false); xhr.send(); const blob = new Blob(['sw-port-body'], { type: 'text/sw-port' }); port.postMessage({ kind: 'reply', value: Number(message.data.value) + 1, sourceText: xhr.responseText, sourceType: xhr.getResponseHeader('content-type'), url: URL.createObjectURL(blob) }); } catch (error) { port.postMessage({ kind: 'error', error: String(error) }); } }; port.start(); port.postMessage({ kind: 'ready', value: 1, eventPortsFrozen: Object.isFrozen(event.ports) }); });",
             ),
         ] {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -10360,7 +10360,7 @@ async fn native_content_process_service_worker_transfers_message_port_round_trip
     assert_eq!(
         engine
             .evaluate_async(
-                "await registrationPromise.then(reg => { globalThis.channel = new MessageChannel(); channel.port2.onmessage = event => { const result = { kind: event.data.kind, value: event.data.value, portCount: event.ports.length }; if (event.data.url) { try { const xhr = new XMLHttpRequest(); xhr.open('GET', event.data.url, false); xhr.send(); result.responseText = xhr.responseText; result.responseType = xhr.getResponseHeader('content-type'); } catch (error) { result.error = String(error); } } if (event.data.sourceText) { result.sourceText = event.data.sourceText; result.sourceType = event.data.sourceType; } swEvents.push(result); }; channel.port2.start(); reg.active.postMessage({ kind: 'connect' }, [channel.port1]); let detachedError = ''; try { channel.port1.postMessage({}); } catch (error) { detachedError = error.name; } return { detachedError, port2: channel.port2 instanceof MessagePort }; })",
+                "await registrationPromise.then(reg => { globalThis.channel = new MessageChannel(); channel.port2.onmessage = event => { const result = { kind: event.data.kind, value: event.data.value, portCount: event.ports.length }; if (event.data.eventPortsFrozen !== undefined) result.eventPortsFrozen = event.data.eventPortsFrozen; if (event.data.url) { try { const xhr = new XMLHttpRequest(); xhr.open('GET', event.data.url, false); xhr.send(); result.responseText = xhr.responseText; result.responseType = xhr.getResponseHeader('content-type'); } catch (error) { result.error = String(error); } } if (event.data.sourceText) { result.sourceText = event.data.sourceText; result.sourceType = event.data.sourceType; } swEvents.push(result); }; channel.port2.start(); reg.active.postMessage({ kind: 'connect' }, [channel.port1]); let detachedError = ''; try { channel.port1.postMessage({}); } catch (error) { detachedError = error.name; } return { detachedError, port2: channel.port2 instanceof MessagePort }; })",
             )
             .await
             .unwrap(),
@@ -10369,7 +10369,7 @@ async fn native_content_process_service_worker_transfers_message_port_round_trip
     assert_eq!(
         engine.evaluate_async("({ swEvents })").await.unwrap(),
         serde_json::json!({
-            "swEvents": [{"kind": "ready", "value": 1, "portCount": 0}],
+            "swEvents": [{"kind": "ready", "value": 1, "portCount": 0, "eventPortsFrozen": true}],
         })
     );
     assert_eq!(
@@ -10383,7 +10383,7 @@ async fn native_content_process_service_worker_transfers_message_port_round_trip
         engine.evaluate_async("({ swEvents })").await.unwrap(),
         serde_json::json!({
             "swEvents": [
-                {"kind": "ready", "value": 1, "portCount": 0},
+                {"kind": "ready", "value": 1, "portCount": 0, "eventPortsFrozen": true},
                 {
                     "kind": "reply",
                     "value": 5,
@@ -11538,6 +11538,235 @@ async fn native_content_process_runs_service_worker_timer_on_next_page_turn() {
         engine.evaluate_async("swEvents").await.unwrap(),
         serde_json::json!([{ "kind": "timer", "value": 7 }])
     );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_service_worker_message_events_extend_lifetime() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let page = r#"<script>
+globalThis.swEvents = [];
+globalThis.pageErrors = [];
+navigator.serviceWorker.addEventListener('message', event => swEvents.push(event.data));
+navigator.serviceWorker.addEventListener('error', event => pageErrors.push(event.message));
+globalThis.registrationPromise = navigator.serviceWorker.register('/sw-message-events.js', { scope: '/' });
+</script><main>Service Worker extendable message events</main>"#;
+    let worker_script = r#"
+addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+globalThis.workerErrors = [];
+addEventListener('error', event => workerErrors.push(event.message));
+const syntheticMessage = new ExtendableMessageEvent('message', { data: 'synthetic' });
+let syntheticWaitError = '';
+try { syntheticMessage.waitUntil(Promise.resolve()); } catch (error) { syntheticWaitError = error.name; }
+let syntheticBaseWaitError = '';
+try { new ExtendableEvent('install').waitUntil(Promise.resolve()); }
+catch (error) { syntheticBaseWaitError = error.name; }
+globalThis.syntheticChecks = {
+  dispatcherHidden: typeof globalThis.__glassDispatchServiceWorkerMessage === 'undefined',
+  isEvent: syntheticMessage instanceof Event,
+  isExtendableEvent: syntheticMessage instanceof ExtendableEvent,
+  isExtendableMessageEvent: syntheticMessage instanceof ExtendableMessageEvent,
+  isMessageEvent: syntheticMessage instanceof MessageEvent,
+  isTrusted: syntheticMessage.isTrusted,
+  defaultData: syntheticMessage.data,
+  defaultOrigin: syntheticMessage.origin,
+  defaultLastEventId: syntheticMessage.lastEventId,
+  defaultSource: syntheticMessage.source,
+  frozenPorts: Object.isFrozen(syntheticMessage.ports),
+  syntheticWaitError,
+  syntheticBaseWaitError,
+};
+globalThis.savedMessageEvent = null;
+addEventListener('message', event => {
+  if (event.data.kind === 'exercise') {
+    globalThis.savedMessageEvent = event;
+    const observation = {
+      isEvent: event instanceof Event,
+      isExtendableEvent: event instanceof ExtendableEvent,
+      isExtendableMessageEvent: event instanceof ExtendableMessageEvent,
+      isMessageEvent: event instanceof MessageEvent,
+      isTrusted: event.isTrusted,
+      origin: event.origin,
+      lastEventId: event.lastEventId,
+      dataKind: event.data.kind,
+      portsLength: event.ports.length,
+      portsFrozen: Object.isFrozen(event.ports),
+      sourceId: event.source.id,
+      sourceUrl: event.source.url,
+      sourceFrozen: Object.isFrozen(event.source),
+      targetIsGlobal: event.target === self,
+      currentTargetIsGlobal: event.currentTarget === self,
+      eventPhase: event.eventPhase,
+      bubbles: event.bubbles,
+      cancelable: event.cancelable,
+      syntheticChecks,
+    };
+    event.source.postMessage({ kind: 'immediate', observation });
+    event.waitUntil(fetch('/message-work').then(response => response.text()).then(body => {
+      event.waitUntil(Promise.resolve().then(() => {
+        event.source.postMessage({ kind: 'extended', body });
+      }));
+    }));
+    return;
+  }
+  if (event.data.kind === 'late') {
+    let waitError = '';
+    try { savedMessageEvent.waitUntil(Promise.resolve()); }
+    catch (error) { waitError = error.name; }
+    event.source.postMessage({ kind: 'late', waitError });
+    return;
+  }
+  if (event.data.kind === 'reject') {
+    event.waitUntil(Promise.reject(new Error('drained lifetime rejection')));
+    return;
+  }
+  if (event.data.kind === 'alive') {
+    event.source.postMessage({
+      kind: 'alive', trusted: event.isTrusted, workerErrors: workerErrors.slice(),
+    });
+  }
+});
+"#;
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            ("/message-page", "text/html", page),
+            (
+                "/sw-message-events.js",
+                "application/javascript",
+                worker_script,
+            ),
+            ("/message-work", "text/plain", "wait-until-finished"),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let origin = format!("http://{address}");
+    let page_url = format!("{origin}/message-page");
+    let mut engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url(page_url.clone()))
+            .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(reg => { globalThis.activeServiceWorker = reg.active; reg.active.addEventListener('error', event => pageErrors.push('worker:' + event.message)); return [reg.active.state, navigator.serviceWorker.controller !== null]; })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["activated", true]),
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "navigator.serviceWorker.controller.postMessage({ kind: 'exercise' }); true"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true),
+    );
+    let events = engine.evaluate_async("swEvents").await.unwrap();
+    assert_eq!(events.as_array().unwrap().len(), 2);
+    let immediate = &events[0];
+    assert_eq!(immediate["kind"], "immediate");
+    let observation = &immediate["observation"];
+    assert_eq!(observation["isEvent"], true);
+    assert_eq!(observation["isExtendableEvent"], true);
+    assert_eq!(observation["isExtendableMessageEvent"], true);
+    assert_eq!(observation["isMessageEvent"], false);
+    assert_eq!(observation["isTrusted"], true);
+    assert_eq!(observation["origin"], origin);
+    assert_eq!(observation["lastEventId"], "");
+    assert_eq!(observation["dataKind"], "exercise");
+    assert_eq!(observation["portsLength"], 0);
+    assert_eq!(observation["portsFrozen"], true);
+    assert_ne!(observation["sourceId"], "");
+    assert_eq!(observation["sourceUrl"], page_url);
+    assert_eq!(observation["sourceFrozen"], true);
+    assert_eq!(observation["targetIsGlobal"], true);
+    assert_eq!(observation["currentTargetIsGlobal"], true);
+    assert_eq!(observation["eventPhase"], 2);
+    assert_eq!(observation["bubbles"], false);
+    assert_eq!(observation["cancelable"], false);
+    assert_eq!(
+        observation["syntheticChecks"],
+        serde_json::json!({
+            "dispatcherHidden": true,
+            "isEvent": true,
+            "isExtendableEvent": true,
+            "isExtendableMessageEvent": true,
+            "isMessageEvent": false,
+            "isTrusted": false,
+            "defaultData": "synthetic",
+            "defaultOrigin": "",
+            "defaultLastEventId": "",
+            "defaultSource": null,
+            "frozenPorts": true,
+            "syntheticWaitError": "InvalidStateError",
+            "syntheticBaseWaitError": "InvalidStateError",
+        })
+    );
+    assert_eq!(
+        events[1],
+        serde_json::json!({
+            "kind": "extended", "body": "wait-until-finished",
+        })
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "navigator.serviceWorker.controller.postMessage({ kind: 'late' }); true"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true),
+    );
+    assert_eq!(
+        engine.evaluate_async("swEvents[2]").await.unwrap(),
+        serde_json::json!({ "kind": "late", "waitError": "InvalidStateError" }),
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "navigator.serviceWorker.controller.postMessage({ kind: 'reject' }); true"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true),
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "navigator.serviceWorker.controller.postMessage({ kind: 'alive' }); true"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true),
+    );
+    assert_eq!(
+        engine.evaluate_async("swEvents").await.unwrap()[3],
+        serde_json::json!({ "kind": "alive", "trusted": true, "workerErrors": [] }),
+    );
+    let final_state = engine
+        .evaluate_async("({ pageErrors, state: activeServiceWorker.state })")
+        .await
+        .unwrap();
+    assert_eq!(final_state["pageErrors"], serde_json::json!([]));
+    assert_eq!(final_state["state"], "activated");
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

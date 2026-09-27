@@ -3754,23 +3754,23 @@ message dispatcher and dispatches `messageerror` without delivering partial
 data, then preserves later valid work. It adds the ordered `onmessageerror`
 handler slot, Web IDL value conversion, callback reporting/continuation, and
 process-backed HTTP coverage for Dedicated Worker and Service Worker owners.
-The Service Worker event deliberately remains the current generic
-`MessageEvent` shell in this increment; it does not establish the specified
-`ExtendableMessageEvent`, source/origin, or lifetime behavior. These are the
-next Service Worker messaging requirements, alongside MessagePort and
-page-side Worker proxy error delivery. The task records exact local evidence
-and non-conformance boundaries; issue #40 remains open.
+At that checkpoint the Service Worker event remained the generic
+`MessageEvent` shell; Slice 800 supersedes it with the specified
+`ExtendableMessageEvent`, sender source/origin, and lifetime behavior.
+MessagePort and page-side Worker proxy error delivery remain separate issue
+#40 work. The task records exact local evidence and non-conformance
+boundaries; issue #40 remains open.
 See [task 799](../tasks/native-engine-browser-799.md).
 
-Slice 800 is contracted to replace the current generic Service Worker message
-shell with `ExtendableMessageEvent` for both `message` and `messageerror`,
-preserving the current sender's client projection and serialized origin. It
-defines active-event `waitUntil()` rules and requires the worker host settlement
-loop to wait for all registered promises, including extensions made while a
-promise remains pending. Rejected message-event lifetime work is consumed
-without an exception to the synchronous sender or a page error signal. This
-bounded contract does not establish full Client/WindowClient Web IDL or WPT
-conformance; implementation evidence is pending. See
+Slice 800 implements `ExtendableMessageEvent` for page-to-Service-Worker
+`message` and `messageerror`, preserving the sender's validated client
+projection and serialized origin. Active-event `waitUntil()` keeps the worker
+turn pending through all registered promises, including extensions while an
+earlier promise remains pending. Rejected message-event lifetime work is
+consumed without a synchronous sender exception or page error signal. Focused
+local process-backed and malformed-envelope tests pass. This bounded behavior
+does not establish full Client/WindowClient Web IDL or WPT conformance; remote
+CI remains pending. See
 [task 800](../tasks/native-engine-browser-800.md).
 
 Slice 793 installs the dedicated-owner forwarding mode of the worker error

@@ -215,6 +215,14 @@ ordering and ownership are unchanged. The focused two-connection regression
 and scoped package check pass locally. See the
 [slice 786 task](tasks/native-engine-browser-786.md).
 
+Slice 787 adds the bounded classic dedicated-worker startup runtime-error
+path: dispatch a cancelable worker-realm `ErrorEvent`, apply the global
+`onerror` five-argument/exact-`true` cancellation rule, and forward uncanceled
+errors to the owning `Worker` as an `ErrorEvent`. It preserves the worker for
+subsequent messages. Module startup errors, resource/parse failures, later
+callback exceptions, source-location fidelity, and full worker error/WPT
+conformance remain separate. See the [slice 787 task](tasks/native-engine-browser-787.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

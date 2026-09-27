@@ -161,6 +161,12 @@ worker-realm `MessageEvent` shape and honors `onconnect` exact-false
 cancellation before later listeners. Its focused two-connection regression
 and scoped package check pass locally; see the
 [slice 786 task](tasks/native-engine-browser-786.md).
+Slice 787 is in progress: classic dedicated-worker startup runtime errors are
+reported first to the worker global, where the legacy `onerror` callback's
+exact-`true` result can cancel forwarding; uncanceled errors reach the owning
+`Worker` as `ErrorEvent`s, and the worker remains alive. See the
+[slice 787 task](tasks/native-engine-browser-787.md) for the bounded contract
+and exclusions.
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

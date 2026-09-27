@@ -10604,6 +10604,175 @@ addEventListener('message', async event => {
 }
 
 #[tokio::test]
+async fn native_content_process_service_worker_fetch_callback_errors_continue_and_fallback() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let page = r#"<script>
+globalThis.clientErrors = [];
+navigator.serviceWorker.addEventListener('error', event => clientErrors.push(['container', event.message]));
+globalThis.registrationPromise = navigator.serviceWorker.register('/sw-fetch-callback-errors.js', { scope: '/' });
+</script><main>service worker fetch callback errors</main>"#;
+    let worker_script = r#"const callbackTrace = [];
+const reports = [];
+let traceStart = 0;
+let reportStart = 0;
+addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+onerror = (message, filename, line, column, error) => {
+  const cancel = message === 'handled service worker onfetch error';
+  reports.push({ phase: 'onerror', message, cancel, errorIsError: error instanceof Error });
+  callbackTrace.push('global:onerror:' + message);
+  return cancel;
+};
+addEventListener('error', event => {
+  reports.push({
+    phase: 'error-listener', message: event.message, defaultPrevented: event.defaultPrevented,
+    cancelable: event.cancelable, targetIsGlobal: event.target === self,
+    currentTargetIsGlobal: event.currentTarget === self,
+  });
+  callbackTrace.push('global:error:' + event.message);
+});
+onfetch = event => {
+  const path = new URL(event.request.url).pathname;
+  traceStart = callbackTrace.length;
+  reportStart = reports.length;
+  callbackTrace.push('onfetch:' + path);
+  if (path === '/handler-error') throw new Error('handled service worker onfetch error');
+  if (path === '/network-fallback') throw 'unhandled service worker fallback error';
+};
+addEventListener('fetch', event => {
+  const path = new URL(event.request.url).pathname;
+  callbackTrace.push('listener-one:' + path);
+  if (path === '/listener-error') throw 'unhandled service worker fetch listener error';
+});
+addEventListener('fetch', event => {
+  const path = new URL(event.request.url).pathname;
+  callbackTrace.push('listener-two:' + path);
+  if (path === '/handler-error' || path === '/listener-error') {
+    event.respondWith(new Response(JSON.stringify({
+      trace: callbackTrace.slice(traceStart), reports: reports.slice(reportStart),
+    }), { headers: { 'Content-Type': 'application/json' } }));
+  } else if (path === '/healthy') {
+    event.respondWith(new Response('healthy after callback failure'));
+  }
+});"#;
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            ("/service-fetch-callback-errors", "text/html", page),
+            (
+                "/sw-fetch-callback-errors.js",
+                "application/javascript",
+                worker_script,
+            ),
+            (
+                "/network-fallback",
+                "text/plain",
+                "ordinary network fallback",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/service-fetch-callback-errors")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(reg => { globalThis.activeServiceWorker = reg.active; reg.active.addEventListener('error', event => clientErrors.push(['service-worker', event.message])); return [reg.active.state, navigator.serviceWorker.controller !== null]; })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["activated", true])
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/handler-error').then(response => response.json())")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "trace": [
+                "onfetch:/handler-error",
+                "global:onerror:handled service worker onfetch error",
+                "global:error:handled service worker onfetch error",
+                "listener-one:/handler-error",
+                "listener-two:/handler-error",
+            ],
+            "reports": [
+                { "phase": "onerror", "message": "handled service worker onfetch error", "cancel": true, "errorIsError": true },
+                {
+                    "phase": "error-listener", "message": "handled service worker onfetch error",
+                    "defaultPrevented": true, "cancelable": true,
+                    "targetIsGlobal": true, "currentTargetIsGlobal": true,
+                },
+            ],
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/listener-error').then(response => response.json())")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "trace": [
+                "onfetch:/listener-error",
+                "listener-one:/listener-error",
+                "global:onerror:unhandled service worker fetch listener error",
+                "global:error:unhandled service worker fetch listener error",
+                "listener-two:/listener-error",
+            ],
+            "reports": [
+                { "phase": "onerror", "message": "unhandled service worker fetch listener error", "cancel": false, "errorIsError": false },
+                {
+                    "phase": "error-listener", "message": "unhandled service worker fetch listener error",
+                    "defaultPrevented": false, "cancelable": true,
+                    "targetIsGlobal": true, "currentTargetIsGlobal": true,
+                },
+            ],
+        })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await fetch('/network-fallback').then(async response => [response.status, await response.text()])",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([200, "ordinary network fallback"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/healthy').then(response => response.text())")
+            .await
+            .unwrap(),
+        serde_json::json!("healthy after callback failure")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ clientErrors, workerState: activeServiceWorker.state })")
+            .await
+            .unwrap(),
+        serde_json::json!({ "clientErrors": [], "workerState": "activated" })
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_service_worker_timer_on_next_page_turn() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

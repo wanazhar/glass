@@ -225,6 +225,12 @@ state, and absence of client-side error events. The scoped native-engine check,
 focused regression, and Service Worker port round-trip passed locally. This
 does not claim complete Service Worker, MessagePort, or WPT conformance; see
 the [slice 794 task](tasks/native-engine-browser-794.md).
+Slice 795 is scoped to exceptions thrown by ServiceWorkerGlobalScope
+`onmessage` and registered `message` listeners. It will report failures at the
+Service Worker global, preserve later listener and message delivery, and keep
+errors from being forwarded to clients. It does not change MessagePort callback
+handling, Service Worker fetch/lifecycle behavior, or other worker modes. See
+the [slice 795 contract](tasks/native-engine-browser-795.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

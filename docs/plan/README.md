@@ -245,6 +245,12 @@ continuations, real upstream fallback, worker survival, and a later healthy
 controlled fetch. Existing asynchronous response and large-request regressions
 pass; `respondWith()` promise rejection and `waitUntil()` behavior were not
 changed. See the [slice 796 task](tasks/native-engine-browser-796.md).
+Slice 797 is scoped to exceptions thrown by registered Service Worker
+`install` and `activate` listeners. It will report at the Service Worker
+global and continue later listeners, while retaining the existing lifecycle
+effect of fulfilled or rejected `waitUntil()` promises. Event-handler
+attributes and broader lifecycle conformance remain outside this slice. See
+the [slice 797 contract](tasks/native-engine-browser-797.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

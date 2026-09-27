@@ -32169,6 +32169,58 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
     }
     return Promise.all(waitUntilPromises).then(() => null);
   };
+  let serviceWorkerLifecycleHandlerSlots =
+    globalThis.__glassServiceWorkerLifecycleHandlerSlots instanceof Map
+      ? globalThis.__glassServiceWorkerLifecycleHandlerSlots
+      : null;
+  if (!serviceWorkerLifecycleHandlerSlots) {
+    serviceWorkerLifecycleHandlerSlots = new Map();
+    Object.defineProperty(globalThis, "__glassServiceWorkerLifecycleHandlerSlots", {
+      value: serviceWorkerLifecycleHandlerSlots,
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+  }
+  const setServiceWorkerLifecycleHandler = (type, value) => {
+    const isObjectOrFunction = value !== null
+      && (typeof value === "object" || typeof value === "function");
+    const handlerValue = isObjectOrFunction ? value : null;
+    const current = serviceWorkerLifecycleHandlerSlots.get(type) || null;
+    if (handlerValue === null) {
+      if (current) {
+        current.active = false;
+        const callbacks = listeners.get(type) || [];
+        listeners.set(type, callbacks.filter((callback) => callback !== current.listener));
+        serviceWorkerLifecycleHandlerSlots.delete(type);
+      }
+      return;
+    }
+    if (current && current.active) {
+      current.value = handlerValue;
+      return;
+    }
+    const slot = { active: true, value: handlerValue, listener: null };
+    slot.listener = (event) => {
+      if (!slot.active || typeof slot.value !== "function") return undefined;
+      return slot.value.call(globalThis, event);
+    };
+    const callbacks = listeners.get(type) || [];
+    callbacks.push(slot.listener);
+    listeners.set(type, callbacks);
+    serviceWorkerLifecycleHandlerSlots.set(type, slot);
+  };
+  for (const [property, type] of [["oninstall", "install"], ["onactivate", "activate"]]) {
+    Object.defineProperty(globalThis, property, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        const slot = serviceWorkerLifecycleHandlerSlots.get(type);
+        return slot && slot.active ? slot.value : null;
+      },
+      set(value) { setServiceWorkerLifecycleHandler(type, value); },
+    });
+  }
   globalThis.__glassResolveServiceWorkerCache = (requestId, payload) => {
     const pending = serviceWorkerCachePendingRequests.get(Number(requestId));
     if (!pending) return null;

@@ -1469,7 +1469,17 @@ impl NativeCspDirectives {
             NativeSubresourceKind::Worker => self
                 .worker_sources
                 .as_ref()
-                .map(|sources| ("worker-src", sources)),
+                .map(|sources| ("worker-src", sources))
+                .or_else(|| {
+                    self.child_sources
+                        .as_ref()
+                        .map(|sources| ("child-src", sources))
+                })
+                .or_else(|| {
+                    self.script_sources
+                        .as_ref()
+                        .map(|sources| ("script-src", sources))
+                }),
         };
         specific.or_else(|| {
             self.default_sources
@@ -1495,7 +1505,11 @@ impl NativeCspDirectives {
                 self.frame_sources.as_ref().or(self.child_sources.as_ref())
             }
             NativeSubresourceKind::Connect => self.connect_sources.as_ref(),
-            NativeSubresourceKind::Worker => self.worker_sources.as_ref(),
+            NativeSubresourceKind::Worker => self
+                .worker_sources
+                .as_ref()
+                .or(self.child_sources.as_ref())
+                .or(self.script_sources.as_ref()),
         }
     }
 
@@ -7254,24 +7268,56 @@ impl NativeResourceLoader {
         .await
     }
 
-    pub(crate) async fn load_worker_module_dependency_async(
+    pub(crate) async fn load_worker_script_dependency_async(
         &mut self,
         document_url: &str,
         href: &str,
         max_source_bytes: usize,
-        module_type: NativeModuleResourceType,
+        module_type: Option<NativeModuleResourceType>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        validate_url_text("document URL", document_url)?;
+        validate_url_text("script URL", href)?;
+        if max_source_bytes == 0 {
+            return Err(NativeEngineError::invalid(
+                "script source limit",
+                "must be positive",
+            ));
+        }
+        if let Ok(owner_url) = Url::parse(without_fragment(document_url))
+            && owner_url.scheme().eq_ignore_ascii_case("fixture")
+        {
+            let target_url = Url::parse(href)
+                .or_else(|_| owner_url.join(href))
+                .map_err(|_| NativeEngineError::UnsupportedUrl {
+                    reason: "worker script URL could not be resolved against its owner".into(),
+                })?;
+            if !target_url.scheme().eq_ignore_ascii_case("fixture") {
+                return Ok(None);
+            }
+            let resource = self.load(without_fragment(target_url.as_str()))?;
+            if resource.body.len() > max_source_bytes {
+                return Err(NativeEngineError::limit(
+                    "worker script dependency",
+                    max_source_bytes,
+                    resource.body.len(),
+                ));
+            }
+            return Ok(Some(NativeScriptResource {
+                url: resource.url,
+                body: resource.body,
+            }));
+        }
         self.load_script_like_async(
             document_url,
             href,
             max_source_bytes,
-            NativeSubresourceKind::Worker,
+            NativeSubresourceKind::Script,
             true,
             None,
             None,
             None,
             None,
-            Some(module_type),
+            module_type,
         )
         .await
     }
@@ -11742,6 +11788,92 @@ mod tests {
         let child_only_policy = content_security_policy(&child_only_headers);
         assert!(child_only_policy.allows(NativeSubresourceKind::Frame, &document, &child));
         assert!(!child_only_policy.allows(NativeSubresourceKind::Frame, &document, &frame));
+    }
+
+    #[test]
+    fn csp_worker_creation_uses_worker_src_fallback_chain() {
+        let document = Url::parse("https://app.test/index.html").unwrap();
+        let worker = Url::parse("https://app.test/worker.js").unwrap();
+        let cross_origin_worker = Url::parse("https://worker.test/worker.js").unwrap();
+        for (header, expected_directive) in [
+            (
+                "worker-src 'self'; child-src 'none'; script-src 'none'; default-src 'none'",
+                "worker-src",
+            ),
+            (
+                "child-src 'self'; script-src 'none'; default-src 'none'",
+                "child-src",
+            ),
+            ("script-src 'self'; default-src 'none'", "script-src"),
+            ("default-src 'self'", "default-src"),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                CONTENT_SECURITY_POLICY,
+                HeaderValue::from_str(header).unwrap(),
+            );
+            let policy = content_security_policy(&headers);
+            assert!(policy.allows(NativeSubresourceKind::Worker, &document, &worker));
+            assert!(!policy.allows(
+                NativeSubresourceKind::Worker,
+                &document,
+                &cross_origin_worker
+            ));
+            assert_eq!(
+                policy.policies[0]
+                    .directive_for(NativeSubresourceKind::Worker)
+                    .map(|(name, _)| name),
+                Some(expected_directive)
+            );
+        }
+    }
+
+    #[test]
+    fn csp_worker_imports_use_script_policy_and_report_only_does_not_block() {
+        let document = Url::parse("https://app.test/worker.js").unwrap();
+        let imported_script = Url::parse("https://app.test/imported.js").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("worker-src 'self'; script-src 'none'; default-src 'self'"),
+        );
+        let enforced = content_security_policy(&headers);
+        assert!(enforced.allows(NativeSubresourceKind::Worker, &document, &imported_script));
+        assert!(!enforced.allows(NativeSubresourceKind::Script, &document, &imported_script));
+        assert_eq!(
+            enforced.policies[0]
+                .directive_for(NativeSubresourceKind::Script)
+                .map(|(name, _)| name),
+            Some("script-src")
+        );
+
+        let mut report_only_headers = HeaderMap::new();
+        report_only_headers.insert(
+            HeaderName::from_static("content-security-policy-report-only"),
+            HeaderValue::from_static("script-src 'none'; worker-src 'self'"),
+        );
+        let report_only = content_security_policy(&report_only_headers);
+        assert!(report_only.allows(NativeSubresourceKind::Script, &document, &imported_script));
+        let violations = report_only.report_only_url_violations(
+            NativeSubresourceKind::Script,
+            &document,
+            &imported_script,
+            true,
+            None,
+        );
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].1, "script-src");
+        assert!(
+            report_only
+                .report_only_url_violations(
+                    NativeSubresourceKind::Worker,
+                    &document,
+                    &imported_script,
+                    true,
+                    None,
+                )
+                .is_empty()
+        );
     }
 
     #[test]

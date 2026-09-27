@@ -100,6 +100,13 @@ from sequential navigation. Actually disabled supported native controls and
 non-rendered targets are excluded. Native image-map areas retain their
 image-anchor focus model.
 
+The native element projection exposes `tabIndex`: a valid signed-long
+`tabindex` attribute is returned directly; otherwise the HTML default is zero
+for the standard focus-default element set and the first `summary` child of a
+`details`, and minus one for other elements. Setting the property uses Web IDL
+`long` conversion and writes the canonical integer to the content attribute,
+so subsequent focus traversal observes the same live mutation.
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 inertness, form-associated custom-element disabled focus state,
 browser/platform sequential-focus preferences, focus-chain handoff, and
@@ -268,6 +275,14 @@ path. Local, HTTP(S) content-process, and same-origin-frame evidence is tracked
 in [`native-engine-browser-773`](tasks/native-engine-browser-773.md). This does
 not complete focus-chain, shadow-DOM, inertness, keyboard, WPT, platform, or
 remote-CI conformance.
+
+Slice 774 adds `tabIndex` getter/setter reflection to the native element
+projection. Explicit signed-long values are read from `tabindex`; absent,
+invalid, and out-of-range values use the element-specific HTML default. The
+setter converts to Web IDL `long` and writes through the existing live
+attribute-mutation path. Local, HTTP(S) content-process, and same-origin-frame
+evidence is in [`native-engine-browser-774`](tasks/native-engine-browser-774.md).
+Full focus navigation and Web IDL conformance remain open.
 
 Slice 768 implements the bounded keyboard-input contract: unmodified
 Space on a focused, enabled native checkbox or radio synthesizes click

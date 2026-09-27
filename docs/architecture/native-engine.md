@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-773`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-774`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -5258,6 +5258,19 @@ establish complete focus-chain, shadow-DOM, inertness, form-associated
 custom-element disabled state, keyboard, WPT, platform, or issue #40
 conformance; see the
 [slice 773 task](../plan/tasks/native-engine-browser-773.md).
+
+### `tabIndex` reflection (slice 774)
+
+The native element projection reflects `tabIndex` through the shared HTML
+attribute owner. A valid signed-long `tabindex` value is returned directly;
+missing, invalid, and out-of-range values use the HTML element-specific
+default, including the first `summary` child of `details`. The setter applies
+Web IDL `long` conversion and writes the canonical decimal value to the live
+attribute, so native focus traversal sees property assignments after the
+script turn. Local, HTTP(S) process, and same-origin-frame regressions exercise
+the getter, setter, persisted attribute, and resulting focus order. This is not
+complete focus or Web IDL conformance; see the
+[slice 774 task](../plan/tasks/native-engine-browser-774.md).
 
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its

@@ -327,6 +327,17 @@ page control, and no page error event. Full Web IDL/EventTarget, rejected
 lifetime, platform, remote-CI, and WPT conformance remain open; see the
 [slice 798 task](tasks/native-engine-browser-798.md).
 
+Slice 799 converts direct worker-global structured-clone decode failures into
+`messageerror` delivery, adds the ordered `onmessageerror` EventHandler slot,
+reports callback exceptions using the existing owner policy, and preserves
+worker operation for later valid messages. Process-backed HTTP regressions
+exercise Dedicated Worker and Service Worker dispatch. The Service Worker
+case currently reuses the generic `MessageEvent` shell; its required
+`ExtendableMessageEvent` class, source/origin metadata, and extendable lifetime
+remain a separate required GCWP item. MessagePort and page-side Worker proxy
+decode failures are also outside this slice; see
+[slice 799](tasks/native-engine-browser-799.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

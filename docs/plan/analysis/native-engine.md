@@ -3749,6 +3749,19 @@ event shape, rejected-wait certification, complete Web IDL/EventTarget
 semantics, and WPT remain separate issue #40 work; see
 [task 798](../tasks/native-engine-browser-798.md).
 
+Slice 799 catches malformed structured-clone decode at the direct worker-global
+message dispatcher and dispatches `messageerror` without delivering partial
+data, then preserves later valid work. It adds the ordered `onmessageerror`
+handler slot, Web IDL value conversion, callback reporting/continuation, and
+process-backed HTTP coverage for Dedicated Worker and Service Worker owners.
+The Service Worker event deliberately remains the current generic
+`MessageEvent` shell in this increment; it does not establish the specified
+`ExtendableMessageEvent`, source/origin, or lifetime behavior. These are the
+next Service Worker messaging requirements, alongside MessagePort and
+page-side Worker proxy error delivery. The task records exact local evidence
+and non-conformance boundaries; issue #40 remains open.
+See [task 799](../tasks/native-engine-browser-799.md).
+
 Slice 793 installs the dedicated-owner forwarding mode of the worker error
 reporter for native MessagePorts in DedicatedWorker realms. The process-backed
 transferred-port test covers exact-`true` global cancellation, one uncanceled

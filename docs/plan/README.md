@@ -207,6 +207,10 @@ state, and absence of page-owner errors. This does not claim generic scheduler,
 cross-realm MessagePort, or complete worker/WPT behavior; see the
 [slice 791 task](tasks/native-engine-browser-791.md) and
 [slice 792 task](tasks/native-engine-browser-792.md).
+Slice 793 is scoped to dedicated-worker MessagePort callback exceptions. It
+will use the existing worker-global reporter and dedicated-owner forwarding
+path, without changing SharedWorker, Service Worker, page, or BroadcastChannel
+semantics. See the [slice 793 contract](tasks/native-engine-browser-793.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

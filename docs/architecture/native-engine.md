@@ -5452,6 +5452,18 @@ EventTarget semantics, and WPT conformance are unchanged or remain open; see
 the [`native-engine-browser-786` task](../plan/tasks/native-engine-browser-786.md)
 for exact local evidence.
 
+### Classic dedicated-worker startup runtime errors (slice 787, in progress)
+
+An uncaught runtime error from a classic dedicated worker's initial script is
+reported first to the worker global as a cancelable `ErrorEvent`. The worker
+global `onerror` uses its legacy five-argument callback and only an exact
+`true` return cancels forwarding; registered error listeners still run. An
+uncanceled report is forwarded to the owning `Worker` as an `ErrorEvent`, and
+the worker remains available for later messages. The bounded task covers this
+initial classic-script path, not fetch/parse failures, module startup, later
+callback exceptions, or full error-source metadata. See the
+[`native-engine-browser-787` task](../plan/tasks/native-engine-browser-787.md).
+
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,

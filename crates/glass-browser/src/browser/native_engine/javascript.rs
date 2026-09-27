@@ -32163,7 +32163,9 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       try {
         if (typeof callback === "function") callback.call(globalThis, event);
         else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
-      } catch (_) {}
+      } catch (error) {
+        reportWorkerCallbackException(error, false);
+      }
     }
     return Promise.all(waitUntilPromises).then(() => null);
   };

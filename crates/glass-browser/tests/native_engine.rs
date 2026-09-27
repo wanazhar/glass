@@ -10773,6 +10773,178 @@ addEventListener('fetch', event => {
 }
 
 #[tokio::test]
+async fn native_content_process_service_worker_lifecycle_callback_errors_continue() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let page = r#"<script>
+globalThis.lifecycleMessages = [];
+globalThis.clientErrors = [];
+navigator.serviceWorker.addEventListener('message', event => lifecycleMessages.push(event.data));
+navigator.serviceWorker.addEventListener('error', event => clientErrors.push(['container', event.message]));
+globalThis.registrationPromise = navigator.serviceWorker.register('/sw-lifecycle-callback-errors.js', { scope: '/' });
+</script><main>service worker lifecycle callback errors</main>"#;
+    let worker_script = r#"const callbackTrace = [];
+const reports = [];
+let traceStart = 0;
+let reportStart = 0;
+onerror = (message, filename, line, column, error) => {
+  const cancel = message === 'handled service worker install callback error';
+  reports.push({ phase: 'onerror', message, cancel, errorIsError: error instanceof Error });
+  callbackTrace.push('global:onerror:' + message);
+  return cancel;
+};
+addEventListener('error', event => {
+  reports.push({
+    phase: 'error-listener', message: event.message, defaultPrevented: event.defaultPrevented,
+    cancelable: event.cancelable, targetIsGlobal: event.target === self,
+    currentTargetIsGlobal: event.currentTarget === self,
+  });
+  callbackTrace.push('global:error:' + event.message);
+});
+addEventListener('install', event => {
+  traceStart = callbackTrace.length;
+  reportStart = reports.length;
+  callbackTrace.push('install:throwing');
+  throw new Error('handled service worker install callback error');
+});
+addEventListener('install', event => {
+  callbackTrace.push('install:later');
+  event.waitUntil(self.skipWaiting());
+  event.waitUntil(self.clients.matchAll({ includeUncontrolled: true, type: 'window' }).then(clients => {
+    const client = clients.find(candidate => candidate.url.endsWith('/service-worker-lifecycle-callback-errors'));
+    client?.postMessage({ phase: 'install', trace: callbackTrace.slice(traceStart), reports: reports.slice(reportStart) });
+  }));
+});
+addEventListener('activate', event => {
+  traceStart = callbackTrace.length;
+  reportStart = reports.length;
+  callbackTrace.push('activate:throwing');
+  throw 'unhandled service worker activate callback error';
+});
+addEventListener('activate', event => {
+  callbackTrace.push('activate:later');
+  event.waitUntil(self.clients.claim().then(() => self.clients.matchAll({ includeUncontrolled: true, type: 'window' })).then(clients => {
+    const client = clients.find(candidate => candidate.url.endsWith('/service-worker-lifecycle-callback-errors'));
+    client?.postMessage({ phase: 'activate', trace: callbackTrace.slice(traceStart), reports: reports.slice(reportStart) });
+  }));
+});"#;
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            (
+                "/service-worker-lifecycle-callback-errors",
+                "text/html",
+                page,
+            ),
+            (
+                "/sw-lifecycle-callback-errors.js",
+                "application/javascript",
+                worker_script,
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(NativeEngineConfig::default().with_initial_url(format!(
+        "http://{address}/service-worker-lifecycle-callback-errors"
+    )))
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(reg => { globalThis.activeServiceWorker = reg.active; reg.active.addEventListener('error', event => clientErrors.push(['service-worker', event.message])); return [reg.active.state, navigator.serviceWorker.controller !== null]; })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["activated", true])
+    );
+
+    for _ in 0..12 {
+        let page_state = engine
+            .evaluate_async(
+                "({ lifecycleMessages, clientErrors, workerState: activeServiceWorker.state, controlled: navigator.serviceWorker.controller !== null })",
+            )
+            .await
+            .unwrap();
+        if page_state["lifecycleMessages"]
+            .as_array()
+            .is_some_and(|messages| {
+                messages.iter().any(|message| message["phase"] == "install")
+                    && messages
+                        .iter()
+                        .any(|message| message["phase"] == "activate")
+            })
+        {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    let page_state = engine
+        .evaluate_async(
+            "({ lifecycleMessages, clientErrors, workerState: activeServiceWorker.state, controlled: navigator.serviceWorker.controller !== null })",
+        )
+        .await
+        .unwrap();
+    assert_eq!(page_state["clientErrors"], serde_json::json!([]));
+    assert_eq!(page_state["workerState"], serde_json::json!("activated"));
+    assert_eq!(page_state["controlled"], serde_json::json!(true));
+    assert_eq!(
+        page_state["lifecycleMessages"],
+        serde_json::json!([
+            {
+                "phase": "install",
+                "trace": [
+                    "install:throwing",
+                    "global:onerror:handled service worker install callback error",
+                    "global:error:handled service worker install callback error",
+                    "install:later",
+                ],
+                "reports": [
+                    { "phase": "onerror", "message": "handled service worker install callback error", "cancel": true, "errorIsError": true },
+                    {
+                        "phase": "error-listener", "message": "handled service worker install callback error",
+                        "defaultPrevented": true, "cancelable": true,
+                        "targetIsGlobal": true, "currentTargetIsGlobal": true,
+                    },
+                ],
+            },
+            {
+                "phase": "activate",
+                "trace": [
+                    "activate:throwing",
+                    "global:onerror:unhandled service worker activate callback error",
+                    "global:error:unhandled service worker activate callback error",
+                    "activate:later",
+                ],
+                "reports": [
+                    { "phase": "onerror", "message": "unhandled service worker activate callback error", "cancel": false, "errorIsError": false },
+                    {
+                        "phase": "error-listener", "message": "unhandled service worker activate callback error",
+                        "defaultPrevented": false, "cancelable": true,
+                        "targetIsGlobal": true, "currentTargetIsGlobal": true,
+                    },
+                ],
+            },
+        ])
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_service_worker_timer_on_next_page_turn() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

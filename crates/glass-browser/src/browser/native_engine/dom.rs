@@ -5648,7 +5648,11 @@ impl NativeDocument {
             }
             "radio" => {
                 if !checkable_pre_activated {
-                    for radio_id in self.radio_group_members(id) {
+                    let mut radio_ids = self.radio_group_members(id);
+                    if !radio_ids.contains(&id) {
+                        radio_ids.push(id);
+                    }
+                    for radio_id in radio_ids {
                         self.node_mut(radio_id)
                             .ok_or(NativeEngineError::DetachedTarget)?
                             .state
@@ -9305,7 +9309,11 @@ impl NativeDocument {
                 state.indeterminate = false;
             }
             NativeCheckableKind::Radio => {
-                for radio_id in self.radio_group_members(id) {
+                let mut radio_ids = self.radio_group_members(id);
+                if !radio_ids.contains(&id) {
+                    radio_ids.push(id);
+                }
+                for radio_id in radio_ids {
                     self.node_mut(radio_id)
                         .ok_or(NativeEngineError::DetachedTarget)?
                         .state
@@ -9326,20 +9334,40 @@ impl NativeDocument {
         &mut self,
         activation: NativeCheckablePreActivation,
     ) -> Result<(), NativeEngineError> {
-        {
+        if activation.kind == NativeCheckableKind::Checkbox {
             let state = &mut self
                 .node_mut(activation.node_id)
                 .ok_or(NativeEngineError::DetachedTarget)?
                 .state;
             state.checked = activation.checked;
             state.indeterminate = activation.indeterminate;
+        } else {
+            self.node_mut(activation.node_id)
+                .ok_or(NativeEngineError::DetachedTarget)?
+                .state
+                .indeterminate = activation.indeterminate;
         }
         if activation.kind == NativeCheckableKind::Radio {
-            for (radio_id, checked) in activation.radio_group_checked {
-                self.node_mut(radio_id)
+            let current_group = self.radio_group_members(activation.node_id);
+            let original_checked_in_current_group =
+                activation
+                    .radio_group_checked
+                    .iter()
+                    .find_map(|(radio_id, checked)| {
+                        (*checked && current_group.contains(radio_id)).then_some(*radio_id)
+                    });
+            if let Some(checked_id) = original_checked_in_current_group {
+                for radio_id in current_group {
+                    self.node_mut(radio_id)
+                        .ok_or(NativeEngineError::DetachedTarget)?
+                        .state
+                        .checked = radio_id == checked_id;
+                }
+            } else {
+                self.node_mut(activation.node_id)
                     .ok_or(NativeEngineError::DetachedTarget)?
                     .state
-                    .checked = checked;
+                    .checked = false;
             }
         }
         Ok(())
@@ -9349,7 +9377,16 @@ impl NativeDocument {
         let Some(node) = self.node(id) else {
             return Vec::new();
         };
-        let name = node.attribute("name").filter(|name| !name.is_empty());
+        if node.element_name() != Some("input")
+            || !node
+                .attribute("type")
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("radio"))
+        {
+            return Vec::new();
+        }
+        let Some(name) = node.attribute("name").filter(|name| !name.is_empty()) else {
+            return Vec::new();
+        };
         let form_owner = self.form_owner(id);
         self.nodes
             .iter()
@@ -9359,11 +9396,8 @@ impl NativeDocument {
                     && candidate
                         .attribute("type")
                         .is_some_and(|kind| kind.eq_ignore_ascii_case("radio"))
-                    && (candidate.id() == id
-                        || name.is_some_and(|name| {
-                            candidate.attribute("name") == Some(name)
-                                && self.form_owner(candidate.id()) == form_owner
-                        }))
+                    && candidate.attribute("name") == Some(name)
+                    && self.form_owner(candidate.id()) == form_owner
             })
             .map(NativeNode::id)
             .collect()

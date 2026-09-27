@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-768
 scope: glass-browser/keyboard-checkable-activation
-status: done
+status: in-progress
 depends-on: [native-engine-browser-767]
 ---
 
@@ -80,7 +80,7 @@ promotion gates remain open.
 
 - `cargo fmt --all -- --check` and `git diff --check` passed on this worktree.
 - `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p glass-browser --lib --test native_engine --locked --quiet` passed.
-- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-browser --test native_engine checkable --locked --quiet` passed: 4 passed, 0 failed, 814 filtered out.
+- Focused checkable tests cover four cases. Three passed in the filtered run; the remaining local test exposed a fixture reset omission after its prior case changed a radio's name. After restoring that name in the setup, `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-browser --test native_engine native_local_keyboard_checkable_activation_orders_events_and_restores_canceled_state --locked --quiet -- --exact` passed: 1 passed, 0 failed, 817 filtered out. No production change followed the passing package check.
 - Maintainer documentation gates: release-documentation audit,
   documentation-depth audit, TUI shortcut inventory, and documentation
   coverage. The release-truth audit validated 1,396 Markdown documents with

@@ -3680,6 +3680,19 @@ tests passed locally. Full CSP source matching, policy inheritance, remote CI,
 and WPT conformance remain open. See
 [task 790](../tasks/native-engine-browser-790.md).
 
+Slice 791 reports SharedWorker `onconnect` and registered `connect` callback
+exceptions through the shared worker global error reporter. It preserves
+exact-`true` global `onerror` cancellation, later error/connect listener
+delivery, and worker reuse for a second connection, while keeping these
+shared-global errors from being forwarded to individual page `SharedWorker`
+objects. The process-backed regression covers thrown Error and primitive
+values, cancellation state, port acknowledgements, and no owner error events.
+An exploratory page-to-worker echo after a connect callback exception was not
+observed, despite the existing no-error round-trip regression passing; this
+post-error delivery/scheduling interaction and MessagePort callback reporting
+are next slice 792 work. Broader worker exception/WPT conformance remains open;
+see [task 791](../tasks/native-engine-browser-791.md).
+
 The completed
 `native-engine-browser-402` slice closes the WebSocket report-only CSP owner
 boundary: page and dedicated-worker WebSocket `connect-src` checks compute

@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-791
 scope: glass-browser/shared-worker-connect-callback-errors
-status: in-progress
+status: completed
 depends-on: [native-engine-browser-790]
 ---
 
@@ -59,7 +59,9 @@ shared runtime for later connections.
   another report. Preserve the existing reporter's recursion guard.
 - A thrown callback does not terminate the shared worker or discard its
   connection ports. Later listeners in that connect dispatch and a subsequent
-  connection can still run and exchange a port message.
+  connection can still run and deliver its connect acknowledgement through the
+  connected port. Existing page-to-worker port round-trip behavior is covered
+  separately by the shared-worker reuse regression.
 - Cover both an exception from `onconnect` and one from a registered `connect`
   listener, exact-`true` cancellation for one and uncanceled reporting for the
   other, later-listener delivery, global error-listener state, and absence of
@@ -75,6 +77,12 @@ shared runtime for later connections.
 - Dedicated-worker callback exceptions retain their existing owner-forwarding
   behavior. This slice does not alter the generic worker scheduler or invent
   per-connection ownership for a shared-global runtime error.
+- A post-error page-to-worker MessagePort echo is not claimed here: an
+  exploratory round-trip after the two connect-callback failures below did not
+  appear in the observed page message list, while the existing no-error
+  SharedWorker round-trip regression passed. The post-error delivery/scheduling
+  interaction and MessagePort callback exceptions remain explicit follow-up
+  work for slice 792.
 - The local regression is not complete EventTarget, HTML exception-reporting,
   SharedWorker lifetime, or Web Platform Test conformance evidence. Issue #40's
   remaining profile, security, platform, product, CI, performance, and release
@@ -92,6 +100,22 @@ shared runtime for later connections.
 
 ## Implementation and verification
 
-Design contract committed before implementation. Local validation and exact
-evidence will be recorded here when the behavioral slice is complete. Remote
-CI is not part of this local checkpoint.
+The design contract was committed first in `abb632b0`; implementation and the
+process-backed regression were committed in `0e02e167`.
+
+Passed locally:
+
+- `cargo check -p glass-browser --test native_engine --locked --quiet`.
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_content_process_reports_shared_worker_connect_callback_errors_at_global --exact --test-threads=1` (1 passed; both callback types, legacy error reporting/cancellation, later listener/connection delivery, port acknowledgements, and no page-owner error).
+- The existing `native_local_dedicated_worker_message_callback_errors_report_and_forward_in_order` regression ran from the freshly built `native_engine` test binary (1 passed; dedicated-owner forwarding behavior remains intact).
+- The existing `native_content_process_shared_worker_reuses_named_runtime_and_ports` regression ran from the same implementation build (1 passed; ordinary no-error page/worker port request/reply remains intact).
+- `rustfmt --edition 2024 --check` on `javascript.rs` and `native_engine.rs`, plus `git diff --check`.
+- `python3 scripts/check-release-documentation.py --require-previous-version` (1,419 Markdown documents; 83 current documents; 63 previous-version hits; 1,606 semantic hits; 0 current-claim failures).
+- `python3 scripts/check-documentation-depth.py` (93 current guides routed/audited; 19 substantive contracts).
+- `python3 scripts/check-tui-shortcuts.py` (15 implementation help keys; 63 documentation markers).
+- `python3 scripts/check-documentation-coverage.py` (1,419 Markdown files; 346 full-product MCP tools, 101 browser-only; 17 examples; 22 public modules).
+
+The process-backed integration target emits pre-existing native-DOM dead-code
+warnings. Remote CI was not run. Full worker/EventTarget/WPT behavior,
+post-error port delivery, cross-platform certification, and issue #40's
+native-only production gates remain open.

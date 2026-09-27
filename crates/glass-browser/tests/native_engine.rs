@@ -23303,6 +23303,149 @@ async fn native_content_process_enforces_script_src_attr_for_initial_and_dynamic
 }
 
 #[tokio::test]
+async fn native_content_process_routes_body_and_frameset_handlers_through_window_slot() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let initial_source = "globalThis.windowHandlerAttrOrder.push('body-initial');";
+    let dynamic_source = "globalThis.windowHandlerAttrOrder.push('body-dynamic');";
+    let frameset_source = "globalThis.windowHandlerAttrOrder.push('frameset');";
+    let click_source = "globalThis.windowHandlerAttrClicks.push([this === document.body, event.currentTarget === document.body]);";
+    let blocked_source = "globalThis.windowHandlerAttrOrder.push('blocked');";
+    let hash = |source: &str| {
+        base64::engine::general_purpose::STANDARD.encode(Sha256::digest(source.as_bytes()))
+    };
+    let allowed_hashes = [
+        initial_source,
+        dynamic_source,
+        frameset_source,
+        click_source,
+    ]
+    .into_iter()
+    .map(|source| format!("'sha256-{}'", hash(source)))
+    .collect::<Vec<_>>()
+    .join(" ");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/window-handler-attrs")
+        );
+        let body =
+            format!("<!doctype html><html><body onmessage=\"{initial_source}\"></body></html>");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src 'none'; script-src-attr 'unsafe-hashes' {allowed_hashes}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/window-handler-attrs")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let dynamic_json = serde_json::to_string(dynamic_source).unwrap();
+    let blocked_json = serde_json::to_string(blocked_source).unwrap();
+    let frameset_json = serde_json::to_string(frameset_source).unwrap();
+    let click_json = serde_json::to_string(click_source).unwrap();
+    let setup_script = format!(
+        r#"(() => {{
+          const order = globalThis.windowHandlerAttrOrder = [];
+          const body = document.body;
+          const initialAlias = typeof body.onmessage === 'function' && body.onmessage === window.onmessage;
+          const tail = () => order.push('tail');
+          globalThis.windowHandlerAttrTail = tail;
+          window.addEventListener('message', tail);
+          window.onmessage = () => order.push('idl');
+          window.dispatchEvent(new Event('message'));
+          const idlOrder = order.slice();
+          body.setAttribute('onmessage', {dynamic_json});
+          const dynamicAlias = typeof body.onmessage === 'function' && body.onmessage === window.onmessage;
+          return [initialAlias, idlOrder, dynamicAlias];
+        }})()"#
+    );
+    assert_eq!(
+        engine.evaluate_async(&setup_script).await.unwrap(),
+        serde_json::json!([true, ["idl", "tail"], true])
+    );
+    let script = format!(
+        r#"(() => {{
+          const order = globalThis.windowHandlerAttrOrder;
+          const body = document.body;
+          window.dispatchEvent(new Event('message'));
+          const afterRefreshOrder = order.slice();
+          const dynamicHandler = body.onmessage;
+          body.setAttribute('onmessage', {blocked_json});
+          const blockedPreserved = body.onmessage === dynamicHandler && window.onmessage === dynamicHandler;
+          window.dispatchEvent(new Event('message'));
+          const blockedOrder = order.slice();
+          body.removeAttribute('onmessage');
+          const bodyCleared = body.onmessage === null && window.onmessage === null;
+          window.dispatchEvent(new Event('message'));
+          const afterRemovalOrder = order.slice();
+          const frameset = document.createElement('frameset');
+          frameset.setAttribute('onmessage', {frameset_json});
+          const framesetAlias = frameset.onmessage === window.onmessage;
+          window.dispatchEvent(new Event('message'));
+          const framesetOrder = order.slice();
+          frameset.removeAttribute('onmessage');
+          const framesetCleared = frameset.onmessage === null && window.onmessage === null;
+          const clicks = globalThis.windowHandlerAttrClicks = [];
+          body.setAttribute('onclick', {click_json});
+          body.dispatchEvent(new Event('click'));
+          body.removeAttribute('onclick');
+          window.removeEventListener('message', globalThis.windowHandlerAttrTail);
+          return [afterRefreshOrder, blockedPreserved, blockedOrder, bodyCleared, afterRemovalOrder,
+            framesetAlias, framesetOrder, framesetCleared, clicks];
+        }})()"#
+    );
+    assert_eq!(
+        engine.evaluate_async(&script).await.unwrap(),
+        serde_json::json!([
+            ["idl", "tail", "body-dynamic", "tail"],
+            true,
+            [
+                "idl",
+                "tail",
+                "body-dynamic",
+                "tail",
+                "body-dynamic",
+                "tail"
+            ],
+            true,
+            [
+                "idl",
+                "tail",
+                "body-dynamic",
+                "tail",
+                "body-dynamic",
+                "tail",
+                "tail"
+            ],
+            true,
+            [
+                "idl",
+                "tail",
+                "body-dynamic",
+                "tail",
+                "body-dynamic",
+                "tail",
+                "tail",
+                "tail",
+                "frameset"
+            ],
+            true,
+            [[true, true]],
+        ])
+    );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_orders_navigation_lifecycle_events() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -70281,6 +70424,44 @@ fn native_window_document_event_handler_dispatch_script() -> &'static str {
     })()"#
 }
 
+fn native_window_routed_content_attribute_script() -> &'static str {
+    r#"(() => {
+      const order = globalThis.routedContentAttributeOrder = [];
+      const body = document.body;
+      body.setAttribute('onmessage', "globalThis.routedContentAttributeOrder.push('body-initial')");
+      const initialAlias = typeof body.onmessage === 'function' && body.onmessage === window.onmessage;
+      const tail = () => order.push('tail');
+      window.addEventListener('message', tail);
+      window.onmessage = () => order.push('idl');
+      window.dispatchEvent(new Event('message'));
+      const idlAlias = body.onmessage === window.onmessage;
+      const idlOrder = order.slice();
+      body.setAttribute('onmessage', "globalThis.routedContentAttributeOrder.push('body-replacement')");
+      window.dispatchEvent(new Event('message'));
+      const attributeAlias = body.onmessage === window.onmessage;
+      const attributeOrder = order.slice();
+      body.removeAttribute('onmessage');
+      const removedAlias = window.onmessage === null && body.onmessage === null;
+      window.dispatchEvent(new Event('message'));
+      const afterRemoveOrder = order.slice();
+      const frameset = document.createElement('frameset');
+      frameset.setAttribute('onmessage', "globalThis.routedContentAttributeOrder.push('frameset')");
+      const framesetAlias = frameset.onmessage === window.onmessage;
+      window.dispatchEvent(new Event('message'));
+      const framesetOrder = order.slice();
+      frameset.removeAttribute('onmessage');
+      const framesetCleared = frameset.onmessage === null && window.onmessage === null;
+      window.removeEventListener('message', tail);
+      const clicks = globalThis.routedContentAttributeClicks = [];
+      body.setAttribute('onclick', "globalThis.routedContentAttributeClicks.push([this === document.body, event.currentTarget === document.body])");
+      body.dispatchEvent(new Event('click'));
+      body.removeAttribute('onclick');
+      return [initialAlias, idlAlias, idlOrder, attributeAlias, attributeOrder,
+        removedAlias, afterRemoveOrder, framesetAlias, framesetOrder,
+        framesetCleared, clicks];
+    })()"#
+}
+
 fn native_projected_window_document_event_handler_dispatch_script() -> &'static str {
     r#"(() => {
       const frame = document.getElementById('child');
@@ -70301,7 +70482,19 @@ fn native_projected_window_document_event_handler_dispatch_script() -> &'static 
       };
       frameDocument.dispatchEvent(new Event('visibilitychange'));
       frameDocument.onvisibilitychange = null;
-      return [events, aliasesWindow, frameWindow.onload === null, body.onload === null];
+      globalThis.projectedWindowAttributeCalls = [];
+      globalThis.projectedWindowAttributeTarget = frameWindow;
+      frameWindow.projectedWindowAttributeCalls = globalThis.projectedWindowAttributeCalls;
+      frameWindow.projectedWindowAttributeTarget = frameWindow;
+      body.setAttribute('onload', "globalThis.projectedWindowAttributeCalls.push([this === globalThis.projectedWindowAttributeTarget, event.currentTarget === globalThis.projectedWindowAttributeTarget])");
+      const assignedContentAttributeHandler = typeof body.onload === 'function';
+      const contentAttributeAliasesWindow = body.onload === frameWindow.onload;
+      frameWindow.dispatchEvent(new Event('load'));
+      const contentAttributeCalls = globalThis.projectedWindowAttributeCalls.slice();
+      body.removeAttribute('onload');
+      return [events, aliasesWindow, frameWindow.onload === null, body.onload === null,
+        [assignedContentAttributeHandler, contentAttributeAliasesWindow, contentAttributeCalls,
+          frameWindow.onload === null]];
     })()"#
 }
 
@@ -70442,6 +70635,33 @@ async fn native_local_focusin_focusout_bubble_with_related_targets() {
     );
     assert_eq!(
         engine
+            .evaluate_async(native_window_routed_content_attribute_script())
+            .await
+            .unwrap(),
+        serde_json::json!([
+            true,
+            true,
+            ["idl", "tail"],
+            true,
+            ["idl", "tail", "body-replacement", "tail"],
+            true,
+            ["idl", "tail", "body-replacement", "tail", "tail"],
+            true,
+            [
+                "idl",
+                "tail",
+                "body-replacement",
+                "tail",
+                "tail",
+                "tail",
+                "frameset"
+            ],
+            true,
+            [[true, true]],
+        ])
+    );
+    assert_eq!(
+        engine
             .evaluate_async(&native_html_global_event_handler_surface_script())
             .await
             .unwrap(),
@@ -70577,6 +70797,7 @@ async fn native_http_focusin_focusout_persist_in_same_origin_frame() {
             true,
             true,
             true,
+            [true, true, [[true, true]], true],
         ])
     );
     assert_eq!(

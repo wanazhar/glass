@@ -5357,6 +5357,22 @@ cross-platform conformance remain open. See
 [`native-engine-browser-779`](../plan/tasks/native-engine-browser-779.md), and
 [`native-engine-browser-778`](../plan/tasks/native-engine-browser-778.md).
 
+### Body and frameset inline event-handler targets (slice 781)
+
+For event types already mapped to Window by slice 780, body/frameset inline
+content attributes use the same owner-keyed event-handler value and registered
+listener as the corresponding body/frameset and Window IDL properties. An
+attribute update replaces the value without registering a second listener;
+attribute removal deactivates the shared entry. CSP authorization is checked
+against the element and exact source before installation, and a blocked value
+does not replace an active routed handler. An unchanged attribute in a
+refreshed host snapshot does not move the listener's order. Other element
+content attributes remain on their element-owned path. Local and process-backed
+tests cover aliasing, dispatch, ordering, CSP, and same-origin frame ownership.
+This is not complete inline-handler compilation, Window error/beforeunload
+legacy behavior, or event conformance. See the
+[`native-engine-browser-781` task](../plan/tasks/native-engine-browser-781.md).
+
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,

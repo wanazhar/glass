@@ -37545,55 +37545,19 @@ fn document_bootstrap(
   }};
   const installEventHandlerProperty = (element, type, onPrototype = false) => {{
     const targetFor = (receiver) => nativeEventHandlerTargetFor(onPrototype ? receiver : element, type);
-    const keyForTarget = (target) => listenerKey(ownerFor(target), type);
-    const createState = (target) => {{
-      const state = {{ handler: null, active: false, registered: null }};
-      state.registered = event => {{
-        const handler = state.handler;
-        if (!handler) return;
-        const currentTarget = event.currentTarget || target;
-        if (currentTarget === globalThis && type === "error") {{
-          return handler.call(
-            currentTarget,
-            event.message || "",
-            event.filename || "",
-            Number(event.lineno) || 0,
-            Number(event.colno) || 0,
-            event.error || null,
-          );
-        }}
-        return handler.call(currentTarget, event);
-      }};
-      return state;
-    }};
     Object.defineProperty(element, "on" + type, {{
       enumerable: true,
       configurable: onPrototype,
       get() {{
         const target = targetFor(this);
         if (!target) return null;
-        const state = eventHandlers.get(keyForTarget(target));
-        return state ? state.handler : null;
+        return eventHandlerValueFor(target, type);
       }},
       set(next) {{
         const target = targetFor(this);
         if (!target) return;
-        const key = keyForTarget(target);
         const handler = typeof next === "function" ? next : null;
-        let state = eventHandlers.get(key);
-        if (!state && !handler) return;
-        if (!state) {{
-          state = createState(target);
-          eventHandlers.set(key, state);
-        }}
-        state.handler = handler;
-        if (handler && !state.active) {{
-          addListener(ownerFor(target), type, state.registered, false);
-          state.active = true;
-        }} else if (!handler && state.active) {{
-          removeListener(ownerFor(target), type, state.registered, false);
-          eventHandlers.delete(key);
-        }}
+        setEventHandlerValue(target, type, handler, false);
       }},
     }});
   }};
@@ -37655,6 +37619,149 @@ fn document_bootstrap(
     if (target === globalThis) return "window";
     if (target === document) return "document";
     return "node:" + target.nodeIndex;
+  }};
+  const eventHandlerKeyFor = (target, type) => listenerKey(ownerFor(target), type);
+  const eventHandlerStateFor = (target, type, create = false) => {{
+    const key = eventHandlerKeyFor(target, type);
+    let state = eventHandlers.get(key);
+    if (!state && create) {{
+      state = {{ handler: null, active: false, registered: null, contentAttribute: false }};
+      state.registered = event => {{
+        const handler = state.handler;
+        if (!handler) return;
+        const currentTarget = event.currentTarget || target;
+        let result;
+        if (currentTarget === globalThis && type === "error") {{
+          result = handler.call(
+            currentTarget,
+            event.message || "",
+            event.filename || "",
+            Number(event.lineno) || 0,
+            Number(event.colno) || 0,
+            event.error || null,
+          );
+        }} else {{
+          result = handler.call(currentTarget, event);
+        }}
+        if (state.contentAttribute && result === false
+            && event && typeof event.preventDefault === "function") event.preventDefault();
+        return result;
+      }};
+      eventHandlers.set(key, state);
+    }}
+    return {{ key, state }};
+  }};
+  const eventHandlerValueFor = (target, type) => {{
+    const {{ state }} = eventHandlerStateFor(target, type);
+    return state ? state.handler : null;
+  }};
+  const setEventHandlerValue = (target, type, handler, contentAttribute) => {{
+    const {{ key, state: existing }} = eventHandlerStateFor(target, type);
+    if (!existing && !handler) return;
+    const state = existing || eventHandlerStateFor(target, type, true).state;
+    state.handler = handler;
+    state.contentAttribute = Boolean(contentAttribute);
+    if (handler && !state.active) {{
+      addListener(ownerFor(target), type, state.registered, false);
+      state.active = true;
+    }} else if (!handler && state.active) {{
+      removeListener(ownerFor(target), type, state.registered, false);
+      state.active = false;
+    }}
+    if (!handler) eventHandlers.delete(key);
+  }};
+  const nativeInlineEventType = (name) => {{
+    const value = String(name).toLowerCase();
+    if (!value.startsWith("on") || value.length <= 2 || !/^[a-z][a-z0-9]*$/.test(value.slice(2))) return null;
+    try {{ return normalizeEventType(value.slice(2)); }} catch (_error) {{ return null; }}
+  }};
+  const nativeWindowInlineEventTargetFor = (element, type, namespaceURI = null) => {{
+    if (namespaceURI !== null) return null;
+    const target = nativeEventHandlerTargetFor(element, type);
+    return target && target !== element ? target : null;
+  }};
+  const installNativeWindowInlineEventHandler = (type, value, target, records) => {{
+    const previous = records.get(type);
+    let allowed = true;
+    if (typeof globalThis.__glassAllowsInlineEventHandler === "function") {{
+      try {{ allowed = Boolean(globalThis.__glassAllowsInlineEventHandler(value)); }} catch (_error) {{ allowed = false; }}
+    }}
+    if (!allowed) {{
+      if (previous && !previous.shared) removeListener(previous.owner, type, previous.registered, false);
+      if (previous && previous.shared && previous.target !== target)
+        setEventHandlerValue(previous.target, type, null, false);
+      records.set(type, {{
+        source: value,
+        shared: true,
+        target,
+        handler: previous && previous.shared && previous.target === target ? previous.handler : null,
+      }});
+      return;
+    }}
+    let handler;
+    try {{
+      handler = type === "error"
+        ? Function("event", "source", "lineno", "colno", "error", value)
+        : Function("event", value);
+    }} catch (_error) {{
+      setEventHandlerValue(target, type, null, false);
+      records.set(type, {{ source: value, shared: true, target, handler: null }});
+      return;
+    }}
+    if (previous && !previous.shared) removeListener(previous.owner, type, previous.registered, false);
+    if (previous && previous.shared && previous.target !== target)
+      setEventHandlerValue(previous.target, type, null, false);
+    setEventHandlerValue(target, type, handler, true);
+    records.set(type, {{ source: value, shared: true, target, handler }});
+  }};
+  const createNativeWindowInlineAttributeController = (getElement, namespaceForName) => {{
+    const records = new Map();
+    const targetFor = (name, type) =>
+      nativeWindowInlineEventTargetFor(getElement(), type, namespaceForName(name));
+    const set = (name, source) => {{
+      const type = nativeInlineEventType(name);
+      if (!type) return;
+      const target = targetFor(name, type);
+      if (target) {{
+        installNativeWindowInlineEventHandler(
+          type,
+          String(source === null || source === undefined ? "" : source),
+          target,
+          records,
+        );
+        return;
+      }}
+      const previous = records.get(type);
+      if (previous && previous.shared) setEventHandlerValue(previous.target, type, null, false);
+      records.delete(type);
+    }};
+    const remove = (name, hadAttribute = true) => {{
+      if (!hadAttribute) return;
+      const type = nativeInlineEventType(name);
+      if (!type) return;
+      const record = records.get(type);
+      const target = record && record.shared ? record.target : targetFor(name, type);
+      if (target) setEventHandlerValue(target, type, null, false);
+      records.delete(type);
+    }};
+    const refresh = (attributes) => {{
+      const current = new Map();
+      for (const [name, value] of Object.entries(attributes || {{}})) {{
+        const type = nativeInlineEventType(name);
+        if (type) current.set(type, {{ name, value: String(value) }});
+      }}
+      for (const type of records.keys()) {{
+        if (!current.has(type)) remove("on" + type);
+      }}
+      for (const [type, attribute] of current) {{
+        const target = targetFor(attribute.name, type);
+        const record = records.get(type);
+        if (record && record.source === attribute.value && record.shared === Boolean(target)
+            && (!target || record.target === target)) continue;
+        set(attribute.name, attribute.value);
+      }}
+    }};
+    return {{ set, remove, refresh }};
   }};
   const invokeListeners = (target, event, capture, phase) => {{
     const owner = ownerFor(target);
@@ -39785,7 +39892,7 @@ fn document_bootstrap(
           : null;
         delete entry.attributes[key];
         delete entry.attributeNamespaces[key];
-        removeInlineAttributeHandler(key);
+        removeInlineAttributeHandler(key, oldValue !== null);
         if (["src", "srcset", "sizes"].includes(key) && element.tagName === "IMG") resetImageState(key === "src");
         if ((element.tagName === "AUDIO" || element.tagName === "VIDEO") && key === "src") resetMediaState();
         if (element.tagName === "SOURCE" && ["src", "type"].includes(key)
@@ -39985,18 +40092,70 @@ fn document_bootstrap(
       try {{ return normalizeEventType(value.slice(2)); }} catch (_error) {{ return null; }}
     }};
     const inlineAttributeOwner = () => ownerFor(element);
-    const removeInlineAttributeHandler = (name) => {{
+    const inlineAttributeWindowTarget = (name, type) => {{
+      if (element.namespaceURI !== HTML_NAMESPACE) return null;
+      const attributeName = String(name).toLowerCase();
+      for (const [qualifiedName, namespace] of Object.entries(entry.attributeNamespaces || {{}})) {{
+        if (qualifiedName.toLowerCase() === attributeName && namespace !== null && namespace !== undefined) return null;
+      }}
+      const target = nativeEventHandlerTargetFor(element, type);
+      return target && target !== element ? target : null;
+    }};
+    const removeInlineAttributeHandler = (name, deactivateShared = true) => {{
       const type = inlineEventType(name);
       if (!type) return;
-      const registered = inlineAttributeHandlers.get(type);
-      if (registered) removeListener(inlineAttributeOwner(), type, registered, false);
+      const record = inlineAttributeHandlers.get(type);
+      if (record && record.shared) {{
+        if (deactivateShared) setEventHandlerValue(record.target, type, null, false);
+      }} else if (record) {{
+        removeListener(record.owner, type, record.registered, false);
+      }} else {{
+        const target = inlineAttributeWindowTarget(name, type);
+        if (deactivateShared && target) setEventHandlerValue(target, type, null, false);
+      }}
       inlineAttributeHandlers.delete(type);
     }};
     const installInlineAttributeHandler = (name, source) => {{
       const type = inlineEventType(name);
       if (!type) return;
+      const value = String(source === null || source === undefined ? "" : source);
+      const target = inlineAttributeWindowTarget(name, type);
+      const previous = inlineAttributeHandlers.get(type);
+      if (target) {{
+        let allowed = true;
+        if (typeof globalThis.__glassAllowsInlineEventHandler === "function") {{
+          try {{ allowed = Boolean(globalThis.__glassAllowsInlineEventHandler(value)); }} catch (_error) {{ allowed = false; }}
+        }}
+        if (!allowed) {{
+          if (previous && !previous.shared) removeListener(previous.owner, type, previous.registered, false);
+          if (previous && previous.shared && previous.target !== target)
+            setEventHandlerValue(previous.target, type, null, false);
+          inlineAttributeHandlers.set(type, {{
+            source: value,
+            shared: true,
+            target,
+            handler: previous && previous.shared && previous.target === target ? previous.handler : null,
+          }});
+          return;
+        }}
+        let handler;
+        try {{
+          handler = type === "error"
+            ? Function("event", "source", "lineno", "colno", "error", value)
+            : Function("event", value);
+        }} catch (_error) {{
+          setEventHandlerValue(target, type, null, false);
+          inlineAttributeHandlers.set(type, {{ source: value, shared: true, target, handler: null }});
+          return;
+        }}
+        if (previous && !previous.shared) removeListener(previous.owner, type, previous.registered, false);
+        if (previous && previous.shared && previous.target !== target)
+          setEventHandlerValue(previous.target, type, null, false);
+        setEventHandlerValue(target, type, handler, true);
+        inlineAttributeHandlers.set(type, {{ source: value, shared: true, target, handler }});
+        return;
+      }}
       removeInlineAttributeHandler(name);
-      const value = String(source || "");
       if (!value) return;
       let allowed = true;
       if (typeof globalThis.__glassAllowsInlineEventHandler === "function") {{
@@ -40010,16 +40169,34 @@ fn document_bootstrap(
           if (handler.call(element, event) === false && event && typeof event.preventDefault === "function") event.preventDefault();
         }} catch (_error) {{}}
       }};
-      inlineAttributeHandlers.set(type, registered);
-      addListener(inlineAttributeOwner(), type, registered, false);
+      const owner = inlineAttributeOwner();
+      inlineAttributeHandlers.set(type, {{ source: value, shared: false, owner, registered }});
+      addListener(owner, type, registered, false);
     }};
     const clearInlineAttributeHandlers = () => {{
-      for (const [type, registered] of inlineAttributeHandlers) removeListener(inlineAttributeOwner(), type, registered, false);
+      for (const [type, record] of inlineAttributeHandlers) {{
+        if (!record.shared) removeListener(record.owner, type, record.registered, false);
+      }}
       inlineAttributeHandlers.clear();
     }};
     const refreshInlineAttributeHandlers = () => {{
-      clearInlineAttributeHandlers();
-      for (const [name, value] of Object.entries(entry.attributes || {{}})) installInlineAttributeHandler(name, value);
+      const attributes = new Map();
+      for (const [name, value] of Object.entries(entry.attributes || {{}})) {{
+        const type = inlineEventType(name);
+        if (type) attributes.set(type, {{ name, value: String(value) }});
+      }}
+      for (const type of inlineAttributeHandlers.keys()) {{
+        if (!attributes.has(type)) removeInlineAttributeHandler("on" + type);
+      }}
+      for (const [type, attribute] of attributes) {{
+        const target = inlineAttributeWindowTarget(attribute.name, type);
+        const record = inlineAttributeHandlers.get(type);
+        if (record
+            && record.source === attribute.value
+            && record.shared === Boolean(target)
+            && (!target || record.target === target)) continue;
+        installInlineAttributeHandler(attribute.name, attribute.value);
+      }}
     }};
     Object.defineProperty(element, "__glassChildren", {{
       enumerable: false,
@@ -40428,7 +40605,6 @@ fn document_bootstrap(
       enumerable: false,
       configurable: false,
       value(nextEntry, nextExactTextForNode = exactTextForNode) {{
-        clearInlineAttributeHandlers();
         entry = nextEntry;
         computedStyle = nextEntry.computedStyle && typeof nextEntry.computedStyle === "object"
           ? nextEntry.computedStyle
@@ -48147,6 +48323,54 @@ fn document_bootstrap(
         const value = attributeNamespaces[String(name)];
         return value === undefined || value === "" ? null : String(value);
       }};
+      const inlineAttributeHandlers = new Map();
+      const frameInlineEventTarget = (name, type) =>
+        nativeWindowInlineEventTargetFor(projected, type, frameAttributeNamespace(name));
+      const updateFrameInlineAttributeHandler = (name, source) => {{
+        const type = nativeInlineEventType(name);
+        if (!type) return;
+        const target = frameInlineEventTarget(name, type);
+        if (target) {{
+          installNativeWindowInlineEventHandler(
+            type,
+            String(source === null || source === undefined ? "" : source),
+            target,
+            inlineAttributeHandlers,
+          );
+          return;
+        }}
+        const previous = inlineAttributeHandlers.get(type);
+        if (previous && previous.shared) setEventHandlerValue(previous.target, type, null, false);
+        inlineAttributeHandlers.delete(type);
+      }};
+      const removeFrameInlineAttributeHandler = (name, hadAttribute = true) => {{
+        if (!hadAttribute) return;
+        const type = nativeInlineEventType(name);
+        if (!type) return;
+        const record = inlineAttributeHandlers.get(type);
+        const target = record && record.shared ? record.target : frameInlineEventTarget(name, type);
+        if (target) setEventHandlerValue(target, type, null, false);
+        inlineAttributeHandlers.delete(type);
+      }};
+      const refreshFrameInlineAttributeHandlers = () => {{
+        const current = new Map();
+        for (const [name, value] of Object.entries(attributes)) {{
+          const type = nativeInlineEventType(name);
+          if (type) current.set(type, {{ name, value: String(value) }});
+        }}
+        for (const type of inlineAttributeHandlers.keys()) {{
+          if (!current.has(type)) removeFrameInlineAttributeHandler("on" + type);
+        }}
+        for (const [type, attribute] of current) {{
+          const target = frameInlineEventTarget(attribute.name, type);
+          const record = inlineAttributeHandlers.get(type);
+          if (record
+              && record.source === attribute.value
+              && record.shared === Boolean(target)
+              && (!target || record.target === target)) continue;
+          updateFrameInlineAttributeHandler(attribute.name, attribute.value);
+        }}
+      }};
       const frameStoredAttributeLocalName = (name) =>
         storedAttributeLocalName(name, frameAttributeNamespace(name));
       const setFrameNamespacedAttribute = (namespace, name, nextValue) => {{
@@ -48157,6 +48381,7 @@ fn document_bootstrap(
       attributes[qualified] = stringValue;
       if (namespaceURI === null) delete attributeNamespaces[qualified];
       else attributeNamespaces[qualified] = namespaceURI;
+      updateFrameInlineAttributeHandler(qualified, stringValue);
       projected.__glassSyncContent();
       if (typeof projected.__glassSyncAttributeNodes === "function") projected.__glassSyncAttributeNodes();
       queueFrameCommand(currentBinding, {{
@@ -48185,6 +48410,7 @@ fn document_bootstrap(
         if (key === undefined) return;
         delete attributes[key];
         delete attributeNamespaces[key];
+        removeFrameInlineAttributeHandler(key, namespaceURI === null);
         projected.__glassSyncContent();
         if (typeof projected.__glassSyncAttributeNodes === "function") projected.__glassSyncAttributeNodes();
         queueFrameCommand(currentBinding, {{
@@ -48313,6 +48539,7 @@ fn document_bootstrap(
           const stringValue = String(nextValue);
           attributes[key] = stringValue;
           delete attributeNamespaces[key];
+          updateFrameInlineAttributeHandler(key, stringValue);
           if (key === "disabled") disabled = true;
           if (key === "hidden") hidden = true;
           if (key === "multiple") multiple = true;
@@ -48324,8 +48551,12 @@ fn document_bootstrap(
         }},
         removeAttribute(name) {{
           const key = String(name).toLowerCase();
+          const oldValue = Object.prototype.hasOwnProperty.call(attributes, key)
+            ? String(attributes[key])
+            : null;
           delete attributes[key];
           delete attributeNamespaces[key];
+          removeFrameInlineAttributeHandler(key, oldValue !== null);
           if (key === "disabled") disabled = false;
           if (key === "hidden") hidden = false;
           if (key === "multiple") multiple = false;
@@ -48434,6 +48665,11 @@ fn document_bootstrap(
           return child;
         }},
       }};
+      Object.defineProperty(projected, "__glassRefreshInlineEventHandlers", {{
+        enumerable: false,
+        configurable: false,
+        value: refreshFrameInlineAttributeHandlers,
+      }});
       installCommonAttributeProperties(projected, {{
         disabled: () => disabled,
         hidden: () => hidden,
@@ -48773,6 +49009,7 @@ fn document_bootstrap(
           disabled = Boolean(nextEntry.disabled);
           hidden = Boolean(nextEntry.hidden);
           multiple = Object.prototype.hasOwnProperty.call(attributes, "multiple");
+          refreshFrameInlineAttributeHandlers();
           if (typeof projected.__glassSyncAttributeNodes === "function") projected.__glassSyncAttributeNodes();
         }},
       }});
@@ -49004,17 +49241,25 @@ fn document_bootstrap(
         const value = attributeNamespaces[String(name)];
         return value === undefined || value === "" ? null : String(value);
       }};
+      const inlineEventHandlers = createNativeWindowInlineAttributeController(
+        () => projected,
+        frameAttributeNamespace,
+      );
+      const updateFrameInlineAttributeHandler = inlineEventHandlers.set;
+      const removeFrameInlineAttributeHandler = inlineEventHandlers.remove;
+      const refreshFrameInlineAttributeHandlers = () => inlineEventHandlers.refresh(attributes);
       const frameStoredAttributeLocalName = (name) =>
         storedAttributeLocalName(name, frameAttributeNamespace(name));
       const setFrameNamespacedAttribute = (namespace, name, nextValue) => {{
         const namespaceURI = normalizeAttributeNamespace(namespace);
         const qualified = qualifiedAttributeName(name, namespaceURI);
-        const stringValue = String(nextValue);
-        if (stringValue.length > storageValueLimit) throw new RangeError("native frame attribute value exceeds its limit");
-        attributes[qualified] = stringValue;
-        if (namespaceURI === null) delete attributeNamespaces[qualified];
-        else attributeNamespaces[qualified] = namespaceURI;
-        projected.__glassSyncContent();
+          const stringValue = String(nextValue);
+          if (stringValue.length > storageValueLimit) throw new RangeError("native frame attribute value exceeds its limit");
+          attributes[qualified] = stringValue;
+          if (namespaceURI === null) delete attributeNamespaces[qualified];
+          else attributeNamespaces[qualified] = namespaceURI;
+          updateFrameInlineAttributeHandler(qualified, stringValue);
+          projected.__glassSyncContent();
         if (typeof projected.__glassSyncAttributeNodes === "function") projected.__glassSyncAttributeNodes();
         queueFrameCommand(currentBinding, {{
           kind: "setAttribute",
@@ -49042,6 +49287,7 @@ fn document_bootstrap(
         if (key === undefined) return;
         delete attributes[key];
         delete attributeNamespaces[key];
+        removeFrameInlineAttributeHandler(key, namespaceURI === null);
         projected.__glassSyncContent();
         if (typeof projected.__glassSyncAttributeNodes === "function") projected.__glassSyncAttributeNodes();
         queueFrameCommand(currentBinding, {{
@@ -49103,6 +49349,7 @@ fn document_bootstrap(
           const stringValue = String(nextValue);
           attributes[key] = stringValue;
           delete attributeNamespaces[key];
+          updateFrameInlineAttributeHandler(key, stringValue);
           if (key === "disabled") disabled = true;
           if (key === "hidden") hidden = true;
           if (key === "multiple") multiple = true;
@@ -49118,6 +49365,7 @@ fn document_bootstrap(
           if (namespaceURI === null) delete attributeNamespaces[qualifiedName];
           else attributeNamespaces[qualifiedName] = namespaceURI;
           const key = qualifiedName.toLowerCase();
+          updateFrameInlineAttributeHandler(key, stringValue);
           if (key === "disabled") disabled = true;
           if (key === "hidden") hidden = true;
           if (key === "multiple") multiple = true;
@@ -49135,8 +49383,12 @@ fn document_bootstrap(
         }},
         removeAttribute(name) {{
           const key = String(name).toLowerCase();
+          const oldValue = Object.prototype.hasOwnProperty.call(attributes, key)
+            ? String(attributes[key])
+            : null;
           delete attributes[key];
           delete attributeNamespaces[key];
+          removeFrameInlineAttributeHandler(key, oldValue !== null);
           if (key === "disabled") disabled = false;
           if (key === "hidden") hidden = false;
           if (key === "multiple") multiple = false;
@@ -49312,6 +49564,7 @@ fn document_bootstrap(
             ? nextEntry.attributeNamespaces
             : {{}};
           for (const [name, namespace] of Object.entries(nextAttributeNamespaces)) attributeNamespaces[name] = String(namespace);
+          refreshFrameInlineAttributeHandlers();
           textContent = snapshotElementTextContent(nextEntry, nextExactTextForNode);
           innerHtml = String(nextEntry.innerHtml || "");
           templateContentIndex = nextEntry.templateContentIndex == null ? null : Number(nextEntry.templateContentIndex);
@@ -50082,6 +50335,10 @@ fn document_bootstrap(
       topologyKey,
       document: frameDocument,
     }});
+    for (const element of frameElements) {{
+      if (typeof element.__glassRefreshInlineEventHandlers === "function")
+        element.__glassRefreshInlineEventHandlers();
+    }}
     return frameDocument;
   }};
   globalThis.__glassDispatchFrameEvents = (frameId, events) => {{

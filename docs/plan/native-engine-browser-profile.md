@@ -153,6 +153,17 @@ WPT conformance remain open. See the [slice 780 task](tasks/native-engine-browse
 the [slice 779 task](tasks/native-engine-browser-779.md), and the
 [slice 778 task](tasks/native-engine-browser-778.md).
 
+Slice 781 routes body/frameset content attributes for the Window-targeted
+event names through the same owner-keyed handler value and listener slot as
+their IDL properties and the owning Window. CSP authorization is checked
+against the element and exact source before the value is installed; a blocked
+replacement does not overwrite an active routed handler. Unchanged projected
+attributes do not reactivate the listener during snapshot refresh. Ordinary
+element content attributes remain element-owned. This does not complete
+inline-handler lexical environments, all `onerror`/`onbeforeunload` legacy
+behavior, CSP reporting, or event/WPT conformance; see the
+[slice 781 task](tasks/native-engine-browser-781.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

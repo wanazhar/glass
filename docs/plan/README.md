@@ -145,6 +145,10 @@ and content-attribute handlers even on non-cancelable events; later listeners
 still run, and Window `onerror` and `onbeforeunload` keep distinct paths. Local
 tests cover both handler sources; see the
 [slice 783 task](tasks/native-engine-browser-783.md).
+Slice 784 connects Window `onbeforeunload`'s nullable-`DOMString` callback
+return and `BeforeUnloadEvent.returnValue` to the existing cancellation and
+prompt gate; it does not change prompt policy. See the
+[slice 784 task](tasks/native-engine-browser-784.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

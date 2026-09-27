@@ -181,6 +181,16 @@ special Window `onerror` and `onbeforeunload` return paths distinct.
 Worker-specific event dispatch wrappers remain separate work. See the
 [slice 783 task](tasks/native-engine-browser-783.md).
 
+Slice 784 implements the typed Window `onbeforeunload` return path on native
+`BeforeUnloadEvent`s: `null`/`undefined` do not cancel, other values are
+converted to `DOMString` and cancel, and the first returned string fills an
+empty `returnValue`. Explicit `returnValue` assignments use `DOMString`
+conversion. This feeds the already-existing host prompt gate without changing
+sticky-activation policy or exposing page-provided prompt text. Plain
+`Event("beforeunload")` does not take the special return path. Conversion
+exception reporting remains open; see the
+[slice 784 task](tasks/native-engine-browser-784.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

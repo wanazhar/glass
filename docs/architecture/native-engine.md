@@ -5404,6 +5404,21 @@ coverage exercises IDL and content-attribute handlers, non-cancelable events,
 continued listeners, non-false returns, and the Window error exception. See
 the [`native-engine-browser-783` task](../plan/tasks/native-engine-browser-783.md).
 
+### Typed `onbeforeunload` return handling (slice 784, in progress)
+
+The native navigation owner and host prompt are already implemented, but the
+Window `onbeforeunload` event-handler slot does not yet apply its nullable
+`DOMString` return conversion. This slice gives host-generated
+`beforeunload` events the `BeforeUnloadEvent` interface and converts handler
+returns so `null`/`undefined` do not cancel, while every other value cancels;
+the first non-empty return value is stored only when `returnValue` is still
+empty. Explicit `returnValue` assignment also performs `DOMString`
+conversion. This only feeds the existing canceled-state/prompt path: sticky
+activation, generic browser-controlled prompt copy, authorization, and host
+decisions do not change. A plain `Event("beforeunload")` is not treated as a
+`BeforeUnloadEvent`. Conversion exception reporting remains separate. See the
+[`native-engine-browser-784` task](../plan/tasks/native-engine-browser-784.md).
+
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,

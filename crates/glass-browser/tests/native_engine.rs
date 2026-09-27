@@ -10232,6 +10232,184 @@ async fn native_content_process_service_worker_transfers_message_port_round_trip
 }
 
 #[tokio::test]
+async fn native_content_process_service_worker_message_port_callback_errors_stay_global() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let page = r#"<script>
+globalThis.swEvents = [];
+globalThis.clientErrors = [];
+navigator.serviceWorker.addEventListener('error', event => clientErrors.push(['container', event.message]));
+globalThis.registrationPromise = navigator.serviceWorker.register('/sw-port-errors.js', { scope: '/' });
+</script><main>service worker MessagePort callback errors</main>"#;
+    let worker_script = r#"const reports = [];
+const callbackTrace = [];
+let messageReportStart = 0;
+let messageTraceStart = 0;
+onerror = (message, filename, line, column, error) => {
+  const cancel = message === 'handled service port error';
+  reports.push({ phase: 'onerror', message, cancel, errorIsError: error instanceof Error });
+  callbackTrace.push('global:onerror:' + message);
+  return cancel;
+};
+addEventListener('error', event => {
+  reports.push({
+    phase: 'error-listener', message: event.message, defaultPrevented: event.defaultPrevented,
+    cancelable: event.cancelable, targetIsGlobal: event.target === self,
+    currentTargetIsGlobal: event.currentTarget === self,
+  });
+  callbackTrace.push('global:error:' + event.message);
+});
+addEventListener('message', event => {
+  const port = event.ports[0];
+  if (!port) return;
+  port.onmessage = message => {
+    const kind = message.data.kind;
+    messageReportStart = reports.length;
+    messageTraceStart = callbackTrace.length;
+    callbackTrace.push('port:onmessage:' + kind);
+    if (kind === 'handled') throw new Error('handled service port error');
+  };
+  port.addEventListener('message', message => {
+    const kind = message.data.kind;
+    callbackTrace.push('port:listener-one:' + kind);
+    if (kind === 'unhandled') throw 'unhandled service port error';
+  });
+  port.addEventListener('message', message => {
+    const kind = message.data.kind;
+    callbackTrace.push('port:listener-two:' + kind);
+    port.postMessage({
+      kind: 'reply', request: kind,
+      trace: callbackTrace.slice(messageTraceStart),
+      reports: reports.slice(messageReportStart),
+    });
+  });
+  port.start();
+  port.postMessage({ kind: 'ready' });
+});"#;
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            ("/service-port-error-page", "text/html", page),
+            (
+                "/sw-port-errors.js",
+                "application/javascript",
+                worker_script,
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/service-port-error-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(reg => { globalThis.activeServiceWorker = reg.active; reg.active.addEventListener('error', event => clientErrors.push(['worker', event.message])); globalThis.channel = new MessageChannel(); channel.port2.onmessage = event => swEvents.push(event.data); channel.port2.start(); reg.active.postMessage({ kind: 'connect' }, [channel.port1]); return reg.active.state; })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("activated")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({ swEvents, clientErrors })")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "swEvents": [{ "kind": "ready" }],
+            "clientErrors": [],
+        })
+    );
+
+    for (kind, trace, reports) in [
+        (
+            "handled",
+            vec![
+                "port:onmessage:handled",
+                "global:onerror:handled service port error",
+                "global:error:handled service port error",
+                "port:listener-one:handled",
+                "port:listener-two:handled",
+            ],
+            serde_json::json!([
+                { "phase": "onerror", "message": "handled service port error", "cancel": true, "errorIsError": true },
+                {
+                    "phase": "error-listener", "message": "handled service port error",
+                    "defaultPrevented": true, "cancelable": true,
+                    "targetIsGlobal": true, "currentTargetIsGlobal": true,
+                },
+            ]),
+        ),
+        (
+            "unhandled",
+            vec![
+                "port:onmessage:unhandled",
+                "port:listener-one:unhandled",
+                "global:onerror:unhandled service port error",
+                "global:error:unhandled service port error",
+                "port:listener-two:unhandled",
+            ],
+            serde_json::json!([
+                { "phase": "onerror", "message": "unhandled service port error", "cancel": false, "errorIsError": false },
+                {
+                    "phase": "error-listener", "message": "unhandled service port error",
+                    "defaultPrevented": false, "cancelable": true,
+                    "targetIsGlobal": true, "currentTargetIsGlobal": true,
+                },
+            ]),
+        ),
+        (
+            "alive",
+            vec![
+                "port:onmessage:alive",
+                "port:listener-one:alive",
+                "port:listener-two:alive",
+            ],
+            serde_json::json!([]),
+        ),
+    ] {
+        assert_eq!(
+            engine
+                .evaluate_async(&format!(
+                    "channel.port2.postMessage({{ kind: '{kind}' }}); true"
+                ))
+                .await
+                .unwrap(),
+            serde_json::json!(true),
+            "page-to-Service-Worker port send for {kind}",
+        );
+        let page_state = engine
+            .evaluate_async("({ swEvents, clientErrors, workerState: activeServiceWorker.state })")
+            .await
+            .unwrap();
+        let service_worker_events = page_state["swEvents"].as_array().unwrap();
+        assert_eq!(
+            service_worker_events.last(),
+            Some(&serde_json::json!({
+                "kind": "reply", "request": kind, "trace": trace, "reports": reports,
+            })),
+            "reply after Service Worker MessagePort callback {kind}",
+        );
+        assert_eq!(page_state["clientErrors"], serde_json::json!([]));
+        assert_eq!(page_state["workerState"], serde_json::json!("activated"));
+    }
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_runs_service_worker_timer_on_next_page_turn() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

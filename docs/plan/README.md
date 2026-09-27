@@ -197,15 +197,16 @@ Slice 791 reports exceptions from SharedWorker `onconnect` and registered
 shared-global runtime errors out to individual page `SharedWorker` objects.
 The process-backed two-connection regression verifies both callback forms,
 later listener/connection delivery, global error-event state, connected-port
-acknowledgements, and absence of owner errors. MessagePort callback errors and
-post-error page-to-worker port delivery remain unresolved and are scoped in
-the active slice 792 contract, along with complete worker error/WPT behavior;
-see the [slice 791 task](tasks/native-engine-browser-791.md) and
+acknowledgements, and absence of owner errors. The exploratory post-error echo
+probe installed no worker-side MessagePort
+receiver and therefore did not demonstrate a delivery failure. Slice 792 adds
+that receiver, verifies page-to-worker request/reply after a connect callback
+exception, reports SharedWorker MessagePort handler/listener exceptions at the
+shared global, and checks later listeners, subsequent messages, cancellation
+state, and absence of page-owner errors. This does not claim generic scheduler,
+cross-realm MessagePort, or complete worker/WPT behavior; see the
+[slice 791 task](tasks/native-engine-browser-791.md) and
 [slice 792 task](tasks/native-engine-browser-792.md).
-Slice 792 first verifies post-error page-to-worker delivery with an actual
-worker-side MessagePort receiver, then covers SharedWorker MessagePort callback
-error reporting and recovery. No generic scheduler or cross-realm MessagePort
-behavior is claimed; see the [slice 792 contract](tasks/native-engine-browser-792.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

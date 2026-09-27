@@ -3687,11 +3687,14 @@ delivery, and worker reuse for a second connection, while keeping these
 shared-global errors from being forwarded to individual page `SharedWorker`
 objects. The process-backed regression covers thrown Error and primitive
 values, cancellation state, port acknowledgements, and no owner error events.
-An exploratory page-to-worker echo after a connect callback exception was not
-observed, despite the existing no-error round-trip regression passing; this
-post-error delivery/scheduling interaction and MessagePort callback reporting
-are next slice 792 work. Broader worker exception/WPT conformance remains open;
-see [task 791](../tasks/native-engine-browser-791.md).
+The exploratory post-error page-to-worker probe installed no worker-side
+MessagePort handler, so its missing reply did not demonstrate broken delivery.
+Slice 792 installs an explicit receiver, verifies request/reply after the
+connect-callback exception, and reports MessagePort callback failures at the
+SharedWorker global while preserving later listeners, replies, and the port.
+Broader worker exception/WPT conformance remains open; see
+[task 791](../tasks/native-engine-browser-791.md) and
+[task 792](../tasks/native-engine-browser-792.md).
 
 The completed
 `native-engine-browser-402` slice closes the WebSocket report-only CSP owner

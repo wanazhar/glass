@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-792
 scope: glass-browser/shared-worker-message-port-callback-errors
-status: in_progress
+status: completed
 depends-on: [native-engine-browser-791]
 ---
 
@@ -35,11 +35,11 @@ port delivery, or the shared runtime.
 
 ## Contract
 
-- The process-backed regression must install a worker-side `MessagePort`
-  receiver before claiming page-to-worker delivery. It must send through the
-  ports connected before and after the slice 791 callback failures and verify
-  worker receipt and a reply to the page. This explicitly avoids treating a
-  missing reply as a delivery failure when no worker reply handler exists.
+- The process-backed regression installs a worker-side `MessagePort` receiver
+  before claiming page-to-worker delivery. It sends through the port connected
+  after an `onconnect` callback exception and verifies worker receipt and a
+  reply to the page. This explicitly avoids treating a missing reply as a
+  delivery failure when no worker reply handler exists.
 - If that baseline fails, isolate the page command route, worker dispatch, and
   host-turn scheduling boundary in the same regression before changing those
   paths. Do not redesign task scheduling or the generic message transport
@@ -95,6 +95,31 @@ port delivery, or the shared runtime.
 
 ## Implementation and verification
 
-Contract approved before implementation. Record the precise regression and
-scoped local verification commands here after the behavior is implemented.
-Remote CI and complete worker/MessagePort conformance remain issue #40 gates.
+The contract checkpoint is `1345c434`; implementation and the focused
+process-backed regression are committed in `dcc8d31d`.
+
+The initial no-reply observation in slice 791 was corrected after inspection:
+that probe had no worker-side message receiver and therefore did not establish
+a delivery defect. This slice's process-backed test installs a real receiver,
+then proves delivery and reply after a connect callback exception. It also
+proves that a throwing MessagePort `onmessage` callback is reported before
+later message listeners and that a throwing registered listener is reported
+before the next listener. Exact-`true` global cancellation, uncanceled error
+state, continued replies, a later healthy message, and no page-owner errors
+are all asserted.
+
+Passed locally:
+
+- `cargo check -p glass-browser --test native_engine --locked --quiet`.
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_content_process_shared_worker_message_port_callback_errors_recover --exact --test-threads=1` (1 passed).
+- The freshly rebuilt `native_engine` integration binary passed
+  `native_content_process_reports_shared_worker_connect_callback_errors_at_global`,
+  `native_content_process_shared_worker_reuses_named_runtime_and_ports`, and
+  `native_local_dedicated_worker_message_callback_errors_report_and_forward_in_order` (1 each).
+- `rustfmt --edition 2024 --check` on `javascript.rs` and `native_engine.rs`,
+  plus `git diff --check`.
+
+The process-backed target emits existing native-DOM dead-code warnings.
+Remote CI, full worker/MessagePort Web Platform Test conformance,
+cross-platform certification, and issue #40's production/release gates remain
+open.

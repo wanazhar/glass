@@ -43,10 +43,11 @@ ordinary native hyperlinks.
   effect on the next action without stale geometry.
 - Support the HTML `default`, `rect`, `circle`, and `poly` shape states,
   including coordinate-list normalization, empty-shape behavior, rectangle
-  endpoint normalization, and shape-boundary cases. Scale coordinates against
-  the image's displayed width and height; browser zoom and CSS/SVG transforms
-  do not change the map's coordinate system. A missing or invalid `shape` uses
-  the HTML rectangle default.
+  endpoint normalization, and shape-boundary cases. Interpret coordinates in
+  the displayed image's CSS-pixel coordinate space after width/height layout;
+  do not normalize coordinate values against natural image pixels. Browser
+  zoom and CSS/SVG transforms do not change the map coordinate values. A
+  missing or invalid `shape` uses the HTML rectangle default.
 - Areas layer in map tree order with the first matching area topmost. A
   topmost area without `href` still receives the pointer event and does not
   activate a lower overlapping hyperlink. If no area covers the point, the

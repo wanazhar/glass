@@ -31661,6 +31661,8 @@ fn native_xml_document_script() -> String {
 }
 
 const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
+  globalThis.__glassReportWorkerMessagePortCallbackException = (error) =>
+    reportWorkerCallbackException(error, false);
   const rejectServiceWorkerDynamicImport = (specifier, options) => {
     const intrinsics = globalThis.__glassDynamicImportIntrinsics;
     return new intrinsics.PromiseConstructor((resolve, reject) => {

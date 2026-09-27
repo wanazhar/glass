@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-794
 scope: glass-browser/service-worker-message-port-callback-errors
-status: in_progress
+status: completed
 depends-on: [native-engine-browser-793]
 ---
 
@@ -83,7 +83,23 @@ worker and port for later messages.
 
 ## Implementation and verification
 
-Commit the design contract before implementation. Record the exact
-process-backed regression and scoped local verification commands here after
-implementation. Remote CI and complete worker/MessagePort conformance remain
-issue #40 gates.
+Contract checkpoint: `a93b89a6`; implementation and process-backed regression:
+`54d5693e`.
+
+The Service Worker MessagePort callback reporter uses the existing global
+worker-script error path with owner forwarding disabled. The regression
+`native_content_process_service_worker_message_port_callback_errors_stay_global`
+covers a handled `onmessage` Error, an uncanceled listener primitive, global
+report order, later listener execution, replies after both exceptions, a later
+healthy message, active Service Worker state, and no client-side errors.
+
+Passed locally:
+
+- `cargo check -p glass-browser --test native_engine --locked --quiet`
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_content_process_service_worker_message_port_callback_errors_stay_global --exact --test-threads=1`
+- Direct process-backed regression `native_content_process_service_worker_transfers_message_port_round_trip` (1 passed).
+- Rustfmt check for the touched JavaScript and native-engine test sources; `git diff --check`.
+
+The integration target emits existing native-DOM dead-code warnings. Remote CI
+and complete Service Worker, MessagePort, and WPT conformance remain issue #40
+gates.

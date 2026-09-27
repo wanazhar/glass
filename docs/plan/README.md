@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is locally complete through
-`native-engine-browser-793`. Slice 767 verifies native hyperlink Enter
+`native-engine-browser-794`. Slice 767 verifies native hyperlink Enter
 activation through local and process-backed `_blank` target and download
 defaults, including cancellation and opener preservation; see the
 [slice 767 task](tasks/native-engine-browser-767.md) for local evidence and
@@ -216,12 +216,15 @@ SharedWorker and Service Worker port paths and regular transfer regressions
 also pass. Page, BroadcastChannel, and generic scheduler behavior did not
 change; complete worker/WPT conformance remains open. See the
 [slice 793 task](tasks/native-engine-browser-793.md).
-Slice 794 is scoped to Service Worker MessagePort callback exceptions. It will
-report these failures at the Service Worker global, keep them from being
-forwarded to page clients, and verify that later listeners, replies, and the
-worker remain available. DedicatedWorker, SharedWorker, page, BroadcastChannel,
-and general scheduler behavior remain unchanged. See the
-[slice 794 contract](tasks/native-engine-browser-794.md).
+Slice 794 reports Service Worker MessagePort handler/listener exceptions at
+the ServiceWorkerGlobalScope without forwarding them to clients. Its
+process-backed transferred-port regression verifies exact-`true` global
+`onerror` cancellation, an uncanceled primitive error, report order before
+later port callbacks, continued replies, subsequent port reuse, active worker
+state, and absence of client-side error events. The scoped native-engine check,
+focused regression, and Service Worker port round-trip passed locally. This
+does not claim complete Service Worker, MessagePort, or WPT conformance; see
+the [slice 794 task](tasks/native-engine-browser-794.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

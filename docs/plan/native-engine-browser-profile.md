@@ -282,6 +282,14 @@ and BroadcastChannel behavior remains unchanged. This does not claim full
 worker or MessagePort WPT conformance; see the
 [slice 793 task](tasks/native-engine-browser-793.md).
 
+Slice 794 reports Service Worker MessagePort callback exceptions at
+ServiceWorkerGlobalScope, applies exact-`true` global `onerror` cancellation,
+and does not forward those errors to clients. A process-backed transferred-port
+regression verifies later listener delivery, replies, subsequent port use,
+active worker state, and absence of client-side error events. This focused
+slice is not complete Service Worker, MessagePort, or WPT conformance; see the
+[slice 794 task](tasks/native-engine-browser-794.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

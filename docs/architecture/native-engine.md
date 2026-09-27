@@ -3702,6 +3702,15 @@ ErrorEvent properties. It leaves SharedWorker, Service Worker, page, and
 BroadcastChannel semantics unchanged; full worker/WPT conformance remains
 open. See [task 793](../plan/tasks/native-engine-browser-793.md).
 
+Slice 794 applies the worker-global reporter to Service Worker MessagePort
+handlers and listeners. Global `onerror` retains exact-`true` cancellation,
+later port listeners and replies still run, and these errors are not forwarded
+to clients. The process-backed regression verifies a later healthy request,
+active worker state, and no client-side error events. The scoped check and
+focused regression pass locally; complete Service Worker, MessagePort, and
+WPT conformance remain open. See
+[task 794](../plan/tasks/native-engine-browser-794.md).
+
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
 operation and delivers them in the owning page turn; EventSource carries

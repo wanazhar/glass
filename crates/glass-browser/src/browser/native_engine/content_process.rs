@@ -16,8 +16,8 @@ use super::css::{
 };
 use super::dialog::{NativeDialogControlPlane, NativeDialogResolution, NativeDialogWait};
 use super::dom::{
-    NativeDocument, NativeDocumentWire, NativeNodeId, NativePageImportMapSource,
-    NativePageScriptSource, NativePageScriptTiming,
+    NativeCheckableKind, NativeDocument, NativeDocumentWire, NativeNodeId,
+    NativePageImportMapSource, NativePageScriptSource, NativePageScriptTiming,
 };
 use super::environment::NativeEnvironmentOverrides;
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
@@ -4713,7 +4713,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut stdout = tokio::io::stdout();
     let mut running = false;
     let mut document: Option<NativeDocument> = None;
-    let mut pending_space_activation: Option<NativeNodeId> = None;
+    let mut pending_space_activation: Option<(NativeNodeId, Option<NativeCheckableKind>)> = None;
     let mut document_url = None;
     let mut document_origin = None;
     let mut viewport = Viewport::default();
@@ -6927,18 +6927,32 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             NativeEventKind::KeyUp
                         };
                         if pending_space_activation
-                            .is_some_and(|target| target.generation() != current.generation())
+                            .is_some_and(|(target, _)| target.generation() != current.generation())
                         {
                             pending_space_activation = None;
                         }
                         let target_id = NativeNodeId::from_parts(current.generation(), node_index);
                         let is_space = key == " ";
+                        let pending = pending_space_activation;
                         let was_pending_space = kind == NativeEventKind::KeyUp
                             && is_space
-                            && pending_space_activation == Some(target_id);
+                            && pending.is_some_and(|(pending_id, checkable_kind)| {
+                                pending_id == target_id
+                                    && match checkable_kind {
+                                        Some(expected) => {
+                                            current.keyboard_checkable_kind(target_id)
+                                                == Some(expected)
+                                        }
+                                        None => {
+                                            current.has_native_keyboard_button_activation(target_id)
+                                        }
+                                    }
+                            });
                         let eligible_on_keydown = kind == NativeEventKind::KeyDown
                             && is_space
-                            && current.has_native_keyboard_button_activation(target_id);
+                            && (current.has_native_keyboard_button_activation(target_id)
+                                || current.keyboard_checkable_kind(target_id).is_some());
+                        let checkable_kind = current.keyboard_checkable_kind(target_id);
                         if is_space && kind == NativeEventKind::KeyDown {
                             pending_space_activation = None;
                         } else if is_space && kind == NativeEventKind::KeyUp {
@@ -6961,10 +6975,18 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             && result.as_ref().is_ok_and(|(next, mutation)| {
                                 mutation.allowed
                                     && next.focused_node() == target_id
-                                    && next.has_native_keyboard_button_activation(target_id)
+                                    && match checkable_kind {
+                                        Some(expected) => {
+                                            next.keyboard_checkable_kind(target_id)
+                                                == Some(expected)
+                                        }
+                                        None => {
+                                            next.has_native_keyboard_button_activation(target_id)
+                                        }
+                                    }
                             })
                         {
-                            pending_space_activation = Some(target_id);
+                            pending_space_activation = Some((target_id, checkable_kind));
                         }
                         result
                     }
@@ -9414,6 +9436,8 @@ fn mutate_click_with_event_preflight(
         events.extend(effects);
     }
 
+    let checkable_pre_activation = next.pre_activate_checkable(node_id)?;
+
     let click_event_batch =
         host_event_batch(&[(node_index, NativeEventKind::Click)])?.ok_or_else(|| {
             NativeEngineError::Worker {
@@ -9457,7 +9481,49 @@ fn mutate_click_with_event_preflight(
     events.extend(effects);
     let mut navigation = None;
     if click_allowed {
-        events.extend(next.apply_click(node_id)?);
+        let click_events = if checkable_pre_activation.is_some() {
+            next.apply_click_after_checkable_pre_activation(node_id)?
+        } else {
+            next.apply_click(node_id)?
+        };
+        let dispatch_checkable_events =
+            checkable_pre_activation.is_some() && next.connected_checkable_kind(node_id).is_some();
+        events.extend(click_events);
+        if dispatch_checkable_events {
+            let event_batch = host_event_batch(&[
+                (node_index, NativeEventKind::Input),
+                (node_index, NativeEventKind::Change),
+            ])?
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "content process checkable input/change events".into(),
+                reason: "native checkable event batch was empty".into(),
+            })?;
+            let evaluation = runtime.evaluate_with_host_events(
+                &event_batch,
+                &next,
+                document_url,
+                document_origin,
+                viewport,
+            )?;
+            apply_content_event_history(
+                &evaluation.commands,
+                document_url,
+                document_origin,
+                runtime,
+                &mut history,
+            )?;
+            scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
+            let (effects, _) = apply_document_commands_with_font_face_ack(
+                &mut next,
+                runtime,
+                document_url,
+                document_origin,
+                viewport,
+                &evaluation.commands,
+                false,
+            )?;
+            events.extend(effects);
+        }
         if let Some(form_id) = next.reset_control_form(node_id) {
             let command = serde_json::json!({
                 "kind": "activateFormReset",
@@ -9540,6 +9606,9 @@ fn mutate_click_with_event_preflight(
             }
         }
     } else {
+        if let Some(checkable_pre_activation) = checkable_pre_activation {
+            next.restore_checkable_pre_activation(checkable_pre_activation)?;
+        }
         events.push((node_id, NativeEventKind::Click));
     }
     dispatch_scroll_events(
@@ -10113,6 +10182,7 @@ fn mutate_key_event_with_event_bridge(
         });
     }
     let keyboard_link_target = current.has_native_keyboard_link_activation(node_id);
+    let keyboard_checkable_kind = current.keyboard_checkable_kind(node_id);
     let mut next = current.clone();
     let mut history = Vec::new();
     let mut scroll_commands = Vec::new();
@@ -10170,15 +10240,23 @@ fn mutate_key_event_with_event_bridge(
         apply_pending_meta_content_security_policies(&mut next, loader, document_url)?;
         refresh_inline_style_policy(&mut next, loader, document_url)?;
     }
-    let enter_target_remains_activatable = next.has_native_keyboard_button_activation(node_id)
-        || (key == "Enter"
-            && keyboard_link_target
-            && next.has_native_keyboard_link_activation(node_id));
-    let should_activate = event_allowed
-        && next.focused_node() == node_id
-        && enter_target_remains_activatable
-        && ((kind == NativeEventKind::KeyDown && key == "Enter")
-            || (kind == NativeEventKind::KeyUp && key == " " && activate_space_on_keyup));
+    let keyboard_button_target_remains = next.has_native_keyboard_button_activation(node_id);
+    let keyboard_link_target_remains =
+        key == "Enter" && keyboard_link_target && next.has_native_keyboard_link_activation(node_id);
+    let keyboard_checkable_target_remains = key == " "
+        && activate_space_on_keyup
+        && keyboard_checkable_kind
+            .is_some_and(|expected| next.keyboard_checkable_kind(node_id) == Some(expected));
+    let should_activate = next.focused_node() == node_id
+        && ((kind == NativeEventKind::KeyDown
+            && key == "Enter"
+            && event_allowed
+            && (keyboard_button_target_remains || keyboard_link_target_remains))
+            || (kind == NativeEventKind::KeyUp
+                && key == " "
+                && activate_space_on_keyup
+                && (keyboard_button_target_remains || keyboard_checkable_target_remains)
+                && (event_allowed || keyboard_checkable_target_remains)));
     if should_activate {
         let (clicked, click_mutation) = mutate_click_with_event_preflight(
             &next,
@@ -10306,6 +10384,7 @@ fn mutate_key_shortcut_with_event_bridge(
         });
     }
     let keyboard_button_target = current.has_native_keyboard_button_activation(node_id);
+    let keyboard_checkable_kind = current.keyboard_checkable_kind(node_id);
     let keyboard_link_target =
         key == "Enter" && current.has_native_keyboard_link_activation(node_id);
     let mut next = current.clone();
@@ -10457,11 +10536,14 @@ fn mutate_key_shortcut_with_event_bridge(
         false,
     )?;
     events.extend(effects);
+    let keyboard_checkable_target_remains = modifiers == 0
+        && keyboard_checkable_kind
+            .is_some_and(|expected| next.keyboard_checkable_kind(node_id) == Some(expected));
     if keydown_allowed
         && key == " "
-        && keyboard_button_target
         && next.focused_node() == node_id
-        && next.has_native_keyboard_button_activation(node_id)
+        && ((keyboard_button_target && next.has_native_keyboard_button_activation(node_id))
+            || keyboard_checkable_target_remains)
     {
         dispatch_scroll_events(
             &mut next,

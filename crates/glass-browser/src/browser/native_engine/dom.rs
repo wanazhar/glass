@@ -140,6 +140,21 @@ impl NativeNodeId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeCheckableKind {
+    Checkbox,
+    Radio,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct NativeCheckablePreActivation {
+    node_id: NativeNodeId,
+    kind: NativeCheckableKind,
+    checked: bool,
+    indeterminate: bool,
+    radio_group_checked: Vec<(NativeNodeId, bool)>,
+}
+
 /// Mutable state associated with a native element. Raw values remain inside
 /// the document owner and are not included in semantic projections.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -149,6 +164,7 @@ pub(crate) struct NativeElementState {
     value: Option<String>,
     files: Vec<NativeFile>,
     checked: bool,
+    indeterminate: bool,
     focused: bool,
     hovered: bool,
     user_interacted: bool,
@@ -174,6 +190,7 @@ impl NativeElementState {
             value: (name == "input").then(|| attributes.get("value").cloned().unwrap_or_default()),
             files: Vec::new(),
             checked: attributes.contains_key("checked"),
+            indeterminate: false,
             focused: false,
             user_interacted: false,
             hovered: false,
@@ -434,6 +451,8 @@ pub(crate) struct NativeElementStateWire {
     pub(crate) files: Vec<NativeFile>,
     #[serde(default)]
     pub(crate) checked: bool,
+    #[serde(default)]
+    pub(crate) indeterminate: bool,
     #[serde(default)]
     pub(crate) focused: bool,
     #[serde(default)]
@@ -714,6 +733,8 @@ pub(crate) struct NativeScriptElementSnapshot {
     #[serde(default)]
     pub(crate) files: Vec<NativeFile>,
     pub(crate) checked: bool,
+    #[serde(default)]
+    pub(crate) indeterminate: bool,
     pub(crate) selected: bool,
     pub(crate) disabled: bool,
     pub(crate) hidden: bool,
@@ -3137,6 +3158,7 @@ impl NativeDocument {
                     files: node.state.files.clone(),
                     attribute_namespaces: node.state.attribute_namespaces.clone(),
                     checked: node.state.checked,
+                    indeterminate: node.state.indeterminate,
                     focused: node.state.focused,
                     hovered: node.state.hovered,
                     user_interacted: node.state.user_interacted,
@@ -3652,6 +3674,7 @@ impl NativeDocument {
                     value: wire_node.state.value.clone(),
                     files: wire_node.state.files.clone(),
                     checked: wire_node.state.checked,
+                    indeterminate: wire_node.state.indeterminate,
                     focused: wire_node.state.focused,
                     hovered: wire_node.state.hovered,
                     user_interacted: wire_node.state.user_interacted,
@@ -5023,6 +5046,7 @@ impl NativeDocument {
                     value: self.current_value(node.id()),
                     files: node.state.files.clone(),
                     checked: node.state.checked,
+                    indeterminate: node.state.indeterminate,
                     selected: node.state.selected,
                     disabled: self.is_disabled(node.id()),
                     hidden: self.is_hidden(node.id()),
@@ -5566,15 +5590,31 @@ impl NativeDocument {
         &mut self,
         id: NativeNodeId,
     ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        self.apply_click_with_checkable_pre_activation(id, false)
+    }
+
+    pub(crate) fn apply_click_after_checkable_pre_activation(
+        &mut self,
+        id: NativeNodeId,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        self.apply_click_with_checkable_pre_activation(id, true)
+    }
+
+    fn apply_click_with_checkable_pre_activation(
+        &mut self,
+        id: NativeNodeId,
+        checkable_pre_activated: bool,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
         let semantic =
             self.semantic_node(id)
                 .ok_or_else(|| NativeEngineError::TargetNotActionable {
                     reason: "target has no supported semantic control role".into(),
                 })?;
-        if semantic.disabled {
+        let checkable_activation_role = matches!(semantic.role.as_str(), "checkbox" | "radio");
+        if semantic.disabled && !(checkable_pre_activated && checkable_activation_role) {
             return Err(NativeEngineError::DisabledTarget);
         }
-        if semantic.hidden {
+        if semantic.hidden && !(checkable_pre_activated && checkable_activation_role) {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "hidden targets are not actionable".into(),
             });
@@ -5598,42 +5638,25 @@ impl NativeDocument {
         events.push((id, NativeEventKind::Click));
         match semantic.role.as_str() {
             "checkbox" => {
-                let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
-                node.state.checked = !node.state.checked;
+                if !checkable_pre_activated {
+                    let node = self.node_mut(id).ok_or(NativeEngineError::DetachedTarget)?;
+                    node.state.checked = !node.state.checked;
+                    node.state.indeterminate = false;
+                }
+                events.push((id, NativeEventKind::Input));
                 events.push((id, NativeEventKind::Change));
             }
             "radio" => {
-                let group_name = self
-                    .node(id)
-                    .and_then(|node| node.attribute("name"))
-                    .map(str::to_owned);
-                let radio_ids = self
-                    .nodes
-                    .iter()
-                    .filter(|node| self.semantic_role(node.id()) == Some("radio"))
-                    .filter(|node| {
-                        node.id() == id
-                            || group_name.as_deref().is_some_and(|name| {
-                                !name.is_empty() && node.attribute("name") == Some(name)
-                            })
-                    })
-                    .map(NativeNode::id)
-                    .collect::<Vec<_>>();
-                for radio_id in radio_ids {
-                    let should_be_checked = radio_id == id;
-                    let was_checked = self
-                        .node(radio_id)
-                        .ok_or(NativeEngineError::DetachedTarget)?
-                        .state
-                        .checked;
-                    if was_checked != should_be_checked {
+                if !checkable_pre_activated {
+                    for radio_id in self.radio_group_members(id) {
                         self.node_mut(radio_id)
                             .ok_or(NativeEngineError::DetachedTarget)?
                             .state
-                            .checked = should_be_checked;
-                        events.push((radio_id, NativeEventKind::Change));
+                            .checked = radio_id == id;
                     }
                 }
+                events.push((id, NativeEventKind::Input));
+                events.push((id, NativeEventKind::Change));
             }
             "option" => {
                 let select_id = option_select_id.ok_or(NativeEngineError::DetachedTarget)?;
@@ -6613,6 +6636,12 @@ impl NativeDocument {
                 } => {
                     self.apply_script_checked(*node_index, *checked, &script_nodes)?;
                 }
+                NativeScriptCommand::SetIndeterminate {
+                    node_index,
+                    indeterminate,
+                } => {
+                    self.apply_script_indeterminate(*node_index, *indeterminate, &script_nodes)?;
+                }
                 NativeScriptCommand::SetSelected {
                     node_index,
                     selected,
@@ -7160,6 +7189,32 @@ impl NativeDocument {
                 .state
                 .checked = checked;
         }
+        Ok(())
+    }
+
+    fn apply_script_indeterminate(
+        &mut self,
+        node_index: u32,
+        indeterminate: bool,
+        script_nodes: &BTreeMap<u32, NativeNodeId>,
+    ) -> Result<(), NativeEngineError> {
+        let id = self.resolve_script_node_id(node_index, script_nodes);
+        let node = self
+            .script_node(id, script_nodes)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if node.element_name() != Some("input")
+            || !node
+                .attribute("type")
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("checkbox"))
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "script indeterminate state requires a checkbox input".into(),
+            });
+        }
+        self.script_node_mut(id, script_nodes)
+            .ok_or(NativeEngineError::DetachedTarget)?
+            .state
+            .indeterminate = indeterminate;
         Ok(())
     }
 
@@ -9192,6 +9247,128 @@ impl NativeDocument {
         }
     }
 
+    pub(crate) fn has_native_keyboard_checkable_activation(&self, id: NativeNodeId) -> bool {
+        self.keyboard_checkable_kind(id).is_some()
+    }
+
+    pub(crate) fn keyboard_checkable_kind(&self, id: NativeNodeId) -> Option<NativeCheckableKind> {
+        if !self.is_attached(id) || self.is_disabled(id) {
+            return None;
+        }
+        self.connected_checkable_kind(id)
+    }
+
+    pub(crate) fn connected_checkable_kind(&self, id: NativeNodeId) -> Option<NativeCheckableKind> {
+        if !self.is_attached(id) {
+            return None;
+        }
+        let node = self.node(id)?;
+        if node.element_name() != Some("input") {
+            return None;
+        }
+        match node.attribute("type")? {
+            kind if kind.eq_ignore_ascii_case("checkbox") => Some(NativeCheckableKind::Checkbox),
+            kind if kind.eq_ignore_ascii_case("radio") => Some(NativeCheckableKind::Radio),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn pre_activate_checkable(
+        &mut self,
+        id: NativeNodeId,
+    ) -> Result<Option<NativeCheckablePreActivation>, NativeEngineError> {
+        let Some(kind) = self.keyboard_checkable_kind(id) else {
+            return Ok(None);
+        };
+        let node = self.node(id).ok_or(NativeEngineError::DetachedTarget)?;
+        let checked = node.state.checked;
+        let indeterminate = node.state.indeterminate;
+        let radio_group_checked = if kind == NativeCheckableKind::Radio {
+            self.radio_group_members(id)
+                .into_iter()
+                .map(|radio_id| {
+                    self.node(radio_id)
+                        .map(|radio| (radio_id, radio.state.checked))
+                        .ok_or(NativeEngineError::DetachedTarget)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
+        match kind {
+            NativeCheckableKind::Checkbox => {
+                let state = &mut self
+                    .node_mut(id)
+                    .ok_or(NativeEngineError::DetachedTarget)?
+                    .state;
+                state.checked = !state.checked;
+                state.indeterminate = false;
+            }
+            NativeCheckableKind::Radio => {
+                for radio_id in self.radio_group_members(id) {
+                    self.node_mut(radio_id)
+                        .ok_or(NativeEngineError::DetachedTarget)?
+                        .state
+                        .checked = radio_id == id;
+                }
+            }
+        }
+        Ok(Some(NativeCheckablePreActivation {
+            node_id: id,
+            kind,
+            checked,
+            indeterminate,
+            radio_group_checked,
+        }))
+    }
+
+    pub(crate) fn restore_checkable_pre_activation(
+        &mut self,
+        activation: NativeCheckablePreActivation,
+    ) -> Result<(), NativeEngineError> {
+        {
+            let state = &mut self
+                .node_mut(activation.node_id)
+                .ok_or(NativeEngineError::DetachedTarget)?
+                .state;
+            state.checked = activation.checked;
+            state.indeterminate = activation.indeterminate;
+        }
+        if activation.kind == NativeCheckableKind::Radio {
+            for (radio_id, checked) in activation.radio_group_checked {
+                self.node_mut(radio_id)
+                    .ok_or(NativeEngineError::DetachedTarget)?
+                    .state
+                    .checked = checked;
+            }
+        }
+        Ok(())
+    }
+
+    fn radio_group_members(&self, id: NativeNodeId) -> Vec<NativeNodeId> {
+        let Some(node) = self.node(id) else {
+            return Vec::new();
+        };
+        let name = node.attribute("name").filter(|name| !name.is_empty());
+        let form_owner = self.form_owner(id);
+        self.nodes
+            .iter()
+            .filter(|candidate| {
+                self.is_attached(candidate.id())
+                    && candidate.element_name() == Some("input")
+                    && candidate
+                        .attribute("type")
+                        .is_some_and(|kind| kind.eq_ignore_ascii_case("radio"))
+                    && (candidate.id() == id
+                        || name.is_some_and(|name| {
+                            candidate.attribute("name") == Some(name)
+                                && self.form_owner(candidate.id()) == form_owner
+                        }))
+            })
+            .map(NativeNode::id)
+            .collect()
+    }
+
     pub(crate) fn has_native_keyboard_link_activation(&self, id: NativeNodeId) -> bool {
         self.is_attached(id)
             && self.node(id).is_some_and(|node| {
@@ -9554,20 +9731,19 @@ impl NativeDocument {
             Some("input")
                 if node
                     .attribute("type")
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("checkbox")) =>
+            {
+                node.state.indeterminate
+            }
+            Some("input")
+                if node
+                    .attribute("type")
                     .is_some_and(|kind| kind.eq_ignore_ascii_case("radio")) =>
             {
-                let form_owner = self.form_owner(id);
-                let name = node.attribute("name");
-                !self.nodes.iter().any(|candidate| {
-                    self.is_attached(candidate.id())
-                        && candidate.element_name() == Some("input")
-                        && candidate
-                            .attribute("type")
-                            .is_some_and(|kind| kind.eq_ignore_ascii_case("radio"))
-                        && self.form_owner(candidate.id()) == form_owner
-                        && candidate.attribute("name") == name
-                        && candidate.state.checked
-                })
+                !self
+                    .radio_group_members(id)
+                    .into_iter()
+                    .any(|radio_id| self.node(radio_id).is_some_and(|radio| radio.state.checked))
             }
             _ => false,
         }

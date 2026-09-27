@@ -210,6 +210,15 @@ the opener. Target initialization runs in a separate Tokio task so popup
 layout does not inherit the initiating action's stack. See the
 [slice 767 task](tasks/native-engine-browser-767.md). Modifier gestures,
 image-map areas, and complete keyboard conformance remain open.
+Slice 768 implements the bounded keyboard-input contract: unmodified
+Space on a focused, enabled native checkbox or radio synthesizes click
+activation on keyup through the shared checkable-control owner. It covers
+cancellation-safe checked state, checkbox indeterminateness clearing, radio
+non-toggle/group semantics, and bubbling input/change effects for accepted
+activation across local, process-backed, and same-origin-frame paths. The
+scoped package check and four focused regressions pass; see the
+[slice 768 task](tasks/native-engine-browser-768.md). This remains a narrow
+checkpoint, not complete keyboard or form conformance.
 Slice 764 implements keyboard activation for focused native button controls
 in process-backed network documents: Enter activates on keydown and Space on
 keyup after an uncanceled keydown. The shared click/default path handles reset

@@ -18541,6 +18541,342 @@ async fn native_local_keyboard_button_activation_raw_space_is_focus_bound() {
 }
 
 #[tokio::test]
+async fn native_local_keyboard_checkable_activation_orders_events_and_restores_canceled_state() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://local-keyboard-checkable",
+            "<form id='form'><input id='required' required><input id='checkbox' type='checkbox'><input id='radio-a' type='radio' name='group' checked><input id='radio-b' type='radio' name='group'></form><input id='radio-outside' type='radio' name='group' checked>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://local-keyboard-checkable");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "globalThis.trace = []; globalThis.cancelTarget = ''; document.addEventListener('keydown', event => trace.push('keydown:' + event.target.id + ':' + event.key)); document.addEventListener('keyup', event => trace.push('keyup:' + event.target.id + ':' + event.key)); document.addEventListener('click', event => { trace.push('click:' + event.target.id + ':' + event.target.checked + ':' + event.target.indeterminate + ':' + event.cancelable); if (cancelTarget === event.target.id) event.preventDefault(); }); document.addEventListener('input', event => trace.push('input:' + event.target.id + ':' + event.bubbles)); document.addEventListener('change', event => trace.push('change:' + event.target.id + ':' + event.bubbles)); document.addEventListener('submit', () => trace.push('submit')); document.addEventListener('invalid', () => trace.push('invalid')); true",
+        )
+        .await
+        .unwrap();
+
+    engine
+        .evaluate_async("const checkbox = document.getElementById('checkbox'); checkbox.indeterminate = true; checkbox.focus(); true")
+        .await
+        .unwrap();
+    let before_shortcut = engine.revision();
+    let result = engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .unwrap();
+    assert_eq!(result.revision, before_shortcut + 1);
+    assert_eq!(engine.revision(), before_shortcut + 1);
+    assert_eq!(
+        engine.evaluate_async("globalThis.trace").await.unwrap(),
+        serde_json::json!([
+            "keydown:checkbox: ",
+            "keyup:checkbox: ",
+            "click:checkbox:true:false:true",
+            "input:checkbox:true",
+            "change:checkbox:true",
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({checked: checkbox.checked, indeterminate: checkbox.indeterminate})")
+            .await
+            .unwrap(),
+        serde_json::json!({"checked": true, "indeterminate": false})
+    );
+
+    engine
+        .evaluate_async("globalThis.trace = []; globalThis.cancelTarget = 'checkbox'; checkbox.checked = false; checkbox.indeterminate = true; checkbox.focus(); true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.trace").await.unwrap(),
+        serde_json::json!([
+            "keydown:checkbox: ",
+            "keyup:checkbox: ",
+            "click:checkbox:true:false:true",
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({checked: checkbox.checked, indeterminate: checkbox.indeterminate})")
+            .await
+            .unwrap(),
+        serde_json::json!({"checked": false, "indeterminate": true})
+    );
+
+    engine
+        .evaluate_async(
+            "globalThis.trace = []; globalThis.cancelTarget = ''; checkbox.focus(); true",
+        )
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.trace").await.unwrap(),
+        serde_json::json!(["keydown:checkbox:Enter", "keyup:checkbox:Enter"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("({checked: checkbox.checked, indeterminate: checkbox.indeterminate})")
+            .await
+            .unwrap(),
+        serde_json::json!({"checked": false, "indeterminate": true})
+    );
+
+    engine
+        .evaluate_async("const radioA = document.getElementById('radio-a'); const radioB = document.getElementById('radio-b'); const radioOutside = document.getElementById('radio-outside'); globalThis.trace = []; globalThis.cancelTarget = 'radio-b'; radioB.focus(); true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({a: radioA.checked, b: radioB.checked, outside: radioOutside.checked})"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"a": true, "b": false, "outside": true})
+    );
+    assert_eq!(
+        engine.evaluate_async("globalThis.trace").await.unwrap(),
+        serde_json::json!([
+            "keydown:radio-b: ",
+            "keyup:radio-b: ",
+            "click:radio-b:true:false:true",
+        ])
+    );
+
+    engine
+        .evaluate_async("globalThis.trace = []; globalThis.cancelTarget = ''; radioB.focus(); true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({a: radioA.checked, b: radioB.checked, outside: radioOutside.checked, trace: globalThis.trace})")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "a": false,
+            "b": true,
+            "outside": true,
+            "trace": [
+                "keydown:radio-b: ",
+                "keyup:radio-b: ",
+                "click:radio-b:true:false:true",
+                "input:radio-b:true",
+                "change:radio-b:true",
+            ],
+        })
+    );
+
+    engine
+        .evaluate_async("globalThis.trace = []; radioB.focus(); true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({a: radioA.checked, b: radioB.checked, outside: radioOutside.checked, trace: globalThis.trace})")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "a": false,
+            "b": true,
+            "outside": true,
+            "trace": [
+                "keydown:radio-b: ",
+                "keyup:radio-b: ",
+                "click:radio-b:true:false:true",
+                "input:radio-b:true",
+                "change:radio-b:true",
+            ],
+        })
+    );
+    assert!(
+        engine
+            .evaluate_async(
+                "!globalThis.trace.includes('submit') && !globalThis.trace.includes('invalid')"
+            )
+            .await
+            .unwrap()
+            .as_bool()
+            .unwrap()
+    );
+
+    engine
+        .evaluate_async(
+            "globalThis.trace = []; checkbox.checked = false; checkbox.indeterminate = true; true",
+        )
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Click {
+            target: "id=checkbox".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({checked: checkbox.checked, indeterminate: checkbox.indeterminate, trace: globalThis.trace})")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "checked": true,
+            "indeterminate": false,
+            "trace": [
+                "click:checkbox:true:false:true",
+                "input:checkbox:true",
+                "change:checkbox:true",
+            ],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_raw_space_checkable_activation_is_cancel_and_focus_bound() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://local-raw-space-checkable",
+            "<input id='first' type='checkbox'><input id='second' type='checkbox'>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://local-raw-space-checkable");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "globalThis.trace = []; globalThis.cancelKeydown = false; document.addEventListener('keydown', event => { trace.push('down:' + event.target.id); if (cancelKeydown) event.preventDefault(); }); document.addEventListener('keyup', event => trace.push('up:' + event.target.id)); document.addEventListener('click', event => trace.push('click:' + event.target.id)); document.getElementById('first').focus(); true",
+        )
+        .await
+        .unwrap();
+
+    engine
+        .evaluate_async("globalThis.cancelKeydown = true; globalThis.trace = []; true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::KeyDown { key: " ".into() })
+        .unwrap();
+    engine
+        .action(NativeAction::KeyUp { key: " ".into() })
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.trace").await.unwrap(),
+        serde_json::json!(["down:first", "up:first"])
+    );
+
+    engine
+        .evaluate_async("globalThis.cancelKeydown = false; globalThis.trace = []; document.getElementById('first').focus(); true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::KeyDown { key: " ".into() })
+        .unwrap();
+    engine
+        .evaluate_async("document.getElementById('second').focus(); true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::KeyUp { key: " ".into() })
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.trace").await.unwrap(),
+        serde_json::json!(["down:first", "up:second"])
+    );
+
+    engine
+        .evaluate_async("globalThis.trace = []; document.getElementById('first').focus(); true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::KeyDown { key: " ".into() })
+        .unwrap();
+    engine
+        .evaluate_async("document.getElementById('first').setAttribute('type', 'text'); true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::KeyUp { key: " ".into() })
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("globalThis.trace").await.unwrap(),
+        serde_json::json!(["down:first", "up:first"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('first').checked")
+            .await
+            .unwrap(),
+        serde_json::json!(false)
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_local_raw_space_checkable_activation_is_disabled_bound() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://local-raw-space-checkable-disabled",
+            "<input id='checkbox' type='checkbox'>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://local-raw-space-checkable-disabled");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "globalThis.events = []; document.addEventListener('keydown', () => events.push('keydown')); document.addEventListener('keyup', () => events.push('keyup')); document.addEventListener('click', () => events.push('click')); document.getElementById('checkbox').focus(); true",
+        )
+        .await
+        .unwrap();
+
+    engine
+        .action(NativeAction::KeyDown { key: " ".into() })
+        .unwrap();
+    engine
+        .evaluate_async("document.getElementById('checkbox').disabled = true; true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::KeyUp { key: " ".into() })
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({checked: document.getElementById('checkbox').checked, events: globalThis.events})")
+            .await
+            .unwrap(),
+        serde_json::json!({"checked": false, "events": ["keydown", "keyup"]})
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_keyboard_button_activation_runs_reset_validation_and_submit_defaults() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -65094,6 +65430,288 @@ fn native_reset_button_state_script() -> &'static str {
       ...globalThis.__glassResetButtonTrace,
       sameHref: location.href === globalThis.__glassResetButtonInitialHref,
     }))()"##
+}
+
+#[tokio::test]
+async fn native_content_process_keyboard_checkable_activation_and_frame_routing() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let controls = "<form id='form'><input id='checkbox' type='checkbox' checked><input id='radio-a' type='radio' name='group' checked><input id='radio-b' type='radio' name='group'></form><input id='other' type='checkbox'>";
+    let parent_body =
+        format!("<!doctype html><body>{controls}<iframe id='child' src='/child'></iframe></body>");
+    let child_body = format!("<!doctype html><body>{controls}</body>");
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("native checkable-control request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let body = match request.split_whitespace().nth(1) {
+                Some("/page") => &parent_body,
+                Some("/child") => &child_body,
+                other => panic!("unexpected native checkable-control path: {other:?}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .await
+    .unwrap();
+    let setup_script = "globalThis.events = []; globalThis.cancelClickId = ''; document.addEventListener('keydown', event => events.push('keydown:' + event.target.id + ':' + (event.key === ' ' ? 'Space' : event.key))); document.addEventListener('keyup', event => events.push('keyup:' + event.target.id + ':' + (event.key === ' ' ? 'Space' : event.key))); document.addEventListener('click', event => { const target = event.target; const state = target.id === 'checkbox' ? target.checked + ':' + target.indeterminate : document.getElementById('radio-a').checked + ':' + document.getElementById('radio-b').checked; events.push('click:' + target.id + ':' + state + ':' + event.cancelable); if (cancelClickId === target.id) event.preventDefault(); }); document.addEventListener('input', event => events.push('input:' + event.target.id)); document.addEventListener('change', event => events.push('change:' + event.target.id)); true";
+    session.script(setup_script).await.unwrap();
+
+    session
+        .script("document.getElementById('checkbox').indeterminate = true; document.getElementById('checkbox').focus(); globalThis.cancelClickId = 'checkbox'; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({checked: document.getElementById('checkbox').checked, indeterminate: document.getElementById('checkbox').indeterminate, events: globalThis.events})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "checked": true,
+            "indeterminate": true,
+            "events": [
+                "keydown:checkbox:Space",
+                "keyup:checkbox:Space",
+                "click:checkbox:false:false:true",
+            ],
+        })
+    );
+
+    session
+        .script("globalThis.events = []; globalThis.cancelClickId = ''; document.getElementById('checkbox').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({checked: document.getElementById('checkbox').checked, indeterminate: document.getElementById('checkbox').indeterminate, events: globalThis.events})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "checked": false,
+            "indeterminate": false,
+            "events": [
+                "keydown:checkbox:Space",
+                "keyup:checkbox:Space",
+                "click:checkbox:false:false:true",
+                "input:checkbox",
+                "change:checkbox",
+            ],
+        })
+    );
+
+    session
+        .script("globalThis.events = []; globalThis.cancelClickId = 'radio-b'; document.getElementById('radio-b').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({a: document.getElementById('radio-a').checked, b: document.getElementById('radio-b').checked, events: globalThis.events})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "a": true,
+            "b": false,
+            "events": [
+                "keydown:radio-b:Space",
+                "keyup:radio-b:Space",
+                "click:radio-b:false:true:true",
+            ],
+        })
+    );
+
+    session
+        .script("globalThis.events = []; globalThis.cancelClickId = ''; document.getElementById('radio-b').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .await
+        .unwrap();
+    let accepted_radio = serde_json::json!({
+        "a": false,
+        "b": true,
+        "events": [
+            "keydown:radio-b:Space",
+            "keyup:radio-b:Space",
+            "click:radio-b:false:true:true",
+            "input:radio-b",
+            "change:radio-b",
+        ],
+    });
+    assert_eq!(
+        session
+            .script("({a: document.getElementById('radio-a').checked, b: document.getElementById('radio-b').checked, events: globalThis.events})")
+            .await
+            .unwrap()
+            .value,
+        accepted_radio
+    );
+
+    session
+        .script("globalThis.events = []; document.getElementById('radio-b').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({a: document.getElementById('radio-a').checked, b: document.getElementById('radio-b').checked, events: globalThis.events})")
+            .await
+            .unwrap()
+            .value,
+        accepted_radio
+    );
+
+    session
+        .script("globalThis.events = []; document.getElementById('checkbox').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::KeyDown { key: " ".into() })
+        .await
+        .unwrap();
+    session
+        .script("document.getElementById('other').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::KeyUp { key: " ".into() })
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("globalThis.events").await.unwrap().value,
+        serde_json::json!(["keydown:checkbox:Space", "keyup:other:Space"])
+    );
+
+    session
+        .script("const checkboxForInvalidation = document.getElementById('checkbox'); checkboxForInvalidation.type = 'checkbox'; checkboxForInvalidation.disabled = false; checkboxForInvalidation.focus(); globalThis.events = []; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::KeyDown { key: " ".into() })
+        .await
+        .unwrap();
+    session
+        .script("document.getElementById('checkbox').type = 'radio'; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::KeyUp { key: " ".into() })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({checked: document.getElementById('checkbox').checked, activated: globalThis.events.some(event => event.startsWith('click:checkbox:'))})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({"checked": false, "activated": false})
+    );
+
+    session
+        .script("document.getElementById('checkbox').type = 'checkbox'; document.getElementById('checkbox').focus(); globalThis.events = []; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::KeyDown { key: " ".into() })
+        .await
+        .unwrap();
+    session
+        .script("document.getElementById('checkbox').disabled = true; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::KeyUp { key: " ".into() })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({checked: document.getElementById('checkbox').checked, activated: globalThis.events.some(event => event.startsWith('click:'))})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({"checked": false, "activated": false})
+    );
+
+    let child_id = session
+        .native_list_frames()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("same-origin checkable-control child frame")
+        .id;
+    session.select_frame(&child_id).await.unwrap();
+    session.script(setup_script).await.unwrap();
+    session
+        .script("document.getElementById('checkbox').checked = false; document.getElementById('checkbox').indeterminate = false; document.getElementById('checkbox').focus(); globalThis.events = []; true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({checked: document.getElementById('checkbox').checked, events: globalThis.events})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "checked": true,
+            "events": [
+                "keydown:checkbox:Space",
+                "keyup:checkbox:Space",
+                "click:checkbox:true:false:true",
+                "input:checkbox",
+                "change:checkbox",
+            ],
+        })
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
 }
 
 #[tokio::test]

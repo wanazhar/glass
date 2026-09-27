@@ -28,11 +28,18 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is complete through
-`native-engine-browser-767`. Slice 767 verifies native hyperlink Enter
+`native-engine-browser-768`. Slice 767 verifies native hyperlink Enter
 activation through local and process-backed `_blank` target and download
 defaults, including cancellation and opener preservation; see the
 [slice 767 task](tasks/native-engine-browser-767.md) for local evidence and
-remaining boundaries. Slice 766 implements native hyperlink Enter activation
+remaining boundaries. Slice 768 implements Space activation for focused
+native checkbox and radio inputs through the shared checkable-state owner,
+including pre-activation rollback, indeterminateness, radio grouping, and
+accepted bubbling `input`/`change` events across local, process-backed, and
+same-origin-frame paths. Its package check and four focused tests pass; see
+the [`native-engine-browser-768` task](tasks/native-engine-browser-768.md) for
+evidence and boundaries.
+Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and
 customized-built-in custom-element contracts for the currently mapped HTML

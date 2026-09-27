@@ -3693,6 +3693,15 @@ worker/WPT conformance remain open. See
 [task 791](../plan/tasks/native-engine-browser-791.md) and
 [task 792](../plan/tasks/native-engine-browser-792.md).
 
+Slice 793 applies the worker-global reporter to dedicated-worker MessagePort
+handlers and listeners. Exact-`true` worker-global `onerror` suppresses owner
+forwarding; an uncanceled exception reaches the owning page `Worker` once.
+Later port listeners, replies, and a healthy subsequent message still run.
+The process-backed transferred-port regression checks callback order and owner
+ErrorEvent properties. It leaves SharedWorker, Service Worker, page, and
+BroadcastChannel semantics unchanged; full worker/WPT conformance remains
+open. See [task 793](../plan/tasks/native-engine-browser-793.md).
+
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
 operation and delivers them in the owning page turn; EventSource carries

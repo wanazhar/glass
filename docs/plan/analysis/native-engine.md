@@ -3696,6 +3696,15 @@ Broader worker exception/WPT conformance remains open; see
 [task 791](../tasks/native-engine-browser-791.md) and
 [task 792](../tasks/native-engine-browser-792.md).
 
+Slice 793 installs the dedicated-owner forwarding mode of the worker error
+reporter for native MessagePorts in DedicatedWorker realms. The process-backed
+transferred-port test covers exact-`true` global cancellation, one uncanceled
+owner error with the expected ErrorEvent fields, reporting order before later
+port listeners, replies after both failures, and a subsequent healthy message.
+Existing SharedWorker and Service Worker transfer/error paths pass their
+focused regressions and remain unchanged. Full worker and WPT conformance
+remain open; see [task 793](../tasks/native-engine-browser-793.md).
+
 The completed
 `native-engine-browser-402` slice closes the WebSocket report-only CSP owner
 boundary: page and dedicated-worker WebSocket `connect-src` checks compute

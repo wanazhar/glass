@@ -25844,6 +25844,17 @@ async fn native_local_inline_script_failure_dispatches_error_without_aborting_do
     );
     assert_eq!(
         engine
+            .evaluate_async(native_event_handler_false_cancellation_script())
+            .await
+            .unwrap(),
+        serde_json::json!([
+            [false, false, true, [["handler", true], ["later", true]],],
+            [false, false, true, [true], [["later", true]]],
+            [true, false],
+        ])
+    );
+    assert_eq!(
+        engine
             .evaluate_async("[Boolean(globalThis.inlineRan), Boolean(globalThis.moduleInlineRan)]")
             .await
             .unwrap(),
@@ -70534,6 +70545,41 @@ fn native_window_onerror_return_semantics_script() -> &'static str {
       body.removeAttribute('onerror');
       window.onerror = null;
       return [specialCase, falseCase, plainCase, attributeCase];
+    })()"#
+}
+
+fn native_event_handler_false_cancellation_script() -> &'static str {
+    r#"(() => {
+      const windowOrder = [];
+      window.onmessage = function() {
+        windowOrder.push(['handler', this === window]);
+        return false;
+      };
+      const windowTail = event => windowOrder.push(['later', event.defaultPrevented]);
+      window.addEventListener('message', windowTail);
+      const messageEvent = new Event('message');
+      const messageResult = window.dispatchEvent(messageEvent);
+      window.removeEventListener('message', windowTail);
+      window.onmessage = null;
+
+      const attributeCalls = globalThis.nativeAttrFalseCalls = [];
+      const attributeOrder = [];
+      const button = document.createElement('button');
+      button.setAttribute('onclick',
+        'globalThis.nativeAttrFalseCalls.push(this === event.currentTarget); return false;');
+      button.addEventListener('click', event => attributeOrder.push(['later', event.defaultPrevented]));
+      const clickEvent = new Event('click');
+      const clickResult = button.dispatchEvent(clickEvent);
+
+      window.onmessage = () => 0;
+      const zeroEvent = new Event('message');
+      const zeroResult = window.dispatchEvent(zeroEvent);
+      window.onmessage = null;
+      return [
+        [messageResult, messageEvent.cancelable, messageEvent.defaultPrevented, windowOrder],
+        [clickResult, clickEvent.cancelable, clickEvent.defaultPrevented, attributeCalls, attributeOrder],
+        [zeroResult, zeroEvent.defaultPrevented],
+      ];
     })()"#
 }
 

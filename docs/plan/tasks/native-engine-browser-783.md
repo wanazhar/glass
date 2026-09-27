@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-783
 scope: glass-browser/event-handler-false-cancellation
-status: in_progress
+status: completed
 depends-on: [native-engine-browser-782]
 ---
 
@@ -21,9 +21,11 @@ depends-on: [native-engine-browser-782]
 
 ## Objective
 
-Apply ordinary EventHandler `return false` cancellation uniformly to IDL and
-content-attribute handlers without changing listener ordering, propagation,
-Window `onerror`, or `onbeforeunload` behavior.
+Apply ordinary EventHandler `return false` cancellation uniformly to the
+shared DOM event-handler slots for HTML elements, Window, and Document, plus
+ordinary HTML content attributes, without changing listener ordering,
+propagation, Window `onerror`, or `onbeforeunload` behavior. Independent worker,
+XHR, WebSocket, and EventSource dispatch wrappers are outside this slice.
 
 ## Contract
 
@@ -32,6 +34,8 @@ Window `onerror`, or `onbeforeunload` behavior.
   false, whether or not `event.cancelable` is true.
 - The rule is the same for IDL event-handler properties and event-handler
   content attributes; it does not depend on internal provenance metadata.
+- It covers the `eventHandlerStateFor` slots used by element, Window, and
+  Document handlers, plus the generic HTML inline-attribute listener path.
 - Cancellation does not stop immediate/normal propagation: listeners after
   the handler still run and observe the canceled state.
 - Values other than exactly `false` do not invoke ordinary cancellation.
@@ -63,4 +67,17 @@ Window `onerror`, or `onbeforeunload` behavior.
 
 ## Verification
 
-Pending implementation and focused verification.
+Passed locally:
+
+- `rustfmt --edition 2024 --check crates/glass-browser/tests/native_engine.rs`
+- `cargo check -p glass-browser --test native_engine --locked --quiet`
+  (existing parser/dead-code warnings only)
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_local_inline_script_failure_dispatches_error_without_aborting_document --exact --test-threads=1`
+  (1 passed; IDL/content attributes, non-cancelable events, continued
+  listeners, non-false return, and Window error behavior)
+- `python3 scripts/check-documentation-coverage.py`
+  (1,411 Markdown files; coverage validated)
+- `git diff --check`
+
+Remote CI, full WPT, cross-platform certification, and issue #40's
+native-only production gates were not run and remain open.

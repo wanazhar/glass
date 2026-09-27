@@ -265,10 +265,12 @@ remains its separate rule. A process-backed two-connection regression covers
 handler and listener exceptions, cancellation state, later listeners and
 connections, port acknowledgements, and absence of owner error events. This
 does not cover MessagePort callbacks, Service Worker callbacks, or full worker
-error/WPT conformance. An exploratory page-to-worker echo after a connect
-callback exception was not observed; post-error port delivery is next slice
-792 work. See the
-[slice 791 task](tasks/native-engine-browser-791.md).
+error/WPT conformance. The exploratory post-error echo then lacked a
+worker-side MessagePort receiver, so its absence did not establish a delivery
+failure. Slice 792 adds that receiver and verifies post-error request/reply,
+SharedWorker-global MessagePort callback error reporting, and port recovery;
+see the [slice 791 task](tasks/native-engine-browser-791.md) and
+[slice 792 task](tasks/native-engine-browser-792.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus

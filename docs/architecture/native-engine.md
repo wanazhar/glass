@@ -3683,11 +3683,15 @@ preserved; callback failure does not suppress later connect listeners or
 connections. These shared-global errors are not forwarded to page
 `SharedWorker` objects. A process-backed two-connection regression verifies
 both callback forms, continued listener/connection delivery, connected-port
-acknowledgements, and no owner error events. MessagePort callback exceptions,
-post-error page-to-worker port delivery, Service Worker callbacks,
-startup-error gaps, and complete worker/WPT conformance remain separate gates;
-post-error port delivery is next slice 792 work. See
-[task 791](../plan/tasks/native-engine-browser-791.md).
+acknowledgements, and no owner error events. Slice 792 verifies a real
+page-to-worker MessagePort request/reply after a connect-callback exception,
+reports MessagePort handler/listener exceptions at the SharedWorker global,
+and preserves later callbacks and port reuse. The initial exploratory
+no-reply observation was inconclusive because it installed no worker-side
+message handler. Service Worker callbacks, other worker error paths, and full
+worker/WPT conformance remain open. See
+[task 791](../plan/tasks/native-engine-browser-791.md) and
+[task 792](../plan/tasks/native-engine-browser-792.md).
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader

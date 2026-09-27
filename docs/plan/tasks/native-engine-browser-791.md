@@ -77,12 +77,11 @@ shared runtime for later connections.
 - Dedicated-worker callback exceptions retain their existing owner-forwarding
   behavior. This slice does not alter the generic worker scheduler or invent
   per-connection ownership for a shared-global runtime error.
-- A post-error page-to-worker MessagePort echo is not claimed here: an
-  exploratory round-trip after the two connect-callback failures below did not
-  appear in the observed page message list, while the existing no-error
-  SharedWorker round-trip regression passed. The post-error delivery/scheduling
-  interaction and MessagePort callback exceptions remain explicit follow-up
-  work for slice 792.
+- Retrospective correction: the exploratory page-to-worker probe after the
+  connect-callback failures did not install a worker-side MessagePort message
+  handler, so the absent reply did not establish a delivery or scheduling
+  failure. Slice 792 adds an explicit receiver and verifies post-error
+  request/reply delivery; see its regression and evidence.
 - The local regression is not complete EventTarget, HTML exception-reporting,
   SharedWorker lifetime, or Web Platform Test conformance evidence. Issue #40's
   remaining profile, security, platform, product, CI, performance, and release
@@ -117,5 +116,5 @@ Passed locally:
 
 The process-backed integration target emits pre-existing native-DOM dead-code
 warnings. Remote CI was not run. Full worker/EventTarget/WPT behavior,
-post-error port delivery, cross-platform certification, and issue #40's
-native-only production gates remain open.
+cross-platform certification, and issue #40's native-only production gates
+remain open.

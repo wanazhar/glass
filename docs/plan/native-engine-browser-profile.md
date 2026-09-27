@@ -205,10 +205,11 @@ the broader Core Web Profile; see the [slice 766 task](tasks/native-engine-brows
 Slice 764 implements keyboard activation for focused native button controls
 in process-backed network documents: Enter activates on keydown and Space on
 keyup after an uncanceled keydown. The shared click/default path handles reset
-and submit controls in top-level and same-origin child Documents. The
-in-process/local `NativeEngine::action()` route remains a parity gap tracked by
-[slice 765](tasks/native-engine-browser-765.md). Exact local evidence and
-boundaries are recorded in the [slice 764 task](tasks/native-engine-browser-764.md).
+and submit controls in top-level and same-origin child Documents. Slice 765
+adds matching in-process/local action routing and fixture-backed form
+navigation evidence. Exact process-backed and local boundaries are recorded
+in the [slice 764 task](tasks/native-engine-browser-764.md) and
+[slice 765 task](tasks/native-engine-browser-765.md).
 ### Synchronous JavaScript dialog contract
 
 The native page realm implements the HTML Standard's modal user-prompt

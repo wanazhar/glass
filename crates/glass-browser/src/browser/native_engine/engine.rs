@@ -7211,11 +7211,7 @@ impl NativeEngine {
             )?;
         }
 
-        let keyup_target = if document.is_attached(id) {
-            id
-        } else {
-            document.focused_node()
-        };
+        let keyup_target = document.focused_node();
         events.push((keyup_target, NativeEventKind::KeyUp));
         if let Some(evaluation) = self.evaluate_local_key_event_with_modifiers(
             &document,

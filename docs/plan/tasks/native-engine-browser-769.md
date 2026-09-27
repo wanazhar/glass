@@ -38,8 +38,9 @@ and same-origin-frame routes.
   previous enabled member. Navigation wraps at either end.
 - A radio group uses the HTML grouping rules: same tree, same form owner (or
   no form owner), and matching nonempty `name`. Disabled or disconnected
-  radios are not navigation destinations. Unnamed radios have no navigation
-  group.
+  radios are not navigation destinations. A radio inside the first direct
+  `legend` child of a disabled `fieldset` remains enabled; other disabled
+  fieldset descendants are skipped. Unnamed radios have no navigation group.
 - Focus and checkedness move together. Selection events are emitted only when
   checkedness changes: bubbling `input`, then bubbling `change`, on the newly
   checked radio. Arrow navigation does not synthesize pointer events or a
@@ -48,6 +49,10 @@ and same-origin-frame routes.
   `preventDefault()` suppresses navigation. After listeners run, revalidate
   focus, attachment, enabled state, type, and current group membership before
   moving focus or selection.
+- A complete `Shortcut` dispatches `keyup` to the focused node after keydown
+  listeners and the default action have run, including when arrow navigation
+  moved focus to another radio. Separate keydown and keyup actions continue to
+  target the focus current for each action.
 - Unmodified arrow navigation is applied on keydown. A complete non-navigating
   `Shortcut` advances one revision; separately delivered key actions preserve
   their existing per-action revision behavior.
@@ -78,7 +83,9 @@ cross-platform certification.
 
 - Add DOM-visible tests for forward/backward navigation, wrapping, focus and
   checkedness, unchanged-selection behavior, disabled/unnamed/form-owner
-  isolation, keydown cancellation, and listener-time group/focus invalidation.
+  isolation, disabled-fieldset first-legend exemption, keydown cancellation,
+  and listener-time group/focus invalidation. Assert Shortcut keyup targets
+  the post-default focus.
 - Cover local and HTTP(S) content-process execution, plus a same-origin frame.
   Assert event target/order and that no click/pointer event is synthesized.
 - Compare the event trace against an already-installed Chromium when available;

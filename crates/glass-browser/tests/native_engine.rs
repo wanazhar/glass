@@ -18545,7 +18545,7 @@ async fn native_local_radio_group_arrow_navigation_revalidates_keydown_defaults(
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://local-radio-arrow-navigation",
-            "<form id='first'><input id='radio-a' type='radio' name='group' checked><input id='radio-b' type='radio' name='group' disabled><input id='radio-c' type='radio' name='group'></form><form id='second'><input id='radio-other-form' type='radio' name='group' checked></form><input id='radio-no-form' type='radio' name='group' checked><input id='radio-unnamed' type='radio' checked><input id='radio-solo' type='radio' name='solo' checked><input id='radio-guard' type='radio' name='guard'>",
+            "<form id='first'><input id='radio-a' type='radio' name='group' checked><input id='radio-b' type='radio' name='group' disabled><input id='radio-c' type='radio' name='group'></form><form id='second'><input id='radio-other-form' type='radio' name='group' checked></form><input id='radio-no-form' type='radio' name='group' checked><input id='radio-unnamed' type='radio' checked><input id='radio-solo' type='radio' name='solo' checked><input id='radio-guard' type='radio' name='guard'><input id='fieldset-radio-start' type='radio' name='fieldset-group' checked><fieldset disabled><legend><span><input id='fieldset-radio-legend' type='radio' name='fieldset-group'></span></legend><input id='fieldset-radio-disabled' type='radio' name='fieldset-group'></fieldset><input id='fieldset-radio-after' type='radio' name='fieldset-group'>",
         )
         .unwrap()
         .with_initial_url("fixture://local-radio-arrow-navigation");
@@ -18553,7 +18553,7 @@ async fn native_local_radio_group_arrow_navigation_revalidates_keydown_defaults(
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "globalThis.__radioArrowTrace = []; globalThis.__radioArrowMode = ''; document.addEventListener('keydown', event => { const targetId = event.target ? event.target.id : ''; __radioArrowTrace.push('keydown:' + targetId + ':' + event.key); if (__radioArrowMode === 'cancel') event.preventDefault(); if (targetId === 'radio-a') { if (__radioArrowMode === 'group') event.target.removeAttribute('name'); if (__radioArrowMode === 'focus') document.getElementById('radio-guard').focus(); if (__radioArrowMode === 'disabled') event.target.disabled = true; if (__radioArrowMode === 'type') event.target.type = 'checkbox'; if (__radioArrowMode === 'detach') event.target.remove(); } }); document.addEventListener('keyup', event => { const targetId = event.target ? event.target.id : ''; __radioArrowTrace.push('keyup:' + targetId + ':' + event.key); }); for (const type of ['input', 'change', 'click', 'pointerdown', 'pointerup', 'mousedown', 'mouseup']) document.addEventListener(type, event => { const targetId = event.target ? event.target.id : ''; __radioArrowTrace.push(type + ':' + targetId + ':' + event.bubbles); }); true",
+            "globalThis.__radioArrowTrace = []; globalThis.__radioArrowMode = ''; globalThis.__radioA = document.getElementById('radio-a'); document.addEventListener('keydown', event => { const targetId = event.target ? event.target.id : ''; __radioArrowTrace.push('keydown:' + targetId + ':' + event.key); if (__radioArrowMode === 'cancel') event.preventDefault(); if (targetId === 'radio-a') { if (__radioArrowMode === 'group') event.target.removeAttribute('name'); if (__radioArrowMode === 'focus') document.getElementById('radio-guard').focus(); if (__radioArrowMode === 'disabled') event.target.disabled = true; if (__radioArrowMode === 'type') event.target.type = 'checkbox'; if (__radioArrowMode === 'detach') event.target.remove(); } }); document.addEventListener('keyup', event => { const targetId = event.target ? event.target.id : ''; __radioArrowTrace.push('keyup:' + targetId + ':' + event.key); }); for (const type of ['input', 'change', 'click', 'pointerdown', 'pointerup', 'mousedown', 'mouseup']) document.addEventListener(type, event => { const targetId = event.target ? event.target.id : ''; __radioArrowTrace.push(type + ':' + targetId + ':' + event.bubbles); }); true",
         )
         .await
         .unwrap();
@@ -18585,7 +18585,7 @@ async fn native_local_radio_group_arrow_navigation_revalidates_keydown_defaults(
                 "keydown:radio-a:ArrowRight",
                 "input:radio-c:true",
                 "change:radio-c:true",
-                "keyup:radio-a:ArrowRight",
+                "keyup:radio-c:ArrowRight",
             ],
         })
     );
@@ -18612,7 +18612,7 @@ async fn native_local_radio_group_arrow_navigation_revalidates_keydown_defaults(
                 "keydown:radio-c:ArrowDown",
                 "input:radio-a:true",
                 "change:radio-a:true",
-                "keyup:radio-c:ArrowDown",
+                "keyup:radio-a:ArrowDown",
             ],
         })
     );
@@ -18638,7 +18638,7 @@ async fn native_local_radio_group_arrow_navigation_revalidates_keydown_defaults(
                 "keydown:radio-a:ArrowLeft",
                 "input:radio-c:true",
                 "change:radio-c:true",
-                "keyup:radio-a:ArrowLeft",
+                "keyup:radio-c:ArrowLeft",
             ],
         })
     );
@@ -18664,7 +18664,7 @@ async fn native_local_radio_group_arrow_navigation_revalidates_keydown_defaults(
                 "keydown:radio-c:ArrowUp",
                 "input:radio-a:true",
                 "change:radio-a:true",
-                "keyup:radio-c:ArrowUp",
+                "keyup:radio-a:ArrowUp",
             ],
         })
     );
@@ -18716,7 +18716,7 @@ async fn native_local_radio_group_arrow_navigation_revalidates_keydown_defaults(
             })
             .unwrap();
         let state = engine
-            .evaluate_async("({active: __radioArrowMode === 'focus' && document.activeElement ? document.activeElement.id : null, a: globalThis.__radioA ? __radioA.checked : document.getElementById('radio-a')?.checked, c: document.getElementById('radio-c').checked, trace: __radioArrowTrace})")
+            .evaluate_async("({active: __radioArrowMode === 'focus' && document.activeElement ? document.activeElement.id : null, a: document.getElementById('radio-a') ? document.getElementById('radio-a').checked : (globalThis.__radioA ? globalThis.__radioA.checked : null), c: document.getElementById('radio-c').checked, trace: __radioArrowTrace})")
             .await
             .unwrap();
         assert_eq!(state["c"], false, "radio moved during {mode} invalidation");
@@ -18782,6 +18782,63 @@ async fn native_local_radio_group_arrow_navigation_revalidates_keydown_defaults(
             "active": "radio-unnamed",
             "checked": true,
             "trace": ["keydown:radio-unnamed:ArrowRight", "keyup:radio-unnamed:ArrowRight"],
+        })
+    );
+
+    engine
+        .evaluate_async(
+            "__radioArrowTrace = []; document.getElementById('fieldset-radio-start').focus(); true",
+        )
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "ArrowRight".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({active: document.activeElement.id, legend: document.getElementById('fieldset-radio-legend').checked, disabled: document.getElementById('fieldset-radio-disabled').checked, after: document.getElementById('fieldset-radio-after').checked, trace: __radioArrowTrace})")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "active": "fieldset-radio-legend",
+            "legend": true,
+            "disabled": false,
+            "after": false,
+            "trace": [
+                "keydown:fieldset-radio-start:ArrowRight",
+                "input:fieldset-radio-legend:true",
+                "change:fieldset-radio-legend:true",
+                "keyup:fieldset-radio-legend:ArrowRight",
+            ],
+        })
+    );
+    engine
+        .evaluate_async("__radioArrowTrace = []; true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "ArrowDown".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({active: document.activeElement.id, legend: document.getElementById('fieldset-radio-legend').checked, disabled: document.getElementById('fieldset-radio-disabled').checked, after: document.getElementById('fieldset-radio-after').checked, trace: __radioArrowTrace})")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "active": "fieldset-radio-after",
+            "legend": false,
+            "disabled": false,
+            "after": true,
+            "trace": [
+                "keydown:fieldset-radio-legend:ArrowDown",
+                "input:fieldset-radio-after:true",
+                "change:fieldset-radio-after:true",
+                "keyup:fieldset-radio-after:ArrowDown",
+            ],
         })
     );
     engine.close_async().await.unwrap();
@@ -65812,7 +65869,7 @@ async fn native_content_process_radio_group_arrow_navigation_covers_same_origin_
                 "keydown:parent-a:ArrowRight",
                 "input:parent-b:true",
                 "change:parent-b:true",
-                "keyup:parent-a:ArrowRight",
+                "keyup:parent-b:ArrowRight",
             ],
         })
     );
@@ -65851,7 +65908,7 @@ async fn native_content_process_radio_group_arrow_navigation_covers_same_origin_
                 "keydown:child-a:ArrowDown",
                 "input:child-b:true",
                 "change:child-b:true",
-                "keyup:child-a:ArrowDown",
+                "keyup:child-b:ArrowDown",
             ],
         })
     );

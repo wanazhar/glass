@@ -236,6 +236,13 @@ and WPT conformance remains open. The scoped check, focused test, related
 worker-mode regressions, formatting, and diff checks passed locally. See the
 [slice 795 task](tasks/native-engine-browser-795.md) for exact evidence and
 initial test-harness corrections.
+Slice 796 is scoped to synchronous exceptions thrown by Service Worker fetch
+callbacks. It will report each exception at the Service Worker global and
+continue later fetch listeners, preserving a response supplied by a later
+listener or the ordinary network fallback when no listener calls
+`respondWith()`. Promise rejection from an already supplied response and
+`waitUntil()` lifecycle remain unchanged. See the
+[slice 796 contract](tasks/native-engine-browser-796.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

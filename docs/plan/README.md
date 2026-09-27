@@ -104,6 +104,13 @@ same-origin parent-frame event dispatch. Focus events are `FocusEvent` objects
 with the bounded `UIEvent.view`/`detail` surface. Full focus-event Web IDL and
 reentrant focus-algorithm conformance remain open; see the
 [slice 777 task](tasks/native-engine-browser-777.md).
+Slice 778 exposes ordinary-element `onfocus`/`onblur` IDL properties through
+the shared event owner, preserving listener position on handler replacement
+and removing the handler on null assignment. Owner-keyed state survives frame
+projection refreshes. Local, process-backed, and same-origin parent-projection
+tests cover target/`this`, replacement, and clearing; inline event-handler
+attributes and `body`/`frameset` Window-target remapping remain open. See the
+[slice 778 task](tasks/native-engine-browser-778.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

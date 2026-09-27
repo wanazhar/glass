@@ -70038,7 +70038,48 @@ fn native_focus_event_markup() -> &'static str {
 }
 
 fn native_focus_event_listener_script() -> &'static str {
-    "(() => { globalThis.focusEvents = []; const outer = document.getElementById('outer'); const record = event => focusEvents.push([event.type, event.target.id, event.relatedTarget ? event.relatedTarget.id : null, event instanceof FocusEvent]); for (const type of ['blur', 'focus']) outer.addEventListener(type, record, true); for (const type of ['focusout', 'focusin']) outer.addEventListener(type, record); document.getElementById('first').focus(); document.getElementById('second').focus(); return focusEvents; })()"
+    r#"(() => {
+      globalThis.focusEvents = [];
+      globalThis.idlFocusEvents = [];
+      globalThis.idlFocusOrder = [];
+      const outer = document.getElementById('outer');
+      const first = document.getElementById('first');
+      const second = document.getElementById('second');
+      const record = event => focusEvents.push([
+        event.type,
+        event.target.id,
+        event.relatedTarget ? event.relatedTarget.id : null,
+        event instanceof FocusEvent,
+      ]);
+      for (const type of ['blur', 'focus']) outer.addEventListener(type, record, true);
+      for (const type of ['focusout', 'focusin']) outer.addEventListener(type, record);
+      first.addEventListener('focus', () => idlFocusOrder.push('before'));
+      first.onfocus = () => {
+        idlFocusEvents.push(['replaced']);
+        idlFocusOrder.push('replaced');
+      };
+      first.addEventListener('focus', () => idlFocusOrder.push('after'));
+      first.onfocus = function(event) {
+        idlFocusEvents.push(['focus-first', this === event.currentTarget, event.target === event.currentTarget]);
+        idlFocusOrder.push('handler');
+      };
+      first.onblur = () => idlFocusEvents.push(['replaced-blur']);
+      first.onblur = function(event) {
+        idlFocusEvents.push(['blur-first', this === event.currentTarget, event.target === event.currentTarget]);
+      };
+      second.onfocus = function(event) {
+        idlFocusEvents.push(['focus-second', this === event.currentTarget, event.target === event.currentTarget]);
+      };
+      second.onblur = function(event) {
+        idlFocusEvents.push(['blur-second', this === event.currentTarget, event.target === event.currentTarget]);
+      };
+      first.focus();
+      second.focus();
+      first.onfocus = null;
+      second.onblur = null;
+      globalThis.clearedFocusHandlers = [first.onfocus, second.onblur];
+      return focusEvents;
+    })()"#
 }
 
 fn native_focus_transition_events() -> serde_json::Value {
@@ -70050,6 +70091,59 @@ fn native_focus_transition_events() -> serde_json::Value {
         ["focus", "second", "first", true],
         ["focusin", "second", "first", true],
     ])
+}
+
+fn native_projected_focus_handler_setup_script() -> &'static str {
+    r#"(() => {
+      const child = document.getElementById('child').contentDocument;
+      const outer = child.getElementById('outer');
+      const first = child.getElementById('first');
+      const second = child.getElementById('second');
+      globalThis.projectedFocusEvents = [];
+      globalThis.projectedIdlFocusEvents = [];
+      const record = event => projectedFocusEvents.push([
+        event.type,
+        event.target.id,
+        event.relatedTarget ? event.relatedTarget.id : null,
+        event instanceof FocusEvent,
+      ]);
+      for (const type of ['blur', 'focus']) outer.addEventListener(type, record, true);
+      for (const type of ['focusout', 'focusin']) outer.addEventListener(type, record);
+      first.onfocus = () => projectedIdlFocusEvents.push(['replaced']);
+      first.onfocus = function(event) {
+        projectedIdlFocusEvents.push([
+          'focus-first',
+          this === event.currentTarget,
+          event.target === event.currentTarget,
+        ]);
+      };
+      first.onblur = function(event) {
+        projectedIdlFocusEvents.push([
+          'blur-first',
+          this === event.currentTarget,
+          event.target === event.currentTarget,
+        ]);
+      };
+      second.onfocus = function(event) {
+        projectedIdlFocusEvents.push([
+          'focus-second',
+          this === event.currentTarget,
+          event.target === event.currentTarget,
+        ]);
+      };
+      second.onblur = function(event) {
+        projectedIdlFocusEvents.push([
+          'blur-second',
+          this === event.currentTarget,
+          event.target === event.currentTarget,
+        ]);
+      };
+      return true;
+    })()"#
+}
+
+fn native_projected_focus_handler_clear_script() -> &'static str {
+    "(() => { const child = document.getElementById('child').contentDocument; const first = child.getElementById('first'); const second = child.getElementById('second'); first.onfocus = null; second.onblur = null; return [first.onfocus, second.onblur]; })()"
 }
 
 #[tokio::test]
@@ -70068,6 +70162,22 @@ async fn native_local_focusin_focusout_bubble_with_related_targets() {
             .await
             .unwrap(),
         native_focus_transition_events()
+    );
+    assert_eq!(
+        engine.evaluate_async("idlFocusEvents").await.unwrap(),
+        serde_json::json!([
+            ["focus-first", true, true],
+            ["blur-first", true, true],
+            ["focus-second", true, true],
+        ])
+    );
+    assert_eq!(
+        engine.evaluate_async("clearedFocusHandlers").await.unwrap(),
+        serde_json::json!([null, null])
+    );
+    assert_eq!(
+        engine.evaluate_async("idlFocusOrder").await.unwrap(),
+        serde_json::json!(["before", "handler", "after"])
     );
 
     engine
@@ -70090,6 +70200,18 @@ async fn native_local_focusin_focusout_bubble_with_related_targets() {
             ["focus", "first", "second", true],
             ["focusin", "first", "second", true],
         ])
+    );
+    assert_eq!(
+        engine.evaluate_async("idlFocusEvents").await.unwrap(),
+        serde_json::json!([
+            ["focus-first", true, true],
+            ["blur-first", true, true],
+            ["focus-second", true, true],
+        ])
+    );
+    assert_eq!(
+        engine.evaluate_async("idlFocusOrder").await.unwrap(),
+        serde_json::json!(["before", "handler", "after", "before", "after"])
     );
     engine.close_async().await.unwrap();
 }
@@ -70136,9 +70258,7 @@ async fn native_http_focusin_focusout_persist_in_same_origin_frame() {
         .id
         .clone();
     session
-        .script(
-            "(() => { const child = document.getElementById('child').contentDocument; const outer = child.getElementById('outer'); globalThis.projectedFocusEvents = []; const record = event => projectedFocusEvents.push([event.type, event.target.id, event.relatedTarget ? event.relatedTarget.id : null, event instanceof FocusEvent]); for (const type of ['blur', 'focus']) outer.addEventListener(type, record, true); for (const type of ['focusout', 'focusin']) outer.addEventListener(type, record); return true; })()",
-        )
+        .script(native_projected_focus_handler_setup_script())
         .await
         .unwrap();
     session.native_select_frame(&child_id).await.unwrap();
@@ -70150,6 +70270,35 @@ async fn native_http_focusin_focusout_persist_in_same_origin_frame() {
             .value,
         native_focus_transition_events()
     );
+    assert_eq!(
+        session.script("idlFocusEvents").await.unwrap().value,
+        serde_json::json!([
+            ["focus-first", true, true],
+            ["blur-first", true, true],
+            ["focus-second", true, true],
+        ])
+    );
+    assert_eq!(
+        session.script("clearedFocusHandlers").await.unwrap().value,
+        serde_json::json!([null, null])
+    );
+    assert_eq!(
+        session.script("idlFocusOrder").await.unwrap().value,
+        serde_json::json!(["before", "handler", "after"])
+    );
+    session
+        .native_select_frame("native-context:main")
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script(native_projected_focus_handler_clear_script())
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([null, null])
+    );
+    session.native_select_frame(&child_id).await.unwrap();
     session
         .action(SemanticAction::Shortcut {
             shortcut: "Tab".into(),
@@ -70189,6 +70338,23 @@ async fn native_http_focusin_focusout_persist_in_same_origin_frame() {
             ["focus", "first", "second", true],
             ["focusin", "first", "second", true],
         ])
+    );
+    assert_eq!(
+        session
+            .script("projectedIdlFocusEvents")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([
+            ["focus-first", true, true],
+            ["blur-first", true, true],
+            ["focus-second", true, true],
+        ])
+    );
+    session.native_select_frame(&child_id).await.unwrap();
+    assert_eq!(
+        session.script("idlFocusOrder").await.unwrap().value,
+        serde_json::json!(["before", "handler", "after", "before", "after"])
     );
     session.close().await.unwrap();
     server.await.unwrap();

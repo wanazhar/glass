@@ -243,6 +243,13 @@ regressions cover cancellation, forwarding order, later listeners, and worker
 survival. See the
 [slice 789 task](tasks/native-engine-browser-789.md).
 
+Slice 790 corrects worker CSP destination selection: root worker creation uses
+the `worker-src` → `child-src` → `script-src` → `default-src` fallback chain,
+while `importScripts()` and worker module dependencies use the active worker's
+script-source policy. Report-only events keep their effective-directive
+metadata without changing the request result. This does not claim complete CSP
+or WPT conformance; see the [slice 790 task](tasks/native-engine-browser-790.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

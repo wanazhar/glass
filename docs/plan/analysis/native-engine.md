@@ -3666,7 +3666,17 @@ without changing page `worker-src` authorization. A later worker response
 replaces stale policy state; the existing bounded page/worker report transport
 then delivers report-only records in the owning worker realm. The contract and
 evidence are recorded in
-`docs/plan/tasks/native-engine-browser-401.md`. The completed
+`docs/plan/tasks/native-engine-browser-401.md`.
+
+Slice 790 separates CSP request destinations: worker creation checks
+`worker-src` → `child-src` → `script-src` → `default-src`, while classic
+`importScripts()` and worker module dependencies use the active worker's
+script-source policy. Report-only violations retain the selected directive
+and remain non-blocking. Full CSP source matching, policy inheritance, and
+WPT conformance remain open. See
+[task 790](../plan/tasks/native-engine-browser-790.md).
+
+The completed
 `native-engine-browser-402` slice closes the WebSocket report-only CSP owner
 boundary: page and dedicated-worker WebSocket `connect-src` checks compute
 bounded records alongside the enforced decision, carry them through the

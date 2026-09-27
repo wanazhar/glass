@@ -3664,6 +3664,14 @@ state; report-only records remain bounded and never authorize or block a
 request. Dynamic policy mutation, strict-dynamic trust, and the complete CSP
 source-expression grammar remain separate issue #40 gates.
 
+Slice 790 separates worker-creation CSP from scripts loaded by an existing
+worker. Worker and service-worker root requests use the `worker-src` fallback
+chain (`child-src`, `script-src`, then `default-src`); `importScripts()` and
+worker module dependencies use the worker's script-source policy instead.
+Report-only records name the effective directive without changing the load
+decision. This bounded correction does not claim complete CSP or WPT
+conformance; see [task 790](../plan/tasks/native-engine-browser-790.md).
+
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
 operation and delivers them in the owning page turn; EventSource carries

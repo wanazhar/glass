@@ -243,14 +243,16 @@ regressions cover cancellation, forwarding order, later listeners, and worker
 survival. See the
 [slice 789 task](tasks/native-engine-browser-789.md).
 
-Slice 790 corrects worker CSP destination selection: root worker creation uses
-the `worker-src` → `child-src` → `script-src` → `default-src` fallback chain,
-while `importScripts()` and worker module dependencies use the active worker's
-script-source policy. A blocked Service Worker registration or update rejects
-its API promise without terminating the owning page process; a failed update
-retains the installed registration. Report-only events keep their
-effective-directive metadata without changing the request result. This does
-not claim complete CSP or WPT conformance; see the
+Completed locally, slice 790 corrects worker CSP destination selection: root
+worker creation uses the `worker-src` → `child-src` → `script-src` →
+`default-src` fallback chain, while `importScripts()` and worker module
+dependencies use the active worker's script-source policy. Blocked dedicated/
+shared worker graphs report worker errors without terminating the page process;
+blocked Service Worker registration/update rejects its API promise, and a
+blocked update retains the installed registration. Report-only events keep
+their effective-directive metadata without changing the request result. Focused
+CSP, fixture, JSON-module, and runtime-import tests passed locally. This does
+not claim complete CSP/WPT conformance or remote CI; see the
 [slice 790 task](tasks/native-engine-browser-790.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,

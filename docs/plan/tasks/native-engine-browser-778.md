@@ -43,10 +43,13 @@ native event-listener ownership path.
 
 ## Boundaries and tradeoffs
 
-This is the IDL-property path only. Inline `onfocus`/`onblur` content-attribute
-compilation, `body`/`frameset` Window-target remapping, the remaining
-`GlobalEventHandlers` properties, complete event-handler return-value behavior,
-and full focus Web IDL/reentrancy conformance remain separate requirements.
+This adds the IDL-property path only. Native elements already route generic
+`on*` content attributes through the inline-handler compiler; this slice does
+not change or independently certify its focus-specific CSP behavior or
+same-origin parent-projection parity. `body`/`frameset` Window-target remapping,
+the remaining `GlobalEventHandlers` properties, complete event-handler
+return-value behavior, and full focus Web IDL/reentrancy conformance remain
+separate requirements.
 
 ## Paths
 

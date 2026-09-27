@@ -140,9 +140,11 @@ the stable native event owner so refreshed same-origin frame projections read
 and update the same handler. Local,
 HTTP(S) content-process, and same-origin parent-frame projection tests cover
 handler `this`/target identity at dispatch, replacement, clearing, and listener
-order.
-Inline event-handler content attributes and `body`/`frameset` Window-target
-remapping are not included; see the [slice 778 task](tasks/native-engine-browser-778.md).
+order. Native elements already route generic `on*` content attributes through
+the inline-handler path; this slice does not change or independently verify
+focus-specific CSP behavior or same-origin parent-projection parity.
+`body`/`frameset` Window-target remapping remains open; see the
+[slice 778 task](tasks/native-engine-browser-778.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus

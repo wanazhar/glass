@@ -5329,8 +5329,9 @@ function updates the handler in place, preserving its listener order;
 assigning null removes it. The property handler receives the event's current
 target as `this`. Local, process-backed, and same-origin parent-frame tests
 cover these properties together with the existing native focus transitions.
-This does not compile inline handler
-content attributes or remap `body`/`frameset` handlers to Window, and is not a
+The existing generic `on*` inline-content-attribute path is unchanged; this
+slice does not independently establish focus-specific CSP or projection
+parity. It does not remap `body`/`frameset` handlers to Window and is not a
 complete `GlobalEventHandlers` implementation. See
 [`native-engine-browser-778`](../plan/tasks/native-engine-browser-778.md).
 

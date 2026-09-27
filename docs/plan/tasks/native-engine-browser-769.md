@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-769
 scope: glass-browser/keyboard-radio-group-navigation
-status: ready
+status: in-progress
 depends-on: [native-engine-browser-768]
 ---
 

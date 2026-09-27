@@ -168,7 +168,15 @@ fn should_apply_native_key_default(key: &str, modifiers: i64) -> bool {
         && (key.chars().count() == 1
             || matches!(
                 key,
-                "Backspace" | "Delete" | "ArrowLeft" | "ArrowRight" | "Home" | "End" | "Tab"
+                "Backspace"
+                    | "Delete"
+                    | "ArrowLeft"
+                    | "ArrowRight"
+                    | "ArrowUp"
+                    | "ArrowDown"
+                    | "Home"
+                    | "End"
+                    | "Tab"
             ))
 }
 
@@ -4518,6 +4526,11 @@ impl NativeEngine {
                 let default_allowed = should_apply_native_key_default(&key, modifiers);
                 let apply_default = default_allowed
                     && (key == "Tab"
+                        || self.document.can_apply_radio_group_arrow_navigation(
+                            focused_node,
+                            &key,
+                            modifiers,
+                        )
                         || self
                             .document
                             .focused_text_control()
@@ -7012,6 +7025,8 @@ impl NativeEngine {
         let was_button = document.has_native_keyboard_button_activation(id);
         let was_link = document.has_native_keyboard_link_activation(id);
         let was_checkable_kind = document.keyboard_checkable_kind(id);
+        let was_radio_arrow_target =
+            document.can_apply_radio_group_arrow_navigation(id, key, modifiers);
         let evaluation =
             self.evaluate_local_key_event_with_modifiers(&document, id, kind, key, modifiers)?;
         let event_allowed = evaluation
@@ -7026,6 +7041,27 @@ impl NativeEngine {
                 &evaluation.commands,
                 &mut history_commands,
             )?);
+        }
+
+        if kind == NativeEventKind::KeyDown
+            && event_allowed
+            && was_radio_arrow_target
+            && document.focused_node() == id
+            && document.can_apply_radio_group_arrow_navigation(id, key, modifiers)
+        {
+            let default_events = document.apply_key_default(id, key, modifiers)?;
+            events.extend(default_events.clone());
+            for (event_node, event_kind) in default_events {
+                if let Some(evaluation) =
+                    self.evaluate_local_events(&document, &[(event_node, event_kind)])?
+                {
+                    events.extend(self.apply_local_evaluation_commands(
+                        &mut document,
+                        &evaluation.commands,
+                        &mut history_commands,
+                    )?);
+                }
+            }
         }
 
         let mut submit_navigation = None;
@@ -7099,6 +7135,8 @@ impl NativeEngine {
         let mut events = vec![(id, NativeEventKind::KeyDown)];
         let keyboard_button_target = document.has_native_keyboard_button_activation(id);
         let keyboard_checkable_kind = document.keyboard_checkable_kind(id);
+        let keyboard_radio_arrow_target =
+            document.can_apply_radio_group_arrow_navigation(id, key, modifiers);
         let keyboard_link_target =
             key == "Enter" && document.has_native_keyboard_link_activation(id);
         let keydown = self.evaluate_local_key_event_with_modifiers(
@@ -7126,6 +7164,12 @@ impl NativeEngine {
             let default_events = if key == "Tab" {
                 if document.focused_node() == id {
                     document.apply_tab_focus(modifiers & 8 != 0)?
+                } else {
+                    Vec::new()
+                }
+            } else if keyboard_radio_arrow_target {
+                if document.can_apply_radio_group_arrow_navigation(id, key, modifiers) {
+                    document.apply_key_default(id, key, modifiers)?
                 } else {
                     Vec::new()
                 }
@@ -7167,10 +7211,15 @@ impl NativeEngine {
             )?;
         }
 
-        events.push((id, NativeEventKind::KeyUp));
+        let keyup_target = if document.is_attached(id) {
+            id
+        } else {
+            document.focused_node()
+        };
+        events.push((keyup_target, NativeEventKind::KeyUp));
         if let Some(evaluation) = self.evaluate_local_key_event_with_modifiers(
             &document,
-            id,
+            keyup_target,
             NativeEventKind::KeyUp,
             key,
             modifiers,

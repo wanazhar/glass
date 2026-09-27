@@ -227,9 +227,11 @@ Left/Up select the previous member, focus follows selection, and navigation
 wraps within the HTML radio group. A canceled keydown suppresses the default;
 actual selection changes emit bubbling `input` then `change`. This is an
 explicit Glass profile choice because the HTML Standard defines radio groups
-and activation events but not directional-key mapping. The behavior is
-planned in [slice 769](tasks/native-engine-browser-769.md); it does not
-cover toolbar-specific or ARIA-authored radio widgets.
+and activation events but not directional-key mapping. Slice 769 implements
+this behavior through the shared key-default owner across local,
+process-backed, and same-origin-frame routes. It does not cover
+toolbar-specific or ARIA-authored radio widgets; see
+[slice 769](tasks/native-engine-browser-769.md).
 Slice 764 implements keyboard activation for focused native button controls
 in process-backed network documents: Enter activates on keydown and Space on
 keyup after an uncanceled keydown. The shared click/default path handles reset

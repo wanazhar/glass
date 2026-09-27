@@ -9174,6 +9174,24 @@ impl NativeDocument {
         self.form_owner(id)
     }
 
+    pub(crate) fn has_native_keyboard_button_activation(&self, id: NativeNodeId) -> bool {
+        if !self.is_attached(id) || self.is_disabled(id) {
+            return false;
+        }
+        let Some(node) = self.node(id) else {
+            return false;
+        };
+        match node.element_name() {
+            Some("button") => true,
+            Some("input") => node.attribute("type").is_some_and(|kind| {
+                ["button", "reset", "submit", "image"]
+                    .iter()
+                    .any(|supported| kind.eq_ignore_ascii_case(supported))
+            }),
+            _ => false,
+        }
+    }
+
     pub(crate) fn reset_form_controls(
         &mut self,
         form_id: NativeNodeId,

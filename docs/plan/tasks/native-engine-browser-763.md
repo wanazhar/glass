@@ -50,7 +50,9 @@ This slice reuses `nativeFormReset()` and the native `ResetForm` command so
 event cancellation, default-state restoration, and custom-element reactions
 cannot drift into a second implementation. General Enter/Space-generated button
 clicks are part of the broader keyboard activation model and remain outside
-this slice; tests must not imply keyboard activation support.
+this slice; tests must not imply keyboard activation support. Process-backed
+Enter/Space activation is implemented separately in slice 764; inline/local
+engine parity remains tracked in slice 765.
 
 ## Paths
 
@@ -78,5 +80,7 @@ Passed locally:
 
 The regressions verify click cancellation, reset-event cancellation, current
 type/form-owner changes made by click listeners, and no validation, submission,
-or navigation. Remote CI, cross-platform certification, keyboard-generated
-activation, and issue #40 completion are not established by these local checks.
+or navigation. These slice-763 checks do not establish remote CI,
+cross-platform certification, or issue #40 completion. Keyboard-generated
+activation has separate process-backed evidence in slice 764; inline/local
+engine parity remains open in slice 765.

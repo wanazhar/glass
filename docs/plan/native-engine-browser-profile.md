@@ -185,16 +185,19 @@ reset defaults. Reset-button activation, state restoration, and complete
 form-control Web IDL reflection remain profile requirements. Slice 763
 implements native activation of form-associated reset buttons through semantic clicks,
 JavaScript `.click()`, and same-origin frame routing. Local tests cover event
-cancellation, form-owner changes, and no submit/validation/navigation. Keyboard-
-generated click activation remains in the broader input workstream. See the
+cancellation, form-owner changes, and no submit/validation/navigation.
+Process-backed keyboard-generated button activation is implemented in
+[slice 764](tasks/native-engine-browser-764.md); inline/local parity remains
+tracked in [slice 765](tasks/native-engine-browser-765.md). See the
 [slice 762](tasks/native-engine-browser-762.md) and
 [slice 763](tasks/native-engine-browser-763.md) contracts.
-Slice 764 defines keyboard activation for focused native button controls:
-Enter activates on keydown and Space on keyup after an uncanceled keydown.
-The contract requires the shared click/default path for reset and submit
-controls in top-level and same-origin-frame Documents. Implementation and
-verification remain pending; see the
-[slice 764 contract](tasks/native-engine-browser-764.md).
+Slice 764 implements keyboard activation for focused native button controls
+in process-backed network documents: Enter activates on keydown and Space on
+keyup after an uncanceled keydown. The shared click/default path handles reset
+and submit controls in top-level and same-origin child Documents. The
+in-process/local `NativeEngine::action()` route remains a parity gap tracked by
+[slice 765](tasks/native-engine-browser-765.md). Exact local evidence and
+boundaries are recorded in the [slice 764 task](tasks/native-engine-browser-764.md).
 ### Synchronous JavaScript dialog contract
 
 The native page realm implements the HTML Standard's modal user-prompt

@@ -24,8 +24,8 @@ use super::error::NativeWorkerFailureKind;
 use super::font::{MAX_NATIVE_FONT_FACES, NativeFontBook, NativeFontFaceResource};
 use super::history::{NativeHistory, NativeHistoryDirection};
 use super::interaction::{
-    MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind, parse_native_shortcut,
-    validate_native_edit_key, validate_native_key,
+    MAX_NATIVE_EFFECTS, NativeAction, NativeEffect, NativeEventKind, normalize_native_keyboard_key,
+    parse_native_shortcut, validate_native_edit_key, validate_native_key,
 };
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES,
@@ -4074,11 +4074,14 @@ impl NativeEngine {
             }
             NativeAction::KeyDown { key } => {
                 validate_native_key(&key)?;
+                let key = normalize_native_keyboard_key(key);
                 self.document_has_sticky_activation = true;
                 let id = self.document.focused_node();
                 return self.action_local_key_event(id, &key, NativeEventKind::KeyDown, 0);
             }
             NativeAction::KeyUp { key } => {
+                validate_native_key(&key)?;
+                let key = normalize_native_keyboard_key(key);
                 let id = self.document.focused_node();
                 return self.action_local_key_event(id, &key, NativeEventKind::KeyUp, 0);
             }
@@ -4436,6 +4439,7 @@ impl NativeEngine {
             }
             NativeAction::KeyDown { key } => {
                 validate_native_key(&key)?;
+                let key = normalize_native_keyboard_key(key);
                 self.document_has_sticky_activation = true;
                 let node_index = self.document.focused_node().index();
                 let mutation = {
@@ -4455,11 +4459,11 @@ impl NativeEngine {
                         )
                         .await?
                 };
-                let next_revision = self.next_revision()?;
-                self.apply_content_process_mutation_async_at(next_revision, mutation)
-                    .await
+                self.apply_keyboard_mutation_async(mutation).await
             }
             NativeAction::KeyUp { key } => {
+                validate_native_key(&key)?;
+                let key = normalize_native_keyboard_key(key);
                 let node_index = self.document.focused_node().index();
                 let mutation = {
                     let process =
@@ -4478,9 +4482,7 @@ impl NativeEngine {
                         )
                         .await?
                 };
-                let next_revision = self.next_revision()?;
-                self.apply_content_process_mutation_async_at(next_revision, mutation)
-                    .await
+                self.apply_keyboard_mutation_async(mutation).await
             }
             NativeAction::Shortcut { shortcut } => {
                 let (modifiers, key) = parse_native_shortcut(&shortcut)?;
@@ -4510,9 +4512,7 @@ impl NativeEngine {
                         )
                         .await?
                 };
-                let next_revision = self.next_revision()?;
-                self.apply_content_process_mutation_async_at(next_revision, mutation)
-                    .await
+                self.apply_keyboard_mutation_async(mutation).await
             }
             NativeAction::KeyPress { key } => {
                 validate_native_edit_key(&key)?;
@@ -6856,6 +6856,25 @@ impl NativeEngine {
             revision: next_revision,
             accepted: true,
         })
+    }
+
+    async fn apply_keyboard_mutation_async(
+        &mut self,
+        mutation: NativeContentMutation,
+    ) -> Result<NativeActionResult, NativeEngineError> {
+        let navigation = mutation.navigation.clone();
+        let next_revision = self.next_revision()?;
+        let outcome = self
+            .apply_content_process_mutation_async_at(next_revision, mutation)
+            .await?;
+        if let Some(navigation) = navigation {
+            self.navigate_script_navigation_async(navigation, 0).await?;
+            return Ok(NativeActionResult {
+                revision: self.revision,
+                accepted: true,
+            });
+        }
+        Ok(outcome)
     }
 
     fn apply_content_process_mutation(

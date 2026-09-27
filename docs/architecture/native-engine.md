@@ -88,12 +88,17 @@ for exact verification evidence. Slice 763 connects reset buttons to this
 shared algorithm through native semantic clicks, JavaScript `.click()`, and
 same-origin frame routing. Focused tests cover click/reset cancellation,
 post-listener type and form-owner changes, absence of submission/validation/
-navigation, and frame state persistence. General keyboard-generated button
-activation remains open. See the
+navigation, and frame state persistence. Process-backed keyboard-generated
+button activation is implemented in slice 764; inline/local parity is tracked
+in slice 765. See the
 [slice 763 task](../plan/tasks/native-engine-browser-763.md).
-Slice 764 defines Enter/Space activation timing for mapped native button
-controls through the same click/default-action path. Its implementation and
-verification remain pending; see the
+Slice 764 implements keyboard activation for focused native button controls
+in process-backed network documents: Enter activates on keydown and Space on
+keyup after an uncanceled keydown. The shared click/default path handles reset
+and submit controls in top-level and same-origin child Documents. The
+in-process/local `NativeEngine::action()` route remains a parity gap tracked by
+[slice 765](../plan/tasks/native-engine-browser-765.md). Exact local evidence
+and boundaries are recorded in the
 [slice 764 task](../plan/tasks/native-engine-browser-764.md).
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,

@@ -30,7 +30,7 @@ use super::interaction::{
     validate_native_key,
 };
 use super::javascript::NativeScriptCommand;
-use super::layout::{NativeLayoutSnapshot, NativePoint};
+use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
@@ -72,6 +72,14 @@ const MAX_FORM_CONTROLS: usize = 128;
 const MAX_IMAGE_SRCSET_CANDIDATES: usize = 32;
 const MAX_IMAGE_DENSITY_MILLI: u32 = 64_000;
 const DEFAULT_IMAGE_DENSITY_MILLI: u32 = 1_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeImageMapShape {
+    Default,
+    Rectangle,
+    Circle,
+    Polygon,
+}
 /// Maximum logical pixels retained for one script-backed canvas.
 pub(crate) const MAX_NATIVE_CANVAS_PIXELS: usize = 1_024 * 1_024;
 pub(crate) const MAX_NATIVE_CANVAS_BYTES: usize = MAX_NATIVE_CANVAS_PIXELS * 4;
@@ -5532,7 +5540,116 @@ impl NativeDocument {
         x: i64,
         y: i64,
     ) -> Result<Option<NativeNodeId>, NativeEngineError> {
-        self.layout(viewport)?.hit_test(x, y)
+        let layout = self.layout(viewport)?;
+        self.hit_test_with_layout(&layout, x, y)
+    }
+
+    pub(crate) fn hit_test_with_layout(
+        &self,
+        layout: &NativeLayoutSnapshot,
+        x: i64,
+        y: i64,
+    ) -> Result<Option<NativeNodeId>, NativeEngineError> {
+        let Some(hit) = layout.hit_test(x, y)? else {
+            return Ok(None);
+        };
+        Ok(self
+            .image_map_area_at_point(layout, hit, x, y)
+            .or(Some(hit)))
+    }
+
+    fn image_map_area_at_point(
+        &self,
+        layout: &NativeLayoutSnapshot,
+        image_id: NativeNodeId,
+        x: i64,
+        y: i64,
+    ) -> Option<NativeNodeId> {
+        if self.node(image_id)?.element_name() != Some("img") {
+            return None;
+        }
+        let map_id = self.image_map_for_image(image_id)?;
+        let local = image_content_point(layout, image_id, x, y)?;
+        let mut pending = self
+            .node(map_id)?
+            .children()
+            .iter()
+            .rev()
+            .copied()
+            .collect::<Vec<_>>();
+        while let Some(id) = pending.pop() {
+            let node = self.node(id)?;
+            if node.element_name() == Some("area")
+                && image_map_shape_contains(node, local.0, local.1)
+            {
+                return Some(id);
+            }
+            pending.extend(node.children().iter().rev().copied());
+        }
+        None
+    }
+
+    fn image_map_for_image(&self, image_id: NativeNodeId) -> Option<NativeNodeId> {
+        let reference = self.node(image_id)?.attribute("usemap")?;
+        let hash = reference.find('#')?;
+        let name = reference.get(hash + 1..)?;
+        if name.is_empty() {
+            return None;
+        }
+        let mut pending = vec![self.root];
+        while let Some(id) = pending.pop() {
+            let node = self.node(id)?;
+            if node.element_name() == Some("map")
+                && (node.attribute("id") == Some(name) || node.attribute("name") == Some(name))
+            {
+                return Some(id);
+            }
+            pending.extend(node.children().iter().rev().copied());
+        }
+        None
+    }
+
+    fn image_map_for_area(&self, area_id: NativeNodeId) -> Option<NativeNodeId> {
+        let mut current = self.node(area_id)?.parent();
+        while let Some(id) = current {
+            let node = self.node(id)?;
+            if node.element_name() == Some("map") {
+                return Some(id);
+            }
+            current = node.parent();
+        }
+        None
+    }
+
+    pub(crate) fn image_map_area_has_visible_image(
+        &self,
+        area_id: NativeNodeId,
+        layout: &NativeLayoutSnapshot,
+    ) -> bool {
+        self.image_map_area_viewport_rect(area_id, layout).is_some()
+    }
+
+    pub(crate) fn image_map_area_viewport_rect(
+        &self,
+        area_id: NativeNodeId,
+        layout: &NativeLayoutSnapshot,
+    ) -> Option<NativeRect> {
+        let Some(map_id) = self.image_map_for_area(area_id) else {
+            return None;
+        };
+        self.nodes.iter().find_map(|node| {
+            let image_id = node.id();
+            if node.element_name() != Some("img")
+                || !self.is_attached(image_id)
+                || self.image_map_for_image(image_id) != Some(map_id)
+                || self.is_hidden_for_layout(image_id)
+            {
+                return None;
+            }
+            layout
+                .viewport_rect_for(image_id)
+                .filter(|rect| rect.width > 0 && rect.height > 0)
+        })
     }
 
     /// Derive an immutable display list from the current layout revision.
@@ -5605,11 +5722,17 @@ impl NativeDocument {
         id: NativeNodeId,
         checkable_pre_activated: bool,
     ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
-        let semantic =
-            self.semantic_node(id)
-                .ok_or_else(|| NativeEngineError::TargetNotActionable {
-                    reason: "target has no supported semantic control role".into(),
-                })?;
+        let Some(semantic) = self.semantic_node(id) else {
+            if self.node(id).and_then(NativeNode::element_name) == Some("area")
+                && self.image_map_for_area(id).is_some()
+            {
+                self.mark_user_interacted(id)?;
+                return Ok(vec![(id, NativeEventKind::Click)]);
+            }
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "target has no supported semantic control role".into(),
+            });
+        };
         let checkable_activation_role = matches!(semantic.role.as_str(), "checkbox" | "radio");
         if semantic.disabled && !(checkable_pre_activated && checkable_activation_role) {
             return Err(NativeEngineError::DisabledTarget);
@@ -6097,6 +6220,7 @@ impl NativeDocument {
                 if !self.is_attached(node.id())
                     || self.is_hidden(node.id())
                     || self.is_disabled(node.id())
+                    || node.element_name() == Some("area")
                 {
                     return None;
                 }
@@ -7107,11 +7231,16 @@ impl NativeDocument {
         let Some(_node) = self.node(id) else {
             return Err(NativeEngineError::DetachedTarget);
         };
-        let semantic =
-            self.semantic_node(id)
-                .ok_or_else(|| NativeEngineError::TargetNotActionable {
-                    reason: "target has no supported semantic control role".into(),
-                })?;
+        let Some(semantic) = self.semantic_node(id) else {
+            if self.node(id).and_then(NativeNode::element_name) == Some("area")
+                && self.image_map_for_area(id).is_some()
+            {
+                return Ok(Vec::new());
+            }
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "target has no supported semantic control role".into(),
+            });
+        };
         if semantic.hidden {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "hidden targets cannot receive focus".into(),
@@ -9086,14 +9215,14 @@ impl NativeDocument {
 
     pub(crate) fn link_href(&self, id: NativeNodeId) -> Option<&str> {
         let node = self.node(id)?;
-        (node.element_name() == Some("a"))
+        self.is_hyperlink_element(id)
             .then(|| node.attribute("href"))
             .flatten()
     }
 
     pub(crate) fn link_download_attribute(&self, id: NativeNodeId) -> Option<&str> {
         let node = self.node(id)?;
-        if node.element_name() != Some("a") || node.attribute("href").is_none() {
+        if !self.is_hyperlink_element(id) {
             return None;
         }
         let attributes = node.attributes()?;
@@ -9112,11 +9241,22 @@ impl NativeDocument {
         let Some(node) = self.node(id) else {
             return false;
         };
-        node.element_name() == Some("a")
-            && node.attribute("href").is_some()
+        self.is_hyperlink_element(id)
             && node
                 .attribute("target")
                 .is_some_and(|target| target.trim().eq_ignore_ascii_case("_blank"))
+    }
+
+    fn is_hyperlink_element(&self, id: NativeNodeId) -> bool {
+        let Some(node) = self.node(id) else {
+            return false;
+        };
+        node.attribute("href").is_some()
+            && match node.element_name() {
+                Some("a") => true,
+                Some("area") => self.image_map_for_area(id).is_some(),
+                _ => false,
+            }
     }
 
     pub(crate) fn form_submission_target(
@@ -10337,6 +10477,11 @@ impl NativeDocument {
 
     fn semantic_role(&self, id: NativeNodeId) -> Option<&'static str> {
         let node = self.node(id)?;
+        if node.element_name() == Some("area")
+            && (!self.is_hyperlink_element(id) || self.image_map_for_area(id).is_none())
+        {
+            return None;
+        }
         if let Some(role) = node
             .attribute("role")
             .and_then(|role| supported_role(role.trim()))
@@ -10347,6 +10492,7 @@ impl NativeDocument {
         match name {
             "button" => Some("button"),
             "a" if node.attribute("href").is_some() => Some("link"),
+            "area" if self.is_hyperlink_element(id) => Some("link"),
             "textarea" => Some("textbox"),
             "select" => Some("combobox"),
             "option" => Some("option"),
@@ -10393,7 +10539,7 @@ impl NativeDocument {
                 return collapsed;
             }
         }
-        if role == "img"
+        if (role == "img" || (role == "link" && node.element_name() == Some("area")))
             && let Some(value) = node.attribute("alt")
         {
             return collapse_text(value, MAX_LOCATOR_BYTES);
@@ -12290,6 +12436,163 @@ fn media_type_is_supported(media_type: Option<&str>) -> bool {
                     | "application/x-mpegurl"
             )
     })
+}
+
+fn image_content_point(
+    layout: &NativeLayoutSnapshot,
+    image_id: NativeNodeId,
+    x: i64,
+    y: i64,
+) -> Option<(f64, f64)> {
+    let (visible_rect, source_offset) = layout.viewport_projection_for(image_id)?;
+    let point = NativePoint {
+        x: u32::try_from(x).ok()?,
+        y: u32::try_from(y).ok()?,
+    };
+    if !visible_rect.contains(point) {
+        return None;
+    }
+    let layout_box = layout
+        .boxes
+        .iter()
+        .find(|layout_box| layout_box.node_id == image_id)?;
+    let inset_x = layout_box.content_rect.x.saturating_sub(layout_box.rect.x);
+    let inset_y = layout_box.content_rect.y.saturating_sub(layout_box.rect.y);
+    let local_x = i64::from(point.x)
+        .saturating_sub(i64::from(visible_rect.x))
+        .saturating_add(i64::from(source_offset.x))
+        .saturating_sub(i64::from(inset_x));
+    let local_y = i64::from(point.y)
+        .saturating_sub(i64::from(visible_rect.y))
+        .saturating_add(i64::from(source_offset.y))
+        .saturating_sub(i64::from(inset_y));
+    if local_x < 0
+        || local_y < 0
+        || local_x >= i64::from(layout_box.content_rect.width)
+        || local_y >= i64::from(layout_box.content_rect.height)
+    {
+        return None;
+    }
+    Some((local_x as f64, local_y as f64))
+}
+
+fn image_map_shape_contains(node: &NativeNode, x: f64, y: f64) -> bool {
+    let shape = match node.attribute("shape") {
+        Some(value) if value.eq_ignore_ascii_case("default") => NativeImageMapShape::Default,
+        Some(value) if value.eq_ignore_ascii_case("circle") => NativeImageMapShape::Circle,
+        Some(value) if value.eq_ignore_ascii_case("poly") => NativeImageMapShape::Polygon,
+        _ => NativeImageMapShape::Rectangle,
+    };
+    if shape == NativeImageMapShape::Default {
+        return true;
+    }
+    let mut coords = parse_image_map_coordinates(node.attribute("coords"));
+    match shape {
+        NativeImageMapShape::Default => true,
+        NativeImageMapShape::Rectangle => {
+            if coords.len() < 4 {
+                return false;
+            }
+            coords.truncate(4);
+            let (mut left, mut top, mut right, mut bottom) =
+                (coords[0], coords[1], coords[2], coords[3]);
+            if left > right {
+                std::mem::swap(&mut left, &mut right);
+            }
+            if top > bottom {
+                std::mem::swap(&mut top, &mut bottom);
+            }
+            x >= left && x <= right && y >= top && y <= bottom
+        }
+        NativeImageMapShape::Circle => {
+            if coords.len() < 3 {
+                return false;
+            }
+            coords.truncate(3);
+            let radius = coords[2];
+            if radius <= 0.0 {
+                return false;
+            }
+            let delta_x = x - coords[0];
+            let delta_y = y - coords[1];
+            delta_x.mul_add(delta_x, delta_y * delta_y) <= radius * radius
+        }
+        NativeImageMapShape::Polygon => {
+            if coords.len() < 6 {
+                return false;
+            }
+            if !coords.len().is_multiple_of(2) {
+                coords.pop();
+            }
+            image_map_polygon_contains(&coords, x, y)
+        }
+    }
+}
+
+fn parse_image_map_coordinates(value: Option<&str>) -> Vec<f64> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    let mut coordinates = Vec::new();
+    let mut position = 0;
+    while position < value.len() {
+        let character = value[position..]
+            .chars()
+            .next()
+            .expect("position is within the coordinate string");
+        if character == ',' || character == ';' || character.is_ascii_whitespace() {
+            position += character.len_utf8();
+            continue;
+        }
+        if !character.is_ascii_digit() && !matches!(character, '.' | '-') {
+            position += character.len_utf8();
+            continue;
+        }
+
+        let start = position;
+        while position < value.len() {
+            let character = value[position..]
+                .chars()
+                .next()
+                .expect("position is within the coordinate string");
+            if character == ',' || character == ';' || character.is_ascii_whitespace() {
+                break;
+            }
+            position += character.len_utf8();
+        }
+        coordinates.push(
+            value[start..position]
+                .parse::<f64>()
+                .ok()
+                .filter(|coordinate| coordinate.is_finite())
+                .unwrap_or(0.0),
+        );
+    }
+    coordinates
+}
+
+fn image_map_polygon_contains(coords: &[f64], x: f64, y: f64) -> bool {
+    let mut inside = false;
+    let mut previous = coords.len() - 2;
+    for current in (0..coords.len()).step_by(2) {
+        let x1 = coords[previous];
+        let y1 = coords[previous + 1];
+        let x2 = coords[current];
+        let y2 = coords[current + 1];
+        let cross = (x - x1) * (y2 - y1) - (y - y1) * (x2 - x1);
+        if cross == 0.0 && x >= x1.min(x2) && x <= x1.max(x2) && y >= y1.min(y2) && y <= y1.max(y2)
+        {
+            return true;
+        }
+        if (y1 > y) != (y2 > y) {
+            let crossing_x = (x2 - x1) * (y - y1) / (y2 - y1) + x1;
+            if x < crossing_x {
+                inside = !inside;
+            }
+        }
+        previous = current;
+    }
+    inside
 }
 
 fn parse_image_srcset(value: &str) -> Vec<NativeImageCandidate> {

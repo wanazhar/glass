@@ -28,7 +28,6 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is complete through
-`native-engine-browser-770`; image-map interaction is in progress as
 `native-engine-browser-771`. Slice 767 verifies native hyperlink Enter
 activation through local and process-backed `_blank` target and download
 defaults, including cancellation and opener preservation; see the
@@ -54,11 +53,14 @@ existing download handling, and navigation policy. Its focused library and
 native integration tests pass locally; exact results and boundaries are in the
 [slice 770 task](tasks/native-engine-browser-770.md). This does not establish
 full pointer or browser conformance.
-Slice 771 is in progress to add client-side image-map point targeting, area
-activation, and accessible link routing through the existing native
-interaction owners. Its contract and required local/process/frame evidence are in the
-[slice 771 task](tasks/native-engine-browser-771.md); complete image-map and
-keyboard conformance remain open.
+Slice 771 implements client-side image-map point targeting, area activation,
+and accessible link routing through the existing native interaction owners.
+Focused tests cover normalized geometry, live map mutations, dead-area
+interception, cancelable local activation, HTTP(S) content-process downloads
+and target creation, and same-origin-frame navigation. See the
+[slice 771 task](tasks/native-engine-browser-771.md) for exact local evidence;
+complete image-map, keyboard, WPT, platform, and remote-CI conformance remain
+open.
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

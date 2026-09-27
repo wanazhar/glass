@@ -226,12 +226,14 @@ process-backed, and same-origin-frame behavior; focused local tests pass. See
 [`native-engine-browser-770`](tasks/native-engine-browser-770.md) for exact
 evidence. This is not complete pointer-input conformance.
 
-Slice 771 is in progress to bring client-side `<img usemap>` regions into
-native point hit testing and link activation. The planned map/area association,
-shape geometry, topmost-area selection, click cancellation, link defaults, and
-`alt`-derived accessible name follow the existing document and navigation owners; see
-[`native-engine-browser-771`](tasks/native-engine-browser-771.md). This does
-not claim complete image-map keyboard or WPT conformance.
+Slice 771 brings client-side `<img usemap>` regions into native point hit
+testing and link activation. Map association, normalized shape geometry,
+topmost-area selection, click cancellation, live link defaults, downloads,
+background targets, and `alt`-derived accessible names follow the existing
+document and navigation owners across local, HTTP(S) content-process, and
+same-origin-frame paths; see
+[`native-engine-browser-771`](tasks/native-engine-browser-771.md). Complete
+area keyboard, WPT, platform, and remote-CI conformance remain open.
 
 Slice 768 implements the bounded keyboard-input contract: unmodified
 Space on a focused, enabled native checkbox or radio synthesizes click

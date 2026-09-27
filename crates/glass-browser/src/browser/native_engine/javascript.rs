@@ -38247,6 +38247,43 @@ fn document_bootstrap(
       set(next) {{ element.setAttribute("class", String(next)); }},
     }});
   }};
+  const parsedNativeTabIndexAttribute = (value) => {{
+    if (value === null || value === undefined) return null;
+    const source = String(value);
+    if (!/^[\t\n\f\r ]*[+-]?[0-9]+[\t\n\f\r ]*$/.test(source)) return null;
+    const parsed = Number(source);
+    return Number.isInteger(parsed) && parsed >= -2147483648 && parsed <= 2147483647
+      ? parsed
+      : null;
+  }};
+  const defaultNativeTabIndex = (element) => {{
+    const tagName = String(element.tagName || "").toUpperCase();
+    if (["A", "AREA", "BUTTON", "FRAME", "IFRAME", "INPUT", "OBJECT", "SELECT", "TEXTAREA"].includes(tagName)) return 0;
+    if (tagName === "SUMMARY") {{
+      const parent = element.parentElement;
+      if (parent && parent.tagName === "DETAILS") {{
+        const firstSummary = Array.isArray(parent.__glassChildren)
+          ? parent.__glassChildren.find((child) => Number(child.nodeType) === 1 && child.tagName === "SUMMARY")
+          : null;
+        if (firstSummary === element) return 0;
+      }}
+    }}
+    return -1;
+  }};
+  const installTabIndexProperty = (element) => {{
+    Object.defineProperty(element, "tabIndex", {{
+      enumerable: true,
+      configurable: false,
+      get() {{
+        const parsed = parsedNativeTabIndexAttribute(element.getAttribute("tabindex"));
+        return parsed === null ? defaultNativeTabIndex(element) : parsed;
+      }},
+      set(next) {{
+        const converted = (+next) | 0;
+        element.setAttribute("tabindex", String(converted));
+      }},
+    }});
+  }};
   const installBooleanAttributeProperty = (element, property, attribute, read) => {{
     Object.defineProperty(element, property, {{
       enumerable: true,
@@ -38300,6 +38337,7 @@ fn document_bootstrap(
   }};
   const installCommonAttributeProperties = (element, state = {{}}, baseUrl = host.url) => {{
     installReflectedAttributeProperties(element);
+    installTabIndexProperty(element);
     for (const [property, attribute] of [
       ["disabled", "disabled"], ["hidden", "hidden"], ["multiple", "multiple"],
       ["required", "required"], ["readOnly", "readonly"], ["autofocus", "autofocus"],

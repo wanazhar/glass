@@ -12892,6 +12892,151 @@ async fn native_same_origin_frame_script_projection_matches_window_contract() {
 }
 
 #[tokio::test]
+async fn native_local_tab_index_property_reflects_defaults_and_focus_order() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://tabindex-idl",
+            "<div id='generic'></div><a id='anchor'>No href</a><button id='button' type='button'>Button</button><details><summary id='summary-first'>First</summary><summary id='summary-second'>Second</summary></details><input id='hidden-input' type='hidden'><div id='invalid' tabindex='bad'></div><div id='overflow'></div>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://tabindex-idl");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const generic = document.getElementById('generic'); const anchor = document.getElementById('anchor'); const button = document.getElementById('button'); const firstSummary = document.getElementById('summary-first'); const secondSummary = document.getElementById('summary-second'); const hiddenInput = document.getElementById('hidden-input'); const invalid = document.getElementById('invalid'); const overflow = document.getElementById('overflow'); const defaults = [generic.tabIndex, anchor.tabIndex, button.tabIndex, firstSummary.tabIndex, secondSummary.tabIndex, hiddenInput.tabIndex, invalid.tabIndex]; generic.tabIndex = 2.9; const truncation = [generic.tabIndex, generic.getAttribute('tabindex')]; generic.tabIndex = 4294967297; const wrapping = [generic.tabIndex, generic.getAttribute('tabindex')]; generic.tabIndex = -2.9; const negative = [generic.tabIndex, generic.getAttribute('tabindex')]; anchor.setAttribute('tabindex', 'invalid'); overflow.setAttribute('tabindex', '2147483648'); const invalidFallbacks = [anchor.tabIndex, overflow.tabIndex]; anchor.removeAttribute('tabindex'); generic.tabIndex = 2; return { defaults, truncation, wrapping, negative, invalidFallbacks, assigned: [generic.tabIndex, generic.getAttribute('tabindex')] }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "defaults": [-1, 0, 0, 0, -1, 0, -1],
+            "truncation": [2, "2"],
+            "wrapping": [1, "1"],
+            "negative": [-2, "-2"],
+            "invalidFallbacks": [0, -1],
+            "assigned": [2, "2"],
+        })
+    );
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.activeElement.id")
+            .await
+            .unwrap(),
+        serde_json::json!("generic")
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_http_tab_index_property_persists_in_content_process_and_frame() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = match path {
+                "/parent" => {
+                    "<div id='parent-property'></div><button id='parent-button'>Parent</button><iframe id='child' src='/child'></iframe>"
+                }
+                "/child" => {
+                    "<div id='frame-property'></div><button id='frame-button'>Frame</button>"
+                }
+                other => panic!("unexpected tabIndex request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        session
+            .script(
+                "const target = document.getElementById('parent-property'); const before = target.tabIndex; target.tabIndex = 3.8; [before, target.tabIndex, target.getAttribute('tabindex')]",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([-1, 3, "3"])
+    );
+    assert_eq!(
+        session
+            .script("[document.getElementById('parent-property').tabIndex, document.getElementById('parent-property').getAttribute('tabindex')]")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([3, "3"])
+    );
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("parent-property")
+    );
+
+    let frames = session.native_list_frames().await.unwrap();
+    let child_id = frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("same-origin tabIndex frame")
+        .id
+        .clone();
+    session.native_select_frame(&child_id).await.unwrap();
+    assert_eq!(
+        session
+            .script(
+                "const target = document.getElementById('frame-property'); target.tabIndex = 1.9; [target.tabIndex, target.getAttribute('tabindex')]",
+            )
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([1, "1"])
+    );
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("frame-property")
+    );
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_nested_frame_script_projection_preserves_window_chain() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

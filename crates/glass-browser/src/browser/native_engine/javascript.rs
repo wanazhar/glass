@@ -1557,6 +1557,7 @@ impl NativeDedicatedWorker {
                 import_script_counts,
                 self.is_module,
                 true,
+                false,
             )?
         };
         let module_name = if self.is_module {
@@ -15042,6 +15043,7 @@ impl NativeJavaScriptRuntime {
             import_script_counts,
             false,
             true,
+            false,
         )?;
         self.evaluate_worker_source_with_bootstrap_and_event_impl(
             worker_id, worker_url, None, source, bootstrap, false, false, None, true, false,
@@ -15086,6 +15088,7 @@ impl NativeJavaScriptRuntime {
             &BTreeMap::new(),
             true,
             true,
+            false,
         )?;
         self.evaluate_worker_source_with_bootstrap_and_event_impl(
             worker_id,
@@ -15258,6 +15261,7 @@ impl NativeJavaScriptRuntime {
             import_script_counts,
             module_name.is_some(),
             true,
+            false,
         )?;
         self.evaluate_worker_source_with_bootstrap(
             worker_id,
@@ -23034,6 +23038,7 @@ fn worker_bootstrap(
     import_script_counts: &BTreeMap<String, usize>,
     is_module: bool,
     capture_message_callback_errors: bool,
+    capture_connect_callback_errors: bool,
 ) -> Result<String, NativeEngineError> {
     let worker_url = serde_json::to_string(worker_url).map_err(|_| NativeEngineError::Worker {
         operation: "serialize native Worker URL".into(),
@@ -23061,6 +23066,11 @@ fn worker_bootstrap(
     } else {
         "false"
     };
+    let capture_connect_callback_errors = if capture_connect_callback_errors {
+        "true"
+    } else {
+        "false"
+    };
     let mut bootstrap = format!(
         r###"(() => {{
   const workerId = {worker_id};
@@ -23070,6 +23080,7 @@ fn worker_bootstrap(
   const initialWorkerCryptoBytes = {initial_random_bytes};
   const isModuleWorker = {is_module};
   const captureMessageCallbackErrors = {capture_message_callback_errors};
+  const captureConnectCallbackErrors = {capture_connect_callback_errors};
   globalThis.__glassWorkerId = workerId;
   globalThis.__glassMessageRealmKey = "worker:" + String(workerId);
   const commands = [];
@@ -23153,7 +23164,9 @@ fn worker_bootstrap(
       let result;
       try {{ result = handler.call(globalThis, event); }} catch (error) {{
         if (type === "message" && captureMessageCallbackErrors)
-          reportWorkerMessageCallbackException(error);
+          reportWorkerCallbackException(error, true);
+        else if (type === "connect" && captureConnectCallbackErrors)
+          reportWorkerCallbackException(error, false);
       }}
       if ((type === "message" || type === "connect") && result === false)
         event.defaultPrevented = true;
@@ -23162,7 +23175,9 @@ fn worker_bootstrap(
     for (const callback of callbacks.slice()) {{
       try {{ callback.call(globalThis, event); }} catch (error) {{
         if (type === "message" && captureMessageCallbackErrors)
-          reportWorkerMessageCallbackException(error);
+          reportWorkerCallbackException(error, true);
+        else if (type === "connect" && captureConnectCallbackErrors)
+          reportWorkerCallbackException(error, false);
       }}
     }}
   }};
@@ -28332,11 +28347,11 @@ fn worker_bootstrap(
     }}
     return JSON.stringify({{ handled: event.defaultPrevented, message: event.message }});
   }};
-  const reportWorkerMessageCallbackException = (error) => {{
+  const reportWorkerCallbackException = (error, forwardUnhandledError) => {{
     const report = JSON.parse(globalThis.__glassReportWorkerScriptError(error));
     if (!report || typeof report.handled !== "boolean" || typeof report.message !== "string")
       throw new TypeError("native Worker error reporter returned invalid data");
-    if (!report.handled) pushCommand({{
+    if (forwardUnhandledError && !report.handled) pushCommand({{
       kind: "workerScriptError",
       worker_id: workerId,
       message: report.message,
@@ -28460,6 +28475,7 @@ fn worker_bootstrap(
         now_ms = now_ms,
         import_script_counts = import_script_counts,
         capture_message_callback_errors = capture_message_callback_errors,
+        capture_connect_callback_errors = capture_connect_callback_errors,
         message_channel_script = message_channel_script,
     );
     bootstrap.push_str(NATIVE_DYNAMIC_IMPORT_OPTIONS_BOOTSTRAP);
@@ -28479,6 +28495,7 @@ fn service_worker_bootstrap(
         now_ms,
         import_script_counts,
         is_module,
+        false,
         false,
     )?;
     let marker = "})()";
@@ -28506,6 +28523,7 @@ fn shared_worker_bootstrap(
         import_script_counts,
         is_module,
         false,
+        true,
     )?;
     let marker = "})()";
     let insertion = bootstrap

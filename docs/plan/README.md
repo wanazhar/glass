@@ -156,6 +156,10 @@ later listeners. A focused local integration regression covers that ordering
 and confirms ordinary listener returns remain ignored. It does not apply the
 rule to specialized resource dispatchers; see the
 [slice 785 task](tasks/native-engine-browser-785.md).
+Slice 786 corrects shared-worker `connect` delivery to the standard
+worker-realm `MessageEvent` shape and honors `onconnect` exact-false
+cancellation before later listeners; see the
+[slice 786 task](tasks/native-engine-browser-786.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

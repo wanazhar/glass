@@ -206,6 +206,14 @@ listener returns. Worker scheduling, specialized XHR/WebSocket/EventSource
 dispatchers, worker error handlers, and full worker event/WPT conformance
 remain separate. See the [slice 785 task](tasks/native-engine-browser-785.md).
 
+Slice 786 gives shared-worker `connect` dispatch a worker-realm
+`MessageEvent`: empty `data`, `source` set to the connection's inside port,
+and a frozen `ports` array containing that same port. `onconnect` exact-false
+cancellation is visible to later listeners even though the event is
+non-cancelable; ordinary listener returns remain ignored. Connection task
+ordering and ownership are unchanged. See the
+[slice 786 task](tasks/native-engine-browser-786.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

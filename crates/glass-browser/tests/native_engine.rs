@@ -18545,7 +18545,7 @@ async fn native_local_keyboard_checkable_activation_orders_events_and_restores_c
     let config = NativeEngineConfig::default()
         .with_fixture(
             "fixture://local-keyboard-checkable",
-            "<form id='form'><input id='required' required><input id='checkbox' type='checkbox'><input id='radio-a' type='radio' name='group' checked><input id='radio-b' type='radio' name='group'></form><input id='radio-outside' type='radio' name='group' checked>",
+            "<form id='form'><input id='required' required><input id='checkbox' type='checkbox'><input id='radio-a' type='radio' name='group' checked><input id='radio-b' type='radio' name='group'><input id='radio-c' type='radio' name='other'></form><input id='radio-outside' type='radio' name='group' checked><input id='radio-unnamed' type='radio'>",
         )
         .unwrap()
         .with_initial_url("fixture://local-keyboard-checkable");
@@ -18553,7 +18553,7 @@ async fn native_local_keyboard_checkable_activation_orders_events_and_restores_c
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "globalThis.trace = []; globalThis.cancelTarget = ''; document.addEventListener('keydown', event => trace.push('keydown:' + event.target.id + ':' + event.key)); document.addEventListener('keyup', event => trace.push('keyup:' + event.target.id + ':' + event.key)); document.addEventListener('click', event => { trace.push('click:' + event.target.id + ':' + event.target.checked + ':' + event.target.indeterminate + ':' + event.cancelable); if (cancelTarget === event.target.id) event.preventDefault(); }); document.addEventListener('input', event => trace.push('input:' + event.target.id + ':' + event.bubbles)); document.addEventListener('change', event => trace.push('change:' + event.target.id + ':' + event.bubbles)); document.addEventListener('submit', () => trace.push('submit')); document.addEventListener('invalid', () => trace.push('invalid')); true",
+            "globalThis.trace = []; globalThis.cancelTarget = ''; globalThis.removeRadioNameOnClick = false; globalThis.joinRadioOnClick = false; document.addEventListener('keydown', event => trace.push('keydown:' + event.target.id + ':' + event.key)); document.addEventListener('keyup', event => trace.push('keyup:' + event.target.id + ':' + event.key)); document.addEventListener('click', event => { trace.push('click:' + event.target.id + ':' + event.target.checked + ':' + event.target.indeterminate + ':' + event.cancelable); if (removeRadioNameOnClick && event.target.id === 'radio-b') { event.target.removeAttribute('name'); event.preventDefault(); } else if (joinRadioOnClick && event.target.id === 'radio-b') { const radioC = document.getElementById('radio-c'); radioC.setAttribute('name', 'group'); radioC.checked = true; event.preventDefault(); } else if (cancelTarget === event.target.id) event.preventDefault(); }); document.addEventListener('input', event => trace.push('input:' + event.target.id + ':' + event.bubbles)); document.addEventListener('change', event => trace.push('change:' + event.target.id + ':' + event.bubbles)); document.addEventListener('submit', () => trace.push('submit')); document.addEventListener('invalid', () => trace.push('invalid')); true",
         )
         .await
         .unwrap();
@@ -18727,6 +18727,81 @@ async fn native_local_keyboard_checkable_activation_orders_events_and_restores_c
             .unwrap()
             .as_bool()
             .unwrap()
+    );
+
+    engine
+        .evaluate_async("globalThis.trace = []; globalThis.cancelTarget = ''; globalThis.removeRadioNameOnClick = true; radioA.checked = true; radioB.checked = false; radioB.focus(); true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({a: radioA.checked, b: radioB.checked, trace: globalThis.trace})")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "a": false,
+            "b": false,
+            "trace": [
+                "keydown:radio-b: ",
+                "keyup:radio-b: ",
+                "click:radio-b:true:false:true",
+            ],
+        })
+    );
+
+    engine
+        .evaluate_async("globalThis.trace = []; globalThis.removeRadioNameOnClick = false; globalThis.joinRadioOnClick = true; radioB.setAttribute('name', 'group'); radioA.checked = true; radioB.checked = false; document.getElementById('radio-c').setAttribute('name', 'other'); document.getElementById('radio-c').checked = false; radioB.focus(); true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({a: radioA.checked, b: radioB.checked, c: document.getElementById('radio-c').checked, trace: globalThis.trace})")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "a": true,
+            "b": false,
+            "c": false,
+            "trace": [
+                "keydown:radio-b: ",
+                "keyup:radio-b: ",
+                "click:radio-b:true:false:true",
+            ],
+        })
+    );
+
+    engine
+        .evaluate_async("globalThis.trace = []; globalThis.joinRadioOnClick = false; document.getElementById('radio-unnamed').checked = false; true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Click {
+            target: "id=radio-unnamed".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({checked: document.getElementById('radio-unnamed').checked, trace: globalThis.trace})")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "checked": true,
+            "trace": [
+                "click:radio-unnamed:true:false:true",
+                "input:radio-unnamed:true",
+                "change:radio-unnamed:true",
+            ],
+        })
     );
 
     engine
@@ -65437,7 +65512,7 @@ async fn native_content_process_keyboard_checkable_activation_and_frame_routing(
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let controls = "<form id='form'><input id='checkbox' type='checkbox' checked><input id='radio-a' type='radio' name='group' checked><input id='radio-b' type='radio' name='group'></form><input id='other' type='checkbox'>";
+    let controls = "<form id='form'><input id='checkbox' type='checkbox' checked><input id='radio-a' type='radio' name='group' checked><input id='radio-b' type='radio' name='group'></form><form id='other-form'></form><input id='other' type='checkbox'>";
     let parent_body =
         format!("<!doctype html><body>{controls}<iframe id='child' src='/child'></iframe></body>");
     let child_body = format!("<!doctype html><body>{controls}</body>");
@@ -65466,7 +65541,7 @@ async fn native_content_process_keyboard_checkable_activation_and_frame_routing(
     )
     .await
     .unwrap();
-    let setup_script = "globalThis.events = []; globalThis.cancelClickId = ''; document.addEventListener('keydown', event => events.push('keydown:' + event.target.id + ':' + (event.key === ' ' ? 'Space' : event.key))); document.addEventListener('keyup', event => events.push('keyup:' + event.target.id + ':' + (event.key === ' ' ? 'Space' : event.key))); document.addEventListener('click', event => { const target = event.target; const state = target.id === 'checkbox' ? target.checked + ':' + target.indeterminate : document.getElementById('radio-a').checked + ':' + document.getElementById('radio-b').checked; events.push('click:' + target.id + ':' + state + ':' + event.cancelable); if (cancelClickId === target.id) event.preventDefault(); }); document.addEventListener('input', event => events.push('input:' + event.target.id)); document.addEventListener('change', event => events.push('change:' + event.target.id)); true";
+    let setup_script = "globalThis.events = []; globalThis.cancelClickId = ''; globalThis.changeRadioFormOnClick = false; document.addEventListener('keydown', event => events.push('keydown:' + event.target.id + ':' + (event.key === ' ' ? 'Space' : event.key))); document.addEventListener('keyup', event => events.push('keyup:' + event.target.id + ':' + (event.key === ' ' ? 'Space' : event.key))); document.addEventListener('click', event => { const target = event.target; const state = target.id === 'checkbox' ? target.checked + ':' + target.indeterminate : document.getElementById('radio-a').checked + ':' + document.getElementById('radio-b').checked; events.push('click:' + target.id + ':' + state + ':' + event.cancelable); if (changeRadioFormOnClick && target.id === 'radio-b') { target.setAttribute('form', 'other-form'); event.preventDefault(); } else if (cancelClickId === target.id) event.preventDefault(); }); document.addEventListener('input', event => events.push('input:' + event.target.id)); document.addEventListener('change', event => events.push('change:' + event.target.id)); true";
     session.script(setup_script).await.unwrap();
 
     session
@@ -65553,7 +65628,34 @@ async fn native_content_process_keyboard_checkable_activation_and_frame_routing(
     );
 
     session
-        .script("globalThis.events = []; globalThis.cancelClickId = ''; document.getElementById('radio-b').focus(); true")
+        .script("globalThis.events = []; globalThis.cancelClickId = ''; globalThis.changeRadioFormOnClick = true; const radioA = document.getElementById('radio-a'); const radioB = document.getElementById('radio-b'); radioA.checked = true; radioB.checked = false; radioB.focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Space".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({a: document.getElementById('radio-a').checked, b: document.getElementById('radio-b').checked, events: globalThis.events})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "a": false,
+            "b": false,
+            "events": [
+                "keydown:radio-b:Space",
+                "keyup:radio-b:Space",
+                "click:radio-b:false:true:true",
+            ],
+        })
+    );
+
+    session
+        .script("globalThis.events = []; globalThis.cancelClickId = ''; globalThis.changeRadioFormOnClick = false; document.getElementById('radio-b').removeAttribute('form'); document.getElementById('radio-a').checked = true; document.getElementById('radio-b').checked = false; document.getElementById('radio-b').focus(); true")
         .await
         .unwrap();
     session

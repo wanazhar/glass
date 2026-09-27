@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-769
 scope: glass-browser/keyboard-radio-group-navigation
-status: in-progress
+status: done
 depends-on: [native-engine-browser-768]
 ---
 
@@ -95,6 +95,25 @@ cross-platform certification.
   before the focused `cargo test -p glass-browser --test native_engine
   radio_group_arrow_navigation --locked --quiet` group.
 - Do not run workspace, all-targets, or remote CI as part of this bounded slice.
+
+## Results
+
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+- `cargo check -p glass-browser --lib --test native_engine --locked --quiet`:
+  passed; only existing dead-code warnings.
+- `cargo test -p glass-browser --test native_engine
+  radio_group_arrow_navigation --locked --quiet`: 2 passed, 0 failed, 818
+  filtered out. An independent tests-only run passed on the final commit.
+- Independent static review passed. It confirmed post-default-focus `keyup`
+  targeting in local and content-process bridges and the disabled-fieldset
+  first-`legend` exemption.
+- The reviewer noted a nonblocking coverage gap: listener-moved-focus and
+  detached-target `keyup` recipients are not asserted individually across
+  every route; ordinary focus movement is asserted locally, over HTTP(S), and
+  in a same-origin frame, while local tests cover listener invalidation.
+- No remote CI or release gate was run. The local Chromium event-trace
+  comparison was unavailable because the installed binary did not expose a
+  DevTools endpoint during the bounded probe; no browser was installed.
 
 The authoring guide is a user-agent convention rather than the source of the
 HTML grouping algorithm. Keep the distinction explicit in design notes and

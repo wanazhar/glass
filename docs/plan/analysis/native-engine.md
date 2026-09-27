@@ -3668,15 +3668,17 @@ then delivers report-only records in the owning worker realm. The contract and
 evidence are recorded in
 `docs/plan/tasks/native-engine-browser-401.md`.
 
-Slice 790 separates CSP request destinations: worker creation checks
-`worker-src` → `child-src` → `script-src` → `default-src`, while classic
-`importScripts()` and worker module dependencies use the active worker's
-script-source policy. A blocked Service Worker registration or update rejects
-its API promise instead of terminating the page process, and a failed update
-retains its existing registration. Report-only violations retain the selected
-directive and remain non-blocking. Full CSP source matching, policy
-inheritance, and WPT conformance remain open. See
-[task 790](../plan/tasks/native-engine-browser-790.md).
+Completed locally, slice 790 separates CSP request destinations: worker
+creation checks `worker-src` → `child-src` → `script-src` → `default-src`,
+while classic `importScripts()` and worker module dependencies use the active
+worker's script-source policy. Blocked dedicated/shared worker graphs report
+worker errors without aborting their page process; blocked Service Worker
+registration/update rejects its API promise, and a blocked update preserves
+its active registration. Report-only violations retain the selected directive
+and remain non-blocking. Focused CSP, fixture, JSON-module, and runtime-import
+tests passed locally. Full CSP source matching, policy inheritance, remote CI,
+and WPT conformance remain open. See
+[task 790](../tasks/native-engine-browser-790.md).
 
 The completed
 `native-engine-browser-402` slice closes the WebSocket report-only CSP owner

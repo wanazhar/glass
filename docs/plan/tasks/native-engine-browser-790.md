@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-790
 scope: native-engine/worker-csp-request-destinations
-status: planned
+status: completed
 depends-on: [native-engine-browser-789]
 ---
 
@@ -46,10 +46,12 @@ behavior, and existing loader bounds.
   script's response policy to the already-running worker global.
 - Report-only declarations emit the correctly attributed bounded violation,
   but never change whether the worker or imported script loads.
+- A blocked dedicated/shared worker import graph reports an error to its
+  owning worker object without terminating the page content process.
 - A service-worker registration or update whose root/import graph is blocked
   rejects that API promise with the loading error; it must not terminate the
-  owning page content process. A failed update leaves the previously installed
-  registration intact.
+  owning page content process. A blocked update leaves the previously
+  installed registration intact.
 - Keep redirects, MIME checks, integrity behavior, cookies, source bounds,
   structured errors, and rooted-file admission unchanged.
 - Cover worker-src precedence and each fallback edge, plus a real HTTP(S)
@@ -75,6 +77,7 @@ behavior, and existing loader bounds.
 
 - `crates/glass-browser/src/browser/native_engine/resource_loader.rs`
 - `crates/glass-browser/src/browser/native_engine/javascript.rs`
+- `crates/glass-browser/src/browser/native_engine/content_process.rs`
 - `crates/glass-browser/src/browser/native_engine/service_worker.rs`
 - `crates/glass-browser/tests/native_engine.rs`
 - `docs/architecture/native-engine.md`
@@ -83,16 +86,44 @@ behavior, and existing loader bounds.
 - `docs/plan/README.md`
 - `docs/plan/tasks/native-engine-browser-790.md`
 
-## Verification plan
+## Implementation and verification
 
-- Run one scoped `cargo check -p glass-browser --test native_engine --locked
-  --quiet` after the complete implementation batch.
-- Run the focused worker CSP regressions, then relevant existing worker import
-  and service-worker module-graph tests against the built integration binary.
-- Run `rustfmt --edition 2024 --check` on changed Rust files and `git diff
-  --check`.
-- Run the four maintainer documentation gates after synchronizing the current
-  contract and evidence.
-- Record local-only evidence precisely. Remote CI, cross-platform
-  certification, full WPT conformance, and issue #40 promotion gates remain
-  open.
+The design contract was committed in `9144074c` and refined with the
+Service-Worker rejection boundary in `3247045b`. Implementation and process
+regressions were committed in `f0cbfa48`.
+
+Passed locally:
+
+- `cargo check -p glass-browser --test native_engine --locked --quiet`
+  (the final check passed; the earlier unsuppressed run showed only existing
+  native-DOM dead-code warnings).
+- `cargo test -p glass-browser --lib --locked --quiet -- csp_worker_ --test-threads=1`
+  (2 passed: worker fallback selection and script-policy/report-only behavior).
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_content_process_uses_script_csp_for_worker_import_scripts --test-threads=1`
+  (1 passed: enforced import denial, report-only import execution, and exact
+  request set).
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_content_process_rejects_service_worker_csp_failures_without_exiting --test-threads=1`
+  (1 passed: blocked module registration and update reject; the active worker
+  and page process survive; denied dependencies are not fetched).
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_json_module_ --test-threads=1`
+  (6 passed, including dedicated/shared worker graphs and Service Worker static
+  imports).
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_content_process_resolves_runtime_ --test-threads=1`
+  (2 passed: dedicated/shared runtime worker module imports).
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_local_worker_preloads_import_scripts_dependencies --test-threads=1`
+  (1 passed: fixture classic `importScripts()` dependencies).
+- `rustfmt --edition 2024 --check` on all four changed Rust files and
+  `git diff --check`.
+- `python3 scripts/check-release-documentation.py --require-previous-version`
+  (1,418 Markdown documents; 83 current documents; 63 previous-version hits;
+  1,605 semantic audit hits; 0 current-claim failures).
+- `python3 scripts/check-documentation-depth.py` (93 current guides routed and
+  audited; 19 substantive contracts).
+- `python3 scripts/check-tui-shortcuts.py` (15 implementation help keys; 63
+  documentation markers).
+- `python3 scripts/check-documentation-coverage.py` (1,418 Markdown files; 346
+  full-product MCP tools, 101 browser-only; 17 examples; 22 public modules).
+
+The integration test target emits existing native-DOM dead-code warnings.
+Remote CI was not run. Cross-platform certification, full CSP/WPT
+conformance, and issue #40 native-only production gates remain open.

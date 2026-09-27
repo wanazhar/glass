@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-774`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-790`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -3664,15 +3664,17 @@ state; report-only records remain bounded and never authorize or block a
 request. Dynamic policy mutation, strict-dynamic trust, and the complete CSP
 source-expression grammar remain separate issue #40 gates.
 
-Slice 790 separates worker-creation CSP from scripts loaded by an existing
-worker. Worker and service-worker root requests use the `worker-src` fallback
-chain (`child-src`, `script-src`, then `default-src`); `importScripts()` and
-worker module dependencies use the worker's script-source policy instead.
-Report-only records name the effective directive without changing the load
-decision. A blocked Service Worker registration/update rejects its API promise
-without terminating the page content process; failed updates retain the
-installed registration. This bounded correction does not claim complete CSP
-or WPT conformance; see [task 790](../plan/tasks/native-engine-browser-790.md).
+Completed locally, slice 790 separates worker-creation CSP from scripts loaded
+by an existing worker. Worker and service-worker root requests use the
+`worker-src` fallback chain (`child-src`, `script-src`, then `default-src`);
+`importScripts()` and worker module dependencies use the active worker's
+script-source policy. Report-only records name the effective directive without
+changing the load decision. Blocked dedicated/shared worker graphs surface as
+worker errors without aborting the page process. A blocked Service Worker
+registration/update rejects its API promise, and a blocked update preserves the
+installed worker. Focused CSP, fixture, JSON-module, and runtime-import tests
+passed locally. Remote CI and complete CSP/WPT conformance remain open; see
+[task 790](../plan/tasks/native-engine-browser-790.md).
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader

@@ -223,6 +223,13 @@ subsequent messages. Module startup errors, resource/parse failures, later
 callback exceptions, source-location fidelity, and full worker error/WPT
 conformance remain separate. See the [slice 787 task](tasks/native-engine-browser-787.md).
 
+Slice 788 targets the corresponding initial dedicated module-worker runtime
+error: a rejected evaluation after successful module loading/parsing/linking is
+reported first to the worker global, while fetch/parse/resolve/link failures
+remain owner-side startup errors. Pending top-level-await settlement is not
+reclassified as an immediate error. See the
+[slice 788 task](tasks/native-engine-browser-788.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

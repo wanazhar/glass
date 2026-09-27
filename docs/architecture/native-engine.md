@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-772`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-773`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -5242,6 +5242,22 @@ cancellation, live `href`/`target`, `_blank`, download filename and bytes, and
 frame navigation. Full focus-chain and keyboard conformance, WPT, platform, and
 remote-CI certification remain open; see the
 [slice 772 task](../plan/tasks/native-engine-browser-772.md).
+
+### Explicit `tabindex` focus (slice 773)
+
+Slice 773 extends sequential and programmatic focus to attached, rendered
+elements with a valid explicit `tabindex`, independent of interactive semantic
+role. Positive values sort before natural-order values; ties and zero retain
+tree order. Negative values can receive programmatic focus but do not enter
+Tab order. Supported native disabled controls and non-rendered targets remain
+excluded; image-map areas retain their image-anchor path. Keyboard events
+target the focused generic element, and Enter does not synthesize a click
+without native activation behavior. Local, HTTP(S) content-process, and
+same-origin-frame regressions exercise the shared behavior. This does not
+establish complete focus-chain, shadow-DOM, inertness, form-associated
+custom-element disabled state, keyboard, WPT, platform, or issue #40
+conformance; see the
+[slice 773 task](../plan/tasks/native-engine-browser-773.md).
 
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its

@@ -70032,3 +70032,164 @@ async fn native_http_inert_focus_state_persists_in_same_origin_frame() {
     session.close().await.unwrap();
     server.await.unwrap();
 }
+
+fn native_focus_event_markup() -> &'static str {
+    "<div id='outer'><button id='first'>First</button><button id='second'>Second</button></div>"
+}
+
+fn native_focus_event_listener_script() -> &'static str {
+    "(() => { globalThis.focusEvents = []; const outer = document.getElementById('outer'); const record = event => focusEvents.push([event.type, event.target.id, event.relatedTarget ? event.relatedTarget.id : null, event instanceof FocusEvent]); for (const type of ['blur', 'focus']) outer.addEventListener(type, record, true); for (const type of ['focusout', 'focusin']) outer.addEventListener(type, record); document.getElementById('first').focus(); document.getElementById('second').focus(); return focusEvents; })()"
+}
+
+fn native_focus_transition_events() -> serde_json::Value {
+    serde_json::json!([
+        ["focus", "first", null, true],
+        ["focusin", "first", null, true],
+        ["blur", "first", "second", true],
+        ["focusout", "first", "second", true],
+        ["focus", "second", "first", true],
+        ["focusin", "second", "first", true],
+    ])
+}
+
+#[tokio::test]
+async fn native_local_focusin_focusout_bubble_with_related_targets() {
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_fixture("fixture://focus-events", native_focus_event_markup())
+            .unwrap()
+            .with_initial_url("fixture://focus-events"),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(native_focus_event_listener_script())
+            .await
+            .unwrap(),
+        native_focus_transition_events()
+    );
+
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("focusEvents").await.unwrap(),
+        serde_json::json!([
+            ["focus", "first", null, true],
+            ["focusin", "first", null, true],
+            ["blur", "first", "second", true],
+            ["focusout", "first", "second", true],
+            ["focus", "second", "first", true],
+            ["focusin", "second", "first", true],
+            ["blur", "second", "first", true],
+            ["focusout", "second", "first", true],
+            ["focus", "first", "second", true],
+            ["focusin", "first", "second", true],
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_http_focusin_focusout_persist_in_same_origin_frame() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let markup = native_focus_event_markup();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("native focus-event document request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = if path == "/parent" {
+                "<iframe id='child' src='/child'></iframe>"
+            } else if path == "/child" {
+                markup
+            } else {
+                panic!("unexpected native focus-event request: {path}");
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    let frames = session.native_list_frames().await.unwrap();
+    let child_id = frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("same-origin child frame")
+        .id
+        .clone();
+    session
+        .script(
+            "(() => { const child = document.getElementById('child').contentDocument; const outer = child.getElementById('outer'); globalThis.projectedFocusEvents = []; const record = event => projectedFocusEvents.push([event.type, event.target.id, event.relatedTarget ? event.relatedTarget.id : null, event instanceof FocusEvent]); for (const type of ['blur', 'focus']) outer.addEventListener(type, record, true); for (const type of ['focusout', 'focusin']) outer.addEventListener(type, record); return true; })()",
+        )
+        .await
+        .unwrap();
+    session.native_select_frame(&child_id).await.unwrap();
+    assert_eq!(
+        session
+            .script(native_focus_event_listener_script())
+            .await
+            .unwrap()
+            .value,
+        native_focus_transition_events()
+    );
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("focusEvents").await.unwrap().value,
+        serde_json::json!([
+            ["focus", "first", null, true],
+            ["focusin", "first", null, true],
+            ["blur", "first", "second", true],
+            ["focusout", "first", "second", true],
+            ["focus", "second", "first", true],
+            ["focusin", "second", "first", true],
+            ["blur", "second", "first", true],
+            ["focusout", "second", "first", true],
+            ["focus", "first", "second", true],
+            ["focusin", "first", "second", true],
+        ])
+    );
+    session
+        .native_select_frame("native-context:main")
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("projectedFocusEvents").await.unwrap().value,
+        serde_json::json!([
+            ["focus", "first", null, true],
+            ["focusin", "first", null, true],
+            ["blur", "first", "second", true],
+            ["focusout", "first", "second", true],
+            ["focus", "second", "first", true],
+            ["focusin", "second", "first", true],
+            ["blur", "second", "first", true],
+            ["focusout", "second", "first", true],
+            ["focus", "first", "second", true],
+            ["focusin", "first", "second", true],
+        ])
+    );
+    session.close().await.unwrap();
+    server.await.unwrap();
+}

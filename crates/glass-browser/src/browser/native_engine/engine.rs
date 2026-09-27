@@ -32,19 +32,19 @@ use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES,
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_WORKER_MESSAGES,
     NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
-    NativeFrameScriptRequest, NativeHashChangeEvent, NativeIndexedDbChange, NativeIndexedDbState,
-    NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativeMessagePortTransfer,
-    NativePageEventBatch, NativePageMessageEvent, NativePageMessagePortCommand,
-    NativePageNavigation, NativePageScript, NativePageScriptResult, NativePopupRequest,
-    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
+    NativeFrameScriptRequest, NativeHashChangeEvent, NativeHostEvent, NativeIndexedDbChange,
+    NativeIndexedDbState, NativeJavaScriptRuntime, NativeMessagePortPageMessage,
+    NativeMessagePortTransfer, NativePageEventBatch, NativePageMessageEvent,
+    NativePageMessagePortCommand, NativePageNavigation, NativePageScript, NativePageScriptResult,
+    NativePopupRequest, NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
     NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
     apply_document_commands_with_font_face_ack, apply_indexed_db_changes, diff_indexed_db_changes,
     execute_dynamic_page_scripts, execute_inline_scripts, frame_event_batch,
-    host_click_event_batch_with_modifiers, host_event_batch, host_key_event_batch_with_modifiers,
-    host_submit_event_batch, load_indexed_db_profile,
+    host_click_event_batch_with_modifiers, host_event_batch, host_event_batch_at,
+    host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
     load_local_file_dynamic_module_graph_with_import_map,
     load_local_file_module_graph_with_import_map, load_service_worker_client_leases,
     load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
@@ -6413,6 +6413,30 @@ impl NativeEngine {
         let Some(event_batch) = host_event_batch(&event_metadata)? else {
             return Ok(None);
         };
+        self.evaluate_local_host_events(document, &event_batch)
+    }
+
+    fn evaluate_local_transition_event(
+        &mut self,
+        document: &NativeDocument,
+        events: &[(NativeNodeId, NativeEventKind)],
+        index: usize,
+    ) -> Result<Option<NativeScriptEvaluation>, NativeEngineError> {
+        let event_metadata = events
+            .iter()
+            .map(|(node_id, kind)| (node_id.index(), *kind))
+            .collect::<Vec<_>>();
+        let Some(event_batch) = host_event_batch_at(&event_metadata, index)? else {
+            return Ok(None);
+        };
+        self.evaluate_local_host_events(document, &event_batch)
+    }
+
+    fn evaluate_local_host_events(
+        &mut self,
+        document: &NativeDocument,
+        event_batch: &[NativeHostEvent],
+    ) -> Result<Option<NativeScriptEvaluation>, NativeEngineError> {
         let Some(javascript) = self.javascript.as_ref() else {
             return Ok(None);
         };
@@ -6844,9 +6868,9 @@ impl NativeEngine {
         let mut history_commands = Vec::new();
         let mut events = apply(&mut document)?;
         let default_events = events.clone();
-        for (event_node, event_kind) in default_events {
+        for index in 0..default_events.len() {
             if let Some(evaluation) =
-                self.evaluate_local_events(&document, &[(event_node, event_kind)])?
+                self.evaluate_local_transition_event(&document, &default_events, index)?
             {
                 events.extend(self.apply_local_evaluation_commands(
                     &mut document,
@@ -7164,9 +7188,9 @@ impl NativeEngine {
         {
             let default_events = document.apply_key_default(id, key, modifiers)?;
             events.extend(default_events.clone());
-            for (event_node, event_kind) in default_events {
+            for index in 0..default_events.len() {
                 if let Some(evaluation) =
-                    self.evaluate_local_events(&document, &[(event_node, event_kind)])?
+                    self.evaluate_local_transition_event(&document, &default_events, index)?
                 {
                     events.extend(self.apply_local_evaluation_commands(
                         &mut document,
@@ -7296,9 +7320,9 @@ impl NativeEngine {
                 Vec::new()
             };
             events.extend(default_events.clone());
-            for (event_node, event_kind) in default_events {
+            for index in 0..default_events.len() {
                 if let Some(evaluation) =
-                    self.evaluate_local_events(&document, &[(event_node, event_kind)])?
+                    self.evaluate_local_transition_event(&document, &default_events, index)?
                 {
                     events.extend(self.apply_local_evaluation_commands(
                         &mut document,

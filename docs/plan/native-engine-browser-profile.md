@@ -122,6 +122,17 @@ affect subsequent focus decisions. This is the focus-specific baseline only;
 it does not claim the complete flat-tree inert model or the broader effects of
 inertness on hit testing, editing, selection, or accessibility.
 
+Focus transitions dispatch `focus` then `focusin` on the newly focused target;
+the old target receives `blur` then `focusout` before the new target's events.
+`focus` and `blur` do not bubble; `focusin` and `focusout` do. The paired
+`relatedTarget` identifies the other endpoint of the transition, or is null
+when focus enters or leaves without a paired element. These events are
+`FocusEvent` instances exposing the bounded `UIEvent.view`/`detail` and
+`FocusEvent.relatedTarget` surface. Local, content-process, and same-origin
+parent-frame projection tests cover direct focus, Tab, ordering, propagation,
+and related targets. This is not complete focus-event Web IDL or reentrant
+focus-algorithm conformance; see the [slice 777 task](tasks/native-engine-browser-777.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

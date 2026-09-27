@@ -7510,7 +7510,10 @@ impl NativeDocument {
             .state;
         state.focused = false;
         state.focus_anchor_node_index = None;
-        Ok(vec![(id, NativeEventKind::Blur)])
+        Ok(vec![
+            (id, NativeEventKind::Blur),
+            (id, NativeEventKind::FocusOut),
+        ])
     }
 
     fn apply_script_value(
@@ -9035,6 +9038,7 @@ impl NativeDocument {
                 node.state.focused = false;
                 node.state.focus_anchor_node_index = None;
                 events.push((focused_id, NativeEventKind::Blur));
+                events.push((focused_id, NativeEventKind::FocusOut));
             }
         }
         if let Some(node) = self.node_mut(id) {
@@ -9044,6 +9048,7 @@ impl NativeDocument {
             node.state.focus_anchor_node_index = focus_anchor.map(NativeNodeId::index);
             if focus_changed {
                 events.push((id, NativeEventKind::Focus));
+                events.push((id, NativeEventKind::FocusIn));
             }
         }
         self.initialize_selection_if_needed(id);

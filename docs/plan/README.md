@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is complete through
-`native-engine-browser-771`. Slice 767 verifies native hyperlink Enter
+`native-engine-browser-772`. Slice 767 verifies native hyperlink Enter
 activation through local and process-backed `_blank` target and download
 defaults, including cancellation and opener preservation; see the
 [slice 767 task](tasks/native-engine-browser-767.md) for local evidence and
@@ -61,6 +61,13 @@ and target creation, and same-origin-frame navigation. See the
 [slice 771 task](tasks/native-engine-browser-771.md) for exact local evidence;
 complete image-map, keyboard, WPT, platform, and remote-CI conformance remain
 open.
+Slice 772 completes linked image-map sequential focus and Enter activation
+through per-image DOM anchors and the existing area click/link owners. Local,
+HTTP(S) content-process, and same-origin-frame regressions verify positive,
+zero, and negative `tabindex` ordering; dead/empty-area exclusion; event targets
+and cancellation; live `href`/`target`; `_blank`; download filename/bytes; and
+frame navigation. See the [slice 772 task](tasks/native-engine-browser-772.md).
+This does not claim full focus-chain, keyboard, WPT, or platform conformance.
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

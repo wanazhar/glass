@@ -235,6 +235,13 @@ same-origin-frame paths; see
 [`native-engine-browser-771`](tasks/native-engine-browser-771.md). Complete
 area keyboard, WPT, platform, and remote-CI conformance remain open.
 
+Slice 772 completes linked image-map sequential focus and Enter activation
+through per-image DOM focus anchors and the ordinary cancelable area-click/
+link-default path. Local, HTTP(S) content-process, and same-origin-frame
+evidence is tracked in
+[`native-engine-browser-772`](tasks/native-engine-browser-772.md). Complete
+focus-chain, keyboard, WPT, platform, and remote-CI conformance remain open.
+
 Slice 768 implements the bounded keyboard-input contract: unmodified
 Space on a focused, enabled native checkbox or radio synthesizes click
 activation on keyup through the shared checkable-control owner. It covers

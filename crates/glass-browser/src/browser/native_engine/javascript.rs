@@ -39316,6 +39316,7 @@ fn document_bootstrap(
       disabled,
       hidden,
       focused: entry.focused,
+      focusAnchorNodeIndex: entry.focusAnchorNodeIndex ?? null,
       hovered: entry.hovered === true,
       userInteracted: entry.userInteracted === true,
       selectionEnd: entry.selectionEnd,
@@ -40225,6 +40226,7 @@ fn document_bootstrap(
         disabled = Boolean(nextEntry.disabled);
         hidden = Boolean(nextEntry.hidden);
         element.focused = nextEntry.focused;
+        element.focusAnchorNodeIndex = nextEntry.focusAnchorNodeIndex ?? null;
         element.hovered = nextEntry.hovered === true;
         element.userInteracted = nextEntry.userInteracted === true;
         value = nextEntry.value === null
@@ -40298,6 +40300,7 @@ fn document_bootstrap(
       disabled: false,
       hidden: false,
       focused: false,
+      focusAnchorNodeIndex: null,
       hovered: false,
       userInteracted: false,
       validity: {{ valid: true }},
@@ -43774,7 +43777,11 @@ fn document_bootstrap(
     hidden: false,
     visibilityState: "visible",
     get defaultView() {{ return globalThis; }},
-    get activeElement() {{ return liveDocumentElements().find((element) => element.focused) || null; }},
+    get activeElement() {{
+      const focused = liveDocumentElements().find((element) => element.focused) || null;
+      if (!focused || focused.focusAnchorNodeIndex === null) return focused;
+      return nodesByIndex.get(Number(focused.focusAnchorNodeIndex)) || focused;
+    }},
     get head() {{ return liveDocumentElements().find((element) => element.tagName === "HEAD") || null; }},
     get doctype() {{ return document.__glassChildren.find((node) => Number(node.nodeType) === 10) || null; }},
     get forms() {{ return liveCollection(document, (element) => element.tagName === "FORM", "HTMLCollection", true); }},

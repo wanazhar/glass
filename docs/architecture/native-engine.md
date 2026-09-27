@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-768`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-772`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -5224,6 +5224,24 @@ tests cover shape normalization, live attributes, cancellation, background
 target creation, download filename/bytes, and accessible names. This does not
 claim server-side `ismap`, complete area keyboard focus behavior, full WPT
 coverage, cross-platform certification, or complete image-map conformance.
+
+### Image-map keyboard focus and activation (slice 772)
+
+Slice 772 adds linked image-map areas to native sequential keyboard focus. A
+linked area contributes one focus anchor for each attached associated image;
+positive `tabindex` values precede natural order, explicit zero participates in
+natural order, and negative, dead, hidden, and empty-shape areas are skipped.
+The area retains focused state while `document.activeElement` and key events
+resolve to the selected image anchor. Enter dispatches a cancelable click to
+the area; canceling keydown suppresses click, canceling click suppresses the
+link default, and Space does not activate the area. After event listeners, the
+existing owner revalidates focus and live link state before applying navigation,
+target, or download behavior. Local, HTTP(S) content-process, and same-origin
+frame tests cover Tab/Shift+Tab order, multiple image anchors, event targets,
+cancellation, live `href`/`target`, `_blank`, download filename and bytes, and
+frame navigation. Full focus-chain and keyboard conformance, WPT, platform, and
+remote-CI certification remain open; see the
+[slice 772 task](../plan/tasks/native-engine-browser-772.md).
 
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its

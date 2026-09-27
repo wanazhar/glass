@@ -3762,6 +3762,17 @@ page-side Worker proxy error delivery. The task records exact local evidence
 and non-conformance boundaries; issue #40 remains open.
 See [task 799](../tasks/native-engine-browser-799.md).
 
+Slice 800 is contracted to replace the current generic Service Worker message
+shell with `ExtendableMessageEvent` for both `message` and `messageerror`,
+preserving the current sender's client projection and serialized origin. It
+defines active-event `waitUntil()` rules and requires the worker host settlement
+loop to wait for all registered promises, including extensions made while a
+promise remains pending. Rejected message-event lifetime work is consumed
+without an exception to the synchronous sender or a page error signal. This
+bounded contract does not establish full Client/WindowClient Web IDL or WPT
+conformance; implementation evidence is pending. See
+[task 800](../tasks/native-engine-browser-800.md).
+
 Slice 793 installs the dedicated-owner forwarding mode of the worker error
 reporter for native MessagePorts in DedicatedWorker realms. The process-backed
 transferred-port test covers exact-`true` global cancellation, one uncanceled

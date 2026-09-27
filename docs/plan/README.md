@@ -270,6 +270,14 @@ its required `ExtendableMessageEvent`, client source/origin, and `waitUntil()`
 lifetime are a standards follow-up, not certified here. MessagePort and
 page-side Worker proxy decode failures remain separate. See the
 [slice 799 task](tasks/native-engine-browser-799.md).
+Slice 800 contracts page-to-Service-Worker `message` and `messageerror` as
+`ExtendableMessageEvent`s, including the current client's trusted source and
+origin, and `waitUntil()` lifetime settlement through the worker host loop.
+This interface derives from `ExtendableEvent`, not `MessageEvent`. Rejected
+lifetime promises are drained without becoming a synchronous sender error or
+client `error` event; the message-event contract has no application result
+channel. Implementation and process-backed evidence are pending. See the
+[slice 800 contract](tasks/native-engine-browser-800.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

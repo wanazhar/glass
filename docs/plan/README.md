@@ -254,12 +254,14 @@ The existing `Promise.all(waitUntilPromises)` settlement path is unchanged;
 event-handler attributes, rejected-lifetime certification, and broader
 lifecycle/WPT conformance remain open. Exact local evidence is in the
 [slice 797 task](tasks/native-engine-browser-797.md).
-Slice 798 has a contract for the required Service Worker global `oninstall`
-and `onactivate` event-handler properties. It specifies integration with the
-registered-listener order, handler replacement/null-removal/reactivation,
-legacy callback conversion, lifecycle exception reporting, and existing
-`waitUntil()` behavior. Implementation and process-backed verification are
-next; see the [slice 798 contract](tasks/native-engine-browser-798.md).
+Slice 798 adds Service Worker global `oninstall` and `onactivate` properties
+as ordered lifecycle listeners, with persistent slots across bootstrap
+re-entry, replacement, nullish removal/reactivation, and legacy callback
+conversion. Its process-backed HTTP regression verifies handler invocation
+and context, error reporting/continuation, fulfilled lifecycle waits, worker
+activation, page control, and no client error. Full Web IDL/EventTarget and
+WPT behavior remain open; exact evidence is in the
+[slice 798 task](tasks/native-engine-browser-798.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

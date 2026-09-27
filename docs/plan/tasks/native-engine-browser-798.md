@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-798
 scope: glass-browser/service-worker-lifecycle-handler-properties
-status: in_progress
+status: completed
 depends-on: [native-engine-browser-797]
 ---
 
@@ -99,7 +99,37 @@ listeners, while preserving Slice 797 error reporting and `waitUntil()`.
 
 ## Implementation and verification
 
-Commit this contract before implementation. Record the process-backed
-regression and scoped local verification commands here after implementation.
-Remote CI and complete Service Worker lifecycle/WPT conformance remain issue
-#40 gates.
+Contract checkpoint: `c89aad39`; implementation and process-backed regression:
+`41ac25e1`.
+
+The native Service Worker bootstrap now exposes `oninstall` and `onactivate`
+properties backed by per-event handler-slot records in the worker global. The
+records survive bootstrap re-entry across lifecycle turns. Active replacement
+updates the current record without moving its listener; nullish or primitive
+values deactivate and remove the slot; subsequent non-null values install a
+fresh slot. Legacy non-callable object values are retained and the listener
+wrapper performs no callback work for them. Callable values run with the
+Service Worker global as `this`; thrown errors use the Slice 797 global-only
+reporter.
+
+The process-backed HTTP regression
+`native_content_process_service_worker_lifecycle_handler_properties_follow_listener_order`
+checks initially-null properties; primitive clearing; non-callable object
+readback and a no-op dispatch probe; callable install and activate handlers;
+`this`/event type; replacement without moving the install slot; activate
+clear/reactivation ordering; handled global ErrorEvent state; later listener
+continuation; fulfilled `waitUntil(skipWaiting())` and
+`waitUntil(clients.claim())`; activated state; page control; and no client
+error event.
+
+Passed locally:
+
+- `cargo check -p glass-browser --test native_engine --locked --quiet`
+- `cargo test -p glass-browser --test native_engine --locked native_content_process_service_worker_lifecycle_handler_properties_follow_listener_order -- --exact` (1 passed).
+- Direct process-backed regressions from `target/debug/deps/native_engine-d4489efcb3153c24`: `native_content_process_service_worker_lifecycle_callback_errors_continue` and `native_content_process_service_worker_fetch_callback_errors_continue_and_fallback` (1 passed each).
+- `cargo fmt --all -- --check` and `git diff --check`.
+
+The integration target emits existing native-DOM dead-code warnings. Rejected
+`waitUntil()` failure was not separately regression-tested, and full Service
+Worker/Web IDL/EventTarget behavior, remote CI, cross-platform certification,
+and WPT conformance remain issue #40 gates.

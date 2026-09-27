@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-788
 scope: glass-browser/module-dedicated-worker-startup-runtime-errors
-status: in_progress
+status: completed
 depends-on: [native-engine-browser-787]
 ---
 
@@ -43,8 +43,10 @@ worker available after the exception.
 - Module fetch, parse, resolution, and link failures remain startup failures
   reported through the existing owner-side path; they are not reclassified as
   runtime exceptions inside the worker global.
-- Do not treat a pending top-level-await evaluation as an immediate runtime
-  error. Eventual top-level-await settlement/rejection is outside this slice.
+- A pending top-level-await evaluation retains the preexisting bounded
+  `WouldBlock` startup handling; it is not sent through the new worker-global
+  runtime-error reporter. Top-level-await scheduling and eventual
+  settlement/rejection remain outside this slice.
 - Limit the behavior change to the initial dedicated module worker. Later
   module-worker turns, shared/module service workers, and their event tasks are
   unchanged.
@@ -72,4 +74,26 @@ worker available after the exception.
 
 ## Verification
 
-Pending implementation and focused verification.
+Passed locally:
+
+- `rustfmt --edition 2024 --check crates/glass-browser/src/browser/native_engine/javascript.rs crates/glass-browser/tests/native_engine.rs`
+- `cargo check -p glass-browser --test native_engine --locked --quiet`
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- startup_errors_report_and_forward --test-threads=1`
+  (2 passed; verifies module and classic worker-global cancellation,
+  owner-side forwarding/order, syntax and missing-export link failures, and
+  continued worker-message handling)
+- `target/debug/deps/native_engine-d4489efcb3153c24 --exact native_json_module_worker_graphs_support_dedicated_and_shared_workers --test-threads=1`
+  (1 passed; existing dedicated/shared module graph behavior remains intact)
+- `python3 scripts/check-release-documentation.py --require-previous-version`
+  (1,416 Markdown documents; 0 current-claim failures)
+- `python3 scripts/check-documentation-depth.py`
+  (93 current guides routed/audited; 19 substantive contracts)
+- `python3 scripts/check-tui-shortcuts.py`
+  (15 implementation help keys; 63 documentation markers)
+- `python3 scripts/check-documentation-coverage.py`
+  (1,416 Markdown files; 346 MCP tools, 17 examples, 22 public modules)
+- `git diff --check`
+
+The scoped Cargo check/tests pass with existing dead-code warnings in the
+native DOM module. Remote CI, full worker/WPT conformance, cross-platform
+certification, and issue #40 native-only production gates remain open.

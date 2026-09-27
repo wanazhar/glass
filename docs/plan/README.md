@@ -169,11 +169,13 @@ covers cancellation, forwarding order, continued message handling, and syntax
 failure separation. See the
 [slice 787 task](tasks/native-engine-browser-787.md) for the bounded contract
 and exclusions.
-Slice 788 is in progress: rejected evaluation of an initial dedicated module
-worker is routed through the same worker-global error path, while fetch,
-parse, resolve, and link failures retain owner-side startup reporting and a
-pending top-level-await evaluation is not treated as an immediate exception.
-See the [slice 788 task](tasks/native-engine-browser-788.md).
+Slice 788 completes dedicated module-worker startup runtime-error reporting:
+rejected evaluation after graph load/parse/link is reported first in the worker
+global and forwarded only when unhandled, while syntax and missing-export link
+failures retain owner-side reporting. The regression verifies cancellation,
+forwarding order, worker survival, and later messages. Existing pending
+top-level-await `WouldBlock` handling remains unchanged. See the
+[slice 788 task](tasks/native-engine-browser-788.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

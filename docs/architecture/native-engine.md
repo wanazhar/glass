@@ -5461,20 +5461,23 @@ global `onerror` uses its legacy five-argument callback and only an exact
 uncanceled report is forwarded to the owning `Worker` as an `ErrorEvent`, and
 the worker remains available for later messages. The focused regression checks
 handled and unhandled exceptions, owner-side event ordering and cancellation,
-worker survival, and the separate syntax-error path. The bounded task covers
-this initial classic-script path, not fetch/parse failures, module startup,
-later callback exceptions, or full error-source metadata. See the
+worker survival, and the separate syntax-error path. This bounded task covers
+the initial classic-script path; the module-evaluation counterpart is slice
+788. Resource/parse failures, later callback exceptions, and full error-source
+metadata remain separate. See the
 [`native-engine-browser-787` task](../plan/tasks/native-engine-browser-787.md).
 
-### Dedicated module-worker startup runtime errors (slice 788, in progress)
+### Dedicated module-worker startup runtime errors (slice 788, completed)
 
-The next worker error boundary applies the same worker-global `ErrorEvent`
-reporting to a rejected evaluation of an initial dedicated module worker,
-after its graph has loaded, parsed, and linked. Module fetch/parse/resolve/link
-failures remain on the owning `Worker` startup-error path. A pending
-top-level-await evaluation is not treated as an immediate runtime exception;
-later settlement, shared/service-worker errors, and later event-turn
-exceptions remain separate. See the
+Initial dedicated module-worker evaluation now shares the worker-global
+`ErrorEvent` path from slice 787 once the module is loaded, parsed, and linked.
+Module syntax and missing-export link failures remain on the owning `Worker`
+startup-error path. Handled and unhandled exceptions preserve cancellation,
+owner event ordering, and later worker messages; existing module-graph tests
+continue to pass. Pending top-level-await evaluation retains its bounded
+`WouldBlock` behavior and is not sent through this reporter. Later settlement,
+shared/service-worker errors, and later event-turn exceptions remain separate.
+See the
 [`native-engine-browser-788` task](../plan/tasks/native-engine-browser-788.md).
 
 The first executable browser-complete batch is recorded in

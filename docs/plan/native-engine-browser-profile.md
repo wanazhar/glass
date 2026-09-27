@@ -219,15 +219,17 @@ Slice 787 adds the bounded classic dedicated-worker startup runtime-error
 path: dispatch a cancelable worker-realm `ErrorEvent`, apply the global
 `onerror` five-argument/exact-`true` cancellation rule, and forward uncanceled
 errors to the owning `Worker` as an `ErrorEvent`. It preserves the worker for
-subsequent messages. Module startup errors, resource/parse failures, later
+subsequent messages. Module graph fetch/parse/resolve/link failures (the
+bounded post-link evaluation-rejection counterpart is slice 788), later
 callback exceptions, source-location fidelity, and full worker error/WPT
 conformance remain separate. See the [slice 787 task](tasks/native-engine-browser-787.md).
 
-Slice 788 targets the corresponding initial dedicated module-worker runtime
+Slice 788 adds the corresponding initial dedicated module-worker runtime
 error: a rejected evaluation after successful module loading/parsing/linking is
 reported first to the worker global, while fetch/parse/resolve/link failures
-remain owner-side startup errors. Pending top-level-await settlement is not
-reclassified as an immediate error. See the
+remain owner-side startup errors. Pending top-level-await evaluation retains
+its existing `WouldBlock` handling and is not sent through the new error
+reporter. See the
 [slice 788 task](tasks/native-engine-browser-788.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,

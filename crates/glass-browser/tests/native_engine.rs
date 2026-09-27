@@ -4669,6 +4669,173 @@ async fn native_local_dedicated_worker_startup_errors_report_and_forward() {
 }
 
 #[tokio::test]
+async fn native_local_dedicated_module_worker_startup_errors_report_and_forward() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://module-worker-script-error-page",
+            r#"<script>
+                globalThis.workerMessages = [];
+                globalThis.ownerErrors = [];
+                const captureMessage = (worker, event) => workerMessages.push(Object.assign({ worker }, event.data));
+                globalThis.handledWorker = new Worker('fixture://module-worker-script-error-handled', { type: 'module' });
+                handledWorker.onmessage = event => captureMessage('handled', event);
+                handledWorker.onerror = event => ownerErrors.push({ kind: 'unexpected-handled-owner-error', message: event.message });
+                globalThis.unhandledWorker = new Worker('fixture://module-worker-script-error-unhandled', { type: 'module' });
+                unhandledWorker.onmessage = event => captureMessage('unhandled', event);
+                unhandledWorker.onerror = function(event) {
+                  ownerErrors.push({ kind: 'unhandled-handler', state: [
+                    event instanceof ErrorEvent, event.message.includes('unhandled-module-boom'),
+                    event.filename === this.url, event.error === null, event.cancelable,
+                    event.defaultPrevented, event.target === this, event.currentTarget === this,
+                    event.eventPhase,
+                  ] });
+                  return false;
+                };
+                unhandledWorker.addEventListener('error', event => ownerErrors.push({
+                  kind: 'unhandled-listener', state: [event instanceof ErrorEvent,
+                    event.defaultPrevented, event.target === unhandledWorker,
+                    event.currentTarget === unhandledWorker, event.eventPhase]
+                }));
+                globalThis.syntaxWorker = new Worker('fixture://module-worker-script-error-syntax', { type: 'module' });
+                syntaxWorker.onerror = event => ownerErrors.push({ kind: 'syntax-handler', state: [
+                  event instanceof ErrorEvent, event.message.length > 0,
+                  event.filename === syntaxWorker.url, event.error === null,
+                  event.cancelable, event.defaultPrevented, event.target === syntaxWorker,
+                  event.currentTarget === syntaxWorker, event.eventPhase,
+                ] });
+                syntaxWorker.addEventListener('error', event => ownerErrors.push({
+                  kind: 'syntax-listener', state: [event.defaultPrevented, event.eventPhase]
+                }));
+                globalThis.graphWorker = new Worker('fixture://module-worker-script-error-graph', { type: 'module' });
+                graphWorker.onerror = event => ownerErrors.push({ kind: 'graph-handler', state: [
+                  event instanceof ErrorEvent, event.message.length > 0,
+                  event.filename === graphWorker.url, event.error === null,
+                  event.cancelable, event.defaultPrevented, event.target === graphWorker,
+                  event.currentTarget === graphWorker, event.eventPhase,
+                ] });
+            </script><main>module worker errors</main>"#,
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://module-worker-script-error-handled",
+            r#"globalThis.errorTrace = [];
+                globalThis.onmessage = event => postMessage({ kind: 'alive', value: event.data });
+                globalThis.onerror = function(message, filename, line, column, error) {
+                  errorTrace.push(['handler', arguments.length, message.includes('handled-module-boom'),
+                    filename === location.href, line, column, error instanceof Error]);
+                  return true;
+                };
+                globalThis.addEventListener('error', event => {
+                  errorTrace.push(['listener', event instanceof ErrorEvent, event.type,
+                    event.message.includes('handled-module-boom'), event.filename === location.href,
+                    event.lineno, event.colno, event.error instanceof Error,
+                    event.target === self, event.currentTarget === self,
+                    event.cancelable, event.defaultPrevented, event.eventPhase]);
+                  postMessage({ kind: 'global-error', trace: errorTrace.slice() });
+                });
+                throw new Error('handled-module-boom');"#,
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://module-worker-script-error-unhandled",
+            r#"globalThis.errorTrace = [];
+                globalThis.onmessage = event => postMessage({ kind: 'alive', value: event.data });
+                globalThis.onerror = function(message, filename, line, column, error) {
+                  errorTrace.push(['handler', arguments.length, message.includes('unhandled-module-boom'),
+                    filename === location.href, line, column, error instanceof Error]);
+                  return false;
+                };
+                globalThis.addEventListener('error', event => {
+                  errorTrace.push(['listener', event instanceof ErrorEvent, event.type,
+                    event.message.includes('unhandled-module-boom'), event.filename === location.href,
+                    event.lineno, event.colno, event.error instanceof Error,
+                    event.target === self, event.currentTarget === self,
+                    event.cancelable, event.defaultPrevented, event.eventPhase]);
+                  postMessage({ kind: 'global-error', trace: errorTrace.slice() });
+                });
+                throw new Error('unhandled-module-boom');"#,
+        )
+        .unwrap()
+        .with_fixture("fixture://module-worker-script-error-syntax", "function {")
+        .unwrap()
+        .with_fixture(
+            "fixture://module-worker-script-error-graph",
+            "import { missingValue } from 'fixture://module-worker-script-error-dependency'; globalThis.unusedMissingValue = missingValue;",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://module-worker-script-error-dependency",
+            "export const existingValue = 1;",
+        )
+        .unwrap()
+        .with_initial_url("fixture://module-worker-script-error-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    engine
+        .evaluate_async(
+            "handledWorker.postMessage('still-alive'); unhandledWorker.postMessage('still-alive'); true",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"({
+                    handled: workerMessages.filter(message => message.worker === 'handled').map(({ worker, ...message }) => message),
+                    unhandled: workerMessages.filter(message => message.worker === 'unhandled').map(({ worker, ...message }) => message),
+                    ownerErrors,
+                })"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "handled": [
+                {
+                    "kind": "global-error",
+                    "trace": [
+                        ["handler", 5, true, true, 0, 0, true],
+                        ["listener", true, "error", true, true, 0, 0, true, true, true, true, true, 2],
+                    ],
+                },
+                {"kind": "alive", "value": "still-alive"},
+            ],
+            "unhandled": [
+                {
+                    "kind": "global-error",
+                    "trace": [
+                        ["handler", 5, true, true, 0, 0, true],
+                        ["listener", true, "error", true, true, 0, 0, true, true, true, true, false, 2],
+                    ],
+                },
+                {"kind": "alive", "value": "still-alive"},
+            ],
+            "ownerErrors": [
+                {
+                    "kind": "unhandled-handler",
+                    "state": [true, true, true, true, true, false, true, true, 2],
+                },
+                {
+                    "kind": "unhandled-listener",
+                    "state": [true, true, true, true, 2],
+                },
+                {
+                    "kind": "syntax-handler",
+                    "state": [true, true, true, true, true, false, true, true, 2],
+                },
+                {"kind": "syntax-listener", "state": [false, 2]},
+                {
+                    "kind": "graph-handler",
+                    "state": [true, true, true, true, true, false, true, true, 2],
+                },
+            ],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_worker_url_objects_are_mutable_and_search_params_are_live() {
     let config = NativeEngineConfig::default()
         .with_fixture(

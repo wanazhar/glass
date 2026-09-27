@@ -113,6 +113,13 @@ attributes continue through the existing generic handler path, whose
 focus-specific CSP/projection parity this slice does not certify;
 `body`/`frameset` Window-target remapping remains open. See the
 [slice 778 task](tasks/native-engine-browser-778.md).
+Slice 779 installs the current element-side `GlobalEventHandlers` property
+set once on the shared HTML prototype, avoiding per-node property overhead.
+Owner-keyed handler state survives same-origin projection refreshes and keeps
+replacement order and null removal; local/frame tests check the full property
+surface plus representative event delivery. Window/Document handler sets,
+`body`/`frameset` Window-target routing, and full event conformance remain
+open; see the [slice 779 task](tasks/native-engine-browser-779.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

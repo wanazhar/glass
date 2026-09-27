@@ -5193,6 +5193,22 @@ parent visible-text projection omits fallback descendants of HTML `iframe` and
 `frame` elements; the child document remains independently available through
 the frame registry.
 
+### Modifier-aware hyperlink clicks
+
+`GCWP-0.1` adopts an explicit primary-click convention for native hyperlinks:
+Control, Meta, or Shift opens one background browsing context and leaves the
+source selected. The click event exposes the supplied modifier flags first, so
+page cancellation still suppresses the browser default. Existing `download`
+attribute and navigation-policy owners remain authoritative; Alt alone never
+turns an arbitrary link into a download. Glass has no desktop tab/window
+surface, so Shift maps to the same background target behavior. This is a Glass
+profile choice because the HTML hyperlink algorithm does not define platform
+modifier gestures. Right/middle-button behavior is not covered here.
+
+Slice 770 threads these flags through the semantic action and native click
+event path, including local, process-backed, and same-origin-frame documents.
+It does not claim full pointer-event conformance or complete browser input.
+
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,

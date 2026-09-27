@@ -126,14 +126,19 @@ adds the two Document-specific properties. `body` and `frameset` expose the
 Window-specific properties, with IDL handlers routed to the owning Document's
 `defaultView` for those properties and the six Window-reflecting names. Local,
 process-backed, and same-origin parent-projection checks cover surface,
-dispatch, and ownership. Generic inline content attributes do not yet share
-the body/frameset Window-target mapping; complete event/Web IDL and WPT
-conformance remain open. See the [slice 780 task](tasks/native-engine-browser-780.md).
+dispatch, and ownership. Slice 780 initially left generic inline content
+attributes on their element-owned path; slice 781 below adds the
+body/frameset Window-target mapping. Complete event/Web IDL and WPT conformance
+remain open. See the [slice 780 task](tasks/native-engine-browser-780.md).
 Slice 781 routes those body/frameset content attributes through the same
 Window-target event-handler slot as their IDL aliases, preserving listener
 order and the element-based CSP check; ordinary element attributes remain
 element-owned. Event compilation/legacy details and wider conformance stay
 open. See the [slice 781 task](tasks/native-engine-browser-781.md).
+Slice 782 scopes the unimplemented special cancellation result for
+`Window.onerror` and the cancelable flag on generated script-error events; its
+contract and focused coverage are tracked in the
+[slice 782 task](tasks/native-engine-browser-782.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

@@ -146,11 +146,12 @@ and keyed by the native event owner, so refreshed same-origin frame
 projections read, replace, and clear the same handler. Local, HTTP(S)
 content-process, and same-origin parent-projection tests cover property
 presence/null initialization, representative dispatch, target/`this`
-identity, Window reflection, and local body click behavior. The generic `on*`
-content-attribute path is unchanged and does not yet share this body/frameset
-Window-target routing; full content-attribute, CSP, event-source, Web IDL, and
-WPT conformance remain open. See the [slice 780 task](tasks/native-engine-browser-780.md),
-the [slice 779 task](tasks/native-engine-browser-779.md), and the
+identity, Window reflection, and local body click behavior. Slice 780 left
+body/frameset inline content attributes on the generic element-owned path;
+slice 781 below adds their Window-target routing. Full inline-handler,
+event-source, Web IDL, and WPT conformance remain open. See the
+[slice 780 task](tasks/native-engine-browser-780.md), the
+[slice 779 task](tasks/native-engine-browser-779.md), and the
 [slice 778 task](tasks/native-engine-browser-778.md).
 
 Slice 781 routes body/frameset content attributes for the Window-targeted
@@ -163,6 +164,13 @@ element content attributes remain element-owned. This does not complete
 inline-handler lexical environments, all `onerror`/`onbeforeunload` legacy
 behavior, CSP reporting, or event/WPT conformance; see the
 [slice 781 task](tasks/native-engine-browser-781.md).
+
+The native script-error path currently sends the legacy five arguments to
+`Window.onerror`, but does not apply its special `return true` cancellation;
+its generated `ErrorEvent` is also not marked cancelable. Slice 782 scopes that
+reporting-event contract while leaving general error reporting and
+`onbeforeunload` behavior for separate work. See the
+[slice 782 task](tasks/native-engine-browser-782.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus

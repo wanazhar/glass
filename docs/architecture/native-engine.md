@@ -5373,6 +5373,20 @@ This is not complete inline-handler compilation, Window error/beforeunload
 legacy behavior, or event conformance. See the
 [`native-engine-browser-781` task](../plan/tasks/native-engine-browser-781.md).
 
+### Script-error `Window.onerror` cancellation (slice 782, in progress)
+
+The script-error dispatcher already constructs `ErrorEvent` instances and
+invokes a Window `onerror` handler with the legacy message/source/line/column/
+error arguments. The current gap is that these generated events are not
+cancelable and the handler's special `true` return is not reflected in the
+event's canceled state. This slice aligns the generated reporting event and
+Window callback with the HTML event-handler cancellation rule, while
+preserving the existing event path for ordinary `error` events and
+element-targeted error handlers. General script-error reporting policy,
+cross-origin muted errors, callback-exception reporting, and
+`onbeforeunload` remain outside this bounded change. See the
+[`native-engine-browser-782` task](../plan/tasks/native-engine-browser-782.md).
+
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,

@@ -135,9 +135,10 @@ Window-target event-handler slot as their IDL aliases, preserving listener
 order and the element-based CSP check; ordinary element attributes remain
 element-owned. Event compilation/legacy details and wider conformance stay
 open. See the [slice 781 task](tasks/native-engine-browser-781.md).
-Slice 782 scopes the unimplemented special cancellation result for
-`Window.onerror` and the cancelable flag on generated script-error events; its
-contract and focused coverage are tracked in the
+Slice 782 marks generated script-report `ErrorEvent`s cancelable and applies
+the legacy `Window.onerror` rule that an exact `true` return cancels only an
+`ErrorEvent` dispatched at Window. A local regression covers actual script
+reports, plain `Event("error")`, return values, and the body alias; see the
 [slice 782 task](tasks/native-engine-browser-782.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the

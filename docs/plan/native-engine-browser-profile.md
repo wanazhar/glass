@@ -161,15 +161,17 @@ against the element and exact source before the value is installed; a blocked
 replacement does not overwrite an active routed handler. Unchanged projected
 attributes do not reactivate the listener during snapshot refresh. Ordinary
 element content attributes remain element-owned. This does not complete
-inline-handler lexical environments, all `onerror`/`onbeforeunload` legacy
-behavior, CSP reporting, or event/WPT conformance; see the
+inline-handler lexical environments, remaining `onerror`/`onbeforeunload`
+legacy behavior, CSP reporting, or event/WPT conformance; see the
 [slice 781 task](tasks/native-engine-browser-781.md).
 
-The native script-error path currently sends the legacy five arguments to
-`Window.onerror`, but does not apply its special `return true` cancellation;
-its generated `ErrorEvent` is also not marked cancelable. Slice 782 scopes that
-reporting-event contract while leaving general error reporting and
-`onbeforeunload` behavior for separate work. See the
+Generated script-report `ErrorEvent`s are cancelable. At Window, the special
+five-argument `onerror` invocation applies only to `ErrorEvent` objects of
+type `error`; an exact `true` return sets cancellation, while a plain
+`Event("error")` uses the ordinary event argument. Local tests cover direct
+dispatch (including a non-cancelable synthetic `ErrorEvent`), a body handler
+alias, and uncaught script reports. General error-reporting policy and
+remaining `onbeforeunload` behavior are separate work. See the
 [slice 782 task](tasks/native-engine-browser-782.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,

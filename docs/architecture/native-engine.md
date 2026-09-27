@@ -5369,22 +5369,25 @@ does not replace an active routed handler. An unchanged attribute in a
 refreshed host snapshot does not move the listener's order. Other element
 content attributes remain on their element-owned path. Local and process-backed
 tests cover aliasing, dispatch, ordering, CSP, and same-origin frame ownership.
-This is not complete inline-handler compilation, Window error/beforeunload
-legacy behavior, or event conformance. See the
+This is not complete inline-handler compilation, remaining Window error and
+`beforeunload` legacy behavior, or event conformance. See the
 [`native-engine-browser-781` task](../plan/tasks/native-engine-browser-781.md).
 
-### Script-error `Window.onerror` cancellation (slice 782, in progress)
+### Script-error `Window.onerror` cancellation (slice 782)
 
-The script-error dispatcher already constructs `ErrorEvent` instances and
-invokes a Window `onerror` handler with the legacy message/source/line/column/
-error arguments. The current gap is that these generated events are not
-cancelable and the handler's special `true` return is not reflected in the
-event's canceled state. This slice aligns the generated reporting event and
-Window callback with the HTML event-handler cancellation rule, while
-preserving the existing event path for ordinary `error` events and
-element-targeted error handlers. General script-error reporting policy,
-cross-origin muted errors, callback-exception reporting, and
-`onbeforeunload` remain outside this bounded change. See the
+Generated script-report `ErrorEvent` instances are cancelable. When an
+`ErrorEvent` of type `error` reaches Window's event-handler slot, the callback
+receives the legacy message/source/line/column/error arguments and `this` is
+the Window; returning exactly `true` sets `defaultPrevented` and makes
+`dispatchEvent()` return false. The special behavior is gated on the event
+being an `ErrorEvent` at Window: a plain event named `error` uses the ordinary
+event argument and a true return does not cancel. A direct regression also
+checks that the special handler sets cancellation even when a synthetic
+`ErrorEvent` itself is non-cancelable. Local script-error tests cover actual
+uncaught script reports, body/Window aliasing, and continued document loading.
+General script-error reporting policy, cross-origin muted errors,
+callback-exception reporting, and `onbeforeunload` remain outside this bounded
+change. See the
 [`native-engine-browser-782` task](../plan/tasks/native-engine-browser-782.md).
 
 The first executable browser-complete batch is recorded in

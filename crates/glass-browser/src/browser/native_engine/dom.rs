@@ -8255,7 +8255,7 @@ impl NativeDocument {
             .flatten()
     }
 
-    pub(crate) fn is_attached(&self, id: NativeNodeId) -> bool {
+    fn is_attached(&self, id: NativeNodeId) -> bool {
         if id.generation != self.generation {
             return false;
         }
@@ -10486,7 +10486,16 @@ impl NativeDocument {
             if parent_node.element_name() == Some("fieldset")
                 && parent_node.attribute("disabled").is_some()
             {
-                return true;
+                let first_legend = parent_node.children().iter().find_map(|child_id| {
+                    self.node(*child_id)
+                        .is_some_and(|child| child.element_name() == Some("legend"))
+                        .then_some(*child_id)
+                });
+                if !first_legend.is_some_and(|legend_id| {
+                    id == legend_id || self.is_descendant_of(id, legend_id)
+                }) {
+                    return true;
+                }
             }
             if parent_node.element_name() == Some("select")
                 && parent_node.attribute("disabled").is_some()

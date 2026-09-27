@@ -10562,11 +10562,7 @@ fn mutate_key_shortcut_with_event_bridge(
         ));
         next = clicked;
     }
-    let keyup_node_id = if next.is_attached(node_id) {
-        node_id
-    } else {
-        next.focused_node()
-    };
+    let keyup_node_id = next.focused_node();
     let keyup_event_batch = host_key_event_batch_with_modifiers(
         keyup_node_id.index(),
         NativeEventKind::KeyUp,

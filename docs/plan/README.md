@@ -44,6 +44,12 @@ implements reset-button activation through native semantic clicks, JavaScript
 cancellation, dynamic type/form ownership, and the absence of validation,
 submission, or navigation; exact evidence is
 [recorded here](tasks/native-engine-browser-763.md).
+Slice 764 is the next contract: Enter/Space activation for focused native
+button controls through the shared click/default-action path. It defines
+Enter-on-keydown and Space-on-keyup ordering, keydown/click cancellation,
+reset/submit behavior, and top-level/same-origin-frame routing. It does not
+claim implementation evidence yet. See the
+[slice 764 contract](tasks/native-engine-browser-764.md).
 Slice 755 implements target-document-aware `Document.importNode()` for live
 top-level, same-origin-frame, and inert template-owner Documents. Its focused
 process-backed regression passes locally; this remains a bounded DOM slice,
@@ -118,6 +124,9 @@ Slice 763 implements form-associated reset-button activation using the shared
 reset algorithm. General keyboard-generated button activation remains part of
 the broader input workstream. See the
 [slice 763 contract](tasks/native-engine-browser-763.md).
+Slice 764 defines the next keyboard input contract. Its implementation and
+verification remain pending. See the
+[slice 764 contract](tasks/native-engine-browser-764.md).
 Slice 744 disables and asserts against nested Linux user namespaces in the
 Bubblewrap content worker. Slice 745 adds OS-enforced content-worker memory
 ceilings on Linux and Windows while preserving stricter inherited Linux

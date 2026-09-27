@@ -189,6 +189,12 @@ cancellation, form-owner changes, and no submit/validation/navigation. Keyboard-
 generated click activation remains in the broader input workstream. See the
 [slice 762](tasks/native-engine-browser-762.md) and
 [slice 763](tasks/native-engine-browser-763.md) contracts.
+Slice 764 defines keyboard activation for focused native button controls:
+Enter activates on keydown and Space on keyup after an uncanceled keydown.
+The contract requires the shared click/default path for reset and submit
+controls in top-level and same-origin-frame Documents. Implementation and
+verification remain pending; see the
+[slice 764 contract](tasks/native-engine-browser-764.md).
 ### Synchronous JavaScript dialog contract
 
 The native page realm implements the HTML Standard's modal user-prompt

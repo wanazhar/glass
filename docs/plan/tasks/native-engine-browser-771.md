@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-771
 scope: glass-browser/native-image-map-hit-testing
-status: in-progress
+status: done
 depends-on: [native-engine-browser-770]
 ---
 
@@ -100,3 +100,30 @@ conformance from this slice alone.
   and the affected `glass-dev` target check before focused image-map tests.
 - Do not run workspace/all-targets tests, remote CI, or clean Cargo artifacts
   for this bounded slice.
+
+## Result and local evidence
+
+Implemented live `<img usemap>` association, displayed-content CSS-pixel mapping,
+normalized `default`/`rect`/`circle`/`poly` geometry, tree-order interception,
+linked-area semantics, and normal cancelable click/link defaults. Areas use the
+existing URL-policy, opener, modifier, and download owners. Point clicks are
+covered in local documents; HTTP(S) content-process coverage includes updated
+`href`/`target`, an image-map download retaining its `download` filename and
+bytes, and same-origin-frame navigation.
+
+Final local gates passed:
+
+- `cargo fmt --all -- --check`
+- `git diff --check`
+- `cargo check -p glass-browser --lib --test native_engine --locked --quiet`
+- `cargo check -p glass-dev --lib --bins --locked --quiet`
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- image_map --test-threads=1` — 4 passed, 0 failed
+- `python3 scripts/check-release-documentation.py --require-previous-version --report /tmp/glass-release-documentation.json` — 0 current-claim failures
+- `python3 scripts/check-documentation-depth.py` — 93 current guides routed/audited, 19 substantive contracts
+- `python3 scripts/check-tui-shortcuts.py` — 15 implementation keys and 63 documentation markers
+
+An earlier focused run exposed that a non-linked topmost area was rejected by
+semantic click preflight. The click path now dispatches its event without
+inventing a link default, and the final complete image-map filter passes.
+Keyboard sequential focus, WPT coverage, cross-platform certification, and
+remote CI remain explicit boundaries; this task is not issue #40 completion.

@@ -3868,7 +3868,10 @@ impl NativeEngine {
         else {
             return Ok(unresolved(NativeTargetErrorKind::StaleReference));
         };
-        let geometry = self.layout()?.viewport_rect_for(id);
+        let layout = self.layout()?;
+        let geometry = layout
+            .viewport_rect_for(id)
+            .or_else(|| self.document.image_map_area_viewport_rect(id, &layout));
         let requires_geometry = !matches!(action, NativePreflightAction::Upload);
         let actionability_reason = if node.disabled {
             Some(NativeActionabilityReason::Disabled)
@@ -3934,7 +3937,8 @@ impl NativeEngine {
         y: i64,
     ) -> Result<Option<super::dom::NativeNodeId>, NativeEngineError> {
         self.require_running("hit testing")?;
-        self.layout()?.hit_test(x, y)
+        let layout = self.layout()?;
+        self.document.hit_test_with_layout(&layout, x, y)
     }
 
     pub(crate) fn is_descendant_or_self(
@@ -4018,7 +4022,6 @@ impl NativeEngine {
                     && !href.is_empty()
                 {
                     if self.javascript.is_some() {
-                        self.preflight_local_link_navigation(&self.document, id, &href)?;
                         return self.action_local_click_with_event_preflight(id, click_modifiers);
                     }
                     return self.activate_link(
@@ -4257,14 +4260,14 @@ impl NativeEngine {
             NativeAction::Click { target } => {
                 let id = self.resolve_click_target(&target)?;
                 self.require_layout_actionable(id)?;
-                let link_href = self
+                let initial_link_href = self
                     .document
                     .link_href(id)
                     .filter(|href| !href.is_empty())
                     .map(str::to_owned);
-                let download_attribute =
+                let initial_download_attribute =
                     self.document.link_download_attribute(id).map(str::to_owned);
-                if download_attribute.is_some()
+                if initial_download_attribute.is_some()
                     && self.pending_downloads.len() >= MAX_NATIVE_PENDING_DOWNLOADS
                 {
                     return Err(NativeEngineError::limit(
@@ -4291,7 +4294,7 @@ impl NativeEngine {
                 let navigation = mutation.navigation.clone();
                 let click_allowed = mutation.allowed;
                 if click_allowed
-                    && link_href.is_some()
+                    && initial_link_href.is_some()
                     && mutation.history.iter().any(|command| {
                         matches!(
                             command,
@@ -4315,7 +4318,24 @@ impl NativeEngine {
                         accepted: outcome.accepted,
                     });
                 }
-                if click_allowed && let Some(href) = link_href {
+                if click_allowed
+                    && let Some(href) = self
+                        .document
+                        .link_href(id)
+                        .filter(|href| !href.is_empty())
+                        .map(str::to_owned)
+                {
+                    let download_attribute =
+                        self.document.link_download_attribute(id).map(str::to_owned);
+                    if download_attribute.is_some()
+                        && self.pending_downloads.len() >= MAX_NATIVE_PENDING_DOWNLOADS
+                    {
+                        return Err(NativeEngineError::limit(
+                            "native pending downloads",
+                            MAX_NATIVE_PENDING_DOWNLOADS,
+                            self.pending_downloads.len().saturating_add(1),
+                        ));
+                    }
                     let target_url = self.resolve_link_href(&href)?;
                     let opens_new_target = self.document.link_opens_new_target(id)
                         || modifier_click_opens_new_target(click_modifiers);
@@ -6643,6 +6663,9 @@ impl NativeEngine {
                 MAX_NATIVE_EFFECTS,
                 events.len(),
             ));
+        }
+        if let Some(href) = link_navigation.as_deref() {
+            self.preflight_local_link_navigation(&document, id, href)?;
         }
         if history_commands.iter().any(|command| {
             matches!(
@@ -9372,10 +9395,13 @@ impl NativeEngine {
         let Some((x, y)) = parse_point_target(target)? else {
             return self.document.resolve_target(target);
         };
-        let hit = self.layout()?.hit_test(x, y)?;
+        let hit = self.hit_test(x, y)?;
         let hit = hit.ok_or_else(|| NativeEngineError::TargetNotActionable {
             reason: "point hit no visible element".into(),
         })?;
+        if self.document.node(hit).and_then(|node| node.element_name()) == Some("area") {
+            return Ok(hit);
+        }
         self.document
             .nearest_clickable_ancestor(hit)
             .ok_or_else(|| NativeEngineError::TargetNotActionable {
@@ -9393,6 +9419,11 @@ impl NativeEngine {
             });
         }
         let layout = self.layout()?;
+        if self.document.node(id).and_then(|node| node.element_name()) == Some("area")
+            && self.document.image_map_area_has_visible_image(id, &layout)
+        {
+            return Ok(());
+        }
         let visible = layout
             .viewport_rect_for(id)
             .is_some_and(|rect| rect.width > 0 && rect.height > 0);

@@ -5945,6 +5945,9 @@ impl<'a> LayoutBuilder<'a> {
         let Some(name) = self.document.node(id).and_then(|node| node.element_name()) else {
             return DisplayValue::Inline;
         };
+        if matches!(name, "map" | "area") {
+            return DisplayValue::None;
+        }
         if matches!(
             name,
             "html"

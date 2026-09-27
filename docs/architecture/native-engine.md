@@ -5211,15 +5211,19 @@ It does not claim full pointer-event conformance or complete browser input.
 
 ### Image-map hit testing and activation (slice 771)
 
-The planned image-map path keeps one source of truth: `NativeLayoutSnapshot`
-owns the displayed image box; `NativeDocument` resolves that image's live
-`usemap` association and area geometry; the existing semantic click owner
-dispatches the cancelable event and processes link defaults. Geometry is
-derived from the current document on each action so map/area mutations cannot
-leave stale hit targets. Earlier `<area>` elements win overlapping hits, in
-accordance with the HTML image-map processing model. Linked areas reuse the
-native hyperlink, URL-policy, target/download, and accessibility-name paths;
-there is no separate popup or navigation implementation for image maps.
+Slice 771 implements client-side `<img usemap>` hit testing through existing
+browser owners: `NativeLayoutSnapshot` supplies the displayed image box,
+`NativeDocument` resolves the live map association and area geometry, and the
+semantic click owner dispatches the cancelable event and processes link
+defaults. Geometry is derived from the current document on each action, so
+map/area mutations cannot leave stale hit targets. Earlier `<area>` elements
+win overlapping hits, including non-linked areas that intercept a point.
+Linked areas reuse native hyperlink, URL-policy, target/download, and
+accessibility-name paths. Local, HTTP(S) content-process, and same-origin-frame
+tests cover shape normalization, live attributes, cancellation, background
+target creation, download filename/bytes, and accessible names. This does not
+claim server-side `ismap`, complete area keyboard focus behavior, full WPT
+coverage, cross-platform certification, or complete image-map conformance.
 
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its

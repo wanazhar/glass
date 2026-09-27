@@ -13247,6 +13247,129 @@ async fn native_modifier_link_clicks_open_one_background_target_and_honor_cancel
 }
 
 #[tokio::test]
+async fn native_image_map_point_actions_route_dead_and_linked_areas() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://image-map-parent",
+            "<img id='mapped' usemap='#places' style='display:block;width:100px;height:100px'><map name='places'><area id='dead' coords='10,10,40,40'><area id='chosen' shape='rect' coords='0,0,70,70' href='fixture://map-original' alt='Chosen area'><area id='cancel' shape='rect' coords='70,0,99,30' href='fixture://map-canceled' alt='Canceled area'></map><script>globalThis.__mapClicks = []; document.getElementById('dead').addEventListener('click', event => __mapClicks.push([event.target.id, event.ctrlKey])); document.getElementById('chosen').addEventListener('click', event => { __mapClicks.push([event.target.id, event.ctrlKey]); event.currentTarget.setAttribute('href', 'fixture://map-current'); event.currentTarget.setAttribute('target', '_blank'); }); document.getElementById('cancel').addEventListener('click', event => { __mapClicks.push([event.target.id, event.defaultPrevented]); event.preventDefault(); });</script>",
+        )
+        .unwrap()
+        .with_fixture("fixture://map-current", "<title>Current area destination</title>")
+        .unwrap()
+        .with_fixture("fixture://map-original", "<title>Stale area destination</title>")
+        .unwrap()
+        .with_fixture("fixture://map-canceled", "<title>Canceled area destination</title>")
+        .unwrap()
+        .with_initial_url("fixture://image-map-parent");
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+
+    let initial = session
+        .semantic_observe(SemanticObservationLevel::Interactive)
+        .await
+        .unwrap();
+    assert!(
+        initial
+            .regions
+            .iter()
+            .flat_map(|region| region.targets.iter())
+            .any(|target| target.role == "link" && target.name == "Chosen area")
+    );
+    assert_eq!(
+        initial
+            .regions
+            .iter()
+            .flat_map(|region| region.targets.iter())
+            .filter(|target| target.role == "link")
+            .count(),
+        2
+    );
+
+    session
+        .action(SemanticAction::Click {
+            target: "point=20,20".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("location.href").await.unwrap().value,
+        serde_json::json!("fixture://image-map-parent")
+    );
+    assert_eq!(
+        session
+            .script("globalThis.__mapClicks")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([["dead", false]])
+    );
+
+    session
+        .action(SemanticAction::ClickWithModifiers {
+            target: "point=50,50".into(),
+            modifiers: ClickModifiers {
+                control: true,
+                ..ClickModifiers::default()
+            },
+        })
+        .await
+        .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert!(targets.iter().any(|target| {
+        !target.active
+            && target.url == "fixture://map-current"
+            && target.opener_id.as_deref() == Some("native-context")
+    }));
+    assert_eq!(
+        session
+            .script("globalThis.__mapClicks")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([["dead", false], ["chosen", true]])
+    );
+
+    let refreshed = session
+        .semantic_observe(SemanticObservationLevel::Interactive)
+        .await
+        .unwrap();
+    let chosen = refreshed
+        .regions
+        .iter()
+        .flat_map(|region| region.targets.iter())
+        .find(|target| target.role == "link" && target.name == "Chosen area")
+        .expect("linked image-map area remains addressable after live attribute mutation");
+    session
+        .action(SemanticAction::Click {
+            target: chosen.reference.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 3);
+    assert!(
+        session
+            .native_list_targets()
+            .await
+            .unwrap()
+            .iter()
+            .any(|target| !target.active && target.url == "fixture://map-current")
+    );
+
+    session
+        .action(SemanticAction::Click {
+            target: "point=80,20".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 3);
+    assert_eq!(
+        session.script("location.href").await.unwrap().value,
+        serde_json::json!("fixture://image-map-parent")
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_form_targets_keep_opener_and_reuse_named_targets() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -54291,6 +54414,166 @@ async fn native_images_expose_accessible_role_and_alt_name() {
     engine.close_async().await.unwrap();
 }
 
+#[test]
+fn native_image_map_hit_testing_normalizes_shapes_and_uses_displayed_content_pixels() {
+    let document = NativeDocument::parse(
+        "<img id='mapped' usemap='prefix#places' style='display:block;width:120px;height:80px;padding:4px;border:2px solid black'><map name='places'><area id='dead' coords='11,11,19,19'><area id='reversed' shape='rect' coords='40,40,30,30' href='fixture://rectangle' alt='Reversed rectangle'><area id='circle' shape='circle' coords='60 20 10 99' href='fixture://circle' alt='Circle'><area id='polygon' shape='poly' coords='70,10,90,10,80,30,999' href='fixture://polygon' alt='Polygon'><area id='invalid-shape' shape='ellipse' coords='100,40,119,60' href='fixture://invalid-shape' alt='Invalid shape defaults to rectangle'><area id='parsed-list' shape='rect' coords='ignored,50;50,60;60' href='fixture://parsed-list' alt='Recovered coordinate list'><area id='malformed-number' shape='rect' coords='0,0,12oops,10' href='fixture://malformed-number' alt='Malformed coordinate becomes zero'><area id='empty-rect' shape='rect' coords='0,0,10'><area id='empty-circle' shape='circle' coords='5,5,0'><area id='empty-fallback' coords='0,0,10,10' href='fixture://empty-fallback' alt='Empty shape fallback'><area id='default' shape='default' coords='not numeric' href='fixture://default' alt='Default area'></map><img id='unmapped' style='display:block;width:40px;height:30px'>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let viewport = Viewport {
+        width: 300,
+        height: 240,
+        device_scale_factor_milli: 1000,
+    };
+    let layout = document.layout(viewport).unwrap();
+    let image_id = find_element_with_attribute(&document, "img", "id", "mapped");
+    let image_rect = layout.viewport_rect_for(image_id).unwrap();
+    let image_box = layout
+        .boxes
+        .iter()
+        .find(|layout_box| layout_box.node_id == image_id)
+        .unwrap();
+    let inset_x = image_box.content_rect.x - image_box.rect.x;
+    let inset_y = image_box.content_rect.y - image_box.rect.y;
+    let hit_local = |x: u32, y: u32| {
+        document
+            .hit_test(
+                viewport,
+                i64::from(image_rect.x + inset_x + x),
+                i64::from(image_rect.y + inset_y + y),
+            )
+            .unwrap()
+            .unwrap()
+    };
+    let node_id = |id: &str| find_element_with_attribute(&document, "area", "id", id);
+
+    assert_eq!(hit_local(15, 15), node_id("dead"));
+    assert_eq!(hit_local(35, 35), node_id("reversed"));
+    assert_eq!(hit_local(60, 20), node_id("circle"));
+    assert_eq!(hit_local(80, 20), node_id("polygon"));
+    assert_eq!(hit_local(110, 50), node_id("invalid-shape"));
+    assert_eq!(hit_local(55, 55), node_id("parsed-list"));
+    assert_eq!(hit_local(0, 5), node_id("malformed-number"));
+    assert_eq!(hit_local(5, 5), node_id("empty-fallback"));
+    assert_eq!(hit_local(110, 70), node_id("default"));
+
+    let border_hit = document
+        .hit_test(
+            viewport,
+            i64::from(image_rect.x + 2),
+            i64::from(image_rect.y + 2),
+        )
+        .unwrap();
+    assert_eq!(border_hit, Some(image_id));
+    let unmapped = find_element_with_attribute(&document, "img", "id", "unmapped");
+    let unmapped_rect = layout.viewport_rect_for(unmapped).unwrap();
+    assert_eq!(
+        document
+            .hit_test(
+                viewport,
+                i64::from(unmapped_rect.x + 5),
+                i64::from(unmapped_rect.y + 5),
+            )
+            .unwrap(),
+        Some(unmapped)
+    );
+
+    let semantic_links = document
+        .semantic_nodes()
+        .into_iter()
+        .filter(|node| node.role == "link")
+        .collect::<Vec<_>>();
+    assert!(
+        semantic_links
+            .iter()
+            .any(|node| node.node_id == node_id("reversed") && node.name == "Reversed rectangle")
+    );
+    assert!(
+        !semantic_links
+            .iter()
+            .any(|node| node.node_id == node_id("dead"))
+    );
+}
+
+#[tokio::test]
+async fn native_image_map_hit_testing_tracks_live_dom_mutations() {
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://live-image-map")
+        .with_fixture(
+            "fixture://live-image-map",
+            "<img id='image' usemap='#first-map' style='display:block;width:100px;height:100px'><map name='first-map'><area id='first' shape='rect' coords='0,0,100,100' href='fixture://first' alt='First'><area id='second' shape='rect' coords='0,0,100,100' href='fixture://second' alt='Second'></map><map name='second-map'><area id='third' shape='rect' coords='40,40,60,60' href='fixture://third' alt='Third'></map>",
+        )
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let image_id = engine
+        .semantic_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.tag_name == "img")
+        .unwrap()
+        .node_id;
+    let image_rect = engine
+        .layout()
+        .unwrap()
+        .viewport_rect_for(image_id)
+        .unwrap();
+    let point = (i64::from(image_rect.x + 50), i64::from(image_rect.y + 50));
+    let area_id = |engine: &NativeEngine, name: &str| {
+        engine
+            .semantic_nodes()
+            .unwrap()
+            .into_iter()
+            .find(|node| node.tag_name == "area" && node.name == name)
+            .unwrap()
+            .node_id
+    };
+    assert_eq!(
+        engine.hit_test(point.0, point.1).unwrap(),
+        Some(area_id(&engine, "First"))
+    );
+
+    engine
+        .evaluate_async(
+            "(() => { const map = document.querySelector('map[name=first-map]'); map.insertBefore(document.getElementById('second'), document.getElementById('first')); })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.hit_test(point.0, point.1).unwrap(),
+        Some(area_id(&engine, "Second"))
+    );
+
+    engine
+        .evaluate_async("document.getElementById('image').setAttribute('usemap', '#second-map')")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.hit_test(point.0, point.1).unwrap(),
+        Some(area_id(&engine, "Third"))
+    );
+
+    engine
+        .evaluate_async("document.getElementById('third').setAttribute('coords', '0,0,10,10')")
+        .await
+        .unwrap();
+    assert_eq!(engine.hit_test(point.0, point.1).unwrap(), Some(image_id));
+
+    engine
+        .evaluate_async(
+            "(() => { document.querySelector('map[name=second-map]').setAttribute('name', 'renamed-map'); document.getElementById('image').setAttribute('usemap', '#renamed-map'); document.getElementById('third').setAttribute('coords', '40,40,60,60'); })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.hit_test(point.0, point.1).unwrap(),
+        Some(area_id(&engine, "Third"))
+    );
+    engine.close_async().await.unwrap();
+}
+
 #[tokio::test]
 async fn native_images_select_srcset_candidates_from_viewport_and_density() {
     let config = NativeEngineConfig::default()
@@ -67004,6 +67287,132 @@ async fn native_content_process_modifier_link_click_routes_through_same_origin_f
         session.script("location.pathname").await.unwrap().value,
         serde_json::json!("/parent")
     );
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_image_maps_work_in_top_level_and_same_origin_frames() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..5 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("native image-map request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let (content_type, extra_headers, body) = match request.split_whitespace().nth(1) {
+                Some("/parent") => (
+                    "text/html",
+                    "",
+                    "<title>HTTP image map</title><img id='top-image' usemap='#top-map' style='display:block;width:100px;height:100px'><map name='top-map'><area id='top-download' shape='rect' coords='0,0,20,20' href='/download' download='map-area.txt' alt='Download area'><area id='top-link' shape='default' href='/stale' alt='Top destination'></map><iframe id='child' src='/child' style='width:120px;height:120px'></iframe><script>document.getElementById('top-link').addEventListener('click', event => { event.currentTarget.setAttribute('href', '/top-dest'); event.currentTarget.setAttribute('target', '_blank'); });</script>",
+                ),
+                Some("/child") => (
+                    "text/html",
+                    "",
+                    "<title>Frame image map</title><img id='frame-image' usemap='#frame-map' style='display:block;width:100px;height:100px'><map name='frame-map'><area id='frame-link' shape='default' href='/frame-dest' alt='Frame destination'></map>",
+                ),
+                Some("/top-dest") => ("text/html", "", "<title>Top area popup</title>"),
+                Some("/frame-dest") => ("text/html", "", "<title>Frame area destination</title>"),
+                Some("/download") => (
+                    "application/octet-stream",
+                    "Content-Disposition: attachment; filename=server-name.txt\r\n",
+                    "native image-map download bytes",
+                ),
+                other => panic!("unexpected native image-map request: {other:?}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    session
+        .action(SemanticAction::Click {
+            target: "point=50,50".into(),
+        })
+        .await
+        .unwrap();
+    let targets = session.native_list_targets().await.unwrap();
+    assert_eq!(targets.len(), 2);
+    assert!(
+        targets
+            .iter()
+            .any(|target| { !target.active && target.url == format!("http://{address}/top-dest") })
+    );
+
+    let frame_id = session
+        .native_list_frames()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("same-origin image-map frame")
+        .id;
+    session.select_frame(&frame_id).await.unwrap();
+    let frame_observation = session
+        .semantic_observe(SemanticObservationLevel::Interactive)
+        .await
+        .unwrap();
+    assert!(
+        frame_observation
+            .regions
+            .iter()
+            .flat_map(|region| region.targets.iter())
+            .any(|target| target.role == "link" && target.name == "Frame destination")
+    );
+    session
+        .action(SemanticAction::Click {
+            target: "id=frame-link".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session.script("location.pathname").await.unwrap().value,
+        serde_json::json!("/frame-dest")
+    );
+
+    session.select_frame("native-context:main").await.unwrap();
+    assert_eq!(
+        session.script("location.pathname").await.unwrap().value,
+        serde_json::json!("/parent")
+    );
+
+    session
+        .action(SemanticAction::Click {
+            target: "point=10,10".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(session.native_list_targets().await.unwrap().len(), 2);
+    let download_directory = std::env::temp_dir().join(format!(
+        "glass-native-image-map-download-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&download_directory).unwrap();
+    let outcome = session
+        .native_wait_for_download(&download_directory, Duration::from_secs(10))
+        .await
+        .unwrap();
+    assert_eq!(outcome.suggested_filename, "map-area.txt");
+    assert_eq!(
+        fs::read(download_directory.join("map-area.txt")).unwrap(),
+        b"native image-map download bytes"
+    );
+    fs::remove_dir_all(&download_directory).unwrap();
     session.close().await.unwrap();
     server.await.unwrap();
 }

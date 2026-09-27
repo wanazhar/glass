@@ -6911,6 +6911,12 @@ impl NativeDocument {
                 | NativeScriptCommand::WorkerPostMessage { .. }
                 | NativeScriptCommand::WorkerTerminate { .. }
                 | NativeScriptCommand::WorkerClose { .. } => {}
+                NativeScriptCommand::WorkerScriptError { .. } => {
+                    return Err(NativeEngineError::invalid(
+                        "native Worker script error",
+                        "must be routed through the dedicated Worker host boundary",
+                    ));
+                }
                 NativeScriptCommand::WebSocketOpen { .. }
                 | NativeScriptCommand::WebSocketSend { .. }
                 | NativeScriptCommand::WebSocketClose { .. }

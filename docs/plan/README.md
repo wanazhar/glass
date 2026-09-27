@@ -176,12 +176,12 @@ failures retain owner-side reporting. The regression verifies cancellation,
 forwarding order, worker survival, and later messages. Existing pending
 top-level-await `WouldBlock` handling remains unchanged. See the
 [slice 788 task](tasks/native-engine-browser-788.md).
-Slice 789 specifies the next bounded worker-error path: report each exception
+Slice 789 implements the next bounded worker-error path: report each exception
 thrown by dedicated-worker `onmessage` or message listeners at the worker
 global, continue later listeners, and enqueue uncanceled owner errors in order
-with callback-posted messages. Shared/service-worker and specialized
-EventTarget dispatch remain outside this slice; implementation and focused
-verification are pending. See the
+with callback-posted messages. Focused classic/module local tests cover exact
+cancellation, callback and owner ordering, and worker survival. Shared/service-
+worker and specialized EventTarget dispatch remain outside this slice. See the
 [slice 789 task](tasks/native-engine-browser-789.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the

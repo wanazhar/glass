@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-789
 scope: glass-browser/dedicated-worker-message-callback-errors
-status: in-progress
+status: completed
 depends-on: [native-engine-browser-788]
 ---
 
@@ -81,7 +81,30 @@ order.
 
 ## Verification
 
-Pending implementation. The focused regression must cover classic and module
-dedicated workers, throwing `onmessage` and registered listeners, multiple
-callback errors, global `onerror`/error-listener order and exact-`true`
-cancellation, owner forwarding/order, later listeners, and worker survival.
+Passed locally:
+
+- `rustfmt --edition 2024 --check crates/glass-browser/src/browser/native_engine/javascript.rs crates/glass-browser/src/browser/native_engine/dom.rs crates/glass-browser/tests/native_engine.rs`
+- `cargo check -p glass-browser --test native_engine --locked --quiet`
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_local_dedicated_worker_message_callback_errors_report_and_forward_in_order --test-threads=1`
+  (1 passed; checks classic handled and module unhandled callback exceptions,
+  handler/listener ordering, owner command order around callback messages,
+  later listeners, and worker survival)
+- Existing exact regressions run against the updated native-engine test binary:
+  `native_local_dedicated_worker_onmessage_false_cancels_before_listeners`,
+  `native_local_dedicated_worker_startup_errors_report_and_forward`,
+  `native_local_dedicated_module_worker_startup_errors_report_and_forward`,
+  and `native_json_module_worker_graphs_support_dedicated_and_shared_workers`
+  (1 passed each).
+- `python3 scripts/check-release-documentation.py --require-previous-version`
+  (1,417 Markdown documents; 0 current-claim failures)
+- `python3 scripts/check-documentation-depth.py`
+  (93 current guides routed/audited; 19 substantive contracts)
+- `python3 scripts/check-tui-shortcuts.py`
+  (15 implementation help keys; 63 documentation markers)
+- `python3 scripts/check-documentation-coverage.py`
+  (1,417 Markdown files; 346 MCP tools, 17 examples, 22 public modules)
+- `git diff --check`
+
+The scoped Cargo check and test emit the existing native-DOM dead-code
+warnings. Remote CI, full worker/WPT conformance, cross-platform
+certification, and issue #40 native-only production gates remain open.

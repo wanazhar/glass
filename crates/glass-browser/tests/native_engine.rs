@@ -4836,6 +4836,204 @@ async fn native_local_dedicated_module_worker_startup_errors_report_and_forward(
 }
 
 #[tokio::test]
+async fn native_local_dedicated_worker_message_callback_errors_report_and_forward_in_order() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-message-callback-errors-page",
+            r#"<script>
+                globalThis.ownerEvents = [];
+                const watch = (name, worker) => {
+                  worker.onmessage = event => ownerEvents.push([name, "message", event.data]);
+                  worker.onerror = event => ownerEvents.push([
+                    name, "owner-error-handler", event.message,
+                    event.filename === worker.url, event.error === null,
+                    event.cancelable, event.defaultPrevented,
+                    event.target === worker, event.currentTarget === worker,
+                    event.eventPhase,
+                  ]);
+                  worker.addEventListener("error", event => ownerEvents.push([
+                    name, "owner-error-listener", event.message,
+                    event.defaultPrevented, event.target === worker,
+                    event.currentTarget === worker, event.eventPhase,
+                  ]));
+                };
+                globalThis.classicWorker = new Worker("fixture://worker-message-callback-errors-classic");
+                watch("classic", classicWorker);
+                globalThis.moduleWorker = new Worker(
+                  "fixture://worker-message-callback-errors-module", { type: "module" });
+                watch("module", moduleWorker);
+            </script><main>worker message callback errors</main>"#,
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-message-callback-errors-classic",
+            r#"globalThis.workerTrace = [];
+                globalThis.onerror = function(message, filename, line, column, error) {
+                  workerTrace.push(["global-handler", message, arguments.length,
+                    filename === location.href, line, column, error instanceof Error]);
+                  return true;
+                };
+                globalThis.addEventListener("error", event => workerTrace.push([
+                  "global-listener", event.message, event instanceof ErrorEvent,
+                  event.defaultPrevented, event.target === self,
+                  event.currentTarget === self, event.eventPhase,
+                ]));
+                globalThis.onmessage = event => {
+                  if (event.data === "trigger") {
+                    workerTrace.push(["message-handler", "trigger"]);
+                    postMessage({ kind: "before" });
+                    throw new Error("classic-handler-boom");
+                  }
+                  workerTrace.push(["message-handler", event.data]);
+                  postMessage({ kind: "alive", value: event.data });
+                };
+                globalThis.addEventListener("message", event => {
+                  if (event.data === "trigger") {
+                    workerTrace.push(["message-listener-one", "trigger"]);
+                    throw new Error("classic-listener-boom");
+                  }
+                  workerTrace.push(["message-listener-one", event.data]);
+                });
+                globalThis.addEventListener("message", event => {
+                  if (event.data === "trigger") {
+                    workerTrace.push(["message-listener-two", event.defaultPrevented]);
+                    postMessage({ kind: "trace", trace: workerTrace.slice() });
+                  } else {
+                    workerTrace.push(["message-listener-two", event.data]);
+                  }
+                });"#,
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-message-callback-errors-module",
+            r#"globalThis.workerTrace = [];
+                globalThis.onerror = function(message, filename, line, column, error) {
+                  workerTrace.push(["global-handler", message, arguments.length,
+                    filename === location.href, line, column, error instanceof Error]);
+                  return false;
+                };
+                globalThis.addEventListener("error", event => workerTrace.push([
+                  "global-listener", event.message, event instanceof ErrorEvent,
+                  event.defaultPrevented, event.target === self,
+                  event.currentTarget === self, event.eventPhase,
+                ]));
+                globalThis.onmessage = event => {
+                  if (event.data === "trigger") {
+                    workerTrace.push(["message-handler", "trigger"]);
+                    postMessage({ kind: "before" });
+                    throw new Error("module-handler-boom");
+                  }
+                  workerTrace.push(["message-handler", event.data]);
+                  postMessage({ kind: "alive", value: event.data });
+                };
+                globalThis.addEventListener("message", event => {
+                  if (event.data === "trigger") {
+                    workerTrace.push(["message-listener-one", "trigger"]);
+                    throw new Error("module-listener-boom");
+                  }
+                  workerTrace.push(["message-listener-one", event.data]);
+                });
+                globalThis.addEventListener("message", event => {
+                  if (event.data === "trigger") {
+                    workerTrace.push(["message-listener-two", event.defaultPrevented]);
+                    postMessage({ kind: "trace", trace: workerTrace.slice() });
+                  } else {
+                    workerTrace.push(["message-listener-two", event.data]);
+                  }
+                });"#,
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-message-callback-errors-page");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    engine
+        .evaluate_async("classicWorker.postMessage('trigger'); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("ownerEvents").await.unwrap(),
+        serde_json::json!([
+            ["classic", "message", {"kind": "before"}],
+            ["classic", "message", {
+                "kind": "trace",
+                "trace": [
+                    ["message-handler", "trigger"],
+                    ["global-handler", "classic-handler-boom", 5, true, 0, 0, true],
+                    ["global-listener", "classic-handler-boom", true, true, true, true, 2],
+                    ["message-listener-one", "trigger"],
+                    ["global-handler", "classic-listener-boom", 5, true, 0, 0, true],
+                    ["global-listener", "classic-listener-boom", true, true, true, true, 2],
+                    ["message-listener-two", false],
+                ],
+            }],
+        ])
+    );
+
+    engine
+        .evaluate_async("moduleWorker.postMessage('trigger'); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("ownerEvents").await.unwrap(),
+        serde_json::json!([
+            ["classic", "message", {"kind": "before"}],
+            ["classic", "message", {
+                "kind": "trace",
+                "trace": [
+                    ["message-handler", "trigger"],
+                    ["global-handler", "classic-handler-boom", 5, true, 0, 0, true],
+                    ["global-listener", "classic-handler-boom", true, true, true, true, 2],
+                    ["message-listener-one", "trigger"],
+                    ["global-handler", "classic-listener-boom", 5, true, 0, 0, true],
+                    ["global-listener", "classic-listener-boom", true, true, true, true, 2],
+                    ["message-listener-two", false],
+                ],
+            }],
+            ["module", "message", {"kind": "before"}],
+            ["module", "owner-error-handler", "module-handler-boom",
+                true, true, true, false, true, true, 2],
+            ["module", "owner-error-listener", "module-handler-boom",
+                false, true, true, 2],
+            ["module", "owner-error-handler", "module-listener-boom",
+                true, true, true, false, true, true, 2],
+            ["module", "owner-error-listener", "module-listener-boom",
+                false, true, true, 2],
+            ["module", "message", {
+                "kind": "trace",
+                "trace": [
+                    ["message-handler", "trigger"],
+                    ["global-handler", "module-handler-boom", 5, true, 0, 0, true],
+                    ["global-listener", "module-handler-boom", true, false, true, true, 2],
+                    ["message-listener-one", "trigger"],
+                    ["global-handler", "module-listener-boom", 5, true, 0, 0, true],
+                    ["global-listener", "module-listener-boom", true, false, true, true, 2],
+                    ["message-listener-two", false],
+                ],
+            }],
+        ])
+    );
+
+    engine
+        .evaluate_async(
+            "classicWorker.postMessage('after'); moduleWorker.postMessage('after'); true",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("ownerEvents.slice(-2)")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            ["classic", "message", {"kind": "alive", "value": "after"}],
+            ["module", "message", {"kind": "alive", "value": "after"}],
+        ])
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_worker_url_objects_are_mutable_and_search_params_are_live() {
     let config = NativeEngineConfig::default()
         .with_fixture(

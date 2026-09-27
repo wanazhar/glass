@@ -109,6 +109,7 @@ pub(crate) const MAX_NATIVE_INLINE_SCRIPTS: usize = 32;
 pub(crate) const MAX_NATIVE_MODULE_IMPORTS: usize = 128;
 pub(crate) const MAX_NATIVE_WORKERS: usize = 32;
 pub(crate) const MAX_NATIVE_WORKER_MESSAGES: usize = 64;
+const MAX_NATIVE_WORKER_SCRIPT_ERROR_BYTES: usize = 16 * 1024;
 const MAX_NATIVE_WORKER_FETCH_STREAMS: usize = MAX_NATIVE_WORKER_MESSAGES;
 const MAX_NATIVE_WORKER_FETCH_UPLOADS: usize = MAX_NATIVE_WORKER_MESSAGES;
 pub(crate) const MAX_NATIVE_WORKER_TIMERS: usize = 64;
@@ -703,6 +704,12 @@ pub(crate) enum NativeScriptCommand {
     },
     WorkerClose {
         worker_id: u32,
+    },
+    /// Forward one uncanceled dedicated-worker callback exception to its
+    /// owning Worker, ordered with messages emitted by the same event turn.
+    WorkerScriptError {
+        worker_id: u32,
+        message: String,
     },
     MessagePortPostMessage {
         bridge_key: String,
@@ -1549,6 +1556,7 @@ impl NativeDedicatedWorker {
                 self.runtime.now_ms(),
                 import_script_counts,
                 self.is_module,
+                true,
             )?
         };
         let module_name = if self.is_module {
@@ -2379,6 +2387,28 @@ impl NativeWorkerRegistry {
                     NativeScriptCommand::WorkerClose {
                         worker_id: command_worker_id,
                     } if command_worker_id == current_worker_id => closed = true,
+                    NativeScriptCommand::WorkerScriptError {
+                        worker_id: command_worker_id,
+                        message,
+                    } if command_worker_id == current_worker_id => {
+                        if self
+                            .workers
+                            .get(&current_worker_id)
+                            .is_none_or(|worker| worker.is_shared)
+                        {
+                            return Err(NativeEngineError::invalid(
+                                "native Worker script error",
+                                "callback error forwarding is only supported for dedicated Workers",
+                            ));
+                        }
+                        self.queue_message(NativeWorkerMessage {
+                            worker_id: current_worker_id,
+                            data: serde_json::Value::Null,
+                            error: Some(message),
+                            transfer_ports: Vec::new(),
+                            object_urls: Vec::new(),
+                        })?;
+                    }
                     NativeScriptCommand::MessagePortPostMessage {
                         bridge_key,
                         data,
@@ -13927,6 +13957,7 @@ impl NativeJavaScriptRuntime {
                 | NativeScriptCommand::WorkerPostMessage { .. }
                 | NativeScriptCommand::WorkerTerminate { .. }
                 | NativeScriptCommand::WorkerClose { .. }
+                | NativeScriptCommand::WorkerScriptError { .. }
         ) {
             return Ok(false);
         }
@@ -14020,6 +14051,12 @@ impl NativeJavaScriptRuntime {
                         "must be positive",
                     ));
                 }
+            }
+            NativeScriptCommand::WorkerScriptError { .. } => {
+                return Err(NativeEngineError::invalid(
+                    "native Worker script error",
+                    "errors can only be emitted by a dedicated-worker callback turn",
+                ));
             }
             _ => unreachable!(),
         }
@@ -14971,6 +15008,7 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             import_script_counts,
             false,
+            true,
         )?;
         self.evaluate_worker_source_with_bootstrap_and_event_impl(
             worker_id, worker_url, None, source, bootstrap, false, false, None, true, false,
@@ -15008,8 +15046,14 @@ impl NativeJavaScriptRuntime {
                 reason: "Worker module referrer could not be encoded".into(),
             })?;
         let source = rewrite_runtime_dynamic_module_imports(source, &referrer)?;
-        let bootstrap =
-            worker_bootstrap(worker_id, worker_url, self.now_ms(), &BTreeMap::new(), true)?;
+        let bootstrap = worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            &BTreeMap::new(),
+            true,
+            true,
+        )?;
         self.evaluate_worker_source_with_bootstrap_and_event_impl(
             worker_id,
             worker_url,
@@ -15180,6 +15224,7 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             import_script_counts,
             module_name.is_some(),
+            true,
         )?;
         self.evaluate_worker_source_with_bootstrap(
             worker_id,
@@ -15527,6 +15572,22 @@ impl NativeJavaScriptRuntime {
                 let valid = match &command {
                     NativeScriptCommand::WorkerPostMessage { .. }
                     | NativeScriptCommand::WorkerClose { .. } => !service_worker,
+                    NativeScriptCommand::WorkerScriptError {
+                        worker_id: command_worker_id,
+                        message,
+                    } => {
+                        if *command_worker_id == worker_id
+                            && !service_worker
+                            && message.len() > MAX_NATIVE_WORKER_SCRIPT_ERROR_BYTES
+                        {
+                            return Err(NativeEngineError::limit(
+                                "native Worker script error message",
+                                MAX_NATIVE_WORKER_SCRIPT_ERROR_BYTES,
+                                message.len(),
+                            ));
+                        }
+                        *command_worker_id == worker_id && !service_worker
+                    }
                     NativeScriptCommand::Fetch {
                         worker_id: Some(command_worker_id),
                         ..
@@ -22939,6 +23000,7 @@ fn worker_bootstrap(
     now_ms: u64,
     import_script_counts: &BTreeMap<String, usize>,
     is_module: bool,
+    capture_message_callback_errors: bool,
 ) -> Result<String, NativeEngineError> {
     let worker_url = serde_json::to_string(worker_url).map_err(|_| NativeEngineError::Worker {
         operation: "serialize native Worker URL".into(),
@@ -22961,6 +23023,11 @@ fn worker_bootstrap(
         })?;
     let message_channel_script = message_channel_bootstrap();
     let is_module = if is_module { "true" } else { "false" };
+    let capture_message_callback_errors = if capture_message_callback_errors {
+        "true"
+    } else {
+        "false"
+    };
     let mut bootstrap = format!(
         r###"(() => {{
   const workerId = {worker_id};
@@ -22969,6 +23036,7 @@ fn worker_bootstrap(
   const initialImportScriptCounts = {import_script_counts};
   const initialWorkerCryptoBytes = {initial_random_bytes};
   const isModuleWorker = {is_module};
+  const captureMessageCallbackErrors = {capture_message_callback_errors};
   globalThis.__glassWorkerId = workerId;
   globalThis.__glassMessageRealmKey = "worker:" + String(workerId);
   const commands = [];
@@ -23050,13 +23118,19 @@ fn worker_bootstrap(
           : null;
     if (typeof handler === "function") {{
       let result;
-      try {{ result = handler.call(globalThis, event); }} catch (_error) {{}}
+      try {{ result = handler.call(globalThis, event); }} catch (error) {{
+        if (type === "message" && captureMessageCallbackErrors)
+          reportWorkerMessageCallbackException(error);
+      }}
       if ((type === "message" || type === "connect") && result === false)
         event.defaultPrevented = true;
     }}
     const callbacks = listeners.get(type) || [];
     for (const callback of callbacks.slice()) {{
-      try {{ callback.call(globalThis, event); }} catch (_error) {{}}
+      try {{ callback.call(globalThis, event); }} catch (error) {{
+        if (type === "message" && captureMessageCallbackErrors)
+          reportWorkerMessageCallbackException(error);
+      }}
     }}
   }};
   const addEventListener = (type, callback) => {{
@@ -28225,6 +28299,16 @@ fn worker_bootstrap(
     }}
     return JSON.stringify({{ handled: event.defaultPrevented, message: event.message }});
   }};
+  const reportWorkerMessageCallbackException = (error) => {{
+    const report = JSON.parse(globalThis.__glassReportWorkerScriptError(error));
+    if (!report || typeof report.handled !== "boolean" || typeof report.message !== "string")
+      throw new TypeError("native Worker error reporter returned invalid data");
+    if (!report.handled) pushCommand({{
+      kind: "workerScriptError",
+      worker_id: workerId,
+      message: report.message,
+    }});
+  }};
   globalThis.__glassDispatchWorkerCspViolations = (violations) => {{
     if (!Array.isArray(violations)) throw new TypeError("native Worker CSP violations are invalid");
     return violations.map((descriptor) => {{
@@ -28342,6 +28426,7 @@ fn worker_bootstrap(
         initial_random_bytes = initial_random_bytes,
         now_ms = now_ms,
         import_script_counts = import_script_counts,
+        capture_message_callback_errors = capture_message_callback_errors,
         message_channel_script = message_channel_script,
     );
     bootstrap.push_str(NATIVE_DYNAMIC_IMPORT_OPTIONS_BOOTSTRAP);
@@ -28361,6 +28446,7 @@ fn service_worker_bootstrap(
         now_ms,
         import_script_counts,
         is_module,
+        false,
     )?;
     let marker = "})()";
     let insertion = bootstrap
@@ -28386,6 +28472,7 @@ fn shared_worker_bootstrap(
         now_ms,
         import_script_counts,
         is_module,
+        false,
     )?;
     let marker = "})()";
     let insertion = bootstrap

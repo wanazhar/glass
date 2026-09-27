@@ -32065,12 +32065,18 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
     };
     const callbacks = listeners.get("fetch") || [];
     try {
-      if (typeof globalThis.onfetch === "function") globalThis.onfetch.call(globalThis, event);
-      for (const callback of callbacks.slice()) {
+      const handler = globalThis.onfetch;
+      if (typeof handler === "function") {
+        try { handler.call(globalThis, event); }
+        catch (error) { reportWorkerCallbackException(error, false); }
+      }
+    } catch (error) { reportWorkerCallbackException(error, false); }
+    for (const callback of callbacks.slice()) {
+      try {
         if (typeof callback === "function") callback.call(globalThis, event);
         else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
-      }
-    } catch (error) { return Promise.reject(error); }
+      } catch (error) { reportWorkerCallbackException(error, false); }
+    }
     const lifetime = value => Promise.all(waitUntilPromises).then(() => value);
     if (!responded) return lifetime({ handled: false });
     return responsePromise.then(response => serviceWorkerFetchResponse(response))

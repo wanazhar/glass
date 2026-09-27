@@ -10183,6 +10183,8 @@ fn mutate_key_event_with_event_bridge(
     }
     let keyboard_link_target = current.has_native_keyboard_link_activation(node_id);
     let keyboard_checkable_kind = current.keyboard_checkable_kind(node_id);
+    let radio_arrow_target =
+        current.can_apply_radio_group_arrow_navigation(node_id, key, modifiers);
     let mut next = current.clone();
     let mut history = Vec::new();
     let mut scroll_commands = Vec::new();
@@ -10239,6 +10241,45 @@ fn mutate_key_event_with_event_bridge(
     if let Some(loader) = loader.as_deref_mut() {
         apply_pending_meta_content_security_policies(&mut next, loader, document_url)?;
         refresh_inline_style_policy(&mut next, loader, document_url)?;
+    }
+    if kind == NativeEventKind::KeyDown
+        && event_allowed
+        && radio_arrow_target
+        && next.focused_node() == node_id
+        && next.can_apply_radio_group_arrow_navigation(node_id, key, modifiers)
+    {
+        let default_events = next.apply_key_default(node_id, key, modifiers)?;
+        events.extend(default_events.clone());
+        for (event_node, event_kind) in default_events {
+            let Some(event_batch) = host_event_batch(&[(event_node.index(), event_kind)])? else {
+                continue;
+            };
+            let evaluation = runtime.evaluate_with_host_events(
+                &event_batch,
+                &next,
+                document_url,
+                document_origin,
+                viewport,
+            )?;
+            apply_content_event_history(
+                &evaluation.commands,
+                document_url,
+                document_origin,
+                runtime,
+                &mut history,
+            )?;
+            scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
+            let (effects, _) = apply_document_commands_with_font_face_ack(
+                &mut next,
+                runtime,
+                document_url,
+                document_origin,
+                viewport,
+                &evaluation.commands,
+                false,
+            )?;
+            events.extend(effects);
+        }
     }
     let keyboard_button_target_remains = next.has_native_keyboard_button_activation(node_id);
     let keyboard_link_target_remains =
@@ -10374,7 +10415,7 @@ fn mutate_key_shortcut_with_event_bridge(
     if apply_default && !should_apply_native_key_default(key, modifiers) {
         return Err(NativeEngineError::invalid(
             "content-process shortcut default",
-            "default behavior is only valid for Ctrl/Meta+A, bounded text editing, or Tab focus traversal",
+            "default behavior is only valid for Ctrl/Meta+A, bounded text editing, radio-group arrow navigation, or Tab focus traversal",
         ));
     }
     let node_id = NativeNodeId::from_parts(current.generation(), node_index);
@@ -10383,6 +10424,11 @@ fn mutate_key_shortcut_with_event_bridge(
             reason: "shortcut target is not the focused page target".into(),
         });
     }
+    let radio_arrow_target =
+        current.can_apply_radio_group_arrow_navigation(node_id, key, modifiers);
+    let text_default_target = current
+        .focused_text_control()
+        .is_ok_and(|focused| focused == node_id);
     let keyboard_button_target = current.has_native_keyboard_button_activation(node_id);
     let keyboard_checkable_kind = current.keyboard_checkable_kind(node_id);
     let keyboard_link_target =
@@ -10435,8 +10481,20 @@ fn mutate_key_shortcut_with_event_bridge(
     if keydown_allowed && apply_default && next.focused_node() == node_id {
         let default_events = if key == "Tab" {
             next.apply_tab_focus(modifiers & 8 != 0)?
-        } else {
+        } else if radio_arrow_target {
+            if next.can_apply_radio_group_arrow_navigation(node_id, key, modifiers) {
+                next.apply_key_default(node_id, key, modifiers)?
+            } else {
+                Vec::new()
+            }
+        } else if text_default_target
+            && next
+                .focused_text_control()
+                .is_ok_and(|focused| focused == node_id)
+        {
             next.apply_key_default(node_id, key, modifiers)?
+        } else {
+            Vec::new()
         };
         events.extend(default_events.clone());
         for (event_node, event_kind) in default_events {
@@ -10504,12 +10562,21 @@ fn mutate_key_shortcut_with_event_bridge(
         ));
         next = clicked;
     }
-    let keyup_event_batch =
-        host_key_event_batch_with_modifiers(node_index, NativeEventKind::KeyUp, key, modifiers)?
-            .ok_or_else(|| NativeEngineError::Worker {
-                operation: "content process shortcut event bridge".into(),
-                reason: "native shortcut keyup batch was empty".into(),
-            })?;
+    let keyup_node_id = if next.is_attached(node_id) {
+        node_id
+    } else {
+        next.focused_node()
+    };
+    let keyup_event_batch = host_key_event_batch_with_modifiers(
+        keyup_node_id.index(),
+        NativeEventKind::KeyUp,
+        key,
+        modifiers,
+    )?
+    .ok_or_else(|| NativeEngineError::Worker {
+        operation: "content process shortcut event bridge".into(),
+        reason: "native shortcut keyup batch was empty".into(),
+    })?;
     let keyup = runtime.evaluate_with_host_events(
         &keyup_event_batch,
         &next,
@@ -10525,7 +10592,7 @@ fn mutate_key_shortcut_with_event_bridge(
         &mut history,
     )?;
     scroll_commands.extend(extract_scroll_commands(&keyup.commands));
-    events.push((node_id, NativeEventKind::KeyUp));
+    events.push((keyup_node_id, NativeEventKind::KeyUp));
     let (effects, _) = apply_document_commands_with_font_face_ack(
         &mut next,
         runtime,
@@ -10644,7 +10711,15 @@ fn should_apply_native_key_default(key: &str, modifiers: i64) -> bool {
         && (key.chars().count() == 1
             || matches!(
                 key,
-                "Backspace" | "Delete" | "ArrowLeft" | "ArrowRight" | "Home" | "End" | "Tab"
+                "Backspace"
+                    | "Delete"
+                    | "ArrowLeft"
+                    | "ArrowRight"
+                    | "ArrowUp"
+                    | "ArrowDown"
+                    | "Home"
+                    | "End"
+                    | "Tab"
             ))
 }
 

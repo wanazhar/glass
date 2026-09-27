@@ -131,12 +131,16 @@ check passed; the task records the focused test setup correction and exact
 rerun alongside the initial group results. Issue #40 and complete
 keyboard/form conformance remain open. See the
 [slice 768 task](../plan/tasks/native-engine-browser-768.md).
-The next bounded keyboard task adopts the approved WAI-ARIA Authoring
-Practices convention for native radio groups: Right/Down advance, Left/Up
-move backward, selection follows focus, and navigation wraps. The HTML
-Standard does not prescribe this key mapping; the profile makes it an explicit
-Glass convention. It is planned in the
-[slice 769 task](../plan/tasks/native-engine-browser-769.md).
+Slice 769 implements the approved WAI-ARIA Authoring Practices convention for
+native radio groups through the shared key-default owner: Right/Down advance,
+Left/Up move backward, selection follows focus, and navigation wraps across
+enabled members in the current HTML radio group. Changed selection emits
+bubbling `input` then `change`; canceled keydown and listener-time focus/group
+changes suppress the default. The HTML Standard does not prescribe this key
+mapping; the profile makes it an explicit Glass convention. Local,
+process-backed, and same-origin-frame coverage is recorded in the
+[slice 769 task](../plan/tasks/native-engine-browser-769.md). This remains
+bounded behavior, not full keyboard conformance.
 Slice 745 adds an
 OS-enforced content-worker memory ceiling: Linux uses inherited `RLIMIT_AS`,
 and Windows configures the Job Object process-memory limit. Linux behavior and

@@ -6067,6 +6067,21 @@ impl NativeDocument {
             .unwrap_or(self.root)
     }
 
+    pub(crate) fn can_apply_radio_group_arrow_navigation(
+        &self,
+        id: NativeNodeId,
+        key: &str,
+        modifiers: i64,
+    ) -> bool {
+        modifiers == 0
+            && matches!(key, "ArrowRight" | "ArrowDown" | "ArrowLeft" | "ArrowUp")
+            && self.focused_node() == id
+            && self.is_attached(id)
+            && !self.is_disabled(id)
+            && self.connected_checkable_kind(id) == Some(NativeCheckableKind::Radio)
+            && !self.radio_group_members(id).is_empty()
+    }
+
     /// Move focus through the bounded sequentially focusable controls in
     /// document order. Positive `tabindex` values are ordered before the
     /// natural zero-order controls; negative values are skipped.
@@ -6228,6 +6243,21 @@ impl NativeDocument {
                 reason: "hidden targets cannot receive key input".into(),
             });
         }
+        if semantic.role == "radio" && semantic.tag_name == "input" {
+            if semantic.disabled {
+                return Err(NativeEngineError::DisabledTarget);
+            }
+            if self.focused_node() != id {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "key default target is not focused".into(),
+                });
+            }
+            if matches!(key, "ArrowRight" | "ArrowDown" | "ArrowLeft" | "ArrowUp") && modifiers == 0
+            {
+                return self.apply_radio_group_arrow_default(id, key);
+            }
+            return Ok(Vec::new());
+        }
         if semantic.role != "textbox" || !matches!(semantic.tag_name.as_str(), "input" | "textarea")
         {
             return Ok(Vec::new());
@@ -6349,6 +6379,48 @@ impl NativeDocument {
             .value = Some(next_value);
         self.set_selection_state(id, next_caret, next_caret, "none")?;
         Ok(vec![(id, NativeEventKind::Input)])
+    }
+
+    fn apply_radio_group_arrow_default(
+        &mut self,
+        id: NativeNodeId,
+        key: &str,
+    ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
+        if !self.can_apply_radio_group_arrow_navigation(id, key, 0) {
+            return Ok(Vec::new());
+        }
+        let group = self.radio_group_members(id);
+        let Some(current_index) = group.iter().position(|member| *member == id) else {
+            return Ok(Vec::new());
+        };
+        let forward = matches!(key, "ArrowRight" | "ArrowDown");
+        let Some(destination) = (1..=group.len()).find_map(|step| {
+            let index = if forward {
+                (current_index + step) % group.len()
+            } else {
+                (current_index + group.len() - (step % group.len())) % group.len()
+            };
+            let candidate = group[index];
+            (!self.is_disabled(candidate)).then_some(candidate)
+        }) else {
+            return Ok(Vec::new());
+        };
+        let selection_changed = !self
+            .node(destination)
+            .is_some_and(|node| node.state.checked);
+        for radio_id in group {
+            self.node_mut(radio_id)
+                .ok_or(NativeEngineError::DetachedTarget)?
+                .state
+                .checked = radio_id == destination;
+        }
+        self.mark_user_interacted(destination)?;
+        let mut events = self.focus_element(destination);
+        if selection_changed {
+            events.push((destination, NativeEventKind::Input));
+            events.push((destination, NativeEventKind::Change));
+        }
+        Ok(events)
     }
 
     /// Apply the bounded default edit for one key to a focused text control.
@@ -8183,7 +8255,7 @@ impl NativeDocument {
             .flatten()
     }
 
-    fn is_attached(&self, id: NativeNodeId) -> bool {
+    pub(crate) fn is_attached(&self, id: NativeNodeId) -> bool {
         if id.generation != self.generation {
             return false;
         }
@@ -9377,7 +9449,8 @@ impl NativeDocument {
         let Some(node) = self.node(id) else {
             return Vec::new();
         };
-        if node.element_name() != Some("input")
+        if !self.is_attached(id)
+            || node.element_name() != Some("input")
             || !node
                 .attribute("type")
                 .is_some_and(|kind| kind.eq_ignore_ascii_case("radio"))
@@ -9388,19 +9461,33 @@ impl NativeDocument {
             return Vec::new();
         };
         let form_owner = self.form_owner(id);
-        self.nodes
-            .iter()
-            .filter(|candidate| {
-                self.is_attached(candidate.id())
-                    && candidate.element_name() == Some("input")
-                    && candidate
-                        .attribute("type")
-                        .is_some_and(|kind| kind.eq_ignore_ascii_case("radio"))
-                    && candidate.attribute("name") == Some(name)
-                    && self.form_owner(candidate.id()) == form_owner
-            })
-            .map(NativeNode::id)
-            .collect()
+        let mut members = Vec::new();
+        self.collect_radio_group_members(self.root, name, form_owner, &mut members);
+        members
+    }
+
+    fn collect_radio_group_members(
+        &self,
+        current: NativeNodeId,
+        name: &str,
+        form_owner: Option<NativeNodeId>,
+        members: &mut Vec<NativeNodeId>,
+    ) {
+        let Some(node) = self.node(current) else {
+            return;
+        };
+        if node.element_name() == Some("input")
+            && node
+                .attribute("type")
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("radio"))
+            && node.attribute("name") == Some(name)
+            && self.form_owner(current) == form_owner
+        {
+            members.push(current);
+        }
+        for child in node.children() {
+            self.collect_radio_group_members(*child, name, form_owner, members);
+        }
     }
 
     pub(crate) fn has_native_keyboard_link_activation(&self, id: NativeNodeId) -> bool {

@@ -18541,6 +18541,253 @@ async fn native_local_keyboard_button_activation_raw_space_is_focus_bound() {
 }
 
 #[tokio::test]
+async fn native_local_radio_group_arrow_navigation_revalidates_keydown_defaults() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://local-radio-arrow-navigation",
+            "<form id='first'><input id='radio-a' type='radio' name='group' checked><input id='radio-b' type='radio' name='group' disabled><input id='radio-c' type='radio' name='group'></form><form id='second'><input id='radio-other-form' type='radio' name='group' checked></form><input id='radio-no-form' type='radio' name='group' checked><input id='radio-unnamed' type='radio' checked><input id='radio-solo' type='radio' name='solo' checked><input id='radio-guard' type='radio' name='guard'>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://local-radio-arrow-navigation");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "globalThis.__radioArrowTrace = []; globalThis.__radioArrowMode = ''; document.addEventListener('keydown', event => { __radioArrowTrace.push('keydown:' + event.target.id + ':' + event.key); if (__radioArrowMode === 'cancel') event.preventDefault(); if (event.target.id === 'radio-a') { if (__radioArrowMode === 'group') event.target.removeAttribute('name'); if (__radioArrowMode === 'focus') document.getElementById('radio-guard').focus(); if (__radioArrowMode === 'disabled') event.target.disabled = true; if (__radioArrowMode === 'type') event.target.type = 'checkbox'; if (__radioArrowMode === 'detach') event.target.remove(); } }); document.addEventListener('keyup', event => __radioArrowTrace.push('keyup:' + event.target.id + ':' + event.key)); for (const type of ['input', 'change', 'click', 'pointerdown', 'pointerup', 'mousedown', 'mouseup']) document.addEventListener(type, event => __radioArrowTrace.push(type + ':' + event.target.id + ':' + event.bubbles)); true",
+        )
+        .await
+        .unwrap();
+
+    engine
+        .evaluate_async("document.getElementById('radio-a').focus(); true")
+        .await
+        .unwrap();
+    let before = engine.revision();
+    let result = engine
+        .action(NativeAction::Shortcut {
+            shortcut: "ArrowRight".into(),
+        })
+        .unwrap();
+    assert_eq!(result.revision, before + 1);
+    assert_eq!(
+        engine
+            .evaluate_async("({active: document.activeElement.id, a: document.getElementById('radio-a').checked, b: document.getElementById('radio-b').checked, c: document.getElementById('radio-c').checked, otherForm: document.getElementById('radio-other-form').checked, noForm: document.getElementById('radio-no-form').checked, trace: __radioArrowTrace})")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "active": "radio-c",
+            "a": false,
+            "b": false,
+            "c": true,
+            "otherForm": true,
+            "noForm": true,
+            "trace": [
+                "keydown:radio-a:ArrowRight",
+                "input:radio-c:true",
+                "change:radio-c:true",
+                "keyup:radio-a:ArrowRight",
+            ],
+        })
+    );
+
+    engine
+        .evaluate_async("__radioArrowTrace = []; true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "ArrowDown".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({active: document.activeElement.id, a: document.getElementById('radio-a').checked, c: document.getElementById('radio-c').checked, trace: __radioArrowTrace})")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "active": "radio-a",
+            "a": true,
+            "c": false,
+            "trace": [
+                "keydown:radio-c:ArrowDown",
+                "input:radio-a:true",
+                "change:radio-a:true",
+                "keyup:radio-c:ArrowDown",
+            ],
+        })
+    );
+    engine
+        .evaluate_async("__radioArrowTrace = []; true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "ArrowLeft".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({active: document.activeElement.id, a: document.getElementById('radio-a').checked, c: document.getElementById('radio-c').checked, trace: __radioArrowTrace})")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "active": "radio-c",
+            "a": false,
+            "c": true,
+            "trace": [
+                "keydown:radio-a:ArrowLeft",
+                "input:radio-c:true",
+                "change:radio-c:true",
+                "keyup:radio-a:ArrowLeft",
+            ],
+        })
+    );
+    engine
+        .evaluate_async("__radioArrowTrace = []; true")
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "ArrowUp".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({active: document.activeElement.id, a: document.getElementById('radio-a').checked, c: document.getElementById('radio-c').checked, trace: __radioArrowTrace})")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "active": "radio-a",
+            "a": true,
+            "c": false,
+            "trace": [
+                "keydown:radio-c:ArrowUp",
+                "input:radio-a:true",
+                "change:radio-a:true",
+                "keyup:radio-c:ArrowUp",
+            ],
+        })
+    );
+
+    engine
+        .evaluate_async("__radioArrowTrace = []; document.getElementById('radio-a').focus(); true")
+        .await
+        .unwrap();
+    let before_keydown = engine.revision();
+    let keydown = engine
+        .action(NativeAction::KeyDown {
+            key: "ArrowRight".into(),
+        })
+        .unwrap();
+    assert_eq!(keydown.revision, before_keydown + 1);
+    assert_eq!(
+        engine
+            .evaluate_async("({active: document.activeElement.id, a: document.getElementById('radio-a').checked, c: document.getElementById('radio-c').checked, trace: __radioArrowTrace})")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "active": "radio-c",
+            "a": false,
+            "c": true,
+            "trace": [
+                "keydown:radio-a:ArrowRight",
+                "input:radio-c:true",
+                "change:radio-c:true",
+            ],
+        })
+    );
+    let keyup = engine
+        .action(NativeAction::KeyUp {
+            key: "ArrowRight".into(),
+        })
+        .unwrap();
+    assert_eq!(keyup.revision, before_keydown + 2);
+
+    for mode in ["cancel", "group", "focus", "disabled", "type", "detach"] {
+        engine
+            .evaluate_async(&format!(
+                "(() => {{ __radioArrowTrace = []; __radioArrowMode = '{mode}'; const a = document.getElementById('radio-a'); if (a) {{ a.disabled = false; a.type = 'radio'; a.setAttribute('name', 'group'); a.checked = true; a.focus(); }} return true; }})()"
+            ))
+            .await
+            .unwrap();
+        engine
+            .action(NativeAction::Shortcut {
+                shortcut: "ArrowRight".into(),
+            })
+            .unwrap();
+        let state = engine
+            .evaluate_async("({active: document.activeElement.id, a: globalThis.__radioA ? __radioA.checked : document.getElementById('radio-a')?.checked, c: document.getElementById('radio-c').checked, trace: __radioArrowTrace})")
+            .await
+            .unwrap();
+        assert_eq!(state["c"], false, "radio moved during {mode} invalidation");
+        assert!(
+            !state["trace"].as_array().unwrap().iter().any(|event| {
+                event.as_str().is_some_and(|event| {
+                    event.starts_with("input:") || event.starts_with("change:")
+                })
+            }),
+            "selection events fired during {mode} invalidation: {state}"
+        );
+        if mode == "focus" {
+            assert_eq!(state["active"], "radio-guard");
+        }
+        if mode != "detach" {
+            assert_eq!(
+                state["a"], true,
+                "source radio changed during {mode} invalidation"
+            );
+        }
+    }
+
+    engine
+        .evaluate_async("__radioArrowTrace = []; __radioArrowMode = ''; document.getElementById('radio-solo').focus(); true")
+        .await
+        .unwrap();
+    let before_unchanged_shortcut = engine.revision();
+    let unchanged = engine
+        .action(NativeAction::Shortcut {
+            shortcut: "ArrowDown".into(),
+        })
+        .unwrap();
+    assert_eq!(unchanged.revision, before_unchanged_shortcut + 1);
+    assert_eq!(
+        engine
+            .evaluate_async("({active: document.activeElement.id, checked: document.getElementById('radio-solo').checked, trace: __radioArrowTrace})")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "active": "radio-solo",
+            "checked": true,
+            "trace": ["keydown:radio-solo:ArrowDown", "keyup:radio-solo:ArrowDown"],
+        })
+    );
+
+    engine
+        .evaluate_async(
+            "__radioArrowTrace = []; document.getElementById('radio-unnamed').focus(); true",
+        )
+        .await
+        .unwrap();
+    engine
+        .action(NativeAction::Shortcut {
+            shortcut: "ArrowRight".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("({active: document.activeElement.id, checked: document.getElementById('radio-unnamed').checked, trace: __radioArrowTrace})")
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "active": "radio-unnamed",
+            "checked": true,
+            "trace": ["keydown:radio-unnamed:ArrowRight", "keyup:radio-unnamed:ArrowRight"],
+        })
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_local_keyboard_checkable_activation_orders_events_and_restores_canceled_state() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -65505,6 +65752,112 @@ fn native_reset_button_state_script() -> &'static str {
       ...globalThis.__glassResetButtonTrace,
       sameHref: location.href === globalThis.__glassResetButtonInitialHref,
     }))()"##
+}
+
+#[tokio::test]
+async fn native_content_process_radio_group_arrow_navigation_covers_same_origin_frames() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let parent_body = "<!doctype html><body><form><input id='parent-a' type='radio' name='parent' checked><input id='parent-b' type='radio' name='parent'></form><iframe id='child' src='/child'></iframe></body>";
+    let child_body = "<!doctype html><body><form><input id='child-a' type='radio' name='child' checked><input id='child-b' type='radio' name='child'></form></body>";
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("radio navigation document request")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let body = match request.split_whitespace().nth(1) {
+                Some("/page") => parent_body,
+                Some("/child") => child_body,
+                other => panic!("unexpected radio navigation path: {other:?}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .await
+    .unwrap();
+    let setup_trace = "globalThis.__radioArrowTrace = []; document.addEventListener('keydown', event => __radioArrowTrace.push('keydown:' + event.target.id + ':' + event.key)); document.addEventListener('keyup', event => __radioArrowTrace.push('keyup:' + event.target.id + ':' + event.key)); for (const type of ['input', 'change', 'click', 'pointerdown', 'pointerup', 'mousedown', 'mouseup']) document.addEventListener(type, event => __radioArrowTrace.push(type + ':' + event.target.id + ':' + event.bubbles)); true";
+    session.script(setup_trace).await.unwrap();
+    session
+        .script("document.getElementById('parent-a').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "ArrowRight".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({active: document.activeElement.id, a: document.getElementById('parent-a').checked, b: document.getElementById('parent-b').checked, trace: __radioArrowTrace})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "active": "parent-b",
+            "a": false,
+            "b": true,
+            "trace": [
+                "keydown:parent-a:ArrowRight",
+                "input:parent-b:true",
+                "change:parent-b:true",
+                "keyup:parent-a:ArrowRight",
+            ],
+        })
+    );
+
+    let child_id = session
+        .native_list_frames()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("same-origin radio group child frame")
+        .id;
+    session.select_frame(&child_id).await.unwrap();
+    session.script(setup_trace).await.unwrap();
+    session
+        .script("document.getElementById('child-a').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "ArrowDown".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("({active: document.activeElement.id, a: document.getElementById('child-a').checked, b: document.getElementById('child-b').checked, trace: __radioArrowTrace})")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!({
+            "active": "child-b",
+            "a": false,
+            "b": true,
+            "trace": [
+                "keydown:child-a:ArrowDown",
+                "input:child-b:true",
+                "change:child-b:true",
+                "keyup:child-a:ArrowDown",
+            ],
+        })
+    );
+
+    session.close().await.unwrap();
+    server.await.unwrap();
 }
 
 #[tokio::test]

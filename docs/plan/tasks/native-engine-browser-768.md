@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-768
 scope: glass-browser/keyboard-checkable-activation
-status: in-progress
+status: done
 depends-on: [native-engine-browser-767]
 ---
 

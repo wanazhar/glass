@@ -195,6 +195,15 @@ cached handlers work with newly created events. Conversion exception reporting
 remains open; see the
 [slice 784 task](tasks/native-engine-browser-784.md).
 
+Slice 785 updates dedicated worker host-message dispatch to use the worker
+realm's `MessageEvent` and to apply exact-false cancellation from the
+`WorkerGlobalScope.onmessage` event-handler slot before continuing to later
+listeners. This rule sets the canceled state even though worker message events
+are non-cancelable; ordinary `addEventListener` callback returns remain
+ignored. Worker scheduling, specialized XHR/WebSocket/EventSource dispatchers,
+worker error handlers, and full worker event/WPT conformance remain separate.
+See the [slice 785 task](tasks/native-engine-browser-785.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

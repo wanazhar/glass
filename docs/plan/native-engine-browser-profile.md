@@ -135,17 +135,23 @@ focus-algorithm conformance; see the [slice 777 task](tasks/native-engine-browse
 
 Ordinary HTML elements expose the current `GlobalEventHandlers` IDL property
 set from the shared HTML element prototype, including `onfocus` and `onblur`.
-State is allocated only when a handler is assigned and keyed by the native
-event owner, so refreshed same-origin frame projections read, replace, and
-clear the same handler. Function replacement retains its listener position
-relative to `addEventListener`; null clears it. Local, HTTP(S) content-process,
-and same-origin parent-projection tests cover the complete property-name
-surface and representative click/input/focus dispatch, `this`/target identity,
-replacement, clearing, and listener order. The existing generic `on*`
-content-attribute path is unchanged; focus-specific CSP/projection parity is
-not established. `Window`/`Document` handler sets and `body`/`frameset`
-Window-target remapping remain open; see the [slice 779 task](tasks/native-engine-browser-779.md)
-and [slice 778 task](tasks/native-engine-browser-778.md).
+`Window` exposes `GlobalEventHandlers` and `WindowEventHandlers`; `Document`
+exposes `GlobalEventHandlers` plus `onreadystatechange` and
+`onvisibilitychange`. `body` and `frameset` expose `WindowEventHandlers`, and
+their IDL handler properties for those names and the six Window-reflecting
+names (`blur`, `error`, `focus`, `load`, `resize`, `scroll`) share the owning
+Document's `defaultView` handler state. Other `GlobalEventHandlers` on those
+elements remain element-owned. Handler state is allocated only when assigned
+and keyed by the native event owner, so refreshed same-origin frame
+projections read, replace, and clear the same handler. Local, HTTP(S)
+content-process, and same-origin parent-projection tests cover property
+presence/null initialization, representative dispatch, target/`this`
+identity, Window reflection, and local body click behavior. The generic `on*`
+content-attribute path is unchanged and does not yet share this body/frameset
+Window-target routing; full content-attribute, CSP, event-source, Web IDL, and
+WPT conformance remain open. See the [slice 780 task](tasks/native-engine-browser-780.md),
+the [slice 779 task](tasks/native-engine-browser-779.md), and the
+[slice 778 task](tasks/native-engine-browser-778.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus

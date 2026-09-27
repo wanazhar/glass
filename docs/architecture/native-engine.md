@@ -5335,19 +5335,27 @@ parity. It does not remap `body`/`frameset` handlers to Window and is not a
 complete `GlobalEventHandlers` implementation. See
 [`native-engine-browser-778`](../plan/tasks/native-engine-browser-778.md).
 
-### Element `GlobalEventHandlers` IDL properties (slice 779)
+### Window, Document, and element event-handler IDL properties (slice 780)
 
-The current `GlobalEventHandlers` event-handler properties are inherited from
-the shared HTML element prototype, rather than allocated as own properties on
-every node. Handler state is created only on assignment and keyed by native
-event owner, preserving replacement order, null removal, and behavior across
-same-origin frame projection refreshes. Local and process/frame tests check
-the full property-name surface plus click/input and focus dispatch. This does
-not mean every event source or default action is implemented; Window and
-Document handler sets, body/frameset Window-target routing, and complete event
-conformance remain separate. The existing inline `on*` content-attribute path
-is unchanged. See
-[`native-engine-browser-779`](../plan/tasks/native-engine-browser-779.md).
+The current `GlobalEventHandlers` property set is inherited by ordinary HTML
+elements, `Window`, and `Document`. `Window` also exposes `WindowEventHandlers`;
+`Document` adds `onreadystatechange` and `onvisibilitychange`. `body` and
+`frameset` expose `WindowEventHandlers`, and their IDL handler properties for
+those event types plus the six Window-reflecting names (`blur`, `error`,
+`focus`, `load`, `resize`, `scroll`) resolve to the owning Document's
+`defaultView`. Other global event handlers on those elements remain local.
+State is allocated only after assignment and keyed by the resolved event
+owner, preserving replacement order, null removal, and same-origin parent
+frame projection behavior. Local and process-backed tests verify the property
+surfaces, initial null values, dispatch target/`this`, Window aliasing, and
+element-local click handlers. The generic inline `on*` content-attribute
+compiler still registers directly on its element and does not use the
+body/frameset Window-target mapping. Event-source completeness, full Web IDL
+conversion and legacy return behavior, content-attribute/CSP parity, WPT, and
+cross-platform conformance remain open. See
+[`native-engine-browser-780`](../plan/tasks/native-engine-browser-780.md),
+[`native-engine-browser-779`](../plan/tasks/native-engine-browser-779.md), and
+[`native-engine-browser-778`](../plan/tasks/native-engine-browser-778.md).
 
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its

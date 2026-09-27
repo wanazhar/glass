@@ -70172,11 +70172,137 @@ const NATIVE_GLOBAL_EVENT_HANDLER_TYPES: &[&str] = &[
     "wheel",
 ];
 
+const NATIVE_WINDOW_EVENT_HANDLER_TYPES: &[&str] = &[
+    "afterprint",
+    "beforeprint",
+    "beforeunload",
+    "hashchange",
+    "languagechange",
+    "message",
+    "messageerror",
+    "offline",
+    "online",
+    "pagehide",
+    "pagereveal",
+    "pageshow",
+    "pageswap",
+    "popstate",
+    "rejectionhandled",
+    "storage",
+    "unhandledrejection",
+    "unload",
+];
+
+const NATIVE_DOCUMENT_EVENT_HANDLER_TYPES: &[&str] = &["readystatechange", "visibilitychange"];
+
 fn native_html_global_event_handler_surface_script() -> String {
     let types = serde_json::to_string(NATIVE_GLOBAL_EVENT_HANDLER_TYPES).unwrap();
     format!(
         "(() => {{ const element = document.getElementById('first') || document.getElementById('child').contentDocument.getElementById('first'); const types = {types}; return [types.filter(type => !(\"on\" + type in element)), types.filter(type => element[\"on\" + type] !== null), types.filter(type => Object.prototype.hasOwnProperty.call(element, \"on\" + type))]; }})()"
     )
+}
+
+fn native_window_document_event_handler_surface_script() -> String {
+    let global_types = serde_json::to_string(NATIVE_GLOBAL_EVENT_HANDLER_TYPES).unwrap();
+    let window_types = serde_json::to_string(NATIVE_WINDOW_EVENT_HANDLER_TYPES).unwrap();
+    let document_types = serde_json::to_string(NATIVE_DOCUMENT_EVENT_HANDLER_TYPES).unwrap();
+    format!(
+        r#"(() => {{
+          const globalTypes = {global_types};
+          const windowTypes = {window_types};
+          const documentTypes = {document_types};
+          const missing = (target, types) => types.filter(type => !("on" + type in target));
+          const nonNull = (target, types) => types.filter(type => target["on" + type] !== null);
+          const windowSurface = [...globalTypes, ...windowTypes];
+          const documentSurface = [...globalTypes, ...documentTypes];
+          const bodySurface = [...globalTypes, ...windowTypes];
+          const body = document.body;
+          const frameset = document.createElement("frameset");
+          const generic = document.createElement("div");
+          return [
+            missing(window, windowSurface),
+            nonNull(window, windowSurface),
+            missing(document, documentSurface),
+            nonNull(document, documentSurface),
+            missing(body, bodySurface),
+            nonNull(body, bodySurface),
+            missing(frameset, bodySurface),
+            nonNull(frameset, bodySurface),
+            windowTypes.filter(type => ("on" + type) in generic),
+            [frameset instanceof HTMLFrameSetElement, body instanceof HTMLBodyElement],
+          ];
+        }})()"#
+    )
+}
+
+fn native_window_document_event_handler_dispatch_script() -> &'static str {
+    r#"(() => {
+      const events = [];
+      const body = document.body;
+      const frameset = document.createElement('frameset');
+      window.onmessage = function(event) {
+        events.push(['window-message', this === window, event.target === window, event.currentTarget === window]);
+      };
+      window.dispatchEvent(new Event('message'));
+      const readyHandler = function(event) {
+        events.push(['document-ready', this === document, event.target === document, event.currentTarget === document]);
+      };
+      document.onreadystatechange = readyHandler;
+      document.dispatchEvent(new Event('readystatechange'));
+      document.onvisibilitychange = function(event) {
+        events.push(['document-visibility', this === document, event.target === document, event.currentTarget === document]);
+      };
+      document.dispatchEvent(new Event('visibilitychange'));
+      const bodyLoad = function(event) {
+        events.push(['body-load', this === window, event.target === window, event.currentTarget === window]);
+      };
+      body.onload = bodyLoad;
+      const bodyLoadAliasesWindow = window.onload === bodyLoad && body.onload === bodyLoad;
+      window.dispatchEvent(new Event('load'));
+      body.onload = null;
+      const bodyLoadCleared = window.onload === null && body.onload === null;
+      const framesetAfterPrint = function(event) {
+        events.push(['frameset-afterprint', this === window, event.target === window, event.currentTarget === window]);
+      };
+      frameset.onafterprint = framesetAfterPrint;
+      const framesetAliasesWindow = window.onafterprint === framesetAfterPrint;
+      window.dispatchEvent(new Event('afterprint'));
+      frameset.onafterprint = null;
+      body.onclick = function(event) {
+        events.push(['body-click', this === body, event.target === body, event.currentTarget === body]);
+      };
+      const bodyClickStayedLocal = window.onclick === null;
+      body.dispatchEvent(new Event('click', { bubbles: true }));
+      body.onclick = null;
+      window.onmessage = null;
+      document.onreadystatechange = null;
+      document.onvisibilitychange = null;
+      return [events, bodyLoadAliasesWindow, bodyLoadCleared, framesetAliasesWindow, bodyClickStayedLocal];
+    })()"#
+}
+
+fn native_projected_window_document_event_handler_dispatch_script() -> &'static str {
+    r#"(() => {
+      const frame = document.getElementById('child');
+      const frameDocument = frame.contentDocument;
+      const frameWindow = frame.contentWindow;
+      const events = [];
+      const body = frameDocument.body;
+      const load = function(event) {
+        events.push(['frame-body-load', this === frameWindow, event.target === frameWindow, event.currentTarget === frameWindow]);
+      };
+      body.onload = load;
+      const aliasesWindow = frameDocument.defaultView === frameWindow
+        && frameWindow.onload === load && body.onload === load;
+      frameWindow.dispatchEvent(new Event('load'));
+      body.onload = null;
+      frameDocument.onvisibilitychange = function(event) {
+        events.push(['frame-document-visibility', this === frameDocument, event.target === frameDocument, event.currentTarget === frameDocument]);
+      };
+      frameDocument.dispatchEvent(new Event('visibilitychange'));
+      frameDocument.onvisibilitychange = null;
+      return [events, aliasesWindow, frameWindow.onload === null, body.onload === null];
+    })()"#
 }
 
 fn native_global_event_handler_dispatch_script() -> &'static str {
@@ -70287,6 +70413,33 @@ async fn native_local_focusin_focusout_bubble_with_related_targets() {
     )
     .unwrap();
     engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(&native_window_document_event_handler_surface_script())
+            .await
+            .unwrap(),
+        serde_json::json!([[], [], [], [], [], [], [], [], [], [true, true]])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(native_window_document_event_handler_dispatch_script())
+            .await
+            .unwrap(),
+        serde_json::json!([
+            [
+                ["window-message", true, true, true],
+                ["document-ready", true, true, true],
+                ["document-visibility", true, true, true],
+                ["body-load", true, true, true],
+                ["frameset-afterprint", true, true, true],
+                ["body-click", true, true, true],
+            ],
+            true,
+            true,
+            true,
+            true,
+        ])
+    );
     assert_eq!(
         engine
             .evaluate_async(&native_html_global_event_handler_surface_script())
@@ -70404,6 +70557,30 @@ async fn native_http_focusin_focusout_persist_in_same_origin_frame() {
         .clone();
     assert_eq!(
         session
+            .script(&native_window_document_event_handler_surface_script())
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([[], [], [], [], [], [], [], [], [], [true, true]])
+    );
+    assert_eq!(
+        session
+            .script(native_projected_window_document_event_handler_dispatch_script())
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([
+            [
+                ["frame-body-load", true, true, true],
+                ["frame-document-visibility", true, true, true],
+            ],
+            true,
+            true,
+            true,
+        ])
+    );
+    assert_eq!(
+        session
             .script(&native_html_global_event_handler_surface_script())
             .await
             .unwrap()
@@ -70415,6 +70592,35 @@ async fn native_http_focusin_focusout_persist_in_same_origin_frame() {
         .await
         .unwrap();
     session.native_select_frame(&child_id).await.unwrap();
+    assert_eq!(
+        session
+            .script(&native_window_document_event_handler_surface_script())
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([[], [], [], [], [], [], [], [], [], [true, true]])
+    );
+    assert_eq!(
+        session
+            .script(native_window_document_event_handler_dispatch_script())
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([
+            [
+                ["window-message", true, true, true],
+                ["document-ready", true, true, true],
+                ["document-visibility", true, true, true],
+                ["body-load", true, true, true],
+                ["frameset-afterprint", true, true, true],
+                ["body-click", true, true, true],
+            ],
+            true,
+            true,
+            true,
+            true,
+        ])
+    );
     assert_eq!(
         session
             .script(&native_html_global_event_handler_surface_script())

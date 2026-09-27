@@ -5466,6 +5466,17 @@ this initial classic-script path, not fetch/parse failures, module startup,
 later callback exceptions, or full error-source metadata. See the
 [`native-engine-browser-787` task](../plan/tasks/native-engine-browser-787.md).
 
+### Dedicated module-worker startup runtime errors (slice 788, in progress)
+
+The next worker error boundary applies the same worker-global `ErrorEvent`
+reporting to a rejected evaluation of an initial dedicated module worker,
+after its graph has loaded, parsed, and linked. Module fetch/parse/resolve/link
+failures remain on the owning `Worker` startup-error path. A pending
+top-level-await evaluation is not treated as an immediate runtime exception;
+later settlement, shared/service-worker errors, and later event-turn
+exceptions remain separate. See the
+[`native-engine-browser-788` task](../plan/tasks/native-engine-browser-788.md).
+
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,

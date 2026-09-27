@@ -133,6 +133,17 @@ parent-frame projection tests cover direct focus, Tab, ordering, propagation,
 and related targets. This is not complete focus-event Web IDL or reentrant
 focus-algorithm conformance; see the [slice 777 task](tasks/native-engine-browser-777.md).
 
+Ordinary HTML elements expose the `onfocus` and `onblur` event-handler IDL
+properties. Function replacement retains the handler's position relative to
+`addEventListener` listeners, and assigning null clears it. Handler state uses
+the stable native event owner so refreshed same-origin frame projections read
+and update the same handler. Local,
+HTTP(S) content-process, and same-origin parent-frame projection tests cover
+handler `this`/target identity at dispatch, replacement, clearing, and listener
+order.
+Inline event-handler content attributes and `body`/`frameset` Window-target
+remapping are not included; see the [slice 778 task](tasks/native-engine-browser-778.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

@@ -37469,6 +37469,10 @@ fn document_bootstrap(
     ? globalThis.__glassHostListeners
     : new Map();
   globalThis.__glassHostListeners = listeners;
+  const eventHandlers = globalThis.__glassHostEventHandlers instanceof Map
+    ? globalThis.__glassHostEventHandlers
+    : new Map();
+  globalThis.__glassHostEventHandlers = eventHandlers;
   const normalizeEventType = (type) => {{
     const value = String(type).toLowerCase();
     if (!value || value.length > 128) throw new TypeError("invalid native event type");
@@ -37519,26 +37523,51 @@ fn document_bootstrap(
     if (callbacks.length === 0) listeners.delete(key);
   }};
   const installEventHandlerProperty = (element, type) => {{
-    let handler = null;
-    let registered = null;
+    const keyForElement = () => listenerKey(ownerFor(element), type);
+    const createState = () => {{
+      const state = {{ handler: null, active: false, registered: null }};
+      state.registered = event => {{
+        const handler = state.handler;
+        if (!handler) return;
+        const target = event.currentTarget || element;
+        if (target === globalThis && type === "error") {{
+          return handler.call(
+            target,
+            event.message || "",
+            event.filename || "",
+            Number(event.lineno) || 0,
+            Number(event.colno) || 0,
+            event.error || null,
+          );
+        }}
+        return handler.call(target, event);
+      }};
+      return state;
+    }};
     Object.defineProperty(element, "on" + type, {{
       enumerable: true,
       configurable: false,
-      get() {{ return handler; }},
+      get() {{
+        const state = eventHandlers.get(keyForElement());
+        return state ? state.handler : null;
+      }},
       set(next) {{
-        if (registered) removeListener(ownerFor(element), type, registered, false);
-        handler = typeof next === "function" ? next : null;
-        registered = handler && element === globalThis && type === "error"
-          ? event => handler.call(
-              element,
-              event.message || "",
-              event.filename || "",
-              Number(event.lineno) || 0,
-              Number(event.colno) || 0,
-              event.error || null,
-            )
-          : handler;
-        if (registered) addListener(ownerFor(element), type, registered, false);
+        const key = keyForElement();
+        const handler = typeof next === "function" ? next : null;
+        let state = eventHandlers.get(key);
+        if (!state && !handler) return;
+        if (!state) {{
+          state = createState();
+          eventHandlers.set(key, state);
+        }}
+        state.handler = handler;
+        if (handler && !state.active) {{
+          addListener(ownerFor(element), type, state.registered, false);
+          state.active = true;
+        }} else if (!handler && state.active) {{
+          removeListener(ownerFor(element), type, state.registered, false);
+          eventHandlers.delete(key);
+        }}
       }},
     }});
   }};
@@ -38467,6 +38496,8 @@ fn document_bootstrap(
     }});
   }};
   const installCommonAttributeProperties = (element, state = {{}}, baseUrl = host.url) => {{
+    installEventHandlerProperty(element, "focus");
+    installEventHandlerProperty(element, "blur");
     installReflectedAttributeProperties(element);
     installTabIndexProperty(element);
     for (const [property, attribute] of [

@@ -5319,6 +5319,21 @@ behavior. Complete focus Web IDL/reentrancy, shadow retargeting, platform
 focus-chain behavior, WPT, and remote CI remain open. See
 [`native-engine-browser-777`](../plan/tasks/native-engine-browser-777.md).
 
+### Focus event-handler IDL properties (slice 778)
+
+Ordinary HTML elements expose `onfocus` and `onblur` properties through the
+shared native event-owner path. Handler state is keyed by that owner, so a
+refreshed frame projection reads and updates the existing handler rather than
+leaving a callback on an obsolete projection object. Assigning a replacement
+function updates the handler in place, preserving its listener order;
+assigning null removes it. The property handler receives the event's current
+target as `this`. Local, process-backed, and same-origin parent-frame tests
+cover these properties together with the existing native focus transitions.
+This does not compile inline handler
+content attributes or remap `body`/`frameset` handlers to Window, and is not a
+complete `GlobalEventHandlers` implementation. See
+[`native-engine-browser-778`](../plan/tasks/native-engine-browser-778.md).
+
 The first executable browser-complete batch is recorded in
 [`native-engine-browser-001`](../plan/tasks/native-engine-browser-001.md). Its
 `NativeRuntime` owns runtime state, typed task/microtask ordering, cancellation,

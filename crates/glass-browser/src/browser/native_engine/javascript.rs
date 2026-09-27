@@ -1970,9 +1970,16 @@ impl NativeWorkerRegistry {
             module_base_urls,
             dynamic_import_referrers,
         ) = if is_module {
-            let graph = self
+            let graph = match self
                 .load_worker_module_graph(loader, owner_url, module_request_url, resource.clone())
-                .await?;
+                .await
+            {
+                Ok(graph) => graph,
+                Err(error) => {
+                    self.queue_error(worker_id, &resource.url, &error.to_string())?;
+                    return Ok(());
+                }
+            };
             (
                 resource.body.clone(),
                 BTreeMap::new(),
@@ -1983,13 +1990,20 @@ impl NativeWorkerRegistry {
                 BTreeSet::new(),
             )
         } else {
-            let graph = self
+            let graph = match self
                 .load_worker_script_graph(
                     loader,
                     resource.clone(),
                     NativeWorkerClassicDynamicImportMode::RewritePerScript,
                 )
-                .await?;
+                .await
+            {
+                Ok(graph) => graph,
+                Err(error) => {
+                    self.queue_error(worker_id, &resource.url, &error.to_string())?;
+                    return Ok(());
+                }
+            };
             (
                 graph.source,
                 graph.import_script_counts,
@@ -2164,9 +2178,16 @@ impl NativeWorkerRegistry {
             module_base_urls,
             dynamic_import_referrers,
         ) = if is_module {
-            let graph = self
+            let graph = match self
                 .load_worker_module_graph(loader, owner_url, module_request_url, resource.clone())
-                .await?;
+                .await
+            {
+                Ok(graph) => graph,
+                Err(error) => {
+                    self.queue_error(connection_id, &resource.url, &error.to_string())?;
+                    return Ok(());
+                }
+            };
             (
                 resource.body.clone(),
                 BTreeMap::new(),
@@ -2177,13 +2198,20 @@ impl NativeWorkerRegistry {
                 BTreeSet::new(),
             )
         } else {
-            let graph = self
+            let graph = match self
                 .load_worker_script_graph(
                     loader,
                     resource.clone(),
                     NativeWorkerClassicDynamicImportMode::RewritePerScript,
                 )
-                .await?;
+                .await
+            {
+                Ok(graph) => graph,
+                Err(error) => {
+                    self.queue_error(connection_id, &resource.url, &error.to_string())?;
+                    return Ok(());
+                }
+            };
             (
                 graph.source,
                 graph.import_script_counts,
@@ -3737,11 +3765,11 @@ impl NativeWorkerRegistry {
         };
 
         let resource = loader
-            .load_worker_module_dependency_async(
+            .load_worker_script_dependency_async(
                 worker_url,
                 &target,
                 MAX_NATIVE_SCRIPT_BYTES,
-                module_type,
+                Some(module_type),
             )
             .await?
             .ok_or_else(|| NativeEngineError::Network {
@@ -3899,7 +3927,12 @@ impl NativeWorkerRegistry {
                     ));
                 }
                 let imported = loader
-                    .load_worker_async(&parent_url, &specifier, MAX_NATIVE_SCRIPT_BYTES)
+                    .load_worker_script_dependency_async(
+                        &parent_url,
+                        &specifier,
+                        MAX_NATIVE_SCRIPT_BYTES,
+                        None,
+                    )
                     .await?
                     .ok_or_else(|| NativeEngineError::Network {
                         operation: "worker importScripts".into(),
@@ -4050,11 +4083,11 @@ impl NativeWorkerRegistry {
                     ));
                 }
                 let resource = loader
-                    .load_worker_module_dependency_async(
+                    .load_worker_script_dependency_async(
                         owner_url,
                         &target,
                         MAX_NATIVE_SCRIPT_BYTES,
-                        request.module_type,
+                        Some(request.module_type),
                     )
                     .await?
                     .ok_or_else(|| NativeEngineError::Network {

@@ -7759,14 +7759,21 @@ async fn resolve_service_worker_commands(
                 scope,
                 worker_type,
             } => {
-                let state = registry
+                let payload = match registry
                     .register(document_url, &script_url, &scope, &worker_type, loader)
-                    .await?;
-                runtime
-                    .set_service_worker_registrations(registry.states_for_document(document_url)?);
+                    .await
+                {
+                    Ok(state) => {
+                        runtime.set_service_worker_registrations(
+                            registry.states_for_document(document_url)?,
+                        );
+                        json!({"kind":"register","registration":state})
+                    }
+                    Err(error) => json!({"error":error.to_string()}),
+                };
                 let evaluation = runtime.resolve_service_worker_registration(
                     request_id,
-                    &json!({"kind":"register","registration":state}),
+                    &payload,
                     document,
                     document_url,
                     document_origin,
@@ -7807,12 +7814,18 @@ async fn resolve_service_worker_commands(
                 pending.extend(runtime.take_service_worker_commands());
             }
             NativeScriptCommand::ServiceWorkerUpdate { request_id, scope } => {
-                let state = registry.update(&scope, loader).await?;
-                runtime
-                    .set_service_worker_registrations(registry.states_for_document(document_url)?);
+                let payload = match registry.update(&scope, loader).await {
+                    Ok(state) => {
+                        runtime.set_service_worker_registrations(
+                            registry.states_for_document(document_url)?,
+                        );
+                        json!({"kind":"update","registration":state})
+                    }
+                    Err(error) => json!({"error":error.to_string()}),
+                };
                 let evaluation = runtime.resolve_service_worker_registration(
                     request_id,
-                    &json!({"kind":"update","registration":state}),
+                    &payload,
                     document,
                     document_url,
                     document_origin,

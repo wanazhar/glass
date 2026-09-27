@@ -23852,6 +23852,228 @@ async fn native_content_process_worker_delivers_report_only_connect_events_for_e
 }
 
 #[tokio::test]
+async fn native_content_process_uses_script_csp_for_worker_import_scripts() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut paths = Vec::new();
+        for _ in 0..5 {
+            let Ok(Ok((mut stream, _))) =
+                tokio::time::timeout(Duration::from_secs(10), listener.accept()).await
+            else {
+                break;
+            };
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_owned();
+            paths.push(path.clone());
+            let (content_type, policy_header, body) = match path.as_str() {
+                "/worker-csp-destinations" => (
+                    "text/html",
+                    "Content-Security-Policy: script-src 'unsafe-inline'; worker-src 'self'\r\n",
+                    "<script>globalThis.workerErrors=[]; globalThis.workerMessages=[]; const denied=new Worker('/worker-csp-denied-root.js'); denied.onmessage=e=>workerMessages.push(['denied',e.data]); denied.onerror=e=>{e.preventDefault();workerErrors.push(String(e.message||''));}; const reportOnly=new Worker('/worker-csp-report-root.js'); reportOnly.onmessage=e=>workerMessages.push(['report',e.data]); reportOnly.onerror=e=>workerErrors.push('report-worker-error');</script>",
+                ),
+                "/worker-csp-denied-root.js" => (
+                    "text/javascript",
+                    "Content-Security-Policy: script-src 'none'; worker-src 'self'\r\n",
+                    "importScripts('/worker-csp-denied-dependency.js'); postMessage('denied-root-ran');",
+                ),
+                "/worker-csp-report-root.js" => (
+                    "text/javascript",
+                    "Content-Security-Policy-Report-Only: script-src 'none'; worker-src 'self'\r\n",
+                    "importScripts('/worker-csp-report-dependency.js'); postMessage('report-only-root-ran');",
+                ),
+                "/worker-csp-denied-dependency.js" => (
+                    "text/javascript",
+                    "",
+                    "globalThis.deniedDependencyLoaded=true;",
+                ),
+                "/worker-csp-report-dependency.js" => (
+                    "text/javascript",
+                    "",
+                    "globalThis.reportDependencyLoaded=true;",
+                ),
+                _ => ("text/plain", "", "unexpected resource"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{policy_header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            if path == "/worker-csp-report-dependency.js" {
+                break;
+            }
+        }
+        paths
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/worker-csp-destinations")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let mut observations = serde_json::Value::Null;
+    for _ in 0..50 {
+        observations = engine
+            .evaluate_async("[workerErrors, workerMessages]")
+            .await
+            .unwrap();
+        if observations[1].as_array().is_some_and(|messages| {
+            messages.contains(&serde_json::json!(["report", "report-only-root-ran"]))
+        }) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    engine.close_async().await.unwrap();
+    let paths = server.await.unwrap();
+    assert_eq!(
+        observations[1],
+        serde_json::json!([["report", "report-only-root-ran"]]),
+        "worker observations: {observations:?}; HTTP paths: {paths:?}"
+    );
+    assert_eq!(observations[0].as_array().map(Vec::len), Some(1));
+    assert!(paths.contains(&"/worker-csp-denied-root.js".to_owned()));
+    assert!(paths.contains(&"/worker-csp-report-dependency.js".to_owned()));
+    assert!(!paths.contains(&"/worker-csp-denied-dependency.js".to_owned()));
+}
+
+#[tokio::test]
+async fn native_content_process_rejects_service_worker_csp_failures_without_exiting() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut paths = Vec::new();
+        let mut update_script_requests = 0usize;
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_receiver => break,
+                accepted = listener.accept() => {
+                    let (mut stream, _) = accepted.unwrap();
+                    let request = read_http_request(&mut stream).await;
+                    let path = request.split_whitespace().nth(1).unwrap_or_default().to_owned();
+                    paths.push(path.clone());
+                    let (content_type, policy_header, body) = match path.as_str() {
+                        "/service-worker-csp" => (
+                            "text/html",
+                            "Content-Security-Policy: script-src 'unsafe-inline'; worker-src 'self'\r\n",
+                            "<script>globalThis.registrationState='pending';globalThis.updateState='pending';globalThis.updatePreserved=false;globalThis.pageAlive=42;navigator.serviceWorker.register('/blocked/sw.js',{scope:'/blocked/',type:'module'}).then(()=>registrationState='resolved',error=>registrationState='rejected:'+error.message);navigator.serviceWorker.register('/update/sw.js',{scope:'/update/'}).then(registration=>{globalThis.updateState='registered';registration.update().then(()=>updateState='updated',error=>{globalThis.updatePreserved=Boolean(registration.active&&registration.active.scriptURL===new URL('/update/sw.js',location.href).href&&registration.active.state==='activated');globalThis.updateState='rejected:'+error.message;});},error=>updateState='register-rejected:'+error.message);</script><main>worker policy test</main>",
+                        ),
+                        "/blocked/sw.js" => (
+                            "application/javascript",
+                            "Content-Security-Policy: worker-src 'self'; script-src 'none'\r\n",
+                            "import { blocked } from './dependency.js'; self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));",
+                        ),
+                        "/blocked/dependency.js" => (
+                            "application/javascript",
+                            "",
+                            "export const blocked = true;",
+                        ),
+                        "/update/sw.js" if update_script_requests == 0 => {
+                            update_script_requests += 1;
+                            (
+                                "application/javascript",
+                                "",
+                                "self.addEventListener('install', event => event.waitUntil(self.skipWaiting())); self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));",
+                            )
+                        }
+                        "/update/sw.js" => {
+                            update_script_requests += 1;
+                            (
+                                "application/javascript",
+                                "Content-Security-Policy: worker-src 'self'; script-src 'none'\r\n",
+                                "importScripts('/update/denied.js'); self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));",
+                            )
+                        }
+                        "/update/denied.js" => (
+                            "application/javascript",
+                            "",
+                            "globalThis.deniedUpdateDependencyLoaded = true;",
+                        ),
+                        _ => ("text/plain", "", "unexpected resource"),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{policy_header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            }
+        }
+        paths
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/service-worker-csp")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let mut observations = serde_json::Value::Null;
+    for _ in 0..500 {
+        observations = engine
+            .evaluate_async("[registrationState,updateState,updatePreserved,pageAlive]")
+            .await
+            .unwrap();
+        let registration_finished = observations[0]
+            .as_str()
+            .is_some_and(|state| state.starts_with("rejected:"));
+        let update_finished = observations[1]
+            .as_str()
+            .is_some_and(|state| state.starts_with("rejected:"));
+        if registration_finished && update_finished {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    engine.close_async().await.unwrap();
+    shutdown_sender.send(()).unwrap();
+    let paths = server.await.unwrap();
+
+    assert!(
+        observations[0]
+            .as_str()
+            .is_some_and(|state| state.starts_with("rejected:")),
+        "blocked module Service Worker registration must reject: {observations:?}; HTTP paths: {paths:?}"
+    );
+    assert!(
+        observations[1]
+            .as_str()
+            .is_some_and(|state| state.starts_with("rejected:")),
+        "blocked Service Worker update must reject: {observations:?}; HTTP paths: {paths:?}"
+    );
+    assert_eq!(
+        observations[2], true,
+        "the old active worker must survive the failed update"
+    );
+    assert_eq!(
+        observations[3], 42,
+        "the page content process must remain usable"
+    );
+    assert!(paths.contains(&"/blocked/sw.js".to_owned()));
+    assert!(!paths.contains(&"/blocked/dependency.js".to_owned()));
+    assert_eq!(
+        paths
+            .iter()
+            .filter(|path| path.as_str() == "/update/sw.js")
+            .count(),
+        2,
+        "registration plus failed update must both load the script: {paths:?}"
+    );
+    assert!(!paths.contains(&"/update/denied.js".to_owned()));
+}
+
+#[tokio::test]
 async fn native_content_process_enforces_script_src_attr_for_initial_and_dynamic_handlers() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

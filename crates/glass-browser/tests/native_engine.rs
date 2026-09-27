@@ -18553,7 +18553,7 @@ async fn native_local_radio_group_arrow_navigation_revalidates_keydown_defaults(
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "globalThis.__radioArrowTrace = []; globalThis.__radioArrowMode = ''; document.addEventListener('keydown', event => { __radioArrowTrace.push('keydown:' + event.target.id + ':' + event.key); if (__radioArrowMode === 'cancel') event.preventDefault(); if (event.target.id === 'radio-a') { if (__radioArrowMode === 'group') event.target.removeAttribute('name'); if (__radioArrowMode === 'focus') document.getElementById('radio-guard').focus(); if (__radioArrowMode === 'disabled') event.target.disabled = true; if (__radioArrowMode === 'type') event.target.type = 'checkbox'; if (__radioArrowMode === 'detach') event.target.remove(); } }); document.addEventListener('keyup', event => __radioArrowTrace.push('keyup:' + event.target.id + ':' + event.key)); for (const type of ['input', 'change', 'click', 'pointerdown', 'pointerup', 'mousedown', 'mouseup']) document.addEventListener(type, event => __radioArrowTrace.push(type + ':' + event.target.id + ':' + event.bubbles)); true",
+            "globalThis.__radioArrowTrace = []; globalThis.__radioArrowMode = ''; document.addEventListener('keydown', event => { const targetId = event.target ? event.target.id : ''; __radioArrowTrace.push('keydown:' + targetId + ':' + event.key); if (__radioArrowMode === 'cancel') event.preventDefault(); if (targetId === 'radio-a') { if (__radioArrowMode === 'group') event.target.removeAttribute('name'); if (__radioArrowMode === 'focus') document.getElementById('radio-guard').focus(); if (__radioArrowMode === 'disabled') event.target.disabled = true; if (__radioArrowMode === 'type') event.target.type = 'checkbox'; if (__radioArrowMode === 'detach') event.target.remove(); } }); document.addEventListener('keyup', event => { const targetId = event.target ? event.target.id : ''; __radioArrowTrace.push('keyup:' + targetId + ':' + event.key); }); for (const type of ['input', 'change', 'click', 'pointerdown', 'pointerup', 'mousedown', 'mouseup']) document.addEventListener(type, event => { const targetId = event.target ? event.target.id : ''; __radioArrowTrace.push(type + ':' + targetId + ':' + event.bubbles); }); true",
         )
         .await
         .unwrap();
@@ -18716,7 +18716,7 @@ async fn native_local_radio_group_arrow_navigation_revalidates_keydown_defaults(
             })
             .unwrap();
         let state = engine
-            .evaluate_async("({active: document.activeElement?.id ?? null, a: globalThis.__radioA ? __radioA.checked : document.getElementById('radio-a')?.checked, c: document.getElementById('radio-c').checked, trace: __radioArrowTrace})")
+            .evaluate_async("({active: __radioArrowMode === 'focus' && document.activeElement ? document.activeElement.id : null, a: globalThis.__radioA ? __radioA.checked : document.getElementById('radio-a')?.checked, c: document.getElementById('radio-c').checked, trace: __radioArrowTrace})")
             .await
             .unwrap();
         assert_eq!(state["c"], false, "radio moved during {mode} invalidation");

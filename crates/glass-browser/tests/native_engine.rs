@@ -69255,3 +69255,245 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts() {
     session.close().await.unwrap();
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn native_local_generic_explicit_tabindex_focus_order_and_enter_target() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://generic-tabindex-focus",
+            "<div id='positive-first' tabindex='1'></div><div id='positive-first-tie' tabindex='1'></div><div id='positive-second' tabindex='+2'></div><div id='zero' tabindex='0'></div><h2 id='heading' tabindex='0'>Heading</h2><div id='generic-disabled-attribute' disabled tabindex='0'></div><div id='negative' tabindex='-1'></div><div id='invalid' tabindex='not-an-integer'></div><input id='hidden-input' type='hidden' tabindex='0'><button id='disabled-button' type='button' disabled tabindex='0'>Disabled</button><div id='hidden' hidden tabindex='0'></div>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://generic-tabindex-focus");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let mut active_ids = Vec::new();
+    for _ in 0..6 {
+        engine
+            .action_async(NativeAction::Shortcut {
+                shortcut: "Tab".into(),
+            })
+            .await
+            .unwrap();
+        active_ids.push(
+            engine
+                .evaluate_async("document.activeElement.id")
+                .await
+                .unwrap(),
+        );
+    }
+    assert_eq!(
+        serde_json::Value::Array(active_ids),
+        serde_json::json!([
+            "positive-first",
+            "positive-first-tie",
+            "positive-second",
+            "zero",
+            "heading",
+            "generic-disabled-attribute",
+        ])
+    );
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Shift+Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.activeElement.id")
+            .await
+            .unwrap(),
+        serde_json::json!("heading")
+    );
+    engine
+        .evaluate_async(
+            "document.getElementById('generic-disabled-attribute').setAttribute('tabindex', '3'); document.getElementById('positive-second').focus(); true",
+        )
+        .await
+        .unwrap();
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.activeElement.id")
+            .await
+            .unwrap(),
+        serde_json::json!("generic-disabled-attribute")
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { globalThis.__genericFocusTrace = []; const target = document.getElementById('negative'); for (const type of ['focus', 'keydown', 'keyup', 'click']) target.addEventListener(type, event => __genericFocusTrace.push(type + ':' + event.target.id + ':' + (event.key || ''))); target.focus(); return document.activeElement.id; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("negative")
+    );
+    engine
+        .action_async(NativeAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.__genericFocusTrace")
+            .await
+            .unwrap(),
+        serde_json::json!([
+            "focus:negative:",
+            "keydown:negative:Enter",
+            "keyup:negative:Enter",
+        ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("document.activeElement.id")
+            .await
+            .unwrap(),
+        serde_json::json!("negative")
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_http_generic_explicit_tabindex_focus_routes_through_same_origin_frame() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = match path {
+                "/parent" => {
+                    "<div id='parent-two' tabindex='2'></div><div id='parent-one' tabindex='1'></div><h2 id='parent-zero' tabindex='0'>Parent heading</h2><iframe id='child' src='/child'></iframe>"
+                }
+                "/child" => {
+                    "<div id='frame-two' tabindex='2'></div><section id='frame-zero' tabindex='0'></section><div id='frame-negative' tabindex='-1'></div><div id='frame-invalid' tabindex='bad'></div><div id='frame-hidden' hidden tabindex='0'></div>"
+                }
+                other => panic!("unexpected generic tabindex request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    for expected in ["parent-one", "parent-two", "parent-zero"] {
+        session
+            .action(SemanticAction::Shortcut {
+                shortcut: "Tab".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .script("document.activeElement.id")
+                .await
+                .unwrap()
+                .value,
+            serde_json::json!(expected)
+        );
+    }
+
+    let frames = session.native_list_frames().await.unwrap();
+    let child_id = frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("same-origin child frame")
+        .id
+        .clone();
+    session.native_select_frame(&child_id).await.unwrap();
+    session
+        .script(
+            "globalThis.__genericFrameTrace = []; const target = document.getElementById('frame-negative'); for (const type of ['focus', 'keydown', 'keyup', 'click']) target.addEventListener(type, event => __genericFrameTrace.push(type + ':' + event.target.id + ':' + (event.key || ''))); target.focus(); document.activeElement.id",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("frame-negative")
+    );
+    for expected in ["frame-two", "frame-zero"] {
+        session
+            .action(SemanticAction::Shortcut {
+                shortcut: "Tab".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            session
+                .script("document.activeElement.id")
+                .await
+                .unwrap()
+                .value,
+            serde_json::json!(expected)
+        );
+    }
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Tab".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("frame-two")
+    );
+    session
+        .script("globalThis.__genericFrameTrace = []; document.getElementById('frame-negative').focus(); true")
+        .await
+        .unwrap();
+    session
+        .action(SemanticAction::Shortcut {
+            shortcut: "Enter".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("globalThis.__genericFrameTrace")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!([
+            "focus:frame-negative:",
+            "keydown:frame-negative:Enter",
+            "keyup:frame-negative:Enter",
+        ])
+    );
+    assert_eq!(
+        session
+            .script("document.activeElement.id")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("frame-negative")
+    );
+    session.close().await.unwrap();
+    server.await.unwrap();
+}

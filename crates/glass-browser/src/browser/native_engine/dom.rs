@@ -6325,27 +6325,25 @@ impl NativeDocument {
             let Some(node) = self.node(id) else {
                 continue;
             };
-            if !self.is_attached(id) || self.is_disabled(id) {
+            if !self.is_attached(id) {
                 continue;
             }
-            let Some(role) = self.semantic_role(id) else {
-                continue;
-            };
-            if !matches!(
-                role,
-                "button" | "link" | "textbox" | "checkbox" | "radio" | "combobox"
-            ) {
-                continue;
-            }
-            let tab_index = node
-                .attribute("tabindex")
-                .and_then(parse_native_tab_index)
-                .unwrap_or(0);
-            if tab_index < 0 {
-                continue;
-            }
+            let explicit_tab_index = node.attribute("tabindex").and_then(parse_native_tab_index);
             if node.element_name() == Some("area") {
-                if self.is_hidden(id) {
+                let Some(role) = self.semantic_role(id) else {
+                    continue;
+                };
+                if self.is_disabled(id)
+                    || !matches!(
+                        role,
+                        "button" | "link" | "textbox" | "checkbox" | "radio" | "combobox"
+                    )
+                    || self.is_hidden(id)
+                {
+                    continue;
+                }
+                let tab_index = explicit_tab_index.unwrap_or(0);
+                if tab_index < 0 {
                     continue;
                 }
                 for anchor in self.image_map_area_focus_anchors(id) {
@@ -6359,8 +6357,25 @@ impl NativeDocument {
                     };
                     focusable.push((tab_index, anchor_order, order, id, Some(anchor)));
                 }
-            } else if !self.is_hidden(id) {
-                focusable.push((tab_index, order, order, id, None));
+                continue;
+            }
+            if let Some(tab_index) = explicit_tab_index {
+                if tab_index >= 0 && self.can_focus_explicit_tabindex(id) {
+                    focusable.push((tab_index, order, order, id, None));
+                }
+                continue;
+            }
+            if self.is_disabled(id) || self.is_hidden(id) {
+                continue;
+            }
+            let Some(role) = self.semantic_role(id) else {
+                continue;
+            };
+            if matches!(
+                role,
+                "button" | "link" | "textbox" | "checkbox" | "radio" | "combobox"
+            ) {
+                focusable.push((0, order, order, id, None));
             }
         }
         focusable.sort_by_key(|(tab_index, anchor_order, element_order, _, _)| {
@@ -7359,9 +7374,30 @@ impl NativeDocument {
         &mut self,
         id: NativeNodeId,
     ) -> Result<Vec<(NativeNodeId, NativeEventKind)>, NativeEngineError> {
-        let Some(_node) = self.node(id) else {
+        let Some(node) = self.node(id) else {
             return Err(NativeEngineError::DetachedTarget);
         };
+        if node.element_name() != Some("area")
+            && node
+                .attribute("tabindex")
+                .and_then(parse_native_tab_index)
+                .is_some()
+        {
+            if self.is_hidden(id) {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "hidden targets cannot receive focus".into(),
+                });
+            }
+            if self.is_actually_disabled_native_focus_target(id) {
+                return Err(NativeEngineError::DisabledTarget);
+            }
+            if !self.can_focus_explicit_tabindex(id) {
+                return Err(NativeEngineError::TargetNotActionable {
+                    reason: "target is not a rendered focusable element".into(),
+                });
+            }
+            return Ok(self.focus_element(id));
+        }
         let Some(semantic) = self.semantic_node(id) else {
             if self.node(id).and_then(NativeNode::element_name) == Some("area")
                 && self.image_map_for_area(id).is_some()
@@ -10812,6 +10848,87 @@ impl NativeDocument {
             parent = parent_node.parent();
         }
         false
+    }
+
+    fn is_actually_disabled_native_focus_target(&self, id: NativeNodeId) -> bool {
+        let Some(node) = self.node(id) else {
+            return true;
+        };
+        let tag_name = node.element_name().unwrap_or_default();
+        let supports_disabled = matches!(
+            tag_name,
+            "button" | "fieldset" | "input" | "optgroup" | "option" | "select" | "textarea"
+        );
+        if supports_disabled && node.attribute("disabled").is_some() {
+            return true;
+        }
+
+        if matches!(
+            tag_name,
+            "button" | "fieldset" | "input" | "select" | "textarea"
+        ) {
+            let mut parent = node.parent();
+            while let Some(parent_id) = parent {
+                let Some(parent_node) = self.node(parent_id) else {
+                    break;
+                };
+                if parent_node.element_name() == Some("fieldset")
+                    && parent_node.attribute("disabled").is_some()
+                {
+                    let first_legend = parent_node.children().iter().find_map(|child_id| {
+                        self.node(*child_id)
+                            .is_some_and(|child| child.element_name() == Some("legend"))
+                            .then_some(*child_id)
+                    });
+                    if !first_legend.is_some_and(|legend_id| {
+                        id == legend_id || self.is_descendant_of(id, legend_id)
+                    }) {
+                        return true;
+                    }
+                }
+                parent = parent_node.parent();
+            }
+        }
+
+        if tag_name == "option" {
+            let mut parent = node.parent();
+            while let Some(parent_id) = parent {
+                let Some(parent_node) = self.node(parent_id) else {
+                    break;
+                };
+                if matches!(parent_node.element_name(), Some("optgroup" | "select"))
+                    && parent_node.attribute("disabled").is_some()
+                {
+                    return true;
+                }
+                if parent_node.element_name() == Some("select") {
+                    break;
+                }
+                parent = parent_node.parent();
+            }
+        }
+        false
+    }
+
+    fn can_focus_explicit_tabindex(&self, id: NativeNodeId) -> bool {
+        let Some(node) = self.node(id) else {
+            return false;
+        };
+        if !self.is_attached(id)
+            || self.is_hidden(id)
+            || self.is_actually_disabled_native_focus_target(id)
+            || node.element_name() == Some("area")
+        {
+            return false;
+        }
+        if node.element_name() == Some("input")
+            && node
+                .attribute("type")
+                .is_some_and(|input_type| input_type.eq_ignore_ascii_case("hidden"))
+        {
+            return false;
+        }
+        true
     }
 
     fn is_option_disabled(&self, id: NativeNodeId) -> bool {

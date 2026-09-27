@@ -89,6 +89,23 @@ It is never an implicit fallback for a native request.
 | `accessibility` | semantic and assistive surface | roles, states, properties, name/description computation, focus, actions, and incremental updates for the declared DOM/layout surface | accessibility-tree differential fixtures and action/focus tests |
 | `glass-integration` | public Glass contract | stable backend capability profile, navigation, targets, DOM/AX/evidence, actions, key input, script/evaluate, waits/events, screenshots, contexts, storage, downloads/uploads, prompts, CLI, MCP, and TUI parity | all normal operations pass in native-only mode with no hidden CDP process/socket |
 
+### Explicit `tabindex` focus baseline
+
+Within the current light-DOM focus scope, a valid explicit `tabindex` makes an
+attached, rendered element programmatically focusable even when its semantic
+role is not an interactive control. Nonnegative values participate in
+sequential navigation: positive values sort first by value, ties and zero use
+tree order. Negative values remain programmatically focusable but are omitted
+from sequential navigation. Actually disabled supported native controls and
+non-rendered targets are excluded. Native image-map areas retain their
+image-anchor focus model.
+
+This is the bounded baseline, not complete focus navigation: shadow scopes,
+inertness, form-associated custom-element disabled focus state,
+browser/platform sequential-focus preferences, focus-chain handoff, and
+complete focus Web Platform Test conformance remain separate profile
+requirements.
+
 ### XHR document responses
 
 For a Window `XMLHttpRequest` whose response type is `document`, only an HTML
@@ -241,6 +258,16 @@ link-default path. Local, HTTP(S) content-process, and same-origin-frame
 evidence is tracked in
 [`native-engine-browser-772`](tasks/native-engine-browser-772.md). Complete
 focus-chain, keyboard, WPT, platform, and remote-CI conformance remain open.
+
+Slice 773 extends the current light-DOM focus scope to rendered elements with
+valid explicit `tabindex`, regardless of interactive semantic role. Positive
+values precede natural order; negative values permit programmatic focus but
+remain outside sequential navigation. Supported native disabled controls and
+non-rendered targets stay excluded, and image-map areas keep their image-anchor
+path. Local, HTTP(S) content-process, and same-origin-frame evidence is tracked
+in [`native-engine-browser-773`](tasks/native-engine-browser-773.md). This does
+not complete focus-chain, shadow-DOM, inertness, keyboard, WPT, platform, or
+remote-CI conformance.
 
 Slice 768 implements the bounded keyboard-input contract: unmodified
 Space on a focused, enabled native checkbox or radio synthesizes click

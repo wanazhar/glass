@@ -28357,6 +28357,10 @@ fn worker_bootstrap(
       message: report.message,
     }});
   }};
+  if (captureMessageCallbackErrors || captureConnectCallbackErrors) {{
+    globalThis.__glassReportWorkerMessagePortCallbackException = (error) =>
+      reportWorkerCallbackException(error, captureMessageCallbackErrors);
+  }}
   globalThis.__glassDispatchWorkerCspViolations = (violations) => {{
     if (!Array.isArray(violations)) throw new TypeError("native Worker CSP violations are invalid");
     return violations.map((descriptor) => {{
@@ -28553,8 +28557,6 @@ fn service_worker_bootstrap_script() -> String {
 }
 
 const NATIVE_SHARED_WORKER_BOOTSTRAP: &str = r###"
-  globalThis.__glassReportSharedWorkerMessagePortCallbackException = (error) =>
-    reportWorkerCallbackException(error, false);
   globalThis.__glassDispatchSharedWorkerConnect = (payload) => {
     if (closed) return null;
     const envelope = glassMessageDecodeEnvelope(payload || {});
@@ -29960,7 +29962,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     const handler = target["on" + type];
     if (typeof handler === "function") {
       try { handler.call(target, event); } catch (error) {
-        glassMessageReportSharedWorkerCallbackException(target, error);
+        glassMessageReportWorkerCallbackException(target, error);
       }
     }
     const listeners = target.__glassMessageListeners instanceof Map
@@ -29969,7 +29971,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     const records = (listeners.get(type) || []).slice();
     for (const record of records) {
       try { glassMessageInvoke(record.callback, target, event); } catch (error) {
-        glassMessageReportSharedWorkerCallbackException(target, error);
+        glassMessageReportWorkerCallbackException(target, error);
       }
       if (record.once) {
         const current = listeners.get(type) || [];
@@ -29981,9 +29983,9 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     event.eventPhase = 0;
     return event.defaultPrevented !== true;
   };
-  const glassMessageReportSharedWorkerCallbackException = (target, error) => {
+  const glassMessageReportWorkerCallbackException = (target, error) => {
     if (!target || !Number.isSafeInteger(target.__glassMessagePortId)) return;
-    const report = globalThis.__glassReportSharedWorkerMessagePortCallbackException;
+    const report = globalThis.__glassReportWorkerMessagePortCallbackException;
     if (typeof report !== "function") return;
     try { report(error); } catch (_reportingError) {}
   };

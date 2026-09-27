@@ -272,6 +272,16 @@ SharedWorker-global MessagePort callback error reporting, and port recovery;
 see the [slice 791 task](tasks/native-engine-browser-791.md) and
 [slice 792 task](tasks/native-engine-browser-792.md).
 
+Slice 793 reports DedicatedWorker MessagePort callback exceptions at the
+worker global before continuing port listeners. Exact-`true` worker `onerror`
+cancels forwarding. An uncanceled exception reaches the page `Worker` as one
+ErrorEvent, and the port and worker continue to deliver messages. A
+process-backed transferred-port test verifies handler/listener order, owner
+event fields, replies, and later port use. SharedWorker, Service Worker, page,
+and BroadcastChannel behavior remains unchanged. This does not claim full
+worker or MessagePort WPT conformance; see the
+[slice 793 task](tasks/native-engine-browser-793.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-793
 scope: glass-browser/dedicated-worker-message-port-callback-errors
-status: in_progress
+status: completed
 depends-on: [native-engine-browser-792]
 ---
 
@@ -86,7 +86,31 @@ and continue port delivery and later callbacks.
 
 ## Implementation and verification
 
-The design contract is committed before implementation. Record the exact
-process-backed regression, scoped Cargo commands, and any owner-event ordering
-evidence here after implementation. Remote CI and complete worker/MessagePort
-conformance remain issue #40 gates.
+The contract is checkpointed in `1ac1bf7c`; implementation and the
+process-backed regression are committed in `b297eeb5`.
+
+The transferred port's `onmessage` Error is reported at the dedicated worker
+global and canceled only because its `onerror` returns exact `true`. The
+registered listener's primitive throw is reported globally and forwarded once
+to the owning page `Worker`. The test verifies that each global report occurs
+before the next port listener, that the reply listener still runs, that the
+owner receives the expected cancelable ErrorEvent with a null `error`, and
+that a later healthy message still receives a reply.
+
+Passed locally:
+
+- `cargo check -p glass-browser --test native_engine --locked --quiet`.
+- `cargo test -p glass-browser --test native_engine --locked --quiet -- native_content_process_dedicated_worker_message_port_callback_errors_report_and_forward --exact --test-threads=1` (1 passed).
+- The rebuilt `native_engine` integration binary passed
+  `native_content_process_shared_worker_message_port_callback_errors_recover`,
+  `native_content_process_shared_worker_reuses_named_runtime_and_ports`,
+  `native_content_process_service_worker_transfers_message_port_round_trip`,
+  `native_content_process_transfers_message_ports_between_page_and_worker_realms`,
+  and `native_local_dedicated_worker_message_callback_errors_report_and_forward_in_order` (1 each).
+- `rustfmt --edition 2024 --check` on `javascript.rs` and `native_engine.rs`,
+  plus `git diff --check`.
+
+The process-backed target emits existing native-DOM dead-code warnings.
+Remote CI, complete worker/MessagePort Web Platform Test conformance,
+cross-platform certification, and issue #40 production/release gates remain
+open.

@@ -3769,6 +3769,15 @@ conformance evidence. MessagePort and page-side Worker proxy decode failures
 are separate. See
 [task 799](../plan/tasks/native-engine-browser-799.md).
 
+Slice 800 contracts the page-to-Service-Worker `message` and `messageerror`
+path to use trusted `ExtendableMessageEvent`s with the sending client's
+projection and origin, plus active-event `waitUntil()` settlement through the
+existing host-command loop. It explicitly preserves the specification's
+`ExtendableEvent` inheritance rather than treating these as `MessageEvent`s.
+The contract records rejection behavior and the still-open full Client
+interfaces; implementation and process-backed verification remain pending.
+See [task 800](../plan/tasks/native-engine-browser-800.md).
+
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
 operation and delivers them in the owning page turn; EventSource carries

@@ -338,6 +338,17 @@ remain a separate required GCWP item. MessagePort and page-side Worker proxy
 decode failures are also outside this slice; see
 [slice 799](tasks/native-engine-browser-799.md).
 
+Slice 800 contracts native page-to-Service-Worker `message` and
+`messageerror` delivery as trusted `ExtendableMessageEvent`s, not
+`MessageEvent`s. The event preserves the sending client's projected identity
+and serialized origin, exposes the bounded frozen ports array, and extends the
+worker event turn while active `waitUntil()` promises settle, including
+continuation-added promises. Rejections are drained without becoming a
+synchronous `postMessage()` exception or client error event. This contract
+does not certify all Client/WindowClient Web IDL, other message source kinds,
+or full Service Worker conformance; implementation evidence is pending. See
+[slice 800](tasks/native-engine-browser-800.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

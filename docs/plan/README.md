@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is locally complete through
-`native-engine-browser-799`. Slice 767 verifies native hyperlink Enter
+`native-engine-browser-808`. Slice 767 verifies native hyperlink Enter
 activation through local and process-backed `_blank` target and download
 defaults, including cancellation and opener preservation; see the
 [slice 767 task](tasks/native-engine-browser-767.md) for local evidence and
@@ -338,14 +338,15 @@ bridge that remains usable (1 passed, 859 filtered; 25.23 seconds).
 Multi-client scheduling, GC/document-destruction close, complete
 task-source/EventTarget/WPT behavior, remote CI, and cross-platform
 certification remain open. See the [slice 807 task](tasks/native-engine-browser-807.md).
-Slice 808 contracts the missing process-backed SharedWorker bridge-close
-proof. Its real HTTP fixture will use three connections to one named runtime
-to exercise page- and SharedWorker-initiated close while keeping an unrelated
-connection active. The NativeWorkerRegistry route implementation is expected
-to be shared with Slice 806; implementation evidence is pending and no
-SharedWorker conformance claim is made yet. Full lifecycle/task-source/WPT,
-remote CI, and cross-platform certification remain open. See the
-[slice 808 task](tasks/native-engine-browser-808.md).
+Slice 808 implements real HTTP process coverage for MessagePort close across
+three connections to one SharedWorker runtime. Page- and SharedWorker-initiated
+close each deliver one generic close Event to the surviving endpoint, purge
+their route's queued work, and suppress later messages; a third connection
+completes a request/reply after both closures. The focused test passed locally
+(1 passed, 860 filtered; 29.63 seconds), and no registry change was needed.
+SharedWorker lifecycle and cross-page sharing, complete task-source,
+EventTarget/Web IDL and WPT conformance, remote CI, and cross-platform
+certification remain open. See the [slice 808 task](tasks/native-engine-browser-808.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

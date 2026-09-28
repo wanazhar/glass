@@ -11187,7 +11187,6 @@ async fn native_content_process_service_worker_message_port_bridge_close_both_di
 globalThis.pageMessages = [];
 globalThis.pageCloseTrace = [];
 globalThis.pageCloseEvents = Object.create(null);
-globalThis.pageCloseReports = [];
 globalThis.pagePorts = Object.create(null);
 globalThis.pagePortCloseLast = Object.create(null);
 globalThis.pageInitiatorPostError = null;
@@ -13098,6 +13097,365 @@ async fn native_content_process_shared_worker_reuses_named_runtime_and_ports() {
             {"port": "two", "kind": "reply", "value": 9},
         ])
     );
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_shared_worker_message_port_bridge_close_both_directions() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let page = r#"<script>
+globalThis.pageMessages = [];
+globalThis.pageCloseTrace = [];
+globalThis.pageCloseEvents = Object.create(null);
+globalThis.pageCloseReports = [];
+globalThis.pagePorts = Object.create(null);
+globalThis.pageInitiatorPostError = null;
+</script><main>SharedWorker MessagePort bridge close</main>"#;
+    let worker_script = r#"
+let connectionCount = 0;
+const states = new Map();
+const closeSnapshot = (id, phase, event, port, receiverThis, previous) => ({
+  id,
+  phase,
+  sameEvent: previous === event,
+  type: event.type,
+  genericEvent: event instanceof Event && !(event instanceof MessageEvent),
+  targetIsPort: event.target === port,
+  currentTargetIsPort: event.currentTarget === port,
+  eventPhase: event.eventPhase,
+  bubbles: event.bubbles,
+  cancelable: event.cancelable,
+  thisIsPort: receiverThis === port,
+});
+onconnect = event => {
+  const port = event.ports[0];
+  const state = {
+    id: null, connection: ++connectionCount, trace: [], lastClose: null,
+    postCloseError: null, postAfterRemoteCloseError: null,
+  };
+  port.onclose = function(closeEvent) {
+    state.lastClose = closeEvent;
+    state.trace.push(closeSnapshot(state.id, 'handler', closeEvent, port, this, closeEvent));
+    try { port.postMessage({ kind: 'must-not-cross-after-peer-close', id: state.id }); }
+    catch (error) { state.postAfterRemoteCloseError = error.name; }
+  };
+  port.addEventListener('close', function(closeEvent) {
+    state.trace.push(closeSnapshot(state.id, 'listener', closeEvent, port, this, state.lastClose));
+  });
+  port.addEventListener('message', message => {
+    if (message.data.kind === 'register') {
+      state.id = message.data.id;
+      states.set(state.id, state);
+      port.postMessage({ kind: 'ready', id: state.id, connection: state.connection });
+    } else if (message.data.kind === 'close-worker') {
+      port.postMessage({ kind: 'queued-before-close', id: state.id });
+      port.close();
+      port.close();
+      try { port.postMessage({ kind: 'must-not-cross-after-local-close', id: state.id }); }
+      catch (error) { state.postCloseError = error.name; }
+    } else if (message.data.kind === 'ping') {
+      port.postMessage({ kind: 'pong', id: state.id });
+    } else if (message.data.kind === 'report') {
+      const target = states.get(message.data.targetId);
+      port.postMessage({
+        kind: 'close-report',
+        id: message.data.targetId,
+        trace: target ? target.trace : [],
+        eventStateReset: !target || !target.lastClose
+          || (target.lastClose.currentTarget === null && target.lastClose.eventPhase === 0),
+        postCloseError: target ? target.postCloseError : null,
+        postAfterRemoteCloseError: target ? target.postAfterRemoteCloseError : null,
+      });
+    }
+  });
+  port.start();
+};"#;
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            ("/shared-port-close-page", "text/html", page),
+            ("/shared-port-close.js", "text/javascript", worker_script),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/shared-port-close-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+  const snapshot = (id, phase, event, port, receiverThis, previous) => ({
+    id,
+    phase,
+    sameEvent: previous === event,
+    type: event.type,
+    genericEvent: event instanceof Event && !(event instanceof MessageEvent),
+    targetIsPort: event.target === port,
+    currentTargetIsPort: event.currentTarget === port,
+    eventPhase: event.eventPhase,
+    bubbles: event.bubbles,
+    cancelable: event.cancelable,
+    thisIsPort: receiverThis === port,
+  });
+  for (const id of ['page-closes', 'worker-closes', 'unrelated']) {
+    const shared = new SharedWorker('/shared-port-close.js', { name: 'glass-shared-port-close' });
+    const port = shared.port;
+    pagePorts[id] = port;
+    port.onmessage = event => pageMessages.push(event.data);
+    port.onclose = function(event) {
+      pageCloseEvents[id] = event;
+      pageCloseTrace.push(snapshot(id, 'handler', event, port, this, event));
+    };
+    port.addEventListener('close', function(event) {
+      pageCloseTrace.push(snapshot(id, 'listener', event, port, this, pageCloseEvents[id]));
+    });
+    port.start();
+    port.postMessage({ kind: 'register', id });
+  }
+  return true;
+})()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+
+    let mut ready_state = serde_json::Value::Null;
+    for _ in 0..8 {
+        ready_state = engine
+            .evaluate_async(
+                "(() => { const ready = pageMessages.filter(message => message.kind === 'ready'); return { ids: ready.map(message => message.id).sort(), connections: ready.map(message => message.connection).sort((a, b) => a - b) }; })()",
+            )
+            .await
+            .unwrap();
+        if ready_state["ids"]
+            .as_array()
+            .is_some_and(|ids| ids.len() == 3)
+        {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        ready_state,
+        serde_json::json!({
+            "ids": ["page-closes", "unrelated", "worker-closes"],
+            "connections": [1, 2, 3],
+        })
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"(() => {
+  const initiator = pagePorts['page-closes'];
+  initiator.close();
+  initiator.close();
+  try { initiator.postMessage({ kind: 'must-not-cross-after-local-close' }); }
+  catch (error) { pageInitiatorPostError = error.name; }
+  pagePorts['worker-closes'].postMessage({ kind: 'close-worker' });
+  return true;
+})()"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+
+    let mut post_close_state = serde_json::Value::Null;
+    for _ in 0..8 {
+        post_close_state = engine
+            .evaluate_async("({ pageCloseTrace, pageMessages, pageInitiatorPostError })")
+            .await
+            .unwrap();
+        if post_close_state["pageCloseTrace"]
+            .as_array()
+            .is_some_and(|trace| trace.len() == 2)
+        {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        post_close_state["pageInitiatorPostError"],
+        "InvalidStateError"
+    );
+    assert_eq!(
+        post_close_state["pageCloseTrace"].as_array().unwrap().len(),
+        2
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async("pagePorts.unrelated.postMessage({ kind: 'ping' }); true",)
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    let mut unrelated_reply = serde_json::Value::Null;
+    for _ in 0..8 {
+        unrelated_reply = engine
+            .evaluate_async(
+                "pageMessages.filter(message => message.kind === 'pong' && message.id === 'unrelated')",
+            )
+            .await
+            .unwrap();
+        if unrelated_reply
+            .as_array()
+            .is_some_and(|messages| !messages.is_empty())
+        {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    assert_eq!(unrelated_reply.as_array().unwrap().len(), 1);
+    let post_close_messages = engine.evaluate_async("pageMessages").await.unwrap();
+    assert!(
+        !post_close_messages
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["kind"] == "queued-before-close"
+                || message["kind"] == "must-not-cross-after-peer-close"
+                || message["kind"] == "must-not-cross-after-local-close")
+    );
+
+    engine
+        .evaluate_async(
+            "pagePorts.unrelated.postMessage({ kind: 'report', targetId: 'page-closes' }); pagePorts.unrelated.postMessage({ kind: 'report', targetId: 'worker-closes' }); true",
+        )
+        .await
+        .unwrap();
+    let mut close_reports = serde_json::Value::Null;
+    for _ in 0..8 {
+        close_reports = engine
+            .evaluate_async(
+                "pageMessages.filter(message => message.kind === 'close-report').slice().sort((a, b) => a.id.localeCompare(b.id))",
+            )
+            .await
+            .unwrap();
+        let page_initiated_close_delivered = close_reports
+            .as_array()
+            .and_then(|reports| reports.iter().find(|report| report["id"] == "page-closes"))
+            .and_then(|report| report["trace"].as_array())
+            .is_some_and(|trace| trace.len() == 2);
+        if close_reports
+            .as_array()
+            .is_some_and(|reports| reports.len() == 2)
+            && page_initiated_close_delivered
+        {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        close_reports,
+        serde_json::json!([
+            {
+                "kind": "close-report",
+                "id": "page-closes",
+                "trace": [
+                    { "id": "page-closes", "phase": "handler", "sameEvent": true, "type": "close", "genericEvent": true, "targetIsPort": true, "currentTargetIsPort": true, "eventPhase": 2, "bubbles": false, "cancelable": false, "thisIsPort": true },
+                    { "id": "page-closes", "phase": "listener", "sameEvent": true, "type": "close", "genericEvent": true, "targetIsPort": true, "currentTargetIsPort": true, "eventPhase": 2, "bubbles": false, "cancelable": false, "thisIsPort": true },
+                ],
+                "eventStateReset": true,
+                "postCloseError": null,
+                "postAfterRemoteCloseError": null,
+            },
+            {
+                "kind": "close-report",
+                "id": "worker-closes",
+                "trace": [],
+                "eventStateReset": true,
+                "postCloseError": "InvalidStateError",
+                "postAfterRemoteCloseError": null,
+            },
+        ])
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async("pagePorts.unrelated.postMessage({ kind: 'ping' }); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    let mut post_both_closes_replies = serde_json::Value::Null;
+    for _ in 0..8 {
+        post_both_closes_replies = engine
+            .evaluate_async(
+                "pageMessages.filter(message => message.kind === 'pong' && message.id === 'unrelated')",
+            )
+            .await
+            .unwrap();
+        if post_both_closes_replies
+            .as_array()
+            .is_some_and(|messages| messages.len() == 2)
+        {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    assert_eq!(post_both_closes_replies.as_array().unwrap().len(), 2);
+
+    let final_state = engine
+        .evaluate_async(
+            "({ pageCloseTrace, pageCloseStateReset: pageCloseEvents['worker-closes'].currentTarget === null && pageCloseEvents['worker-closes'].eventPhase === 0, remotePostError: (() => { try { pagePorts['worker-closes'].postMessage({ kind: 'must-not-cross-after-remote-close' }); return null; } catch (error) { return error.name; } })(), pageMessages })",
+        )
+        .await
+        .unwrap();
+    assert_eq!(final_state["pageCloseStateReset"], true);
+    assert_eq!(final_state["remotePostError"], serde_json::Value::Null);
+    assert_eq!(
+        final_state["pageCloseTrace"],
+        serde_json::json!([
+            { "id": "worker-closes", "phase": "handler", "sameEvent": true, "type": "close", "genericEvent": true, "targetIsPort": true, "currentTargetIsPort": true, "eventPhase": 2, "bubbles": false, "cancelable": false, "thisIsPort": true },
+            { "id": "worker-closes", "phase": "listener", "sameEvent": true, "type": "close", "genericEvent": true, "targetIsPort": true, "currentTargetIsPort": true, "eventPhase": 2, "bubbles": false, "cancelable": false, "thisIsPort": true },
+        ])
+    );
+    assert!(
+        !final_state["pageMessages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(
+                |message| message["kind"] == "must-not-cross-after-remote-close"
+                    || message["kind"] == "queued-before-close"
+                    || message["kind"] == "must-not-cross-after-peer-close"
+                    || message["kind"] == "must-not-cross-after-local-close"
+            )
+    );
+
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

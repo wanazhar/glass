@@ -1186,6 +1186,7 @@ pub(crate) struct NativePageMessagePortCommand {
 pub(crate) struct NativeSharedWorkerCreateRequest {
     pub(crate) source_context_id: String,
     pub(crate) source_frame_id: String,
+    pub(crate) document_generation: u32,
     pub(crate) owner_url: String,
     pub(crate) href: String,
     pub(crate) name: String,
@@ -1703,7 +1704,7 @@ impl NativeDedicatedWorker {
 pub(crate) struct NativeWorkerRegistry {
     workers: BTreeMap<u32, NativeDedicatedWorker>,
     shared_worker_keys: BTreeMap<String, u32>,
-    shared_worker_owners: BTreeMap<u32, BTreeSet<(String, String)>>,
+    shared_worker_owners: BTreeMap<u32, BTreeSet<(String, String, u32)>>,
     next_worker_timer_id: u32,
     pending_messages: VecDeque<NativeWorkerMessage>,
     pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
@@ -1803,6 +1804,7 @@ impl NativeWorkerRegistry {
         worker_id: u32,
         context_id: String,
         frame_id: String,
+        document_generation: u32,
     ) -> Result<(), NativeEngineError> {
         for (field, value) in [
             ("SharedWorker owner context", context_id.as_str()),
@@ -1825,6 +1827,12 @@ impl NativeWorkerRegistry {
                 ));
             }
         }
+        if document_generation == 0 {
+            return Err(NativeEngineError::invalid(
+                "SharedWorker owner Document generation",
+                "must be positive",
+            ));
+        }
         if !self
             .workers
             .get(&worker_id)
@@ -1836,7 +1844,7 @@ impl NativeWorkerRegistry {
             ));
         }
         let owners = self.shared_worker_owners.entry(worker_id).or_default();
-        let owner = (context_id, frame_id);
+        let owner = (context_id, frame_id, document_generation);
         if !owners.contains(&owner) && owners.len() >= MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
                 "native SharedWorker Document owners",
@@ -1852,6 +1860,36 @@ impl NativeWorkerRegistry {
         &mut self,
         context_id: &str,
     ) -> BTreeSet<u32> {
+        self.remove_shared_worker_owners_matching(|owner_context, _, _| owner_context == context_id)
+    }
+
+    pub(crate) fn remove_shared_worker_owner_for_document(
+        &mut self,
+        context_id: &str,
+        frame_id: &str,
+        document_generation: u32,
+    ) -> BTreeSet<u32> {
+        self.remove_shared_worker_owners_matching(|owner_context, owner_frame, owner_generation| {
+            owner_context == context_id
+                && owner_frame == frame_id
+                && owner_generation == document_generation
+        })
+    }
+
+    pub(crate) fn remove_shared_worker_owners_for_frame(
+        &mut self,
+        context_id: &str,
+        frame_id: &str,
+    ) -> BTreeSet<u32> {
+        self.remove_shared_worker_owners_matching(|owner_context, owner_frame, _| {
+            owner_context == context_id && owner_frame == frame_id
+        })
+    }
+
+    fn remove_shared_worker_owners_matching(
+        &mut self,
+        mut should_remove: impl FnMut(&str, &str, u32) -> bool,
+    ) -> BTreeSet<u32> {
         let worker_ids = self
             .shared_worker_owners
             .keys()
@@ -1862,7 +1900,9 @@ impl NativeWorkerRegistry {
             let Some(owners) = self.shared_worker_owners.get_mut(&worker_id) else {
                 continue;
             };
-            owners.retain(|(owner_context, _)| owner_context != context_id);
+            owners.retain(|(owner_context, owner_frame, owner_generation)| {
+                !should_remove(owner_context, owner_frame, *owner_generation)
+            });
             if owners.is_empty() {
                 self.shared_worker_owners.remove(&worker_id);
                 unowned.insert(worker_id);

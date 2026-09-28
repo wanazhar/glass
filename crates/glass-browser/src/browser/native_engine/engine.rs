@@ -3378,6 +3378,7 @@ impl NativeEngine {
                 .push_back(NativeSharedWorkerCreateRequest {
                     source_context_id: self.config.context_id.clone(),
                     source_frame_id: self.frame_id.clone(),
+                    document_generation: self.document.generation(),
                     owner_url: self.url.clone(),
                     href,
                     name,
@@ -3685,7 +3686,17 @@ impl NativeEngine {
     pub(crate) fn take_pending_shared_worker_creates(
         &mut self,
     ) -> Vec<NativeSharedWorkerCreateRequest> {
-        self.pending_shared_worker_creates.drain(..).collect()
+        let committed_generation = self.document.generation();
+        self.pending_shared_worker_creates
+            .drain(..)
+            .map(|mut request| {
+                // HTTP load effects are queued before their Document commits.
+                // Bind the owner at extraction, after the commit establishes
+                // the generation that this request belongs to.
+                request.document_generation = committed_generation;
+                request
+            })
+            .collect()
     }
 
     pub(crate) fn take_pending_window_closes(&mut self) -> Vec<NativeWindowCloseRequest> {

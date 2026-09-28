@@ -72,6 +72,23 @@ async fn wait_for_modal_dialog(
     .unwrap_or_else(|_| panic!("native modal controller did not expose {expected_type}"))
 }
 
+async fn wait_for_shared_worker_messages(
+    session: &BrowserSession,
+    expression: &str,
+) -> serde_json::Value {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let value = session.script(expression).await.unwrap().value;
+            if value.as_array().is_some_and(|events| !events.is_empty()) {
+                return value;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("SharedWorker page event did not arrive: {expression}"))
+}
+
 async fn read_http_request_bytes(stream: &mut TcpStream) -> Vec<u8> {
     let mut request = Vec::new();
     let mut chunk = [0_u8; 4096];
@@ -10201,6 +10218,287 @@ true"#;
         .value;
     assert_eq!(third_ready[0]["connection"], 1);
     assert_ne!(third_ready[0]["runtimeId"], original_runtime);
+
+    session.close().await.unwrap();
+    let _ = shutdown_sender.send(());
+    server.await.unwrap();
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
+fn native_runtime_shared_worker_document_navigation_retires_only_replaced_owners() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(run_shared_worker_document_navigation_teardown());
+    });
+}
+
+async fn run_shared_worker_document_navigation_teardown() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-shared-worker-document-lifecycle-{}.json",
+        std::process::id()
+    ));
+    let lock_path = profile_path.with_extension("lock");
+    let events_path = profile_path.with_extension("events");
+    let readers_path = profile_path.with_extension("readers");
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+    let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        loop {
+            let accepted = tokio::select! {
+                _ = &mut shutdown_receiver => break,
+                accepted = listener.accept() => accepted.unwrap(),
+            };
+            let (mut stream, _) = accepted;
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            let page = |page_id: &str| {
+                format!(
+                    r#"<script>
+globalThis.pageId = {page_id:?};
+globalThis.sharedMessages = [];
+globalThis.closeEvents = [];
+globalThis.sharedWorker = new SharedWorker('/shared-document.js', {{ name: 'glass-document-owner' }});
+sharedWorker.port.addEventListener('message', event => sharedMessages.push(event.data));
+sharedWorker.port.addEventListener('close', event => closeEvents.push(event.type));
+sharedWorker.port.start();
+sharedWorker.port.postMessage({{ kind: 'connect', pageId }});
+</script><main>{page_id}</main>"#
+                )
+            };
+            let (status, content_type, body) = match path {
+                "/parent" => (
+                    "200 OK",
+                    "text/html",
+                    "<main>parent<iframe src='/child'></iframe></main>".to_owned(),
+                ),
+                "/child" => ("200 OK", "text/html", page("child")),
+                "/child-next" => ("200 OK", "text/html", page("child-next")),
+                "/sibling" => ("200 OK", "text/html", page("sibling")),
+                "/root-next" => ("200 OK", "text/html", page("root-next")),
+                "/shared-document.js" => (
+                    "200 OK",
+                    "text/javascript",
+                    r#"
+let connectionCount = 0;
+const runtimeId = Date.now().toString() + '-' + Math.random().toString(36).slice(2);
+const ports = new Map();
+const closedPages = [];
+onconnect = event => {
+  const port = event.ports[0];
+  const connection = ++connectionCount;
+  let pageId = null;
+  port.addEventListener('message', message => {
+    if (message.data.kind === 'connect') {
+      pageId = message.data.pageId;
+      ports.set(pageId, port);
+      port.postMessage({ kind: 'ready', pageId, connection, runtimeId });
+    } else if (message.data.kind === 'ping') {
+      port.postMessage({ kind: 'pong', pageId, connection, runtimeId, closedPages: [...closedPages] });
+    }
+  });
+  port.addEventListener('close', () => {
+    closedPages.push(pageId);
+    ports.delete(pageId);
+    for (const otherPort of ports.values()) {
+      otherPort.postMessage({ kind: 'peer-closed', pageId, runtimeId });
+    }
+  });
+  port.start();
+};"#
+                        .to_owned(),
+                ),
+                _ => ("404 Not Found", "text/plain", "unexpected request".to_owned()),
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserSession::start(
+        NativeEngineConfig::default()
+            .with_storage_path(profile_path.clone())
+            .with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    let frames = session.list_frames().await.unwrap();
+    let root_frame_id = frames[0].id.clone();
+    let child_frame_id = frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some(root_frame_id.as_str()))
+        .unwrap()
+        .id
+        .clone();
+    session.select_frame(&child_frame_id).await.unwrap();
+    let child_ready = wait_for_shared_worker_messages(
+        &session,
+        "sharedMessages.filter(message => message.kind === 'ready')",
+    )
+    .await;
+    assert_eq!(child_ready.as_array().map(Vec::len), Some(1));
+    assert_eq!(child_ready[0]["connection"], 1);
+    let original_runtime = child_ready[0]["runtimeId"].clone();
+
+    let sibling = session
+        .create_target(&format!("http://{address}/sibling"))
+        .await
+        .unwrap();
+    session.select_target(&sibling.id).await.unwrap();
+    let sibling_ready = wait_for_shared_worker_messages(
+        &session,
+        "sharedMessages.filter(message => message.kind === 'ready')",
+    )
+    .await;
+    assert_eq!(sibling_ready[0]["connection"], 2);
+    assert_eq!(sibling_ready[0]["runtimeId"], original_runtime);
+
+    session.select_target("native-context").await.unwrap();
+    session.select_frame(&child_frame_id).await.unwrap();
+    session
+        .navigate(&format!("http://{address}/child#same-document"))
+        .await
+        .unwrap();
+    session
+        .script("sharedWorker.port.postMessage({ kind: 'ping' }); true")
+        .await
+        .unwrap();
+    let same_document_pong = wait_for_shared_worker_messages(
+        &session,
+        "sharedMessages.filter(message => message.kind === 'pong')",
+    )
+    .await;
+    assert_eq!(same_document_pong[0]["runtimeId"], original_runtime);
+    assert_eq!(same_document_pong[0]["closedPages"], serde_json::json!([]));
+
+    session
+        .navigate(&format!("http://{address}/child-next"))
+        .await
+        .unwrap();
+    let replacement_child_ready = wait_for_shared_worker_messages(
+        &session,
+        "sharedMessages.filter(message => message.kind === 'ready')",
+    )
+    .await;
+    let replacement_child_ready = replacement_child_ready.as_array().unwrap().last().unwrap();
+    assert_eq!(replacement_child_ready["pageId"], "child-next");
+    assert_eq!(replacement_child_ready["connection"], 3);
+    assert_eq!(replacement_child_ready["runtimeId"], original_runtime);
+    assert_eq!(
+        session.script("closeEvents").await.unwrap().value,
+        serde_json::json!([]),
+        "teardown of the outgoing Document must not dispatch close into its replacement"
+    );
+
+    session.select_target(&sibling.id).await.unwrap();
+    let child_closed = wait_for_shared_worker_messages(
+        &session,
+        "sharedMessages.filter(message => message.kind === 'peer-closed')",
+    )
+    .await;
+    assert_eq!(child_closed[0]["pageId"], "child");
+    session
+        .script("sharedWorker.port.postMessage({ kind: 'ping' }); true")
+        .await
+        .unwrap();
+    let sibling_pong = wait_for_shared_worker_messages(
+        &session,
+        "sharedMessages.filter(message => message.kind === 'pong')",
+    )
+    .await;
+    assert_eq!(
+        sibling_pong.as_array().unwrap().last().unwrap()["runtimeId"],
+        original_runtime
+    );
+
+    session.select_target("native-context").await.unwrap();
+    let root_frame_id = session.list_frames().await.unwrap()[0].id.clone();
+    session.select_frame(&root_frame_id).await.unwrap();
+    session
+        .navigate(&format!("http://{address}/root-next"))
+        .await
+        .unwrap();
+    let replacement_root_ready = wait_for_shared_worker_messages(
+        &session,
+        "sharedMessages.filter(message => message.kind === 'ready')",
+    )
+    .await;
+    let replacement_root_ready = replacement_root_ready.as_array().unwrap().last().unwrap();
+    assert_eq!(replacement_root_ready["pageId"], "root-next");
+    assert_eq!(replacement_root_ready["connection"], 4);
+    assert_eq!(replacement_root_ready["runtimeId"], original_runtime);
+    session
+        .script("sharedWorker.port.postMessage({ kind: 'ping' }); true")
+        .await
+        .unwrap();
+    let replacement_pong = wait_for_shared_worker_messages(
+        &session,
+        "sharedMessages.filter(message => message.kind === 'pong')",
+    )
+    .await;
+    assert_eq!(
+        replacement_pong.as_array().unwrap().last().unwrap()["pageId"],
+        "root-next"
+    );
+    assert_eq!(
+        replacement_pong.as_array().unwrap().last().unwrap()["closedPages"],
+        serde_json::json!(["child", "child-next"])
+    );
+
+    session.recover().await.unwrap();
+    let recovered_root_ready = wait_for_shared_worker_messages(
+        &session,
+        "sharedMessages.filter(message => message.kind === 'ready')",
+    )
+    .await;
+    let recovered_root_ready = recovered_root_ready.as_array().unwrap().last().unwrap();
+    assert_eq!(recovered_root_ready["pageId"], "root-next");
+    assert_eq!(recovered_root_ready["connection"], 5);
+    assert_eq!(recovered_root_ready["runtimeId"], original_runtime);
+
+    session.select_target(&sibling.id).await.unwrap();
+    session
+        .script("sharedWorker.port.postMessage({ kind: 'ping' }); true")
+        .await
+        .unwrap();
+    let recovered_sibling_pong = wait_for_shared_worker_messages(
+        &session,
+        "sharedMessages.filter(message => message.kind === 'pong' && message.closedPages.includes('root-next'))",
+    )
+    .await;
+    let recovered_sibling_pong = recovered_sibling_pong.as_array().unwrap().last().unwrap();
+    assert_eq!(recovered_sibling_pong["runtimeId"], original_runtime);
+    assert_eq!(
+        recovered_sibling_pong["closedPages"],
+        serde_json::json!(["child", "child-next", "root-next"])
+    );
+
+    session.select_target("native-context").await.unwrap();
+    session
+        .script("sharedWorker.port.postMessage({ kind: 'ping' }); true")
+        .await
+        .unwrap();
+    let recovered_root_pong = wait_for_shared_worker_messages(
+        &session,
+        "sharedMessages.filter(message => message.kind === 'pong')",
+    )
+    .await;
+    let recovered_root_pong = recovered_root_pong.as_array().unwrap().last().unwrap();
+    assert_eq!(recovered_root_pong["pageId"], "root-next");
+    assert_eq!(recovered_root_pong["runtimeId"], original_runtime);
+    assert_eq!(
+        recovered_root_pong["closedPages"],
+        serde_json::json!(["child", "child-next", "root-next"])
+    );
 
     session.close().await.unwrap();
     let _ = shutdown_sender.send(());

@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is locally complete through
-`native-engine-browser-810`. Slice 767 verifies native hyperlink Enter
+`native-engine-browser-811`. Slice 767 verifies native hyperlink Enter
 activation through local and process-backed `_blank` target and download
 defaults, including cancellation and opener preservation; see the
 [slice 767 task](tasks/native-engine-browser-767.md) for local evidence and
@@ -361,6 +361,16 @@ sibling owners and connections, and retires the worker after its final
 Document owner is destroyed. Closing a port alone does not erase its live
 Document owner. The process-backed evidence and remaining boundaries are in the
 [slice 810 task](tasks/native-engine-browser-810.md).
+
+Slice 811 binds SharedWorker owners to committed Document generations. It
+tears down the outgoing Document and descendants destroyed by cross-document
+navigation or successful recovery, after outgoing lifecycle effects and before
+replacement worker effects. The process-backed regression verifies same-
+document preservation, child and ancestor replacement, recovery, surviving
+target isolation, and replacement-route delivery (1 passed, 863 filtered;
+68.92 seconds). Dynamic iframe removal from a still-live parent Document and
+complete storage-key/partition/agent-cluster/credentials matching remain open;
+see the [slice 811 task](tasks/native-engine-browser-811.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

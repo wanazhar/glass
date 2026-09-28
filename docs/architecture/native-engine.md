@@ -1,10 +1,17 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-809`; issue #40 remains open. Slice 809 implements
+`native-engine-browser-811`; issue #40 remains open. Slice 811 binds
+SharedWorker ownership to committed Document generations and tears down only
+the replaced Document and descendant frames during committed cross-document
+navigation or recovery. Its process-backed regression covers same-document
+preservation, child and ancestor replacement, recovery, a surviving target,
+and replacement-route delivery (1 passed, 863 filtered; 68.92 seconds). Slice
+810 implements same-session SharedWorker teardown across top-level targets,
+with independent Document ownership and final-owner reaping. Slice 809 verifies
 same-session SharedWorker reuse across two same-origin top-level targets and
-verifies cross-target request/reply through both connection ports (1 passed,
-861 filtered; 36.22 seconds). Slice 808 verifies MessagePort close isolation
+cross-target request/reply through both connection ports (1 passed, 861
+filtered; 36.22 seconds). Slice 808 verifies MessagePort close isolation
 across three connections to one HTTP-loaded SharedWorker, including a
 request/reply after both close directions (1 passed, 860 filtered; 29.63
 seconds). Slice 746 moves initial
@@ -3893,6 +3900,15 @@ Document owner retires the idle SharedWorker global and matching key. A
 manually closed port does not remove its still-live Document owner. The
 process-backed evidence and remaining boundaries are in
 [task 810](../plan/tasks/native-engine-browser-810.md).
+
+Slice 811 completes the bounded Document-owner replacement path. Outgoing
+lifecycle effects run before teardown; the exact old generation and descendant
+Documents destroyed by replacement are retired before replacement worker
+effects, while same-document navigation and surviving Documents remain live.
+The process-backed result and exact commands are in
+[task 811](../plan/tasks/native-engine-browser-811.md). Dynamic iframe removal
+from a still-live parent Document remains open, as do SharedWorker matching by
+storage key, partition, agent cluster, and credentials.
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader

@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-801
 scope: glass-browser/message-port-deserialization-error-recovery
-status: contracted
+status: completed locally
 depends-on: [native-engine-browser-800]
 ---
 
@@ -81,13 +81,34 @@ its delivery queue so a later valid message still works.
 - `docs/plan/README.md`
 - `docs/plan/native-engine-browser-profile.md`
 
-## Verification
+## Implementation and verification
+
+The shared native MessagePort bootstrap now catches only failures from
+`glassMessageDecodeEnvelope()` in both local-ID and bridge host dispatch. It
+enqueues a bounded `messageerror` record through the receiving port's existing
+queue, constructs a `MessageEvent` with null data and no ports, and leaves the
+port open. Object-URL transfers are installed only after successful clone
+decoding, so a failed envelope cannot publish them. Sender-side serialization,
+host validation, object-URL installation, listener dispatch, and queue-limit
+errors remain outside the catch.
+
+The process-backed HTTP regression
+`native_content_process_message_port_decode_failure_dispatches_messageerror_and_recovers`
+transfers a port from a Dedicated Worker to its page, then injects a
+transfer-free malformed envelope through both the local-ID and bridge
+dispatchers. It verifies `MessageEvent` identity, event type/target/current
+target, null data, empty ports, no partial `message`, reset dispatch state,
+and that both local and cross-realm ports remain open and carry a later valid
+message. The cross-realm valid message round-trips through the worker.
+
+Passed locally:
 
 - `cargo check -p glass-browser --test native_engine --locked --quiet`
-- The exact process-backed HTTP regression added for the malformed-envelope
-  and recovery behavior.
-- `cargo fmt --all -- --check`, `git diff --check`, and the focused repository
-  documentation gates.
+- `cargo test -p glass-browser --test native_engine native_content_process_message_port_decode_failure_dispatches_messageerror_and_recovers --locked --quiet -- --exact` (1 passed)
+- `cargo test -p glass-browser --test native_engine native_content_process_transfers_message_ports_between_page_and_worker_realms --locked --quiet -- --exact` (1 passed)
+- `cargo fmt --all -- --check`, `git diff --check`
+- Release-truth and documentation-depth checks (see current issue #40 checkout evidence).
 
-Record results and exclusions here after implementation. Remote CI is not
-implied by local verification.
+The malformed fixture has no transferred ports or object URLs. Transfer
+rollback, other `messageerror` sources, remote CI, complete EventTarget/Web IDL
+and WPT behavior, and cross-platform certification remain open issue #40 work.

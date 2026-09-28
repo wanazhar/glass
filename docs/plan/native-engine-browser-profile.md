@@ -349,11 +349,12 @@ pass; this does not certify all Client/WindowClient Web IDL, other message
 source kinds, remote CI, or full Service Worker conformance. See
 [slice 800](tasks/native-engine-browser-800.md).
 
-Slice 801 contracts receive-side MessagePort recovery for a host-delivered
-clone envelope that fails structured deserialization: deliver `messageerror`
-without exposing partial data or ports, and preserve the port for later valid
-delivery. The regression is transfer-free and does not certify rollback for
-transferred resources or complete MessagePort/EventTarget/WPT conformance; see
+Slice 801 implements receive-side MessagePort recovery for host-delivered
+clone envelopes that fail structured deserialization: deliver `messageerror`
+without exposing partial data or ports, and preserve local and cross-realm
+ports for later valid delivery. The process-backed regression passes with
+transfer-free malformed input; transferred-resource rollback and complete
+MessagePort/EventTarget/WPT conformance remain open. See
 [slice 801](tasks/native-engine-browser-801.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,

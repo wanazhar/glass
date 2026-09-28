@@ -505,9 +505,19 @@ filtered; 24.08 seconds). Evidence covers the owning page's next request,
 HttpOnly invisibility to script, profile reload, and deletion both immediately
 and after another reload. The scoped integration-test check passed with 68
 existing legacy HTML parser dead-code warnings. Fan-out to unrelated already-
-live page/frame processes, broader cookie/WPT conformance, and cross-platform
-coverage remain open. See the
-[slice 816 task](tasks/native-engine-browser-816.md).
+Slice 817 fans out accepted SharedWorker cookie changes to all already-live
+target and frame processes within one backend/profile. Its process-backed
+group passed (3 passed, 866 filtered; 126.59 seconds), and the Slice 814
+credentials/redirect regression passed (1 passed, 868 filtered; 25.05
+seconds). The test verifies cookie visibility and the next HTTP request from a
+parked page and child frame, plus isolation from another backend with a
+different profile. The scoped test-target check passed with 68 existing
+legacy HTML parser dead-code warnings. Only the first live engine performs the
+profile merge; remaining engines refresh their runtime views. Separate live
+backend/session notification, ordinary page-response cookie synchronization,
+broader cookie/WPT conformance, and cross-platform coverage remain open.
+Ordinary page-response synchronization is the next bounded checkpoint. See
+the [slice 817 task](tasks/native-engine-browser-817.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus

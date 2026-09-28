@@ -3008,6 +3008,14 @@ impl NativeEngine {
         &mut self,
         changes: &[NativeCookieChange],
     ) -> Result<(), NativeEngineError> {
+        self.apply_cookie_changes_to_runtime_async(changes).await?;
+        self.persist_local_web_storage()
+    }
+
+    pub(crate) async fn apply_cookie_changes_to_runtime_async(
+        &mut self,
+        changes: &[NativeCookieChange],
+    ) -> Result<(), NativeEngineError> {
         self.require_running("apply SharedWorker cookie changes")?;
         let mut loader = self.loader.clone();
         loader.apply_cookie_changes(changes)?;
@@ -3015,7 +3023,6 @@ impl NativeEngine {
             process.apply_cookie_changes(changes).await?;
         }
         self.loader = loader;
-        self.persist_local_web_storage()?;
         Ok(())
     }
 

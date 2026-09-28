@@ -373,12 +373,14 @@ and listener plus a later real client message. Transfer rollback and complete
 Service Worker/EventTarget/WPT conformance remain open; see
 [slice 803](tasks/native-engine-browser-803.md).
 
-Slice 804 contracts cleanup of receiver-side `MessagePort` bridge proxies
+Slice 804 implements cleanup of receiver-side `MessagePort` bridge proxies
 created during a transfer-containing envelope whose object graph then fails
-to deserialize. It preserves preexisting endpoints and does not restore the
-sender's already-transferred object. Host-route retirement, remote-peer close
-notification, other transferables, and complete MessagePort/WPT conformance
-remain open; see [slice 804](tasks/native-engine-browser-804.md).
+to deserialize. Process-backed coverage verifies provisional entries are
+removed, preexisting endpoints survive, and later valid messages continue. It
+does not restore the sender's already-transferred object. Host-route
+retirement, remote-peer close notification, other transferables, and complete
+MessagePort/WPT conformance remain open; see
+[slice 804](tasks/native-engine-browser-804.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus

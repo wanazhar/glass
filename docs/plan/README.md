@@ -299,12 +299,14 @@ partial data or ports. Its process-backed regression verifies listener and
 `Client.postMessage()` event. Transfer rollback, full Web
 IDL/EventTarget/WPT, remote CI, and cross-platform certification remain open;
 see the [slice 803 task](tasks/native-engine-browser-803.md).
-Slice 804 contracts cleanup of receiver-side `MessagePort` bridge proxies
+Slice 804 implements cleanup of receiver-side `MessagePort` bridge proxies
 created before a transferred envelope's object graph fails to deserialize.
-It explicitly preserves prior registrations and does not pretend to restore
-already-transferred objects to the sender. Host-route retirement, remote-peer
-`close` notification, and other transferable cleanup remain separate gates;
-see the [slice 804 task](tasks/native-engine-browser-804.md).
+Its process-backed regression proves provisional entries are removed,
+preexisting registrations survive, and later valid messages still arrive. It
+does not restore already-transferred objects to the sender. Host-route
+retirement, remote-peer `close` notification, and other transferable cleanup
+remain separate gates; see the
+[slice 804 task](tasks/native-engine-browser-804.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

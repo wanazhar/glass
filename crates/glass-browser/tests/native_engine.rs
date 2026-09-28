@@ -7479,6 +7479,172 @@ addEventListener('messageerror', event => observeMessageError('listener', event)
 }
 
 #[tokio::test]
+async fn native_content_process_worker_proxy_dispatches_messageerror_and_recovers() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let page = r#"<script>
+globalThis.workerEvents = [];
+globalThis.workerMessages = [];
+globalThis.workerErrors = [];
+globalThis.currentProxyMessageError = null;
+globalThis.handlerThisIsWorker = false;
+globalThis.worker = new Worker('/worker-proxy-messageerror.js');
+const observeMessageError = (kind, event) => {
+  if (currentProxyMessageError === null) currentProxyMessageError = event;
+  workerEvents.push({
+    kind,
+    sameEvent: currentProxyMessageError === event,
+    type: event.type,
+    isMessageEvent: event instanceof MessageEvent,
+    targetIsWorker: event.target === worker,
+    currentTargetIsWorker: event.currentTarget === worker,
+    eventPhase: event.eventPhase,
+    dataIsNull: event.data === null,
+    portCount: event.ports.length,
+    origin: event.origin,
+    sourceIsNull: event.source === null,
+    bubbles: event.bubbles,
+    cancelable: event.cancelable,
+  });
+};
+const messageErrorHandler = function(event) {
+  handlerThisIsWorker = this === worker;
+  observeMessageError('handler', event);
+};
+worker.onmessageerror = messageErrorHandler;
+worker.addEventListener('messageerror', event => observeMessageError('listener', event));
+worker.onmessage = event => workerMessages.push({
+  type: event.type,
+  isMessageEvent: event instanceof MessageEvent,
+  targetIsWorker: event.target === worker,
+  currentTargetIsWorker: event.currentTarget === worker,
+  eventPhase: event.eventPhase,
+  data: event.data,
+});
+worker.onerror = event => workerErrors.push(event.message);
+</script><main>Worker proxy messageerror</main>"#;
+    let worker_script = r#"self.onmessage = event => {
+  postMessage({ kind: 'valid', value: event.data.value + 1 });
+};"#;
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            ("/worker-proxy-messageerror-page", "text/html", page),
+            (
+                "/worker-proxy-messageerror.js",
+                "text/javascript",
+                worker_script,
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/worker-proxy-messageerror-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"const malformed = {
+  data: {
+    __glassMessageClone: 'glass-native-structured-clone-v1',
+    root: { ref: 0 },
+    nodes: [{ type: 'invalid-node' }],
+  },
+  transfer_ports: [],
+  object_urls: [],
+  origin: 'https://sender.example',
+};
+__glassDispatchWorkerMessage(worker.__glassWorkerId, malformed);
+({
+  workerEvents,
+  workerErrors,
+  handlerReadback: worker.onmessageerror === messageErrorHandler,
+  handlerThisIsWorker,
+  eventStateReset: currentProxyMessageError.currentTarget === null
+    && currentProxyMessageError.eventPhase === 0,
+  workerAlive: !worker.__glassTerminated,
+})"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "workerEvents": [
+                {
+                    "kind": "handler", "sameEvent": true,
+                    "type": "messageerror", "isMessageEvent": true,
+                    "targetIsWorker": true, "currentTargetIsWorker": true,
+                    "eventPhase": 2, "dataIsNull": true, "portCount": 0,
+                    "origin": "https://sender.example", "sourceIsNull": true,
+                    "bubbles": false, "cancelable": false,
+                },
+                {
+                    "kind": "listener", "sameEvent": true,
+                    "type": "messageerror", "isMessageEvent": true,
+                    "targetIsWorker": true, "currentTargetIsWorker": true,
+                    "eventPhase": 2, "dataIsNull": true, "portCount": 0,
+                    "origin": "https://sender.example", "sourceIsNull": true,
+                    "bubbles": false, "cancelable": false,
+                },
+            ],
+            "workerErrors": [],
+            "handlerReadback": true,
+            "handlerThisIsWorker": true,
+            "eventStateReset": true,
+            "workerAlive": true,
+        })
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async("worker.postMessage({ value: 41 }); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    let mut valid_message = serde_json::Value::Null;
+    for _ in 0..8 {
+        valid_message = engine
+            .evaluate_async("workerMessages.length > 0 ? workerMessages[0] : null")
+            .await
+            .unwrap();
+        if !valid_message.is_null() {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        valid_message,
+        serde_json::json!({
+            "type": "message",
+            "isMessageEvent": true,
+            "targetIsWorker": true,
+            "currentTargetIsWorker": true,
+            "eventPhase": 2,
+            "data": { "kind": "valid", "value": 42 },
+        })
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_worker_blob_object_urls_cross_realm_messages() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -455,24 +455,32 @@ routes. Slice 812 implements dynamic iframe removal from a still-live parent
 Document: detach/reinsert receives a fresh frame identity, removed descendant
 contexts and SharedWorker routes are retired, surviving siblings remain live,
 and no unload event is delivered. Its process-backed regression passed (1
-passed, 864 filtered; 85.59 seconds). Full storage-key, partition,
-agent-cluster, credentials, retained detached `WindowProxy`, iframe/WPT, and
-SharedWorker conformance remain open; see the [slice 812 task](tasks/native-engine-browser-812.md)
-for exact evidence.
+passed, 864 filtered; 85.59 seconds). Storage partitioning beyond the current
+origin key, agent-cluster policy, credential-aware module-worker fetching,
+retained detached `WindowProxy`, iframe/WPT, and full SharedWorker conformance
+remain open; see the [slice 812 task](tasks/native-engine-browser-812.md) for
+exact evidence.
 
-Slice 813 specifies SharedWorker reuse identity as the creator environment's
-storage key, parsed constructor URL, and name. Worker type, credentials mode,
-and `extendedLifetime` are checked after identity matching; a mismatch reports
-an error to the new `SharedWorker` and must not create a parallel global or
-alter the existing owner's ports. The current [Storage Standard storage-key
-algorithm](https://storage.spec.whatwg.org/#storage-keys) defines a key as an
-origin tuple, so native opaque-origin keys must preserve per-Document origin
-identity rather than use the SharedWorker script URL. The [HTML Standard
-constructor algorithm](https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworker-interface)
-is the matching and mismatch authority. Credential-aware fetching,
-partitioning beyond the current storage-key definition, agent-cluster
-communication policy, and worker lifetime timers remain separate open profile
-requirements. See the [slice 813 task](tasks/native-engine-browser-813.md).
+Slice 813 implements SharedWorker reuse by creator storage key, parsed
+constructor URL, and name. Type, credentials, and `extendedLifetime` mismatches
+dispatch an error to the incoming object without connecting it or disturbing
+the incumbent; different names and URLs create separate globals. Its focused
+process-backed HTTP regression passed (1 passed, 864 filtered; 42.33 seconds).
+The tuple/opaque key-level tests are present but were not executed because the
+separate library-test compilation exhausted available host memory. The current
+[Storage Standard storage-key algorithm](https://storage.spec.whatwg.org/#storage-keys)
+and [HTML Standard constructor algorithm](https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworker-interface)
+remain authoritative. Credential-aware module-worker fetching, partitioning
+beyond the current storage-key definition, agent-cluster communication policy,
+and worker lifetime timers remain open. See the
+[slice 813 task](tasks/native-engine-browser-813.md).
+
+Slice 814 is planned to apply the SharedWorker `credentials` option to module
+script fetching and its module graph. The HTML Standard limits this option to
+`type: "module"`; classic SharedWorker script fetching retains its classic
+policy. Redirects, response-cookie handling, and module dependency requests
+need process-backed HTTP coverage. See the
+[slice 814 task](tasks/native-engine-browser-814.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus

@@ -1,10 +1,15 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-812`; issue #40 remains open. Slice 812 implements
-live iframe removal/reinsertion with scoped descendant and SharedWorker
-teardown, survivor preservation, and no unload delivery (1 passed, 864
-filtered; 85.59 seconds). Slice 811 binds
+`native-engine-browser-813`; issue #40 remains open. Slice 813 implements
+SharedWorker constructor matching by creator storage key, constructor URL,
+and name; incompatible type/credentials/lifetime options error only the new
+object. Its process-backed HTTP regression passed (1 passed, 864 filtered;
+42.33 seconds). The tuple/opaque key-level tests are present but were not run
+because compiling the separate library-test target exhausted available host
+memory. Slice 812 implements live iframe removal/reinsertion with scoped
+descendant and SharedWorker teardown, survivor preservation, and no unload
+delivery (1 passed, 864 filtered; 85.59 seconds). Slice 811 binds
 SharedWorker ownership to committed Document generations and tears down only
 the replaced Document and descendant frames during committed cross-document
 navigation or recovery. Its process-backed regression covers same-document
@@ -17,9 +22,12 @@ cross-target request/reply through both connection ports (1 passed, 861
 filtered; 36.22 seconds). Slice 808 verifies MessagePort close isolation
 across three connections to one HTTP-loaded SharedWorker, including a
 request/reply after both close directions (1 passed, 860 filtered; 29.63
-seconds). Slice 813 is in progress for standards-based SharedWorker
-constructor identity and option-mismatch handling; see the
-[slice 813 task](../plan/tasks/native-engine-browser-813.md). Slice 746 moves initial
+seconds). Slice 814 is planned for SharedWorker module-script credential
+handling; the HTML Standard applies the constructor credentials option only
+to module workers. See the
+[slice 814 task](../plan/tasks/native-engine-browser-814.md). Credential-aware
+redirect, response-cookie, and module-dependency behavior remains open. Slice
+746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR

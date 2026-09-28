@@ -28,19 +28,24 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is locally complete through
-`native-engine-browser-818`. Slice 818 returns ordinary page-response cookie
+`native-engine-browser-819`. Slice 818 returns ordinary page-response cookie
 journals after profile merge, synchronizes same-backend live target/frame
 engines and the SharedWorker loader/journal without duplicate profile writes,
 and preserves separate-profile isolation. Its process-backed regression passed
 (1 passed, 869 filtered; 69.98 seconds), covering cookie coalescing, HttpOnly,
-deletion, peer/frame requests, and a fresh engine reopening the profile. The
+deletion, peer/frame requests, and a fresh engine reopening the profile. Slice
+819's focused process-backed test also passed (1 passed, 869 filtered; 86.02
+seconds): an already-running module SharedWorker loads a same-origin module
+after the page cookie update, and the request includes the latest ordinary and
+HttpOnly cookies but not the deleted cookie. The
 companion SharedWorker-originated live-context group passed in its preceding
 focused run (2 passed, 868 filtered; 115.58 seconds). The scoped integration
 test check passed with existing dead-code warnings from the superseded HTML
-parser; formatting and diff validation passed. Direct observation from inside
-an already-running SharedWorker of a page-originated cookie update remains
-unverified, as do cross-session notification, broader cookie/WPT conformance,
-and cross-platform coverage. See the [slice 818 task](tasks/native-engine-browser-818.md),
+parser; formatting and diff validation passed. Direct Fetch API requests from
+inside a SharedWorker remain unverified. Cross-session notification, broader
+cookie/WPT conformance, and cross-platform coverage also remain open. See the
+[slice 819 task](tasks/native-engine-browser-819.md),
+the [slice 818 task](tasks/native-engine-browser-818.md),
 the [slice 817 task](tasks/native-engine-browser-817.md), the [slice 816
 task](tasks/native-engine-browser-816.md), and the [slice 815
 task](tasks/native-engine-browser-815.md) for ordinary fan-out, profile

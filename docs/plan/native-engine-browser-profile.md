@@ -515,12 +515,16 @@ content processes, and the SharedWorker loader/journal without duplicate
 profile writes. Its process-backed regression passed (1 passed, 869 filtered;
 69.98 seconds), verifying the peer and child-frame next requests, HttpOnly
 visibility, latest-value coalescing and deletion, independent-profile
-isolation, and cookies restored by a newly opened engine. The scoped check
+isolation, and cookies restored by a newly opened engine. Slice 819 also
+passes (1 passed, 869 filtered; 86.02 seconds), proving that a live module
+SharedWorker dynamic import after the page response sends the latest ordinary
+and HttpOnly cookies and excludes the deletion. The scoped check
 passed with existing legacy HTML parser dead-code warnings; formatting and
-diff validation passed. Direct observation inside an already-running
-SharedWorker of page-originated changes remains unverified. Separate
+diff validation passed. Direct SharedWorker Fetch API requests remain
+unverified. Separate
 backend/session notification, broader cookie/WPT conformance, and
-cross-platform coverage also remain open. See the [slice 818 task](tasks/native-engine-browser-818.md),
+cross-platform coverage also remain open. See the [slice 819 task](tasks/native-engine-browser-819.md),
+the [slice 818 task](tasks/native-engine-browser-818.md),
 the [slice 817 task](tasks/native-engine-browser-817.md), and
 [slice 816 task](tasks/native-engine-browser-816.md).
 

@@ -32972,58 +32972,89 @@ fn native_runtime_page_response_cookie_changes_reach_all_live_profile_contexts()
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let server = tokio::spawn(async move {
-                tokio::time::timeout(Duration::from_secs(60), async move {
-                    let mut requests = Vec::new();
-                    for _ in 0..10 {
-                        let (mut stream, _) = listener.accept().await.unwrap();
-                        let request = read_http_request(&mut stream).await;
-                        let path = request
-                            .split_whitespace()
-                            .nth(1)
-                            .expect("page-cookie request includes a URL")
-                            .to_owned();
-                        let cookie = request
-                            .lines()
-                            .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
-                            .and_then(|line| line.split_once(':'))
-                            .map(|(_, value)| value.trim().to_owned());
-                        let (extra_headers, content_type, body): (&str, &str, &str) =
-                            match path.as_str() {
-                                "/writer-page" => ("", "text/html", "<p>page cookie writer</p>"),
-                                "/peer-page" => {
-                                    ("", "text/html", "<iframe src='/peer-frame'></iframe>")
-                                }
-                                "/peer-frame" => ("", "text/html", "<p>live frame</p>"),
-                                "/isolated-page" => ("", "text/html", "<p>isolated</p>"),
-                                "/reload-page" => ("", "text/html", "<p>profile reload</p>"),
-                                "/set-cookie" => (
-                                    concat!(
-                                        "Set-Cookie: native_http_only=secret; HttpOnly; Path=/; SameSite=Lax\r\n",
-                                        "Set-Cookie: native_visible=first; Path=/; SameSite=Lax\r\n",
-                                        "Set-Cookie: native_visible=final; Path=/; SameSite=Lax\r\n",
-                                        "Set-Cookie: native_deleted=temporary; Path=/; SameSite=Lax\r\n",
-                                        "Set-Cookie: native_deleted=; Max-Age=0; Path=/; SameSite=Lax\r\n",
-                                    ),
-                                    "text/plain",
-                                    "set",
+                let mut requests: Vec<(String, Option<String>)> = Vec::new();
+                for _ in 0..12 {
+                    let (mut stream, _) = tokio::time::timeout(
+                        Duration::from_secs(30),
+                        listener.accept(),
+                    )
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "page-cookie request idle timeout after paths {:?}",
+                            requests
+                                .iter()
+                                .map(|(path, _)| path.as_str())
+                                .collect::<Vec<_>>()
+                        )
+                    })
+                    .unwrap();
+                    let request = read_http_request(&mut stream).await;
+                    let path = request
+                        .split_whitespace()
+                        .nth(1)
+                        .expect("page-cookie request includes a URL")
+                        .to_owned();
+                    let cookie = request
+                        .lines()
+                        .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                        .and_then(|line| line.split_once(':'))
+                        .map(|(_, value)| value.trim().to_owned());
+                    let (extra_headers, content_type, body): (&str, &str, &str) =
+                        match path.as_str() {
+                            "/writer-page" => (
+                                "",
+                                "text/html",
+                                r#"<script>
+globalThis.pageCookieWorkerMessages = [];
+globalThis.pageCookieWorker = new SharedWorker('/cookie-observer.js', {
+  name: 'page-response-cookie-observer', type: 'module', credentials: 'include',
+});
+pageCookieWorker.port.addEventListener('message', event => pageCookieWorkerMessages.push(event.data));
+pageCookieWorker.port.start();
+</script>"#,
+                            ),
+                            "/cookie-observer.js" => (
+                                "",
+                                "application/javascript",
+                                "globalThis.onconnect = event => { const port = event.ports[0]; port.addEventListener('message', message => { if (message.data === 'check') { port.postMessage({ stage: 'received' }); return; } if (message.data !== 'load') return; import('/observe-shared.js').then(module => port.postMessage({ body: module.cookieProbeResult }), error => port.postMessage({ error: String(error) })); }); port.start(); port.postMessage('ready'); };",
+                            ),
+                            "/peer-page" => {
+                                ("", "text/html", "<iframe src='/peer-frame'></iframe>")
+                            }
+                            "/peer-frame" => ("", "text/html", "<p>live frame</p>"),
+                            "/isolated-page" => ("", "text/html", "<p>isolated</p>"),
+                            "/reload-page" => ("", "text/html", "<p>profile reload</p>"),
+                            "/set-cookie" => (
+                                concat!(
+                                    "Set-Cookie: native_http_only=secret; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                    "Set-Cookie: native_visible=first; Path=/; SameSite=Lax\r\n",
+                                    "Set-Cookie: native_visible=final; Path=/; SameSite=Lax\r\n",
+                                    "Set-Cookie: native_deleted=temporary; Path=/; SameSite=Lax\r\n",
+                                    "Set-Cookie: native_deleted=; Max-Age=0; Path=/; SameSite=Lax\r\n",
                                 ),
-                                "/observe-peer" => ("", "text/plain", "peer-observed"),
-                                "/observe-frame" => ("", "text/plain", "frame-observed"),
-                                "/observe-isolated" => ("", "text/plain", "isolated-observed"),
-                                "/observe-reload" => ("", "text/plain", "reload-observed"),
-                                other => panic!("unexpected page-cookie request: {other}"),
-                            };
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                            body.len()
-                        );
-                        stream.write_all(response.as_bytes()).await.unwrap();
-                        requests.push((path, cookie));
-                    }
-                    requests
-                })
-                .await
-                .expect("page-response cookie fan-out remains bounded")
+                                "text/plain",
+                                "set",
+                            ),
+                            "/observe-shared.js" => (
+                                "",
+                                "application/javascript",
+                                "export const cookieProbeResult = 'shared-observed';",
+                            ),
+                            "/observe-peer" => ("", "text/plain", "peer-observed"),
+                            "/observe-frame" => ("", "text/plain", "frame-observed"),
+                            "/observe-isolated" => ("", "text/plain", "isolated-observed"),
+                            "/observe-reload" => ("", "text/plain", "reload-observed"),
+                            other => panic!("unexpected page-cookie request: {other}"),
+                        };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    requests.push((path, cookie));
+                }
+                requests
             });
 
             let session = BrowserRuntimeSession::connect_native(
@@ -33055,6 +33086,24 @@ fn native_runtime_page_response_cookie_changes_reach_all_live_profile_contexts()
             .await
             .unwrap();
             session.native_select_target("native-context").await.unwrap();
+            let ready = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let messages = session
+                        .script("pageCookieWorkerMessages.slice()")
+                        .await
+                        .unwrap()
+                        .value;
+                    if messages.as_array().is_some_and(|values| {
+                        values.first() == Some(&serde_json::json!("ready"))
+                    }) {
+                        break messages;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the live SharedWorker cookie observer connects");
+            assert_eq!(ready, serde_json::json!(["ready"]));
             assert_eq!(
                 session
                     .script("await fetch('/set-cookie').then(response => response.text())")
@@ -33062,6 +33111,57 @@ fn native_runtime_page_response_cookie_changes_reach_all_live_profile_contexts()
                 .unwrap()
                 .value,
                 serde_json::json!("set")
+            );
+            session
+                .script("pageCookieWorker.port.postMessage('check'); true")
+                .await
+                .unwrap();
+            let worker_acknowledgement = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let messages = session
+                        .script("pageCookieWorkerMessages.slice()")
+                        .await
+                        .unwrap()
+                        .value;
+                    if messages.as_array().is_some_and(|values| values.len() == 2) {
+                        break messages;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the already-running SharedWorker receives the page message");
+            assert_eq!(
+                worker_acknowledgement,
+                serde_json::json!(["ready", {"stage": "received"}])
+            );
+            session
+                .script("pageCookieWorker.port.postMessage('load'); true")
+                .await
+                .unwrap();
+            let shared_response = tokio::time::timeout(Duration::from_secs(45), async {
+                loop {
+                    let messages = session
+                        .script("pageCookieWorkerMessages.slice()")
+                        .await
+                        .unwrap()
+                        .value;
+                    if messages.as_array().is_some_and(|values| values.len() == 3) {
+                        break messages;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await;
+            let shared_response = shared_response
+                .expect("the live SharedWorker loads a script with the updated cookie jar");
+            assert_eq!(
+                shared_response,
+                serde_json::json!([
+                    "ready",
+                    {"stage": "received"},
+                    {"body": "shared-observed"}
+                ])
             );
 
             session.native_select_target(&peer.id).await.unwrap();
@@ -33160,6 +33260,7 @@ fn native_runtime_page_response_cookie_changes_reach_all_live_profile_contexts()
                     .to_owned()
             };
             for path in [
+                "/observe-shared.js",
                 "/observe-peer",
                 "/observe-frame",
                 "/observe-reload",

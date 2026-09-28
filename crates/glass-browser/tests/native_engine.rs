@@ -7537,6 +7537,231 @@ async fn native_content_process_worker_blob_object_urls_cross_realm_messages() {
 }
 
 #[tokio::test]
+async fn native_content_process_message_port_decode_failure_dispatches_messageerror_and_recovers() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let page = r#"<script>
+globalThis.portEvents = [];
+globalThis.portReady = false;
+globalThis.workerEvents = [];
+globalThis.workerErrors = [];
+globalThis.localPortEvents = [];
+globalThis.localChannel = new MessageChannel();
+globalThis.localPort = localChannel.port1;
+globalThis.lastLocalPortEvent = null;
+const recordPortEvent = (kind, message, target, events) => {
+  events.push({
+    kind,
+    type: message.type,
+    isMessageEvent: message instanceof MessageEvent,
+    targetIsPort: message.target === target,
+    currentTargetIsPort: message.currentTarget === target,
+    dataIsNull: message.data === null,
+    portCount: message.ports.length,
+    bubbles: message.bubbles,
+    cancelable: message.cancelable,
+    value: message.data && message.data.value,
+  });
+};
+localPort.addEventListener('message', message => {
+  globalThis.lastLocalPortEvent = message;
+  recordPortEvent('message', message, localPort, localPortEvents);
+});
+localPort.addEventListener('messageerror', message => {
+  globalThis.lastLocalPortEvent = message;
+  recordPortEvent('messageerror', message, localPort, localPortEvents);
+});
+localPort.start();
+globalThis.worker = new Worker('/message-port-decode-worker.js');
+worker.onmessage = event => {
+  workerEvents.push({ data: event.data, portCount: event.ports.length });
+  if (event.data.kind !== 'port-ready') return;
+  globalThis.receivingPort = event.ports[0];
+  const observe = (kind, message) => {
+    globalThis.lastPortEvent = message;
+    recordPortEvent(kind, message, receivingPort, portEvents);
+  };
+  receivingPort.addEventListener('message', message => observe('message', message));
+  receivingPort.addEventListener('messageerror', message => observe('messageerror', message));
+  receivingPort.start();
+  globalThis.portReady = true;
+};
+worker.onerror = event => workerErrors.push(event.message);
+</script><main>MessagePort decode recovery</main>"#;
+    let worker_script = r#"
+const channel = new MessageChannel();
+channel.port2.addEventListener('message', event => {
+  channel.port2.postMessage({ value: event.data.value + 1 });
+});
+channel.port2.start();
+postMessage({ kind: 'port-ready' }, [channel.port1]);
+"#;
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            ("/message-port-decode-page", "text/html", page),
+            (
+                "/message-port-decode-worker.js",
+                "text/javascript",
+                worker_script,
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/message-port-decode-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let mut port_ready = false;
+    for _ in 0..8 {
+        port_ready = engine
+            .evaluate_async("portReady")
+            .await
+            .unwrap()
+            .as_bool()
+            .unwrap_or(false);
+        if port_ready {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    assert!(
+        port_ready,
+        "worker-transferred MessagePort should be available: {}",
+        engine
+            .evaluate_async("({ workerEvents, workerErrors })")
+            .await
+            .unwrap()
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"const malformed = {
+  data: {
+    __glassMessageClone: 'glass-native-structured-clone-v1',
+    root: { ref: 0 },
+    nodes: [{ type: 'invalid-node' }],
+  },
+  transfer_ports: [],
+  object_urls: [],
+};
+__glassDispatchMessagePortById(localPort.__glassMessagePortId, malformed);
+__glassDispatchMessagePortByBridge(receivingPort.__glassMessagePortBridgeKey, malformed);
+await Promise.resolve();
+({
+  localPortEvents,
+  portEvents,
+  eventStateReset: lastLocalPortEvent.currentTarget === null
+    && lastLocalPortEvent.eventPhase === 0
+    && lastPortEvent.currentTarget === null
+    && lastPortEvent.eventPhase === 0,
+  portsOpen: !localPort.__glassMessageClosed && !receivingPort.__glassMessageClosed,
+})"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "localPortEvents": [{
+                "kind": "messageerror",
+                "type": "messageerror",
+                "isMessageEvent": true,
+                "targetIsPort": true,
+                "currentTargetIsPort": true,
+                "dataIsNull": true,
+                "portCount": 0,
+                "bubbles": false,
+                "cancelable": false,
+                "value": null,
+            }],
+            "portEvents": [{
+                "kind": "messageerror",
+                "type": "messageerror",
+                "isMessageEvent": true,
+                "targetIsPort": true,
+                "currentTargetIsPort": true,
+                "dataIsNull": true,
+                "portCount": 0,
+                "bubbles": false,
+                "cancelable": false,
+                "value": null,
+            }],
+            "eventStateReset": true,
+            "portsOpen": true,
+        })
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async("receivingPort.postMessage({ value: 41 }); localChannel.port2.postMessage({ value: 8 }); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    let mut recovered = serde_json::Value::Null;
+    for _ in 0..8 {
+        recovered = engine
+            .evaluate_async("portEvents.length === 2 && localPortEvents.length === 2 ? ({ bridge: portEvents[1], local: localPortEvents[1] }) : null")
+            .await
+            .unwrap();
+        if !recovered.is_null() {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        recovered,
+        serde_json::json!({
+            "bridge": {
+                "kind": "message",
+                "type": "message",
+                "isMessageEvent": true,
+                "targetIsPort": true,
+                "currentTargetIsPort": true,
+                "dataIsNull": false,
+                "portCount": 0,
+                "bubbles": false,
+                "cancelable": false,
+                "value": 42,
+            },
+            "local": {
+                "kind": "message",
+                "type": "message",
+                "isMessageEvent": true,
+                "targetIsPort": true,
+                "currentTargetIsPort": true,
+                "dataIsNull": false,
+                "portCount": 0,
+                "bubbles": false,
+                "cancelable": false,
+                "value": 8,
+            },
+        })
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_transfers_message_ports_between_page_and_worker_realms() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

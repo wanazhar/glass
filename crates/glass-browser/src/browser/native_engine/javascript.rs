@@ -30255,6 +30255,16 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     event.target = target;
     return event;
   };
+  const glassMessageErrorEvent = (target) => {
+    const event = new GlassMessageEvent("messageerror", {
+      data: null,
+      origin: "",
+      source: null,
+      ports: [],
+    });
+    event.target = target;
+    return event;
+  };
   const glassMessageSchedule = (target) => {
     if (target.__glassMessageClosed || target.__glassMessageDeliveryQueued) return;
     glassMessageHidden(target, "__glassMessageDeliveryQueued", true);
@@ -30264,7 +30274,10 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
       const queue = target.__glassMessageQueue;
       while (queue.length > 0 && !target.__glassMessageClosed) {
         const item = queue.shift();
-        glassMessageDispatch(target, glassMessageEvent(target, item.data, item.ports));
+        const event = item && item.messageError === true
+          ? glassMessageErrorEvent(target)
+          : glassMessageEvent(target, item.data, item.ports);
+        glassMessageDispatch(target, event);
       }
     };
     if (typeof globalThis.queueMicrotask === "function") globalThis.queueMicrotask(run);
@@ -30276,6 +30289,17 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     if (queue.length >= glassMessagePortQueueLimit)
       throw glassMessageException("native message queue is full", "QuotaExceededError");
     queue.push({ data, ports: Array.isArray(ports) ? ports.slice() : [] });
+    if (target.__glassMessageStarted || typeof target.onmessage === "function") {
+      target.__glassMessageStarted = true;
+      glassMessageSchedule(target);
+    }
+  };
+  const glassMessageEnqueueDecodeFailure = (target) => {
+    if (!target || target.__glassMessageClosed) return;
+    const queue = target.__glassMessageQueue;
+    if (queue.length >= glassMessagePortQueueLimit)
+      throw glassMessageException("native message queue is full", "QuotaExceededError");
+    queue.push({ messageError: true, data: null, ports: [] });
     if (target.__glassMessageStarted || typeof target.onmessage === "function") {
       target.__glassMessageStarted = true;
       glassMessageSchedule(target);
@@ -30402,18 +30426,30 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
   globalThis.__glassDispatchMessagePortById = (portId, payload) => {
     const port = glassMessagePortRegistry.get(Number(portId));
     if (!port || port.__glassMessageClosed) return null;
+    let envelope;
+    try {
+      envelope = glassMessageDecodeEnvelope(payload);
+    } catch (_error) {
+      glassMessageEnqueueDecodeFailure(port);
+      return null;
+    }
     if (payload && Array.isArray(payload.object_urls))
       globalThis.__glassInstallObjectUrlTransfers(payload.object_urls);
-    const envelope = glassMessageDecodeEnvelope(payload);
     glassMessageEnqueue(port, envelope.data, envelope.ports);
     return null;
   };
   globalThis.__glassDispatchMessagePortByBridge = (bridgeKey, payload) => {
     const port = glassMessageBridgeRegistry.get(String(bridgeKey));
     if (!port || port.__glassMessageClosed) return null;
+    let envelope;
+    try {
+      envelope = glassMessageDecodeEnvelope(payload);
+    } catch (_error) {
+      glassMessageEnqueueDecodeFailure(port);
+      return null;
+    }
     if (payload && Array.isArray(payload.object_urls))
       globalThis.__glassInstallObjectUrlTransfers(payload.object_urls);
-    const envelope = glassMessageDecodeEnvelope(payload);
     glassMessageEnqueue(port, envelope.data, envelope.ports);
     return null;
   };

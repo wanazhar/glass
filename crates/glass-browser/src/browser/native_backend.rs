@@ -82,6 +82,13 @@ struct NativePageMessagePortRoute {
     frame_id: String,
 }
 
+#[derive(Debug, Clone)]
+struct NativeSharedWorkerPageRoute {
+    context_id: String,
+    frame_id: String,
+    document_generation: u32,
+}
+
 enum NativeWorkerCoordinatorEffect {
     PageMessagePort(NativePageMessagePortCommand),
     SharedWorkerMessage(NativePageMessagePortCommand),
@@ -91,7 +98,7 @@ enum NativeWorkerCoordinatorEffect {
 struct NativeSharedWorkerCoordinator {
     registry: NativeWorkerRegistry,
     loader: NativeResourceLoader,
-    page_ports: BTreeMap<String, NativePageMessagePortRoute>,
+    page_ports: BTreeMap<String, NativeSharedWorkerPageRoute>,
     next_connection_id: u64,
 }
 
@@ -4003,6 +4010,47 @@ impl NativeEngineBackend {
         }
     }
 
+    fn frame_owner_document_generation(
+        &self,
+        frame_id: &str,
+    ) -> Result<Option<u32>, BrowserBackendError> {
+        let Some(route) = self.frame_route(frame_id)? else {
+            return Ok(None);
+        };
+        let generation = match route {
+            NativeFrameRoute::ActiveSelected => self
+                .lock_engine_raw(BackendOperation::Script)?
+                .document_generation()
+                .map_err(native_error)?,
+            NativeFrameRoute::ActiveParked => {
+                let targets = self.lock_targets(BackendOperation::Script)?;
+                let Some(target) = targets.active_frames.parked.get(frame_id) else {
+                    return Ok(None);
+                };
+                target.engine.document_generation().map_err(native_error)?
+            }
+            NativeFrameRoute::ParkedSelected { target_id } => {
+                let targets = self.lock_targets(BackendOperation::Script)?;
+                let Some(target) = targets.parked.get(&target_id) else {
+                    return Ok(None);
+                };
+                target.engine.document_generation().map_err(native_error)?
+            }
+            NativeFrameRoute::ParkedParked { target_id } => {
+                let targets = self.lock_targets(BackendOperation::Script)?;
+                let Some(frame) = targets
+                    .parked
+                    .get(&target_id)
+                    .and_then(|target| target.frames.parked.get(frame_id))
+                else {
+                    return Ok(None);
+                };
+                frame.engine.document_generation().map_err(native_error)?
+            }
+        };
+        Ok(Some(generation))
+    }
+
     fn register_page_message_port_routes(
         &self,
         source_context_id: &str,
@@ -4215,6 +4263,224 @@ impl NativeEngineBackend {
                 .retain(|bridge_key, _| registry.shared_worker_id_for_port(bridge_key).is_some());
         }
 
+        first_error.map_or(Ok(()), Err)
+    }
+
+    async fn close_shared_worker_owners_for_document(
+        &self,
+        context_id: &str,
+        frame_id: &str,
+        document_generation: u32,
+    ) -> Result<(), BrowserBackendError> {
+        validate_native_topology_id(context_id)?;
+        validate_native_topology_id(frame_id)?;
+        if document_generation == 0 {
+            return Err(BrowserBackendError::InvalidConfiguration {
+                field: "native SharedWorker owner Document generation".into(),
+                reason: "must be positive".into(),
+            });
+        }
+        let bridge_keys = {
+            let workers = self.shared_workers.lock().map_err(|_| {
+                poisoned_lock_error(BackendOperation::Navigate, "SharedWorker coordinator")
+            })?;
+            workers
+                .page_ports
+                .iter()
+                .filter_map(|(bridge_key, route)| {
+                    (route.context_id == context_id
+                        && route.frame_id == frame_id
+                        && route.document_generation == document_generation)
+                        .then_some(bridge_key.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+        let close_result = self.close_shared_worker_bridges(bridge_keys).await;
+        let owner_result =
+            self.remove_shared_worker_document_owner(context_id, frame_id, document_generation);
+        close_result?;
+        owner_result
+    }
+
+    async fn close_shared_worker_owners_for_frame(
+        &self,
+        context_id: &str,
+        frame_id: &str,
+    ) -> Result<(), BrowserBackendError> {
+        validate_native_topology_id(context_id)?;
+        validate_native_topology_id(frame_id)?;
+        let bridge_keys = {
+            let workers = self.shared_workers.lock().map_err(|_| {
+                poisoned_lock_error(BackendOperation::Navigate, "SharedWorker coordinator")
+            })?;
+            workers
+                .page_ports
+                .iter()
+                .filter_map(|(bridge_key, route)| {
+                    (route.context_id == context_id && route.frame_id == frame_id)
+                        .then_some(bridge_key.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+        let close_result = self.close_shared_worker_bridges(bridge_keys).await;
+        let owner_result = self.remove_shared_worker_frame_owners(context_id, frame_id);
+        close_result?;
+        owner_result
+    }
+
+    async fn close_shared_worker_bridges(
+        &self,
+        bridge_keys: Vec<String>,
+    ) -> Result<(), BrowserBackendError> {
+        let bridge_keys = bridge_keys.into_iter().collect::<BTreeSet<_>>();
+        if bridge_keys.is_empty() {
+            return Ok(());
+        }
+        self.page_message_port_routes
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Navigate, "page MessagePort route"))?
+            .retain(|bridge_key, _| !bridge_keys.contains(bridge_key));
+        self.shared_workers
+            .lock()
+            .map_err(|_| {
+                poisoned_lock_error(BackendOperation::Navigate, "SharedWorker coordinator")
+            })?
+            .page_ports
+            .retain(|bridge_key, _| !bridge_keys.contains(bridge_key));
+
+        let mut first_error = None;
+        for bridge_key in bridge_keys {
+            let (close_result, effects) = {
+                let mut coordinator = self.shared_workers.lock().map_err(|_| {
+                    poisoned_lock_error(BackendOperation::Navigate, "SharedWorker coordinator")
+                })?;
+                let result = {
+                    let NativeSharedWorkerCoordinator {
+                        registry, loader, ..
+                    } = &mut *coordinator;
+                    registry
+                        .apply_page_message_port_commands(
+                            vec![NativeScriptCommand::MessagePortClose {
+                                bridge_key,
+                                worker_id: None,
+                            }],
+                            loader,
+                        )
+                        .await
+                };
+                let effects = take_shared_worker_page_messages(&mut coordinator);
+                (result, effects)
+            };
+            if let Err(error) = close_result {
+                first_error.get_or_insert_with(|| native_error(error));
+            }
+            let (
+                popups,
+                messages,
+                closes,
+                navigations,
+                service_worker_windows,
+                service_worker_messages,
+                _,
+            ) = NativeQueuedBrowserEffects::default();
+            if let Err(error) = Box::pin(self.process_pending_browser_effects(
+                popups,
+                messages,
+                closes,
+                navigations,
+                service_worker_windows,
+                service_worker_messages,
+                effects,
+            ))
+            .await
+            {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    fn remove_shared_worker_document_owner(
+        &self,
+        context_id: &str,
+        frame_id: &str,
+        document_generation: u32,
+    ) -> Result<(), BrowserBackendError> {
+        let mut coordinator = self.shared_workers.lock().map_err(|_| {
+            poisoned_lock_error(BackendOperation::Navigate, "SharedWorker coordinator")
+        })?;
+        let unowned = coordinator
+            .registry
+            .remove_shared_worker_owner_for_document(context_id, frame_id, document_generation);
+        for worker_id in unowned {
+            coordinator
+                .registry
+                .terminate_unowned_shared_worker(worker_id);
+        }
+        let NativeSharedWorkerCoordinator {
+            registry,
+            page_ports,
+            ..
+        } = &mut *coordinator;
+        page_ports.retain(|bridge_key, _| registry.shared_worker_id_for_port(bridge_key).is_some());
+        Ok(())
+    }
+
+    fn remove_shared_worker_frame_owners(
+        &self,
+        context_id: &str,
+        frame_id: &str,
+    ) -> Result<(), BrowserBackendError> {
+        let mut coordinator = self.shared_workers.lock().map_err(|_| {
+            poisoned_lock_error(BackendOperation::Navigate, "SharedWorker coordinator")
+        })?;
+        let unowned = coordinator
+            .registry
+            .remove_shared_worker_owners_for_frame(context_id, frame_id);
+        for worker_id in unowned {
+            coordinator
+                .registry
+                .terminate_unowned_shared_worker(worker_id);
+        }
+        let NativeSharedWorkerCoordinator {
+            registry,
+            page_ports,
+            ..
+        } = &mut *coordinator;
+        page_ports.retain(|bridge_key, _| registry.shared_worker_id_for_port(bridge_key).is_some());
+        Ok(())
+    }
+
+    async fn teardown_replaced_document(
+        &self,
+        context_id: &str,
+        frame_id: &str,
+        document_generation: u32,
+        destroyed_descendant_frame_ids: &[String],
+    ) -> Result<(), BrowserBackendError> {
+        let mut first_error = self
+            .close_shared_worker_owners_for_document(context_id, frame_id, document_generation)
+            .await
+            .err();
+        for descendant_frame_id in destroyed_descendant_frame_ids {
+            if let Err(error) = self
+                .close_shared_worker_owners_for_frame(context_id, descendant_frame_id)
+                .await
+            {
+                first_error.get_or_insert(error);
+            }
+        }
+        if let Err(error) = self.clear_page_message_port_routes_for_frame(frame_id) {
+            first_error.get_or_insert(error);
+        }
+        for descendant_frame_id in destroyed_descendant_frame_ids {
+            if let Err(error) = self.clear_page_message_port_routes_for_frame(descendant_frame_id) {
+                first_error.get_or_insert(error);
+            }
+        }
+        if let Err(error) = self.prune_page_message_port_routes() {
+            first_error.get_or_insert(error);
+        }
         first_error.map_or(Ok(()), Err)
     }
 
@@ -4477,6 +4743,8 @@ impl NativeEngineBackend {
         }
         if self.frame_owner_context_id(&route.frame_id)?.as_deref()
             != Some(route.context_id.as_str())
+            || self.frame_owner_document_generation(&route.frame_id)?
+                != Some(route.document_generation)
         {
             self.shared_workers
                 .lock()
@@ -4496,6 +4764,28 @@ impl NativeEngineBackend {
     ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
         validate_native_topology_id(&request.source_context_id)?;
         validate_native_topology_id(&request.source_frame_id)?;
+        if request.document_generation == 0 {
+            return Err(BrowserBackendError::InvalidConfiguration {
+                field: "native SharedWorker owner Document generation".into(),
+                reason: "must be positive".into(),
+            });
+        }
+        let current_context = self.frame_owner_context_id(&request.source_frame_id)?;
+        let current_generation = self.frame_owner_document_generation(&request.source_frame_id)?;
+        if current_context.as_deref() != Some(request.source_context_id.as_str())
+            || current_generation != Some(request.document_generation)
+        {
+            return Err(BrowserBackendError::SelectionFailed {
+                reason: format!(
+                    "native SharedWorker create came from stale Document owner {}:{} generation {}; current owner is {:?} generation {:?}",
+                    request.source_context_id,
+                    request.source_frame_id,
+                    request.document_generation,
+                    current_context,
+                    current_generation
+                ),
+            });
+        }
         validate_message_port_transfers(std::slice::from_ref(&request.transfer_port))
             .map_err(native_error)?;
         self.register_page_message_port_routes(
@@ -4530,9 +4820,10 @@ impl NativeEngineBackend {
         }
         coordinator.page_ports.insert(
             request.transfer_port.bridge_key.clone(),
-            NativePageMessagePortRoute {
+            NativeSharedWorkerPageRoute {
                 context_id: request.source_context_id.clone(),
                 frame_id: request.source_frame_id.clone(),
+                document_generation: request.document_generation,
             },
         );
         let command = NativeScriptCommand::SharedWorkerCreate {
@@ -4569,6 +4860,7 @@ impl NativeEngineBackend {
             worker_id,
             request.source_context_id,
             request.source_frame_id,
+            request.document_generation,
         ) {
             coordinator.page_ports.remove(&bridge_key);
             drop(coordinator);
@@ -4602,6 +4894,8 @@ impl NativeEngineBackend {
             || route.frame_id != command.source_frame_id
             || self.frame_owner_context_id(&route.frame_id)?.as_deref()
                 != Some(route.context_id.as_str())
+            || self.frame_owner_document_generation(&route.frame_id)?
+                != Some(route.document_generation)
         {
             return Ok(NativeQueuedBrowserEffects::default());
         }
@@ -4622,9 +4916,10 @@ impl NativeEngineBackend {
             for transfer in &command.transfer_ports {
                 coordinator.page_ports.insert(
                     transfer.bridge_key.clone(),
-                    NativePageMessagePortRoute {
+                    NativeSharedWorkerPageRoute {
                         context_id: route.context_id.clone(),
                         frame_id: route.frame_id.clone(),
+                        document_generation: route.document_generation,
                     },
                 );
             }
@@ -4771,7 +5066,15 @@ impl NativeEngineBackend {
         proxy_updates: &[NativeWindowProxyUpdate],
     ) -> Result<BackendResponse, BrowserBackendError> {
         let cancellation = self.active_navigation_cancellation()?;
-        let (owner_id, frame_id, lifecycle, runtime, document_replaced) = {
+        let (
+            owner_id,
+            frame_id,
+            lifecycle,
+            runtime,
+            document_replaced,
+            outgoing_document_generation,
+            destroyed_descendant_frame_ids,
+        ) = {
             let mut targets = self.lock_targets(BackendOperation::Navigate)?;
             let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
             let owner_id =
@@ -4784,6 +5087,7 @@ impl NativeEngineBackend {
                         reason: "select an available native page target before navigating".into(),
                     })?;
             let frame_id = targets.active_frames.active_frame_id.clone();
+            let destroyed_descendant_frame_ids = targets.active_frames.descendant_ids(&frame_id);
             engine
                 .sync_window_proxies(proxy_updates)
                 .await
@@ -4847,30 +5151,52 @@ impl NativeEngineBackend {
                     targets.active_frames.active_sandboxed_modals = replacement_sandboxed_modals;
                 }
             }
-            (owner_id, frame_id, lifecycle, runtime, document_replaced)
+            (
+                owner_id,
+                frame_id,
+                lifecycle,
+                runtime,
+                document_replaced,
+                initial_generation,
+                destroyed_descendant_frame_ids,
+            )
         };
 
-        let mut browser = self
+        let lifecycle_browser = self
             .process_native_frame_lifecycle_effects(&owner_id, lifecycle.effects)
             .await?;
+        self.process_pending_browser_effects(
+            lifecycle_browser.0,
+            lifecycle_browser.1,
+            lifecycle_browser.2,
+            lifecycle_browser.3,
+            lifecycle_browser.4,
+            lifecycle_browser.5,
+            lifecycle_browser.6,
+        )
+        .await?;
+        if document_replaced {
+            self.teardown_replaced_document(
+                &owner_id,
+                &frame_id,
+                outgoing_document_generation,
+                &destroyed_descendant_frame_ids,
+            )
+            .await?;
+            let mut targets = self.lock_targets(BackendOperation::Navigate)?;
+            close_native_frame_descendants(&mut targets.active_frames, &frame_id).await?;
+            targets.active_frames.discovered_generation = None;
+        }
         let lifecycle_cancelled = lifecycle.cancelled;
         self.sync_target_name(&owner_id, &runtime.window_name)?;
         self.process_frame_event_effects(&frame_id, runtime.events)
             .await?;
         Box::pin(self.process_pending_frame_scripts(runtime.frame_scripts)).await?;
-        append_native_queued_browser_effects(&mut browser, runtime.browser);
-
+        let browser = runtime.browser;
         self.process_pending_browser_effects(
             browser.0, browser.1, browser.2, browser.3, browser.4, browser.5, browser.6,
         )
         .await?;
-        if document_replaced {
-            self.clear_page_message_port_routes_for_frame(&frame_id)?;
-            self.prune_page_message_port_routes()?;
-            let mut targets = self.lock_targets(BackendOperation::Navigate)?;
-            close_native_frame_descendants(&mut targets.active_frames, &frame_id).await?;
-            targets.active_frames.discovered_generation = None;
-        }
         self.synchronize_native_service_worker_clients().await?;
         if lifecycle_cancelled {
             return Err(native_error(NativeEngineError::NavigationCancelled));
@@ -5139,19 +5465,28 @@ impl NativeEngineBackend {
                 (result, target_id)
             }
         };
-        let mut browser = self
+        let lifecycle_browser = self
             .process_native_frame_lifecycle_effects(&owner_id, navigation_result.lifecycle.effects)
             .await?;
-        self.sync_target_name(&owner_id, &navigation_result.runtime.window_name)?;
-        self.process_frame_event_effects(frame_id, navigation_result.runtime.events)
-            .await?;
-        Box::pin(self.process_pending_frame_scripts(navigation_result.runtime.frame_scripts))
-            .await?;
-        append_native_queued_browser_effects(&mut browser, navigation_result.runtime.browser);
+        self.process_pending_browser_effects(
+            lifecycle_browser.0,
+            lifecycle_browser.1,
+            lifecycle_browser.2,
+            lifecycle_browser.3,
+            lifecycle_browser.4,
+            lifecycle_browser.5,
+            lifecycle_browser.6,
+        )
+        .await?;
 
         if navigation_result.document_replaced {
-            self.clear_page_message_port_routes_for_frame(frame_id)?;
-            self.prune_page_message_port_routes()?;
+            self.teardown_replaced_document(
+                &owner_id,
+                frame_id,
+                navigation_result.outgoing_document_generation,
+                &navigation_result.destroyed_descendant_frame_ids,
+            )
+            .await?;
             match cleanup_route {
                 NativeFrameRoute::ActiveSelected => {
                     let mut targets = self.lock_targets(BackendOperation::Navigate)?;
@@ -5209,7 +5544,12 @@ impl NativeEngineBackend {
                 }
             }
         }
-        Ok(browser)
+        self.sync_target_name(&owner_id, &navigation_result.runtime.window_name)?;
+        self.process_frame_event_effects(frame_id, navigation_result.runtime.events)
+            .await?;
+        Box::pin(self.process_pending_frame_scripts(navigation_result.runtime.frame_scripts))
+            .await?;
+        Ok(navigation_result.runtime.browser)
     }
 
     async fn navigate_named_target(
@@ -5265,25 +5605,36 @@ impl NativeEngineBackend {
                 let target = project_native_target(&engine, target_id, opener_id, true)?;
                 (target, target_id.to_owned(), frame_id, navigation_result)
             };
-            let mut browser = self
+            let lifecycle_browser = self
                 .process_native_frame_lifecycle_effects(
                     &owner_id,
                     navigation_result.lifecycle.effects,
                 )
                 .await?;
-            self.sync_target_name(&owner_id, &navigation_result.runtime.window_name)?;
-            self.process_frame_event_effects(&frame_id, navigation_result.runtime.events)
-                .await?;
-            Box::pin(self.process_pending_frame_scripts(navigation_result.runtime.frame_scripts))
-                .await?;
-            append_native_queued_browser_effects(&mut browser, navigation_result.runtime.browser);
+            Box::pin(self.process_pending_browser_effects(
+                lifecycle_browser.0,
+                lifecycle_browser.1,
+                lifecycle_browser.2,
+                lifecycle_browser.3,
+                lifecycle_browser.4,
+                lifecycle_browser.5,
+                lifecycle_browser.6,
+            ))
+            .await?;
             if navigation_result.document_replaced {
-                self.clear_page_message_port_routes_for_context(&owner_id)?;
+                self.close_shared_worker_owners_for_context(&owner_id)
+                    .await?;
                 let mut targets = self.lock_targets(BackendOperation::Navigate)?;
                 close_parked_frames(&mut targets.active_frames).await?;
                 targets.active_frames = NativeFrameState::new(target_id);
                 targets.active_name = native_window_name(&navigation_result.runtime.window_name);
             }
+            self.sync_target_name(&owner_id, &navigation_result.runtime.window_name)?;
+            self.process_frame_event_effects(&frame_id, navigation_result.runtime.events)
+                .await?;
+            Box::pin(self.process_pending_frame_scripts(navigation_result.runtime.frame_scripts))
+                .await?;
+            let browser = navigation_result.runtime.browser;
             Ok((
                 target, browser.0, browser.1, browser.2, browser.3, browser.4, browser.5, browser.6,
             ))
@@ -5350,19 +5701,25 @@ impl NativeEngineBackend {
                 );
                 (target, frame_id, navigation_result)
             };
-            let mut browser = self
+            let lifecycle_browser = self
                 .process_native_frame_lifecycle_effects(
                     target_id,
                     navigation_result.lifecycle.effects,
                 )
                 .await?;
-            self.sync_target_name(target_id, &navigation_result.runtime.window_name)?;
-            self.process_frame_event_effects(&frame_id, navigation_result.runtime.events)
-                .await?;
-            Box::pin(self.process_pending_frame_scripts(navigation_result.runtime.frame_scripts))
-                .await?;
-            append_native_queued_browser_effects(&mut browser, navigation_result.runtime.browser);
+            Box::pin(self.process_pending_browser_effects(
+                lifecycle_browser.0,
+                lifecycle_browser.1,
+                lifecycle_browser.2,
+                lifecycle_browser.3,
+                lifecycle_browser.4,
+                lifecycle_browser.5,
+                lifecycle_browser.6,
+            ))
+            .await?;
             if navigation_result.document_replaced {
+                self.close_shared_worker_owners_for_context(target_id)
+                    .await?;
                 let mut targets = self.lock_targets(BackendOperation::Navigate)?;
                 let mut parked = targets.parked.remove(target_id).ok_or_else(|| {
                     BrowserBackendError::SelectionFailed {
@@ -5373,9 +5730,13 @@ impl NativeEngineBackend {
                 parked.frames = NativeFrameState::new(target_id);
                 parked.name = native_window_name(&navigation_result.runtime.window_name);
                 targets.parked.insert(target_id.to_owned(), parked);
-                drop(targets);
-                self.clear_page_message_port_routes_for_context(target_id)?;
             }
+            self.sync_target_name(target_id, &navigation_result.runtime.window_name)?;
+            self.process_frame_event_effects(&frame_id, navigation_result.runtime.events)
+                .await?;
+            Box::pin(self.process_pending_frame_scripts(navigation_result.runtime.frame_scripts))
+                .await?;
+            let browser = navigation_result.runtime.browser;
             Ok((
                 target, browser.0, browser.1, browser.2, browser.3, browser.4, browser.5, browser.6,
             ))
@@ -5549,6 +5910,8 @@ impl NativeEngineBackend {
             lifecycle,
             runtime,
             document_replaced,
+            initial_generation,
+            destroyed_descendant_frame_ids,
             snapshot,
         ) = {
             let mut targets = self.lock_targets(BackendOperation::Navigate)?;
@@ -5556,6 +5919,7 @@ impl NativeEngineBackend {
             let previous_revision = engine.revision();
             let initial_generation = engine.document_generation().map_err(native_error)?;
             let frame_id = targets.active_frames.active_frame_id.clone();
+            let destroyed_descendant_frame_ids = targets.active_frames.descendant_ids(&frame_id);
             let cross_document = engine.history_target_is_cross_document(direction) == Some(true);
             let replacement_sandboxed_modals = if cross_document {
                 native_frame_sandboxed_modals_for_replacement(
@@ -5622,6 +5986,8 @@ impl NativeEngineBackend {
                 lifecycle,
                 runtime,
                 document_replaced,
+                initial_generation,
+                destroyed_descendant_frame_ids,
                 snapshot,
             )
         };
@@ -5637,21 +6003,36 @@ impl NativeEngineBackend {
             }
             .into(),
         })?;
-        let mut browser = self
+        let lifecycle_browser = self
             .process_native_frame_lifecycle_effects(&owner_id, lifecycle.effects)
             .await?;
-        self.sync_target_name(&owner_id, &runtime.window_name)?;
-        self.process_frame_event_effects(&frame_id, runtime.events)
-            .await?;
-        Box::pin(self.process_pending_frame_scripts(runtime.frame_scripts)).await?;
-        append_native_queued_browser_effects(&mut browser, runtime.browser);
+        self.process_pending_browser_effects(
+            lifecycle_browser.0,
+            lifecycle_browser.1,
+            lifecycle_browser.2,
+            lifecycle_browser.3,
+            lifecycle_browser.4,
+            lifecycle_browser.5,
+            lifecycle_browser.6,
+        )
+        .await?;
         if document_replaced {
-            self.clear_page_message_port_routes_for_frame(&frame_id)?;
-            self.prune_page_message_port_routes()?;
+            self.teardown_replaced_document(
+                &owner_id,
+                &frame_id,
+                initial_generation,
+                &destroyed_descendant_frame_ids,
+            )
+            .await?;
             let mut targets = self.lock_targets(BackendOperation::Navigate)?;
             close_native_frame_descendants(&mut targets.active_frames, &frame_id).await?;
             targets.active_frames.discovered_generation = None;
         }
+        self.sync_target_name(&owner_id, &runtime.window_name)?;
+        self.process_frame_event_effects(&frame_id, runtime.events)
+            .await?;
+        Box::pin(self.process_pending_frame_scripts(runtime.frame_scripts)).await?;
+        let browser = runtime.browser;
         self.process_pending_browser_effects(
             browser.0, browser.1, browser.2, browser.3, browser.4, browser.5, browser.6,
         )
@@ -5752,8 +6133,16 @@ impl NativeEngineBackend {
             page_message_port_commands,
             window_name,
             current_revision,
+            outgoing_document_generation,
+            frame_id,
+            destroyed_descendant_frame_ids,
         ) = {
+            let targets = self.lock_targets(BackendOperation::Navigate)?;
+            let frame_id = targets.active_frames.active_frame_id.clone();
+            let destroyed_descendant_frame_ids = targets.active_frames.descendant_ids(&frame_id);
             let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+            let outgoing_document_generation =
+                engine.document_generation().map_err(native_error)?;
             engine
                 .sync_window_proxies(&proxy_updates)
                 .await
@@ -5779,9 +6168,20 @@ impl NativeEngineBackend {
                 page_message_port_commands,
                 window_name,
                 snapshot.revision,
+                outgoing_document_generation,
+                frame_id,
+                destroyed_descendant_frame_ids,
             )
         };
+        self.teardown_replaced_document(
+            &target_id,
+            &frame_id,
+            outgoing_document_generation,
+            &destroyed_descendant_frame_ids,
+        )
+        .await?;
         let mut targets = self.lock_targets(BackendOperation::Contexts)?;
+        close_native_frame_descendants(&mut targets.active_frames, &frame_id).await?;
         targets.active_frames = NativeFrameState::new(&target_id);
         targets.active_name = native_window_name(&window_name);
         drop(targets);
@@ -6936,6 +7336,8 @@ struct NativeFrameNavigationResult {
     runtime: NativeFrameRuntimeEffects,
     lifecycle: NativeFrameLifecycleResult,
     document_replaced: bool,
+    outgoing_document_generation: u32,
+    destroyed_descendant_frame_ids: Vec<String>,
     replacement_sandboxed_modals: bool,
 }
 
@@ -7193,6 +7595,7 @@ async fn navigate_native_frame(
         .await
         .map_err(native_error)?;
     let initial_generation = engine.document_generation().map_err(native_error)?;
+    let descendant_frame_ids = frames.descendant_ids(frame_id);
     let lifecycle = if engine.navigation_requires_document_lifecycle(&navigation.url) {
         dispatch_native_frame_tree_lifecycle(engine, frames, frame_id, sandboxed_modals, None)
             .await?
@@ -7229,6 +7632,12 @@ async fn navigate_native_frame(
         runtime,
         lifecycle,
         document_replaced,
+        outgoing_document_generation: initial_generation,
+        destroyed_descendant_frame_ids: if document_replaced {
+            descendant_frame_ids
+        } else {
+            Vec::new()
+        },
         replacement_sandboxed_modals,
     })
 }

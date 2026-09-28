@@ -445,9 +445,16 @@ The completed [slice 810 contract](tasks/native-engine-browser-810.md) closes
 the session-level lifecycle gap: target-owned bridge teardown, correctly
 routed page/worker close Events, survivor isolation, and final-Document-owner
 runtime reaping. Explicitly closing one port while its Document remains active
-does not terminate the shared worker. Child-frame/document teardown,
-same-document navigation, BFCache, GC, crashes, storage-key matching, and full
-SharedWorker/WPT conformance remain open.
+does not terminate the shared worker. Slice 811 completes the bounded
+owner-replacement path: ownership includes the committed Document generation,
+committed cross-document navigation and successful recovery retire only the
+outgoing Document, and descendant owners destroyed with a replaced ancestor
+are retired before replacement worker effects. Same-document navigation
+retains its owner, and process evidence verifies surviving and replacement
+routes. Dynamic iframe removal from a still-live parent Document remains open,
+as do full storage-key, partition, agent-cluster, credentials, and
+SharedWorker/WPT conformance. See the
+[slice 811 task](tasks/native-engine-browser-811.md) for exact evidence.
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus

@@ -3777,6 +3777,14 @@ Focused local process-backed behavior and malformed-envelope dispatch tests
 pass; remote CI, full Client interfaces, and full Service Worker conformance
 remain open. See [task 800](../plan/tasks/native-engine-browser-800.md).
 
+Slice 801 contracts receive-side recovery for host-delivered MessagePort
+events: a clone-deserialization failure becomes `messageerror` at the
+receiving port, exposes no partial data or ports, and leaves the port usable
+for a later valid delivery. The contract limits malformed-envelope coverage
+to transfer-free input; transferred-resource rollback and other
+`messageerror` sources remain separate. See
+[task 801](../plan/tasks/native-engine-browser-801.md).
+
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
 operation and delivers them in the owning page turn; EventSource carries

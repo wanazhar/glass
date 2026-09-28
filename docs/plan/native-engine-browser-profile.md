@@ -441,6 +441,14 @@ cross-session/process sharing, last-client destruction, complete storage-key
 or agent-cluster matching, or full SharedWorker/WPT conformance. See the
 [slice 809 task](tasks/native-engine-browser-809.md).
 
+The completed [slice 810 contract](tasks/native-engine-browser-810.md) closes
+the session-level lifecycle gap: target-owned bridge teardown, correctly
+routed page/worker close Events, survivor isolation, and final-Document-owner
+runtime reaping. Explicitly closing one port while its Document remains active
+does not terminate the shared worker. Child-frame/document teardown,
+same-document navigation, BFCache, GC, crashes, storage-key matching, and full
+SharedWorker/WPT conformance remain open.
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

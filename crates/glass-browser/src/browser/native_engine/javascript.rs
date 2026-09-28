@@ -1167,6 +1167,8 @@ pub(crate) struct NativeMessagePortPageMessage {
 pub(crate) struct NativePageMessagePortCommand {
     pub(crate) bridge_key: String,
     pub(crate) data: serde_json::Value,
+    #[serde(default, skip_serializing_if = "skip_if_false")]
+    pub(crate) close: bool,
     #[serde(default)]
     pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
     #[serde(default)]
@@ -1701,6 +1703,7 @@ impl NativeDedicatedWorker {
 pub(crate) struct NativeWorkerRegistry {
     workers: BTreeMap<u32, NativeDedicatedWorker>,
     shared_worker_keys: BTreeMap<String, u32>,
+    shared_worker_owners: BTreeMap<u32, BTreeSet<(String, String)>>,
     next_worker_timer_id: u32,
     pending_messages: VecDeque<NativeWorkerMessage>,
     pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
@@ -1730,6 +1733,7 @@ impl NativeWorkerRegistry {
         Self {
             workers: BTreeMap::new(),
             shared_worker_keys: BTreeMap::new(),
+            shared_worker_owners: BTreeMap::new(),
             next_worker_timer_id: 0,
             pending_messages: VecDeque::new(),
             pending_message_port_messages: VecDeque::new(),
@@ -1766,6 +1770,7 @@ impl NativeWorkerRegistry {
     pub(crate) fn clear(&mut self) {
         self.workers.clear();
         self.shared_worker_keys.clear();
+        self.shared_worker_owners.clear();
         self.next_worker_timer_id = 0;
         self.pending_messages.clear();
         self.pending_message_port_messages.clear();
@@ -1783,6 +1788,104 @@ impl NativeWorkerRegistry {
                 .try_send(NativeFetchUploadCommand::Cancel);
         }
         self.message_port_routes.clear();
+    }
+
+    pub(crate) fn shared_worker_id_for_port(&self, bridge_key: &str) -> Option<u32> {
+        let worker_id = self.message_port_routes.get(bridge_key)?.worker_id;
+        self.workers
+            .get(&worker_id)
+            .is_some_and(|worker| worker.is_shared)
+            .then_some(worker_id)
+    }
+
+    pub(crate) fn add_shared_worker_owner(
+        &mut self,
+        worker_id: u32,
+        context_id: String,
+        frame_id: String,
+    ) -> Result<(), NativeEngineError> {
+        for (field, value) in [
+            ("SharedWorker owner context", context_id.as_str()),
+            ("SharedWorker owner frame", frame_id.as_str()),
+        ] {
+            if value.is_empty() {
+                return Err(NativeEngineError::invalid(field, "must not be empty"));
+            }
+            if value.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+                return Err(NativeEngineError::limit(
+                    field,
+                    crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                    value.len(),
+                ));
+            }
+            if value.bytes().any(|byte| byte < 0x20 || byte == 0x7f) {
+                return Err(NativeEngineError::invalid(
+                    field,
+                    "must not contain control characters",
+                ));
+            }
+        }
+        if !self
+            .workers
+            .get(&worker_id)
+            .is_some_and(|worker| worker.is_shared)
+        {
+            return Err(NativeEngineError::invalid(
+                "SharedWorker owner",
+                "owner can only be registered for a live shared worker",
+            ));
+        }
+        let owners = self.shared_worker_owners.entry(worker_id).or_default();
+        let owner = (context_id, frame_id);
+        if !owners.contains(&owner) && owners.len() >= MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native SharedWorker Document owners",
+                MAX_NATIVE_WORKER_MESSAGES,
+                owners.len().saturating_add(1),
+            ));
+        }
+        owners.insert(owner);
+        Ok(())
+    }
+
+    pub(crate) fn remove_shared_worker_owners_for_context(
+        &mut self,
+        context_id: &str,
+    ) -> BTreeSet<u32> {
+        let worker_ids = self
+            .shared_worker_owners
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut unowned = BTreeSet::new();
+        for worker_id in worker_ids {
+            let Some(owners) = self.shared_worker_owners.get_mut(&worker_id) else {
+                continue;
+            };
+            owners.retain(|(owner_context, _)| owner_context != context_id);
+            if owners.is_empty() {
+                self.shared_worker_owners.remove(&worker_id);
+                unowned.insert(worker_id);
+            }
+        }
+        unowned
+    }
+
+    pub(crate) fn terminate_unowned_shared_worker(&mut self, worker_id: u32) -> bool {
+        if self
+            .shared_worker_owners
+            .get(&worker_id)
+            .is_some_and(|owners| !owners.is_empty())
+            || !self
+                .workers
+                .get(&worker_id)
+                .is_some_and(|worker| worker.is_shared)
+        {
+            return false;
+        }
+        self.workers.remove(&worker_id);
+        self.remove_worker_routes(worker_id);
+        true
     }
 
     pub(crate) fn take_messages(&mut self) -> Vec<NativeWorkerMessage> {
@@ -2597,6 +2700,25 @@ impl NativeWorkerRegistry {
         commands: Vec<NativeScriptCommand>,
         loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
+        self.apply_page_message_port_commands_inner(commands, loader, false)
+            .await
+    }
+
+    pub(crate) async fn apply_page_message_port_commands_with_external_shared_workers(
+        &mut self,
+        commands: Vec<NativeScriptCommand>,
+        loader: &mut NativeResourceLoader,
+    ) -> Result<(), NativeEngineError> {
+        self.apply_page_message_port_commands_inner(commands, loader, true)
+            .await
+    }
+
+    async fn apply_page_message_port_commands_inner(
+        &mut self,
+        commands: Vec<NativeScriptCommand>,
+        loader: &mut NativeResourceLoader,
+        forward_unrouted_closes: bool,
+    ) -> Result<(), NativeEngineError> {
         if commands.len() > MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
                 "native page MessagePort commands",
@@ -2619,6 +2741,29 @@ impl NativeWorkerRegistry {
                         ));
                     }
                     let Some(route) = self.message_port_routes.get(&bridge_key).cloned() else {
+                        if forward_unrouted_closes {
+                            let command = NativePageMessagePortCommand {
+                                bridge_key,
+                                data: serde_json::Value::Null,
+                                close: true,
+                                transfer_ports: Vec::new(),
+                                object_urls: Vec::new(),
+                                source_context_id: String::new(),
+                                source_frame_id: String::new(),
+                            };
+                            if self.pending_page_message_port_commands.len()
+                                >= MAX_NATIVE_WORKER_MESSAGES
+                            {
+                                return Err(NativeEngineError::limit(
+                                    "native pending page MessagePort commands",
+                                    MAX_NATIVE_WORKER_MESSAGES,
+                                    self.pending_page_message_port_commands
+                                        .len()
+                                        .saturating_add(1),
+                                ));
+                            }
+                            self.pending_page_message_port_commands.push_back(command);
+                        }
                         continue;
                     };
                     if self.retire_message_port_route(&bridge_key).is_none() {
@@ -2670,6 +2815,7 @@ impl NativeWorkerRegistry {
                 let command = NativePageMessagePortCommand {
                     bridge_key,
                     data,
+                    close: false,
                     transfer_ports,
                     object_urls,
                     source_context_id: String::new(),
@@ -2942,6 +3088,7 @@ impl NativeWorkerRegistry {
             .retain(|command| !retired_bridge_keys.contains(&command.bridge_key));
         self.shared_worker_keys
             .retain(|_, shared_worker_id| *shared_worker_id != worker_id);
+        self.shared_worker_owners.remove(&worker_id);
         let live_bridge_keys = self
             .message_port_routes
             .keys()
@@ -19685,6 +19832,16 @@ pub(crate) fn validate_page_message_port_command(
             "native MessagePort bridge key",
             crate::browser_backend::MAX_BACKEND_ID_BYTES,
             command.bridge_key.len(),
+        ));
+    }
+    if command.close
+        && (command.data != serde_json::Value::Null
+            || !command.transfer_ports.is_empty()
+            || !command.object_urls.is_empty())
+    {
+        return Err(NativeEngineError::invalid(
+            "native page MessagePort close",
+            "close commands must not carry data or transfers",
         ));
     }
     validate_message_port_transfers(&command.transfer_ports)?;

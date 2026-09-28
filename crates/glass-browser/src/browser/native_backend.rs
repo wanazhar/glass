@@ -3521,6 +3521,8 @@ impl NativeEngineBackend {
                             if self.is_shared_worker_page_port(&command)? {
                                 self.deliver_shared_worker_page_message_port(command)
                                     .await?
+                            } else if command.close {
+                                NativeQueuedBrowserEffects::default()
                             } else {
                                 self.deliver_page_message_port(command).await?
                             }
@@ -4123,6 +4125,99 @@ impl NativeEngineBackend {
         Ok(())
     }
 
+    async fn close_shared_worker_owners_for_context(
+        &self,
+        context_id: &str,
+    ) -> Result<(), BrowserBackendError> {
+        validate_native_topology_id(context_id)?;
+        let bridge_keys = {
+            let workers = self.shared_workers.lock().map_err(|_| {
+                poisoned_lock_error(BackendOperation::Close, "SharedWorker coordinator")
+            })?;
+            workers
+                .page_ports
+                .iter()
+                .filter_map(|(bridge_key, route)| {
+                    (route.context_id == context_id).then_some(bridge_key.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+        self.clear_page_message_port_routes_for_context(context_id)?;
+
+        let mut first_error = None;
+        for bridge_key in bridge_keys {
+            let (close_result, effects) = {
+                let mut coordinator = self.shared_workers.lock().map_err(|_| {
+                    poisoned_lock_error(BackendOperation::Close, "SharedWorker coordinator")
+                })?;
+                let result = {
+                    let NativeSharedWorkerCoordinator {
+                        registry, loader, ..
+                    } = &mut *coordinator;
+                    registry
+                        .apply_page_message_port_commands(
+                            vec![NativeScriptCommand::MessagePortClose {
+                                bridge_key,
+                                worker_id: None,
+                            }],
+                            loader,
+                        )
+                        .await
+                };
+                let effects = take_shared_worker_page_messages(&mut coordinator);
+                (result, effects)
+            };
+            if let Err(error) = close_result {
+                first_error.get_or_insert_with(|| native_error(error));
+            }
+            let (
+                popups,
+                messages,
+                closes,
+                navigations,
+                service_worker_windows,
+                service_worker_messages,
+                _,
+            ) = NativeQueuedBrowserEffects::default();
+            if let Err(error) = Box::pin(self.process_pending_browser_effects(
+                popups,
+                messages,
+                closes,
+                navigations,
+                service_worker_windows,
+                service_worker_messages,
+                effects,
+            ))
+            .await
+            {
+                first_error.get_or_insert(error);
+            }
+        }
+
+        {
+            let mut coordinator = self.shared_workers.lock().map_err(|_| {
+                poisoned_lock_error(BackendOperation::Close, "SharedWorker coordinator")
+            })?;
+            let unowned = coordinator
+                .registry
+                .remove_shared_worker_owners_for_context(context_id);
+            for worker_id in unowned {
+                coordinator
+                    .registry
+                    .terminate_unowned_shared_worker(worker_id);
+            }
+            let NativeSharedWorkerCoordinator {
+                registry,
+                page_ports,
+                ..
+            } = &mut *coordinator;
+            page_ports
+                .retain(|bridge_key, _| registry.shared_worker_id_for_port(bridge_key).is_some());
+        }
+
+        first_error.map_or(Ok(()), Err)
+    }
+
     fn clear_page_message_port_routes(&self) -> Result<(), BrowserBackendError> {
         self.page_message_port_routes
             .lock()
@@ -4463,6 +4558,23 @@ impl NativeEngineBackend {
             self.remove_page_message_port_route(&request.transfer_port.bridge_key)?;
             return Err(native_error(error));
         }
+        let bridge_key = request.transfer_port.bridge_key.clone();
+        let Some(worker_id) = coordinator.registry.shared_worker_id_for_port(&bridge_key) else {
+            coordinator.page_ports.remove(&bridge_key);
+            drop(coordinator);
+            self.remove_page_message_port_route(&bridge_key)?;
+            return Ok(NativeQueuedBrowserEffects::default());
+        };
+        if let Err(error) = coordinator.registry.add_shared_worker_owner(
+            worker_id,
+            request.source_context_id,
+            request.source_frame_id,
+        ) {
+            coordinator.page_ports.remove(&bridge_key);
+            drop(coordinator);
+            self.remove_page_message_port_route(&bridge_key)?;
+            return Err(native_error(error));
+        }
         let effects = take_shared_worker_page_messages(&mut coordinator);
         let mut queued = NativeQueuedBrowserEffects::default();
         queued.6 = effects;
@@ -4493,40 +4605,58 @@ impl NativeEngineBackend {
         {
             return Ok(NativeQueuedBrowserEffects::default());
         }
-        self.register_page_message_port_routes(
-            &command.source_context_id,
-            &command.source_frame_id,
-            &command.transfer_ports,
-        )?;
+        if !command.close {
+            self.register_page_message_port_routes(
+                &command.source_context_id,
+                &command.source_frame_id,
+                &command.transfer_ports,
+            )?;
+        }
+        let bridge_key = command.bridge_key.clone();
         let mut coordinator = self.shared_workers.lock().map_err(|_| {
             poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator")
         })?;
-        for transfer in &command.transfer_ports {
-            coordinator.page_ports.insert(
-                transfer.bridge_key.clone(),
-                NativePageMessagePortRoute {
-                    context_id: route.context_id.clone(),
-                    frame_id: route.frame_id.clone(),
-                },
-            );
+        if command.close {
+            coordinator.page_ports.remove(&bridge_key);
+        } else {
+            for transfer in &command.transfer_ports {
+                coordinator.page_ports.insert(
+                    transfer.bridge_key.clone(),
+                    NativePageMessagePortRoute {
+                        context_id: route.context_id.clone(),
+                        frame_id: route.frame_id.clone(),
+                    },
+                );
+            }
         }
-        let worker_command = NativeScriptCommand::MessagePortPostMessage {
-            bridge_key: command.bridge_key,
-            data: command.data,
-            worker_id: None,
-            transfer_ports: command.transfer_ports,
-            object_urls: command.object_urls,
+        let worker_command = if command.close {
+            NativeScriptCommand::MessagePortClose {
+                bridge_key: command.bridge_key,
+                worker_id: None,
+            }
+        } else {
+            NativeScriptCommand::MessagePortPostMessage {
+                bridge_key: command.bridge_key,
+                data: command.data,
+                worker_id: None,
+                transfer_ports: command.transfer_ports,
+                object_urls: command.object_urls,
+            }
         };
-        {
+        let result = {
             let NativeSharedWorkerCoordinator {
                 registry, loader, ..
             } = &mut *coordinator;
             registry
                 .apply_page_message_port_commands(vec![worker_command], loader)
                 .await
-                .map_err(native_error)?;
-        }
+        };
         let effects = take_shared_worker_page_messages(&mut coordinator);
+        drop(coordinator);
+        if command.close {
+            self.remove_page_message_port_route(&bridge_key)?;
+        }
+        result.map_err(native_error)?;
         let mut queued = NativeQueuedBrowserEffects::default();
         queued.6 = effects;
         Ok(queued)
@@ -4616,11 +4746,22 @@ impl NativeEngineBackend {
         self.process_frame_event_effects(&route_info.frame_id, runtime_effects.events)
             .await?;
         Box::pin(self.process_pending_frame_scripts(runtime_effects.frame_scripts)).await?;
-        self.register_page_message_port_routes(
-            &command.source_context_id,
-            &command.source_frame_id,
-            &command.transfer_ports,
-        )?;
+        if command.close {
+            self.remove_page_message_port_route(&command.bridge_key)?;
+            self.shared_workers
+                .lock()
+                .map_err(|_| {
+                    poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator")
+                })?
+                .page_ports
+                .remove(&command.bridge_key);
+        } else {
+            self.register_page_message_port_routes(
+                &command.source_context_id,
+                &command.source_frame_id,
+                &command.transfer_ports,
+            )?;
+        }
         Ok(runtime_effects.browser)
     }
 
@@ -5246,37 +5387,42 @@ impl NativeEngineBackend {
     /// selection, even when parked targets remain available.
     pub async fn close_target(&self, target_id: &str) -> Result<(), BrowserBackendError> {
         validate_native_topology_id(target_id)?;
-        let mut targets = self.lock_targets(BackendOperation::Close)?;
-        if targets.active_target_id.as_deref() == Some(target_id) {
-            let mut engine = self.lock_engine_raw(BackendOperation::Close)?;
-            let closed_url = engine.context().map_err(native_error)?.url;
-            let closed_name = targets.active_name.clone().unwrap_or_default();
-            engine.close_async().await.map_err(native_error)?;
-            let mut frames =
-                std::mem::replace(&mut targets.active_frames, NativeFrameState::empty());
-            targets.active_target_id = None;
-            targets.active_opener_id = None;
-            targets.active_name = None;
-            targets.remember_closed_target(target_id.to_owned(), closed_url, closed_name);
-            self.clear_page_message_port_routes_for_context(target_id)?;
-            return close_parked_frames(&mut frames).await;
-        }
-        let Some(mut parked) = targets.parked.remove(target_id) else {
-            return Err(BrowserBackendError::SelectionFailed {
-                reason: "native page target was not found; call listTargets to refresh topology"
-                    .into(),
-            });
+        let mut frames = {
+            let mut targets = self.lock_targets(BackendOperation::Close)?;
+            if targets.active_target_id.as_deref() == Some(target_id) {
+                let mut engine = self.lock_engine_raw(BackendOperation::Close)?;
+                let closed_url = engine.context().map_err(native_error)?.url;
+                let closed_name = targets.active_name.clone().unwrap_or_default();
+                engine.close_async().await.map_err(native_error)?;
+                let frames =
+                    std::mem::replace(&mut targets.active_frames, NativeFrameState::empty());
+                targets.active_target_id = None;
+                targets.active_opener_id = None;
+                targets.active_name = None;
+                targets.remember_closed_target(target_id.to_owned(), closed_url, closed_name);
+                frames
+            } else {
+                let Some(mut parked) = targets.parked.remove(target_id) else {
+                    return Err(BrowserBackendError::SelectionFailed {
+                        reason:
+                            "native page target was not found; call listTargets to refresh topology"
+                                .into(),
+                    });
+                };
+                let closed_url = parked.engine.context().map_err(native_error)?.url;
+                let closed_name = parked.name.clone().unwrap_or_default();
+                if let Err(error) = parked.engine.close_async().await {
+                    targets.parked.insert(target_id.to_owned(), parked);
+                    return Err(native_error(error));
+                }
+                targets.remember_closed_target(target_id.to_owned(), closed_url, closed_name);
+                parked.frames
+            }
         };
-        let closed_url = parked.engine.context().map_err(native_error)?.url;
-        let closed_name = parked.name.clone().unwrap_or_default();
-        if let Err(error) = parked.engine.close_async().await {
-            targets.parked.insert(target_id.to_owned(), parked);
-            return Err(native_error(error));
-        }
-        targets.remember_closed_target(target_id.to_owned(), closed_url, closed_name);
-        drop(targets);
-        self.clear_page_message_port_routes_for_context(target_id)?;
-        close_parked_frames(&mut parked.frames).await
+        let worker_close_result = self.close_shared_worker_owners_for_context(target_id).await;
+        let frames_close_result = close_parked_frames(&mut frames).await;
+        worker_close_result?;
+        frames_close_result
     }
 
     async fn close_all(&self) -> Result<(), BrowserBackendError> {
@@ -6743,15 +6889,20 @@ fn take_shared_worker_page_messages(
         let Some(route) = coordinator.page_ports.get(&message.bridge_key).cloned() else {
             continue;
         };
-        for transfer in &message.transfer_ports {
-            coordinator
-                .page_ports
-                .insert(transfer.bridge_key.clone(), route.clone());
+        if message.close {
+            coordinator.page_ports.remove(&message.bridge_key);
+        } else {
+            for transfer in &message.transfer_ports {
+                coordinator
+                    .page_ports
+                    .insert(transfer.bridge_key.clone(), route.clone());
+            }
         }
         effects.push(NativeWorkerCoordinatorEffect::SharedWorkerMessage(
             NativePageMessagePortCommand {
                 bridge_key: message.bridge_key,
                 data: message.data,
+                close: message.close,
                 transfer_ports: message.transfer_ports,
                 object_urls: message.object_urls,
                 source_context_id: route.context_id,
@@ -7009,15 +7160,22 @@ async fn dispatch_page_message_port_to_native_frame(
     command: &NativePageMessagePortCommand,
 ) -> Result<NativeFrameRuntimeEffects, BrowserBackendError> {
     let previous_revision = engine.revision();
-    engine
-        .dispatch_page_message_port(
-            &command.bridge_key,
-            &command.data,
-            &command.transfer_ports,
-            &command.object_urls,
-        )
-        .await
-        .map_err(native_error)?;
+    if command.close {
+        engine
+            .dispatch_page_message_port_close(&command.bridge_key)
+            .await
+            .map_err(native_error)?;
+    } else {
+        engine
+            .dispatch_page_message_port(
+                &command.bridge_key,
+                &command.data,
+                &command.transfer_ports,
+                &command.object_urls,
+            )
+            .await
+            .map_err(native_error)?;
+    }
     take_native_frame_runtime_effects(engine, previous_revision)
 }
 

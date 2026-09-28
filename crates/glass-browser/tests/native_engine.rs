@@ -32726,6 +32726,225 @@ fetch('/observe-reload').then(async response => {
     });
 }
 
+#[test]
+fn native_runtime_shared_worker_cookie_changes_reach_all_live_profile_contexts() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let _guard = native_content_process_test_lock().lock().await;
+            let profile_path = std::env::temp_dir().join(format!(
+                "glass-native-shared-worker-cookie-fanout-{}-profile.json",
+                std::process::id()
+            ));
+            let isolated_profile_path = std::env::temp_dir().join(format!(
+                "glass-native-shared-worker-cookie-fanout-{}-isolated.json",
+                std::process::id()
+            ));
+            let profile_lock_path = profile_path.with_extension("lock");
+            let isolated_lock_path = isolated_profile_path.with_extension("lock");
+            for path in [
+                &profile_path,
+                &profile_lock_path,
+                &isolated_profile_path,
+                &isolated_lock_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(60), async move {
+                    let mut requests = Vec::new();
+                    for _ in 0..8 {
+                        let (mut stream, _) = listener.accept().await.unwrap();
+                        let request = read_http_request(&mut stream).await;
+                        let path = request
+                            .split_whitespace()
+                            .nth(1)
+                            .expect("live-context cookie request includes a URL")
+                            .to_owned();
+                        let cookie = request
+                            .lines()
+                            .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                            .and_then(|line| line.split_once(':'))
+                            .map(|(_, value)| value.trim().to_owned());
+                        let (extra_headers, content_type, body): (&str, &str, &str) =
+                            match path.as_str() {
+                                "/writer-page" => (
+                                    "",
+                                    "text/html",
+                                    r#"<script>
+globalThis.cookieFanoutMessages = [];
+globalThis.startCookieFanout = () => {
+  const worker = new SharedWorker('/cookie-writer.js', {
+    name: 'live-profile-cookie-writer', type: 'module', credentials: 'include',
+  });
+  worker.port.addEventListener('message', event => cookieFanoutMessages.push(event.data));
+  worker.port.start();
+};
+</script>"#,
+                                ),
+                                "/cookie-writer.js" => (
+                                    "Set-Cookie: fanout=from-worker; Path=/; SameSite=Lax\r\n",
+                                    "application/javascript",
+                                    "globalThis.onconnect = event => event.ports[0].postMessage('ready');",
+                                ),
+                                "/peer-page" => (
+                                    "",
+                                    "text/html",
+                                    "<iframe src='/peer-frame'></iframe>",
+                                ),
+                                "/peer-frame" => (
+                                    "",
+                                    "text/html",
+                                    "<p>live frame</p>",
+                                ),
+                                "/isolated-page" => ("", "text/html", "<p>isolated</p>"),
+                                "/observe-peer" => ("", "text/plain", "peer-observed"),
+                                "/observe-frame" => ("", "text/plain", "frame-observed"),
+                                "/observe-isolated" => {
+                                    ("", "text/plain", "isolated-observed")
+                                }
+                                other => panic!("unexpected live-context cookie request: {other}"),
+                            };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                        requests.push((path, cookie));
+                    }
+                    requests
+                })
+                .await
+                .expect("live-context cookie fan-out remains bounded")
+            });
+
+            let session = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("http://{address}/writer-page")),
+            )
+            .await
+            .unwrap();
+            let peer = session
+                .native_create_target(&format!("http://{address}/peer-page"))
+                .await
+                .unwrap();
+            session.native_select_target(&peer.id).await.unwrap();
+            let peer_frames = session.native_list_frames().await.unwrap();
+            let child_frame = peer_frames
+                .iter()
+                .find(|frame| frame.parent_id.is_some())
+                .expect("the peer page has a live child frame")
+                .id
+                .clone();
+            session.native_select_frame(&child_frame).await.unwrap();
+
+            let isolated = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(isolated_profile_path.clone())
+                    .with_initial_url(format!("http://{address}/isolated-page")),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                isolated.script("document.cookie").await.unwrap().value,
+                serde_json::json!("")
+            );
+
+            session.native_select_target("native-context").await.unwrap();
+            session
+                .script("startCookieFanout(); true")
+                .await
+                .unwrap();
+            let writer_messages = tokio::time::timeout(Duration::from_secs(25), async {
+                loop {
+                    let messages = session
+                        .script("cookieFanoutMessages")
+                        .await
+                        .unwrap()
+                        .value;
+                    if messages.as_array().is_some_and(|values| values.len() == 1) {
+                        break messages;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the SharedWorker response cookie is accepted");
+
+            session.native_select_target(&peer.id).await.unwrap();
+            let peer_observation = session
+                .script(
+                    "await fetch('/observe-peer').then(async response => ({ cookie: document.cookie, response: await response.text() }))",
+                )
+                .await
+                .unwrap()
+                .value;
+            assert!(peer_observation["cookie"]
+                .as_str()
+                .unwrap()
+                .contains("fanout=from-worker"));
+            assert_eq!(peer_observation["response"], "peer-observed");
+
+            session.native_select_frame(&child_frame).await.unwrap();
+            let frame_observation = session
+                .script(
+                    "await fetch('/observe-frame').then(async response => ({ cookie: document.cookie, response: await response.text() }))",
+                )
+                .await
+                .unwrap()
+                .value;
+            assert!(frame_observation["cookie"]
+                .as_str()
+                .unwrap()
+                .contains("fanout=from-worker"));
+            assert_eq!(frame_observation["response"], "frame-observed");
+
+            assert_eq!(
+                isolated
+                    .script("await fetch('/observe-isolated').then(response => response.text())")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("isolated-observed")
+            );
+            assert_eq!(
+                isolated.script("document.cookie").await.unwrap().value,
+                serde_json::json!("")
+            );
+            assert_eq!(writer_messages, serde_json::json!(["ready"]));
+
+            session.close().await.unwrap();
+            isolated.close().await.unwrap();
+            let requests = server.await.unwrap();
+            let cookie_for = |path: &str| {
+                requests
+                    .iter()
+                    .find(|(request_path, _)| request_path == path)
+                    .unwrap_or_else(|| panic!("missing request {path}"))
+                    .1
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            assert!(cookie_for("/observe-peer").contains("fanout=from-worker"));
+            assert!(cookie_for("/observe-frame").contains("fanout=from-worker"));
+            assert!(!cookie_for("/observe-isolated").contains("fanout="));
+
+            for path in [
+                &profile_path,
+                &profile_lock_path,
+                &isolated_profile_path,
+                &isolated_lock_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+        });
+    });
+}
+
 #[tokio::test]
 async fn native_content_process_import_scripts_dynamic_imports_use_final_script_urls() {
     let _guard = native_content_process_test_lock().lock().await;

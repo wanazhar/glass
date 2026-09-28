@@ -3803,13 +3803,14 @@ event dispatch state, suppression of malformed `message`, and a later real
 ServiceWorkerContainer/EventTarget/WPT conformance remain open. See
 [task 803](../plan/tasks/native-engine-browser-803.md).
 
-Slice 804 contracts provisional receiver-side `MessagePort` bridge cleanup
+Slice 804 implements provisional receiver-side `MessagePort` bridge cleanup
 when envelope graph decoding fails after transfer descriptors have been
-materialized. Cleanup must remove only proxy registrations created by that
-attempt; it must preserve previously registered endpoints and must not
-pretend to restore a transfer to its sender. Rust-owned route retirement,
-remote-peer `close` notification, and non-port transfer-resource cleanup
-remain separate work. See
+materialized. Cleanup removes only proxy registrations created by that
+attempt, preserves previously registered endpoints, and does not pretend to
+restore a transfer to its sender. Its process-backed regression also proves
+later valid messages still arrive on both receiving endpoints. Rust-owned
+route retirement, remote-peer `close` notification, and non-port
+transfer-resource cleanup remain separate work. See
 [task 804](../plan/tasks/native-engine-browser-804.md).
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current

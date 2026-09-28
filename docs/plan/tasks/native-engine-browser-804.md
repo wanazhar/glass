@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-804
 scope: glass-browser/failed-envelope-provisional-message-ports
-status: contracted
+status: completed locally
 depends-on: [native-engine-browser-803]
 ---
 
@@ -93,13 +93,33 @@ the actual receiving endpoint usable for later messages.
 - `docs/plan/README.md`
 - `docs/plan/native-engine-browser-profile.md`
 
-## Verification
+## Implementation and verification
+
+`glassMessageDecodeEnvelope()` now records bridge proxies that were absent (or
+closed) before the current decode attempt. If graph decoding throws, it marks
+only those new proxies closed, clears their local queues, and removes their
+port-ID and bridge-key entries only when the registries still map those keys
+to the same objects. The original exception is rethrown. Previously open
+proxies remain registered; successful decoding is unchanged.
+
+The process-backed HTTP regression
+`native_content_process_message_port_decode_failure_dispatches_messageerror_and_recovers`
+now includes both a fresh transfer descriptor and a preexisting bridge
+registration in its malformed envelopes. It verifies the provisional entry
+is removed, the preexisting endpoint remains open, registry sizes return to
+their pre-failure values, each receiving endpoint reports `messageerror`
+without partial ports, and both endpoints still carry later valid messages.
+
+Passed locally:
 
 - `cargo check -p glass-browser --test native_engine --locked --quiet`
-- Exact process-backed HTTP regression for malformed transfer-containing
-  envelope cleanup and subsequent valid endpoint use.
-- `cargo fmt --all -- --check`, `git diff --check`, and the focused repository
-  documentation gates.
+- `cargo test -p glass-browser --test native_engine native_content_process_message_port_decode_failure_dispatches_messageerror_and_recovers --locked --quiet -- --exact` (1 passed, 858 filtered; 22.32 seconds)
+- `cargo fmt --all -- --check` and `git diff --check`
+- `python3 scripts/check-release-documentation.py --require-previous-version` (1,432 Markdown documents; zero current-claim failures)
+- `python3 scripts/check-documentation-depth.py` (93 current guides routed/audited; 19 substantive contracts)
 
-Record exact results and exclusions here after implementation. Remote CI is
-not implied by local verification.
+These are focused local results only. Host-side route retirement, remote-peer
+`close` notification, cleanup of partially received non-port transferables,
+complete MessagePort/EventTarget/Web IDL and WPT conformance, remote CI, and
+cross-platform certification remain open. Local verification does not imply
+remote CI.

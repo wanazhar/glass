@@ -30159,11 +30159,35 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     const descriptors = payload && Array.isArray(payload.transfer_ports)
       ? payload.transfer_ports
       : [];
-    const ports = descriptors.map(glassMessageMakeBridgePort);
-    return {
-      data: glassMessageDecodeClone(payload && payload.data, ports),
-      ports: ports.filter((_, index) => descriptors[index] && descriptors[index].hidden !== true),
-    };
+    const ports = [];
+    const provisionalPorts = [];
+    try {
+      for (const descriptor of descriptors) {
+        const bridgeKey = String(descriptor && descriptor.bridge_key || "");
+        const existing = glassMessageBridgeRegistry.get(bridgeKey);
+        const alreadyRegistered = existing && existing.__glassMessageClosed !== true;
+        const port = glassMessageMakeBridgePort(descriptor);
+        ports.push(port);
+        if (!alreadyRegistered) provisionalPorts.push(port);
+      }
+      const data = glassMessageDecodeClone(payload && payload.data, ports);
+      return {
+        data,
+        ports: ports.filter((_, index) => descriptors[index] && descriptors[index].hidden !== true),
+      };
+    } catch (error) {
+      for (const port of provisionalPorts) {
+        port.__glassMessageClosed = true;
+        port.__glassMessageQueue.length = 0;
+        const id = Number(port.__glassMessagePortId);
+        if (glassMessagePortRegistry.get(id) === port)
+          glassMessagePortRegistry.delete(id);
+        const bridgeKey = String(port.__glassMessagePortBridgeKey || "");
+        if (bridgeKey && glassMessageBridgeRegistry.get(bridgeKey) === port)
+          glassMessageBridgeRegistry.delete(bridgeKey);
+      }
+      throw error;
+    }
   };
   const glassMessageEventConstructor = typeof globalThis.__glassMessageEventConstructor === "function"
     ? globalThis.__glassMessageEventConstructor

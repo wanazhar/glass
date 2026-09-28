@@ -7824,9 +7824,26 @@ postMessage({ kind: 'port-ready' }, [channel.port1]);
     root: { ref: 0 },
     nodes: [{ type: 'invalid-node' }],
   },
-  transfer_ports: [],
+  transfer_ports: [
+    { bridge_key: 'decode-failure-provisional-port', port_id: 700001, peer_id: 700002 },
+    { bridge_key: 'decode-failure-retained-port', port_id: 700003, peer_id: 700004 },
+  ],
   object_urls: [],
 };
+const retainedBridgeKey = 'decode-failure-retained-port';
+const provisionalBridgeKey = 'decode-failure-provisional-port';
+__glassDispatchMessagePortById(localChannel.port2.__glassMessagePortId, {
+  data: {
+    __glassMessageClone: 'glass-native-structured-clone-v1',
+    root: { type: 'string', value: 'retain this endpoint' },
+    nodes: [],
+  },
+  transfer_ports: [malformed.transfer_ports[1]],
+  object_urls: [],
+});
+const retainedBridge = __glassMessageBridgeRegistry.get(retainedBridgeKey);
+const portRegistryCountBeforeFailure = __glassMessagePortRegistry.size;
+const bridgeRegistryCountBeforeFailure = __glassMessageBridgeRegistry.size;
 __glassDispatchMessagePortById(localPort.__glassMessagePortId, malformed);
 __glassDispatchMessagePortByBridge(receivingPort.__glassMessagePortBridgeKey, malformed);
 await Promise.resolve();
@@ -7837,6 +7854,11 @@ await Promise.resolve();
     && lastLocalPortEvent.eventPhase === 0
     && lastPortEvent.currentTarget === null
     && lastPortEvent.eventPhase === 0,
+  provisionalBridgeRemoved: !__glassMessageBridgeRegistry.has(provisionalBridgeKey),
+  retainedBridgePreserved: __glassMessageBridgeRegistry.get(retainedBridgeKey) === retainedBridge
+    && !retainedBridge.__glassMessageClosed,
+  registrySizesStable: __glassMessagePortRegistry.size === portRegistryCountBeforeFailure
+    && __glassMessageBridgeRegistry.size === bridgeRegistryCountBeforeFailure,
   portsOpen: !localPort.__glassMessageClosed && !receivingPort.__glassMessageClosed,
 })"#,
             )
@@ -7868,6 +7890,9 @@ await Promise.resolve();
                 "value": null,
             }],
             "eventStateReset": true,
+            "provisionalBridgeRemoved": true,
+            "retainedBridgePreserved": true,
+            "registrySizesStable": true,
             "portsOpen": true,
         })
     );

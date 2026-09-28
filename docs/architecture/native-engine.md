@@ -1,13 +1,23 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-813`; issue #40 remains open. Slice 813 implements
-SharedWorker constructor matching by creator storage key, constructor URL,
-and name; incompatible type/credentials/lifetime options error only the new
-object. Its process-backed HTTP regression passed (1 passed, 864 filtered;
-42.33 seconds). The tuple/opaque key-level tests are present but were not run
-because compiling the separate library-test target exhausted available host
-memory. Slice 812 implements live iframe removal/reinsertion with scoped
+`native-engine-browser-814`; issue #40 remains open. Slice 814 applies module
+SharedWorker credentials to root, static-dependency, and dynamic-import
+requests while leaving classic-worker fetch behavior unchanged. Its
+process-backed HTTP regression passed (1 passed, 865 filtered; 27.07 seconds),
+and the scoped check passed with existing legacy HTML parser dead-code
+warnings. It covers redirect response cookies, all three credentials modes,
+cross-origin CORS, and retry after a failed load. Full WPT and cross-platform
+coverage remain open; this slice does not establish cross-context propagation
+or durable persistence of SharedWorker response-cookie state. See the
+[slice 814 task](../plan/tasks/native-engine-browser-814.md). Slice 813
+implements SharedWorker constructor matching by creator storage key,
+constructor URL, and name; incompatible type/credentials/lifetime options
+error only the new object. Its process-backed HTTP regression passed (1
+passed, 864 filtered; 42.33 seconds). The tuple/opaque key-level tests are
+present but were not run because compiling the separate library-test target
+exhausted available host memory. Slice 812 implements live iframe
+removal/reinsertion with scoped
 descendant and SharedWorker teardown, survivor preservation, and no unload
 delivery (1 passed, 864 filtered; 85.59 seconds). Slice 811 binds
 SharedWorker ownership to committed Document generations and tears down only
@@ -22,12 +32,7 @@ cross-target request/reply through both connection ports (1 passed, 861
 filtered; 36.22 seconds). Slice 808 verifies MessagePort close isolation
 across three connections to one HTTP-loaded SharedWorker, including a
 request/reply after both close directions (1 passed, 860 filtered; 29.63
-seconds). Slice 814 is planned for SharedWorker module-script credential
-handling; the HTML Standard applies the constructor credentials option only
-to module workers. See the
-[slice 814 task](../plan/tasks/native-engine-browser-814.md). Credential-aware
-redirect, response-cookie, and module-dependency behavior remains open. Slice
-746 moves initial
+seconds). Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR

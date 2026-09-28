@@ -28,11 +28,10 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is locally complete through
-`native-engine-browser-813`; Slice 813 implements SharedWorker constructor
-matching and option-mismatch behavior. Its scoped check and process-backed
-HTTP regression passed. The two source-level storage-key tests were added but
-not run because compiling their separate library-test binary exhausted
-available memory. See the [slice 813 task](tasks/native-engine-browser-813.md).
+`native-engine-browser-814`; Slice 814 applies module SharedWorker credentials
+to root, static-graph, and dynamic-import fetches, while leaving classic
+SharedWorker fetching unchanged. Its scoped check and process-backed HTTP
+regression passed. See the [slice 814 task](tasks/native-engine-browser-814.md).
 Slice 767 verifies native hyperlink Enter
 activation through local and process-backed `_blank` target and download
 defaults, including cancellation and opener preservation; see the

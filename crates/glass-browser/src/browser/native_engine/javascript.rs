@@ -692,6 +692,8 @@ pub(crate) enum NativeScriptCommand {
         credentials: String,
         #[serde(default)]
         extended_lifetime: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        cookie_profile: Vec<NativeCookieProfileEntry>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         constructor_storage_key: Option<NativeSharedWorkerStorageKey>,
         transfer_port: NativeMessagePortTransfer,
@@ -1205,6 +1207,7 @@ pub(crate) struct NativeSharedWorkerCreateRequest {
     pub(crate) worker_type: String,
     pub(crate) credentials: String,
     pub(crate) extended_lifetime: bool,
+    pub(crate) cookie_profile: Vec<NativeCookieProfileEntry>,
     pub(crate) transfer_port: NativeMessagePortTransfer,
 }
 
@@ -2152,6 +2155,7 @@ impl NativeWorkerRegistry {
                     worker_type,
                     credentials,
                     extended_lifetime,
+                    cookie_profile: _,
                     constructor_storage_key,
                     transfer_port,
                 } => {
@@ -2278,7 +2282,13 @@ impl NativeWorkerRegistry {
             dynamic_import_referrers,
         ) = if is_module {
             let graph = match self
-                .load_worker_module_graph(loader, owner_url, module_request_url, resource.clone())
+                .load_worker_module_graph(
+                    loader,
+                    owner_url,
+                    module_request_url,
+                    resource.clone(),
+                    None,
+                )
                 .await
             {
                 Ok(graph) => graph,
@@ -2469,10 +2479,21 @@ impl NativeWorkerRegistry {
                 "must be unique within the page realm",
             ));
         }
-        let resource = match loader
-            .load_worker_async(owner_url, &href, MAX_NATIVE_SCRIPT_BYTES)
-            .await
-        {
+        let resource_result = if is_module {
+            loader
+                .load_shared_worker_module_async(
+                    owner_url,
+                    &href,
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    &credentials,
+                )
+                .await
+        } else {
+            loader
+                .load_worker_async(owner_url, &href, MAX_NATIVE_SCRIPT_BYTES)
+                .await
+        };
+        let resource = match resource_result {
             Ok(Some(resource)) => resource,
             Ok(None) => {
                 self.queue_error(
@@ -2497,7 +2518,13 @@ impl NativeWorkerRegistry {
             dynamic_import_referrers,
         ) = if is_module {
             let graph = match self
-                .load_worker_module_graph(loader, owner_url, module_request_url, resource.clone())
+                .load_worker_module_graph(
+                    loader,
+                    owner_url,
+                    module_request_url,
+                    resource.clone(),
+                    Some(&credentials),
+                )
                 .await
             {
                 Ok(graph) => graph,
@@ -4262,12 +4289,19 @@ impl NativeWorkerRegistry {
             sources
         };
 
+        let worker_credentials_mode = self
+            .workers
+            .get(&worker_id)
+            .filter(|worker| worker.is_shared && worker.is_module)
+            .map(|worker| worker.credentials.clone());
+
         let resource = loader
-            .load_worker_script_dependency_async(
+            .load_worker_script_dependency_async_with_credentials(
                 worker_url,
                 &target,
                 MAX_NATIVE_SCRIPT_BYTES,
                 Some(module_type),
+                worker_credentials_mode.as_deref(),
             )
             .await?
             .ok_or_else(|| NativeEngineError::Network {
@@ -4275,7 +4309,13 @@ impl NativeWorkerRegistry {
                 reason: "dynamic Worker module was blocked or unavailable".into(),
             })?;
         let graph = self
-            .load_worker_module_graph(loader, worker_url, module_name.clone(), resource)
+            .load_worker_module_graph(
+                loader,
+                worker_url,
+                module_name.clone(),
+                resource,
+                worker_credentials_mode.as_deref(),
+            )
             .await?;
         let new_sources = graph
             .sources
@@ -4533,6 +4573,7 @@ impl NativeWorkerRegistry {
         owner_url: &str,
         root_request_url: String,
         root: NativeScriptResource,
+        credentials_mode: Option<&str>,
     ) -> Result<NativeWorkerModuleGraph, NativeEngineError> {
         if root.body.is_empty() {
             return Err(NativeEngineError::invalid(
@@ -4581,11 +4622,12 @@ impl NativeWorkerRegistry {
                     ));
                 }
                 let resource = loader
-                    .load_worker_script_dependency_async(
+                    .load_worker_script_dependency_async_with_credentials(
                         owner_url,
                         &target,
                         MAX_NATIVE_SCRIPT_BYTES,
                         Some(request.module_type),
+                        credentials_mode,
                     )
                     .await?
                     .ok_or_else(|| NativeEngineError::Network {
@@ -4643,7 +4685,7 @@ pub(crate) async fn load_service_worker_source(
     let registry = NativeWorkerRegistry::new();
     if is_module {
         let module_graph = registry
-            .load_worker_module_graph(loader, owner_url, root_request_url, resource.clone())
+            .load_worker_module_graph(loader, owner_url, root_request_url, resource.clone(), None)
             .await?;
         Ok((resource.body, BTreeMap::new(), Some(module_graph)))
     } else {

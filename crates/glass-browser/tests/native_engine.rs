@@ -31980,6 +31980,305 @@ async fn native_content_process_resolves_runtime_shared_worker_module_imports() 
     );
 }
 
+#[test]
+fn native_runtime_shared_worker_module_credentials_cover_redirects_and_graph_cookies() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let _guard = native_content_process_test_lock().lock().await;
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let cross_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let cross_address = cross_listener.local_addr().unwrap();
+            let page_origin = format!("http://{address}");
+            let cross_origin = format!("http://{cross_address}");
+
+            let primary_server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(40), async move {
+                    let mut requests = Vec::new();
+                    for _ in 0..10 {
+                        let (mut stream, _) = listener.accept().await.unwrap();
+                        let request = read_http_request(&mut stream).await;
+                        let path = request
+                            .split_whitespace()
+                            .nth(1)
+                            .expect("SharedWorker request includes a URL")
+                            .to_owned();
+                        let cookie = request
+                            .lines()
+                            .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                            .and_then(|line| line.split_once(':'))
+                            .map(|(_, value)| value.trim().to_owned());
+                        let (status, extra_headers, content_type, body):
+                            (&str, String, &str, String) = if path == "/page" {
+                            (
+                                "200 OK",
+                                "Set-Cookie: root=seed; Path=/; SameSite=Lax\r\n".to_owned(),
+                                "text/html",
+                                r#"<script>
+globalThis.sharedWorkerResults = [];
+globalThis.sharedWorkerErrors = [];
+for (const mode of ['omit', 'same-origin', 'include']) {
+  const worker = new SharedWorker(`/worker-redirect-${mode}.js`, {
+    name: `credentials-${mode}`, type: 'module', credentials: mode,
+  });
+  worker.addEventListener('error', event => sharedWorkerErrors.push(event.message));
+  worker.port.addEventListener('message', event => sharedWorkerResults.push(event.data));
+  worker.port.start();
+}
+const recoverOptions = {
+  name: 'credentials-cors-recovery', type: 'module', credentials: 'include',
+};
+const rejected = new SharedWorker('/worker-final-recover.js', recoverOptions);
+rejected.addEventListener('error', () => {
+  sharedWorkerErrors.push('cors');
+  const retry = new SharedWorker('/worker-final-recover.js', recoverOptions);
+  retry.port.addEventListener('message', event => sharedWorkerResults.push(event.data));
+  retry.port.start();
+});
+globalThis.classicWorkerResults = [];
+const classic = new SharedWorker('/classic-worker.js', {
+  name: 'classic-credentials-option-is-ignored', credentials: 'omit',
+});
+classic.port.addEventListener('message', event => classicWorkerResults.push(event.data));
+classic.port.start();
+</script>"#
+                                    .to_owned(),
+                            )
+                        } else if let Some(mode) = path
+                            .strip_prefix("/worker-redirect-")
+                            .and_then(|path| path.strip_suffix(".js"))
+                        {
+                            let cookie_name = mode.replace('-', "_");
+                            (
+                                "302 Found",
+                                format!("Location: /worker-final-{mode}.js\r\nSet-Cookie: hop_{cookie_name}=accepted; Path=/; SameSite=Lax\r\n"),
+                                "text/plain",
+                                "redirecting".to_owned(),
+                            )
+                        } else if let Some(mode) = path
+                            .strip_prefix("/worker-final-")
+                            .and_then(|path| path.strip_suffix(".js"))
+                        {
+                            let body = format!(
+                                "import {{ first }} from \"{cross_origin}/first.js?mode={mode}\";\nimport {{ later }} from \"{cross_origin}/later.js?mode={mode}\";\nglobalThis.onconnect = event => {{ const port = event.ports[0]; port.postMessage({{ mode: \"{mode}\", kind: 'static', first, later }}); import(\"{cross_origin}/dynamic.js?mode={mode}\").then(module => port.postMessage({{ mode: \"{mode}\", kind: 'dynamic', dynamic: module.dynamic }})); }};"
+                            );
+                            ("200 OK", String::new(), "application/javascript", body)
+                        } else if path == "/classic-worker.js" {
+                            (
+                                "200 OK",
+                                String::new(),
+                                "application/javascript",
+                                "globalThis.onconnect = event => event.ports[0].postMessage({ kind: 'classic-ready' });".to_owned(),
+                            )
+                        } else {
+                            panic!("unexpected credentials-test request: {path}");
+                        };
+                        let response = format!(
+                            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                        requests.push((path, cookie));
+                    }
+                    requests
+                })
+                .await
+                .expect("SharedWorker root and redirect requests stay within their time bound")
+            });
+
+            let cross_server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(40), async move {
+                    let mut requests = Vec::new();
+                    let mut recover_first_attempts = 0;
+                    for _ in 0..13 {
+                        let (mut stream, _) = cross_listener.accept().await.unwrap();
+                        let request = read_http_request(&mut stream).await;
+                        let path = request
+                            .split_whitespace()
+                            .nth(1)
+                            .expect("cross-origin module request includes a URL")
+                            .to_owned();
+                        let cookie = request
+                            .lines()
+                            .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                            .and_then(|line| line.split_once(':'))
+                            .map(|(_, value)| value.trim().to_owned());
+                        let mode = path
+                            .split_once("mode=")
+                            .map(|(_, mode)| mode)
+                            .expect("module dependency request carries its credentials mode");
+                        let deny_recovery_first = mode == "recover"
+                            && path.starts_with("/first.js?")
+                            && {
+                                recover_first_attempts += 1;
+                                recover_first_attempts == 1
+                            };
+                        let cors = if deny_recovery_first {
+                            String::new()
+                        } else if mode == "include" || mode == "recover" {
+                            format!(
+                                "Access-Control-Allow-Origin: {page_origin}\r\nAccess-Control-Allow-Credentials: true\r\n"
+                            )
+                        } else {
+                            "Access-Control-Allow-Origin: *\r\n".to_owned()
+                        };
+                        let (extra_headers, body) = if path.starts_with("/first.js?") {
+                            let set_cookie = if mode == "include" || mode == "recover" {
+                                if mode == "recover" {
+                                    "Set-Cookie: cross=from-recover; Path=/; SameSite=Lax\r\n"
+                                } else {
+                                    "Set-Cookie: cross=from-include; Path=/; SameSite=Lax\r\n"
+                                }
+                            } else {
+                                "Set-Cookie: cross=must-not-stick; Path=/; SameSite=Lax\r\n"
+                            };
+                            (set_cookie, "export const first = 'loaded';")
+                        } else if path.starts_with("/later.js?") {
+                            ("", "export const later = 'checked';")
+                        } else if path.starts_with("/dynamic.js?") {
+                            ("", "export const dynamic = 'loaded';")
+                        } else {
+                            panic!("unexpected cross-origin module request: {path}");
+                        };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\n{cors}{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                        requests.push((path, cookie));
+                    }
+                    requests
+                })
+                .await
+                .expect("SharedWorker module-graph requests stay within their time bound")
+            });
+
+            let session = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let shared = session
+                        .script("sharedWorkerResults.slice().sort((a, b) => a.mode.localeCompare(b.mode) || a.kind.localeCompare(b.kind))")
+                        .await
+                        .unwrap()
+                        .value;
+                    let classic = session
+                        .script("classicWorkerResults")
+                        .await
+                        .unwrap()
+                        .value;
+                    let errors = session
+                        .script("sharedWorkerErrors")
+                        .await
+                        .unwrap()
+                        .value;
+                    if shared.as_array().is_some_and(|values| values.len() == 8)
+                        && classic.as_array().is_some_and(|values| values.len() == 1)
+                        && errors.as_array().is_some_and(|values| values.len() == 1)
+                    {
+                        break (shared, classic);
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("all module modes and the classic SharedWorker must connect");
+            let results = session
+                .script("sharedWorkerResults.slice().sort((a, b) => a.mode.localeCompare(b.mode) || a.kind.localeCompare(b.kind))")
+                .await
+                .unwrap()
+                .value;
+            let classic_results = session
+                .script("classicWorkerResults")
+                .await
+                .unwrap()
+                .value;
+            let errors = session
+                .script("sharedWorkerErrors")
+                .await
+                .unwrap()
+                .value;
+            session.close().await.unwrap();
+
+            let mut primary_requests = primary_server.await.unwrap();
+            let mut cross_requests = cross_server.await.unwrap();
+            primary_requests.sort_by(|left, right| left.0.cmp(&right.0));
+            cross_requests.sort_by(|left, right| left.0.cmp(&right.0));
+
+            assert_eq!(
+                results,
+                serde_json::json!([
+                    {"mode": "include", "kind": "dynamic", "dynamic": "loaded"},
+                    {"mode": "include", "kind": "static", "first": "loaded", "later": "checked"},
+                    {"mode": "omit", "kind": "dynamic", "dynamic": "loaded"},
+                    {"mode": "omit", "kind": "static", "first": "loaded", "later": "checked"},
+                    {"mode": "recover", "kind": "dynamic", "dynamic": "loaded"},
+                    {"mode": "recover", "kind": "static", "first": "loaded", "later": "checked"},
+                    {"mode": "same-origin", "kind": "dynamic", "dynamic": "loaded"},
+                    {"mode": "same-origin", "kind": "static", "first": "loaded", "later": "checked"},
+                ])
+            );
+            assert_eq!(classic_results, serde_json::json!([{"kind": "classic-ready"}]));
+            assert_eq!(errors, serde_json::json!(["cors"]));
+
+            let primary_cookie = |path: &str| {
+                primary_requests
+                    .iter()
+                    .find(|(request_path, _)| request_path == path)
+                    .unwrap_or_else(|| panic!("missing primary request {path}"))
+                    .1
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            assert!(!primary_cookie("/worker-redirect-omit.js").contains("root=seed"));
+            assert!(!primary_cookie("/worker-final-omit.js").contains("root=seed"));
+            for mode in ["same-origin", "include"] {
+                assert!(primary_cookie(&format!("/worker-redirect-{mode}.js")).contains("root=seed"));
+                let final_cookie = primary_cookie(&format!("/worker-final-{mode}.js"));
+                assert!(final_cookie.contains("root=seed"));
+                assert!(final_cookie.contains(&format!("hop_{}=accepted", mode.replace('-', "_"))));
+            }
+            assert!(primary_cookie("/classic-worker.js").contains("root=seed"));
+
+            let cross_cookie = |path: &str| {
+                cross_requests
+                    .iter()
+                    .find(|(request_path, _)| request_path == path)
+                    .unwrap_or_else(|| panic!("missing cross-origin request {path}"))
+                    .1
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            for mode in ["omit", "same-origin"] {
+                assert!(!cross_cookie(&format!("/first.js?mode={mode}")).contains("root=seed"));
+                assert!(!cross_cookie(&format!("/later.js?mode={mode}")).contains("cross=from-include"));
+                assert!(!cross_cookie(&format!("/dynamic.js?mode={mode}")).contains("cross=from-include"));
+            }
+            let include_first = cross_cookie("/first.js?mode=include");
+            assert!(include_first.contains("root=seed"));
+            assert!(include_first.contains("hop_include=accepted"));
+            assert!(cross_cookie("/later.js?mode=include").contains("cross=from-include"));
+            assert!(cross_cookie("/dynamic.js?mode=include").contains("cross=from-include"));
+
+            let recover_first_requests = cross_requests
+                .iter()
+                .filter(|(path, _)| path == "/first.js?mode=recover")
+                .collect::<Vec<_>>();
+            assert_eq!(recover_first_requests.len(), 2);
+            assert!(recover_first_requests
+                .iter()
+                .all(|(_, cookie)| cookie.as_deref().unwrap_or("").contains("root=seed")));
+            assert!(cross_cookie("/later.js?mode=recover").contains("cross=from-recover"));
+            assert!(cross_cookie("/dynamic.js?mode=recover").contains("cross=from-recover"));
+        });
+    });
+}
+
 #[tokio::test]
 async fn native_content_process_import_scripts_dynamic_imports_use_final_script_urls() {
     let _guard = native_content_process_test_lock().lock().await;

@@ -382,6 +382,13 @@ retirement, remote-peer close notification, other transferables, and complete
 MessagePort/WPT conformance remain open; see
 [slice 804](tasks/native-engine-browser-804.md).
 
+Slice 805 contracts explicit `MessagePort.close()` for same-realm channel
+pairs: the initiating endpoint closes, both peer references are removed, and
+the still-open peer receives one generic `close` Event through its listener
+and `onclose` handler. Cross-realm bridge teardown, GC-driven close, and full
+MessagePort/EventTarget/WPT conformance remain open; see
+[slice 805](tasks/native-engine-browser-805.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

@@ -3813,6 +3813,13 @@ route retirement, remote-peer `close` notification, and non-port
 transfer-resource cleanup remain separate work. See
 [task 804](../plan/tasks/native-engine-browser-804.md).
 
+Slice 805 contracts explicit close for same-realm native MessageChannel
+pairs: closing one endpoint disentangles both references, leaves the peer
+object open, and fires one generic `close` Event at that peer through the
+existing event-dispatch path. The required `onclose` slot is part of the
+contract. Cross-realm bridge-route teardown and GC-driven close remain open.
+See [task 805](../plan/tasks/native-engine-browser-805.md).
+
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
 operation and delivers them in the owning page turn; EventSource carries

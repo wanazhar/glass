@@ -1,15 +1,21 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-814`; issue #40 remains open. Slice 814 applies module
-SharedWorker credentials to root, static-dependency, and dynamic-import
+`native-engine-browser-815`; issue #40 remains open. Slice 815 prevents stale
+creator snapshots from erasing credential-accepted cookie writes/deletions in
+the session SharedWorker loader. Its process-backed regression passed (1
+passed, 866 filtered; 20.52 seconds); the Slice 814 credentials regression
+also passed after this change (1 passed, 866 filtered; 24.17 seconds). The
+scoped check passed with existing legacy HTML parser dead-code warnings. This
+only covers the live coordinator's 128-key change journal; propagation to
+already-live page/frame loaders, durable profile persistence, full WPT, and
+cross-platform coverage remain open. See the
+[slice 815 task](../plan/tasks/native-engine-browser-815.md). Slice 814 applies
+module SharedWorker credentials to root, static-dependency, and dynamic-import
 requests while leaving classic-worker fetch behavior unchanged. Its
-process-backed HTTP regression passed (1 passed, 865 filtered; 27.07 seconds),
-and the scoped check passed with existing legacy HTML parser dead-code
-warnings. It covers redirect response cookies, all three credentials modes,
-cross-origin CORS, and retry after a failed load. Full WPT and cross-platform
-coverage remain open; this slice does not establish cross-context propagation
-or durable persistence of SharedWorker response-cookie state. See the
+process-backed HTTP regression passed (1 passed, 865 filtered; 27.07 seconds).
+It covers redirect response cookies, all three credentials modes,
+cross-origin CORS, and retry after a failed load. See the
 [slice 814 task](../plan/tasks/native-engine-browser-814.md). Slice 813
 implements SharedWorker constructor matching by creator storage key,
 constructor URL, and name; incompatible type/credentials/lifetime options

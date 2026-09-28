@@ -486,6 +486,17 @@ durable persistence of cookies accepted by session-level SharedWorker fetches
 are also not established by this slice. See the
 [slice 814 task](tasks/native-engine-browser-814.md).
 
+Slice 815 preserves the session SharedWorker loader's accepted response-cookie
+writes and deletions when later worker creations replace its cookie profile
+from a stale page snapshot. The real-HTTP process regression passed (1 passed,
+866 filtered; 20.52 seconds); the Slice 814 credentials regression also passed
+after this change (1 passed, 866 filtered; 24.17 seconds). The scoped check
+passed with existing legacy HTML parser dead-code warnings. This is bounded to
+the live SharedWorker coordinator and its 128-key change journal; propagation
+to already-live page/frame loaders and durable profile persistence remain
+separate open requirements. See the
+[slice 815 task](tasks/native-engine-browser-815.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

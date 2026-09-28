@@ -3785,6 +3785,13 @@ HTTP regression covers transfer-free malformed input; transferred-resource
 rollback and other `messageerror` sources remain separate. See
 [task 801](../plan/tasks/native-engine-browser-801.md).
 
+Slice 802 contracts the page-side Dedicated Worker receiver path. A
+host-delivered clone-decode failure must produce `messageerror` on the Worker
+proxy, preserve origin while withholding partial data and ports, and allow a
+later valid Worker message. Worker-global and MessagePort receivers remain
+separate boundaries; see
+[task 802](../plan/tasks/native-engine-browser-802.md).
+
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
 operation and delivers them in the owning page turn; EventSource carries

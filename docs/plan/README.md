@@ -284,6 +284,12 @@ preserving both local and cross-realm ports for later valid delivery. The
 focused process-backed HTTP regression passes; transfer rollback, other
 messageerror sources, remote CI, and complete EventTarget/WPT conformance
 remain open. See the [slice 801 task](tasks/native-engine-browser-801.md).
+Slice 802 contracts the separate page-side Dedicated Worker receiver:
+malformed host-delivered clone data must dispatch `messageerror` on the Worker
+object without exposing partial payloads and must not prevent later valid
+messages. Transfer rollback, other receiver kinds, remote CI, and complete
+EventTarget/WPT conformance remain open; see the
+[slice 802 task](tasks/native-engine-browser-802.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

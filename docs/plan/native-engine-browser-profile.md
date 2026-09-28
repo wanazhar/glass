@@ -357,6 +357,13 @@ transfer-free malformed input; transferred-resource rollback and complete
 MessagePort/EventTarget/WPT conformance remain open. See
 [slice 801](tasks/native-engine-browser-801.md).
 
+Slice 802 contracts page-side Dedicated Worker message recovery: a
+host-delivered clone envelope that fails structured deserialization must
+dispatch `messageerror` at the Worker object without exposing partial data or
+ports, while allowing a later valid Worker message. Transfer rollback and
+complete Worker/EventTarget/WPT conformance remain open; see
+[slice 802](tasks/native-engine-browser-802.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

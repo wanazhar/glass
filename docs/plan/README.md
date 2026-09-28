@@ -338,6 +338,14 @@ bridge that remains usable (1 passed, 859 filtered; 25.23 seconds).
 Multi-client scheduling, GC/document-destruction close, complete
 task-source/EventTarget/WPT behavior, remote CI, and cross-platform
 certification remain open. See the [slice 807 task](tasks/native-engine-browser-807.md).
+Slice 808 contracts the missing process-backed SharedWorker bridge-close
+proof. Its real HTTP fixture will use three connections to one named runtime
+to exercise page- and SharedWorker-initiated close while keeping an unrelated
+connection active. The NativeWorkerRegistry route implementation is expected
+to be shared with Slice 806; implementation evidence is pending and no
+SharedWorker conformance claim is made yet. Full lifecycle/task-source/WPT,
+remote CI, and cross-platform certification remain open. See the
+[slice 808 task](tasks/native-engine-browser-808.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

@@ -418,6 +418,14 @@ GC/document-destruction close, full task-source and EventTarget/WPT
 conformance, remote CI, and cross-platform certification remain open. See
 [slice 807](tasks/native-engine-browser-807.md).
 
+Slice 808 contracts process-backed coverage of bridge close for three
+connections to one real HTTP-loaded SharedWorker: page-initiated and
+SharedWorker-initiated close, per-route queue purge, and continued operation
+on a third connection. This fills the SharedWorker omission in Slice 806's
+Dedicated Worker fixture; implementation/evidence are pending and do not
+imply full SharedWorker, lifecycle, task-source, or WPT conformance. See
+[slice 808](tasks/native-engine-browser-808.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

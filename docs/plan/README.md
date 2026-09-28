@@ -322,17 +322,20 @@ retirement converts that reservation into its close record. A process-backed
 HTTP regression passes for both directions, handler/listener identity,
 same-turn queued-message purge, post-close delivery stop, and independent
 channel survival (1 passed, 858 filtered). The fixture is Dedicated
-Worker-only; SharedWorker process coverage remains open. Service Worker
-routes retain their separate owner and return an explicit owner-specific
-error, not a fallback. GC/document-destruction close, broader task-source and
+Worker-only; SharedWorker process coverage remains open. At the Slice 806
+checkpoint, Service Worker routes retained their separate owner and returned
+an explicit owner-specific error rather than falling back; Slice 807 now
+implements close through that owner. GC/document-destruction close, broader task-source and
 WPT conformance, remote CI, and cross-platform certification remain open; see
 the [slice 806 task](tasks/native-engine-browser-806.md).
-Slice 807 contracts explicit close for Service Worker-owned page bridges
+Slice 807 implements explicit close for Service Worker-owned page bridges
 through `NativeServiceWorkerRegistry`, keeping route ownership separate while
 covering both page-initiated and Service Worker-initiated close. It reserves
-bounded queue capacity for peer close delivery and requires an HTTP-backed
-regression with an unrelated bridge still active. Implementation and evidence
-are pending; multi-client scheduling, GC/document-destruction close, complete
+bounded queue capacity for peer close delivery. Its process-backed HTTP
+regression verifies both directions, shared generic Event identity/state,
+repeated close, same-turn queue purge, post-close suppression, and an unrelated
+bridge that remains usable (1 passed, 859 filtered; 25.23 seconds).
+Multi-client scheduling, GC/document-destruction close, complete
 task-source/EventTarget/WPT behavior, remote CI, and cross-platform
 certification remain open. See the [slice 807 task](tasks/native-engine-browser-807.md).
 Slice 766 implements native hyperlink Enter activation

@@ -16174,6 +16174,46 @@ impl NativeJavaScriptRuntime {
         )
     }
 
+    pub(crate) fn dispatch_service_worker_message_port_close(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        bridge_key: &str,
+        is_module: bool,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        validate_url_text("native service worker MessagePort bridge key", bridge_key)?;
+        if bridge_key.is_empty() {
+            return Err(NativeEngineError::invalid(
+                "native service worker MessagePort bridge key",
+                "must not be empty",
+            ));
+        }
+        if bridge_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+            return Err(NativeEngineError::limit(
+                "native service worker MessagePort bridge key",
+                crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                bridge_key.len(),
+            ));
+        }
+        let bootstrap = service_worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            &BTreeMap::new(),
+            is_module,
+        )?;
+        self.evaluate_worker_source_with_bootstrap_and_event(
+            worker_id,
+            worker_url,
+            None,
+            "undefined;",
+            bootstrap,
+            true,
+            false,
+            Some(NativeWorkerDispatch::MessagePortClose { bridge_key }),
+        )
+    }
+
     pub(crate) fn resolve_service_worker_fetch(
         &self,
         worker_id: u32,
@@ -19288,7 +19328,7 @@ fn dispatch_worker_event<'js>(
                 .globals()
                 .get("__glassDispatchMessagePortCloseByBridge")
                 .map_err(|error| NativeEngineError::Worker {
-                    operation: "dispatch native Worker MessagePort close".into(),
+                    operation: "dispatch native MessagePort close".into(),
                     reason: format!(
                         "native Worker MessagePort close dispatcher was unavailable: {}",
                         CaughtError::from_error(&ctx, error)
@@ -19296,7 +19336,7 @@ fn dispatch_worker_event<'js>(
                 })?;
             dispatch.call::<_, Value>((bridge_key,)).map_err(|error| {
                 NativeEngineError::Worker {
-                    operation: "dispatch native Worker MessagePort close".into(),
+                    operation: "dispatch native MessagePort close".into(),
                     reason: format!(
                         "native Worker MessagePort close dispatch failed: {}",
                         CaughtError::from_error(&ctx, error)

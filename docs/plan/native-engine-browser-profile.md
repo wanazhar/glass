@@ -399,21 +399,24 @@ process-backed HTTP regression verifies both directions, initiator/peer state,
 one shared Event through `onclose` and listeners, queued-message purge,
 post-close stop, and independent-channel survival (1 passed, 858 filtered).
 The fixture uses a Dedicated Worker; SharedWorker process coverage remains
-open. Service Worker bridge close is still outside this slice and explicitly
-returns an owner-specific error rather than crossing registry ownership.
+open. At the Slice 806 checkpoint, Service Worker bridge close remained
+outside the slice and explicitly returned an owner-specific error rather than
+crossing registry ownership; Slice 807 now implements that separate route.
 GC-driven close, full task-source/EventTarget behavior, WPT, remote CI, and
 cross-platform certification remain open; see
 [slice 806](tasks/native-engine-browser-806.md).
 
-Slice 807 contracts `MessagePort.close()` for page-to-Service-Worker bridges
+Slice 807 implements `MessagePort.close()` for page-to-Service-Worker bridges
 owned by `NativeServiceWorkerRegistry`: retire only the validated route, purge
 its pending messages, and deliver one generic close Event to the surviving
-endpoint in either direction. The contract reserves bounded capacity for each
-live route's close notification and requires process-backed HTTP coverage with
-an unrelated bridge still usable. Implementation and evidence are pending;
-multi-client scheduling, GC/document-destruction close, full task-source and
-EventTarget/WPT conformance, remote CI, and cross-platform certification
-remain open. See [slice 807](tasks/native-engine-browser-807.md).
+endpoint in either direction. The registry reserves bounded capacity for each
+live route's close notification. Process-backed HTTP coverage verifies both
+directions, event identity/state, repeated close, same-turn queue purge,
+post-close suppression, and continued use of an unrelated bridge (1 passed,
+859 filtered; 25.23 seconds). Multi-client scheduling,
+GC/document-destruction close, full task-source and EventTarget/WPT
+conformance, remote CI, and cross-platform certification remain open. See
+[slice 807](tasks/native-engine-browser-807.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus

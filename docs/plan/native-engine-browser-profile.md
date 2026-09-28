@@ -390,6 +390,12 @@ no later cross-pair messages. Cross-realm bridge teardown, GC-driven close,
 and full MessagePort/EventTarget/WPT conformance remain open; see
 [slice 805](tasks/native-engine-browser-805.md).
 
+Slice 806 contracts Page-to-Dedicated/Shared-Worker MessagePort close across
+the Rust-owned route: validate the owner, retire the route and pending work,
+and deliver one generic `close` Event to the surviving endpoint. Service
+Worker-owned routes and GC-driven close remain open; see
+[slice 806](tasks/native-engine-browser-806.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

@@ -278,6 +278,11 @@ drained without becoming a synchronous sender error or client `error` event.
 Focused local process-backed and malformed-envelope regressions pass; remote
 CI and full Service Worker conformance remain open. See the
 [slice 800 task](tasks/native-engine-browser-800.md).
+Slice 801 contracts receive-side MessagePort recovery: host-delivered clone
+decode failures must dispatch `messageerror` with no partial payload while
+preserving the port for later valid delivery. Transfer rollback, other message
+source kinds, remote CI, and complete EventTarget/WPT conformance remain open;
+see the [slice 801 task](tasks/native-engine-browser-801.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

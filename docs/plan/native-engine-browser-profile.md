@@ -460,6 +460,20 @@ agent-cluster, credentials, retained detached `WindowProxy`, iframe/WPT, and
 SharedWorker conformance remain open; see the [slice 812 task](tasks/native-engine-browser-812.md)
 for exact evidence.
 
+Slice 813 specifies SharedWorker reuse identity as the creator environment's
+storage key, parsed constructor URL, and name. Worker type, credentials mode,
+and `extendedLifetime` are checked after identity matching; a mismatch reports
+an error to the new `SharedWorker` and must not create a parallel global or
+alter the existing owner's ports. The current [Storage Standard storage-key
+algorithm](https://storage.spec.whatwg.org/#storage-keys) defines a key as an
+origin tuple, so native opaque-origin keys must preserve per-Document origin
+identity rather than use the SharedWorker script URL. The [HTML Standard
+constructor algorithm](https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworker-interface)
+is the matching and mismatch authority. Credential-aware fetching,
+partitioning beyond the current storage-key definition, agent-cluster
+communication policy, and worker lifetime timers remain separate open profile
+requirements. See the [slice 813 task](tasks/native-engine-browser-813.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

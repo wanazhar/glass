@@ -17,7 +17,9 @@ cross-target request/reply through both connection ports (1 passed, 861
 filtered; 36.22 seconds). Slice 808 verifies MessagePort close isolation
 across three connections to one HTTP-loaded SharedWorker, including a
 request/reply after both close directions (1 passed, 860 filtered; 29.63
-seconds). Slice 746 moves initial
+seconds). Slice 813 is in progress for standards-based SharedWorker
+constructor identity and option-mismatch handling; see the
+[slice 813 task](../plan/tasks/native-engine-browser-813.md). Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR

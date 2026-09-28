@@ -3821,6 +3821,12 @@ one-shot delivery and that later messages do not cross the closed pair.
 Cross-realm bridge-route teardown and GC-driven close remain open. See
 [task 805](../plan/tasks/native-engine-browser-805.md).
 
+Slice 806 contracts close over page-to-Dedicated/Shared-Worker MessagePort
+bridges. The host must validate route ownership, retire the Rust route and
+pending work, and dispatch one generic `close` Event at the still-open peer
+in the opposite realm. Service Worker bridge ownership remains separate. See
+[task 806](../plan/tasks/native-engine-browser-806.md).
+
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
 operation and delivers them in the owning page turn; EventSource carries

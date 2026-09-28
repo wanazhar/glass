@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-808
 scope: glass-browser/shared-worker-message-port-bridge-close-process-coverage
-status: in-progress
+status: done
 depends-on: [native-engine-browser-806]
 ---
 
@@ -70,6 +70,15 @@ directions and isolation of an unaffected connection.
   SharedWorker lifecycle, scheduling, module, or WPT work unless the close
   test identifies a direct prerequisite.
 
+## Result
+
+The process-backed regression covers three connections to one named
+HTTP-loaded SharedWorker runtime. It verifies page- and worker-initiated close,
+generic close Event identity and dispatch state, repeated-close idempotence,
+initiator silence, route-specific queue purge and post-close suppression, and
+a request/reply on the third connection after both closures. The existing
+`NativeWorkerRegistry` path passed without a runtime code change.
+
 ## Paths
 
 - `crates/glass-browser/tests/native_engine.rs`
@@ -81,8 +90,10 @@ directions and isolation of an unaffected connection.
 
 ## Verification
 
-The contract checkpoint's documentation truth/depth/shortcut/coverage checks
-passed (1,436 Markdown files, zero current-claim failures; 93 current guides;
-19 substantive contracts; 15 shortcut keys/63 markers; 346 full-product MCP
-tools). Implementation and process-backed verification are pending. Remote
-CI, WPT, and cross-platform certification remain separate issue #40 gates.
+The scoped package check passed:
+`cargo check -p glass-browser --test native_engine --locked --quiet` (exit 0;
+existing unused HTML-parser warnings only). The exact process-backed test
+passed: `cargo test -p glass-browser --test native_engine native_content_process_shared_worker_message_port_bridge_close_both_directions --locked --quiet -- --exact`
+(1 passed, 860 filtered; 29.63 seconds). `cargo fmt --all` and
+`git diff --check` passed. Remote CI, WPT, and cross-platform certification
+remain separate issue #40 gates.

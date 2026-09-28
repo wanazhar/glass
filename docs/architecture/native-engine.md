@@ -1,7 +1,10 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-807`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-808`; issue #40 remains open. Slice 808 verifies
+MessagePort close isolation across three connections to one HTTP-loaded
+SharedWorker, including a request/reply after both close directions
+(1 passed, 860 filtered; 29.63 seconds). Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -3855,6 +3858,17 @@ suppression, and an unrelated live bridge. Multi-client scheduling, worker or
 document destruction, garbage collection, complete task-source and
 EventTarget/Web IDL behavior, WPT, remote CI, and cross-platform certification
 remain open; see [task 807](../plan/tasks/native-engine-browser-807.md).
+
+Slice 808 adds real HTTP process coverage for the SharedWorker route already
+owned by `NativeWorkerRegistry`. Three connections prove one shared runtime;
+page- and worker-initiated close each deliver one close Event only to the
+surviving endpoint, retire only that bridge, purge queued work, and suppress
+later messages. A request/reply on the third connection succeeds after both
+close paths. The focused regression passed (1 passed, 860 filtered; 29.63
+seconds), and no registry change was needed. SharedWorker lifecycle and
+cross-page sharing, complete task-source/EventTarget/Web IDL and WPT
+conformance, remote CI, and cross-platform certification remain open; see
+[task 808](../plan/tasks/native-engine-browser-808.md).
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader

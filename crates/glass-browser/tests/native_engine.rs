@@ -32284,111 +32284,200 @@ fn native_runtime_shared_worker_cookie_changes_survive_stale_create_snapshots() 
     run_native_browser_worker_test(|runtime| {
         runtime.block_on(async {
             let _guard = native_content_process_test_lock().lock().await;
+            let profile_path = std::env::temp_dir().join(format!(
+                "glass-native-shared-worker-stale-cookie-{}.json",
+                std::process::id()
+            ));
+            let lock_path = profile_path.with_extension("lock");
+            for path in [&profile_path, &lock_path] {
+                let _ = fs::remove_file(path);
+            }
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
+            let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
             let server = tokio::spawn(async move {
-                tokio::time::timeout(Duration::from_secs(35), async move {
-                    let mut requests = Vec::new();
-                    for _ in 0..5 {
-                        let (mut stream, _) = listener.accept().await.unwrap();
-                        let request = read_http_request(&mut stream).await;
-                        let path = request
-                            .split_whitespace()
-                            .nth(1)
-                            .expect("SharedWorker request includes a URL")
-                            .to_owned();
-                        let cookie = request
-                            .lines()
-                            .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
-                            .and_then(|line| line.split_once(':'))
-                            .map(|(_, value)| value.trim().to_owned());
-                        let (status, extra_headers, content_type, body):
-                            (&str, &str, &str, &str) = match path.as_str() {
-                            "/page" => (
-                                "200 OK",
-                                "Set-Cookie: worker_state=page-stale; Path=/; SameSite=Lax\r\n",
-                                "text/html",
-                                r#"<script>
+                let mut requests = Vec::new();
+                loop {
+                    let accepted = tokio::select! {
+                        _ = &mut shutdown_receiver => break,
+                        accepted = listener.accept() => accepted.unwrap(),
+                    };
+                    let (mut stream, _) = accepted;
+                    let request = read_http_request(&mut stream).await;
+                    let path = request
+                        .split_whitespace()
+                        .nth(1)
+                        .expect("SharedWorker request includes a URL")
+                        .to_owned();
+                    let cookie = request
+                        .lines()
+                        .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                        .and_then(|line| line.split_once(':'))
+                        .map(|(_, value)| value.trim().to_owned());
+                    let (status, extra_headers, content_type, body):
+                        (&str, &str, &str, &str) = match path.as_str() {
+                        "/first" => (
+                            "200 OK",
+                            "Set-Cookie: worker_state=page-stale; Path=/; SameSite=Lax\r\n",
+                            "text/html",
+                            r#"<script>
 globalThis.cookieWorkerMessages = [];
-function connectCookieWorker(path, name, next) {
+globalThis.connectCookieWorker = (path, name) => {
   const worker = new SharedWorker(path, {
     name, type: 'module', credentials: 'include',
   });
-  worker.port.addEventListener('message', event => {
-    cookieWorkerMessages.push(event.data);
-    if (next) next();
-  });
+  worker.port.addEventListener('message', event => cookieWorkerMessages.push(event.data));
   worker.port.start();
-}
-connectCookieWorker('/writer.js', 'cookie-writer', () => {
-  connectCookieWorker('/observe-before.js', 'cookie-observer-before', () => {
-    connectCookieWorker('/delete.js', 'cookie-deleter', () => {
-      connectCookieWorker('/observe-after.js', 'cookie-observer-after');
-    });
-  });
-});
+};
 </script>"#,
-                            ),
-                            "/writer.js" => (
-                                "200 OK",
-                                "Set-Cookie: worker_state=from-worker; Path=/; SameSite=Lax\r\n",
-                                "application/javascript",
-                                "globalThis.onconnect = event => event.ports[0].postMessage('writer-ready');",
-                            ),
-                            "/observe-before.js" => (
-                                "200 OK",
-                                "",
-                                "application/javascript",
-                                "globalThis.onconnect = event => event.ports[0].postMessage('before-ready');",
-                            ),
-                            "/delete.js" => (
-                                "200 OK",
-                                "Set-Cookie: worker_state=; Max-Age=0; Path=/; SameSite=Lax\r\n",
-                                "application/javascript",
-                                "globalThis.onconnect = event => event.ports[0].postMessage('delete-ready');",
-                            ),
-                            "/observe-after.js" => (
-                                "200 OK",
-                                "",
-                                "application/javascript",
-                                "globalThis.onconnect = event => event.ports[0].postMessage('after-ready');",
-                            ),
-                            other => panic!("unexpected SharedWorker cookie request: {other}"),
-                        };
-                        let response = format!(
-                            "HTTP/1.1 {status}\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                            body.len()
-                        );
-                        stream.write_all(response.as_bytes()).await.unwrap();
-                        requests.push((path, cookie));
-                    }
-                    requests
-                })
-                .await
-                .expect("SharedWorker cookie reconciliation stays within its time bound")
+                        ),
+                        "/second" => (
+                            "200 OK",
+                            "",
+                            "text/html",
+                            r#"<script>
+globalThis.cookieWorkerMessages = [];
+globalThis.connectCookieWorker = (path, name) => {
+  const worker = new SharedWorker(path, {
+    name, type: 'module', credentials: 'include',
+  });
+  worker.port.addEventListener('message', event => cookieWorkerMessages.push(event.data));
+  worker.port.start();
+};
+</script>"#,
+                        ),
+                        "/writer.js" => (
+                            "200 OK",
+                            "Set-Cookie: worker_state=from-worker; Path=/; SameSite=Lax\r\n",
+                            "application/javascript",
+                            "globalThis.onconnect = event => event.ports[0].postMessage('writer-ready');",
+                        ),
+                        "/observe-before.js" => (
+                            "200 OK",
+                            "",
+                            "application/javascript",
+                            "globalThis.onconnect = event => event.ports[0].postMessage('before-ready');",
+                        ),
+                        "/delete.js" => (
+                            "200 OK",
+                            "Set-Cookie: worker_state=; Max-Age=0; Path=/; SameSite=Lax\r\n",
+                            "application/javascript",
+                            "globalThis.onconnect = event => event.ports[0].postMessage('delete-ready');",
+                        ),
+                        "/observe-after.js" => (
+                            "200 OK",
+                            "",
+                            "application/javascript",
+                            "globalThis.onconnect = event => event.ports[0].postMessage('after-ready');",
+                        ),
+                        other => panic!("unexpected SharedWorker cookie request: {other}"),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    requests.push((path, cookie));
+                }
+                requests
             });
 
             let session = BrowserRuntimeSession::connect_native(
-                NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("http://{address}/first")),
             )
             .await
             .unwrap();
-            let messages = tokio::time::timeout(Duration::from_secs(30), async {
+            let second = session
+                .native_create_target(&format!("http://{address}/second"))
+                .await
+                .unwrap();
+            session.native_select_target("native-context").await.unwrap();
+            session
+                .script("connectCookieWorker('/writer.js', 'cookie-writer'); true")
+                .await
+                .unwrap();
+            let first_messages = tokio::time::timeout(Duration::from_secs(25), async {
                 loop {
                     let messages = session
                         .script("cookieWorkerMessages")
                         .await
                         .unwrap()
                         .value;
-                    if messages.as_array().is_some_and(|values| values.len() == 4) {
+                    if messages.as_array().is_some_and(|values| values.len() == 1) {
                         break messages;
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             })
             .await
-            .expect("all four sequential SharedWorkers connect");
+            .expect("the first SharedWorker writes its response cookie");
+            assert_eq!(first_messages, serde_json::json!(["writer-ready"]));
+
+            session.native_select_target(&second.id).await.unwrap();
+            session
+                .script("connectCookieWorker('/observe-before.js', 'cookie-observer-before'); true")
+                .await
+                .unwrap();
+            let second_messages = tokio::time::timeout(Duration::from_secs(25), async {
+                loop {
+                    let messages = session
+                        .script("cookieWorkerMessages")
+                        .await
+                        .unwrap()
+                        .value;
+                    if messages.as_array().is_some_and(|values| values.len() == 1) {
+                        break messages;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("a second page with a stale snapshot sees the session update");
+            assert_eq!(second_messages, serde_json::json!(["before-ready"]));
+            session
+                .script("connectCookieWorker('/delete.js', 'cookie-deleter'); true")
+                .await
+                .unwrap();
+            let second_messages = tokio::time::timeout(Duration::from_secs(25), async {
+                loop {
+                    let messages = session
+                        .script("cookieWorkerMessages")
+                        .await
+                        .unwrap()
+                        .value;
+                    if messages.as_array().is_some_and(|values| values.len() == 2) {
+                        break messages;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the second page accepts the SharedWorker cookie deletion");
+
+            session.native_select_target("native-context").await.unwrap();
+            session
+                .script("connectCookieWorker('/observe-after.js', 'cookie-observer-after'); true")
+                .await
+                .unwrap();
+            let first_messages = tokio::time::timeout(Duration::from_secs(25), async {
+                loop {
+                    let messages = session
+                        .script("cookieWorkerMessages")
+                        .await
+                        .unwrap()
+                        .value;
+                    if messages.as_array().is_some_and(|values| values.len() == 2) {
+                        break messages;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("a stale page snapshot does not resurrect the deleted cookie");
             session.close().await.unwrap();
+            let _ = shutdown_sender.send(());
 
             let requests = server.await.unwrap();
             let cookie_for = |path: &str| {
@@ -32402,18 +32491,237 @@ connectCookieWorker('/writer.js', 'cookie-writer', () => {
                     .to_owned()
             };
             assert_eq!(
-                messages,
-                serde_json::json!([
-                    "writer-ready",
-                    "before-ready",
-                    "delete-ready",
-                    "after-ready",
-                ])
+                first_messages,
+                serde_json::json!(["writer-ready", "after-ready"])
             );
+            assert_eq!(
+                second_messages,
+                serde_json::json!(["before-ready", "delete-ready"])
+            );
+            assert!(cookie_for("/second").contains("worker_state=page-stale"));
             assert!(cookie_for("/writer.js").contains("worker_state=page-stale"));
             assert!(cookie_for("/observe-before.js").contains("worker_state=from-worker"));
             assert!(cookie_for("/delete.js").contains("worker_state=from-worker"));
             assert!(!cookie_for("/observe-after.js").contains("worker_state="));
+            for path in [&profile_path, &lock_path] {
+                let _ = fs::remove_file(path);
+            }
+        });
+    });
+}
+
+#[test]
+fn native_runtime_shared_worker_cookie_changes_reach_page_and_profile() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let _guard = native_content_process_test_lock().lock().await;
+            let profile_path = std::env::temp_dir().join(format!(
+                "glass-native-shared-worker-cookie-sync-{}-profile.json",
+                std::process::id()
+            ));
+            let lock_path = profile_path.with_extension("lock");
+            for path in [&profile_path, &lock_path] {
+                let _ = fs::remove_file(path);
+            }
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(45), async move {
+                    let mut requests = Vec::new();
+                    for _ in 0..9 {
+                        let (mut stream, _) = listener.accept().await.unwrap();
+                        let request = read_http_request(&mut stream).await;
+                        let path = request
+                            .split_whitespace()
+                            .nth(1)
+                            .expect("cookie synchronization request includes a URL")
+                            .to_owned();
+                        let cookie = request
+                            .lines()
+                            .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                            .and_then(|line| line.split_once(':'))
+                            .map(|(_, value)| value.trim().to_owned());
+                        let (extra_headers, content_type, body): (&str, &str, &str) =
+                            match path.as_str() {
+                                "/page" => (
+                                    "",
+                                    "text/html",
+                                    r#"<script>
+globalThis.cookieSyncChecks = [];
+globalThis.httpOnlyHidden = !document.cookie.includes('durable=');
+const worker = new SharedWorker('/writer.js', {
+  name: 'profile-cookie-writer', type: 'module', credentials: 'include',
+});
+worker.port.addEventListener('message', async () => {
+  httpOnlyHidden = !document.cookie.includes('durable=');
+  const response = await fetch('/observe-live');
+  cookieSyncChecks.push(await response.text());
+});
+worker.port.start();
+</script>"#,
+                                ),
+                                "/writer.js" => (
+                                    "Set-Cookie: durable=from-worker; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                    "application/javascript",
+                                    "globalThis.onconnect = event => event.ports[0].postMessage('ready');",
+                                ),
+                                "/reload" => (
+                                    "",
+                                    "text/html",
+                                    r#"<script>
+globalThis.cookieSyncChecks = [];
+globalThis.httpOnlyHidden = !document.cookie.includes('durable=');
+fetch('/observe-reload').then(async response => {
+  cookieSyncChecks.push(await response.text());
+  const worker = new SharedWorker('/delete.js', {
+    name: 'profile-cookie-deleter', type: 'module', credentials: 'include',
+  });
+  worker.port.addEventListener('message', async () => {
+    httpOnlyHidden = !document.cookie.includes('durable=');
+    const afterDelete = await fetch('/observe-delete');
+    cookieSyncChecks.push(await afterDelete.text());
+  });
+  worker.port.start();
+});
+</script>"#,
+                                ),
+                                "/delete.js" => (
+                                    "Set-Cookie: durable=; Max-Age=0; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                    "application/javascript",
+                                    "globalThis.onconnect = event => event.ports[0].postMessage('deleted');",
+                                ),
+                                "/reload-after-delete" => (
+                                    "",
+                                    "text/html",
+                                    "<script>globalThis.cookieSyncChecks = []; fetch('/observe-final').then(async response => cookieSyncChecks.push(await response.text()));</script>",
+                                ),
+                                "/observe-live"
+                                | "/observe-reload"
+                                | "/observe-delete"
+                                | "/observe-final" => ("", "text/plain", "observed"),
+                                other => panic!("unexpected SharedWorker profile request: {other}"),
+                            };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                        requests.push((path, cookie));
+                    }
+                    requests
+                })
+                .await
+                .expect("SharedWorker cookie profile synchronization stays bounded")
+            });
+
+            let first = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("http://{address}/page")),
+            )
+            .await
+            .unwrap();
+            let first_checks = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let checks = first
+                        .script("cookieSyncChecks")
+                        .await
+                        .unwrap()
+                        .value;
+                    if checks.as_array().is_some_and(|values| values.len() == 1) {
+                        break checks;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the owning page fetches after its worker connection");
+            let first_cookie_hidden = first
+                .script("httpOnlyHidden")
+                .await
+                .unwrap()
+                .value;
+            first.close().await.unwrap();
+
+            let second = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("http://{address}/reload")),
+            )
+            .await
+            .unwrap();
+            let second_checks = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let checks = second
+                        .script("cookieSyncChecks")
+                        .await
+                        .unwrap()
+                        .value;
+                    if checks.as_array().is_some_and(|values| values.len() == 2) {
+                        break checks;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("profile reload and worker deletion complete");
+            let second_cookie_hidden = second
+                .script("httpOnlyHidden")
+                .await
+                .unwrap()
+                .value;
+            second.close().await.unwrap();
+
+            let third = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("http://{address}/reload-after-delete")),
+            )
+            .await
+            .unwrap();
+            let final_checks = tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    let checks = third
+                        .script("cookieSyncChecks")
+                        .await
+                        .unwrap()
+                        .value;
+                    if checks.as_array().is_some_and(|values| values.len() == 1) {
+                        break checks;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("deleted cookie remains absent after a profile reload");
+            third.close().await.unwrap();
+
+            let requests = server.await.unwrap();
+            let cookie_for = |path: &str| {
+                requests
+                    .iter()
+                    .find(|(request_path, _)| request_path == path)
+                    .unwrap_or_else(|| panic!("missing request {path}"))
+                    .1
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            assert_eq!(first_checks, serde_json::json!(["observed"]));
+            assert_eq!(
+                second_checks,
+                serde_json::json!(["observed", "observed"])
+            );
+            assert_eq!(final_checks, serde_json::json!(["observed"]));
+            assert_eq!(first_cookie_hidden, serde_json::json!(true));
+            assert_eq!(second_cookie_hidden, serde_json::json!(true));
+            assert!(cookie_for("/observe-live").contains("durable=from-worker"));
+            assert!(cookie_for("/observe-reload").contains("durable=from-worker"));
+            assert!(!cookie_for("/observe-delete").contains("durable="));
+            assert!(!cookie_for("/observe-final").contains("durable="));
+            for path in [&profile_path, &lock_path] {
+                let _ = fs::remove_file(path);
+            }
         });
     });
 }

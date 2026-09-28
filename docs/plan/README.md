@@ -28,12 +28,18 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is locally complete through
-`native-engine-browser-815`; Slice 815 preserves accepted SharedWorker cookie
-writes and deletions across later creates carrying stale page snapshots. Its
-process-backed regression and the Slice 814 credentials regression passed;
-see the [slice 815 task](tasks/native-engine-browser-815.md). Updating already
-live page/frame loaders and durable profile write-through remain open. Slice
-814 applies module SharedWorker credentials to root, static-graph, and
+`native-engine-browser-816`. Slice 816 synchronizes accepted SharedWorker
+cookie writes and deletions to the owning live page/frame and configured
+profile, covering the page's next request, HttpOnly visibility, and persistence
+through profile reloads. Its focused process-backed tests passed (2 passed,
+866 filtered; 69.53 seconds), as did the Slice 814 credentials regression (1
+passed, 867 filtered; 24.08 seconds); the task records exact evidence and
+boundaries. Fan-out to unrelated already-live page/frame processes remains an
+open issue #40 requirement and is the next bounded local checkpoint. See the
+[slice 816 task](tasks/native-engine-browser-816.md) and the
+[slice 815 task](tasks/native-engine-browser-815.md) for stale-snapshot journal
+coverage.
+Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).
 Slice 767 verifies native hyperlink Enter

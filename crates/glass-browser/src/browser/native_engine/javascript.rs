@@ -6125,7 +6125,7 @@ pub(crate) struct NativeCookieProfileEntry {
     pub(crate) expires_at_unix_seconds: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct NativeCookieChange {
     pub(crate) name: String,
     pub(crate) domain: String,

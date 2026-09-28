@@ -109,6 +109,10 @@ enum NativeWorkerCoordinatorEffect {
         route: NativeSharedWorkerPageRoute,
         message: NativeWorkerMessage,
     },
+    SharedWorkerCookieChanges {
+        route: NativeSharedWorkerPageRoute,
+        changes: Vec<NativeCookieChange>,
+    },
 }
 
 struct NativeSharedWorkerCoordinator {
@@ -135,8 +139,9 @@ impl NativeSharedWorkerCoordinator {
         self.loader.apply_cookie_changes(&changes)
     }
 
-    fn remember_cookie_changes(&mut self) -> Result<(), NativeEngineError> {
-        for change in self.loader.take_cookie_changes() {
+    fn remember_cookie_changes(&mut self) -> Result<Vec<NativeCookieChange>, NativeEngineError> {
+        let changes = self.loader.take_cookie_changes();
+        for change in &changes {
             let key = (
                 change.name.clone(),
                 change.domain.clone(),
@@ -151,9 +156,9 @@ impl NativeSharedWorkerCoordinator {
                     self.cookie_overrides.len().saturating_add(1),
                 ));
             }
-            self.cookie_overrides.insert(key, change);
+            self.cookie_overrides.insert(key, change.clone());
         }
-        Ok(())
+        Ok(changes)
     }
 }
 
@@ -3599,6 +3604,13 @@ impl NativeEngineBackend {
                         NativeWorkerCoordinatorEffect::SharedWorkerError { route, message } => {
                             self.deliver_shared_worker_error(route, message).await?
                         }
+                        NativeWorkerCoordinatorEffect::SharedWorkerCookieChanges {
+                            route,
+                            changes,
+                        } => {
+                            self.deliver_shared_worker_cookie_changes(route, changes)
+                                .await?
+                        }
                     };
                     pending_popups.extend(nested.0);
                     pending_messages.extend(nested.1);
@@ -4918,9 +4930,18 @@ impl NativeEngineBackend {
             },
             Err(error) => Err(error),
         };
+        let mut cookie_changes = Vec::new();
         let result = match (result, coordinator.remember_cookie_changes()) {
-            (Err(error), _) => Err(error),
-            (Ok(()), capture_result) => capture_result,
+            (Err(error), Ok(changes)) => {
+                cookie_changes = changes;
+                Err(error)
+            }
+            (Err(error), Err(_)) => Err(error),
+            (Ok(()), Ok(changes)) => {
+                cookie_changes = changes;
+                Ok(())
+            }
+            (Ok(()), Err(error)) => Err(error),
         };
         if let Err(error) = result {
             coordinator
@@ -4933,17 +4954,24 @@ impl NativeEngineBackend {
         let bridge_key = request.transfer_port.bridge_key.clone();
         let worker_messages = coordinator.registry.take_messages_for_worker(connection_id);
         let mut queued = NativeQueuedBrowserEffects::default();
+        if !cookie_changes.is_empty() {
+            queued
+                .6
+                .push(NativeWorkerCoordinatorEffect::SharedWorkerCookieChanges {
+                    route: page_route.clone(),
+                    changes: cookie_changes,
+                });
+        }
         if !worker_messages.is_empty() {
-            queued.6 = worker_messages
-                .into_iter()
-                .map(|mut message| {
+            queued
+                .6
+                .extend(worker_messages.into_iter().map(|mut message| {
                     message.worker_id = request.page_worker_id;
                     NativeWorkerCoordinatorEffect::SharedWorkerError {
                         route: page_route.clone(),
                         message,
                     }
-                })
-                .collect();
+                }));
             coordinator.page_ports.remove(&bridge_key);
             drop(coordinator);
             self.remove_page_message_port_route(&bridge_key)?;
@@ -5134,10 +5162,97 @@ impl NativeEngineBackend {
             self.remove_page_message_port_route(&bridge_key)?;
         }
         result.map_err(native_error)?;
-        cookie_capture.map_err(native_error)?;
+        let cookie_changes = cookie_capture.map_err(native_error)?;
         let mut queued = NativeQueuedBrowserEffects::default();
-        queued.6 = effects;
+        if !cookie_changes.is_empty() {
+            queued
+                .6
+                .push(NativeWorkerCoordinatorEffect::SharedWorkerCookieChanges {
+                    route,
+                    changes: cookie_changes,
+                });
+        }
+        queued.6.extend(effects);
         Ok(queued)
+    }
+
+    async fn deliver_shared_worker_cookie_changes(
+        &self,
+        route_info: NativeSharedWorkerPageRoute,
+        changes: Vec<NativeCookieChange>,
+    ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
+        validate_native_topology_id(&route_info.context_id)?;
+        validate_native_topology_id(&route_info.frame_id)?;
+        if self
+            .frame_owner_context_id(&route_info.frame_id)?
+            .as_deref()
+            != Some(route_info.context_id.as_str())
+            || self.frame_owner_document_generation(&route_info.frame_id)?
+                != Some(route_info.document_generation)
+        {
+            return Ok(NativeQueuedBrowserEffects::default());
+        }
+        let Some(route) = self.frame_route(&route_info.frame_id)? else {
+            return Ok(NativeQueuedBrowserEffects::default());
+        };
+        match route {
+            NativeFrameRoute::ActiveSelected => {
+                let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+                engine
+                    .apply_cookie_changes_async(&changes)
+                    .await
+                    .map_err(native_error)?;
+            }
+            NativeFrameRoute::ActiveParked => {
+                let mut targets = self.lock_targets(BackendOperation::Script)?;
+                let frame = targets
+                    .active_frames
+                    .parked
+                    .get_mut(&route_info.frame_id)
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                        reason: "native SharedWorker cookie owner frame disappeared".into(),
+                    })?;
+                frame
+                    .engine
+                    .apply_cookie_changes_async(&changes)
+                    .await
+                    .map_err(native_error)?;
+            }
+            NativeFrameRoute::ParkedSelected { target_id } => {
+                let mut targets = self.lock_targets(BackendOperation::Script)?;
+                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native SharedWorker cookie owner target disappeared".into(),
+                    }
+                })?;
+                target
+                    .engine
+                    .apply_cookie_changes_async(&changes)
+                    .await
+                    .map_err(native_error)?;
+            }
+            NativeFrameRoute::ParkedParked { target_id } => {
+                let mut targets = self.lock_targets(BackendOperation::Script)?;
+                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native SharedWorker cookie owner target disappeared".into(),
+                    }
+                })?;
+                let frame = target
+                    .frames
+                    .parked
+                    .get_mut(&route_info.frame_id)
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                        reason: "native SharedWorker cookie owner frame disappeared".into(),
+                    })?;
+                frame
+                    .engine
+                    .apply_cookie_changes_async(&changes)
+                    .await
+                    .map_err(native_error)?;
+            }
+        }
+        Ok(NativeQueuedBrowserEffects::default())
     }
 
     async fn deliver_page_message_port(

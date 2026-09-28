@@ -3731,6 +3731,7 @@ impl NativeEngine {
             .push(NativeMessagePortPageMessage {
                 bridge_key: command.bridge_key,
                 data: command.data,
+                close: false,
                 transfer_ports: command.transfer_ports,
                 object_urls: command.object_urls,
             });

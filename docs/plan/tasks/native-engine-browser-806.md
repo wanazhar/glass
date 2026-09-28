@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-806
 scope: glass-browser/worker-message-port-bridge-close
-status: in-progress
+status: done
 depends-on: [native-engine-browser-805]
 ---
 
@@ -26,11 +26,10 @@ the other realm.
   MessageChannel pairs. A page/worker bridge has no local peer pointer: its
   opaque key is routed by `NativeWorkerRegistry.message_port_routes`, and
   pending cross-realm messages are held separately.
-- Worker-originated MessagePort traffic is queued as
-  `NativeMessagePortPageMessage`; page-originated traffic is represented by
-  `NativeScriptCommand::MessagePortPostMessage`. There is no close command or
-  close-event host record yet, so local map deletion does not retire the Rust
-  route or notify the other realm.
+- Worker-originated MessagePort traffic and close records share the bounded
+  `NativeMessagePortPageMessage` queue; page-originated controls use
+  `NativeScriptCommand`. Slice 806 adds `MessagePortClose` and a close-event
+  record so either owner can retire the Rust route and notify its peer.
 - Service Worker MessagePort routes are owned by a separate registry and are
   deliberately outside this slice. They require their own route-owner and
   client-event audit.
@@ -95,6 +94,8 @@ the other realm.
 ## Paths
 
 - `crates/glass-browser/src/browser/native_engine/javascript.rs`
+- `crates/glass-browser/src/browser/native_engine/dom.rs`
+- `crates/glass-browser/src/browser/native_engine/service_worker.rs`
 - `crates/glass-browser/src/browser/native_engine/content_process.rs`
 - `crates/glass-browser/src/browser/native_engine/engine.rs`
 - `crates/glass-browser/tests/native_engine.rs`
@@ -104,11 +105,26 @@ the other realm.
 
 ## Verification
 
-- `cargo check -p glass-browser --test native_engine --locked --quiet`
-- Exact process-backed HTTP regression for both close directions, route
-  retirement, independent-channel survival, and post-close delivery stops.
-- `cargo fmt --all -- --check`, `git diff --check`, and focused repository
-  documentation gates.
+- `cargo check -p glass-browser --test native_engine --locked --quiet` — exit
+  0; the current target reports 68 `dead_code` warnings and no compile errors.
+- Exact regression:
+  `cargo test -p glass-browser --test native_engine native_content_process_message_port_decode_recovery_and_bridge_close_both_directions --locked --quiet -- --exact`
+  — passed: 1 test, 858 filtered, 27.11 seconds. It exercises real HTTP
+  content-process Dedicated Worker routes in both directions, close Event
+  identity/state, queue purge, repeated close, post-close delivery stop, and
+  unrelated-channel survival.
+- `cargo fmt --all -- --check` and `git diff --check` — passed.
+- Documentation truth check — 1,434 Markdown files, zero current-claim
+  failures; depth check — 93 routed current guides and 19 substantive
+  contracts; TUI inventory — 15 implementation keys and 63 doc markers;
+  documentation coverage — 1,434 files, 346 full-product MCP tools (101
+  browser-only), 17 examples, and 22 public modules. All passed.
 
-Record exact results and exclusions here after implementation. Remote CI is
-not implied by local verification.
+SharedWorker process coverage was omitted because it requires extending this
+fixture with another worker resource and connection path. The implementation
+uses the same registry route owner, but this is not SharedWorker conformance
+evidence. Service Worker close is explicitly rejected by its separate owner
+and remains open work. Remote CI, WPT, and cross-platform certification were
+not run.
+
+Remote CI is not implied by local verification.

@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-791`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-806`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -3821,10 +3821,23 @@ one-shot delivery and that later messages do not cross the closed pair.
 Cross-realm bridge-route teardown and GC-driven close remain open. See
 [task 805](../plan/tasks/native-engine-browser-805.md).
 
-Slice 806 contracts close over page-to-Dedicated/Shared-Worker MessagePort
-bridges. The host must validate route ownership, retire the Rust route and
-pending work, and dispatch one generic `close` Event at the still-open peer
-in the opposite realm. Service Worker bridge ownership remains separate. See
+Slice 806 implements page-to-Dedicated/Shared-Worker MessagePort bridge close
+through `NativeWorkerRegistry`. A bounded `MessagePortClose` command carries
+the bridge key and optional Worker identity; the owner validates the route,
+retires it, and purges queued work for that key. Worker-originated close
+replaces the route's reserved queue slot with one close record for the page;
+page-originated close dispatches the close Event into the Worker realm. The
+surviving endpoint stays open and disentangled, while the initiator is closed.
+Capacity enforces `live_routes + queued_events <= MAX_NATIVE_WORKER_MESSAGES`,
+so each live route reserves space for its terminal close record without a
+second queue. A process-backed HTTP regression covers both directions,
+one-shot handler/listener delivery, initiator/peer state, same-turn queued
+message purge, and an unrelated local channel. That fixture is Dedicated
+Worker-only; SharedWorker process coverage remains open. Service Worker routes
+remain separately owned and receive an explicit owner-specific error rather
+than being routed through `NativeWorkerRegistry`. GC/document-destruction
+close, complete task-source ordering, MessagePort/EventTarget WPT, remote CI,
+and cross-platform certification remain open; see
 [task 806](../plan/tasks/native-engine-browser-806.md).
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current

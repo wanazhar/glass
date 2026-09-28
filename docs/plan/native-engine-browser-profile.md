@@ -390,10 +390,19 @@ no later cross-pair messages. Cross-realm bridge teardown, GC-driven close,
 and full MessagePort/EventTarget/WPT conformance remain open; see
 [slice 805](tasks/native-engine-browser-805.md).
 
-Slice 806 contracts Page-to-Dedicated/Shared-Worker MessagePort close across
-the Rust-owned route: validate the owner, retire the route and pending work,
-and deliver one generic `close` Event to the surviving endpoint. Service
-Worker-owned routes and GC-driven close remain open; see
+Slice 806 implements Page-to-Dedicated/Shared-Worker `MessagePort.close()`
+across the Rust-owned route: owner-validated commands retire the route and
+pending work, then deliver one generic `close` Event to the surviving
+endpoint. The bounded queue reserves one record per live route so a close
+cannot retire a route without queue capacity for its peer event. The
+process-backed HTTP regression verifies both directions, initiator/peer state,
+one shared Event through `onclose` and listeners, queued-message purge,
+post-close stop, and independent-channel survival (1 passed, 858 filtered).
+The fixture uses a Dedicated Worker; SharedWorker process coverage remains
+open. Service Worker bridge close is still outside this slice and explicitly
+returns an owner-specific error rather than crossing registry ownership.
+GC-driven close, full task-source/EventTarget behavior, WPT, remote CI, and
+cross-platform certification remain open; see
 [slice 806](tasks/native-engine-browser-806.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,

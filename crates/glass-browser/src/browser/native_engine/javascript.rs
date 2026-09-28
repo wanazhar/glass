@@ -722,6 +722,11 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         object_urls: Vec<NativeObjectUrlTransfer>,
     },
+    MessagePortClose {
+        bridge_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_id: Option<u32>,
+    },
 }
 
 /// A bounded, owner-issued identity for one transferred MessagePort endpoint.
@@ -1146,6 +1151,8 @@ pub(crate) struct NativeWorkerMessage {
 pub(crate) struct NativeMessagePortPageMessage {
     pub(crate) bridge_key: String,
     pub(crate) data: serde_json::Value,
+    #[serde(default, skip_serializing_if = "skip_if_false")]
+    pub(crate) close: bool,
     #[serde(default)]
     pub(crate) transfer_ports: Vec<NativeMessagePortTransfer>,
     #[serde(default)]
@@ -1304,6 +1311,9 @@ enum NativeWorkerDispatch<'a> {
         data: &'a serde_json::Value,
         transfer_ports: &'a [NativeMessagePortTransfer],
         object_urls: &'a [NativeObjectUrlTransfer],
+    },
+    MessagePortClose {
+        bridge_key: &'a str,
     },
     Fetch {
         request_id: u32,
@@ -2393,6 +2403,12 @@ impl NativeWorkerRegistry {
                             object_urls,
                         )?;
                     }
+                    NativeScriptCommand::MessagePortClose {
+                        bridge_key,
+                        worker_id: Some(command_worker_id),
+                    } if command_worker_id == current_worker_id => {
+                        self.close_worker_message_port(current_worker_id, bridge_key)?;
+                    }
                     _ => {
                         return Err(NativeEngineError::invalid(
                             "native Worker MessagePort command",
@@ -2575,18 +2591,66 @@ impl NativeWorkerRegistry {
             ));
         }
         for command in commands {
-            let NativeScriptCommand::MessagePortPostMessage {
-                bridge_key,
-                data,
-                worker_id: None,
-                transfer_ports,
-                object_urls,
-            } = command
-            else {
-                return Err(NativeEngineError::invalid(
-                    "native page MessagePort command",
-                    "command did not originate from the page realm",
-                ));
+            let (bridge_key, data, transfer_ports, object_urls) = match command {
+                NativeScriptCommand::MessagePortClose {
+                    bridge_key,
+                    worker_id: None,
+                } => {
+                    validate_url_text("native MessagePort bridge key", &bridge_key)?;
+                    if bridge_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "native MessagePort bridge key",
+                            crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                            bridge_key.len(),
+                        ));
+                    }
+                    let Some(route) = self.message_port_routes.get(&bridge_key).cloned() else {
+                        continue;
+                    };
+                    if self.retire_message_port_route(&bridge_key).is_none() {
+                        continue;
+                    }
+                    let worker_id = route.worker_id;
+                    let evaluation =
+                        self.evaluate_worker_with_loader(worker_id, loader, |worker| {
+                            worker.evaluate_turn_with_event(
+                                worker_id,
+                                NativeWorkerDispatch::MessagePortClose {
+                                    bridge_key: &bridge_key,
+                                },
+                            )
+                        });
+                    match evaluation {
+                        Ok(evaluation) => {
+                            self.collect_worker_evaluation(worker_id, evaluation, loader)
+                                .await?;
+                        }
+                        Err(error) => {
+                            let worker_url = self
+                                .workers
+                                .get(&worker_id)
+                                .map(|worker| worker.url.clone())
+                                .unwrap_or_default();
+                            self.workers.remove(&worker_id);
+                            self.remove_worker_routes(worker_id);
+                            self.queue_error(worker_id, &worker_url, &error.to_string())?;
+                        }
+                    }
+                    continue;
+                }
+                NativeScriptCommand::MessagePortPostMessage {
+                    bridge_key,
+                    data,
+                    worker_id: None,
+                    transfer_ports,
+                    object_urls,
+                } => (bridge_key, data, transfer_ports, object_urls),
+                _ => {
+                    return Err(NativeEngineError::invalid(
+                        "native page MessagePort command",
+                        "command did not originate from the page realm",
+                    ));
+                }
             };
             let Some(route) = self.message_port_routes.get(&bridge_key).cloned() else {
                 let command = NativePageMessagePortCommand {
@@ -2668,10 +2732,10 @@ impl NativeWorkerRegistry {
         self.register_transfers(worker_id, transfers)
     }
 
-    fn register_transfers(
-        &mut self,
-        worker_id: u32,
+    fn validate_transfer_registration(
+        &self,
         transfers: &[NativeMessagePortTransfer],
+        additional_events: usize,
     ) -> Result<(), NativeEngineError> {
         if transfers.len() > MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
@@ -2680,14 +2744,40 @@ impl NativeWorkerRegistry {
                 transfers.len(),
             ));
         }
+        validate_message_port_transfers(transfers)?;
+        let mut new_routes = 0usize;
         for transfer in transfers {
-            validate_message_port_transfers(std::slice::from_ref(transfer))?;
             if self.message_port_routes.contains_key(&transfer.bridge_key) {
                 return Err(NativeEngineError::invalid(
                     "native MessagePort transfer",
                     "bridge key was already transferred",
                 ));
             }
+            new_routes = new_routes.saturating_add(1);
+        }
+        let occupied = self
+            .message_port_routes
+            .len()
+            .saturating_add(self.pending_message_port_messages.len())
+            .saturating_add(new_routes)
+            .saturating_add(additional_events);
+        if occupied > MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native MessagePort routes and queued events",
+                MAX_NATIVE_WORKER_MESSAGES,
+                occupied,
+            ));
+        }
+        Ok(())
+    }
+
+    fn register_transfers(
+        &mut self,
+        worker_id: u32,
+        transfers: &[NativeMessagePortTransfer],
+    ) -> Result<(), NativeEngineError> {
+        self.validate_transfer_registration(transfers, 0)?;
+        for transfer in transfers {
             self.message_port_routes.insert(
                 transfer.bridge_key.clone(),
                 NativeMessagePortRoute { worker_id },
@@ -2699,14 +2789,12 @@ impl NativeWorkerRegistry {
     fn remove_transfer_routes(&mut self, transfers: &[NativeMessagePortTransfer]) {
         for transfer in transfers {
             self.message_port_routes.remove(&transfer.bridge_key);
+            self.pending_page_message_port_commands
+                .retain(|command| command.bridge_key != transfer.bridge_key);
         }
-        let live_bridge_keys = self
-            .message_port_routes
-            .keys()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        self.pending_message_port_messages
-            .retain(|message| live_bridge_keys.contains(&message.bridge_key));
+        self.pending_message_port_messages.retain(|message| {
+            message.close || self.message_port_routes.contains_key(&message.bridge_key)
+        });
     }
 
     fn queue_page_message_port(
@@ -2726,7 +2814,6 @@ impl NativeWorkerRegistry {
                 "worker id does not own the MessagePort bridge",
             ));
         }
-        self.register_worker_transfers(worker_id, &transfer_ports)?;
         validate_native_object_url_transfers(&object_urls)?;
         validate_native_message_payload(
             &serde_json::json!({
@@ -2736,6 +2823,53 @@ impl NativeWorkerRegistry {
             }),
             "native page MessagePort event",
         )?;
+        self.validate_transfer_registration(&transfer_ports, 1)?;
+        self.register_worker_transfers(worker_id, &transfer_ports)?;
+        self.pending_message_port_messages
+            .push_back(NativeMessagePortPageMessage {
+                bridge_key,
+                data,
+                close: false,
+                transfer_ports,
+                object_urls,
+            });
+        Ok(())
+    }
+
+    fn retire_message_port_route(&mut self, bridge_key: &str) -> Option<NativeMessagePortRoute> {
+        let route = self.message_port_routes.remove(bridge_key)?;
+        self.pending_message_port_messages
+            .retain(|message| message.bridge_key != bridge_key);
+        self.pending_page_message_port_commands
+            .retain(|command| command.bridge_key != bridge_key);
+        Some(route)
+    }
+
+    fn close_worker_message_port(
+        &mut self,
+        worker_id: u32,
+        bridge_key: String,
+    ) -> Result<(), NativeEngineError> {
+        validate_url_text("native MessagePort bridge key", &bridge_key)?;
+        if bridge_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+            return Err(NativeEngineError::limit(
+                "native MessagePort bridge key",
+                crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                bridge_key.len(),
+            ));
+        }
+        let Some(route) = self.message_port_routes.get(&bridge_key) else {
+            return Ok(());
+        };
+        if route.worker_id != worker_id {
+            return Err(NativeEngineError::invalid(
+                "native MessagePort route",
+                "worker id does not own the MessagePort bridge",
+            ));
+        }
+        if self.retire_message_port_route(&bridge_key).is_none() {
+            return Ok(());
+        }
         if self.pending_message_port_messages.len() >= MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
                 "native page MessagePort messages",
@@ -2746,9 +2880,10 @@ impl NativeWorkerRegistry {
         self.pending_message_port_messages
             .push_back(NativeMessagePortPageMessage {
                 bridge_key,
-                data,
-                transfer_ports,
-                object_urls,
+                data: serde_json::Value::Null,
+                close: true,
+                transfer_ports: Vec::new(),
+                object_urls: Vec::new(),
             });
         Ok(())
     }
@@ -2780,8 +2915,17 @@ impl NativeWorkerRegistry {
                     .try_send(NativeFetchUploadCommand::Cancel);
             }
         }
+        let retired_bridge_keys = self
+            .message_port_routes
+            .iter()
+            .filter_map(|(bridge_key, route)| {
+                (route.worker_id == worker_id).then_some(bridge_key.clone())
+            })
+            .collect::<BTreeSet<_>>();
         self.message_port_routes
             .retain(|_, route| route.worker_id != worker_id);
+        self.pending_page_message_port_commands
+            .retain(|command| !retired_bridge_keys.contains(&command.bridge_key));
         self.shared_worker_keys
             .retain(|_, shared_worker_id| *shared_worker_id != worker_id);
         let live_bridge_keys = self
@@ -2790,7 +2934,7 @@ impl NativeWorkerRegistry {
             .cloned()
             .collect::<BTreeSet<_>>();
         self.pending_message_port_messages
-            .retain(|message| live_bridge_keys.contains(&message.bridge_key));
+            .retain(|message| message.close || live_bridge_keys.contains(&message.bridge_key));
     }
 
     pub(crate) async fn dispatch_websocket_event(
@@ -14122,6 +14266,42 @@ impl NativeJavaScriptRuntime {
         ctx: &rquickjs::Ctx<'_>,
         command: &NativeScriptCommand,
     ) -> Result<bool, NativeEngineError> {
+        if let NativeScriptCommand::MessagePortClose {
+            bridge_key,
+            worker_id,
+        } = command
+        {
+            validate_url_text("native MessagePort bridge key", bridge_key)?;
+            if bridge_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+                return Err(NativeEngineError::limit(
+                    "native MessagePort bridge key",
+                    crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                    bridge_key.len(),
+                ));
+            }
+            if worker_id.is_some_and(|worker_id| worker_id == 0) {
+                return Err(NativeEngineError::invalid(
+                    "native MessagePort worker id",
+                    "must be positive when present",
+                ));
+            }
+            let mut commands =
+                self.message_port_commands
+                    .lock()
+                    .map_err(|_| NativeEngineError::Worker {
+                        operation: "record native MessagePort command".into(),
+                        reason: "native MessagePort command queue is unavailable".into(),
+                    })?;
+            if commands.len() >= MAX_NATIVE_WORKER_MESSAGES {
+                return Err(NativeEngineError::limit(
+                    "native MessagePort commands",
+                    MAX_NATIVE_WORKER_MESSAGES,
+                    commands.len().saturating_add(1),
+                ));
+            }
+            commands.push(command.clone());
+            return Ok(true);
+        }
         let NativeScriptCommand::MessagePortPostMessage {
             bridge_key,
             data,
@@ -15640,7 +15820,11 @@ impl NativeJavaScriptRuntime {
                     NativeScriptCommand::MessagePortPostMessage {
                         worker_id: Some(command_worker_id),
                         ..
-                    } if *command_worker_id == worker_id
+                    }
+                        | NativeScriptCommand::MessagePortClose {
+                            worker_id: Some(command_worker_id),
+                            ..
+                        } if *command_worker_id == worker_id
                 )
                     && self.apply_message_port_command(&ctx, &command)?
                 {
@@ -15714,6 +15898,10 @@ impl NativeJavaScriptRuntime {
                         ..
                     } => *command_worker_id == worker_id,
                     NativeScriptCommand::MessagePortPostMessage {
+                        worker_id: Some(command_worker_id),
+                        ..
+                    }
+                    | NativeScriptCommand::MessagePortClose {
                         worker_id: Some(command_worker_id),
                         ..
                     } => *command_worker_id == worker_id,
@@ -18648,6 +18836,28 @@ fn dispatch_page_event_batch(
             })?;
     }
     for message in &events.message_port_messages {
+        if message.close {
+            let dispatch: Function = ctx
+                .globals()
+                .get("__glassDispatchMessagePortCloseByBridge")
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native page MessagePort close".into(),
+                    reason: format!(
+                        "native page MessagePort close dispatcher was unavailable: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            dispatch
+                .call::<_, Value>((message.bridge_key.as_str(),))
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native page MessagePort close".into(),
+                    reason: format!(
+                        "native page MessagePort close dispatch failed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            continue;
+        }
         let payload = native_message_payload(
             &ctx,
             &serde_json::json!({
@@ -19071,6 +19281,28 @@ fn dispatch_worker_event<'js>(
                         CaughtError::from_error(&ctx, error)
                     ),
                 })?;
+            false
+        }
+        NativeWorkerDispatch::MessagePortClose { bridge_key } => {
+            let dispatch: Function = ctx
+                .globals()
+                .get("__glassDispatchMessagePortCloseByBridge")
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "dispatch native Worker MessagePort close".into(),
+                    reason: format!(
+                        "native Worker MessagePort close dispatcher was unavailable: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            dispatch.call::<_, Value>((bridge_key,)).map_err(|error| {
+                NativeEngineError::Worker {
+                    operation: "dispatch native Worker MessagePort close".into(),
+                    reason: format!(
+                        "native Worker MessagePort close dispatch failed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                }
+            })?;
             false
         }
         NativeWorkerDispatch::Fetch {
@@ -30383,12 +30615,20 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
   MessagePortNative.prototype.start = function() { glassMessageStart(this); };
   MessagePortNative.prototype.close = function() {
     if (this.__glassMessageClosed) return;
+    const bridgeKey = String(this.__glassMessagePortBridgeKey || "");
+    if (bridgeKey) {
+      const workerId = Number.isSafeInteger(globalThis.__glassWorkerId)
+        ? globalThis.__glassWorkerId
+        : null;
+      pushCommand({ kind: "messagePortClose", bridge_key: bridgeKey, worker_id: workerId });
+    }
     const peer = this.__glassMessagePortPeer;
     this.__glassMessageClosed = true;
     this.__glassMessageQueue.length = 0;
     glassMessagePortRegistry.delete(this.__glassMessagePortId);
-    if (this.__glassMessagePortBridgeKey)
-      glassMessageBridgeRegistry.delete(this.__glassMessagePortBridgeKey);
+    if (bridgeKey && glassMessageBridgeRegistry.get(bridgeKey) === this)
+      glassMessageBridgeRegistry.delete(bridgeKey);
+    this.__glassMessagePortBridgeKey = null;
     this.__glassMessagePortPeer = null;
     if (peer && peer.__glassMessagePortPeer === this) {
       peer.__glassMessagePortPeer = null;
@@ -30486,6 +30726,24 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     if (payload && Array.isArray(payload.object_urls))
       globalThis.__glassInstallObjectUrlTransfers(payload.object_urls);
     glassMessageEnqueue(port, envelope.data, envelope.ports);
+    return null;
+  };
+  globalThis.__glassDispatchMessagePortCloseByBridge = (bridgeKey) => {
+    const key = String(bridgeKey);
+    const port = glassMessageBridgeRegistry.get(key);
+    if (!port || port.__glassMessageClosed) return null;
+    if (glassMessageBridgeRegistry.get(key) === port)
+      glassMessageBridgeRegistry.delete(key);
+    if (port.__glassMessagePortBridgeKey === key)
+      port.__glassMessagePortBridgeKey = null;
+    const peer = port.__glassMessagePortPeer;
+    port.__glassMessagePortPeer = null;
+    if (peer && peer.__glassMessagePortPeer === port)
+      peer.__glassMessagePortPeer = null;
+    const event = typeof globalThis.__glassCreateEvent === "function"
+      ? globalThis.__glassCreateEvent("close")
+      : new globalThis.Event("close", { bubbles: false, cancelable: false });
+    glassMessageDispatch(port, event);
     return null;
   };
   const BroadcastChannelNative = typeof globalThis.__glassBroadcastChannelConstructor === "function"

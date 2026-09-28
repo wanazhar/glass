@@ -3870,6 +3870,14 @@ cross-page sharing, complete task-source/EventTarget/Web IDL and WPT
 conformance, remote CI, and cross-platform certification remain open; see
 [task 808](../plan/tasks/native-engine-browser-808.md).
 
+Slice 809 contracts cross-target SharedWorker reuse: two same-origin page
+targets in one native session must connect to one shared worker global and
+exchange messages through distinct ports. This verifies the user-agent
+SharedWorker manager across target-owned engines; implementation evidence is
+pending. It does not claim multi-session/process sharing or complete worker
+lifetime and Web Platform Test behavior; see
+[task 809](../plan/tasks/native-engine-browser-809.md).
+
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
 operation and delivers them in the owning page turn; EventSource carries

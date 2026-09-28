@@ -430,6 +430,16 @@ SharedWorker lifecycle, cross-page sharing, task-source, full EventTarget/Web
 IDL and WPT conformance, remote CI, and cross-platform certification remain
 open. See the [slice 808](tasks/native-engine-browser-808.md).
 
+Slice 809 contracts same-origin SharedWorker reuse across two top-level page
+targets in one native browser session. Both pages use the same resolved
+constructor URL and name; the regression must prove one worker global and
+cross-target request/reply through distinct connection ports. This covers the
+shared-manager integration not exercised by Slice 808's one-page fixture.
+Implementation evidence is pending; multi-session/process sharing, owner
+lifetime, storage partitioning beyond the same-session case, and complete
+SharedWorker/Web Platform Test conformance remain open. See the
+[slice 809 task](tasks/native-engine-browser-809.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

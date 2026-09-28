@@ -79,6 +79,7 @@ use crate::browser_backend::{PromptDecision, PromptResult, StorageOperation, Sto
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 
@@ -403,6 +404,7 @@ pub struct NativeEngine {
     runtime: NativeRuntimeShared,
     runtime_worker: Option<NativeRuntimeWorker>,
     content_process: Option<NativeContentProcess>,
+    pending_content_cookie_changes: Arc<Mutex<Vec<NativeCookieChange>>>,
     external_shared_worker_routing: bool,
     javascript: Option<NativeJavaScriptRuntime>,
     dialog_control: NativeDialogControlPlane,
@@ -527,6 +529,7 @@ impl NativeEngine {
             runtime,
             runtime_worker: None,
             content_process: None,
+            pending_content_cookie_changes: Arc::new(Mutex::new(Vec::new())),
             external_shared_worker_routing: false,
             javascript: None,
             dialog_control,
@@ -1367,6 +1370,7 @@ impl NativeEngine {
                     self.config.storage_path.as_deref(),
                     self.loader.allowed_file_roots(),
                     self.dialog_control.clone(),
+                    self.pending_content_cookie_changes.clone(),
                 )
                 .await?,
             )
@@ -1855,6 +1859,7 @@ impl NativeEngine {
                 self.config.storage_path.as_deref(),
                 self.loader.allowed_file_roots(),
                 self.dialog_control.clone(),
+                self.pending_content_cookie_changes.clone(),
             )
             .await?;
             process
@@ -3008,7 +3013,8 @@ impl NativeEngine {
         &mut self,
         changes: &[NativeCookieChange],
     ) -> Result<(), NativeEngineError> {
-        self.apply_cookie_changes_to_runtime_async(changes).await?;
+        self.apply_cookie_changes_with_persistence(changes, true)
+            .await?;
         self.persist_local_web_storage()
     }
 
@@ -3016,11 +3022,22 @@ impl NativeEngine {
         &mut self,
         changes: &[NativeCookieChange],
     ) -> Result<(), NativeEngineError> {
-        self.require_running("apply SharedWorker cookie changes")?;
+        self.apply_cookie_changes_with_persistence(changes, false)
+            .await
+    }
+
+    async fn apply_cookie_changes_with_persistence(
+        &mut self,
+        changes: &[NativeCookieChange],
+        persist_profile: bool,
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("apply native cookie changes")?;
         let mut loader = self.loader.clone();
         loader.apply_cookie_changes(changes)?;
         if let Some(process) = self.content_process.as_mut() {
-            process.apply_cookie_changes(changes).await?;
+            process
+                .apply_cookie_changes(changes, persist_profile)
+                .await?;
         }
         self.loader = loader;
         Ok(())
@@ -3729,6 +3746,19 @@ impl NativeEngine {
 
     pub(crate) fn take_pending_popups(&mut self) -> Vec<NativePopupRequest> {
         self.pending_popups.drain(..).collect()
+    }
+
+    pub(crate) fn take_pending_content_cookie_changes(
+        &self,
+    ) -> Result<Vec<NativeCookieChange>, NativeEngineError> {
+        let mut changes =
+            self.pending_content_cookie_changes
+                .lock()
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "take content process cookie changes".into(),
+                    reason: "content process cookie change queue is poisoned".into(),
+                })?;
+        Ok(std::mem::take(&mut *changes))
     }
 
     pub(crate) fn take_pending_post_messages(&mut self) -> Vec<NativePostMessageRequest> {

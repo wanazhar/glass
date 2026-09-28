@@ -1,21 +1,24 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-817`; issue #40 remains open. Slice 817 fans out
-credential-accepted SharedWorker cookie changes to all already-live targets
-and frames within one backend/profile, refreshing their request loaders and
-content-process cookie views while persisting once per batch. Its focused
-process-backed group passed (3 passed, 866 filtered; 126.59 seconds), and the
-Slice 814 credentials regression passed (1 passed, 868 filtered; 25.05
-seconds). The scoped integration-test check passed with 68 existing dead-code
-warnings from the legacy HTML parser. Separate backend/session notification,
-ordinary page-response cookie synchronization, broader cookie/WPT conformance,
-and cross-platform coverage remain open. Ordinary page-response
-synchronization is the next bounded checkpoint. See the
+`native-engine-browser-818`; issue #40 remains open. Ordinary content-process
+response-cookie journals now return to the backend after profile merge, fan
+out to same-backend live target/frame request loaders and content processes,
+and update the SharedWorker loader/journal without duplicate profile writes.
+The process-backed page-response, peer/frame, isolation, deletion, and profile
+restart regression passed (1 passed, 869 filtered; 69.98 seconds). The
+companion SharedWorker-originated live-context group passed in its preceding
+focused run (2 passed, 868 filtered; 115.58 seconds). The scoped
+integration-test check passed with existing dead-code warnings from the
+superseded HTML parser in `dom.rs`; formatting and diff validation passed.
+Direct observation of a page-originated cookie update from inside a live
+SharedWorker is not covered. Cross-backend notification, broader cookie/WPT
+conformance, and cross-platform coverage remain open. See the
+[slice 818 task](../plan/tasks/native-engine-browser-818.md), the
 [slice 817 task](../plan/tasks/native-engine-browser-817.md), the
 [slice 816 task](../plan/tasks/native-engine-browser-816.md), and the
 [slice 815 task](../plan/tasks/native-engine-browser-815.md) for the bounded
-stale-snapshot journal. Slice 814 applies
+cookie synchronization stages. Slice 814 applies
 module SharedWorker credentials to root, static-dependency, and dynamic-import
 requests while leaving classic-worker fetch behavior unchanged. Its
 process-backed HTTP regression passed (1 passed, 865 filtered; 27.07 seconds).

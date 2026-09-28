@@ -90,8 +90,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout};
@@ -108,11 +108,12 @@ use url::Url;
 // the base64 envelope and the rest of the document state.
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 13;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 14;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CONTENT_EVENT_LOOP_TURNS: usize = MAX_NATIVE_EFFECTS;
+const MAX_NATIVE_COOKIE_CHANGE_BATCH: usize = MAX_NATIVE_EFFECTS;
 const NATIVE_WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const NATIVE_WEBSOCKET_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_NATIVE_WEBSOCKET_EVENTS: usize = MAX_NATIVE_EFFECTS;
@@ -1073,6 +1074,7 @@ pub(crate) struct NativeContentProcess {
     context_id: Option<String>,
     frame_id: Option<String>,
     dialog_control: NativeDialogControlPlane,
+    pending_cookie_changes: Arc<Mutex<Vec<NativeCookieChange>>>,
     #[cfg(windows)]
     sandbox: NativeContentSandbox,
 }
@@ -1183,6 +1185,7 @@ impl NativeContentProcess {
         storage_path: Option<&Path>,
         allowed_file_roots: &[PathBuf],
         dialog_control: NativeDialogControlPlane,
+        pending_cookie_changes: Arc<Mutex<Vec<NativeCookieChange>>>,
     ) -> Result<Self, NativeEngineError> {
         let path = worker_binary_path()?;
         if let Some(storage_path) = storage_path
@@ -1244,6 +1247,7 @@ impl NativeContentProcess {
             context_id: None,
             frame_id: None,
             dialog_control,
+            pending_cookie_changes,
             #[cfg(windows)]
             sandbox,
         };
@@ -2484,6 +2488,7 @@ impl NativeContentProcess {
     pub(crate) async fn apply_cookie_changes(
         &mut self,
         changes: &[NativeCookieChange],
+        persist_profile: bool,
     ) -> Result<(), NativeEngineError> {
         let id = self.next_id();
         let response = self
@@ -2493,6 +2498,7 @@ impl NativeContentProcess {
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
                 "changes": changes,
+                "persist_profile": persist_profile,
                 }),
                 "content process apply cookie changes",
                 CONTENT_PROCESS_SCRIPT_TIMEOUT,
@@ -2503,7 +2509,15 @@ impl NativeContentProcess {
             "cookie_changes_applied",
             id,
             "content process apply cookie changes",
-        )
+        )?;
+        if response.get("persist_profile").and_then(Value::as_bool) != Some(persist_profile) {
+            return Err(NativeEngineError::worker_failure(
+                "content process apply cookie changes",
+                NativeWorkerFailureKind::Protocol,
+                "content process returned a mismatched profile-persistence decision",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) async fn clear_cookies(&mut self) -> Result<(), NativeEngineError> {
@@ -2642,7 +2656,15 @@ impl NativeContentProcess {
     async fn exchange(&mut self, request: Value) -> Result<Value, NativeEngineError> {
         let result = self.exchange_inner(request).await;
         match result {
-            Ok(response) => Ok(response),
+            Ok(response) => {
+                if let Err(error) = self.collect_cookie_changes(&response) {
+                    self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
+                    let _ = self.child.start_kill();
+                    Err(error)
+                } else {
+                    Ok(response)
+                }
+            }
             Err(error) => {
                 let kind = match self.child.try_wait() {
                     Ok(Some(_)) => NativeWorkerFailureKind::Exited,
@@ -2656,6 +2678,25 @@ impl NativeContentProcess {
                 ))
             }
         }
+    }
+
+    fn collect_cookie_changes(&mut self, response: &Value) -> Result<(), NativeEngineError> {
+        let Some(value) = response.get("cookie_changes") else {
+            return Ok(());
+        };
+        let changes: Vec<NativeCookieChange> =
+            serde_json::from_value(value.clone()).map_err(|_| NativeEngineError::Worker {
+                operation: "decode content process cookie changes".into(),
+                reason: "content process returned an invalid cookie change journal".into(),
+            })?;
+        let mut pending =
+            self.pending_cookie_changes
+                .lock()
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "queue content process cookie changes".into(),
+                    reason: "content process cookie change queue is poisoned".into(),
+                })?;
+        merge_cookie_change_batch(&mut pending, changes, "content process cookie changes")
     }
 
     async fn exchange_with_timeout(
@@ -5391,6 +5432,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 json!({"kind":"cookies_set","id":id})
             }
             "apply_cookie_changes" if protocol_matches(&request) && running => {
+                let persist_profile = request
+                    .get("persist_profile")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process cookie profile persistence",
+                            "must be a boolean",
+                        )
+                    })?;
                 let values = request.get("changes").ok_or_else(|| {
                     NativeEngineError::invalid("content-process cookie changes", "must be an array")
                 })?;
@@ -5408,12 +5458,19 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     });
                 };
                 loader.apply_cookie_changes(&changes)?;
+                if !persist_profile {
+                    loader.take_cookie_changes();
+                }
                 refresh_content_runtime_cookie(
                     javascript_runtime.as_ref(),
                     resource_loader.as_ref(),
                     document_url.as_deref(),
                 )?;
-                json!({"kind":"cookie_changes_applied","id":id})
+                json!({
+                    "kind":"cookie_changes_applied",
+                    "id":id,
+                    "persist_profile":persist_profile,
+                })
             }
             "clear_cookies" if protocol_matches(&request) && running => {
                 let Some(loader) = resource_loader.as_mut() else {
@@ -7529,7 +7586,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     document_url.as_deref(),
                     document_origin.as_ref(),
                 )?;
-                persist_content_profile(
+                let cookie_changes = persist_content_profile(
                     storage_profile_path.as_deref(),
                     &storage_state,
                     &indexed_db_state,
@@ -7538,7 +7595,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     &mut service_workers,
                     &mut resource_loader,
                 )?;
-                write_value_frame(&mut stdout, &json!({"kind":"closed","id":id})).await?;
+                write_value_frame(
+                    &mut stdout,
+                    &json!({
+                        "kind":"closed",
+                        "id":id,
+                        "cookie_changes":cookie_changes,
+                    }),
+                )
+                .await?;
                 return Ok(());
             }
             _ => content_error_response(
@@ -7623,15 +7688,35 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
         if javascript_runtime.is_some() {
             window_name = response_window_name.clone();
         }
-        persist_content_profile(
-            storage_profile_path.as_deref(),
-            &storage_state,
-            &indexed_db_state,
-            &storage_events,
-            &indexed_db_changes,
-            &mut service_workers,
-            &mut resource_loader,
-        )?;
+        let is_cookie_change_sync =
+            response.get("kind").and_then(Value::as_str) == Some("cookie_changes_applied");
+        let persist_cookie_profile = response
+            .get("persist_profile")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let cookie_changes = if is_cookie_change_sync && !persist_cookie_profile {
+            Vec::new()
+        } else {
+            persist_content_profile(
+                storage_profile_path.as_deref(),
+                &storage_state,
+                &indexed_db_state,
+                &storage_events,
+                &indexed_db_changes,
+                &mut service_workers,
+                &mut resource_loader,
+            )?
+        };
+        let cookie_changes = if is_cookie_change_sync {
+            Vec::new()
+        } else {
+            cookie_changes
+        };
+        let encoded_cookie_changes =
+            serde_json::to_value(cookie_changes).map_err(|_| NativeEngineError::Worker {
+                operation: "encode content process cookie changes".into(),
+                reason: "content process cookie changes could not be encoded".into(),
+            })?;
         let mut response_dialogs = decode_dialogs(&response, "merge content process dialogs")?;
         response_dialogs.extend(dialogs);
         if response_dialogs.len() > MAX_NATIVE_DIALOGS {
@@ -7695,6 +7780,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             ));
         }
         if let Some(object) = response.as_object_mut() {
+            object.insert("cookie_changes".into(), encoded_cookie_changes);
             object.insert(
                 "storage_events".into(),
                 serde_json::to_value(storage_events).map_err(|_| NativeEngineError::Worker {
@@ -7874,7 +7960,7 @@ fn persist_content_profile(
     indexed_db_changes: &[NativeIndexedDbChange],
     service_workers: &mut NativeServiceWorkerRegistry,
     resource_loader: &mut Option<NativeResourceLoader>,
-) -> Result<(), NativeEngineError> {
+) -> Result<Vec<NativeCookieChange>, NativeEngineError> {
     let cookie_state = resource_loader
         .as_ref()
         .map(NativeResourceLoader::cookie_profile)
@@ -7883,6 +7969,7 @@ fn persist_content_profile(
         .as_mut()
         .map(NativeResourceLoader::take_cookie_changes)
         .unwrap_or_default();
+    let cookie_changes = coalesce_cookie_changes(cookie_changes, "content process cookie changes")?;
     save_web_storage_profile(
         storage_path,
         storage_state,
@@ -7901,6 +7988,43 @@ fn persist_content_profile(
         &registration_changes,
     )?;
     service_workers.clear_registration_changes();
+    Ok(cookie_changes)
+}
+
+fn coalesce_cookie_changes(
+    changes: Vec<NativeCookieChange>,
+    operation: &'static str,
+) -> Result<Vec<NativeCookieChange>, NativeEngineError> {
+    let mut coalesced = Vec::new();
+    merge_cookie_change_batch(&mut coalesced, changes, operation)?;
+    Ok(coalesced)
+}
+
+fn merge_cookie_change_batch(
+    target: &mut Vec<NativeCookieChange>,
+    changes: Vec<NativeCookieChange>,
+    operation: &'static str,
+) -> Result<(), NativeEngineError> {
+    let mut merged = target.clone();
+    for change in changes {
+        if let Some(existing) = merged.iter_mut().find(|existing| {
+            existing.name == change.name
+                && existing.domain == change.domain
+                && existing.path == change.path
+        }) {
+            *existing = change;
+        } else {
+            if merged.len() >= MAX_NATIVE_COOKIE_CHANGE_BATCH {
+                return Err(NativeEngineError::limit(
+                    operation,
+                    MAX_NATIVE_COOKIE_CHANGE_BATCH,
+                    merged.len().saturating_add(1),
+                ));
+            }
+            merged.push(change);
+        }
+    }
+    *target = merged;
     Ok(())
 }
 
@@ -15097,10 +15221,14 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_health_detects_an_exited_content_worker() {
-        let mut process =
-            NativeContentProcess::spawn(None, &[], NativeDialogControlPlane::default())
-                .await
-                .unwrap();
+        let mut process = NativeContentProcess::spawn(
+            None,
+            &[],
+            NativeDialogControlPlane::default(),
+            Arc::new(Mutex::new(Vec::new())),
+        )
+        .await
+        .unwrap();
         process.child.start_kill().unwrap();
         process.child.wait().await.unwrap();
 
@@ -15139,9 +15267,14 @@ mod tests {
             stream.write_all(body).await.unwrap();
         });
         let control = NativeDialogControlPlane::for_modal_owner();
-        let mut process = NativeContentProcess::spawn(None, &[], control.clone())
-            .await
-            .unwrap();
+        let mut process = NativeContentProcess::spawn(
+            None,
+            &[],
+            control.clone(),
+            Arc::new(Mutex::new(Vec::new())),
+        )
+        .await
+        .unwrap();
         process
             .start(
                 None,
@@ -15240,9 +15373,14 @@ mod tests {
             }
         });
         let control = NativeDialogControlPlane::for_modal_owner();
-        let mut process = NativeContentProcess::spawn(None, &[], control.clone())
-            .await
-            .unwrap();
+        let mut process = NativeContentProcess::spawn(
+            None,
+            &[],
+            control.clone(),
+            Arc::new(Mutex::new(Vec::new())),
+        )
+        .await
+        .unwrap();
         process
             .start(
                 None,

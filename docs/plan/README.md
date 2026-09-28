@@ -28,18 +28,23 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is locally complete through
-`native-engine-browser-817`. Slice 817 fans out accepted SharedWorker cookie
-changes to all already-live target and frame processes within one backend,
-persists once per batch, and keeps independent profiles isolated. Its focused
-process-backed group passed (3 passed, 866 filtered; 126.59 seconds), and the
-Slice 814 credentials/redirect regression passed (1 passed, 868 filtered;
-25.05 seconds). Exact check output, the initial fixture correction, and
-remaining boundaries are in the [slice 817 task](tasks/native-engine-browser-817.md).
-Cross-session notification and ordinary page-response cookie synchronization
-remain open; ordinary page-response synchronization is the next bounded
-checkpoint. See the [slice 816 task](tasks/native-engine-browser-816.md) and
-the [slice 815 task](tasks/native-engine-browser-815.md) for profile
-write-through and stale-snapshot journal coverage.
+`native-engine-browser-818`. Slice 818 returns ordinary page-response cookie
+journals after profile merge, synchronizes same-backend live target/frame
+engines and the SharedWorker loader/journal without duplicate profile writes,
+and preserves separate-profile isolation. Its process-backed regression passed
+(1 passed, 869 filtered; 69.98 seconds), covering cookie coalescing, HttpOnly,
+deletion, peer/frame requests, and a fresh engine reopening the profile. The
+companion SharedWorker-originated live-context group passed in its preceding
+focused run (2 passed, 868 filtered; 115.58 seconds). The scoped integration
+test check passed with existing dead-code warnings from the superseded HTML
+parser; formatting and diff validation passed. Direct observation from inside
+an already-running SharedWorker of a page-originated cookie update remains
+unverified, as do cross-session notification, broader cookie/WPT conformance,
+and cross-platform coverage. See the [slice 818 task](tasks/native-engine-browser-818.md),
+the [slice 817 task](tasks/native-engine-browser-817.md), the [slice 816
+task](tasks/native-engine-browser-816.md), and the [slice 815
+task](tasks/native-engine-browser-815.md) for ordinary fan-out, profile
+write-through, and stale-snapshot journal boundaries.
 Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).

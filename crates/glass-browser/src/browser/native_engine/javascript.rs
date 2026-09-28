@@ -1177,6 +1177,20 @@ pub(crate) struct NativePageMessagePortCommand {
     pub(crate) source_frame_id: String,
 }
 
+/// A SharedWorker connection created by a page whose content runtime is
+/// coordinated at browser-session scope rather than inside its isolated
+/// content process.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NativeSharedWorkerCreateRequest {
+    pub(crate) source_context_id: String,
+    pub(crate) source_frame_id: String,
+    pub(crate) owner_url: String,
+    pub(crate) href: String,
+    pub(crate) name: String,
+    pub(crate) worker_type: String,
+    pub(crate) transfer_port: NativeMessagePortTransfer,
+}
+
 /// A bounded message emitted by a Service Worker for one browser-wide page
 /// client. The browser backend resolves the opaque client ID to its target and
 /// frame owner before dispatching the page event.

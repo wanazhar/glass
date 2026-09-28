@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-809
 scope: glass-browser/shared-worker-cross-target-runtime-routing
-status: ready
+status: done
 depends-on: [native-engine-browser-808]
 ---
 
@@ -67,7 +67,9 @@ their independent connection ports.
 
 - `crates/glass-browser/src/browser/native_backend.rs`
 - `crates/glass-browser/src/browser/native_engine/engine.rs`
+- `crates/glass-browser/src/browser/native_engine/content_process.rs`
 - `crates/glass-browser/src/browser/native_engine/javascript.rs`
+- `crates/glass-browser/src/browser/native_engine/mod.rs`
 - `crates/glass-browser/tests/native_engine.rs`
 - `docs/architecture/native-engine.md`
 - `docs/plan/README.md`
@@ -82,8 +84,31 @@ cargo check -p glass-browser --test native_engine --locked --quiet
 cargo test -p glass-browser --test native_engine native_runtime_shared_worker_reuses_runtime_across_targets --locked --quiet -- --exact
 ```
 
-Record the observed failure if the current target-owned registries do not
-share the worker. Run the repository documentation truth, depth, shortcut,
-coverage, formatting, and diff checks after updating the implementation
-record. Remote CI, WPT, and cross-platform certification remain issue #40
-gates.
+The initial regression failed as expected: the second same-origin target
+reported connection 1 instead of connection 2. The cause was one independent
+content-process worker registry per target. The backend now owns one bounded
+SharedWorker registry per `BrowserRuntimeSession`; process-backed pages forward
+only SharedWorker creation to it, while page MessagePort traffic is routed by
+its existing context/frame owner. Dedicated Worker and Service Worker
+ownership are unchanged. Initial page effects now survive document commit,
+and worker-to-page replies are distinguished from page-to-worker commands.
+
+Evidence after the fix:
+
+- `cargo check -p glass-browser --test native_engine --locked --quiet` passed;
+  only existing HTML-parser dead-code warnings were emitted.
+- `cargo test -p glass-browser --test native_engine native_runtime_shared_worker_reuses_runtime_across_targets --locked --quiet -- --exact` passed (1 passed, 861 filtered; 36.22 seconds).
+- The process-backed test verifies one runtime identity, connection numbers 1
+  and 2, and successful page-to-worker-to-page relays in both directions after
+  selecting the other target.
+- `cargo fmt --all`, `git diff --check`, and all maintainer handbook
+  documentation gates passed. The Markdown truth audit covered 1,437 files
+  with zero current-claim failures; depth validated 93 guides and 19
+  substantive contracts; shortcut inventory validated 15 implementation
+  keys and 63 markers; coverage validated 346 full-product MCP tools (101
+  browser-only), 17 examples, and 22 public modules.
+
+This does not certify cross-session/process sharing, worker destruction and
+last-client lifetime, complete storage-key/agent-cluster matching, task-source
+scheduling, option-mismatch behavior, WPT, remote CI, or cross-platform
+conformance. Those remain issue #40 gates.

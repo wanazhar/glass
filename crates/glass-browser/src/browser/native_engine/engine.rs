@@ -38,13 +38,14 @@ use super::javascript::{
     NativePageMessagePortCommand, NativePageNavigation, NativePageScript, NativePageScriptResult,
     NativePopupRequest, NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
     NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
-    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
-    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerRegistry, append_storage_changes,
-    apply_document_commands_with_font_face_ack, apply_indexed_db_changes, diff_indexed_db_changes,
-    execute_dynamic_page_scripts, execute_inline_scripts, frame_event_batch,
-    host_click_event_batch_with_modifiers, host_event_batch, host_event_batch_at,
-    host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
+    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest,
+    NativeSharedWorkerCreateRequest, NativeStorageEvent, NativeWebStorageState,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    NativeWorkerRegistry, append_storage_changes, apply_document_commands_with_font_face_ack,
+    apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
+    execute_inline_scripts, frame_event_batch, host_click_event_batch_with_modifiers,
+    host_event_batch, host_event_batch_at, host_key_event_batch_with_modifiers,
+    host_submit_event_batch, load_indexed_db_profile,
     load_local_file_dynamic_module_graph_with_import_map,
     load_local_file_module_graph_with_import_map, load_service_worker_client_leases,
     load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
@@ -401,6 +402,7 @@ pub struct NativeEngine {
     runtime: NativeRuntimeShared,
     runtime_worker: Option<NativeRuntimeWorker>,
     content_process: Option<NativeContentProcess>,
+    external_shared_worker_routing: bool,
     javascript: Option<NativeJavaScriptRuntime>,
     dialog_control: NativeDialogControlPlane,
     service_worker_clients: Vec<NativeServiceWorkerClientState>,
@@ -419,6 +421,7 @@ pub struct NativeEngine {
     pending_post_messages: VecDeque<NativePostMessageRequest>,
     pending_message_port_messages: VecDeque<NativeMessagePortPageMessage>,
     pending_page_message_port_commands: VecDeque<NativePageMessagePortCommand>,
+    pending_shared_worker_creates: VecDeque<NativeSharedWorkerCreateRequest>,
     pending_window_closes: VecDeque<NativeWindowCloseRequest>,
     pending_window_navigations: VecDeque<NativeWindowNavigationRequest>,
     pending_service_worker_client_messages: VecDeque<NativeServiceWorkerClientMessage>,
@@ -523,6 +526,7 @@ impl NativeEngine {
             runtime,
             runtime_worker: None,
             content_process: None,
+            external_shared_worker_routing: false,
             javascript: None,
             dialog_control,
             service_worker_clients,
@@ -541,6 +545,7 @@ impl NativeEngine {
             pending_post_messages: VecDeque::new(),
             pending_message_port_messages: VecDeque::new(),
             pending_page_message_port_commands: VecDeque::new(),
+            pending_shared_worker_creates: VecDeque::new(),
             pending_window_closes: VecDeque::new(),
             pending_window_navigations: VecDeque::new(),
             pending_service_worker_client_messages: VecDeque::new(),
@@ -572,12 +577,25 @@ impl NativeEngine {
         })
     }
 
+    pub(crate) fn new_with_browser_shared_workers(
+        config: NativeEngineConfig,
+        dialog_control: NativeDialogControlPlane,
+    ) -> Result<Self, NativeEngineError> {
+        let mut engine = Self::new_with_dialog_control(config, dialog_control)?;
+        engine.external_shared_worker_routing = true;
+        Ok(engine)
+    }
+
     pub(crate) fn dialog_control_plane(&self) -> NativeDialogControlPlane {
         self.dialog_control.clone()
     }
 
     pub fn config(&self) -> &NativeEngineConfig {
         &self.config
+    }
+
+    pub(crate) fn clone_resource_loader(&self) -> NativeResourceLoader {
+        self.loader.clone()
     }
 
     /// Update the live CSS viewport and invalidate viewport-dependent
@@ -806,6 +824,7 @@ impl NativeEngine {
             popups,
             post_messages,
             page_message_port_commands,
+            shared_worker_commands,
             window_closes,
             window_navigations,
             service_worker_client_messages,
@@ -839,6 +858,7 @@ impl NativeEngine {
         self.config.window_name = window_name;
         self.queue_frame_script_requests(frame_scripts)?;
         self.queue_page_message_port_commands(page_message_port_commands)?;
+        self.queue_shared_worker_create_commands(shared_worker_commands)?;
         self.queue_service_worker_client_messages(service_worker_client_messages)?;
         self.queue_service_worker_open_window_requests(service_worker_open_windows)?;
         if let Some(mut mutation) = mutation {
@@ -1350,6 +1370,7 @@ impl NativeEngine {
                     self.frame_script_context.as_ref(),
                     &self.environment,
                     &self.service_worker_clients,
+                    self.external_shared_worker_routing,
                 )
                 .await?;
         }
@@ -1832,6 +1853,7 @@ impl NativeEngine {
                     self.frame_script_context.as_ref(),
                     &self.environment,
                     &self.service_worker_clients,
+                    self.external_shared_worker_routing,
                 )
                 .await?;
             self.content_process = Some(process);
@@ -2003,6 +2025,9 @@ impl NativeEngine {
         )?;
         self.queue_page_message_port_commands(std::mem::take(
             &mut content.page_message_port_commands,
+        ))?;
+        self.queue_shared_worker_create_commands(std::mem::take(
+            &mut content.shared_worker_commands,
         ))?;
         self.queue_window_close_requests(std::mem::take(&mut content.window_closes))?;
         self.queue_window_navigation_requests(std::mem::take(&mut content.window_navigations))?;
@@ -2539,6 +2564,7 @@ impl NativeEngine {
                 popups,
                 post_messages,
                 page_message_port_commands,
+                shared_worker_commands,
                 window_closes,
                 window_navigations,
                 service_worker_client_messages,
@@ -2571,6 +2597,7 @@ impl NativeEngine {
             self.config.window_name = window_name;
             self.queue_frame_script_requests(frame_scripts)?;
             self.queue_page_message_port_commands(page_message_port_commands)?;
+            self.queue_shared_worker_create_commands(shared_worker_commands)?;
             self.queue_service_worker_client_messages(service_worker_client_messages)?;
             self.queue_service_worker_open_window_requests(service_worker_open_windows)?;
             let mut history_traversal = None;
@@ -3309,6 +3336,58 @@ impl NativeEngine {
         Ok(())
     }
 
+    fn queue_shared_worker_create_commands(
+        &mut self,
+        commands: Vec<NativeScriptCommand>,
+    ) -> Result<(), NativeEngineError> {
+        if commands.len()
+            > MAX_NATIVE_EFFECTS.saturating_sub(self.pending_shared_worker_creates.len())
+        {
+            return Err(NativeEngineError::limit(
+                "native pending SharedWorker creates",
+                MAX_NATIVE_EFFECTS,
+                self.pending_shared_worker_creates
+                    .len()
+                    .saturating_add(commands.len()),
+            ));
+        }
+        for command in commands {
+            let NativeScriptCommand::SharedWorkerCreate {
+                connection_id,
+                href,
+                name,
+                worker_type,
+                transfer_port,
+            } = command
+            else {
+                return Err(NativeEngineError::Worker {
+                    operation: "route SharedWorker create".into(),
+                    reason: "content process returned an unexpected worker command".into(),
+                });
+            };
+            if connection_id == 0 {
+                return Err(NativeEngineError::invalid(
+                    "native SharedWorker connection id",
+                    "must be positive",
+                ));
+            }
+            validate_context_id(&self.config.context_id)?;
+            validate_context_id(&self.frame_id)?;
+            validate_message_port_transfers(std::slice::from_ref(&transfer_port))?;
+            self.pending_shared_worker_creates
+                .push_back(NativeSharedWorkerCreateRequest {
+                    source_context_id: self.config.context_id.clone(),
+                    source_frame_id: self.frame_id.clone(),
+                    owner_url: self.url.clone(),
+                    href,
+                    name,
+                    worker_type,
+                    transfer_port,
+                });
+        }
+        Ok(())
+    }
+
     fn collect_page_message_port_commands(&mut self) -> Result<(), NativeEngineError> {
         let commands = self.workers.take_page_message_port_commands();
         self.queue_page_message_port_commands(commands)
@@ -3601,6 +3680,12 @@ impl NativeEngine {
         &mut self,
     ) -> Vec<NativePageMessagePortCommand> {
         self.pending_page_message_port_commands.drain(..).collect()
+    }
+
+    pub(crate) fn take_pending_shared_worker_creates(
+        &mut self,
+    ) -> Vec<NativeSharedWorkerCreateRequest> {
+        self.pending_shared_worker_creates.drain(..).collect()
     }
 
     pub(crate) fn take_pending_window_closes(&mut self) -> Vec<NativeWindowCloseRequest> {
@@ -8435,7 +8520,6 @@ impl NativeEngine {
         self.document_has_sticky_activation = false;
         self.workers.clear();
         self.pending_message_port_messages.clear();
-        self.pending_page_message_port_commands.clear();
         self.javascript = javascript;
         self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;
@@ -8619,7 +8703,6 @@ impl NativeEngine {
         self.document_has_sticky_activation = false;
         self.workers.clear();
         self.pending_message_port_messages.clear();
-        self.pending_page_message_port_commands.clear();
         self.javascript = javascript;
         self.nested_scroll_offsets.clear();
         self.url = prepared.resource.url;

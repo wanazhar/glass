@@ -509,15 +509,20 @@ Slice 817 fans out accepted SharedWorker cookie changes to all already-live
 target and frame processes within one backend/profile. Its process-backed
 group passed (3 passed, 866 filtered; 126.59 seconds), and the Slice 814
 credentials/redirect regression passed (1 passed, 868 filtered; 25.05
-seconds). The test verifies cookie visibility and the next HTTP request from a
-parked page and child frame, plus isolation from another backend with a
-different profile. The scoped test-target check passed with 68 existing
-legacy HTML parser dead-code warnings. Only the first live engine performs the
-profile merge; remaining engines refresh their runtime views. Separate live
-backend/session notification, ordinary page-response cookie synchronization,
-broader cookie/WPT conformance, and cross-platform coverage remain open.
-Ordinary page-response synchronization is the next bounded checkpoint. See
-the [slice 817 task](tasks/native-engine-browser-817.md).
+seconds). Slice 818 returns ordinary content-process response-cookie journals
+after profile merge and synchronizes same-backend live target/frame loaders,
+content processes, and the SharedWorker loader/journal without duplicate
+profile writes. Its process-backed regression passed (1 passed, 869 filtered;
+69.98 seconds), verifying the peer and child-frame next requests, HttpOnly
+visibility, latest-value coalescing and deletion, independent-profile
+isolation, and cookies restored by a newly opened engine. The scoped check
+passed with existing legacy HTML parser dead-code warnings; formatting and
+diff validation passed. Direct observation inside an already-running
+SharedWorker of page-originated changes remains unverified. Separate
+backend/session notification, broader cookie/WPT conformance, and
+cross-platform coverage also remain open. See the [slice 818 task](tasks/native-engine-browser-818.md),
+the [slice 817 task](tasks/native-engine-browser-817.md), and
+[slice 816 task](tasks/native-engine-browser-816.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus

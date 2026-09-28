@@ -32945,6 +32945,248 @@ globalThis.startCookieFanout = () => {
     });
 }
 
+#[test]
+fn native_runtime_page_response_cookie_changes_reach_all_live_profile_contexts() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let _guard = native_content_process_test_lock().lock().await;
+            let profile_path = std::env::temp_dir().join(format!(
+                "glass-native-page-cookie-fanout-{}-profile.json",
+                std::process::id()
+            ));
+            let isolated_profile_path = std::env::temp_dir().join(format!(
+                "glass-native-page-cookie-fanout-{}-isolated.json",
+                std::process::id()
+            ));
+            let profile_lock_path = profile_path.with_extension("lock");
+            let isolated_lock_path = isolated_profile_path.with_extension("lock");
+            for path in [
+                &profile_path,
+                &profile_lock_path,
+                &isolated_profile_path,
+                &isolated_lock_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(60), async move {
+                    let mut requests = Vec::new();
+                    for _ in 0..10 {
+                        let (mut stream, _) = listener.accept().await.unwrap();
+                        let request = read_http_request(&mut stream).await;
+                        let path = request
+                            .split_whitespace()
+                            .nth(1)
+                            .expect("page-cookie request includes a URL")
+                            .to_owned();
+                        let cookie = request
+                            .lines()
+                            .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                            .and_then(|line| line.split_once(':'))
+                            .map(|(_, value)| value.trim().to_owned());
+                        let (extra_headers, content_type, body): (&str, &str, &str) =
+                            match path.as_str() {
+                                "/writer-page" => ("", "text/html", "<p>page cookie writer</p>"),
+                                "/peer-page" => {
+                                    ("", "text/html", "<iframe src='/peer-frame'></iframe>")
+                                }
+                                "/peer-frame" => ("", "text/html", "<p>live frame</p>"),
+                                "/isolated-page" => ("", "text/html", "<p>isolated</p>"),
+                                "/reload-page" => ("", "text/html", "<p>profile reload</p>"),
+                                "/set-cookie" => (
+                                    concat!(
+                                        "Set-Cookie: native_http_only=secret; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                        "Set-Cookie: native_visible=first; Path=/; SameSite=Lax\r\n",
+                                        "Set-Cookie: native_visible=final; Path=/; SameSite=Lax\r\n",
+                                        "Set-Cookie: native_deleted=temporary; Path=/; SameSite=Lax\r\n",
+                                        "Set-Cookie: native_deleted=; Max-Age=0; Path=/; SameSite=Lax\r\n",
+                                    ),
+                                    "text/plain",
+                                    "set",
+                                ),
+                                "/observe-peer" => ("", "text/plain", "peer-observed"),
+                                "/observe-frame" => ("", "text/plain", "frame-observed"),
+                                "/observe-isolated" => ("", "text/plain", "isolated-observed"),
+                                "/observe-reload" => ("", "text/plain", "reload-observed"),
+                                other => panic!("unexpected page-cookie request: {other}"),
+                            };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                        requests.push((path, cookie));
+                    }
+                    requests
+                })
+                .await
+                .expect("page-response cookie fan-out remains bounded")
+            });
+
+            let session = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("http://{address}/writer-page")),
+            )
+            .await
+            .unwrap();
+            let peer = session
+                .native_create_target(&format!("http://{address}/peer-page"))
+                .await
+                .unwrap();
+            session.native_select_target(&peer.id).await.unwrap();
+            let peer_frames = session.native_list_frames().await.unwrap();
+            let child_frame = peer_frames
+                .iter()
+                .find(|frame| frame.parent_id.is_some())
+                .expect("the peer page has a live child frame")
+                .id
+                .clone();
+            session.native_select_frame(&child_frame).await.unwrap();
+
+            let isolated = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(isolated_profile_path.clone())
+                    .with_initial_url(format!("http://{address}/isolated-page")),
+            )
+            .await
+            .unwrap();
+            session.native_select_target("native-context").await.unwrap();
+            assert_eq!(
+                session
+                    .script("await fetch('/set-cookie').then(response => response.text())")
+                .await
+                .unwrap()
+                .value,
+                serde_json::json!("set")
+            );
+
+            session.native_select_target(&peer.id).await.unwrap();
+            let peer_state = session
+                .script(
+                    "await fetch('/observe-peer').then(async response => ({ cookie: document.cookie, body: await response.text() }))",
+                )
+                .await
+                .unwrap()
+                .value;
+            assert_eq!(peer_state["body"], "peer-observed");
+            assert!(peer_state["cookie"]
+                .as_str()
+                .unwrap()
+                .contains("native_visible=final"));
+            assert!(!peer_state["cookie"]
+                .as_str()
+                .unwrap()
+                .contains("native_http_only="));
+            assert!(!peer_state["cookie"]
+                .as_str()
+                .unwrap()
+                .contains("native_deleted="));
+
+            session.native_select_frame(&child_frame).await.unwrap();
+            let frame_state = session
+                .script(
+                    "await fetch('/observe-frame').then(async response => ({ cookie: document.cookie, body: await response.text() }))",
+                )
+                .await
+                .unwrap()
+                .value;
+            assert_eq!(frame_state["body"], "frame-observed");
+            assert!(frame_state["cookie"]
+                .as_str()
+                .unwrap()
+                .contains("native_visible=final"));
+            assert!(!frame_state["cookie"]
+                .as_str()
+                .unwrap()
+                .contains("native_http_only="));
+            assert!(!frame_state["cookie"]
+                .as_str()
+                .unwrap()
+                .contains("native_deleted="));
+
+            assert_eq!(
+                isolated
+                    .script("await fetch('/observe-isolated').then(response => response.text())")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("isolated-observed")
+            );
+            assert_eq!(
+                isolated.script("document.cookie").await.unwrap().value,
+                serde_json::json!("")
+            );
+
+            session.close().await.unwrap();
+            isolated.close().await.unwrap();
+            let reloaded = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("http://{address}/reload-page")),
+            )
+            .await
+            .unwrap();
+            let reloaded_visible_cookies = reloaded.script("document.cookie").await.unwrap().value;
+            assert!(reloaded_visible_cookies
+                .as_str()
+                .unwrap()
+                .contains("native_visible=final"));
+            assert!(!reloaded_visible_cookies
+                .as_str()
+                .unwrap()
+                .contains("native_deleted="));
+            assert_eq!(
+                reloaded
+                    .script("await fetch('/observe-reload').then(response => response.text())")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("reload-observed")
+            );
+            reloaded.close().await.unwrap();
+            let requests = server.await.unwrap();
+            let cookie_for = |path: &str| {
+                requests
+                    .iter()
+                    .find(|(request_path, _)| request_path == path)
+                    .unwrap_or_else(|| panic!("missing request {path}"))
+                    .1
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            for path in [
+                "/observe-peer",
+                "/observe-frame",
+                "/observe-reload",
+            ] {
+                let cookie = cookie_for(path);
+                assert!(cookie.contains("native_http_only=secret"));
+                assert!(cookie.contains("native_visible=final"));
+                assert!(!cookie.contains("native_deleted="));
+            }
+            let reload_navigation_cookie = cookie_for("/reload-page");
+            assert!(reload_navigation_cookie.contains("native_http_only=secret"));
+            assert!(reload_navigation_cookie.contains("native_visible=final"));
+            assert!(!reload_navigation_cookie.contains("native_deleted="));
+            assert!(!cookie_for("/observe-isolated").contains("native_"));
+
+            for path in [
+                &profile_path,
+                &profile_lock_path,
+                &isolated_profile_path,
+                &isolated_lock_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+        });
+    });
+}
+
 #[tokio::test]
 async fn native_content_process_import_scripts_dynamic_imports_use_final_script_urls() {
     let _guard = native_content_process_test_lock().lock().await;

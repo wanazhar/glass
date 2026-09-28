@@ -103,6 +103,9 @@ struct NativeSharedWorkerPageRoute {
 
 enum NativeWorkerCoordinatorEffect {
     PageMessagePort(NativePageMessagePortCommand),
+    PageCookieChanges {
+        changes: Vec<NativeCookieChange>,
+    },
     SharedWorkerMessage(NativePageMessagePortCommand),
     SharedWorkerCreate(NativeSharedWorkerCreateRequest),
     SharedWorkerError {
@@ -139,25 +142,50 @@ impl NativeSharedWorkerCoordinator {
     }
 
     fn remember_cookie_changes(&mut self) -> Result<Vec<NativeCookieChange>, NativeEngineError> {
-        let changes = self.loader.take_cookie_changes();
-        for change in &changes {
+        let mut loader = self.loader.clone();
+        let changes = loader.take_cookie_changes();
+        let mut overrides = self.cookie_overrides.clone();
+        Self::remember_cookie_overrides(&mut overrides, &changes)?;
+        self.loader = loader;
+        self.cookie_overrides = overrides;
+        Ok(changes)
+    }
+
+    fn apply_page_cookie_changes(
+        &mut self,
+        changes: &[NativeCookieChange],
+    ) -> Result<(), NativeEngineError> {
+        let mut loader = self.loader.clone();
+        loader.apply_cookie_changes(changes)?;
+        let changes = loader.take_cookie_changes();
+        let mut overrides = self.cookie_overrides.clone();
+        Self::remember_cookie_overrides(&mut overrides, &changes)?;
+        self.loader = loader;
+        self.cookie_overrides = overrides;
+        Ok(())
+    }
+
+    fn remember_cookie_overrides(
+        overrides: &mut BTreeMap<(String, String, String), NativeCookieChange>,
+        changes: &[NativeCookieChange],
+    ) -> Result<(), NativeEngineError> {
+        for change in changes {
             let key = (
                 change.name.clone(),
                 change.domain.clone(),
                 change.path.clone(),
             );
-            if !self.cookie_overrides.contains_key(&key)
-                && self.cookie_overrides.len() >= MAX_NATIVE_COOKIE_PROFILE_ENTRIES
+            if !overrides.contains_key(&key) && overrides.len() >= MAX_NATIVE_COOKIE_PROFILE_ENTRIES
             {
                 return Err(NativeEngineError::limit(
                     "native SharedWorker cookie change entries",
                     MAX_NATIVE_COOKIE_PROFILE_ENTRIES,
-                    self.cookie_overrides.len().saturating_add(1),
+                    overrides.len().saturating_add(1),
                 ));
             }
-            self.cookie_overrides.insert(key, change.clone());
+            overrides.insert(key, change.clone());
         }
-        Ok(changes)
+        Ok(())
     }
 }
 
@@ -2608,7 +2636,7 @@ impl NativeEngineBackend {
                     .await
                     .map_err(native_error)?;
                 let nested = engine.take_pending_frame_scripts();
-                let (effects, window_name) = take_native_browser_effects(&mut engine);
+                let (effects, window_name) = take_native_browser_effects(&mut engine)?;
                 let owner_id = engine.config().context_id.clone();
                 (nested, effects, event_effects, owner_id, window_name)
             }
@@ -2634,7 +2662,7 @@ impl NativeEngineBackend {
                         return Err(error);
                     }
                 };
-                let (effects, window_name) = take_native_browser_effects(&mut frame.engine);
+                let (effects, window_name) = take_native_browser_effects(&mut frame.engine)?;
                 let owner_id = targets.active_target_id.clone().ok_or_else(|| {
                     BrowserBackendError::SelectionFailed {
                         reason: "native frame owner target disappeared during script routing"
@@ -2658,7 +2686,7 @@ impl NativeEngineBackend {
                     .await
                     .map_err(native_error)?;
                 let nested = target.engine.take_pending_frame_scripts();
-                let (effects, window_name) = take_native_browser_effects(&mut target.engine);
+                let (effects, window_name) = take_native_browser_effects(&mut target.engine)?;
                 (nested, effects, event_effects, target_id, window_name)
             }
             NativeFrameRoute::ParkedParked { target_id } => {
@@ -2682,7 +2710,7 @@ impl NativeEngineBackend {
                     .await
                     .map_err(native_error)?;
                 let nested = frame.engine.take_pending_frame_scripts();
-                let (effects, window_name) = take_native_browser_effects(&mut frame.engine);
+                let (effects, window_name) = take_native_browser_effects(&mut frame.engine)?;
                 (nested, effects, event_effects, target_id, window_name)
             }
         };
@@ -3155,7 +3183,7 @@ impl NativeEngineBackend {
             let nested_service_worker_client_messages =
                 engine.take_pending_service_worker_client_messages();
             let nested_page_message_port_commands =
-                take_native_worker_coordinator_effects(&mut engine);
+                take_native_worker_coordinator_effects(&mut engine).map_err(native_error)?;
             let target_name = native_window_name(&engine.config().window_name);
             let target = match project_native_target(
                 &engine,
@@ -3608,6 +3636,9 @@ impl NativeEngineBackend {
                                 self.deliver_page_message_port(command).await?
                             }
                         }
+                        NativeWorkerCoordinatorEffect::PageCookieChanges { changes } => {
+                            self.deliver_page_cookie_changes(changes).await?
+                        }
                         NativeWorkerCoordinatorEffect::SharedWorkerMessage(command) => {
                             self.deliver_page_message_port(command).await?
                         }
@@ -3671,7 +3702,7 @@ impl NativeEngineBackend {
                     .await
                     .map_err(native_error)?;
                 let owner_id = engine.config().context_id.clone();
-                let (effects, window_name) = take_native_browser_effects(&mut engine);
+                let (effects, window_name) = take_native_browser_effects(&mut engine)?;
                 (effects, owner_id, window_name)
             }
             NativeFrameRoute::ActiveParked => {
@@ -3698,7 +3729,7 @@ impl NativeEngineBackend {
                     )
                     .await
                     .map_err(native_error)?;
-                let (effects, window_name) = take_native_browser_effects(&mut frame.engine);
+                let (effects, window_name) = take_native_browser_effects(&mut frame.engine)?;
                 (effects, owner_id, window_name)
             }
             NativeFrameRoute::ParkedSelected { target_id } => {
@@ -3718,7 +3749,7 @@ impl NativeEngineBackend {
                     )
                     .await
                     .map_err(native_error)?;
-                let (effects, window_name) = take_native_browser_effects(&mut target.engine);
+                let (effects, window_name) = take_native_browser_effects(&mut target.engine)?;
                 (effects, target_id, window_name)
             }
             NativeFrameRoute::ParkedParked { target_id } => {
@@ -3745,7 +3776,7 @@ impl NativeEngineBackend {
                     )
                     .await
                     .map_err(native_error)?;
-                let (effects, window_name) = take_native_browser_effects(&mut frame.engine);
+                let (effects, window_name) = take_native_browser_effects(&mut frame.engine)?;
                 (effects, target_id, window_name)
             }
         };
@@ -3776,7 +3807,7 @@ impl NativeEngineBackend {
                     .await
                     .map_err(native_error)?;
                 let owner_id = engine.config().context_id.clone();
-                let (effects, window_name) = take_native_browser_effects(&mut engine);
+                let (effects, window_name) = take_native_browser_effects(&mut engine)?;
                 (effects, owner_id, window_name)
             }
             NativeFrameRoute::ActiveParked => {
@@ -3798,7 +3829,7 @@ impl NativeEngineBackend {
                     .dispatch_service_worker_client_message_async(message)
                     .await
                     .map_err(native_error)?;
-                let (effects, window_name) = take_native_browser_effects(&mut frame.engine);
+                let (effects, window_name) = take_native_browser_effects(&mut frame.engine)?;
                 (effects, owner_id, window_name)
             }
             NativeFrameRoute::ParkedSelected { target_id } => {
@@ -3813,7 +3844,7 @@ impl NativeEngineBackend {
                     .dispatch_service_worker_client_message_async(message)
                     .await
                     .map_err(native_error)?;
-                let (effects, window_name) = take_native_browser_effects(&mut target.engine);
+                let (effects, window_name) = take_native_browser_effects(&mut target.engine)?;
                 (effects, target_id, window_name)
             }
             NativeFrameRoute::ParkedParked { target_id } => {
@@ -3833,7 +3864,7 @@ impl NativeEngineBackend {
                     .dispatch_service_worker_client_message_async(message)
                     .await
                     .map_err(native_error)?;
-                let (effects, window_name) = take_native_browser_effects(&mut frame.engine);
+                let (effects, window_name) = take_native_browser_effects(&mut frame.engine)?;
                 (effects, target_id, window_name)
             }
         };
@@ -4657,7 +4688,7 @@ impl NativeEngineBackend {
                 )
                 .await
                 .map_err(native_error)?;
-            let (effects, window_name) = take_native_browser_effects(&mut engine);
+            let (effects, window_name) = take_native_browser_effects(&mut engine)?;
             drop(engine);
             self.sync_target_name(&target_id, &window_name)?;
             self.register_page_message_port_routes(
@@ -4700,7 +4731,7 @@ impl NativeEngineBackend {
             )
             .await
             .map_err(native_error)?;
-        let (effects, window_name) = take_native_browser_effects(&mut parked.engine);
+        let (effects, window_name) = take_native_browser_effects(&mut parked.engine)?;
         drop(targets);
         self.sync_target_name(&target_id, &window_name)?;
         self.register_page_message_port_routes(
@@ -5187,13 +5218,38 @@ impl NativeEngineBackend {
         &self,
         changes: Vec<NativeCookieChange>,
     ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
+        self.deliver_cookie_changes(changes, false, "synchronize native SharedWorker cookies")
+            .await
+    }
+
+    async fn deliver_page_cookie_changes(
+        &self,
+        changes: Vec<NativeCookieChange>,
+    ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
+        self.shared_workers
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator"))?
+            .apply_page_cookie_changes(&changes)
+            .map_err(native_error)?;
+        self.deliver_cookie_changes(changes, true, "synchronize native page response cookies")
+            .await
+    }
+
+    async fn deliver_cookie_changes(
+        &self,
+        changes: Vec<NativeCookieChange>,
+        profile_already_written: bool,
+        operation: &'static str,
+    ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
         let mut targets = self.lock_targets(BackendOperation::Script)?;
         let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
-        let mut profile_written = false;
+        let mut profile_written = profile_already_written;
+        let mut live_contexts = 0usize;
         if targets.active_target_id.is_some() {
             apply_native_cookie_changes_to_live_engine(&mut engine, &changes, &mut profile_written)
                 .await
                 .map_err(native_error)?;
+            live_contexts += 1;
         }
         for frame in targets.active_frames.parked.values_mut() {
             apply_native_cookie_changes_to_live_engine(
@@ -5203,6 +5259,7 @@ impl NativeEngineBackend {
             )
             .await
             .map_err(native_error)?;
+            live_contexts += 1;
         }
         for target in targets.parked.values_mut() {
             apply_native_cookie_changes_to_live_engine(
@@ -5212,6 +5269,7 @@ impl NativeEngineBackend {
             )
             .await
             .map_err(native_error)?;
+            live_contexts += 1;
             for frame in target.frames.parked.values_mut() {
                 apply_native_cookie_changes_to_live_engine(
                     &mut frame.engine,
@@ -5220,11 +5278,19 @@ impl NativeEngineBackend {
                 )
                 .await
                 .map_err(native_error)?;
+                live_contexts += 1;
             }
+        }
+        if live_contexts == 0 {
+            return Err(BrowserBackendError::Lifecycle {
+                operation: operation.into(),
+                state: "no-live-context".into(),
+                reason: "accepted cookie changes have no live context recipient".into(),
+            });
         }
         if !profile_written {
             return Err(BrowserBackendError::Lifecycle {
-                operation: "synchronize native SharedWorker cookies".into(),
+                operation: operation.into(),
                 state: "no-live-context".into(),
                 reason: "accepted cookie changes have no live profile writer".into(),
             });
@@ -6430,7 +6496,8 @@ impl NativeEngineBackend {
             let service_worker_open_windows = engine.take_pending_service_worker_open_windows();
             let service_worker_client_messages =
                 engine.take_pending_service_worker_client_messages();
-            let page_message_port_commands = take_native_worker_coordinator_effects(&mut engine);
+            let page_message_port_commands =
+                take_native_worker_coordinator_effects(&mut engine).map_err(native_error)?;
             let window_name = engine.config().window_name.clone();
             project_native_target(&engine, &target_id, opener_id, true)?;
             (
@@ -6936,7 +7003,8 @@ impl BrowserBackend for NativeEngineBackend {
                     let service_worker_client_messages =
                         engine.take_pending_service_worker_client_messages();
                     let page_message_port_commands =
-                        take_native_worker_coordinator_effects(&mut engine);
+                        take_native_worker_coordinator_effects(&mut engine)
+                            .map_err(native_error)?;
                     let window_name = engine.config().window_name.clone();
                     drop(engine);
                     self.sync_target_name(&active_context_id, &window_name)?;
@@ -7063,7 +7131,8 @@ impl BrowserBackend for NativeEngineBackend {
                     let service_worker_client_messages =
                         engine.take_pending_service_worker_client_messages();
                     let page_message_port_commands =
-                        take_native_worker_coordinator_effects(&mut engine);
+                        take_native_worker_coordinator_effects(&mut engine)
+                            .map_err(native_error)?;
                     let window_name = engine.config().window_name.clone();
                     drop(engine);
                     self.sync_target_name(&active_context_id, &window_name)?;
@@ -7123,7 +7192,8 @@ impl BrowserBackend for NativeEngineBackend {
                     let service_worker_client_messages =
                         engine.take_pending_service_worker_client_messages();
                     let page_message_port_commands =
-                        take_native_worker_coordinator_effects(&mut engine);
+                        take_native_worker_coordinator_effects(&mut engine)
+                            .map_err(native_error)?;
                     let window_name = engine.config().window_name.clone();
                     drop(engine);
                     self.sync_target_name(&active_context_id, &window_name)?;
@@ -7750,16 +7820,18 @@ async fn activate_navigated_frame_if_ancestor(
     first_error.map_or(Ok(()), Err)
 }
 
-fn take_native_browser_effects(engine: &mut NativeEngine) -> (NativeQueuedBrowserEffects, String) {
+fn take_native_browser_effects(
+    engine: &mut NativeEngine,
+) -> Result<(NativeQueuedBrowserEffects, String), BrowserBackendError> {
     let popups = engine.take_pending_popups();
     let messages = engine.take_pending_post_messages();
     let closes = engine.take_pending_window_closes();
     let navigations = engine.take_pending_window_navigations();
     let service_worker_open_windows = engine.take_pending_service_worker_open_windows();
     let service_worker_client_messages = engine.take_pending_service_worker_client_messages();
-    let worker_effects = take_native_worker_coordinator_effects(engine);
+    let worker_effects = take_native_worker_coordinator_effects(engine).map_err(native_error)?;
     let window_name = engine.config().window_name.clone();
-    (
+    Ok((
         (
             popups,
             messages,
@@ -7770,24 +7842,32 @@ fn take_native_browser_effects(engine: &mut NativeEngine) -> (NativeQueuedBrowse
             worker_effects,
         ),
         window_name,
-    )
+    ))
 }
 
 fn take_native_worker_coordinator_effects(
     engine: &mut NativeEngine,
-) -> Vec<NativeWorkerCoordinatorEffect> {
-    let mut effects = engine
-        .take_pending_shared_worker_creates()
-        .into_iter()
-        .map(NativeWorkerCoordinatorEffect::SharedWorkerCreate)
-        .collect::<Vec<_>>();
+) -> Result<Vec<NativeWorkerCoordinatorEffect>, NativeEngineError> {
+    let mut effects = Vec::new();
+    let cookie_changes = engine.take_pending_content_cookie_changes()?;
+    if !cookie_changes.is_empty() {
+        effects.push(NativeWorkerCoordinatorEffect::PageCookieChanges {
+            changes: cookie_changes,
+        });
+    }
+    effects.extend(
+        engine
+            .take_pending_shared_worker_creates()
+            .into_iter()
+            .map(NativeWorkerCoordinatorEffect::SharedWorkerCreate),
+    );
     effects.extend(
         engine
             .take_pending_page_message_port_commands()
             .into_iter()
             .map(NativeWorkerCoordinatorEffect::PageMessagePort),
     );
-    effects
+    Ok(effects)
 }
 
 fn append_native_queued_browser_effects(
@@ -7812,7 +7892,7 @@ fn take_native_frame_runtime_effects(
         .map_err(native_error)?
         .effects;
     let frame_scripts = engine.take_pending_frame_scripts();
-    let (browser, window_name) = take_native_browser_effects(engine);
+    let (browser, window_name) = take_native_browser_effects(engine)?;
     Ok(NativeFrameRuntimeEffects {
         browser,
         frame_scripts,
@@ -7843,7 +7923,7 @@ async fn dispatch_frame_events_to_parent_engine(
         .map_err(native_error)?
         .effects;
     let nested = engine.take_pending_frame_scripts();
-    let (queued, _) = take_native_browser_effects(engine);
+    let (queued, _) = take_native_browser_effects(engine)?;
     Ok((nested, queued, propagated))
 }
 

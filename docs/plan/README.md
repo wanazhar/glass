@@ -327,6 +327,14 @@ routes retain their separate owner and return an explicit owner-specific
 error, not a fallback. GC/document-destruction close, broader task-source and
 WPT conformance, remote CI, and cross-platform certification remain open; see
 the [slice 806 task](tasks/native-engine-browser-806.md).
+Slice 807 contracts explicit close for Service Worker-owned page bridges
+through `NativeServiceWorkerRegistry`, keeping route ownership separate while
+covering both page-initiated and Service Worker-initiated close. It reserves
+bounded queue capacity for peer close delivery and requires an HTTP-backed
+regression with an unrelated bridge still active. Implementation and evidence
+are pending; multi-client scheduling, GC/document-destruction close, complete
+task-source/EventTarget/WPT behavior, remote CI, and cross-platform
+certification remain open. See the [slice 807 task](tasks/native-engine-browser-807.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

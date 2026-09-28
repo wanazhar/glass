@@ -3819,14 +3819,15 @@ fn decode_shared_worker_commands(
 fn defer_shared_worker_commands(
     commands: Vec<NativeScriptCommand>,
     external_routing: bool,
+    loader: &NativeResourceLoader,
     pending: &mut VecDeque<NativeScriptCommand>,
 ) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
     if !external_routing {
         return Ok(commands);
     }
     let mut local_commands = Vec::with_capacity(commands.len());
-    for command in commands {
-        if matches!(&command, NativeScriptCommand::SharedWorkerCreate { .. }) {
+    for mut command in commands {
+        if let NativeScriptCommand::SharedWorkerCreate { cookie_profile, .. } = &mut command {
             if pending.len() >= MAX_NATIVE_EFFECTS {
                 return Err(NativeEngineError::limit(
                     "content-process pending SharedWorker commands",
@@ -3834,6 +3835,7 @@ fn defer_shared_worker_commands(
                     pending.len().saturating_add(1),
                 ));
             }
+            *cookie_profile = loader.cookie_profile();
             pending.push_back(command);
         } else {
             local_commands.push(command);
@@ -5921,11 +5923,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             storage_key(&resource.url, &resource.origin),
                                             runtime.indexed_db_state(),
                                         )?;
-                                        let worker_commands = defer_shared_worker_commands(
-                                            runtime.take_worker_commands(),
-                                            external_shared_worker_routing,
-                                            &mut pending_shared_worker_commands,
-                                        )?;
                                         let Some(loader) = resource_loader.as_mut() else {
                                             return Err(NativeEngineError::Worker {
                                                 operation: "page-load Worker scheduling".into(),
@@ -5934,6 +5931,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                                         .into(),
                                             });
                                         };
+                                        let worker_commands = defer_shared_worker_commands(
+                                            runtime.take_worker_commands(),
+                                            external_shared_worker_routing,
+                                            loader,
+                                            &mut pending_shared_worker_commands,
+                                        )?;
                                         workers
                                             .apply_commands(worker_commands, loader, &resource.url)
                                             .await?;
@@ -6342,6 +6345,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 let worker_commands = defer_shared_worker_commands(
                     runtime.take_worker_commands(),
                     external_shared_worker_routing,
+                    loader,
                     &mut pending_shared_worker_commands,
                 )?;
                 workers
@@ -6478,6 +6482,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 let dynamic_worker_commands = defer_shared_worker_commands(
                                     runtime.take_worker_commands(),
                                     external_shared_worker_routing,
+                                    loader,
                                     &mut pending_shared_worker_commands,
                                 )?;
                                 workers

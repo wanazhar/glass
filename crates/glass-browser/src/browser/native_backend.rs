@@ -4863,6 +4863,7 @@ impl NativeEngineBackend {
             worker_type: request.worker_type,
             credentials: request.credentials,
             extended_lifetime: request.extended_lifetime,
+            cookie_profile: Vec::new(),
             constructor_storage_key: Some(NativeSharedWorkerStorageKey::for_document(
                 &request.constructor_origin,
                 &request.source_context_id,
@@ -4875,9 +4876,14 @@ impl NativeEngineBackend {
             let NativeSharedWorkerCoordinator {
                 registry, loader, ..
             } = &mut *coordinator;
-            registry
-                .apply_commands(vec![command], loader, &request.owner_url)
-                .await
+            match loader.replace_cookie_profiles(&request.cookie_profile) {
+                Ok(()) => {
+                    registry
+                        .apply_commands(vec![command], loader, &request.owner_url)
+                        .await
+                }
+                Err(error) => Err(error),
+            }
         };
         if let Err(error) = result {
             coordinator

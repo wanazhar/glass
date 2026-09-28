@@ -3384,6 +3384,7 @@ impl NativeEngine {
                 worker_type,
                 credentials,
                 extended_lifetime,
+                cookie_profile,
                 constructor_storage_key: _,
                 transfer_port,
             } = command
@@ -3417,6 +3418,7 @@ impl NativeEngine {
                     worker_type,
                     credentials,
                     extended_lifetime,
+                    cookie_profile,
                     transfer_port,
                 });
         }

@@ -470,16 +470,20 @@ The tuple/opaque key-level tests are present but were not executed because the
 separate library-test compilation exhausted available host memory. The current
 [Storage Standard storage-key algorithm](https://storage.spec.whatwg.org/#storage-keys)
 and [HTML Standard constructor algorithm](https://html.spec.whatwg.org/multipage/workers.html#shared-workers-and-the-sharedworker-interface)
-remain authoritative. Credential-aware module-worker fetching, partitioning
-beyond the current storage-key definition, agent-cluster communication policy,
-and worker lifetime timers remain open. See the
-[slice 813 task](tasks/native-engine-browser-813.md).
+remain authoritative. Partitioning beyond the current storage-key definition,
+agent-cluster communication policy, and worker lifetime timers remain open.
+See the [slice 813 task](tasks/native-engine-browser-813.md).
 
-Slice 814 is planned to apply the SharedWorker `credentials` option to module
-script fetching and its module graph. The HTML Standard limits this option to
-`type: "module"`; classic SharedWorker script fetching retains its classic
-policy. Redirects, response-cookie handling, and module dependency requests
-need process-backed HTTP coverage. See the
+Slice 814 applies the module SharedWorker `credentials` option across root,
+static-dependency, and dynamic-import requests; classic SharedWorker fetches
+retain classic behavior. Its process-backed HTTP regression checks `omit`,
+`same-origin`, and `include`, redirect response-cookie processing,
+cross-origin CORS, failed-load retry, and the classic-worker boundary (1 passed,
+865 filtered; 27.07 seconds). The scoped integration-test check passed with
+existing dead-code warnings from the legacy HTML parser. Full WPT and
+cross-platform coverage remain open. Cross-context merging/propagation and
+durable persistence of cookies accepted by session-level SharedWorker fetches
+are also not established by this slice. See the
 [slice 814 task](tasks/native-engine-browser-814.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,

@@ -2688,6 +2688,35 @@ fn subresource_credentials(crossorigin: Option<&str>) -> Option<bool> {
     crossorigin.map(|value| value.trim().eq_ignore_ascii_case("use-credentials"))
 }
 
+fn worker_module_crossorigin(credentials_mode: &str) -> Result<&'static str, NativeEngineError> {
+    match credentials_mode {
+        "omit" | "same-origin" => Ok("anonymous"),
+        "include" => Ok("use-credentials"),
+        _ => Err(NativeEngineError::invalid(
+            "SharedWorker credentials mode",
+            "must be omit, same-origin, or include",
+        )),
+    }
+}
+
+fn subresource_request_has_credentials(
+    worker_credentials_mode: Option<&str>,
+    crossorigin: Option<&str>,
+    document_url: &Url,
+    resource_url: &Url,
+) -> bool {
+    match worker_credentials_mode {
+        Some("omit") => false,
+        Some("same-origin") => document_url.origin() == resource_url.origin(),
+        Some("include") => true,
+        Some(_) => false,
+        None => {
+            document_url.origin() == resource_url.origin()
+                || subresource_credentials(crossorigin).unwrap_or(false)
+        }
+    }
+}
+
 fn subresource_response_allowed(
     headers: &HeaderMap,
     document_url: &Url,
@@ -4109,6 +4138,22 @@ impl NativeResourceLoader {
                 cookie: Some(profile.clone()),
             });
         }
+        Ok(())
+    }
+
+    pub(crate) fn replace_cookie_profiles(
+        &mut self,
+        profiles: &[NativeCookieProfileEntry],
+    ) -> Result<(), NativeEngineError> {
+        if profiles.len() > MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
+            return Err(NativeEngineError::limit(
+                "native cookie profile entries",
+                MAX_NATIVE_COOKIE_PROFILE_ENTRIES,
+                profiles.len(),
+            ));
+        }
+        self.network.cookies = NativeNetworkState::from_profile(profiles.to_vec())?.cookies;
+        self.cookie_changes.clear();
         Ok(())
     }
 
@@ -7217,6 +7262,7 @@ impl NativeResourceLoader {
             crossorigin,
             object_url,
             None,
+            None,
         )
         .await
     }
@@ -7243,6 +7289,7 @@ impl NativeResourceLoader {
             crossorigin,
             object_url,
             Some(module_type),
+            None,
         )
         .await
     }
@@ -7264,6 +7311,31 @@ impl NativeResourceLoader {
             None,
             None,
             None,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_shared_worker_module_async(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        max_source_bytes: usize,
+        credentials_mode: &str,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        let crossorigin = worker_module_crossorigin(credentials_mode)?;
+        self.load_script_like_async(
+            document_url,
+            href,
+            max_source_bytes,
+            NativeSubresourceKind::Worker,
+            true,
+            None,
+            None,
+            Some(crossorigin),
+            None,
+            Some(NativeModuleResourceType::JavaScript),
+            Some(credentials_mode),
         )
         .await
     }
@@ -7275,8 +7347,29 @@ impl NativeResourceLoader {
         max_source_bytes: usize,
         module_type: Option<NativeModuleResourceType>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        self.load_worker_script_dependency_async_with_credentials(
+            document_url,
+            href,
+            max_source_bytes,
+            module_type,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_worker_script_dependency_async_with_credentials(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        max_source_bytes: usize,
+        module_type: Option<NativeModuleResourceType>,
+        credentials_mode: Option<&str>,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text("script URL", href)?;
+        let crossorigin = credentials_mode
+            .map(worker_module_crossorigin)
+            .transpose()?;
         if max_source_bytes == 0 {
             return Err(NativeEngineError::invalid(
                 "script source limit",
@@ -7315,9 +7408,10 @@ impl NativeResourceLoader {
             true,
             None,
             None,
-            None,
+            crossorigin,
             None,
             module_type,
+            credentials_mode,
         )
         .await
     }
@@ -7334,7 +7428,16 @@ impl NativeResourceLoader {
         crossorigin: Option<&str>,
         object_url: Option<&NativeObjectUrlResource>,
         module_type: Option<NativeModuleResourceType>,
+        worker_credentials_mode: Option<&str>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        if let Some(mode) = worker_credentials_mode
+            && !matches!(mode, "omit" | "same-origin" | "include")
+        {
+            return Err(NativeEngineError::invalid(
+                "SharedWorker credentials mode",
+                "must be omit, same-origin, or include",
+            ));
+        }
         validate_url_text("document URL", document_url)?;
         validate_url_text(
             if subresource_kind == NativeSubresourceKind::Worker {
@@ -7408,8 +7511,8 @@ impl NativeResourceLoader {
         }
         let integrity_required = integrity_metadata_is_enforced(integrity);
         let cross_origin_target = document_url.origin() != target_url.origin();
-        let can_reuse_cached_script =
-            !(cross_origin_target && (integrity_required || crossorigin.is_some()));
+        let can_reuse_cached_script = worker_credentials_mode.is_none()
+            && !(cross_origin_target && (integrity_required || crossorigin.is_some()));
         let policy = self
             .network
             .document_policies
@@ -7520,7 +7623,7 @@ impl NativeResourceLoader {
         let mut current_url = target_url;
         let mut request_referrer = normalize_referrer(Some(document_url.as_str()), &current_url)?;
         let mut redirects = 0;
-        let mut pending_cookies = Vec::new();
+        let mut has_set_cookie = false;
         let response = loop {
             let mut request_url = current_url.clone();
             request_url.set_fragment(None);
@@ -7555,8 +7658,13 @@ impl NativeResourceLoader {
                     request = request.header(reqwest::header::IF_MODIFIED_SINCE, last_modified);
                 }
             }
-            let credentials = subresource_credentials(crossorigin).unwrap_or(false);
-            if (document_url.origin() == current_url.origin() || credentials)
+            let credentials = subresource_request_has_credentials(
+                worker_credentials_mode,
+                crossorigin,
+                &document_url,
+                &current_url,
+            );
+            if credentials
                 && let Some(cookie) = self.network.cookie_header_for_request(
                     &current_url,
                     Some(&document_url),
@@ -7571,13 +7679,17 @@ impl NativeResourceLoader {
                 .send()
                 .await
                 .map_err(|error| network_error("script subresource request", error))?;
-            for value in response
-                .headers()
-                .get_all(reqwest::header::SET_COOKIE)
-                .iter()
-            {
-                if let Ok(cookie) = value.to_str() {
-                    pending_cookies.push((current_url.clone(), cookie.to_owned()));
+            if credentials {
+                for value in response
+                    .headers()
+                    .get_all(reqwest::header::SET_COOKIE)
+                    .iter()
+                {
+                    if let Ok(cookie) = value.to_str() {
+                        has_set_cookie = true;
+                        self.cookie_changes
+                            .extend(self.network.store_cookie(&current_url, cookie));
+                    }
                 }
             }
             if !is_http_redirect(response.status()) {
@@ -7629,7 +7741,6 @@ impl NativeResourceLoader {
             redirects += 1;
         };
         let response_headers = response.headers().clone();
-        let has_set_cookie = !pending_cookies.is_empty();
         if response.status() == reqwest::StatusCode::NOT_MODIFIED {
             let Some(cached) = stale_cached_script else {
                 return Err(NativeEngineError::Network {
@@ -7642,10 +7753,6 @@ impl NativeResourceLoader {
                     operation: "script subresource revalidation".into(),
                     reason: "HTTP 304 was received after a script redirect".into(),
                 });
-            }
-            for (cookie_url, cookie) in pending_cookies {
-                self.cookie_changes
-                    .extend(self.network.store_cookie(&cookie_url, &cookie));
             }
             let cached_resource = NativeScriptResource {
                 url: cached.url.clone(),
@@ -7740,15 +7847,11 @@ impl NativeResourceLoader {
                 content_security_policy(&response_headers),
             );
         }
-        for (cookie_url, cookie) in pending_cookies {
-            self.cookie_changes
-                .extend(self.network.store_cookie(&cookie_url, &cookie));
-        }
         let resource = NativeScriptResource {
             url: current_url.to_string(),
             body,
         };
-        if subresource_kind == NativeSubresourceKind::Script {
+        if subresource_kind == NativeSubresourceKind::Script && worker_credentials_mode.is_none() {
             if !has_set_cookie
                 && let Some(entry) = NativeTextCacheEntry::from_response(
                     resource.url.clone(),

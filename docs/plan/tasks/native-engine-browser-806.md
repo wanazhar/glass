@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-806
 scope: glass-browser/worker-message-port-bridge-close
-status: contracted
+status: in-progress
 depends-on: [native-engine-browser-805]
 ---
 
@@ -56,11 +56,14 @@ the other realm.
   bridge keys and routes live. After route retirement, no new `message` may
   cross the closed channel in either direction; a close event must not be
   duplicated by a repeated close or delayed stale host record.
-- Use the existing serialized page/worker turn and task pump. Bound any added
-  close-event queue by the current MessagePort message limit; do not introduce
-  an unbounded side queue. Deliver already accepted events in their existing
-  order where the current queue model permits, and document any remaining
-  task-source ordering gap.
+- Use the existing serialized page/worker turn and task pump. Keep close
+  records in the existing bounded MessagePort event queue; do not add a side
+  queue. Reserve one queue slot for every live route, enforcing
+  `live_routes + queued_events <= MAX_NATIVE_WORKER_MESSAGES`. Retiring a
+  route converts its reservation into the peer's close record, so queue
+  pressure cannot silently retire a route without admitting its close event.
+  Deliver already accepted events in their existing order where the current
+  queue model permits, and document any remaining task-source ordering gap.
 - Add process-backed HTTP coverage for page-initiated and Worker-initiated
   close across a real Dedicated Worker bridge. Verify one generic close Event
   at each surviving peer, initiator closed/peer open state, route removal,
@@ -84,7 +87,10 @@ the other realm.
   target and the behavior added for local channels in Slice 805.
 - This does not certify ServiceWorkerGlobalScope-to-client MessagePort close
   behavior; that registry must receive a separately verified owner-specific
-  integration rather than a NativeWorkerRegistry fallback.
+  integration rather than a NativeWorkerRegistry fallback. A close command
+  matching a Service Worker-owned route must return an explicit owner-specific
+  error; it must never be applied to the NativeWorkerRegistry or silently
+  discard the Service Worker route.
 
 ## Paths
 

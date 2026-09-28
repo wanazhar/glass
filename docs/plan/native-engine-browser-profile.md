@@ -405,6 +405,16 @@ GC-driven close, full task-source/EventTarget behavior, WPT, remote CI, and
 cross-platform certification remain open; see
 [slice 806](tasks/native-engine-browser-806.md).
 
+Slice 807 contracts `MessagePort.close()` for page-to-Service-Worker bridges
+owned by `NativeServiceWorkerRegistry`: retire only the validated route, purge
+its pending messages, and deliver one generic close Event to the surviving
+endpoint in either direction. The contract reserves bounded capacity for each
+live route's close notification and requires process-backed HTTP coverage with
+an unrelated bridge still usable. Implementation and evidence are pending;
+multi-client scheduling, GC/document-destruction close, full task-source and
+EventTarget/WPT conformance, remote CI, and cross-platform certification
+remain open. See [slice 807](tasks/native-engine-browser-807.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

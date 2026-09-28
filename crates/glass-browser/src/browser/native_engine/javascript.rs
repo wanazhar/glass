@@ -85,6 +85,10 @@ fn default_classic_worker_type() -> String {
     "classic".into()
 }
 
+fn default_same_origin_credentials() -> String {
+    "same-origin".into()
+}
+
 fn skip_if_false(value: &bool) -> bool {
     !*value
 }
@@ -682,8 +686,14 @@ pub(crate) enum NativeScriptCommand {
         connection_id: u32,
         href: String,
         name: String,
-        #[serde(default)]
+        #[serde(default = "default_classic_worker_type")]
         worker_type: String,
+        #[serde(default = "default_same_origin_credentials")]
+        credentials: String,
+        #[serde(default)]
+        extended_lifetime: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        constructor_storage_key: Option<NativeSharedWorkerStorageKey>,
         transfer_port: NativeMessagePortTransfer,
     },
     WorkerCreate {
@@ -1184,14 +1194,81 @@ pub(crate) struct NativePageMessagePortCommand {
 /// content process.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NativeSharedWorkerCreateRequest {
+    pub(crate) page_worker_id: u32,
     pub(crate) source_context_id: String,
     pub(crate) source_frame_id: String,
     pub(crate) document_generation: u32,
+    pub(crate) constructor_origin: NativeOrigin,
     pub(crate) owner_url: String,
     pub(crate) href: String,
     pub(crate) name: String,
     pub(crate) worker_type: String,
+    pub(crate) credentials: String,
+    pub(crate) extended_lifetime: bool,
     pub(crate) transfer_port: NativeMessagePortTransfer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) enum NativeSharedWorkerStorageKey {
+    TupleOrigin(String),
+    OpaqueDocument {
+        context_id: String,
+        frame_id: String,
+        document_generation: u32,
+    },
+}
+
+impl NativeSharedWorkerStorageKey {
+    pub(crate) fn for_document(
+        origin: &NativeOrigin,
+        context_id: &str,
+        frame_id: &str,
+        document_generation: u32,
+    ) -> Self {
+        match origin {
+            NativeOrigin::Opaque => Self::OpaqueDocument {
+                context_id: context_id.to_owned(),
+                frame_id: frame_id.to_owned(),
+                document_generation,
+            },
+            NativeOrigin::Tuple { .. } => Self::TupleOrigin(origin.serialized()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod native_shared_worker_storage_key_tests {
+    use super::{NativeOrigin, NativeSharedWorkerStorageKey};
+    use url::Url;
+
+    #[test]
+    fn tuple_origins_share_storage_key_across_documents() {
+        let origin =
+            NativeOrigin::from_url(&Url::parse("https://example.test/one").unwrap()).unwrap();
+        assert_eq!(
+            NativeSharedWorkerStorageKey::for_document(&origin, "target-a", "frame-a", 1),
+            NativeSharedWorkerStorageKey::for_document(&origin, "target-b", "frame-b", 7),
+        );
+    }
+
+    #[test]
+    fn opaque_origins_remain_document_scoped() {
+        let origin = NativeOrigin::Opaque;
+        let first_document =
+            NativeSharedWorkerStorageKey::for_document(&origin, "target-a", "frame-a", 1);
+        assert_eq!(
+            first_document,
+            NativeSharedWorkerStorageKey::for_document(&origin, "target-a", "frame-a", 1),
+        );
+        assert_ne!(
+            first_document,
+            NativeSharedWorkerStorageKey::for_document(&origin, "target-a", "frame-a", 2),
+        );
+        assert_ne!(
+            first_document,
+            NativeSharedWorkerStorageKey::for_document(&origin, "target-b", "frame-a", 1),
+        );
+    }
 }
 
 /// A bounded message emitted by a Service Worker for one browser-wide page
@@ -1444,6 +1521,8 @@ struct NativeDedicatedWorker {
     module_base_urls: BTreeMap<String, String>,
     is_module: bool,
     is_shared: bool,
+    credentials: String,
+    extended_lifetime: bool,
     next_module_turn: AtomicU64,
 }
 
@@ -1469,6 +1548,36 @@ enum NativeWorkerClassicDynamicImportMode {
 #[derive(Debug, Clone)]
 struct NativeMessagePortRoute {
     worker_id: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct NativeSharedWorkerKey {
+    constructor_storage_key: NativeSharedWorkerStorageKey,
+    constructor_url: String,
+    name: String,
+}
+
+pub(crate) fn validate_native_shared_worker_options(
+    worker_type: &str,
+    credentials: &str,
+) -> Result<bool, NativeEngineError> {
+    let is_module = match worker_type {
+        "classic" => false,
+        "module" => true,
+        _ => {
+            return Err(NativeEngineError::invalid(
+                "native SharedWorker type",
+                "must be classic or module",
+            ));
+        }
+    };
+    if !matches!(credentials, "omit" | "same-origin" | "include") {
+        return Err(NativeEngineError::invalid(
+            "native SharedWorker credentials",
+            "must be omit, same-origin, or include",
+        ));
+    }
+    Ok(is_module)
 }
 
 impl NativeDedicatedWorker {
@@ -1703,7 +1812,7 @@ impl NativeDedicatedWorker {
 /// observable message/error/termination contract.
 pub(crate) struct NativeWorkerRegistry {
     workers: BTreeMap<u32, NativeDedicatedWorker>,
-    shared_worker_keys: BTreeMap<String, u32>,
+    shared_worker_keys: BTreeMap<NativeSharedWorkerKey, u32>,
     shared_worker_owners: BTreeMap<u32, BTreeSet<(String, String, u32)>>,
     next_worker_timer_id: u32,
     pending_messages: VecDeque<NativeWorkerMessage>,
@@ -1932,6 +2041,19 @@ impl NativeWorkerRegistry {
         self.pending_messages.drain(..).collect()
     }
 
+    pub(crate) fn take_messages_for_worker(&mut self, worker_id: u32) -> Vec<NativeWorkerMessage> {
+        let mut messages = Vec::new();
+        self.pending_messages.retain(|message| {
+            if message.worker_id == worker_id {
+                messages.push(message.clone());
+                false
+            } else {
+                true
+            }
+        });
+        messages
+    }
+
     pub(crate) fn take_message_port_messages(&mut self) -> Vec<NativeMessagePortPageMessage> {
         self.pending_message_port_messages.drain(..).collect()
     }
@@ -2028,13 +2150,25 @@ impl NativeWorkerRegistry {
                     href,
                     name,
                     worker_type,
+                    credentials,
+                    extended_lifetime,
+                    constructor_storage_key,
                     transfer_port,
                 } => {
+                    let constructor_storage_key = constructor_storage_key.ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "native SharedWorker constructor storage key",
+                            "must be supplied by the browser owner",
+                        )
+                    })?;
                     self.create_shared_worker(
                         connection_id,
                         href,
                         name,
                         worker_type,
+                        credentials,
+                        extended_lifetime,
+                        constructor_storage_key,
                         transfer_port,
                         loader,
                         owner_url,
@@ -2208,6 +2342,8 @@ impl NativeWorkerRegistry {
                 module_base_urls,
                 is_module,
                 is_shared: false,
+                credentials: "same-origin".into(),
+                extended_lifetime: false,
                 next_module_turn: AtomicU64::new(1),
                 runtime,
             },
@@ -2236,6 +2372,9 @@ impl NativeWorkerRegistry {
         href: String,
         name: String,
         worker_type: String,
+        credentials: String,
+        extended_lifetime: bool,
+        constructor_storage_key: NativeSharedWorkerStorageKey,
         transfer_port: NativeMessagePortTransfer,
         loader: &mut NativeResourceLoader,
         owner_url: &str,
@@ -2260,12 +2399,7 @@ impl NativeWorkerRegistry {
                 "must not contain control characters",
             ));
         }
-        let is_module = worker_type.eq_ignore_ascii_case("module");
-        if !worker_type.is_empty() && !worker_type.eq_ignore_ascii_case("classic") && !is_module {
-            return Err(NativeEngineError::UnsupportedUrl {
-                reason: "native SharedWorker type must be classic or module".into(),
-            });
-        }
+        let is_module = validate_native_shared_worker_options(&worker_type, &credentials)?;
         let module_request_url = if is_module {
             match resolve_module_request_url(owner_url, &href) {
                 Ok(url) => url,
@@ -2278,14 +2412,25 @@ impl NativeWorkerRegistry {
             String::new()
         };
         validate_message_port_transfers(std::slice::from_ref(&transfer_port))?;
-        let shared_key = format!("{href}\u{0}{name}\u{0}{worker_type}");
+        let shared_key = NativeSharedWorkerKey {
+            constructor_storage_key,
+            constructor_url: href.clone(),
+            name: name.clone(),
+        };
         if let Some(worker_id) = self.shared_worker_keys.get(&shared_key).copied() {
-            if self.workers.contains_key(&worker_id) {
-                let worker_url = self
-                    .workers
-                    .get(&worker_id)
-                    .map(|worker| worker.url.clone())
-                    .expect("SharedWorker key points to a worker");
+            if let Some(worker) = self.workers.get(&worker_id) {
+                if worker.is_module != is_module
+                    || worker.credentials != credentials
+                    || worker.extended_lifetime != extended_lifetime
+                {
+                    self.queue_error(
+                        connection_id,
+                        &href,
+                        "SharedWorker options do not match the existing worker",
+                    )?;
+                    return Ok(());
+                }
+                let worker_url = worker.url.clone();
                 self.register_page_transfers(worker_id, std::slice::from_ref(&transfer_port))?;
                 let evaluation = self.evaluate_worker_with_loader(worker_id, loader, |worker| {
                     worker.evaluate_shared_connect(worker_id, &transfer_port)
@@ -2416,6 +2561,8 @@ impl NativeWorkerRegistry {
                 module_base_urls,
                 is_module,
                 is_shared: true,
+                credentials,
+                extended_lifetime,
                 next_module_turn: AtomicU64::new(1),
                 runtime,
             },
@@ -14351,7 +14498,9 @@ impl NativeJavaScriptRuntime {
                 href,
                 name,
                 worker_type,
+                credentials,
                 transfer_port,
+                ..
             } => {
                 if *connection_id == 0 {
                     return Err(NativeEngineError::invalid(
@@ -14373,15 +14522,7 @@ impl NativeJavaScriptRuntime {
                         "must not contain control characters",
                     ));
                 }
-                let is_module = worker_type.eq_ignore_ascii_case("module");
-                if !worker_type.is_empty()
-                    && !worker_type.eq_ignore_ascii_case("classic")
-                    && !is_module
-                {
-                    return Err(NativeEngineError::UnsupportedUrl {
-                        reason: "native SharedWorker type must be classic or module".into(),
-                    });
-                }
+                validate_native_shared_worker_options(worker_type, credentials)?;
                 validate_message_port_transfers(std::slice::from_ref(transfer_port))?;
             }
             NativeScriptCommand::WorkerCreate {
@@ -46570,10 +46711,18 @@ fn document_bootstrap(
         && typeof options !== "object" && typeof options !== "string")
       throw new TypeError("native SharedWorker options must be an object or string");
     const workerType = typeof options === "object" && options && options.type !== undefined
-      ? String(options.type).toLowerCase()
+      ? String(options.type)
       : "classic";
     if (workerType !== "classic" && workerType !== "module")
       throw new TypeError("native SharedWorker type must be classic or module");
+    const credentials = typeof options === "object" && options && options.credentials !== undefined
+      ? String(options.credentials)
+      : "same-origin";
+    if (!["omit", "same-origin", "include"].includes(credentials))
+      throw new TypeError("native SharedWorker credentials must be omit, same-origin, or include");
+    const extendedLifetime = typeof options === "object" && options && options.extendedLifetime !== undefined
+      ? Boolean(options.extendedLifetime)
+      : false;
     const workerName = typeof options === "string"
       ? options
       : options && options.name !== undefined ? String(options.name) : "";
@@ -46619,6 +46768,8 @@ fn document_bootstrap(
       href: resolved.href,
       name: workerName,
       worker_type: workerType,
+      credentials,
+      extended_lifetime: extendedLifetime,
       transfer_port: preparedTransfer.descriptor,
     }});
   }};

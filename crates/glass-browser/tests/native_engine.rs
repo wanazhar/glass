@@ -9763,8 +9763,10 @@ self.addEventListener('fetch', event => {
     }
 }
 
-#[tokio::test]
-async fn native_runtime_shared_worker_reuses_runtime_across_targets() {
+#[test]
+fn native_runtime_shared_worker_matches_constructor_identity() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -9813,7 +9815,7 @@ sharedWorker.port.start();
 sharedWorker.port.postMessage({ kind: 'connect', pageId });
 </script><main>second target</main>"#,
                 ),
-                "/shared-target.js" => (
+                "/shared-target.js" | "/shared-target-alt.js" => (
                     "200 OK",
                     "text/javascript",
                     r#"
@@ -9829,6 +9831,8 @@ onconnect = event => {
       pageId = message.data.pageId;
       ports.set(pageId, port);
       port.postMessage({ kind: 'ready', pageId, connection, runtimeId });
+    } else if (message.data.kind === 'status') {
+      port.postMessage({ kind: 'status', pageId, connections: connectionCount, runtimeId });
     } else if (message.data.kind === 'relay') {
       const destination = ports.get(message.data.target);
       if (destination) {
@@ -9888,6 +9892,123 @@ onconnect = event => {
     );
     assert_eq!(second_ready[0]["runtimeId"], first_ready[0]["runtimeId"]);
 
+    session
+        .script(
+            r#"
+globalThis.sharedWorkerErrors = [];
+for (const [label, options] of [
+  ['type', { name: 'glass-cross-target', type: 'module' }],
+  ['credentials', { name: 'glass-cross-target', credentials: 'include' }],
+  ['extendedLifetime', { name: 'glass-cross-target', extendedLifetime: true }],
+]) {
+  const candidate = new SharedWorker('/shared-target.js', options);
+  candidate.addEventListener('error', () => sharedWorkerErrors.push(label));
+}
+globalThis.invalidSharedWorkerOptions = [];
+for (const options of [
+  { name: 'invalid-type', type: 'MODULE' },
+  { name: 'invalid-credentials', credentials: 'sameOrigin' },
+]) {
+  try {
+    new SharedWorker('/shared-target.js', options);
+  } catch (error) {
+    invalidSharedWorkerOptions.push(error.name);
+  }
+}
+true"#,
+        )
+        .await
+        .unwrap();
+    let mut mismatch_errors = wait_for_shared_worker_messages(&session, "sharedWorkerErrors").await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if mismatch_errors
+                .as_array()
+                .is_some_and(|events| events.len() == 3)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            mismatch_errors = session.script("sharedWorkerErrors").await.unwrap().value;
+        }
+    })
+    .await
+    .expect("all incompatible SharedWorker options must dispatch error");
+    assert_eq!(
+        mismatch_errors,
+        serde_json::json!(["type", "credentials", "extendedLifetime"])
+    );
+    assert_eq!(
+        session
+            .script("invalidSharedWorkerOptions")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(["TypeError", "TypeError"])
+    );
+    session
+        .script("sharedWorker.port.postMessage({ kind: 'status' }); true")
+        .await
+        .unwrap();
+    let status = wait_for_shared_worker_messages(
+        &session,
+        "sharedEvents.filter(message => message.kind === 'status')",
+    )
+    .await;
+    assert_eq!(status[0]["connections"], 2);
+    assert_eq!(status[0]["runtimeId"], first_ready[0]["runtimeId"]);
+
+    session
+        .script(
+            r#"
+globalThis.independentWorkerEvents = [];
+globalThis.independentWorkerByName = new SharedWorker('/shared-target.js', {
+  name: 'glass-cross-target-other-name',
+});
+independentWorkerByName.port.addEventListener('message', event => independentWorkerEvents.push(event.data));
+independentWorkerByName.port.start();
+independentWorkerByName.port.postMessage({ kind: 'connect', pageId: 'different-name' });
+true"#,
+        )
+        .await
+        .unwrap();
+    let independent_by_name = wait_for_shared_worker_messages(
+        &session,
+        "independentWorkerEvents.filter(message => message.pageId === 'different-name')",
+    )
+    .await;
+    assert_ne!(
+        independent_by_name[0]["runtimeId"],
+        first_ready[0]["runtimeId"]
+    );
+
+    session
+        .script(
+            r#"
+globalThis.independentWorkerByUrl = new SharedWorker('/shared-target-alt.js', {
+  name: 'glass-cross-target',
+});
+independentWorkerByUrl.port.addEventListener('message', event => independentWorkerEvents.push(event.data));
+independentWorkerByUrl.port.start();
+independentWorkerByUrl.port.postMessage({ kind: 'connect', pageId: 'different-url' });
+true"#,
+        )
+        .await
+        .unwrap();
+    let independent_by_url = wait_for_shared_worker_messages(
+        &session,
+        "independentWorkerEvents.filter(message => message.pageId === 'different-url')",
+    )
+    .await;
+    assert_ne!(
+        independent_by_url[0]["runtimeId"],
+        first_ready[0]["runtimeId"]
+    );
+    assert_ne!(
+        independent_by_url[0]["runtimeId"],
+        independent_by_name[0]["runtimeId"]
+    );
+
     assert_eq!(
         session
             .script("sharedWorker.port.postMessage({ kind: 'relay', target: 'first', payload: 'from-second' }); true")
@@ -9946,6 +10067,8 @@ onconnect = event => {
     for path in [&profile_path, &lock_path, &events_path, &readers_path] {
         let _ = fs::remove_file(path);
     }
+        });
+    });
 }
 
 #[test]

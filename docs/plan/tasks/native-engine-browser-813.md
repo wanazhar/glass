@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-813
 scope: glass-browser/shared-worker-constructor-matching
-status: in-progress
+status: done
 depends-on: [native-engine-browser-812]
 ---
 
@@ -86,4 +86,35 @@ disturb the existing worker and connections.
 
 ## Results
 
-Implementation and verification are in progress.
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- `cargo check -p glass-browser --test native_engine --locked --quiet` passed
+  in about 50 seconds; only the existing legacy HTML-parser dead-code warnings
+  in `native_engine/dom.rs` were emitted.
+- `cargo test -p glass-browser --test native_engine native_runtime_shared_worker_matches_constructor_identity --locked --quiet -- --exact`
+  passed: 1 passed, 864 filtered; the test body completed in 42.33 seconds.
+  It verifies same-origin reuse, all three incompatible-option error events,
+  incumbent connection/route survival, invalid enum rejection, and distinct
+  worker globals for a different name and URL.
+- The deterministic tuple-origin and opaque-Document key tests were added but
+  not executed. The focused `cargo test --lib` attempt was stopped after its
+  `rustc` process reached about 5 GiB RSS while host swap was exhausted; memory
+  recovered after stopping it. The HTTP regression covers tuple-origin reuse,
+  while direct opaque-key assertions remain unverified in this run.
+- `python3 scripts/check-release-documentation.py --require-previous-version --report /tmp/glass-release-documentation-813-20260928.json`
+  passed: 1,442 Markdown documents, 83 current documents, 63 previous-version
+  hits, 1,615 semantic audit hits, and zero current-claim failures.
+- `python3 scripts/check-documentation-depth.py` passed: 93 current guides
+  routed/audited and 19 substantive contracts.
+- `python3 scripts/check-tui-shortcuts.py` passed: 15 implementation help keys
+  and 63 documentation markers.
+- `python3 scripts/check-documentation-coverage.py` passed: 1,442 Markdown
+  files, 346 full-product MCP tools (101 browser-only), 17 examples, and 22
+  public modules.
+- Initial HTTP load commands can arrive before the new Document commits. The
+  request retains the loaded origin and URL, and the backend derives the
+  creator key using the committed Document generation. This enables
+  same-origin target reuse without merging opaque Documents.
+- Credential-aware module-worker fetches, storage partitioning beyond the
+  current origin key, agent-cluster policy, between-loads retention,
+  `extendedLifetime` timeout behavior, and full SharedWorker/WPT conformance
+  remain open.

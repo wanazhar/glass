@@ -41,11 +41,11 @@ use super::javascript::{
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest,
     NativeSharedWorkerCreateRequest, NativeStorageEvent, NativeWebStorageState,
     NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    NativeWorkerRegistry, append_storage_changes, apply_document_commands_with_font_face_ack,
-    apply_indexed_db_changes, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_inline_scripts, frame_event_batch, host_click_event_batch_with_modifiers,
-    host_event_batch, host_event_batch_at, host_key_event_batch_with_modifiers,
-    host_submit_event_batch, load_indexed_db_profile,
+    NativeWorkerMessage, NativeWorkerRegistry, append_storage_changes,
+    apply_document_commands_with_font_face_ack, apply_indexed_db_changes, diff_indexed_db_changes,
+    execute_dynamic_page_scripts, execute_inline_scripts, frame_event_batch,
+    host_click_event_batch_with_modifiers, host_event_batch, host_event_batch_at,
+    host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
     load_local_file_dynamic_module_graph_with_import_map,
     load_local_file_module_graph_with_import_map, load_service_worker_client_leases,
     load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
@@ -53,7 +53,8 @@ use super::javascript::{
     storage_event_cursor, storage_key, unregister_service_worker_client_lease,
     unregister_storage_reader, validate_frame_script_command, validate_message_port_transfers,
     validate_native_message_payload, validate_native_object_url_transfers,
-    validate_page_message_port_command, validate_service_worker_client_states,
+    validate_native_shared_worker_options, validate_page_message_port_command,
+    validate_service_worker_client_states,
 };
 use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::lifecycle::NativeLifecycleState;
@@ -858,7 +859,11 @@ impl NativeEngine {
         self.config.window_name = window_name;
         self.queue_frame_script_requests(frame_scripts)?;
         self.queue_page_message_port_commands(page_message_port_commands)?;
-        self.queue_shared_worker_create_commands(shared_worker_commands)?;
+        self.queue_shared_worker_create_commands(
+            shared_worker_commands,
+            self.origin.clone(),
+            self.url.clone(),
+        )?;
         self.queue_service_worker_client_messages(service_worker_client_messages)?;
         self.queue_service_worker_open_window_requests(service_worker_open_windows)?;
         if let Some(mut mutation) = mutation {
@@ -2038,9 +2043,11 @@ impl NativeEngine {
         self.queue_page_message_port_commands(std::mem::take(
             &mut content.page_message_port_commands,
         ))?;
-        self.queue_shared_worker_create_commands(std::mem::take(
-            &mut content.shared_worker_commands,
-        ))?;
+        self.queue_shared_worker_create_commands(
+            std::mem::take(&mut content.shared_worker_commands),
+            content.origin.clone(),
+            content.url.clone(),
+        )?;
         self.queue_window_close_requests(std::mem::take(&mut content.window_closes))?;
         self.queue_window_navigation_requests(std::mem::take(&mut content.window_navigations))?;
         self.queue_service_worker_client_messages(std::mem::take(
@@ -2609,7 +2616,11 @@ impl NativeEngine {
             self.config.window_name = window_name;
             self.queue_frame_script_requests(frame_scripts)?;
             self.queue_page_message_port_commands(page_message_port_commands)?;
-            self.queue_shared_worker_create_commands(shared_worker_commands)?;
+            self.queue_shared_worker_create_commands(
+                shared_worker_commands,
+                self.origin.clone(),
+                self.url.clone(),
+            )?;
             self.queue_service_worker_client_messages(service_worker_client_messages)?;
             self.queue_service_worker_open_window_requests(service_worker_open_windows)?;
             let mut history_traversal = None;
@@ -3351,6 +3362,8 @@ impl NativeEngine {
     fn queue_shared_worker_create_commands(
         &mut self,
         commands: Vec<NativeScriptCommand>,
+        constructor_origin: NativeOrigin,
+        owner_url: String,
     ) -> Result<(), NativeEngineError> {
         if commands.len()
             > MAX_NATIVE_EFFECTS.saturating_sub(self.pending_shared_worker_creates.len())
@@ -3369,6 +3382,9 @@ impl NativeEngine {
                 href,
                 name,
                 worker_type,
+                credentials,
+                extended_lifetime,
+                constructor_storage_key: _,
                 transfer_port,
             } = command
             else {
@@ -3385,16 +3401,22 @@ impl NativeEngine {
             }
             validate_context_id(&self.config.context_id)?;
             validate_context_id(&self.frame_id)?;
+            validate_native_shared_worker_options(&worker_type, &credentials)?;
             validate_message_port_transfers(std::slice::from_ref(&transfer_port))?;
+            let document_generation = self.document.generation();
             self.pending_shared_worker_creates
                 .push_back(NativeSharedWorkerCreateRequest {
+                    page_worker_id: connection_id,
                     source_context_id: self.config.context_id.clone(),
                     source_frame_id: self.frame_id.clone(),
-                    document_generation: self.document.generation(),
-                    owner_url: self.url.clone(),
+                    document_generation,
+                    constructor_origin: constructor_origin.clone(),
+                    owner_url: owner_url.clone(),
                     href,
                     name,
                     worker_type,
+                    credentials,
+                    extended_lifetime,
                     transfer_port,
                 });
         }
@@ -3811,6 +3833,28 @@ impl NativeEngine {
                 transfer_ports: transfer_ports.to_vec(),
                 object_urls: object_urls.to_vec(),
             });
+        self.evaluate_page_with_events_async("undefined;".into(), page_events)
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn dispatch_worker_messages_async(
+        &mut self,
+        messages: &[NativeWorkerMessage],
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("Worker error event")?;
+        if messages.is_empty() {
+            return Ok(());
+        }
+        if messages.len() > MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native Worker event batch",
+                MAX_NATIVE_WORKER_MESSAGES,
+                messages.len(),
+            ));
+        }
+        let mut page_events = NativePageEventBatch::default();
+        page_events.worker_messages.extend_from_slice(messages);
         self.evaluate_page_with_events_async("undefined;".into(), page_events)
             .await
             .map(|_| ())

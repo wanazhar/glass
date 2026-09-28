@@ -21,11 +21,11 @@ use super::native_engine::{
     NativePageMessagePortCommand, NativePendingDialog, NativePoint, NativePopupRequest,
     NativePostMessageRequest, NativePreflightAction, NativeRequestBody, NativeScriptCommand,
     NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
-    NativeSharedWorkerCreateRequest, NativeSurface, NativeTargetPreflight,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    NativeWorkerRegistry, Viewport, parse_point_target, synchronize_service_worker_client_leases,
-    validate_message_port_transfers, validate_page_message_port_command,
-    validate_target_navigation_payload,
+    NativeSharedWorkerCreateRequest, NativeSharedWorkerStorageKey, NativeSurface,
+    NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, NativeWorkerMessage, NativeWorkerRegistry, Viewport,
+    parse_point_target, synchronize_service_worker_client_leases, validate_message_port_transfers,
+    validate_page_message_port_command, validate_target_navigation_payload,
 };
 use crate::browser::session::{
     FrameInfo, GeoLocation, NavigationControlOutcome, NetworkConditions, PageTargetInfo,
@@ -104,6 +104,10 @@ enum NativeWorkerCoordinatorEffect {
     PageMessagePort(NativePageMessagePortCommand),
     SharedWorkerMessage(NativePageMessagePortCommand),
     SharedWorkerCreate(NativeSharedWorkerCreateRequest),
+    SharedWorkerError {
+        route: NativeSharedWorkerPageRoute,
+        message: NativeWorkerMessage,
+    },
 }
 
 struct NativeSharedWorkerCoordinator {
@@ -3563,6 +3567,9 @@ impl NativeEngineBackend {
                         NativeWorkerCoordinatorEffect::SharedWorkerCreate(request) => {
                             self.create_shared_worker_connection(request).await?
                         }
+                        NativeWorkerCoordinatorEffect::SharedWorkerError { route, message } => {
+                            self.deliver_shared_worker_error(route, message).await?
+                        }
                     };
                     pending_popups.extend(nested.0);
                     pending_messages.extend(nested.1);
@@ -4841,19 +4848,27 @@ impl NativeEngineBackend {
                 reason: "MessagePort bridge was already attached to a SharedWorker".into(),
             });
         }
-        coordinator.page_ports.insert(
-            request.transfer_port.bridge_key.clone(),
-            NativeSharedWorkerPageRoute {
-                context_id: request.source_context_id.clone(),
-                frame_id: request.source_frame_id.clone(),
-                document_generation: request.document_generation,
-            },
-        );
+        let page_route = NativeSharedWorkerPageRoute {
+            context_id: request.source_context_id.clone(),
+            frame_id: request.source_frame_id.clone(),
+            document_generation: request.document_generation,
+        };
+        coordinator
+            .page_ports
+            .insert(request.transfer_port.bridge_key.clone(), page_route.clone());
         let command = NativeScriptCommand::SharedWorkerCreate {
             connection_id,
             href: request.href,
             name: request.name,
             worker_type: request.worker_type,
+            credentials: request.credentials,
+            extended_lifetime: request.extended_lifetime,
+            constructor_storage_key: Some(NativeSharedWorkerStorageKey::for_document(
+                &request.constructor_origin,
+                &request.source_context_id,
+                &request.source_frame_id,
+                request.document_generation,
+            )),
             transfer_port: request.transfer_port.clone(),
         };
         let result = {
@@ -4873,11 +4888,29 @@ impl NativeEngineBackend {
             return Err(native_error(error));
         }
         let bridge_key = request.transfer_port.bridge_key.clone();
+        let worker_messages = coordinator.registry.take_messages_for_worker(connection_id);
+        let mut queued = NativeQueuedBrowserEffects::default();
+        if !worker_messages.is_empty() {
+            queued.6 = worker_messages
+                .into_iter()
+                .map(|mut message| {
+                    message.worker_id = request.page_worker_id;
+                    NativeWorkerCoordinatorEffect::SharedWorkerError {
+                        route: page_route.clone(),
+                        message,
+                    }
+                })
+                .collect();
+            coordinator.page_ports.remove(&bridge_key);
+            drop(coordinator);
+            self.remove_page_message_port_route(&bridge_key)?;
+            return Ok(queued);
+        }
         let Some(worker_id) = coordinator.registry.shared_worker_id_for_port(&bridge_key) else {
             coordinator.page_ports.remove(&bridge_key);
             drop(coordinator);
             self.remove_page_message_port_route(&bridge_key)?;
-            return Ok(NativeQueuedBrowserEffects::default());
+            return Ok(queued);
         };
         if let Err(error) = coordinator.registry.add_shared_worker_owner(
             worker_id,
@@ -4891,9 +4924,91 @@ impl NativeEngineBackend {
             return Err(native_error(error));
         }
         let effects = take_shared_worker_page_messages(&mut coordinator);
-        let mut queued = NativeQueuedBrowserEffects::default();
-        queued.6 = effects;
+        queued.6.extend(effects);
         Ok(queued)
+    }
+
+    async fn deliver_shared_worker_error(
+        &self,
+        route_info: NativeSharedWorkerPageRoute,
+        message: NativeWorkerMessage,
+    ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
+        validate_native_topology_id(&route_info.context_id)?;
+        validate_native_topology_id(&route_info.frame_id)?;
+        if self
+            .frame_owner_context_id(&route_info.frame_id)?
+            .as_deref()
+            != Some(route_info.context_id.as_str())
+            || self.frame_owner_document_generation(&route_info.frame_id)?
+                != Some(route_info.document_generation)
+        {
+            return Ok(NativeQueuedBrowserEffects::default());
+        }
+        let Some(route) = self.frame_route(&route_info.frame_id)? else {
+            return Ok(NativeQueuedBrowserEffects::default());
+        };
+        let (runtime_effects, owner_id) = match route {
+            NativeFrameRoute::ActiveSelected => {
+                let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+                let runtime_effects =
+                    dispatch_worker_messages_to_native_frame(&mut engine, &[message]).await?;
+                let owner_id = engine.config().context_id.clone();
+                (runtime_effects, owner_id)
+            }
+            NativeFrameRoute::ActiveParked => {
+                let mut targets = self.lock_targets(BackendOperation::Script)?;
+                let owner_id = targets.active_target_id.clone().ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native SharedWorker error owner target disappeared".into(),
+                    }
+                })?;
+                let frame = targets
+                    .active_frames
+                    .parked
+                    .get_mut(&route_info.frame_id)
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                        reason: "native SharedWorker error owner frame disappeared".into(),
+                    })?;
+                let runtime_effects =
+                    dispatch_worker_messages_to_native_frame(&mut frame.engine, &[message]).await?;
+                (runtime_effects, owner_id)
+            }
+            NativeFrameRoute::ParkedSelected { target_id } => {
+                let mut targets = self.lock_targets(BackendOperation::Script)?;
+                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native SharedWorker error owner target disappeared".into(),
+                    }
+                })?;
+                let runtime_effects =
+                    dispatch_worker_messages_to_native_frame(&mut target.engine, &[message])
+                        .await?;
+                (runtime_effects, target_id)
+            }
+            NativeFrameRoute::ParkedParked { target_id } => {
+                let mut targets = self.lock_targets(BackendOperation::Script)?;
+                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
+                    BrowserBackendError::SelectionFailed {
+                        reason: "native SharedWorker error owner target disappeared".into(),
+                    }
+                })?;
+                let frame = target
+                    .frames
+                    .parked
+                    .get_mut(&route_info.frame_id)
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                        reason: "native SharedWorker error owner frame disappeared".into(),
+                    })?;
+                let runtime_effects =
+                    dispatch_worker_messages_to_native_frame(&mut frame.engine, &[message]).await?;
+                (runtime_effects, target_id)
+            }
+        };
+        self.sync_target_name(&owner_id, &runtime_effects.window_name)?;
+        self.process_frame_event_effects(&route_info.frame_id, runtime_effects.events)
+            .await?;
+        Box::pin(self.process_pending_frame_scripts(runtime_effects.frame_scripts)).await?;
+        Ok(runtime_effects.browser)
     }
 
     async fn deliver_shared_worker_page_message_port(
@@ -7652,6 +7767,18 @@ async fn dispatch_page_message_port_to_native_frame(
             .await
             .map_err(native_error)?;
     }
+    take_native_frame_runtime_effects(engine, previous_revision)
+}
+
+async fn dispatch_worker_messages_to_native_frame(
+    engine: &mut NativeEngine,
+    messages: &[NativeWorkerMessage],
+) -> Result<NativeFrameRuntimeEffects, BrowserBackendError> {
+    let previous_revision = engine.revision();
+    engine
+        .dispatch_worker_messages_async(messages)
+        .await
+        .map_err(native_error)?;
     take_native_frame_runtime_effects(engine, previous_revision)
 }
 

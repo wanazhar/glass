@@ -28,9 +28,12 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is locally complete through
-`native-engine-browser-812`; Slice 813 is in progress for SharedWorker
-constructor matching and option-mismatch behavior. See the
-[slice 813 task](tasks/native-engine-browser-813.md). Slice 767 verifies native hyperlink Enter
+`native-engine-browser-813`; Slice 813 implements SharedWorker constructor
+matching and option-mismatch behavior. Its scoped check and process-backed
+HTTP regression passed. The two source-level storage-key tests were added but
+not run because compiling their separate library-test binary exhausted
+available memory. See the [slice 813 task](tasks/native-engine-browser-813.md).
+Slice 767 verifies native hyperlink Enter
 activation through local and process-backed `_blank` target and download
 defaults, including cancellation and opener preservation; see the
 [slice 767 task](tasks/native-engine-browser-767.md) for local evidence and

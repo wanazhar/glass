@@ -1637,20 +1637,52 @@ impl NativeServiceWorkerRegistry {
                     bridge_key,
                     worker_id: None,
                 } => {
-                    validate_url_text("native MessagePort bridge key", &bridge_key)?;
-                    if bridge_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
-                        return Err(NativeEngineError::limit(
-                            "native MessagePort bridge key",
-                            crate::browser_backend::MAX_BACKEND_ID_BYTES,
-                            bridge_key.len(),
-                        ));
+                    validate_service_worker_message_port_bridge_key(&bridge_key)?;
+                    let Some(worker_id) = self.message_port_routes.get(&bridge_key).copied() else {
+                        continue;
+                    };
+                    let Some(scope) = self.registrations.iter().find_map(|(scope, worker)| {
+                        (worker.id == worker_id).then_some(scope.clone())
+                    }) else {
+                        self.retire_message_port_route(&bridge_key);
+                        continue;
+                    };
+                    if self.retire_message_port_route(&bridge_key).is_none() {
+                        continue;
                     }
-                    if self.message_port_routes.contains_key(&bridge_key) {
-                        return Err(NativeEngineError::Worker {
-                            operation: "close Service Worker MessagePort".into(),
-                            reason: "Service Worker-owned bridge close is outside slice 806".into(),
-                        });
+                    let evaluation = {
+                        let worker = self.registrations.get(&scope).ok_or_else(|| {
+                            NativeEngineError::invalid("service worker scope", "not found")
+                        })?;
+                        worker.runtime.dispatch_service_worker_message_port_close(
+                            worker.id,
+                            &worker.script_url,
+                            &bridge_key,
+                            worker.is_module,
+                        )
+                    }?;
+                    let message_port_commands = self
+                        .registrations
+                        .get(&scope)
+                        .map(|worker| worker.runtime.take_message_port_commands())
+                        .unwrap_or_default();
+                    if let Err(error) =
+                        self.collect_message_port_commands(worker_id, message_port_commands)
+                    {
+                        return Err(error);
                     }
+                    let client_messages = settle_service_worker_cache_event(
+                        self.registrations
+                            .get_mut(&scope)
+                            .expect("service worker registration was retained"),
+                        evaluation,
+                        loader,
+                        &mut self.cache_state,
+                        None,
+                        &mut self.pending_open_windows,
+                    )
+                    .await?;
+                    self.enqueue_client_messages(client_messages)?;
                     continue;
                 }
                 NativeScriptCommand::MessagePortPostMessage {
@@ -2051,19 +2083,49 @@ impl NativeServiceWorkerRegistry {
         worker_id: u32,
         transfers: &[NativeMessagePortTransfer],
     ) -> Result<(), NativeEngineError> {
-        validate_message_port_transfers(transfers)?;
-        if transfers
-            .iter()
-            .any(|transfer| self.message_port_routes.contains_key(&transfer.bridge_key))
-        {
-            return Err(NativeEngineError::invalid(
-                "native service-worker MessagePort transfer",
-                "bridge key was already transferred",
-            ));
-        }
+        self.validate_transfer_registration(transfers, 0)?;
         for transfer in transfers {
             self.message_port_routes
                 .insert(transfer.bridge_key.clone(), worker_id);
+        }
+        Ok(())
+    }
+
+    fn validate_transfer_registration(
+        &self,
+        transfers: &[NativeMessagePortTransfer],
+        additional_events: usize,
+    ) -> Result<(), NativeEngineError> {
+        if transfers.len() > MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native Service Worker MessagePort transfers",
+                MAX_NATIVE_WORKER_MESSAGES,
+                transfers.len(),
+            ));
+        }
+        validate_message_port_transfers(transfers)?;
+        let mut new_routes = 0usize;
+        for transfer in transfers {
+            if self.message_port_routes.contains_key(&transfer.bridge_key) {
+                return Err(NativeEngineError::invalid(
+                    "native service-worker MessagePort transfer",
+                    "bridge key was already transferred",
+                ));
+            }
+            new_routes = new_routes.saturating_add(1);
+        }
+        let occupied = self
+            .message_port_routes
+            .len()
+            .saturating_add(self.pending_message_port_messages.len())
+            .saturating_add(new_routes)
+            .saturating_add(additional_events);
+        if occupied > MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native Service Worker MessagePort routes and queued events",
+                MAX_NATIVE_WORKER_MESSAGES,
+                occupied,
+            ));
         }
         Ok(())
     }
@@ -2078,7 +2140,50 @@ impl NativeServiceWorkerRegistry {
             .cloned()
             .collect::<BTreeSet<_>>();
         self.pending_message_port_messages
-            .retain(|message| live_bridge_keys.contains(&message.bridge_key));
+            .retain(|message| message.close || live_bridge_keys.contains(&message.bridge_key));
+    }
+
+    fn retire_message_port_route(&mut self, bridge_key: &str) -> Option<u32> {
+        let worker_id = self.message_port_routes.remove(bridge_key)?;
+        self.pending_message_port_messages
+            .retain(|message| message.bridge_key != bridge_key);
+        Some(worker_id)
+    }
+
+    fn close_worker_message_port(
+        &mut self,
+        worker_id: u32,
+        bridge_key: &str,
+    ) -> Result<(), NativeEngineError> {
+        validate_service_worker_message_port_bridge_key(bridge_key)?;
+        let Some(route_worker_id) = self.message_port_routes.get(bridge_key).copied() else {
+            return Ok(());
+        };
+        if route_worker_id != worker_id {
+            return Err(NativeEngineError::invalid(
+                "native service-worker MessagePort route",
+                "worker id does not own the MessagePort bridge",
+            ));
+        }
+        if self.pending_message_port_messages.len() >= MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native Service Worker MessagePort close events",
+                MAX_NATIVE_WORKER_MESSAGES,
+                self.pending_message_port_messages.len().saturating_add(1),
+            ));
+        }
+        if self.retire_message_port_route(bridge_key).is_none() {
+            return Ok(());
+        }
+        self.pending_message_port_messages
+            .push_back(NativeMessagePortPageMessage {
+                bridge_key: bridge_key.to_owned(),
+                data: Value::Null,
+                close: true,
+                transfer_ports: Vec::new(),
+                object_urls: Vec::new(),
+            });
+        Ok(())
     }
 
     fn collect_message_port_commands(
@@ -2105,20 +2210,8 @@ impl NativeServiceWorkerRegistry {
                         "service worker command owner is invalid",
                     ));
                 }
-                let Some(route_worker_id) = self.message_port_routes.get(bridge_key).copied()
-                else {
-                    continue;
-                };
-                if route_worker_id != worker_id {
-                    return Err(NativeEngineError::invalid(
-                        "native service-worker MessagePort route",
-                        "worker id does not own the MessagePort bridge",
-                    ));
-                }
-                return Err(NativeEngineError::Worker {
-                    operation: "close Service Worker MessagePort".into(),
-                    reason: "Service Worker-owned bridge close is outside slice 806".into(),
-                });
+                self.close_worker_message_port(worker_id, bridge_key)?;
+                continue;
             }
             let NativeScriptCommand::MessagePortPostMessage {
                 bridge_key,
@@ -2148,7 +2241,7 @@ impl NativeServiceWorkerRegistry {
                     "worker id does not own the MessagePort bridge",
                 ));
             }
-            self.register_worker_transfers(worker_id, &transfer_ports)?;
+            validate_service_worker_message_port_bridge_key(&bridge_key)?;
             validate_native_object_url_transfers(&object_urls)?;
             validate_native_message_payload(
                 &serde_json::json!({
@@ -2158,13 +2251,8 @@ impl NativeServiceWorkerRegistry {
                 }),
                 "native service-worker MessagePort event",
             )?;
-            if self.pending_message_port_messages.len() >= MAX_NATIVE_WORKER_MESSAGES {
-                return Err(NativeEngineError::limit(
-                    "native page MessagePort messages",
-                    MAX_NATIVE_WORKER_MESSAGES,
-                    self.pending_message_port_messages.len().saturating_add(1),
-                ));
-            }
+            self.validate_transfer_registration(&transfer_ports, 1)?;
+            self.register_worker_transfers(worker_id, &transfer_ports)?;
             self.pending_message_port_messages
                 .push_back(NativeMessagePortPageMessage {
                     bridge_key,
@@ -2186,7 +2274,7 @@ impl NativeServiceWorkerRegistry {
             .cloned()
             .collect::<BTreeSet<_>>();
         self.pending_message_port_messages
-            .retain(|message| live_bridge_keys.contains(&message.bridge_key));
+            .retain(|message| message.close || live_bridge_keys.contains(&message.bridge_key));
         self.pending_open_windows
             .retain(|request| request.worker_id != worker_id);
         self.pending_fetches
@@ -2196,6 +2284,26 @@ impl NativeServiceWorkerRegistry {
         self.announced_open_windows
             .retain(|(request_worker_id, _)| *request_worker_id != worker_id);
     }
+}
+
+fn validate_service_worker_message_port_bridge_key(
+    bridge_key: &str,
+) -> Result<(), NativeEngineError> {
+    validate_url_text("native service worker MessagePort bridge key", bridge_key)?;
+    if bridge_key.is_empty() {
+        return Err(NativeEngineError::invalid(
+            "native service worker MessagePort bridge key",
+            "must not be empty",
+        ));
+    }
+    if bridge_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+        return Err(NativeEngineError::limit(
+            "native service worker MessagePort bridge key",
+            crate::browser_backend::MAX_BACKEND_ID_BYTES,
+            bridge_key.len(),
+        ));
+    }
+    Ok(())
 }
 
 fn service_worker_scope_matches(scope_path: &str, target_path: &str) -> bool {

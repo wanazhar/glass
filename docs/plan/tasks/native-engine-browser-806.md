@@ -123,8 +123,8 @@ the other realm.
 SharedWorker process coverage was omitted because it requires extending this
 fixture with another worker resource and connection path. The implementation
 uses the same registry route owner, but this is not SharedWorker conformance
-evidence. Service Worker close is explicitly rejected by its separate owner
-and remains open work. Remote CI, WPT, and cross-platform certification were
-not run.
+evidence. At the Slice 806 checkpoint, Service Worker close was explicitly
+rejected by its separate owner; Slice 807 later implements that route. Remote
+CI, WPT, and cross-platform certification were not run.
 
 Remote CI is not implied by local verification.

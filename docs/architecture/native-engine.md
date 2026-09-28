@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-806`; issue #40 remains open. Slice 746 moves initial
+`native-engine-browser-807`; issue #40 remains open. Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -3833,12 +3833,28 @@ so each live route reserves space for its terminal close record without a
 second queue. A process-backed HTTP regression covers both directions,
 one-shot handler/listener delivery, initiator/peer state, same-turn queued
 message purge, and an unrelated local channel. That fixture is Dedicated
-Worker-only; SharedWorker process coverage remains open. Service Worker routes
-remain separately owned and receive an explicit owner-specific error rather
-than being routed through `NativeWorkerRegistry`. GC/document-destruction
-close, complete task-source ordering, MessagePort/EventTarget WPT, remote CI,
-and cross-platform certification remain open; see
+Worker-only; SharedWorker process coverage remains open. At the Slice 806
+checkpoint, Service Worker routes remained separately owned and close commands
+were rejected rather than routed through `NativeWorkerRegistry`; Slice 807
+implements their owner-specific path below. GC/document-destruction close,
+complete task-source ordering, MessagePort/EventTarget WPT, remote CI, and
+cross-platform certification remain open; see
 [task 806](../plan/tasks/native-engine-browser-806.md).
+
+Slice 807 implements explicit close for page-to-Service-Worker MessagePort
+bridges through `NativeServiceWorkerRegistry`, preserving the registry's
+separate route ownership. Page close retires the route and dispatches a
+generic close Event into the owning Service Worker; Service Worker close
+replaces the route reservation with a queued close record for the page.
+Pending messages on the retired route are purged, while unrelated bridge
+routes remain usable. The registry enforces
+`live_routes + queued_events <= MAX_NATIVE_WORKER_MESSAGES`, reserving close
+delivery capacity for each live route. A process-backed HTTP regression covers
+both directions, event identity/state, repeated close, queue purge, post-close
+suppression, and an unrelated live bridge. Multi-client scheduling, worker or
+document destruction, garbage collection, complete task-source and
+EventTarget/Web IDL behavior, WPT, remote CI, and cross-platform certification
+remain open; see [task 807](../plan/tasks/native-engine-browser-807.md).
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader

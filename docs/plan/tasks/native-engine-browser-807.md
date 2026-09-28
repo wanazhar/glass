@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-807
 scope: glass-browser/service-worker-message-port-bridge-close
-status: in-progress
+status: done
 depends-on: [native-engine-browser-806]
 ---
 
@@ -23,8 +23,9 @@ to the still-open endpoint in the other realm and retiring only that route.
 - Slice [806](native-engine-browser-806.md) implements the same behavior for
   `NativeWorkerRegistry`. Service Worker bridge keys belong to a separate
   `NativeServiceWorkerRegistry`; applying close through the Worker registry
-  would cross ownership. The current Service Worker path rejects matching
-  close commands explicitly.
+  would cross ownership. At the Slice 806 checkpoint, the Service Worker path
+  rejected matching close commands explicitly; this task contracts the
+  owner-specific implementation that follows it.
 - Service Worker-originated MessagePort messages and close records use the
   bounded `NativeMessagePortPageMessage` queue. Page-originated close commands
   are consumed by `apply_page_message_port_commands` and must dispatch into
@@ -98,8 +99,44 @@ to the still-open endpoint in the other realm and retiring only that route.
 - `docs/plan/README.md`
 - `docs/plan/native-engine-browser-profile.md`
 
-## Verification
+## Implementation and verification
 
-Implementation and focused verification are pending. Record exact commands and
-results here. Remote CI, WPT, and cross-platform certification are separate
-issue #40 gates; local verification must not be reported as remote evidence.
+`NativeServiceWorkerRegistry` now handles page-originated close commands by
+validating and retiring the exact route before dispatching the close Event to
+the owning Service Worker runtime. Service Worker-originated close validates
+the command worker ID, purges queued messages for that bridge, retires only
+that route, and queues the peer close record through the existing page event
+path. Transfers and normal outgoing messages account for both live-route
+reservations and queued events before mutating registry state; close records
+survive owner teardown. The Service Worker runtime dispatch uses the existing
+MessagePort-by-bridge close handler and the worker's module bootstrap mode.
+
+The process-backed regression
+`native_content_process_service_worker_message_port_bridge_close_both_directions`
+uses a local HTTP page and activated Service Worker. It verifies page- and
+Service-Worker-initiated close, one shared generic Event through `onclose` and
+listeners, target/currentTarget and post-dispatch state, repeated close,
+initiator state, same-turn queued-message purge, no post-close delivery, and
+continued request/reply on an unrelated Service Worker bridge.
+
+Passed locally:
+
+- `cargo check -p glass-browser --test native_engine --locked --quiet` — exit
+  0; only the existing DOM parser `dead_code` warnings were emitted.
+- `cargo test -p glass-browser --test native_engine native_content_process_service_worker_message_port_bridge_close_both_directions --locked --quiet -- --exact`
+  — 1 passed, 859 filtered; 25.23 seconds.
+- `cargo fmt --all` and `git diff --check` — passed.
+- `scripts/check-release-documentation.py --require-previous-version` —
+  1,435 Markdown files, 83 current documents, and zero current-claim failures.
+- `scripts/check-documentation-depth.py` — 93 current guides routed/audited
+  and 19 substantive contracts.
+- `scripts/check-tui-shortcuts.py` — 15 implementation help keys and 63
+  documentation markers.
+- `scripts/check-documentation-coverage.py` — 1,435 Markdown files, 346
+  full-product MCP tools (101 browser-only), 17 examples, and 22 public
+  modules. All documentation checks passed.
+
+This is local HTTP integration evidence only. Multi-client Service Worker
+port scheduling, SharedWorker coverage, GC/document-destruction close,
+complete task-source/EventTarget/Web IDL and WPT behavior, remote CI, and
+cross-platform certification remain open issue #40 gates.

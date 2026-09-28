@@ -12,14 +12,15 @@
 
 use super::native_engine::NativeResourceLoader;
 use super::native_engine::{
-    MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeAction, NativeDialogControlPlane,
-    NativeDialogController, NativeEffect, NativeEngine, NativeEngineConfig, NativeEngineError,
-    NativeEventKind, NativeFile, NativeFrameScriptBinding, NativeFrameScriptContext,
-    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeHistoryDirection,
-    NativeInspectionSnapshot, NativeLayoutSnapshot, NativeNavigationCancellation,
-    NativeNavigationMethod, NativeNavigationRequest, NativeNodeSubtreeTransfer, NativeOrigin,
-    NativePageMessagePortCommand, NativePendingDialog, NativePoint, NativePopupRequest,
-    NativePostMessageRequest, NativePreflightAction, NativeRequestBody, NativeScriptCommand,
+    MAX_NATIVE_COOKIE_PROFILE_ENTRIES, MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION,
+    NativeAction, NativeCookieChange, NativeDialogControlPlane, NativeDialogController,
+    NativeEffect, NativeEngine, NativeEngineConfig, NativeEngineError, NativeEventKind, NativeFile,
+    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
+    NativeFrameScriptWindow, NativeHistoryDirection, NativeInspectionSnapshot,
+    NativeLayoutSnapshot, NativeNavigationCancellation, NativeNavigationMethod,
+    NativeNavigationRequest, NativeNodeSubtreeTransfer, NativeOrigin, NativePageMessagePortCommand,
+    NativePendingDialog, NativePoint, NativePopupRequest, NativePostMessageRequest,
+    NativePreflightAction, NativeRequestBody, NativeScriptCommand,
     NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
     NativeSharedWorkerCreateRequest, NativeSharedWorkerStorageKey, NativeSurface,
     NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
@@ -114,6 +115,7 @@ struct NativeSharedWorkerCoordinator {
     registry: NativeWorkerRegistry,
     loader: NativeResourceLoader,
     page_ports: BTreeMap<String, NativeSharedWorkerPageRoute>,
+    cookie_overrides: BTreeMap<(String, String, String), NativeCookieChange>,
     next_connection_id: u64,
 }
 
@@ -123,8 +125,35 @@ impl NativeSharedWorkerCoordinator {
             registry: NativeWorkerRegistry::new_with_fetch_streams(),
             loader,
             page_ports: BTreeMap::new(),
+            cookie_overrides: BTreeMap::new(),
             next_connection_id: 1,
         }
+    }
+
+    fn replay_cookie_overrides(&mut self) -> Result<(), NativeEngineError> {
+        let changes = self.cookie_overrides.values().cloned().collect::<Vec<_>>();
+        self.loader.apply_cookie_changes(&changes)
+    }
+
+    fn remember_cookie_changes(&mut self) -> Result<(), NativeEngineError> {
+        for change in self.loader.take_cookie_changes() {
+            let key = (
+                change.name.clone(),
+                change.domain.clone(),
+                change.path.clone(),
+            );
+            if !self.cookie_overrides.contains_key(&key)
+                && self.cookie_overrides.len() >= MAX_NATIVE_COOKIE_PROFILE_ENTRIES
+            {
+                return Err(NativeEngineError::limit(
+                    "native SharedWorker cookie change entries",
+                    MAX_NATIVE_COOKIE_PROFILE_ENTRIES,
+                    self.cookie_overrides.len().saturating_add(1),
+                ));
+            }
+            self.cookie_overrides.insert(key, change);
+        }
+        Ok(())
     }
 }
 
@@ -4872,18 +4901,26 @@ impl NativeEngineBackend {
             )),
             transfer_port: request.transfer_port.clone(),
         };
-        let result = {
-            let NativeSharedWorkerCoordinator {
-                registry, loader, ..
-            } = &mut *coordinator;
-            match loader.replace_cookie_profiles(&request.cookie_profile) {
+        let result = match coordinator
+            .loader
+            .replace_cookie_profiles(&request.cookie_profile)
+        {
+            Ok(()) => match coordinator.replay_cookie_overrides() {
                 Ok(()) => {
+                    let NativeSharedWorkerCoordinator {
+                        registry, loader, ..
+                    } = &mut *coordinator;
                     registry
                         .apply_commands(vec![command], loader, &request.owner_url)
                         .await
                 }
                 Err(error) => Err(error),
-            }
+            },
+            Err(error) => Err(error),
+        };
+        let result = match (result, coordinator.remember_cookie_changes()) {
+            (Err(error), _) => Err(error),
+            (Ok(()), capture_result) => capture_result,
         };
         if let Err(error) = result {
             coordinator
@@ -5090,12 +5127,14 @@ impl NativeEngineBackend {
                 .apply_page_message_port_commands(vec![worker_command], loader)
                 .await
         };
+        let cookie_capture = coordinator.remember_cookie_changes();
         let effects = take_shared_worker_page_messages(&mut coordinator);
         drop(coordinator);
         if command.close {
             self.remove_page_message_port_route(&bridge_key)?;
         }
         result.map_err(native_error)?;
+        cookie_capture.map_err(native_error)?;
         let mut queued = NativeQueuedBrowserEffects::default();
         queued.6 = effects;
         Ok(queued)

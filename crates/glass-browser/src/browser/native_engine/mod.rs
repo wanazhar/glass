@@ -78,10 +78,11 @@ pub use interaction::{
     NativeAction, NativeEffect, NativeEventKind, NativeFile,
 };
 pub(crate) use javascript::{
-    MAX_NATIVE_DIALOG_TEXT_BYTES, NativeFrameScriptBinding, NativeFrameScriptContext,
-    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeMessagePortTransfer,
-    NativePageMessagePortCommand, NativePopupRequest, NativePostMessageRequest,
-    NativeScriptCommand, NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
+    MAX_NATIVE_COOKIE_PROFILE_ENTRIES, MAX_NATIVE_DIALOG_TEXT_BYTES, NativeCookieChange,
+    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
+    NativeFrameScriptWindow, NativeMessagePortTransfer, NativePageMessagePortCommand,
+    NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
+    NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
     NativeSharedWorkerCreateRequest, NativeSharedWorkerStorageKey, NativeWindowCloseRequest,
     NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerMessage,
     NativeWorkerRegistry, synchronize_service_worker_client_leases,

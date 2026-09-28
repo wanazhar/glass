@@ -365,11 +365,12 @@ regression passes; transfer rollback and complete Worker/EventTarget/WPT
 conformance remain open. See
 [slice 802](tasks/native-engine-browser-802.md).
 
-Slice 803 contracts Service Worker-to-page client-message recovery: malformed
-host-delivered clone data must dispatch a `MessageEvent` named `messageerror`
-on `navigator.serviceWorker`, retain sender source/origin, expose no partial
-data or ports, and permit later client messages. Transfer rollback and
-complete Service Worker/EventTarget/WPT conformance remain open; see
+Slice 803 implements Service Worker-to-page client-message recovery:
+malformed host-delivered clone data dispatches a `MessageEvent` named
+`messageerror` on `navigator.serviceWorker`, retaining sender source/origin
+without partial data or ports. Process-backed coverage verifies the handler
+and listener plus a later real client message. Transfer rollback and complete
+Service Worker/EventTarget/WPT conformance remain open; see
 [slice 803](tasks/native-engine-browser-803.md).
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,

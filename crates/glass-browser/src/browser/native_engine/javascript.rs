@@ -30852,6 +30852,8 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
     get: () => Promise.resolve(serviceWorkerFind(String(host.url))),
   });
   serviceWorkerContainer.oncontrollerchange = serviceWorkerContainer.oncontrollerchange || null;
+  if (serviceWorkerContainer.onmessage === undefined) serviceWorkerContainer.onmessage = null;
+  if (serviceWorkerContainer.onmessageerror === undefined) serviceWorkerContainer.onmessageerror = null;
   serviceWorkerContainer.__glassServiceWorkerContainer = true;
   globalThis.__glassServiceWorkerContainer = serviceWorkerContainer;
   setNavigatorProperty("serviceWorker", serviceWorkerContainer);
@@ -30906,19 +30908,51 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
   globalThis.__glassServiceWorkerRegistrations = serviceWorkerRegistrations;
   globalThis.__glassServiceWorkerPendingRequests = serviceWorkerPendingRequests;
   globalThis.__glassDispatchServiceWorkerClientMessage = (payload) => {
+    const registration = serviceWorkerFind(String(host.url));
+    const source = registration && registration.active || null;
+    const origin = source && source.scriptURL
+      ? new URLNative(source.scriptURL).origin
+      : "";
+    let envelope;
+    try {
+      envelope = glassMessageDecodeEnvelope(payload || {});
+    } catch (_error) {
+      const MessageEventConstructor = globalThis.__glassWorkerMessageEventConstructor
+        || globalThis.MessageEvent;
+      const messageErrorEvent = new MessageEventConstructor("messageerror", {
+        data: null,
+        origin,
+        source,
+        ports: [],
+        bubbles: false,
+        cancelable: false,
+      });
+      messageErrorEvent.target = serviceWorkerContainer;
+      messageErrorEvent.currentTarget = serviceWorkerContainer;
+      messageErrorEvent.eventPhase = 2;
+      serviceWorkerContainer.dispatchEvent(messageErrorEvent);
+      messageErrorEvent.currentTarget = null;
+      messageErrorEvent.eventPhase = 0;
+      return null;
+    }
     if (payload && Array.isArray(payload.object_urls))
       globalThis.__glassInstallObjectUrlTransfers(payload.object_urls);
-    const envelope = glassMessageDecodeEnvelope(payload || {});
-    const registration = serviceWorkerFind(String(host.url));
-    serviceWorkerContainer.dispatchEvent({
-      type: "message",
+    const MessageEventConstructor = globalThis.__glassWorkerMessageEventConstructor
+      || globalThis.MessageEvent;
+    const messageEvent = new MessageEventConstructor("message", {
       data: envelope.data,
-      origin: "",
-      source: registration && registration.active || null,
+      origin,
+      source,
       ports: envelope.ports,
-      target: serviceWorkerContainer,
-      currentTarget: serviceWorkerContainer,
+      bubbles: false,
+      cancelable: false,
     });
+    messageEvent.target = serviceWorkerContainer;
+    messageEvent.currentTarget = serviceWorkerContainer;
+    messageEvent.eventPhase = 2;
+    serviceWorkerContainer.dispatchEvent(messageEvent);
+    messageEvent.currentTarget = null;
+    messageEvent.eventPhase = 0;
     return null;
   };
 "###;

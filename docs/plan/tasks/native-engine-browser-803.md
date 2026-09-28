@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-803
 scope: glass-browser/service-worker-client-messageerror-recovery
-status: contracted
+status: completed locally
 depends-on: [native-engine-browser-802]
 ---
 
@@ -84,11 +84,20 @@ still arrives.
 
 ## Verification
 
-- `cargo check -p glass-browser --test native_engine --locked --quiet`
-- The exact process-backed HTTP regression added for ServiceWorkerContainer
-  `messageerror` and later client-message recovery.
-- `cargo fmt --all -- --check`, `git diff --check`, and the focused repository
-  documentation gates.
+- `cargo check -p glass-browser --test native_engine --locked --quiet` passed.
+- `cargo test -p glass-browser --test native_engine native_content_process_service_worker_client_messageerror_recovers --locked --quiet -- --exact` passed (1 passed, 858 filtered; 21.13 seconds).
+- The process-backed HTTP regression verifies the `messageerror` listener and
+  `onmessageerror` handler receive the same `MessageEvent`, with null data, no
+  ports, the active worker source and origin, correct dispatch target/phase,
+  and reset event state. It also verifies no `message` is emitted for the
+  malformed envelope and a later real `Client.postMessage()` arrives normally.
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- `python3 scripts/check-release-documentation.py --require-previous-version`
+  passed: 1,431 Markdown documents and zero current-claim failures.
+- `python3 scripts/check-documentation-depth.py` passed: 93 current guides
+  routed/audited and 19 substantive contracts.
 
-Record results and exclusions here after implementation. Remote CI is not
-implied by local verification.
+These are focused local results only. Transfer rollback, other
+`messageerror` sources, complete Service Worker/EventTarget/Web IDL and WPT
+conformance, remote CI, and cross-platform certification remain open. Local
+verification does not imply remote CI.

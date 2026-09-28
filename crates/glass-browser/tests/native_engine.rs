@@ -9747,6 +9747,191 @@ self.addEventListener('fetch', event => {
 }
 
 #[tokio::test]
+async fn native_runtime_shared_worker_reuses_runtime_across_targets() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-shared-worker-targets-{}.json",
+        std::process::id()
+    ));
+    let lock_path = profile_path.with_extension("lock");
+    let events_path = profile_path.with_extension("events");
+    let readers_path = profile_path.with_extension("readers");
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+    let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        loop {
+            let accepted = tokio::select! {
+                _ = &mut shutdown_receiver => break,
+                accepted = listener.accept() => accepted.unwrap(),
+            };
+            let (mut stream, _) = accepted;
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            let (status, content_type, body) = match path {
+                "/first" => (
+                    "200 OK",
+                    "text/html",
+                    r#"<script>
+globalThis.pageId = 'first';
+globalThis.sharedEvents = [];
+globalThis.sharedWorker = new SharedWorker('/shared-target.js', { name: 'glass-cross-target' });
+sharedWorker.port.onmessage = event => sharedEvents.push(event.data);
+sharedWorker.port.start();
+sharedWorker.port.postMessage({ kind: 'connect', pageId });
+</script><main>first target</main>"#,
+                ),
+                "/second" => (
+                    "200 OK",
+                    "text/html",
+                    r#"<script>
+globalThis.pageId = 'second';
+globalThis.sharedEvents = [];
+globalThis.sharedWorker = new SharedWorker('/shared-target.js', { name: 'glass-cross-target' });
+sharedWorker.port.onmessage = event => sharedEvents.push(event.data);
+sharedWorker.port.start();
+sharedWorker.port.postMessage({ kind: 'connect', pageId });
+</script><main>second target</main>"#,
+                ),
+                "/shared-target.js" => (
+                    "200 OK",
+                    "text/javascript",
+                    r#"
+let connectionCount = 0;
+const runtimeId = Date.now().toString() + '-' + Math.random().toString(36).slice(2);
+const ports = new Map();
+onconnect = event => {
+  const port = event.ports[0];
+  const connection = ++connectionCount;
+  let pageId = null;
+  port.addEventListener('message', message => {
+    if (message.data.kind === 'connect') {
+      pageId = message.data.pageId;
+      ports.set(pageId, port);
+      port.postMessage({ kind: 'ready', pageId, connection, runtimeId });
+    } else if (message.data.kind === 'relay') {
+      const destination = ports.get(message.data.target);
+      if (destination) {
+        destination.postMessage({
+          kind: 'relayed', from: pageId, payload: message.data.payload,
+        });
+        port.postMessage({ kind: 'relay-ack', pageId, target: message.data.target });
+      } else {
+        port.postMessage({ kind: 'relay-missing', pageId, target: message.data.target });
+      }
+    }
+  });
+  port.start();
+};"#,
+                ),
+                _ => ("404 Not Found", "text/plain", "unexpected request"),
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_storage_path(profile_path.clone())
+            .with_initial_url(format!("http://{address}/first")),
+    )
+    .await
+    .unwrap();
+    let first_ready = session
+        .script("sharedEvents.filter(message => message.kind === 'ready')")
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(first_ready.as_array().unwrap().len(), 1);
+    assert_eq!(first_ready[0]["pageId"], "first");
+    assert_eq!(first_ready[0]["connection"], 1);
+
+    let second = session
+        .native_create_target(&format!("http://{address}/second"))
+        .await
+        .unwrap();
+    session.native_select_target(&second.id).await.unwrap();
+    let second_ready = session
+        .script("sharedEvents.filter(message => message.kind === 'ready')")
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(second_ready.as_array().unwrap().len(), 1);
+    assert_eq!(second_ready[0]["pageId"], "second");
+    assert_eq!(
+        second_ready[0]["connection"], 2,
+        "same-origin targets must connect to the same SharedWorker global"
+    );
+    assert_eq!(second_ready[0]["runtimeId"], first_ready[0]["runtimeId"]);
+
+    assert_eq!(
+        session
+            .script("sharedWorker.port.postMessage({ kind: 'relay', target: 'first', payload: 'from-second' }); true")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(true)
+    );
+    let second_ack = session
+        .script("sharedEvents.filter(message => message.kind === 'relay-ack')")
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(second_ack[0]["target"], "first");
+
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    let first_relay = session
+        .script("sharedEvents.filter(message => message.kind === 'relayed')")
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(
+        first_relay,
+        serde_json::json!([{
+            "kind": "relayed",
+            "from": "second",
+            "payload": "from-second",
+        }])
+    );
+
+    session
+        .script("sharedWorker.port.postMessage({ kind: 'relay', target: 'second', payload: 'from-first' }); true")
+        .await
+        .unwrap();
+    session.native_select_target(&second.id).await.unwrap();
+    let second_relay = session
+        .script("sharedEvents.filter(message => message.kind === 'relayed')")
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(
+        second_relay,
+        serde_json::json!([{
+            "kind": "relayed",
+            "from": "first",
+            "payload": "from-first",
+        }])
+    );
+
+    session.close().await.unwrap();
+    let _ = shutdown_sender.send(());
+    server.await.unwrap();
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
 async fn native_runtime_service_worker_client_leases_cross_sessions_and_close() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

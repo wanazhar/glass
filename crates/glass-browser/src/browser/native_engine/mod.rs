@@ -82,9 +82,9 @@ pub(crate) use javascript::{
     NativeFrameScriptRequest, NativeFrameScriptWindow, NativeMessagePortTransfer,
     NativePageMessagePortCommand, NativePopupRequest, NativePostMessageRequest,
     NativeScriptCommand, NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    synchronize_service_worker_client_leases, validate_message_port_transfers,
-    validate_page_message_port_command,
+    NativeSharedWorkerCreateRequest, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, NativeWorkerRegistry, synchronize_service_worker_client_leases,
+    validate_message_port_transfers, validate_page_message_port_command,
 };
 pub use layout::{
     NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect, NativeSvgSubpath,

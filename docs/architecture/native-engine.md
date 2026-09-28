@@ -1,10 +1,13 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-808`; issue #40 remains open. Slice 808 verifies
-MessagePort close isolation across three connections to one HTTP-loaded
-SharedWorker, including a request/reply after both close directions
-(1 passed, 860 filtered; 29.63 seconds). Slice 746 moves initial
+`native-engine-browser-809`; issue #40 remains open. Slice 809 implements
+same-session SharedWorker reuse across two same-origin top-level targets and
+verifies cross-target request/reply through both connection ports (1 passed,
+861 filtered; 36.22 seconds). Slice 808 verifies MessagePort close isolation
+across three connections to one HTTP-loaded SharedWorker, including a
+request/reply after both close directions (1 passed, 860 filtered; 29.63
+seconds). Slice 746 moves initial
 navigation documents to `html5ever` through a Glass-owned `TreeSink`. Slice
 747 moves fragment commits and the same-turn projection to the bounded
 html5ever context-fragment algorithm. Slice 748 moves HTML XHR
@@ -3859,23 +3862,28 @@ document destruction, garbage collection, complete task-source and
 EventTarget/Web IDL behavior, WPT, remote CI, and cross-platform certification
 remain open; see [task 807](../plan/tasks/native-engine-browser-807.md).
 
-Slice 808 adds real HTTP process coverage for the SharedWorker route already
-owned by `NativeWorkerRegistry`. Three connections prove one shared runtime;
-page- and worker-initiated close each deliver one close Event only to the
-surviving endpoint, retire only that bridge, purge queued work, and suppress
-later messages. A request/reply on the third connection succeeds after both
-close paths. The focused regression passed (1 passed, 860 filtered; 29.63
-seconds), and no registry change was needed. SharedWorker lifecycle and
-cross-page sharing, complete task-source/EventTarget/Web IDL and WPT
-conformance, remote CI, and cross-platform certification remain open; see
+Slice 808 adds real HTTP process coverage for SharedWorker MessagePort close.
+Three connections prove one shared runtime; page- and worker-initiated close
+each deliver one close Event only to the surviving endpoint, retire only that
+bridge, purge queued work, and suppress later messages. A request/reply on the
+third connection succeeds after both close paths. The focused regression
+passed (1 passed, 860 filtered; 29.63 seconds); see
 [task 808](../plan/tasks/native-engine-browser-808.md).
 
-Slice 809 contracts cross-target SharedWorker reuse: two same-origin page
-targets in one native session must connect to one shared worker global and
-exchange messages through distinct ports. This verifies the user-agent
-SharedWorker manager across target-owned engines; implementation evidence is
-pending. It does not claim multi-session/process sharing or complete worker
-lifetime and Web Platform Test behavior; see
+Slice 809 moves process-backed SharedWorker creation to a session-owned
+`NativeWorkerRegistry`, while each target keeps its own page/content process.
+The backend routes page-owned MessagePort commands into that registry and
+dispatches worker replies back through the existing live context/frame route.
+Worker-create effects are preserved across document commit, and worker-to-page
+messages are explicitly distinguished from page-to-worker commands. The
+process-backed regression proves two same-origin targets in one
+`BrowserRuntimeSession` reuse one worker identity, report connection numbers
+1 and 2, and relay messages in both directions after target selection (1
+passed, 861 filtered; 36.22 seconds). Dedicated Worker and Service Worker
+ownership are unchanged. Cross-session/process sharing, worker destruction and
+last-client lifetime, complete storage-key/agent-cluster matching,
+task-source/EventTarget/Web IDL and WPT conformance, remote CI, and
+cross-platform certification remain open; see
 [task 809](../plan/tasks/native-engine-browser-809.md).
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current

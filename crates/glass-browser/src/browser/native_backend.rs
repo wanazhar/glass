@@ -10,6 +10,7 @@
 //! second request to observe or mutate a half-reconciled frame topology.
 #![allow(clippy::await_holding_lock)]
 
+use super::native_engine::NativeResourceLoader;
 use super::native_engine::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeAction, NativeDialogControlPlane,
     NativeDialogController, NativeEffect, NativeEngine, NativeEngineConfig, NativeEngineError,
@@ -19,11 +20,12 @@ use super::native_engine::{
     NativeNavigationMethod, NativeNavigationRequest, NativeNodeSubtreeTransfer, NativeOrigin,
     NativePageMessagePortCommand, NativePendingDialog, NativePoint, NativePopupRequest,
     NativePostMessageRequest, NativePreflightAction, NativeRequestBody, NativeScriptCommand,
-    NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest, NativeSurface,
-    NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, Viewport, parse_point_target,
-    synchronize_service_worker_client_leases, validate_message_port_transfers,
-    validate_page_message_port_command, validate_target_navigation_payload,
+    NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
+    NativeSharedWorkerCreateRequest, NativeSurface, NativeTargetPreflight,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    NativeWorkerRegistry, Viewport, parse_point_target, synchronize_service_worker_client_leases,
+    validate_message_port_transfers, validate_page_message_port_command,
+    validate_target_navigation_payload,
 };
 use crate::browser::session::{
     FrameInfo, GeoLocation, NavigationControlOutcome, NetworkConditions, PageTargetInfo,
@@ -78,6 +80,30 @@ enum NativeFrameRoute {
 struct NativePageMessagePortRoute {
     context_id: String,
     frame_id: String,
+}
+
+enum NativeWorkerCoordinatorEffect {
+    PageMessagePort(NativePageMessagePortCommand),
+    SharedWorkerMessage(NativePageMessagePortCommand),
+    SharedWorkerCreate(NativeSharedWorkerCreateRequest),
+}
+
+struct NativeSharedWorkerCoordinator {
+    registry: NativeWorkerRegistry,
+    loader: NativeResourceLoader,
+    page_ports: BTreeMap<String, NativePageMessagePortRoute>,
+    next_connection_id: u64,
+}
+
+impl NativeSharedWorkerCoordinator {
+    fn new(loader: NativeResourceLoader) -> Self {
+        Self {
+            registry: NativeWorkerRegistry::new_with_fetch_streams(),
+            loader,
+            page_ports: BTreeMap::new(),
+            next_connection_id: 1,
+        }
+    }
 }
 
 struct ActiveNativeNavigation {
@@ -420,6 +446,7 @@ pub struct NativeEngineBackend {
     engine: Mutex<NativeEngine>,
     dialog_control: NativeDialogControlPlane,
     targets: Mutex<NativeTargetState>,
+    shared_workers: Mutex<NativeSharedWorkerCoordinator>,
     browser_effect_cursor: Mutex<NativeBrowserEffectSource>,
     page_message_port_routes: Mutex<BTreeMap<String, NativePageMessagePortRoute>>,
     navigation_control: Mutex<NativeNavigationControlState>,
@@ -446,14 +473,16 @@ impl NativeEngineBackend {
     ) -> Result<Self, BrowserBackendError> {
         let profile = Self::profile_for(env!("CARGO_PKG_VERSION"))?;
         let active_target_id = config.context_id.clone();
-        let engine = NativeEngine::new_with_dialog_control(config, dialog_control.clone())
+        let engine = NativeEngine::new_with_browser_shared_workers(config, dialog_control.clone())
             .map_err(native_error)?;
+        let shared_workers = NativeSharedWorkerCoordinator::new(engine.clone_resource_loader());
         let active_name = native_window_name(&engine.config().window_name);
         Ok(Self {
             profile,
             engine: Mutex::new(engine),
             dialog_control,
             targets: Mutex::new(NativeTargetState::new(active_target_id, active_name)),
+            shared_workers: Mutex::new(shared_workers),
             browser_effect_cursor: Mutex::new(NativeBrowserEffectSource::Popup),
             page_message_port_routes: Mutex::new(BTreeMap::new()),
             navigation_control: Mutex::new(NativeNavigationControlState {
@@ -2901,9 +2930,27 @@ impl NativeEngineBackend {
     /// target is intentionally not selected, matching the public target API.
     pub async fn create_target(&self, url: &str) -> Result<PageTargetInfo, BrowserBackendError> {
         let navigation = NativeNavigationRequest::get(url);
-        self.create_target_named(&navigation, None, None)
-            .await
-            .map(|(target, _, _, _, _, _, _, _)| target)
+        let (
+            target,
+            popups,
+            messages,
+            closes,
+            navigations,
+            service_worker_open_windows,
+            service_worker_client_messages,
+            worker_coordinator_effects,
+        ) = self.create_target_named(&navigation, None, None).await?;
+        self.process_pending_browser_effects(
+            popups,
+            messages,
+            closes,
+            navigations,
+            service_worker_open_windows,
+            service_worker_client_messages,
+            worker_coordinator_effects,
+        )
+        .await?;
+        Ok(target)
     }
 
     async fn create_target_named(
@@ -2920,7 +2967,7 @@ impl NativeEngineBackend {
             Vec<NativeWindowNavigationRequest>,
             Vec<NativeServiceWorkerOpenWindowRequest>,
             Vec<NativeServiceWorkerClientMessage>,
-            Vec<NativePageMessagePortCommand>,
+            Vec<NativeWorkerCoordinatorEffect>,
         ),
         BrowserBackendError,
     > {
@@ -3005,7 +3052,7 @@ impl NativeEngineBackend {
             nested_service_worker_client_messages,
             nested_page_message_port_commands,
         ) = tokio::spawn(async move {
-            let mut engine = NativeEngine::new_with_dialog_control(config, dialog_control)
+            let mut engine = NativeEngine::new_with_browser_shared_workers(config, dialog_control)
                 .map_err(native_error)?;
             if let Err(error) = engine.initialize_async().await {
                 let _ = engine.close_async().await;
@@ -3027,7 +3074,7 @@ impl NativeEngineBackend {
             let nested_service_worker_client_messages =
                 engine.take_pending_service_worker_client_messages();
             let nested_page_message_port_commands =
-                engine.take_pending_page_message_port_commands();
+                take_native_worker_coordinator_effects(&mut engine);
             let target_name = native_window_name(&engine.config().window_name);
             let target = match project_native_target(
                 &engine,
@@ -3184,7 +3231,7 @@ impl NativeEngineBackend {
         window_navigations: Vec<NativeWindowNavigationRequest>,
         service_worker_open_window_requests: Vec<NativeServiceWorkerOpenWindowRequest>,
         service_worker_client_messages: Vec<NativeServiceWorkerClientMessage>,
-        page_message_port_commands: Vec<NativePageMessagePortCommand>,
+        worker_coordinator_effects: Vec<NativeWorkerCoordinatorEffect>,
     ) -> Result<Vec<PageTargetInfo>, BrowserBackendError> {
         let mut pending_popups = VecDeque::from(popup_requests);
         let mut pending_messages = VecDeque::from(post_messages);
@@ -3194,7 +3241,7 @@ impl NativeEngineBackend {
             VecDeque::from(service_worker_open_window_requests);
         let mut pending_service_worker_client_messages =
             VecDeque::from(service_worker_client_messages);
-        let mut pending_page_message_port_commands = VecDeque::from(page_message_port_commands);
+        let mut pending_worker_coordinator_effects = VecDeque::from(worker_coordinator_effects);
         let mut created: Vec<PageTargetInfo> = Vec::new();
         let mut next_source = *self
             .browser_effect_cursor
@@ -3207,7 +3254,7 @@ impl NativeEngineBackend {
             || !pending_window_navigations.is_empty()
             || !pending_service_worker_open_windows.is_empty()
             || !pending_service_worker_client_messages.is_empty()
-            || !pending_page_message_port_commands.is_empty()
+            || !pending_worker_coordinator_effects.is_empty()
         {
             processed = processed.saturating_add(1);
             if processed > NATIVE_MAX_TARGETS.saturating_mul(8) {
@@ -3223,7 +3270,7 @@ impl NativeEngineBackend {
                 !pending_window_closes.is_empty(),
                 !pending_service_worker_open_windows.is_empty(),
                 !pending_service_worker_client_messages.is_empty(),
-                !pending_page_message_port_commands.is_empty(),
+                !pending_worker_coordinator_effects.is_empty(),
             ) else {
                 break;
             };
@@ -3258,7 +3305,7 @@ impl NativeEngineBackend {
                             .extend(nested_service_worker_open_windows);
                         pending_service_worker_client_messages
                             .extend(nested_service_worker_client_messages);
-                        pending_page_message_port_commands
+                        pending_worker_coordinator_effects
                             .extend(nested_page_message_port_commands);
                         continue;
                     }
@@ -3290,7 +3337,7 @@ impl NativeEngineBackend {
                                 .extend(nested_service_worker_open_windows);
                             pending_service_worker_client_messages
                                 .extend(nested_service_worker_client_messages);
-                            pending_page_message_port_commands
+                            pending_worker_coordinator_effects
                                 .extend(nested_page_message_port_commands);
                         }
                         Err(error) => {
@@ -3321,7 +3368,7 @@ impl NativeEngineBackend {
                     pending_service_worker_open_windows.extend(nested_service_worker_open_windows);
                     pending_service_worker_client_messages
                         .extend(nested_service_worker_client_messages);
-                    pending_page_message_port_commands.extend(nested_page_message_port_commands);
+                    pending_worker_coordinator_effects.extend(nested_page_message_port_commands);
                 }
                 NativeBrowserEffectSource::Navigation => {
                     let navigation = pending_window_navigations
@@ -3354,7 +3401,7 @@ impl NativeEngineBackend {
                             .extend(nested_service_worker_open_windows);
                         pending_service_worker_client_messages
                             .extend(nested_service_worker_client_messages);
-                        pending_page_message_port_commands
+                        pending_worker_coordinator_effects
                             .extend(nested_page_message_port_commands);
                         continue;
                     }
@@ -3381,7 +3428,7 @@ impl NativeEngineBackend {
                     pending_service_worker_open_windows.extend(nested_service_worker_open_windows);
                     pending_service_worker_client_messages
                         .extend(nested_service_worker_client_messages);
-                    pending_page_message_port_commands.extend(nested_page_message_port_commands);
+                    pending_worker_coordinator_effects.extend(nested_page_message_port_commands);
                 }
                 NativeBrowserEffectSource::Close => {
                     let request = pending_window_closes
@@ -3443,14 +3490,14 @@ impl NativeEngineBackend {
                     pending_service_worker_open_windows.extend(nested_service_worker_open_windows);
                     pending_service_worker_client_messages
                         .extend(nested_service_worker_client_messages);
-                    pending_page_message_port_commands.extend(nested_page_message_port_commands);
+                    pending_worker_coordinator_effects.extend(nested_page_message_port_commands);
                     pending_popups.extend(resolved.0);
                     pending_messages.extend(resolved.1);
                     pending_window_closes.extend(resolved.2);
                     pending_window_navigations.extend(resolved.3);
                     pending_service_worker_open_windows.extend(resolved.4);
                     pending_service_worker_client_messages.extend(resolved.5);
-                    pending_page_message_port_commands.extend(resolved.6);
+                    pending_worker_coordinator_effects.extend(resolved.6);
                 }
                 NativeBrowserEffectSource::ServiceWorkerClientMessage => {
                     let message = pending_service_worker_client_messages.pop_front().expect(
@@ -3463,20 +3510,35 @@ impl NativeEngineBackend {
                     pending_window_navigations.extend(nested.3);
                     pending_service_worker_open_windows.extend(nested.4);
                     pending_service_worker_client_messages.extend(nested.5);
-                    pending_page_message_port_commands.extend(nested.6);
+                    pending_worker_coordinator_effects.extend(nested.6);
                 }
                 NativeBrowserEffectSource::PageMessagePort => {
-                    let command = pending_page_message_port_commands.pop_front().expect(
-                        "page MessagePort command queue is non-empty after source selection",
+                    let effect = pending_worker_coordinator_effects.pop_front().expect(
+                        "native worker coordinator effect queue is non-empty after source selection",
                     );
-                    let nested = self.deliver_page_message_port(command).await?;
+                    let nested = match effect {
+                        NativeWorkerCoordinatorEffect::PageMessagePort(command) => {
+                            if self.is_shared_worker_page_port(&command)? {
+                                self.deliver_shared_worker_page_message_port(command)
+                                    .await?
+                            } else {
+                                self.deliver_page_message_port(command).await?
+                            }
+                        }
+                        NativeWorkerCoordinatorEffect::SharedWorkerMessage(command) => {
+                            self.deliver_page_message_port(command).await?
+                        }
+                        NativeWorkerCoordinatorEffect::SharedWorkerCreate(request) => {
+                            self.create_shared_worker_connection(request).await?
+                        }
+                    };
                     pending_popups.extend(nested.0);
                     pending_messages.extend(nested.1);
                     pending_window_closes.extend(nested.2);
                     pending_window_navigations.extend(nested.3);
                     pending_service_worker_open_windows.extend(nested.4);
                     pending_service_worker_client_messages.extend(nested.5);
-                    pending_page_message_port_commands.extend(nested.6);
+                    pending_worker_coordinator_effects.extend(nested.6);
                 }
             }
         }
@@ -4019,6 +4081,14 @@ impl NativeEngineBackend {
         Ok(None)
     }
 
+    fn remove_page_message_port_route(&self, bridge_key: &str) -> Result<(), BrowserBackendError> {
+        self.page_message_port_routes
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Script, "page MessagePort route"))?
+            .remove(bridge_key);
+        Ok(())
+    }
+
     fn clear_page_message_port_routes_for_frame(
         &self,
         frame_id: &str,
@@ -4027,6 +4097,11 @@ impl NativeEngineBackend {
         self.page_message_port_routes
             .lock()
             .map_err(|_| poisoned_lock_error(BackendOperation::Script, "page MessagePort route"))?
+            .retain(|_, route| route.frame_id != frame_id);
+        self.shared_workers
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator"))?
+            .page_ports
             .retain(|_, route| route.frame_id != frame_id);
         Ok(())
     }
@@ -4040,6 +4115,11 @@ impl NativeEngineBackend {
             .lock()
             .map_err(|_| poisoned_lock_error(BackendOperation::Script, "page MessagePort route"))?
             .retain(|_, route| route.context_id != context_id);
+        self.shared_workers
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator"))?
+            .page_ports
+            .retain(|_, route| route.context_id != context_id);
         Ok(())
     }
 
@@ -4048,6 +4128,11 @@ impl NativeEngineBackend {
             .lock()
             .map_err(|_| poisoned_lock_error(BackendOperation::Script, "page MessagePort route"))?
             .clear();
+        let mut workers = self.shared_workers.lock().map_err(|_| {
+            poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator")
+        })?;
+        workers.page_ports.clear();
+        workers.registry.clear();
         Ok(())
     }
 
@@ -4274,6 +4359,177 @@ impl NativeEngineBackend {
             )?;
         }
         Ok(runtime_effects.browser)
+    }
+
+    fn is_shared_worker_page_port(
+        &self,
+        command: &NativePageMessagePortCommand,
+    ) -> Result<bool, BrowserBackendError> {
+        let route = self
+            .shared_workers
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator"))?
+            .page_ports
+            .get(&command.bridge_key)
+            .cloned();
+        let Some(route) = route else {
+            return Ok(false);
+        };
+        if route.context_id != command.source_context_id
+            || route.frame_id != command.source_frame_id
+        {
+            return Ok(false);
+        }
+        if self.frame_owner_context_id(&route.frame_id)?.as_deref()
+            != Some(route.context_id.as_str())
+        {
+            self.shared_workers
+                .lock()
+                .map_err(|_| {
+                    poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator")
+                })?
+                .page_ports
+                .remove(&command.bridge_key);
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    async fn create_shared_worker_connection(
+        &self,
+        request: NativeSharedWorkerCreateRequest,
+    ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
+        validate_native_topology_id(&request.source_context_id)?;
+        validate_native_topology_id(&request.source_frame_id)?;
+        validate_message_port_transfers(std::slice::from_ref(&request.transfer_port))
+            .map_err(native_error)?;
+        self.register_page_message_port_routes(
+            &request.source_context_id,
+            &request.source_frame_id,
+            std::slice::from_ref(&request.transfer_port),
+        )?;
+        let mut coordinator = self.shared_workers.lock().map_err(|_| {
+            poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator")
+        })?;
+        let connection_id = u32::try_from(coordinator.next_connection_id).map_err(|_| {
+            BrowserBackendError::SelectionFailed {
+                reason: "native SharedWorker connection identity space is exhausted".into(),
+            }
+        })?;
+        coordinator.next_connection_id =
+            coordinator
+                .next_connection_id
+                .checked_add(1)
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native SharedWorker connection identity space is exhausted".into(),
+                })?;
+        if coordinator
+            .page_ports
+            .contains_key(&request.transfer_port.bridge_key)
+        {
+            self.remove_page_message_port_route(&request.transfer_port.bridge_key)?;
+            return Err(BrowserBackendError::InvalidConfiguration {
+                field: "native SharedWorker port".into(),
+                reason: "MessagePort bridge was already attached to a SharedWorker".into(),
+            });
+        }
+        coordinator.page_ports.insert(
+            request.transfer_port.bridge_key.clone(),
+            NativePageMessagePortRoute {
+                context_id: request.source_context_id.clone(),
+                frame_id: request.source_frame_id.clone(),
+            },
+        );
+        let command = NativeScriptCommand::SharedWorkerCreate {
+            connection_id,
+            href: request.href,
+            name: request.name,
+            worker_type: request.worker_type,
+            transfer_port: request.transfer_port.clone(),
+        };
+        let result = {
+            let NativeSharedWorkerCoordinator {
+                registry, loader, ..
+            } = &mut *coordinator;
+            registry
+                .apply_commands(vec![command], loader, &request.owner_url)
+                .await
+        };
+        if let Err(error) = result {
+            coordinator
+                .page_ports
+                .remove(&request.transfer_port.bridge_key);
+            drop(coordinator);
+            self.remove_page_message_port_route(&request.transfer_port.bridge_key)?;
+            return Err(native_error(error));
+        }
+        let effects = take_shared_worker_page_messages(&mut coordinator);
+        let mut queued = NativeQueuedBrowserEffects::default();
+        queued.6 = effects;
+        Ok(queued)
+    }
+
+    async fn deliver_shared_worker_page_message_port(
+        &self,
+        command: NativePageMessagePortCommand,
+    ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
+        validate_page_message_port_command(&command).map_err(native_error)?;
+        validate_native_topology_id(&command.source_context_id)?;
+        validate_native_topology_id(&command.source_frame_id)?;
+        let route = self
+            .shared_workers
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator"))?
+            .page_ports
+            .get(&command.bridge_key)
+            .cloned();
+        let Some(route) = route else {
+            return Ok(NativeQueuedBrowserEffects::default());
+        };
+        if route.context_id != command.source_context_id
+            || route.frame_id != command.source_frame_id
+            || self.frame_owner_context_id(&route.frame_id)?.as_deref()
+                != Some(route.context_id.as_str())
+        {
+            return Ok(NativeQueuedBrowserEffects::default());
+        }
+        self.register_page_message_port_routes(
+            &command.source_context_id,
+            &command.source_frame_id,
+            &command.transfer_ports,
+        )?;
+        let mut coordinator = self.shared_workers.lock().map_err(|_| {
+            poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator")
+        })?;
+        for transfer in &command.transfer_ports {
+            coordinator.page_ports.insert(
+                transfer.bridge_key.clone(),
+                NativePageMessagePortRoute {
+                    context_id: route.context_id.clone(),
+                    frame_id: route.frame_id.clone(),
+                },
+            );
+        }
+        let worker_command = NativeScriptCommand::MessagePortPostMessage {
+            bridge_key: command.bridge_key,
+            data: command.data,
+            worker_id: None,
+            transfer_ports: command.transfer_ports,
+            object_urls: command.object_urls,
+        };
+        {
+            let NativeSharedWorkerCoordinator {
+                registry, loader, ..
+            } = &mut *coordinator;
+            registry
+                .apply_page_message_port_commands(vec![worker_command], loader)
+                .await
+                .map_err(native_error)?;
+        }
+        let effects = take_shared_worker_page_messages(&mut coordinator);
+        let mut queued = NativeQueuedBrowserEffects::default();
+        queued.6 = effects;
+        Ok(queued)
     }
 
     async fn deliver_page_message_port(
@@ -4829,7 +5085,7 @@ impl NativeEngineBackend {
             Vec<NativeWindowNavigationRequest>,
             Vec<NativeServiceWorkerOpenWindowRequest>,
             Vec<NativeServiceWorkerClientMessage>,
-            Vec<NativePageMessagePortCommand>,
+            Vec<NativeWorkerCoordinatorEffect>,
         ),
         BrowserBackendError,
     > {
@@ -5364,7 +5620,7 @@ impl NativeEngineBackend {
             let service_worker_open_windows = engine.take_pending_service_worker_open_windows();
             let service_worker_client_messages =
                 engine.take_pending_service_worker_client_messages();
-            let page_message_port_commands = engine.take_pending_page_message_port_commands();
+            let page_message_port_commands = take_native_worker_coordinator_effects(&mut engine);
             let window_name = engine.config().window_name.clone();
             project_native_target(&engine, &target_id, opener_id, true)?;
             (
@@ -5826,7 +6082,7 @@ impl BrowserBackend for NativeEngineBackend {
                     let service_worker_client_messages =
                         engine.take_pending_service_worker_client_messages();
                     let page_message_port_commands =
-                        engine.take_pending_page_message_port_commands();
+                        take_native_worker_coordinator_effects(&mut engine);
                     let window_name = engine.config().window_name.clone();
                     drop(engine);
                     self.sync_target_name(&active_context_id, &window_name)?;
@@ -5953,7 +6209,7 @@ impl BrowserBackend for NativeEngineBackend {
                     let service_worker_client_messages =
                         engine.take_pending_service_worker_client_messages();
                     let page_message_port_commands =
-                        engine.take_pending_page_message_port_commands();
+                        take_native_worker_coordinator_effects(&mut engine);
                     let window_name = engine.config().window_name.clone();
                     drop(engine);
                     self.sync_target_name(&active_context_id, &window_name)?;
@@ -6012,7 +6268,7 @@ impl BrowserBackend for NativeEngineBackend {
                     let service_worker_client_messages =
                         engine.take_pending_service_worker_client_messages();
                     let page_message_port_commands =
-                        engine.take_pending_page_message_port_commands();
+                        take_native_worker_coordinator_effects(&mut engine);
                     let window_name = engine.config().window_name.clone();
                     drop(engine);
                     self.sync_target_name(&active_context_id, &window_name)?;
@@ -6476,8 +6732,35 @@ type NativeQueuedBrowserEffects = (
     Vec<NativeWindowNavigationRequest>,
     Vec<NativeServiceWorkerOpenWindowRequest>,
     Vec<NativeServiceWorkerClientMessage>,
-    Vec<NativePageMessagePortCommand>,
+    Vec<NativeWorkerCoordinatorEffect>,
 );
+
+fn take_shared_worker_page_messages(
+    coordinator: &mut NativeSharedWorkerCoordinator,
+) -> Vec<NativeWorkerCoordinatorEffect> {
+    let mut effects = Vec::new();
+    for message in coordinator.registry.take_message_port_messages() {
+        let Some(route) = coordinator.page_ports.get(&message.bridge_key).cloned() else {
+            continue;
+        };
+        for transfer in &message.transfer_ports {
+            coordinator
+                .page_ports
+                .insert(transfer.bridge_key.clone(), route.clone());
+        }
+        effects.push(NativeWorkerCoordinatorEffect::SharedWorkerMessage(
+            NativePageMessagePortCommand {
+                bridge_key: message.bridge_key,
+                data: message.data,
+                transfer_ports: message.transfer_ports,
+                object_urls: message.object_urls,
+                source_context_id: route.context_id,
+                source_frame_id: route.frame_id,
+            },
+        ));
+    }
+    effects
+}
 
 struct NativeFrameRuntimeEffects {
     browser: NativeQueuedBrowserEffects,
@@ -6595,7 +6878,7 @@ fn take_native_browser_effects(engine: &mut NativeEngine) -> (NativeQueuedBrowse
     let navigations = engine.take_pending_window_navigations();
     let service_worker_open_windows = engine.take_pending_service_worker_open_windows();
     let service_worker_client_messages = engine.take_pending_service_worker_client_messages();
-    let page_message_port_commands = engine.take_pending_page_message_port_commands();
+    let worker_effects = take_native_worker_coordinator_effects(engine);
     let window_name = engine.config().window_name.clone();
     (
         (
@@ -6605,10 +6888,27 @@ fn take_native_browser_effects(engine: &mut NativeEngine) -> (NativeQueuedBrowse
             navigations,
             service_worker_open_windows,
             service_worker_client_messages,
-            page_message_port_commands,
+            worker_effects,
         ),
         window_name,
     )
+}
+
+fn take_native_worker_coordinator_effects(
+    engine: &mut NativeEngine,
+) -> Vec<NativeWorkerCoordinatorEffect> {
+    let mut effects = engine
+        .take_pending_shared_worker_creates()
+        .into_iter()
+        .map(NativeWorkerCoordinatorEffect::SharedWorkerCreate)
+        .collect::<Vec<_>>();
+    effects.extend(
+        engine
+            .take_pending_page_message_port_commands()
+            .into_iter()
+            .map(NativeWorkerCoordinatorEffect::PageMessagePort),
+    );
+    effects
 }
 
 fn append_native_queued_browser_effects(
@@ -7433,9 +7733,11 @@ async fn reconcile_native_frames(
             } else {
                 child_config
             };
-            let mut child =
-                NativeEngine::new_with_dialog_control(child_config, engine.dialog_control_plane())
-                    .map_err(native_error)?;
+            let mut child = NativeEngine::new_with_browser_shared_workers(
+                child_config,
+                engine.dialog_control_plane(),
+            )
+            .map_err(native_error)?;
             child.set_frame_id(frame_id.clone());
             child.inherit_service_worker_clients(&parent_engine.service_worker_clients());
             child.set_embedding_frame_policy(embedding_document_url, embedding_frame_sources);

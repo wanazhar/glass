@@ -347,11 +347,13 @@ completes a request/reply after both closures. The focused test passed locally
 SharedWorker lifecycle and cross-page sharing, complete task-source,
 EventTarget/Web IDL and WPT conformance, remote CI, and cross-platform
 certification remain open. See the [slice 808 task](tasks/native-engine-browser-808.md).
-Slice 809 contracts same-origin SharedWorker reuse across two top-level
-targets in one native session. Its process-backed test must prove one worker
-global and cross-target request/reply over the separate connection ports;
-implementation evidence is pending. Multi-session/process sharing, worker
-lifetime, and complete SharedWorker/WPT behavior remain open. See the
+Slice 809 implements session-owned SharedWorker reuse across two same-origin
+top-level targets. The process-backed regression proves both connections use
+one worker global and relay messages across targets after switching selection
+(1 passed, 861 filtered; 36.22 seconds). Dedicated Worker and Service Worker
+ownership remain separate. Multi-session/process sharing, worker destruction
+and last-client lifetime, full SharedWorker/WPT behavior, remote CI, and
+cross-platform certification remain open. See the
 [slice 809 task](tasks/native-engine-browser-809.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the

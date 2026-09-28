@@ -206,6 +206,7 @@ pub(crate) struct NativeContentLoad {
     pub(crate) popups: Vec<NativePopupRequest>,
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
     pub(crate) page_message_port_commands: Vec<NativePageMessagePortCommand>,
+    pub(crate) shared_worker_commands: Vec<NativeScriptCommand>,
     pub(crate) window_closes: Vec<NativeWindowCloseRequest>,
     pub(crate) window_navigations: Vec<NativeWindowNavigationRequest>,
     pub(crate) service_worker_client_messages: Vec<NativeServiceWorkerClientMessage>,
@@ -1048,6 +1049,7 @@ pub(crate) struct NativeContentScriptResult {
     pub(crate) popups: Vec<NativePopupRequest>,
     pub(crate) post_messages: Vec<NativePostMessageRequest>,
     pub(crate) page_message_port_commands: Vec<NativePageMessagePortCommand>,
+    pub(crate) shared_worker_commands: Vec<NativeScriptCommand>,
     pub(crate) window_closes: Vec<NativeWindowCloseRequest>,
     pub(crate) window_navigations: Vec<NativeWindowNavigationRequest>,
     pub(crate) service_worker_client_messages: Vec<NativeServiceWorkerClientMessage>,
@@ -1286,6 +1288,7 @@ impl NativeContentProcess {
         frame_context: Option<&NativeFrameScriptContext>,
         environment: &NativeEnvironmentOverrides,
         service_worker_clients: &[NativeServiceWorkerClientState],
+        external_shared_worker_routing: bool,
     ) -> Result<(), NativeEngineError> {
         environment.validate()?;
         let id = self.next_id();
@@ -1309,6 +1312,7 @@ impl NativeContentProcess {
                 "environment": environment,
                 "service_worker_clients": service_worker_clients,
                 "modal_dialogs": self.dialog_control.modal_dialogs_enabled(),
+                "external_shared_worker_routing": external_shared_worker_routing,
             }))
             .await?;
         let result = require_response_kind(&response, "started", id, "content process start");
@@ -3011,6 +3015,8 @@ fn decode_load_response(
         response,
         "decode content process page MessagePort commands",
     )?;
+    let shared_worker_commands =
+        decode_shared_worker_commands(response, "decode content process SharedWorker commands")?;
     let window_closes = decode_window_close_requests(response, "decode content process load")?;
     let window_navigations =
         decode_window_navigation_requests(response, "decode content process load")?;
@@ -3039,6 +3045,7 @@ fn decode_load_response(
         popups,
         post_messages,
         page_message_port_commands,
+        shared_worker_commands,
         window_closes,
         window_navigations,
         service_worker_client_messages,
@@ -3772,6 +3779,69 @@ fn decode_page_message_port_commands(
     Ok(commands)
 }
 
+fn decode_shared_worker_commands(
+    response: &Value,
+    operation: &str,
+) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
+    let Some(value) = response.get("shared_worker_commands") else {
+        return Ok(Vec::new());
+    };
+    let commands = value.as_array().ok_or_else(|| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "content process returned invalid SharedWorker commands".into(),
+    })?;
+    if commands.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content-process SharedWorker commands",
+            MAX_NATIVE_EFFECTS,
+            commands.len(),
+        ));
+    }
+    let commands =
+        serde_json::from_value::<Vec<NativeScriptCommand>>(value.clone()).map_err(|_| {
+            NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process returned malformed SharedWorker commands".into(),
+            }
+        })?;
+    if commands
+        .iter()
+        .any(|command| !matches!(command, NativeScriptCommand::SharedWorkerCreate { .. }))
+    {
+        return Err(NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned a non-creation SharedWorker command".into(),
+        });
+    }
+    Ok(commands)
+}
+
+fn defer_shared_worker_commands(
+    commands: Vec<NativeScriptCommand>,
+    external_routing: bool,
+    pending: &mut VecDeque<NativeScriptCommand>,
+) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
+    if !external_routing {
+        return Ok(commands);
+    }
+    let mut local_commands = Vec::with_capacity(commands.len());
+    for command in commands {
+        if matches!(&command, NativeScriptCommand::SharedWorkerCreate { .. }) {
+            if pending.len() >= MAX_NATIVE_EFFECTS {
+                return Err(NativeEngineError::limit(
+                    "content-process pending SharedWorker commands",
+                    MAX_NATIVE_EFFECTS,
+                    pending.len().saturating_add(1),
+                ));
+            }
+            pending.push_back(command);
+        } else {
+            local_commands.push(command);
+        }
+    }
+    Ok(local_commands)
+}
+
 fn decode_content_navigation(
     value: &Value,
     operation: &str,
@@ -4149,6 +4219,8 @@ fn decode_script_response(
         response,
         "decode content process page MessagePort commands",
     )?;
+    let shared_worker_commands =
+        decode_shared_worker_commands(response, "decode content process SharedWorker commands")?;
     let window_closes = decode_window_close_requests(response, "decode content process script")?;
     let window_navigations =
         decode_window_navigation_requests(response, "decode content process script")?;
@@ -4188,6 +4260,7 @@ fn decode_script_response(
             post_messages
         },
         page_message_port_commands,
+        shared_worker_commands,
         window_closes: if has_mutation {
             Vec::new()
         } else {
@@ -4730,6 +4803,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut pending_message_port_messages: VecDeque<NativeMessagePortPageMessage> = VecDeque::new();
     let mut pending_page_message_port_commands: VecDeque<NativePageMessagePortCommand> =
         VecDeque::new();
+    let mut pending_shared_worker_commands: VecDeque<NativeScriptCommand> = VecDeque::new();
     let mut pending_service_worker_client_messages: VecDeque<NativeServiceWorkerClientMessage> =
         VecDeque::new();
     let mut websocket_connections = BTreeMap::new();
@@ -4754,6 +4828,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut frame_script_context: Option<NativeFrameScriptContext> = None;
     let mut frame_script_bindings = Vec::new();
     let mut pending_service_worker_navigation: Option<Value> = None;
+    let mut external_shared_worker_routing = false;
     let dialog_rpc = Arc::new(NativeWorkerDialogRpc::default());
     let dialog_rpc_for_handler = Arc::clone(&dialog_rpc);
     let dialog_handler: NativeDialogHandler =
@@ -4817,6 +4892,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         )
                     })?;
                 dialog_rpc.set_enabled(modal_dialogs);
+                external_shared_worker_routing = request
+                    .get("external_shared_worker_routing")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let requested_context_id = request
                     .get("context_id")
                     .and_then(Value::as_str)
@@ -5825,7 +5904,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             storage_key(&resource.url, &resource.origin),
                                             runtime.indexed_db_state(),
                                         )?;
-                                        let worker_commands = runtime.take_worker_commands();
+                                        let worker_commands = defer_shared_worker_commands(
+                                            runtime.take_worker_commands(),
+                                            external_shared_worker_routing,
+                                            &mut pending_shared_worker_commands,
+                                        )?;
                                         let Some(loader) = resource_loader.as_mut() else {
                                             return Err(NativeEngineError::Worker {
                                                 operation: "page-load Worker scheduling".into(),
@@ -6238,7 +6321,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 pending_message_port_messages.extend(service_workers.take_message_port_messages());
                 pending_service_worker_client_messages
                     .extend(service_workers.take_client_messages());
-                let worker_commands = runtime.take_worker_commands();
+                let worker_commands = defer_shared_worker_commands(
+                    runtime.take_worker_commands(),
+                    external_shared_worker_routing,
+                    &mut pending_shared_worker_commands,
+                )?;
                 workers
                     .apply_commands(worker_commands, loader, &committed_url)
                     .await?;
@@ -6366,7 +6453,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     write_value_frame(&mut stdout, &response).await?;
                                     continue;
                                 };
-                                let dynamic_worker_commands = runtime.take_worker_commands();
+                                let dynamic_worker_commands = defer_shared_worker_commands(
+                                    runtime.take_worker_commands(),
+                                    external_shared_worker_routing,
+                                    &mut pending_shared_worker_commands,
+                                )?;
                                 workers
                                     .apply_commands(
                                         dynamic_worker_commands,
@@ -7494,6 +7585,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 response_page_message_port_commands.len(),
             ));
         }
+        let response_shared_worker_commands =
+            pending_shared_worker_commands.drain(..).collect::<Vec<_>>();
+        if response_shared_worker_commands.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "content-process SharedWorker commands",
+                MAX_NATIVE_EFFECTS,
+                response_shared_worker_commands.len(),
+            ));
+        }
         let mut response_window_closes =
             decode_window_close_requests(&response, "merge content process window close")?;
         response_window_closes.extend(window_closes);
@@ -7563,6 +7663,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         operation: "encode content process page MessagePort commands".into(),
                         reason: "content process page MessagePort commands could not be encoded"
                             .into(),
+                    }
+                })?,
+            );
+            object.insert(
+                "shared_worker_commands".into(),
+                serde_json::to_value(response_shared_worker_commands).map_err(|_| {
+                    NativeEngineError::Worker {
+                        operation: "encode content process SharedWorker commands".into(),
+                        reason: "content process SharedWorker commands could not be encoded".into(),
                     }
                 })?,
             );
@@ -8254,6 +8363,7 @@ async fn load_content_resource(
             popups: Vec::new(),
             post_messages: Vec::new(),
             page_message_port_commands: Vec::new(),
+            shared_worker_commands: Vec::new(),
             window_closes: Vec::new(),
             window_navigations: Vec::new(),
             service_worker_client_messages: Vec::new(),
@@ -14967,6 +15077,7 @@ mod tests {
                 None,
                 &NativeEnvironmentOverrides::default(),
                 &[],
+                false,
             )
             .await
             .unwrap();
@@ -15067,6 +15178,7 @@ mod tests {
                 None,
                 &NativeEnvironmentOverrides::default(),
                 &[],
+                false,
             )
             .await
             .unwrap();

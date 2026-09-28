@@ -7713,9 +7713,43 @@ globalThis.portReady = false;
 globalThis.workerEvents = [];
 globalThis.workerErrors = [];
 globalThis.localPortEvents = [];
+globalThis.localCloseEvents = [];
+globalThis.currentLocalCloseEvent = null;
+globalThis.initiatorCloseCount = 0;
 globalThis.localChannel = new MessageChannel();
 globalThis.localPort = localChannel.port1;
 globalThis.lastLocalPortEvent = null;
+localPort.onclose = () => initiatorCloseCount++;
+localChannel.port2.onclose = function(event) {
+  if (currentLocalCloseEvent === null) currentLocalCloseEvent = event;
+  localCloseEvents.push({
+    kind: 'handler',
+    sameEvent: currentLocalCloseEvent === event,
+    type: event.type,
+    isEvent: event instanceof Event,
+    targetIsPeer: event.target === localChannel.port2,
+    currentTargetIsPeer: event.currentTarget === localChannel.port2,
+    eventPhase: event.eventPhase,
+    thisIsPeer: this === localChannel.port2,
+    bubbles: event.bubbles,
+    cancelable: event.cancelable,
+  });
+};
+localChannel.port2.addEventListener('close', function(event) {
+  if (currentLocalCloseEvent === null) currentLocalCloseEvent = event;
+  localCloseEvents.push({
+    kind: 'listener',
+    sameEvent: currentLocalCloseEvent === event,
+    type: event.type,
+    isEvent: event instanceof Event,
+    targetIsPeer: event.target === localChannel.port2,
+    currentTargetIsPeer: event.currentTarget === localChannel.port2,
+    eventPhase: event.eventPhase,
+    thisIsPeer: this === localChannel.port2,
+    bubbles: event.bubbles,
+    cancelable: event.cancelable,
+  });
+});
 const recordPortEvent = (kind, message, target, events) => {
   events.push({
     kind,
@@ -7945,6 +7979,54 @@ await Promise.resolve();
                 "cancelable": false,
                 "value": 8,
             },
+        })
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"localPort.close();
+localPort.close();
+localChannel.port2.postMessage({ value: 999 });
+({
+  localCloseEvents,
+  closeHandlerReadback: typeof localChannel.port2.onclose === 'function',
+  closeEventStateReset: currentLocalCloseEvent.currentTarget === null
+    && currentLocalCloseEvent.eventPhase === 0,
+  initiatorClosed: localPort.__glassMessageClosed,
+  peerOpen: !localChannel.port2.__glassMessageClosed,
+  pairDetached: localPort.__glassMessagePortPeer === null
+    && localChannel.port2.__glassMessagePortPeer === null,
+  initiatorCloseCount,
+  noPostCloseDelivery: localPortEvents.length === 2,
+})"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "localCloseEvents": [
+                {
+                    "kind": "handler", "sameEvent": true,
+                    "type": "close", "isEvent": true,
+                    "targetIsPeer": true, "currentTargetIsPeer": true,
+                    "eventPhase": 2, "thisIsPeer": true,
+                    "bubbles": false, "cancelable": false,
+                },
+                {
+                    "kind": "listener", "sameEvent": true,
+                    "type": "close", "isEvent": true,
+                    "targetIsPeer": true, "currentTargetIsPeer": true,
+                    "eventPhase": 2, "thisIsPeer": true,
+                    "bubbles": false, "cancelable": false,
+                },
+            ],
+            "closeHandlerReadback": true,
+            "closeEventStateReset": true,
+            "initiatorClosed": true,
+            "peerOpen": true,
+            "pairDetached": true,
+            "initiatorCloseCount": 0,
+            "noPostCloseDelivery": true,
         })
     );
 

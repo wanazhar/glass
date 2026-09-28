@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-805
 scope: glass-browser/local-message-port-close-event
-status: contracted
+status: completed locally
 depends-on: [native-engine-browser-804]
 ---
 
@@ -77,13 +77,34 @@ single `close` event at the still-open peer.
 - `docs/plan/README.md`
 - `docs/plan/native-engine-browser-profile.md`
 
-## Verification
+## Implementation and verification
+
+Native MessagePorts now expose `onclose` without starting their message
+queues. Closing a local entangled endpoint marks only that endpoint closed,
+clears its queue, removes its registry identity, and severs both peer
+references. If the peer still points back and remains open, the runtime fires
+one generic `Event` named `close` at that peer through the existing handler
+and listener dispatcher. Repeated close is idempotent. Bridge endpoints do
+not gain host-route or remote-close behavior in this slice.
+
+The process-backed HTTP regression
+`native_content_process_message_port_decode_failure_dispatches_messageerror_and_recovers`
+now verifies both `onclose` and listener callbacks receive the same Event
+with the peer as `this`, target, and currentTarget during dispatch. It also
+checks the Event type/state, no event on the initiating port, one-shot close,
+peer openness, symmetric disconnection, and no later message delivery across
+the pair.
+
+Passed locally:
 
 - `cargo check -p glass-browser --test native_engine --locked --quiet`
-- Exact process-backed HTTP regression for same-realm close event delivery
-  and pair disconnection.
-- `cargo fmt --all -- --check`, `git diff --check`, and focused repository
-  documentation gates.
+- `cargo test -p glass-browser --test native_engine native_content_process_message_port_decode_failure_dispatches_messageerror_and_recovers --locked --quiet -- --exact` (1 passed, 858 filtered; 21.48 seconds)
+- `cargo fmt --all -- --check` and `git diff --check`
+- `python3 scripts/check-release-documentation.py --require-previous-version` (1,433 Markdown documents; zero current-claim failures)
+- `python3 scripts/check-documentation-depth.py` (93 current guides routed/audited; 19 substantive contracts)
 
-Record exact results and exclusions here after implementation. Remote CI is
-not implied by local verification.
+These are focused local results only. Cross-realm bridge route retirement
+and close delivery, document-destruction/GC close behavior, complete
+EventTarget/EventHandler Web IDL ordering, task-source fairness, full WPT,
+remote CI, and cross-platform certification remain open. Local verification
+does not imply remote CI.

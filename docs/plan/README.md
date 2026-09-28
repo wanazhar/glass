@@ -307,10 +307,12 @@ does not restore already-transferred objects to the sender. Host-route
 retirement, remote-peer `close` notification, and other transferable cleanup
 remain separate gates; see the
 [slice 804 task](tasks/native-engine-browser-804.md).
-Slice 805 contracts `MessagePort.close()` for same-realm channel pairs:
-disentangle the pair and fire one generic `close` Event at the still-open
-peer, with the required `onclose` property. Cross-realm bridge teardown,
-GC-driven close, and full EventTarget/WPT conformance remain open; see the
+Slice 805 implements same-realm `MessagePort.close()`: it disentangles the
+pair, leaves the peer object open, and fires one generic `close` Event there
+through `onclose` and registered listeners. Its process-backed regression
+checks one-shot delivery and that later messages do not cross the closed
+pair. Cross-realm bridge teardown, GC-driven close, and full
+EventTarget/WPT conformance remain open; see the
 [slice 805 task](tasks/native-engine-browser-805.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the

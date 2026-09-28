@@ -30334,7 +30334,7 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
     glassMessageSchedule(target);
   };
   const glassMessageInstallHandlers = (target) => {
-    for (const type of ["message", "messageerror"]) {
+    for (const type of ["message", "messageerror", "close"]) {
       let handler = null;
       Object.defineProperty(target, "on" + type, {
         configurable: false,
@@ -30383,11 +30383,22 @@ const NATIVE_MESSAGE_CHANNEL_BOOTSTRAP: &str = r###"
   MessagePortNative.prototype.start = function() { glassMessageStart(this); };
   MessagePortNative.prototype.close = function() {
     if (this.__glassMessageClosed) return;
+    const peer = this.__glassMessagePortPeer;
     this.__glassMessageClosed = true;
     this.__glassMessageQueue.length = 0;
     glassMessagePortRegistry.delete(this.__glassMessagePortId);
     if (this.__glassMessagePortBridgeKey)
       glassMessageBridgeRegistry.delete(this.__glassMessagePortBridgeKey);
+    this.__glassMessagePortPeer = null;
+    if (peer && peer.__glassMessagePortPeer === this) {
+      peer.__glassMessagePortPeer = null;
+      if (!peer.__glassMessageClosed) {
+        const event = typeof globalThis.__glassCreateEvent === "function"
+          ? globalThis.__glassCreateEvent("close")
+          : new globalThis.Event("close", { bubbles: false, cancelable: false });
+        glassMessageDispatch(peer, event);
+      }
+    }
   };
   MessagePortNative.prototype.postMessage = function(message, options) {
     if (this.__glassMessageClosed)

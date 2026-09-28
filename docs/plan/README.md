@@ -347,6 +347,12 @@ completes a request/reply after both closures. The focused test passed locally
 SharedWorker lifecycle and cross-page sharing, complete task-source,
 EventTarget/Web IDL and WPT conformance, remote CI, and cross-platform
 certification remain open. See the [slice 808 task](tasks/native-engine-browser-808.md).
+Slice 809 contracts same-origin SharedWorker reuse across two top-level
+targets in one native session. Its process-backed test must prove one worker
+global and cross-target request/reply over the separate connection ports;
+implementation evidence is pending. Multi-session/process sharing, worker
+lifetime, and complete SharedWorker/WPT behavior remain open. See the
+[slice 809 task](tasks/native-engine-browser-809.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

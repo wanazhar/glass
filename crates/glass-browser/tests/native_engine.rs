@@ -9931,6 +9931,285 @@ onconnect = event => {
     }
 }
 
+#[test]
+fn native_runtime_shared_worker_target_teardown_preserves_survivor_and_reaps_last_client() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(run_shared_worker_target_teardown());
+    });
+}
+
+async fn run_shared_worker_target_teardown() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-shared-worker-teardown-{}.json",
+        std::process::id()
+    ));
+    let lock_path = profile_path.with_extension("lock");
+    let events_path = profile_path.with_extension("events");
+    let readers_path = profile_path.with_extension("readers");
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+    let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        loop {
+            let accepted = tokio::select! {
+                _ = &mut shutdown_receiver => break,
+                accepted = listener.accept() => accepted.unwrap(),
+            };
+            let (mut stream, _) = accepted;
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            let (status, content_type, body) = match path {
+                "/first" | "/second" | "/third" => {
+                    let page_id = match path {
+                        "/first" => "first",
+                        "/second" => "second",
+                        _ => "third",
+                    };
+                    let body = format!(
+                        r#"<script>
+globalThis.pageId = {page_id:?};
+globalThis.sharedMessages = [];
+globalThis.closeEvents = [];
+globalThis.sharedWorker = new SharedWorker('/shared-lifecycle.js', {{ name: 'glass-target-lifecycle' }});
+sharedWorker.port.onmessage = event => sharedMessages.push(event.data);
+sharedWorker.port.start();
+sharedWorker.port.postMessage({{ kind: 'connect', pageId }});
+</script><main>{page_id} target</main>"#
+                    );
+                    ("200 OK", "text/html", body)
+                }
+                "/shared-lifecycle.js" => (
+                    "200 OK",
+                    "text/javascript",
+                    r#"
+let connectionCount = 0;
+const runtimeId = Date.now().toString() + '-' + Math.random().toString(36).slice(2);
+const ports = new Map();
+const closedConnections = [];
+onconnect = event => {
+  const port = event.ports[0];
+  const connection = ++connectionCount;
+  let pageId = null;
+  port.addEventListener('message', message => {
+    if (message.data.kind === 'connect') {
+      pageId = message.data.pageId;
+      ports.set(pageId, port);
+      port.postMessage({ kind: 'ready', pageId, connection, runtimeId });
+    } else if (message.data.kind === 'ping') {
+      port.postMessage({
+        kind: 'pong', pageId, connection, runtimeId,
+        closedConnections: [...closedConnections],
+      });
+    } else if (message.data.kind === 'close-self') {
+      port.close();
+    } else if (message.data.kind === 'arm-close') {
+      port.onclose = () => {
+        closedConnections.push(pageId);
+        ports.delete(pageId);
+        for (const otherPort of ports.values()) {
+          otherPort.postMessage({ kind: 'peer-closed', closed: pageId, runtimeId });
+        }
+      };
+    }
+  });
+  port.start();
+};"#
+                    .to_owned(),
+                ),
+                "/sentinel" => (
+                    "200 OK",
+                    "text/html",
+                    "<main>sentinel target</main>".to_owned(),
+                ),
+                _ => (
+                    "404 Not Found",
+                    "text/plain",
+                    "unexpected request".to_owned(),
+                ),
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_storage_path(profile_path.clone())
+            .with_initial_url(format!("http://{address}/first")),
+    )
+    .await
+    .unwrap();
+    const ARM_SHARED_WORKER_CLOSE_SCRIPT: &str = r#"
+sharedWorker.port.addEventListener('close', event => closeEvents.push({
+  type: event.type, target: event.target === sharedWorker.port,
+}));
+sharedWorker.port.postMessage({ kind: 'arm-close' });
+true"#;
+    let first_ready = session
+        .script("sharedMessages.filter(message => message.kind === 'ready')")
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(first_ready[0]["connection"], 1);
+    let original_runtime = first_ready[0]["runtimeId"].clone();
+    session
+        .script(ARM_SHARED_WORKER_CLOSE_SCRIPT)
+        .await
+        .unwrap();
+
+    let second = session
+        .native_create_target(&format!("http://{address}/second"))
+        .await
+        .unwrap();
+    session.native_select_target(&second.id).await.unwrap();
+    let second_ready = session
+        .script("sharedMessages.filter(message => message.kind === 'ready')")
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(second_ready[0]["connection"], 2);
+    assert_eq!(second_ready[0]["runtimeId"], original_runtime);
+    session
+        .script(ARM_SHARED_WORKER_CLOSE_SCRIPT)
+        .await
+        .unwrap();
+
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    session
+        .script("sharedWorker.port.close(); true")
+        .await
+        .unwrap();
+    let first_close_events = session.script("closeEvents").await.unwrap().value;
+    assert_eq!(first_close_events, serde_json::json!([]));
+
+    session.native_select_target(&second.id).await.unwrap();
+    let peer_close = session
+        .script("sharedMessages.filter(message => message.kind === 'peer-closed')")
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(peer_close[0]["closed"], "first");
+    session
+        .script("sharedWorker.port.postMessage({ kind: 'ping' }); true")
+        .await
+        .unwrap();
+    let pong = session
+        .script("sharedMessages.filter(message => message.kind === 'pong')")
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(pong[0]["connection"], 2);
+    assert_eq!(pong[0]["runtimeId"], original_runtime);
+    assert_eq!(pong[0]["closedConnections"], serde_json::json!(["first"]));
+
+    session
+        .script("sharedWorker.port.postMessage({ kind: 'close-self' }); true")
+        .await
+        .unwrap();
+    let second_close_events = session.script("closeEvents").await.unwrap().value;
+    assert_eq!(second_close_events.as_array().unwrap().len(), 1);
+    assert_eq!(second_close_events[0]["type"], "close");
+    assert_eq!(second_close_events[0]["target"], true);
+    let second_messages = session.script("sharedMessages").await.unwrap().value;
+    assert!(
+        second_messages
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|message| !message.is_null())
+    );
+
+    session
+        .script(
+            "globalThis.secondExtraWorker = new SharedWorker('/shared-lifecycle.js', { name: 'glass-target-lifecycle' }); secondExtraWorker.port.onmessage = event => sharedMessages.push(event.data); secondExtraWorker.port.start(); secondExtraWorker.port.postMessage({ kind: 'connect', pageId: 'second-extra' }); true",
+        )
+        .await
+        .unwrap();
+    let second_extra_ready = session
+        .script("sharedMessages.filter(message => message.pageId === 'second-extra')")
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(second_extra_ready[0]["connection"], 3);
+    assert_eq!(second_extra_ready[0]["runtimeId"], original_runtime);
+    session
+        .script("secondExtraWorker.port.postMessage({ kind: 'arm-close' }); true")
+        .await
+        .unwrap();
+
+    session
+        .native_select_target("native-context")
+        .await
+        .unwrap();
+    session
+        .script(
+            "globalThis.reconnectedWorker = new SharedWorker('/shared-lifecycle.js', { name: 'glass-target-lifecycle' }); reconnectedWorker.port.addEventListener('message', event => sharedMessages.push(event.data)); reconnectedWorker.port.start(); reconnectedWorker.port.postMessage({ kind: 'connect', pageId: 'first-reconnected' }); true",
+        )
+        .await
+        .unwrap();
+    let first_reconnect = session
+        .script("sharedMessages.filter(message => message.pageId === 'first-reconnected')")
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(first_reconnect[0]["connection"], 4);
+    assert_eq!(first_reconnect[0]["runtimeId"], original_runtime);
+
+    session.native_close_target(&second.id).await.unwrap();
+    session
+        .script("reconnectedWorker.port.postMessage({ kind: 'ping' }); true")
+        .await
+        .unwrap();
+    let survivor_pong = session
+        .script("sharedMessages.filter(message => message.kind === 'pong')")
+        .await
+        .unwrap()
+        .value;
+    let survivor_pong = survivor_pong.as_array().unwrap().last().unwrap();
+    assert_eq!(survivor_pong["connection"], 4);
+    assert_eq!(survivor_pong["runtimeId"], original_runtime);
+    assert_eq!(
+        survivor_pong["closedConnections"],
+        serde_json::json!(["first", "second-extra"])
+    );
+
+    let sentinel = session
+        .native_create_target(&format!("http://{address}/sentinel"))
+        .await
+        .unwrap();
+    session.native_select_target(&sentinel.id).await.unwrap();
+    session.native_close_target("native-context").await.unwrap();
+    let third = session
+        .native_create_target(&format!("http://{address}/third"))
+        .await
+        .unwrap();
+    session.native_select_target(&third.id).await.unwrap();
+    let third_ready = session
+        .script("sharedMessages.filter(message => message.kind === 'ready')")
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(third_ready[0]["connection"], 1);
+    assert_ne!(third_ready[0]["runtimeId"], original_runtime);
+
+    session.close().await.unwrap();
+    let _ = shutdown_sender.send(());
+    server.await.unwrap();
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+}
+
 #[tokio::test]
 async fn native_runtime_service_worker_client_leases_cross_sessions_and_close() {
     let _guard = native_content_process_test_lock().lock().await;

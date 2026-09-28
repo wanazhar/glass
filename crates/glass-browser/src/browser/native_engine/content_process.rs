@@ -3842,6 +3842,23 @@ fn defer_shared_worker_commands(
     Ok(local_commands)
 }
 
+async fn apply_worker_page_message_port_commands(
+    workers: &mut NativeWorkerRegistry,
+    commands: Vec<NativeScriptCommand>,
+    loader: &mut NativeResourceLoader,
+    external_shared_worker_routing: bool,
+) -> Result<(), NativeEngineError> {
+    if external_shared_worker_routing {
+        workers
+            .apply_page_message_port_commands_with_external_shared_workers(commands, loader)
+            .await
+    } else {
+        workers
+            .apply_page_message_port_commands(commands, loader)
+            .await
+    }
+}
+
 fn decode_content_navigation(
     value: &Value,
     operation: &str,
@@ -5928,12 +5945,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                                 loader,
                                             )
                                             .await?;
-                                        workers
-                                            .apply_page_message_port_commands(
-                                                message_port_commands,
-                                                loader,
-                                            )
-                                            .await?;
+                                        apply_worker_page_message_port_commands(
+                                            &mut workers,
+                                            message_port_commands,
+                                            loader,
+                                            external_shared_worker_routing,
+                                        )
+                                        .await?;
                                         process_worker_websocket_commands(
                                             workers.take_websocket_commands(),
                                             &mut worker_websocket_connections,
@@ -6333,9 +6351,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 service_workers
                     .apply_page_message_port_commands(message_port_commands.clone(), loader)
                     .await?;
-                workers
-                    .apply_page_message_port_commands(message_port_commands, loader)
-                    .await?;
+                apply_worker_page_message_port_commands(
+                    &mut workers,
+                    message_port_commands,
+                    loader,
+                    external_shared_worker_routing,
+                )
+                .await?;
                 process_worker_websocket_commands(
                     workers.take_websocket_commands(),
                     &mut worker_websocket_connections,
@@ -6473,12 +6495,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         loader,
                                     )
                                     .await?;
-                                workers
-                                    .apply_page_message_port_commands(
-                                        dynamic_message_port_commands,
-                                        loader,
-                                    )
-                                    .await?;
+                                apply_worker_page_message_port_commands(
+                                    &mut workers,
+                                    dynamic_message_port_commands,
+                                    loader,
+                                    external_shared_worker_routing,
+                                )
+                                .await?;
                                 process_worker_websocket_commands(
                                     workers.take_websocket_commands(),
                                     &mut worker_websocket_connections,

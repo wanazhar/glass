@@ -3804,6 +3804,7 @@ impl NativeEngine {
         let command = NativePageMessagePortCommand {
             bridge_key: bridge_key.to_owned(),
             data: data.clone(),
+            close: false,
             transfer_ports: transfer_ports.to_vec(),
             object_urls: object_urls.to_vec(),
             source_context_id: String::new(),
@@ -3819,6 +3820,34 @@ impl NativeEngine {
                 close: false,
                 transfer_ports: command.transfer_ports,
                 object_urls: command.object_urls,
+            });
+        self.evaluate_page_with_events_async("undefined;".into(), page_events)
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn dispatch_page_message_port_close(
+        &mut self,
+        bridge_key: &str,
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("MessagePort close event")?;
+        validate_url_text("native MessagePort bridge key", bridge_key)?;
+        if bridge_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+            return Err(NativeEngineError::limit(
+                "native MessagePort bridge key",
+                crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                bridge_key.len(),
+            ));
+        }
+        let mut page_events = NativePageEventBatch::default();
+        page_events
+            .message_port_messages
+            .push(NativeMessagePortPageMessage {
+                bridge_key: bridge_key.to_owned(),
+                data: serde_json::Value::Null,
+                close: true,
+                transfer_ports: Vec::new(),
+                object_urls: Vec::new(),
             });
         self.evaluate_page_with_events_async("undefined;".into(), page_events)
             .await

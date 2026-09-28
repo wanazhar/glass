@@ -3886,6 +3886,14 @@ task-source/EventTarget/Web IDL and WPT conformance, remote CI, and
 cross-platform certification remain open; see
 [task 809](../plan/tasks/native-engine-browser-809.md).
 
+Slice 810 implements the session-level SharedWorker teardown contract:
+worker-originated close reaches the owning page as a close Event; closing a
+top-level target closes only that target's ports; and the final routed
+Document owner retires the idle SharedWorker global and matching key. A
+manually closed port does not remove its still-live Document owner. The
+process-backed evidence and remaining boundaries are in
+[task 810](../plan/tasks/native-engine-browser-810.md).
+
 Slice 400 completes the report-only CSP delivery lifecycle for the current
 native HTTP(S) owners. Fetch drains connect-policy records after the loader
 operation and delivers them in the owning page turn; EventSource carries

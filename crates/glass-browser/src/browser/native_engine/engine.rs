@@ -949,6 +949,18 @@ impl NativeEngine {
         Ok(self.document.generation())
     }
 
+    pub(crate) fn document_revision(&self) -> Result<u64, NativeEngineError> {
+        self.require_running("frame discovery")?;
+        Ok(self.document.revision())
+    }
+
+    pub(crate) fn embedded_frame_owner_removal_sequences(
+        &self,
+    ) -> Result<Vec<(u32, u64)>, NativeEngineError> {
+        self.require_running("frame discovery")?;
+        Ok(self.document.embedded_frame_owner_removal_sequences())
+    }
+
     pub(crate) fn frame_owner_id(&self) -> &str {
         &self.frame_id
     }

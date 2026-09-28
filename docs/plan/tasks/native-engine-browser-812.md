@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-812
 scope: glass-browser/live-iframe-removal-lifecycle
-status: in-progress
+status: done
 depends-on: [native-engine-browser-811]
 ---
 
@@ -78,4 +78,20 @@ checkpoint.
 
 ## Results
 
-Implementation and verification are in progress.
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- `cargo check -p glass-browser --test native_engine --locked --quiet` passed
+  in about 76 seconds. Output contained only the existing legacy-parser
+  dead-code warnings in `native_engine/dom.rs`.
+- `cargo test -p glass-browser --test native_engine native_runtime_live_iframe_removal_retires_only_continuously_detached_owners --locked --quiet -- --exact`
+  passed: 1 passed, 864 filtered, 85.59 seconds.
+- The process-backed HTTP regression covers permanent iframe removal and
+  descendant retirement, same-node detach/reinsert with a fresh frame ID,
+  surviving sibling frame and SharedWorker route, worker-side port close,
+  and no `unload` delivery.
+- Removal sequences cross the content-process `NativeDocumentWire` boundary
+  as bounded per-owner counters; backend reconciliation consumes each
+  `(Document generation, owner node, sequence)` once. Retired-frame worker and
+  route teardown runs after target/frame registry locks are released.
+- Dynamic iframe `src`/`srcdoc` mutation, retained detached `WindowProxy`
+  behavior, complete iframe/WPT conformance, and SharedWorker storage-key,
+  partition, agent-cluster, credentials, and full conformance remain open.

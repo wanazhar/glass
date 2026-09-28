@@ -1,8 +1,10 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-811`; issue #40 remains open and Slice 812 is in
-progress. Slice 811 binds
+`native-engine-browser-812`; issue #40 remains open. Slice 812 implements
+live iframe removal/reinsertion with scoped descendant and SharedWorker
+teardown, survivor preservation, and no unload delivery (1 passed, 864
+filtered; 85.59 seconds). Slice 811 binds
 SharedWorker ownership to committed Document generations and tears down only
 the replaced Document and descendant frames during committed cross-document
 navigation or recovery. Its process-backed regression covers same-document

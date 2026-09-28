@@ -1632,18 +1632,40 @@ impl NativeServiceWorkerRegistry {
             ));
         }
         for command in commands {
-            let NativeScriptCommand::MessagePortPostMessage {
-                bridge_key,
-                data,
-                worker_id: None,
-                transfer_ports,
-                object_urls,
-            } = command
-            else {
-                return Err(NativeEngineError::invalid(
-                    "native page MessagePort command",
-                    "command did not originate from the page realm",
-                ));
+            let (bridge_key, data, transfer_ports, object_urls) = match command {
+                NativeScriptCommand::MessagePortClose {
+                    bridge_key,
+                    worker_id: None,
+                } => {
+                    validate_url_text("native MessagePort bridge key", &bridge_key)?;
+                    if bridge_key.len() > crate::browser_backend::MAX_BACKEND_ID_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "native MessagePort bridge key",
+                            crate::browser_backend::MAX_BACKEND_ID_BYTES,
+                            bridge_key.len(),
+                        ));
+                    }
+                    if self.message_port_routes.contains_key(&bridge_key) {
+                        return Err(NativeEngineError::Worker {
+                            operation: "close Service Worker MessagePort".into(),
+                            reason: "Service Worker-owned bridge close is outside slice 806".into(),
+                        });
+                    }
+                    continue;
+                }
+                NativeScriptCommand::MessagePortPostMessage {
+                    bridge_key,
+                    data,
+                    worker_id: None,
+                    transfer_ports,
+                    object_urls,
+                } => (bridge_key, data, transfer_ports, object_urls),
+                _ => {
+                    return Err(NativeEngineError::invalid(
+                        "native page MessagePort command",
+                        "command did not originate from the page realm",
+                    ));
+                }
             };
             let Some(worker_id) = self.message_port_routes.get(&bridge_key).copied() else {
                 continue;
@@ -2072,6 +2094,32 @@ impl NativeServiceWorkerRegistry {
             ));
         }
         for command in commands {
+            if let NativeScriptCommand::MessagePortClose {
+                bridge_key,
+                worker_id: Some(command_worker_id),
+            } = &command
+            {
+                if *command_worker_id != worker_id {
+                    return Err(NativeEngineError::invalid(
+                        "native service-worker MessagePort command",
+                        "service worker command owner is invalid",
+                    ));
+                }
+                let Some(route_worker_id) = self.message_port_routes.get(bridge_key).copied()
+                else {
+                    continue;
+                };
+                if route_worker_id != worker_id {
+                    return Err(NativeEngineError::invalid(
+                        "native service-worker MessagePort route",
+                        "worker id does not own the MessagePort bridge",
+                    ));
+                }
+                return Err(NativeEngineError::Worker {
+                    operation: "close Service Worker MessagePort".into(),
+                    reason: "Service Worker-owned bridge close is outside slice 806".into(),
+                });
+            }
             let NativeScriptCommand::MessagePortPostMessage {
                 bridge_key,
                 data,
@@ -2121,6 +2169,7 @@ impl NativeServiceWorkerRegistry {
                 .push_back(NativeMessagePortPageMessage {
                     bridge_key,
                     data,
+                    close: false,
                     transfer_ports,
                     object_urls,
                 });

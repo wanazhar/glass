@@ -314,11 +314,19 @@ checks one-shot delivery and that later messages do not cross the closed
 pair. Cross-realm bridge teardown, GC-driven close, and full
 EventTarget/WPT conformance remain open; see the
 [slice 805 task](tasks/native-engine-browser-805.md).
-Slice 806 contracts page-to-Dedicated/Shared-Worker bridge close: validate
-the route owner, retire the Rust route and pending work, and deliver one close
-Event to the surviving endpoint in the opposite realm. Service Worker-owned
-routes remain separate; see the
-[slice 806 task](tasks/native-engine-browser-806.md).
+Slice 806 implements page-to-Dedicated/Shared-Worker bridge close through
+`NativeWorkerRegistry`: owner-validated close commands retire routes and
+pending work, and the surviving endpoint receives one generic close Event.
+The existing bounded event queue reserves one slot per live route, so route
+retirement converts that reservation into its close record. A process-backed
+HTTP regression passes for both directions, handler/listener identity,
+same-turn queued-message purge, post-close delivery stop, and independent
+channel survival (1 passed, 858 filtered). The fixture is Dedicated
+Worker-only; SharedWorker process coverage remains open. Service Worker
+routes retain their separate owner and return an explicit owner-specific
+error, not a fallback. GC/document-destruction close, broader task-source and
+WPT conformance, remote CI, and cross-platform certification remain open; see
+the [slice 806 task](tasks/native-engine-browser-806.md).
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

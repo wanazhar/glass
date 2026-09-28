@@ -7703,7 +7703,7 @@ async fn native_content_process_worker_blob_object_urls_cross_realm_messages() {
 }
 
 #[tokio::test]
-async fn native_content_process_message_port_decode_failure_dispatches_messageerror_and_recovers() {
+async fn native_content_process_message_port_decode_recovery_and_bridge_close_both_directions() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -7716,6 +7716,34 @@ globalThis.localPortEvents = [];
 globalThis.localCloseEvents = [];
 globalThis.currentLocalCloseEvent = null;
 globalThis.initiatorCloseCount = 0;
+globalThis.pageBridgeCloseState = { event: null, records: [] };
+globalThis.reverseBridgeCloseState = { event: null, records: [] };
+globalThis.reversePortReady = false;
+globalThis.independentMessages = [];
+globalThis.independentChannel = new MessageChannel();
+independentChannel.port1.addEventListener('message', event => independentMessages.push(event.data.value));
+independentChannel.port1.start();
+const recordClose = (state, kind, port, event, thisValue) => {
+  if (state.event === null) state.event = event;
+  state.records.push({
+    kind,
+    sameEvent: state.event === event,
+    type: event.type,
+    isEvent: event instanceof Event,
+    targetIsPort: event.target === port,
+    currentTargetIsPort: event.currentTarget === port,
+    eventPhase: event.eventPhase,
+    thisIsPort: thisValue === port,
+    bubbles: event.bubbles,
+    cancelable: event.cancelable,
+  });
+};
+const observeClose = (port, state) => {
+  port.onclose = function(event) { recordClose(state, 'handler', port, event, this); };
+  port.addEventListener('close', function(event) { recordClose(state, 'listener', port, event, this); });
+};
+const closeStateReset = state => state.event !== null
+  && state.event.currentTarget === null && state.event.eventPhase === 0;
 globalThis.localChannel = new MessageChannel();
 globalThis.localPort = localChannel.port1;
 globalThis.lastLocalPortEvent = null;
@@ -7776,26 +7804,90 @@ localPort.start();
 globalThis.worker = new Worker('/message-port-decode-worker.js');
 worker.onmessage = event => {
   workerEvents.push({ data: event.data, portCount: event.ports.length });
-  if (event.data.kind !== 'port-ready') return;
-  globalThis.receivingPort = event.ports[0];
-  const observe = (kind, message) => {
-    globalThis.lastPortEvent = message;
-    recordPortEvent(kind, message, receivingPort, portEvents);
-  };
-  receivingPort.addEventListener('message', message => observe('message', message));
-  receivingPort.addEventListener('messageerror', message => observe('messageerror', message));
-  receivingPort.start();
-  globalThis.portReady = true;
+  if (event.data.kind === 'port-ready') {
+    globalThis.receivingPort = event.ports[0];
+    const observe = (kind, message) => {
+      globalThis.lastPortEvent = message;
+      recordPortEvent(kind, message, receivingPort, portEvents);
+    };
+    receivingPort.addEventListener('message', message => observe('message', message));
+    receivingPort.addEventListener('messageerror', message => observe('messageerror', message));
+    observeClose(receivingPort, pageBridgeCloseState);
+    receivingPort.start();
+    globalThis.portReady = true;
+  } else if (event.data.kind === 'reverse-port') {
+    globalThis.reverseReceivingPort = event.ports[0];
+    globalThis.reverseBridgeKey = reverseReceivingPort.__glassMessagePortBridgeKey;
+    observeClose(reverseReceivingPort, reverseBridgeCloseState);
+    reverseReceivingPort.addEventListener('message', message => {
+      portEvents.push({ kind: 'unexpected-reverse-message', value: message.data.value });
+    });
+    reverseReceivingPort.start();
+    globalThis.reversePortReady = true;
+  }
 };
 worker.onerror = event => workerErrors.push(event.message);
-</script><main>MessagePort decode recovery</main>"#;
+</script><main>MessagePort recovery and bridge close</main>"#;
     let worker_script = r#"
 const channel = new MessageChannel();
+const initialCloseState = { event: null, records: [] };
+const reverseCloseState = { event: null, records: [] };
+const recordClose = (state, kind, port, event, thisValue) => {
+  if (state.event === null) state.event = event;
+  state.records.push({
+    kind,
+    sameEvent: state.event === event,
+    type: event.type,
+    isEvent: event instanceof Event,
+    targetIsPort: event.target === port,
+    currentTargetIsPort: event.currentTarget === port,
+    eventPhase: event.eventPhase,
+    thisIsPort: thisValue === port,
+    bubbles: event.bubbles,
+    cancelable: event.cancelable,
+  });
+};
+const observeClose = (port, state, afterClose) => {
+  port.onclose = function(event) { recordClose(state, 'handler', port, event, this); afterClose(); };
+  port.addEventListener('close', function(event) { recordClose(state, 'listener', port, event, this); });
+};
+const closeReport = (port, state) => ({
+  records: state.records,
+  eventStateReset: state.event === null
+    || (state.event.currentTarget === null && state.event.eventPhase === 0),
+  portOpen: !port.__glassMessageClosed,
+  bridgeKeyCleared: port.__glassMessagePortBridgeKey === null,
+  peerCleared: port.__glassMessagePortPeer === null,
+});
+observeClose(channel.port2, initialCloseState, () => {
+  channel.port2.postMessage({ value: 'must-not-cross-after-close' });
+  Promise.resolve().then(() => postMessage({
+    kind: 'page-closed-worker-peer',
+    report: closeReport(channel.port2, initialCloseState),
+  }));
+});
 channel.port2.addEventListener('message', event => {
   channel.port2.postMessage({ value: event.data.value + 1 });
 });
 channel.port2.start();
 postMessage({ kind: 'port-ready' }, [channel.port1]);
+let reverseChannel = null;
+self.onmessage = event => {
+  if (event.data.kind === 'make-reverse') {
+    reverseChannel = new MessageChannel();
+    observeClose(reverseChannel.port2, reverseCloseState, () => {});
+    reverseChannel.port2.start();
+    postMessage({ kind: 'reverse-port' }, [reverseChannel.port1]);
+  } else if (event.data.kind === 'close-reverse') {
+    reverseChannel.port2.postMessage({ value: 'must-be-purged-before-close' });
+    reverseChannel.port2.close();
+    reverseChannel.port2.close();
+    postMessage({
+      kind: 'worker-closed-initiator',
+      report: closeReport(reverseChannel.port2, reverseCloseState),
+    });
+  }
+};
 "#;
     let server = tokio::spawn(async move {
         for (path, content_type, body) in [
@@ -7981,6 +8073,194 @@ await Promise.resolve();
             },
         })
     );
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"globalThis.initialBridgeKey = receivingPort.__glassMessagePortBridgeKey;
+globalThis.initialPortId = receivingPort.__glassMessagePortId;
+receivingPort.close();
+receivingPort.close();
+let postCloseError = null;
+try { receivingPort.postMessage({ value: 'closed' }); }
+catch (error) { postCloseError = error.name; }
+({
+  initiatorClosed: receivingPort.__glassMessageClosed,
+  initiatorBridgeKeyCleared: receivingPort.__glassMessagePortBridgeKey === null,
+  initiatorMapEntryRemoved: !__glassMessageBridgeRegistry.has(initialBridgeKey),
+  initiatorIdEntryRemoved: !__glassMessagePortRegistry.has(initialPortId),
+  initiatorCloseEvents: pageBridgeCloseState.records.length,
+  postCloseError,
+})"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "initiatorClosed": true,
+            "initiatorBridgeKeyCleared": true,
+            "initiatorMapEntryRemoved": true,
+            "initiatorIdEntryRemoved": true,
+            "initiatorCloseEvents": 0,
+            "postCloseError": "InvalidStateError",
+        })
+    );
+
+    let mut page_close_report = serde_json::Value::Null;
+    for _ in 0..8 {
+        page_close_report = engine
+            .evaluate_async(
+                "((workerEvents.find(event => event.data.kind === 'page-closed-worker-peer') || { data: {} }).data || {}).report || null",
+            )
+            .await
+            .unwrap();
+        if !page_close_report.is_null() {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        page_close_report,
+        serde_json::json!({
+            "records": [
+                {
+                    "kind": "handler", "sameEvent": true,
+                    "type": "close", "isEvent": true,
+                    "targetIsPort": true, "currentTargetIsPort": true,
+                    "eventPhase": 2, "thisIsPort": true,
+                    "bubbles": false, "cancelable": false,
+                },
+                {
+                    "kind": "listener", "sameEvent": true,
+                    "type": "close", "isEvent": true,
+                    "targetIsPort": true, "currentTargetIsPort": true,
+                    "eventPhase": 2, "thisIsPort": true,
+                    "bubbles": false, "cancelable": false,
+                },
+            ],
+            "eventStateReset": true,
+            "portOpen": true,
+            "bridgeKeyCleared": true,
+            "peerCleared": true,
+        })
+    );
+    assert_eq!(
+        engine.evaluate_async("portEvents.length").await.unwrap(),
+        serde_json::json!(2),
+        "the closed bridge must not deliver post-close messages"
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async("worker.postMessage({ kind: 'make-reverse' }); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    let mut reverse_port_ready = false;
+    for _ in 0..8 {
+        reverse_port_ready = engine
+            .evaluate_async("reversePortReady")
+            .await
+            .unwrap()
+            .as_bool()
+            .unwrap_or(false);
+        if reverse_port_ready {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    assert!(
+        reverse_port_ready,
+        "Worker should transfer the reverse endpoint"
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async("worker.postMessage({ kind: 'close-reverse' }); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    let mut reverse_close_state = serde_json::Value::Null;
+    for _ in 0..8 {
+        reverse_close_state = engine
+            .evaluate_async(
+                "({ pageRecords: reverseBridgeCloseState.records, pageEventStateReset: closeStateReset(reverseBridgeCloseState), pagePeerOpen: !reverseReceivingPort.__glassMessageClosed, pageBridgeKeyCleared: reverseReceivingPort.__glassMessagePortBridgeKey === null, pageBridgeMapEntryRemoved: !__glassMessageBridgeRegistry.has(reverseBridgeKey), unexpectedMessages: portEvents.filter(event => event.kind === 'unexpected-reverse-message'), workerInitiatorReport: ((workerEvents.find(event => event.data.kind === 'worker-closed-initiator') || { data: {} }).data || {}).report || null })",
+            )
+            .await
+            .unwrap();
+        if reverse_close_state["pageRecords"]
+            .as_array()
+            .map_or(0, Vec::len)
+            == 2
+            && !reverse_close_state["workerInitiatorReport"].is_null()
+        {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        reverse_close_state,
+        serde_json::json!({
+            "pageRecords": [
+                {
+                    "kind": "handler", "sameEvent": true,
+                    "type": "close", "isEvent": true,
+                    "targetIsPort": true, "currentTargetIsPort": true,
+                    "eventPhase": 2, "thisIsPort": true,
+                    "bubbles": false, "cancelable": false,
+                },
+                {
+                    "kind": "listener", "sameEvent": true,
+                    "type": "close", "isEvent": true,
+                    "targetIsPort": true, "currentTargetIsPort": true,
+                    "eventPhase": 2, "thisIsPort": true,
+                    "bubbles": false, "cancelable": false,
+                },
+            ],
+            "pageEventStateReset": true,
+            "pagePeerOpen": true,
+            "pageBridgeKeyCleared": true,
+            "pageBridgeMapEntryRemoved": true,
+            "unexpectedMessages": [],
+            "workerInitiatorReport": {
+                "records": [],
+                "eventStateReset": true,
+                "portOpen": false,
+                "bridgeKeyCleared": true,
+                "peerCleared": true,
+            },
+        })
+    );
+
+    engine
+        .evaluate_async("independentChannel.port2.postMessage({ value: 73 }); true")
+        .await
+        .unwrap();
+    let mut independent_messages = serde_json::Value::Null;
+    for _ in 0..8 {
+        independent_messages = engine.evaluate_async("independentMessages").await.unwrap();
+        if independent_messages
+            .as_array()
+            .is_some_and(|messages| !messages.is_empty())
+        {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    assert_eq!(independent_messages, serde_json::json!([73]));
 
     assert_eq!(
         engine

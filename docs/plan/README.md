@@ -291,10 +291,12 @@ messages. The focused process-backed HTTP regression passes. Transfer
 rollback, other receiver kinds, remote CI, and complete EventTarget/WPT
 conformance remain open; see the
 [slice 802 task](tasks/native-engine-browser-802.md).
-Slice 803 contracts the remaining page-side Service Worker client receiver:
-clone-decode failures must dispatch `messageerror` on
-`navigator.serviceWorker` with sender source/origin and without partial data,
-while preserving later client messages. Transfer rollback, full Web
+Slice 803 implements page-side Service Worker client recovery: clone-decode
+failures dispatch a `MessageEvent` named `messageerror` on
+`navigator.serviceWorker`, retaining the active worker source/origin without
+partial data or ports. Its process-backed regression verifies listener and
+`onmessageerror` delivery, no malformed `message`, and a later real
+`Client.postMessage()` event. Transfer rollback, full Web
 IDL/EventTarget/WPT, remote CI, and cross-platform certification remain open;
 see the [slice 803 task](tasks/native-engine-browser-803.md).
 Slice 766 implements native hyperlink Enter activation

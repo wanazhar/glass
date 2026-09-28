@@ -3793,10 +3793,14 @@ passes; Worker-global and MessagePort receivers remain separate boundaries.
 See
 [task 802](../plan/tasks/native-engine-browser-802.md).
 
-Slice 803 contracts the page-side Service Worker client receiver. A clone
-decode failure in `__glassDispatchServiceWorkerClientMessage` must produce a
-`MessageEvent` named `messageerror` on `navigator.serviceWorker`, retain the
-sending worker source/origin, and leave later client messages usable. See
+Slice 803 implements the page-side Service Worker client receiver.
+`__glassDispatchServiceWorkerClientMessage` converts clone decode failures to
+a `MessageEvent` named `messageerror` on `navigator.serviceWorker`, retaining
+the active worker source/origin without exposing partial data or ports. Its
+process-backed regression covers listener and `onmessageerror` delivery,
+event dispatch state, suppression of malformed `message`, and a later real
+`Client.postMessage()` delivery. Transfer rollback and complete
+ServiceWorkerContainer/EventTarget/WPT conformance remain open. See
 [task 803](../plan/tasks/native-engine-browser-803.md).
 
 Slice 400 completes the report-only CSP delivery lifecycle for the current

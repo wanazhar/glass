@@ -10792,6 +10792,177 @@ async fn native_content_process_service_worker_transfers_message_port_round_trip
 }
 
 #[tokio::test]
+async fn native_content_process_service_worker_client_messageerror_recovers() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let page = r#"<script>
+globalThis.clientMessageErrors = [];
+globalThis.clientMessages = [];
+globalThis.currentClientMessageError = null;
+globalThis.clientErrorHandlerThisIsContainer = false;
+globalThis.registrationPromise = navigator.serviceWorker.register('/client-messageerror-sw.js', { scope: '/' });
+globalThis.registrationPromise.then(registration => globalThis.clientRegistration = registration);
+const observeMessageError = (kind, event) => {
+  if (currentClientMessageError === null) currentClientMessageError = event;
+  clientMessageErrors.push({
+    kind,
+    sameEvent: currentClientMessageError === event,
+    type: event.type,
+    isMessageEvent: event instanceof MessageEvent,
+    targetIsContainer: event.target === navigator.serviceWorker,
+    currentTargetIsContainer: event.currentTarget === navigator.serviceWorker,
+    eventPhase: event.eventPhase,
+    dataIsNull: event.data === null,
+    portCount: event.ports.length,
+    origin: event.origin,
+    sourceIsActive: event.source === clientRegistration.active,
+    bubbles: event.bubbles,
+    cancelable: event.cancelable,
+  });
+};
+navigator.serviceWorker.addEventListener('messageerror', event => observeMessageError('listener', event));
+navigator.serviceWorker.onmessageerror = function(event) {
+  clientErrorHandlerThisIsContainer = this === navigator.serviceWorker;
+  observeMessageError('handler', event);
+};
+navigator.serviceWorker.addEventListener('message', event => clientMessages.push({
+  type: event.type,
+  isMessageEvent: event instanceof MessageEvent,
+  targetIsContainer: event.target === navigator.serviceWorker,
+  currentTargetIsContainer: event.currentTarget === navigator.serviceWorker,
+  eventPhase: event.eventPhase,
+  origin: event.origin,
+  sourceIsActive: event.source === clientRegistration.active,
+  data: event.data,
+}));
+</script><main>Service Worker client messageerror</main>"#;
+    let worker_script = r#"
+self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('message', event => {
+  event.source.postMessage({ kind: 'valid', value: event.data.value + 1 });
+});
+"#;
+    let server = tokio::spawn(async move {
+        for (path, content_type, body) in [
+            ("/client-messageerror-page", "text/html", page),
+            (
+                "/client-messageerror-sw.js",
+                "application/javascript",
+                worker_script,
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/client-messageerror-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                r#"await registrationPromise;
+const malformed = {
+  data: {
+    __glassMessageClone: 'glass-native-structured-clone-v1',
+    root: { ref: 0 },
+    nodes: [{ type: 'invalid-node' }],
+  },
+  transfer_ports: [],
+  object_urls: [],
+};
+__glassDispatchServiceWorkerClientMessage(malformed);
+await Promise.resolve();
+({
+  clientMessageErrors,
+  clientMessages,
+  handlerReadback: typeof navigator.serviceWorker.onmessageerror === 'function',
+  clientErrorHandlerThisIsContainer,
+  eventStateReset: currentClientMessageError.currentTarget === null
+    && currentClientMessageError.eventPhase === 0,
+})"#,
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "clientMessageErrors": [
+                {
+                    "kind": "listener", "sameEvent": true,
+                    "type": "messageerror", "isMessageEvent": true,
+                    "targetIsContainer": true, "currentTargetIsContainer": true,
+                    "eventPhase": 2, "dataIsNull": true, "portCount": 0,
+                    "origin": format!("http://{address}"), "sourceIsActive": true,
+                    "bubbles": false, "cancelable": false,
+                },
+                {
+                    "kind": "handler", "sameEvent": true,
+                    "type": "messageerror", "isMessageEvent": true,
+                    "targetIsContainer": true, "currentTargetIsContainer": true,
+                    "eventPhase": 2, "dataIsNull": true, "portCount": 0,
+                    "origin": format!("http://{address}"), "sourceIsActive": true,
+                    "bubbles": false, "cancelable": false,
+                },
+            ],
+            "clientMessages": [],
+            "handlerReadback": true,
+            "clientErrorHandlerThisIsContainer": true,
+            "eventStateReset": true,
+        })
+    );
+
+    assert_eq!(
+        engine
+            .evaluate_async("clientRegistration.active.postMessage({ value: 41 }); true")
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    let mut valid_message = serde_json::Value::Null;
+    for _ in 0..8 {
+        valid_message = engine
+            .evaluate_async("clientMessages.length > 0 ? clientMessages[0] : null")
+            .await
+            .unwrap();
+        if !valid_message.is_null() {
+            break;
+        }
+        engine
+            .evaluate_async("await new Promise(resolve => setTimeout(resolve, 0)); true")
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        valid_message,
+        serde_json::json!({
+            "type": "message",
+            "isMessageEvent": true,
+            "targetIsContainer": true,
+            "currentTargetIsContainer": true,
+            "eventPhase": 2,
+            "origin": format!("http://{address}"),
+            "sourceIsActive": true,
+            "data": { "kind": "valid", "value": 42 },
+        })
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_service_worker_message_port_callback_errors_stay_global() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

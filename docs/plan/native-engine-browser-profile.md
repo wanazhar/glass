@@ -497,6 +497,18 @@ to already-live page/frame loaders and durable profile persistence remain
 separate open requirements. See the
 [slice 815 task](tasks/native-engine-browser-815.md).
 
+Slice 816 synchronizes credential-accepted worker response-cookie changes to
+the owning live page/frame loader and configured native profile. The focused
+process-backed cookie tests passed (2 passed, 866 filtered; 69.53 seconds),
+and the Slice 814 credentials/redirect regression passed again (1 passed, 867
+filtered; 24.08 seconds). Evidence covers the owning page's next request,
+HttpOnly invisibility to script, profile reload, and deletion both immediately
+and after another reload. The scoped integration-test check passed with 68
+existing legacy HTML parser dead-code warnings. Fan-out to unrelated already-
+live page/frame processes, broader cookie/WPT conformance, and cross-platform
+coverage remain open. See the
+[slice 816 task](tasks/native-engine-browser-816.md).
+
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus
 preferences, focus-chain handoff, and complete focus Web Platform Test

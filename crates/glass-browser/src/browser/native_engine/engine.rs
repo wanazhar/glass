@@ -31,13 +31,13 @@ use super::interaction::{
 use super::javascript::{
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES,
     MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_WORKER_MESSAGES,
-    NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding, NativeFrameScriptContext,
-    NativeFrameScriptRequest, NativeHashChangeEvent, NativeHostEvent, NativeIndexedDbChange,
-    NativeIndexedDbState, NativeJavaScriptRuntime, NativeMessagePortPageMessage,
-    NativeMessagePortTransfer, NativePageEventBatch, NativePageMessageEvent,
-    NativePageMessagePortCommand, NativePageNavigation, NativePageScript, NativePageScriptResult,
-    NativePopupRequest, NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
-    NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
+    NativeCookieChange, NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding,
+    NativeFrameScriptContext, NativeFrameScriptRequest, NativeHashChangeEvent, NativeHostEvent,
+    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
+    NativeMessagePortPageMessage, NativeMessagePortTransfer, NativePageEventBatch,
+    NativePageMessageEvent, NativePageMessagePortCommand, NativePageNavigation, NativePageScript,
+    NativePageScriptResult, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
+    NativeScriptEvaluation, NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest,
     NativeSharedWorkerCreateRequest, NativeStorageEvent, NativeWebStorageState,
     NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
@@ -3001,6 +3001,21 @@ impl NativeEngine {
         if self.content_process.is_none() {
             self.persist_local_web_storage()?;
         }
+        Ok(())
+    }
+
+    pub(crate) async fn apply_cookie_changes_async(
+        &mut self,
+        changes: &[NativeCookieChange],
+    ) -> Result<(), NativeEngineError> {
+        self.require_running("apply SharedWorker cookie changes")?;
+        let mut loader = self.loader.clone();
+        loader.apply_cookie_changes(changes)?;
+        if let Some(process) = self.content_process.as_mut() {
+            process.apply_cookie_changes(changes).await?;
+        }
+        self.loader = loader;
+        self.persist_local_web_storage()?;
         Ok(())
     }
 

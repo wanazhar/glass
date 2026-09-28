@@ -2481,6 +2481,31 @@ impl NativeContentProcess {
         require_response_kind(&response, "cookies_set", id, "content process set cookies")
     }
 
+    pub(crate) async fn apply_cookie_changes(
+        &mut self,
+        changes: &[NativeCookieChange],
+    ) -> Result<(), NativeEngineError> {
+        let id = self.next_id();
+        let response = self
+            .exchange_with_timeout(
+                json!({
+                "kind": "apply_cookie_changes",
+                "id": id,
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "changes": changes,
+                }),
+                "content process apply cookie changes",
+                CONTENT_PROCESS_SCRIPT_TIMEOUT,
+            )
+            .await?;
+        require_response_kind(
+            &response,
+            "cookie_changes_applied",
+            id,
+            "content process apply cookie changes",
+        )
+    }
+
     pub(crate) async fn clear_cookies(&mut self) -> Result<(), NativeEngineError> {
         let id = self.next_id();
         let response = self
@@ -5364,6 +5389,31 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     document_url.as_deref(),
                 )?;
                 json!({"kind":"cookies_set","id":id})
+            }
+            "apply_cookie_changes" if protocol_matches(&request) && running => {
+                let values = request.get("changes").ok_or_else(|| {
+                    NativeEngineError::invalid("content-process cookie changes", "must be an array")
+                })?;
+                let changes: Vec<NativeCookieChange> = serde_json::from_value(values.clone())
+                    .map_err(|_| {
+                        NativeEngineError::invalid(
+                            "content-process cookie changes",
+                            "must contain valid native cookie changes",
+                        )
+                    })?;
+                let Some(loader) = resource_loader.as_mut() else {
+                    return Err(NativeEngineError::Worker {
+                        operation: "content process apply cookie changes".into(),
+                        reason: "content process has no resource loader".into(),
+                    });
+                };
+                loader.apply_cookie_changes(&changes)?;
+                refresh_content_runtime_cookie(
+                    javascript_runtime.as_ref(),
+                    resource_loader.as_ref(),
+                    document_url.as_deref(),
+                )?;
+                json!({"kind":"cookie_changes_applied","id":id})
             }
             "clear_cookies" if protocol_matches(&request) && running => {
                 let Some(loader) = resource_loader.as_mut() else {

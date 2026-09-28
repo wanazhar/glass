@@ -28,8 +28,7 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is locally complete through
-`native-engine-browser-811`; Slice 812 is in progress for live iframe removal
-and owner detach/reinsert lifecycle. Slice 767 verifies native hyperlink Enter
+`native-engine-browser-812`. Slice 767 verifies native hyperlink Enter
 activation through local and process-backed `_blank` target and download
 defaults, including cancellation and opener preservation; see the
 [slice 767 task](tasks/native-engine-browser-767.md) for local evidence and
@@ -369,12 +368,13 @@ navigation or successful recovery, after outgoing lifecycle effects and before
 replacement worker effects. The process-backed regression verifies same-
 document preservation, child and ancestor replacement, recovery, surviving
 target isolation, and replacement-route delivery (1 passed, 863 filtered;
-68.92 seconds). Slice 812 is implementing live iframe owner removal and
-replacement. Complete storage-key/partition/agent-cluster/credentials
-matching, detached `WindowProxy`, iframe/WPT, and SharedWorker conformance
-remain open. See the [slice 811 task](tasks/native-engine-browser-811.md) for
-completed evidence and the [slice 812 task](tasks/native-engine-browser-812.md)
-for the active contract.
+68.92 seconds). Slice 812 implements live iframe removal/reinsertion,
+descendant teardown, fresh owner identity, survivor isolation, and no unload
+delivery (1 passed, 864 filtered; 85.59 seconds). Complete
+storage-key/partition/agent-cluster/credentials matching, detached
+`WindowProxy`, iframe/WPT, and SharedWorker conformance remain open. See the
+[slice 811 task](tasks/native-engine-browser-811.md) and
+[slice 812 task](tasks/native-engine-browser-812.md) for exact evidence.
 Slice 766 implements native hyperlink Enter activation
 across local, process-backed, and same-origin frame paths; see the
 [slice 766 task](tasks/native-engine-browser-766.md). Slices 758 and 759 implement the autonomous and

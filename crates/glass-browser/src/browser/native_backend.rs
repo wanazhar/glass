@@ -68,6 +68,17 @@ struct NativeParkedFrame {
     sandboxed_modals: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeFrameDiscoveryStamp {
+    document_generation: u32,
+    document_revision: u64,
+}
+
+struct NativeRetiredFrame {
+    frame_id: String,
+    engine: NativeEngine,
+}
+
 #[derive(Clone)]
 enum NativeFrameRoute {
     ActiveSelected,
@@ -189,6 +200,9 @@ struct NativeFrameState {
     parked: BTreeMap<String, NativeParkedFrame>,
     next_frame_number: u64,
     discovered_generation: Option<u32>,
+    discovered_documents: BTreeMap<String, NativeFrameDiscoveryStamp>,
+    observed_frame_owner_removal_sequences: BTreeMap<(String, u32, u32), u64>,
+    pending_retired: Vec<NativeRetiredFrame>,
 }
 
 impl NativeFrameState {
@@ -202,6 +216,9 @@ impl NativeFrameState {
             parked: BTreeMap::new(),
             next_frame_number: 1,
             discovered_generation: None,
+            discovered_documents: BTreeMap::new(),
+            observed_frame_owner_removal_sequences: BTreeMap::new(),
+            pending_retired: Vec::new(),
         }
     }
 
@@ -215,6 +232,9 @@ impl NativeFrameState {
             parked: BTreeMap::new(),
             next_frame_number: 1,
             discovered_generation: None,
+            discovered_documents: BTreeMap::new(),
+            observed_frame_owner_removal_sequences: BTreeMap::new(),
+            pending_retired: Vec::new(),
         }
     }
 
@@ -664,8 +684,9 @@ impl NativeEngineBackend {
                 reason: error.to_string(),
             }
         })?;
+        self.synchronize_native_service_worker_clients().await?;
         let mut targets = self.lock_targets(BackendOperation::Capture)?;
-        let engine = self.lock_engine_raw(BackendOperation::Capture)?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Capture)?;
         let target_id =
             targets
                 .active_target_id
@@ -676,7 +697,7 @@ impl NativeEngineBackend {
                     reason: "select an available native page target before capture".into(),
                 })?;
         let frame_id = targets.active_frames.active_frame_id.clone();
-        reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+        reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
 
         let target_node = options
             .target
@@ -777,9 +798,9 @@ impl NativeEngineBackend {
                     }
                 })?;
                 require_context_id(context_id, &active_context_id)?;
-                let engine = self.lock_engine_raw(BackendOperation::Action)?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Action)?;
                 let root_frame_id = targets.active_frames.active_frame_id.clone();
-                reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+                reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
                 find_native_point_frame(&targets.active_frames, &root_frame_id, &engine, x, y, 0)?
             })
         else {
@@ -918,9 +939,9 @@ impl NativeEngineBackend {
                         reason: "select an available native page target before acting".into(),
                     })?;
             require_context_id(context_id, &active_context_id)?;
-            let engine = self.lock_engine_raw(BackendOperation::Action)?;
+            let mut engine = self.lock_engine_raw(BackendOperation::Action)?;
             let root_frame_id = targets.active_frames.active_frame_id.clone();
-            reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+            reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
             let candidate_frame_ids = std::iter::once(root_frame_id.clone())
                 .chain(targets.active_frames.descendant_ids(&root_frame_id))
                 .collect::<Vec<_>>();
@@ -1058,9 +1079,9 @@ impl NativeEngineBackend {
                     })?;
             require_context_id(context_id, &active_context_id)?;
             validate_native_topology_id(frame_id)?;
-            let engine = self.lock_engine_raw(BackendOperation::Action)?;
+            let mut engine = self.lock_engine_raw(BackendOperation::Action)?;
             let root_frame_id = targets.active_frames.active_frame_id.clone();
-            reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+            reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
             if frame_id != root_frame_id && !targets.active_frames.parked.contains_key(frame_id) {
                 return Err(BrowserBackendError::SelectionFailed {
                     reason: "native semantic frame is no longer attached; inspect again".into(),
@@ -1125,9 +1146,9 @@ impl NativeEngineBackend {
                     })?;
             require_context_id(context_id, &active_context_id)?;
             validate_native_topology_id(frame_id)?;
-            let engine = self.lock_engine_raw(BackendOperation::Action)?;
+            let mut engine = self.lock_engine_raw(BackendOperation::Action)?;
             let root_frame_id = targets.active_frames.active_frame_id.clone();
-            reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+            reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
             if frame_id != root_frame_id && !targets.active_frames.parked.contains_key(frame_id) {
                 return Err(BrowserBackendError::SelectionFailed {
                     reason: "native upload frame is no longer attached; inspect again".into(),
@@ -1306,9 +1327,9 @@ impl NativeEngineBackend {
                     }
                 })?;
                 require_context_id(context_id, &active_context_id)?;
-                let engine = self.lock_engine_raw(BackendOperation::Action)?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Action)?;
                 let root_frame_id = targets.active_frames.active_frame_id.clone();
-                reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+                reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
                 let Some(focused_frame_id) = targets.active_frames.focused_frame_id.clone() else {
                     return Ok(None);
                 };
@@ -1381,9 +1402,9 @@ impl NativeEngineBackend {
                 reason: "select an available native page target before target preflight".into(),
             });
         }
-        let engine = self.lock_engine_raw(BackendOperation::Evidence)?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Evidence)?;
         let root_frame_id = targets.active_frames.active_frame_id.clone();
-        reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+        reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
         let frame_ids = std::iter::once(root_frame_id.clone())
             .chain(targets.active_frames.descendant_ids(&root_frame_id))
             .collect::<Vec<_>>();
@@ -1474,6 +1495,7 @@ impl NativeEngineBackend {
     pub async fn inspection_snapshots(
         &self,
     ) -> Result<Vec<NativeFrameInspectionSnapshot>, BrowserBackendError> {
+        self.synchronize_native_service_worker_clients().await?;
         let mut targets = self.lock_targets(BackendOperation::Evidence)?;
         if targets.active_target_id.is_none() {
             return Err(BrowserBackendError::Lifecycle {
@@ -1482,9 +1504,9 @@ impl NativeEngineBackend {
                 reason: "select an available native page target before semantic inspection".into(),
             });
         }
-        let engine = self.lock_engine_raw(BackendOperation::Evidence)?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Evidence)?;
         let root_frame_id = targets.active_frames.active_frame_id.clone();
-        reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+        reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
         let frame_ids = std::iter::once(root_frame_id.clone())
             .chain(targets.active_frames.descendant_ids(&root_frame_id))
             .collect::<Vec<_>>();
@@ -1676,6 +1698,7 @@ impl NativeEngineBackend {
     /// child frame is initialized before publication, so every returned frame
     /// has a live native document owner.
     pub async fn list_frames(&self) -> Result<Vec<FrameInfo>, BrowserBackendError> {
+        self.synchronize_native_service_worker_clients().await?;
         let mut targets = self.lock_targets(BackendOperation::Contexts)?;
         if targets.active_target_id.is_none() {
             return Err(BrowserBackendError::Lifecycle {
@@ -1684,8 +1707,8 @@ impl NativeEngineBackend {
                 reason: "select an available native page target before frame discovery".into(),
             });
         }
-        let engine = self.lock_engine_raw(BackendOperation::Contexts)?;
-        reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Contexts)?;
+        reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
         let active_frame = project_native_frame(
             &engine,
             &targets.active_frames.active_frame_id,
@@ -1711,8 +1734,8 @@ impl NativeEngineBackend {
         if targets.active_target_id.is_none() {
             return Ok(Vec::new());
         }
-        let engine = self.lock_engine_raw(BackendOperation::Script)?;
-        reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+        reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
         let active_frame_id = targets.active_frames.active_frame_id.clone();
         let parent_snapshot = engine.snapshot().map_err(native_error)?;
         native_frame_script_children(
@@ -1730,8 +1753,8 @@ impl NativeEngineBackend {
         let Some(target_id) = targets.active_target_id.clone() else {
             return Ok(None);
         };
-        let engine = self.lock_engine_raw(BackendOperation::Script)?;
-        reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+        reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
         let Some(parent_id) = targets.active_frames.active_parent_id.clone() else {
             return Ok(None);
         };
@@ -1797,8 +1820,8 @@ impl NativeEngineBackend {
         let Some(target_id) = targets.active_target_id.clone() else {
             return Ok(None);
         };
-        let engine = self.lock_engine_raw(BackendOperation::Action)?;
-        reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Action)?;
+        reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
         let (parent_id, owner_node_index) = if targets.active_frames.active_frame_id == frame_id {
             (
                 targets.active_frames.active_parent_id.clone(),
@@ -6359,12 +6382,22 @@ impl NativeEngineBackend {
             return Ok(());
         }
 
-        reconcile_native_frames(&mut targets.active_frames, &engine).await?;
+        reconcile_native_frame_tree(&mut targets.active_frames, &mut engine).await?;
+        let active_context_id = engine.config().context_id.clone();
+        let mut retired_frames = std::mem::take(&mut targets.active_frames.pending_retired)
+            .into_iter()
+            .map(|frame| (active_context_id.clone(), frame))
+            .collect::<Vec<_>>();
         for target in targets.parked.values_mut() {
             if target.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running {
-                let target_engine = &target.engine;
-                reconcile_native_frames(&mut target.frames, target_engine).await?;
+                reconcile_native_frame_tree(&mut target.frames, &mut target.engine).await?;
             }
+            let target_id = target.engine.config().context_id.clone();
+            retired_frames.extend(
+                std::mem::take(&mut target.frames.pending_retired)
+                    .into_iter()
+                    .map(|frame| (target_id.clone(), frame)),
+            );
         }
 
         engine
@@ -6481,7 +6514,27 @@ impl NativeEngineBackend {
                 .await
                 .map_err(native_error)?;
         }
-        Ok(())
+        drop(engine);
+        drop(targets);
+
+        let mut first_error = None;
+        for (context_id, mut retired) in retired_frames {
+            if let Err(error) = self
+                .close_shared_worker_owners_for_frame(&context_id, &retired.frame_id)
+                .await
+            {
+                first_error.get_or_insert(error);
+            }
+            if let Err(error) = self.clear_page_message_port_routes_for_frame(&retired.frame_id) {
+                first_error.get_or_insert(error);
+            }
+            if retired.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
+                && let Err(error) = retired.engine.close_async().await.map_err(native_error)
+            {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 }
 
@@ -6557,6 +6610,7 @@ impl BrowserBackend for NativeEngineBackend {
                         .dispatch_point_click(&action_request.context_id, target, modifiers)
                         .await?
                 {
+                    self.synchronize_native_service_worker_clients().await?;
                     return Ok(response);
                 }
             }
@@ -6566,6 +6620,7 @@ impl BrowserBackend for NativeEngineBackend {
                     .dispatch_locator_action(&action_request.context_id, &action_request.action)
                     .await?
             {
+                self.synchronize_native_service_worker_clients().await?;
                 return Ok(response);
             }
             if let (BackendOperation::Action, BackendRequest::Action(action_request)) =
@@ -6589,6 +6644,7 @@ impl BrowserBackend for NativeEngineBackend {
                         .dispatch_focused_frame_action(&action_request.context_id, focused_action)
                         .await?
                 {
+                    self.synchronize_native_service_worker_clients().await?;
                     return Ok(response);
                 }
             }
@@ -6776,6 +6832,7 @@ impl BrowserBackend for NativeEngineBackend {
                         page_message_port_commands,
                     )
                     .await?;
+                    self.synchronize_native_service_worker_clients().await?;
                     Ok(BackendResponse::Action(ActionResult {
                         context_id: active_context_id.clone(),
                         revision: outcome.revision,
@@ -6833,6 +6890,7 @@ impl BrowserBackend for NativeEngineBackend {
                         page_message_port_commands,
                     )
                     .await?;
+                    self.synchronize_native_service_worker_clients().await?;
                     Ok(BackendResponse::Script(ScriptResult { value }))
                 }
                 (BackendOperation::Capture, BackendRequest::Capture(request)) => {
@@ -7370,12 +7428,20 @@ async fn close_native_frame_descendants(
         let Some(mut frame) = frames.parked.remove(&descendant) else {
             continue;
         };
+        frames.discovered_documents.remove(&descendant);
+        frames
+            .observed_frame_owner_removal_sequences
+            .retain(|(observed_frame_id, _, _), _| observed_frame_id != &descendant);
         if frame.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
             && let Err(error) = frame.engine.close_async().await.map_err(native_error)
         {
             first_error.get_or_insert(error);
         }
     }
+    frames.discovered_documents.remove(frame_id);
+    frames
+        .observed_frame_owner_removal_sequences
+        .retain(|(observed_frame_id, _, _), _| observed_frame_id != frame_id);
     first_error.map_or(Ok(()), Err)
 }
 
@@ -7414,7 +7480,15 @@ async fn activate_navigated_frame_if_ancestor(
         {
             first_error.get_or_insert(error);
         }
+        frames.discovered_documents.remove(&descendant);
+        frames
+            .observed_frame_owner_removal_sequences
+            .retain(|(observed_frame_id, _, _), _| observed_frame_id != &descendant);
     }
+    frames.discovered_documents.remove(frame_id);
+    frames
+        .observed_frame_owner_removal_sequences
+        .retain(|(observed_frame_id, _, _), _| observed_frame_id != frame_id);
     frames.active_frame_id = frame_id.to_owned();
     frames.active_parent_id = parent_id;
     frames.active_owner_node_index = owner_node_index;
@@ -8221,110 +8295,133 @@ fn iframe_sandboxed_modals(inherited: bool, sandbox: Option<&str>) -> bool {
 
 async fn reconcile_native_frames(
     frames: &mut NativeFrameState,
-    engine: &NativeEngine,
+    engine: &mut NativeEngine,
 ) -> Result<(), BrowserBackendError> {
     let generation = engine.document_generation().map_err(native_error)?;
-    if frames.discovered_generation == Some(generation) {
+    let revision = engine.document_revision().map_err(native_error)?;
+    let active_frame_id = frames.active_frame_id.clone();
+    let stamp = NativeFrameDiscoveryStamp {
+        document_generation: generation,
+        document_revision: revision,
+    };
+    let previous_stamp = frames.discovered_documents.get(&active_frame_id).copied();
+    frames.observed_frame_owner_removal_sequences.retain(
+        |(frame_id, document_generation, _), _| {
+            frame_id != &active_frame_id || *document_generation == generation
+        },
+    );
+    let mut removed_owner_indices = BTreeSet::new();
+    for (owner_node_index, sequence) in engine
+        .embedded_frame_owner_removal_sequences()
+        .map_err(native_error)?
+    {
+        let key = (active_frame_id.clone(), generation, owner_node_index);
+        let previous_sequence = frames
+            .observed_frame_owner_removal_sequences
+            .get(&key)
+            .copied()
+            .unwrap_or_default();
+        if sequence > previous_sequence {
+            removed_owner_indices.insert(owner_node_index);
+            frames
+                .observed_frame_owner_removal_sequences
+                .insert(key, sequence);
+        }
+    }
+    if previous_stamp == Some(stamp) && removed_owner_indices.is_empty() {
         return Ok(());
     }
-    let active_frame_id = frames.active_frame_id.clone();
-    for frame_id in frames.descendant_ids(&active_frame_id) {
-        if let Some(mut frame) = frames.parked.remove(&frame_id)
-            && frame.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
-        {
-            let _ = frame.engine.close_async().await;
-        }
+
+    let sources = engine.embedded_frame_sources().map_err(native_error)?;
+    let source_owner_indices = sources
+        .iter()
+        .map(|(node_index, _, _)| *node_index)
+        .collect::<BTreeSet<_>>();
+    let generation_changed =
+        previous_stamp.is_none_or(|previous| previous.document_generation != generation);
+    let mut retired_roots = frames
+        .parked
+        .iter()
+        .filter(|(_, frame)| frame.parent_id.as_deref() == Some(active_frame_id.as_str()))
+        .filter_map(|(frame_id, frame)| {
+            let owner_node_index = frame.owner_node_index?;
+            (generation_changed
+                || !source_owner_indices.contains(&owner_node_index)
+                || removed_owner_indices.contains(&owner_node_index))
+            .then_some(frame_id.clone())
+        })
+        .collect::<Vec<_>>();
+    retired_roots.sort();
+    for frame_id in retired_roots {
+        retire_native_frame_subtree(frames, &frame_id);
     }
+
     let target_id = engine.config().context_id.clone();
-    let mut created: BTreeMap<String, NativeParkedFrame> = BTreeMap::new();
-    let mut pending_parents = VecDeque::from([active_frame_id.clone()]);
-    while let Some(parent_id) = pending_parents.pop_front() {
-        let (sources, base_config, parent_sandboxed_modals) = if parent_id == active_frame_id {
-            (
-                engine.embedded_frame_sources().map_err(native_error)?,
-                engine.config().clone(),
-                frames.active_sandboxed_modals,
-            )
-        } else {
-            let parent =
-                created
-                    .get(&parent_id)
-                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                        reason: "native frame parent disappeared during discovery".into(),
-                    })?;
-            (
-                parent
-                    .engine
-                    .embedded_frame_sources()
-                    .map_err(native_error)?,
-                parent.engine.config().clone(),
-                parent.sandboxed_modals,
-            )
-        };
-        for (node_index, source, sandbox) in sources {
-            if frames.frame_count().saturating_add(created.len()) >= NATIVE_MAX_FRAMES {
-                return Err(BrowserBackendError::SelectionFailed {
-                    reason: format!("native frame limit reached ({NATIVE_MAX_FRAMES})"),
-                });
-            }
-            let frame_id = frames.next_frame_id(&target_id);
-            let parent_engine = if parent_id == active_frame_id {
-                engine
-            } else {
-                &created
-                    .get(&parent_id)
-                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                        reason: "native frame parent disappeared during discovery".into(),
-                    })?
-                    .engine
-            };
-            let requested_frame_url = parent_engine
-                .resolve_embedded_frame_url(&source)
-                .map_err(native_error)?;
-            let frame_url = if parent_engine
-                .allows_embedded_frame_url(&requested_frame_url)
-                .map_err(native_error)?
-            {
-                requested_frame_url
-            } else {
-                "about:blank".to_owned()
-            };
-            let frame_viewport = native_frame_viewport(parent_engine, node_index)?;
-            let sandboxed_modals =
-                iframe_sandboxed_modals(parent_sandboxed_modals, sandbox.as_deref());
-            let (embedding_document_url, embedding_frame_sources) =
-                parent_engine.frame_navigation_policy();
-            let child_config = base_config.clone().with_initial_url(frame_url);
-            let child_config = if let Some(viewport) = frame_viewport {
-                child_config.with_viewport(viewport)
-            } else {
-                child_config
-            };
-            let mut child = NativeEngine::new_with_browser_shared_workers(
-                child_config,
-                engine.dialog_control_plane(),
-            )
-            .map_err(native_error)?;
-            child.set_frame_id(frame_id.clone());
-            child.inherit_service_worker_clients(&parent_engine.service_worker_clients());
-            child.set_embedding_frame_policy(embedding_document_url, embedding_frame_sources);
-            if let Err(error) = child.initialize_async().await {
-                let _ = child.close_async().await;
-                return Err(native_error(error));
-            }
-            pending_parents.push_back(frame_id.clone());
-            created.insert(
-                frame_id,
-                NativeParkedFrame {
-                    engine: child,
-                    parent_id: Some(parent_id.clone()),
-                    owner_node_index: Some(node_index),
-                    sandboxed_modals,
-                },
-            );
+    let base_config = engine.config().clone();
+    let parent_sandboxed_modals = frames.active_sandboxed_modals;
+    let parent_service_worker_clients = engine.service_worker_clients();
+    let (embedding_document_url, embedding_frame_sources) = engine.frame_navigation_policy();
+    let mut children_to_create = Vec::new();
+    for (node_index, source, sandbox) in sources {
+        let already_attached = frames.parked.values().any(|frame| {
+            frame.parent_id.as_deref() == Some(active_frame_id.as_str())
+                && frame.owner_node_index == Some(node_index)
+        });
+        if !already_attached {
+            children_to_create.push((node_index, source, sandbox));
         }
     }
-    frames.parked.extend(created);
+    for (node_index, source, sandbox) in children_to_create {
+        if frames.frame_count() >= NATIVE_MAX_FRAMES {
+            return Err(BrowserBackendError::SelectionFailed {
+                reason: format!("native frame limit reached ({NATIVE_MAX_FRAMES})"),
+            });
+        }
+        let requested_frame_url = engine
+            .resolve_embedded_frame_url(&source)
+            .map_err(native_error)?;
+        let frame_url = if engine
+            .allows_embedded_frame_url(&requested_frame_url)
+            .map_err(native_error)?
+        {
+            requested_frame_url
+        } else {
+            "about:blank".to_owned()
+        };
+        let frame_viewport = native_frame_viewport(engine, node_index)?;
+        let sandboxed_modals = iframe_sandboxed_modals(parent_sandboxed_modals, sandbox.as_deref());
+        let child_config = base_config.clone().with_initial_url(frame_url);
+        let child_config = if let Some(viewport) = frame_viewport {
+            child_config.with_viewport(viewport)
+        } else {
+            child_config
+        };
+        let frame_id = frames.next_frame_id(&target_id);
+        let mut child = NativeEngine::new_with_browser_shared_workers(
+            child_config,
+            engine.dialog_control_plane(),
+        )
+        .map_err(native_error)?;
+        child.set_frame_id(frame_id.clone());
+        child.inherit_service_worker_clients(&parent_service_worker_clients);
+        child.set_embedding_frame_policy(
+            embedding_document_url.clone(),
+            embedding_frame_sources.clone(),
+        );
+        if let Err(error) = child.initialize_async().await {
+            let _ = child.close_async().await;
+            return Err(native_error(error));
+        }
+        frames.parked.insert(
+            frame_id,
+            NativeParkedFrame {
+                engine: child,
+                parent_id: Some(active_frame_id.clone()),
+                owner_node_index: Some(node_index),
+                sandboxed_modals,
+            },
+        );
+    }
     if frames
         .focused_frame_id
         .as_deref()
@@ -8333,6 +8430,81 @@ async fn reconcile_native_frames(
         frames.focused_frame_id = Some(active_frame_id.clone());
     }
     frames.discovered_generation = Some(generation);
+    frames.discovered_documents.insert(active_frame_id, stamp);
+    Ok(())
+}
+
+fn retire_native_frame_subtree(frames: &mut NativeFrameState, root_frame_id: &str) {
+    let mut frame_ids = frames.descendant_ids(root_frame_id);
+    frame_ids.push(root_frame_id.to_owned());
+    for frame_id in frame_ids {
+        if let Some(frame) = frames.parked.remove(&frame_id) {
+            frames.pending_retired.push(NativeRetiredFrame {
+                frame_id: frame_id.clone(),
+                engine: frame.engine,
+            });
+        }
+        frames.discovered_documents.remove(&frame_id);
+        frames
+            .observed_frame_owner_removal_sequences
+            .retain(|(observed_frame_id, _, _), _| observed_frame_id != &frame_id);
+        if frames.focused_frame_id.as_deref() == Some(frame_id.as_str()) {
+            frames.focused_frame_id = Some(frames.active_frame_id.clone());
+        }
+    }
+}
+
+async fn reconcile_native_frame_tree(
+    frames: &mut NativeFrameState,
+    active_engine: &mut NativeEngine,
+) -> Result<(), BrowserBackendError> {
+    let target_id = active_engine.config().context_id.clone();
+    let root_frame_id = native_main_frame_id(&target_id);
+    let original_active_frame_id = frames.active_frame_id.clone();
+    let original_focused_frame_id = frames.focused_frame_id.clone();
+    if root_frame_id != frames.active_frame_id && !frames.parked.contains_key(&root_frame_id) {
+        return Err(BrowserBackendError::SelectionFailed {
+            reason: "native frame tree has no live root document".into(),
+        });
+    }
+
+    let mut pending_parents = VecDeque::from([root_frame_id]);
+    let mut visited = BTreeSet::new();
+    while let Some(parent_frame_id) = pending_parents.pop_front() {
+        if !visited.insert(parent_frame_id.clone()) {
+            continue;
+        }
+        if parent_frame_id != frames.active_frame_id {
+            if !frames.parked.contains_key(&parent_frame_id) {
+                continue;
+            }
+            activate_parked_frame_for_navigation(frames, active_engine, &parent_frame_id)?;
+        }
+        reconcile_native_frames(frames, active_engine).await?;
+        let mut children = frames
+            .parked
+            .iter()
+            .filter(|(_, frame)| frame.parent_id.as_deref() == Some(parent_frame_id.as_str()))
+            .map(|(frame_id, frame)| (frame.owner_node_index.unwrap_or(u32::MAX), frame_id.clone()))
+            .collect::<Vec<_>>();
+        children.sort();
+        pending_parents.extend(children.into_iter().map(|(_, frame_id)| frame_id));
+    }
+
+    if frames.active_frame_id != original_active_frame_id
+        && frames.parked.contains_key(&original_active_frame_id)
+    {
+        activate_parked_frame_for_navigation(frames, active_engine, &original_active_frame_id)?;
+    }
+    frames.focused_frame_id = match original_focused_frame_id {
+        Some(focused)
+            if focused == frames.active_frame_id || frames.parked.contains_key(&focused) =>
+        {
+            Some(focused)
+        }
+        Some(_) => Some(frames.active_frame_id.clone()),
+        None => None,
+    };
     Ok(())
 }
 

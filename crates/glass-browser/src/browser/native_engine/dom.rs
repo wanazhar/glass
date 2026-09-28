@@ -251,6 +251,10 @@ pub(crate) struct NativeDocumentWire {
     #[serde(default)]
     pub(crate) started_script_nodes: Vec<u32>,
     #[serde(default)]
+    pub(crate) embedded_frame_owner_removal_sequences: BTreeMap<u32, u64>,
+    #[serde(default)]
+    pub(crate) next_embedded_frame_owner_removal_sequence: u64,
+    #[serde(default)]
     pub(crate) image_resources: Vec<NativeImageResourceWire>,
     #[serde(default)]
     pub(crate) background_image_sources: Vec<NativeBackgroundImageSourceWire>,
@@ -929,6 +933,8 @@ pub struct NativeDocument {
     started_script_nodes: BTreeSet<u32>,
     processed_csp_meta_nodes: BTreeSet<u32>,
     pending_csp_meta_policies: BTreeMap<u32, String>,
+    embedded_frame_owner_removal_sequences: BTreeMap<u32, u64>,
+    next_embedded_frame_owner_removal_sequence: u64,
     image_resources: BTreeMap<u32, NativeImageResource>,
     image_loads: BTreeMap<u32, String>,
     media_resources: BTreeMap<u32, NativeMediaResource>,
@@ -1456,6 +1462,8 @@ impl NativeDocument {
             started_script_nodes: BTreeSet::new(),
             processed_csp_meta_nodes: BTreeSet::new(),
             pending_csp_meta_policies: BTreeMap::new(),
+            embedded_frame_owner_removal_sequences: BTreeMap::new(),
+            next_embedded_frame_owner_removal_sequence: 0,
             image_resources: BTreeMap::new(),
             image_loads: BTreeMap::new(),
             media_resources: BTreeMap::new(),
@@ -3366,6 +3374,11 @@ impl NativeDocument {
                 })
                 .collect(),
             started_script_nodes: self.started_script_nodes.iter().copied().collect(),
+            embedded_frame_owner_removal_sequences: self
+                .embedded_frame_owner_removal_sequences
+                .clone(),
+            next_embedded_frame_owner_removal_sequence: self
+                .next_embedded_frame_owner_removal_sequence,
             image_resources,
             background_image_sources,
             background_image_resources,
@@ -3384,6 +3397,9 @@ impl NativeDocument {
     ) -> Result<Self, NativeEngineError> {
         let viewport = wire.viewport;
         let quirks_mode = wire.quirks_mode;
+        let embedded_frame_owner_removal_sequences = wire.embedded_frame_owner_removal_sequences;
+        let next_embedded_frame_owner_removal_sequence =
+            wire.next_embedded_frame_owner_removal_sequence;
         viewport.validate()?;
         limits.validate()?;
         if wire.nodes.is_empty() {
@@ -4270,6 +4286,24 @@ impl NativeDocument {
                 });
             }
         }
+        if embedded_frame_owner_removal_sequences
+            .iter()
+            .any(|(node_index, sequence)| {
+                usize::try_from(*node_index).map_or(true, |index| {
+                    index >= nodes.len()
+                        || !matches!(
+                            nodes.get(index).and_then(NativeNode::element_name),
+                            Some("iframe" | "frame")
+                        )
+                }) || *sequence == 0
+                    || *sequence > next_embedded_frame_owner_removal_sequence
+            })
+        {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "content process returned invalid iframe-removal bookkeeping".into(),
+            });
+        }
         let mut document = Self {
             generation,
             revision: u64::from(generation),
@@ -4291,6 +4325,8 @@ impl NativeDocument {
             started_script_nodes,
             processed_csp_meta_nodes: BTreeSet::new(),
             pending_csp_meta_policies: BTreeMap::new(),
+            embedded_frame_owner_removal_sequences,
+            next_embedded_frame_owner_removal_sequence,
             image_resources,
             image_loads,
             media_resources,
@@ -4460,6 +4496,8 @@ impl NativeDocument {
             started_script_nodes: BTreeSet::new(),
             processed_csp_meta_nodes: BTreeSet::new(),
             pending_csp_meta_policies: BTreeMap::new(),
+            embedded_frame_owner_removal_sequences: BTreeMap::new(),
+            next_embedded_frame_owner_removal_sequence: 0,
             image_resources: BTreeMap::new(),
             image_loads: BTreeMap::new(),
             media_resources: BTreeMap::new(),
@@ -4943,6 +4981,13 @@ impl NativeDocument {
                     sandbox,
                 )
             })
+            .collect()
+    }
+
+    pub(crate) fn embedded_frame_owner_removal_sequences(&self) -> Vec<(u32, u64)> {
+        self.embedded_frame_owner_removal_sequences
+            .iter()
+            .map(|(node_index, sequence)| (*node_index, *sequence))
             .collect()
     }
 
@@ -8762,6 +8807,9 @@ impl NativeDocument {
     }
 
     fn detach_subtree(&mut self, id: NativeNodeId) -> Result<(), NativeEngineError> {
+        if self.is_attached(id) {
+            self.record_removed_embedded_frame_owners(id);
+        }
         let parent = self
             .raw_node(id)
             .and_then(NativeNode::parent)
@@ -8797,6 +8845,30 @@ impl NativeDocument {
             node.state.focused = false;
         }
         Ok(())
+    }
+
+    fn record_removed_embedded_frame_owners(&mut self, root: NativeNodeId) {
+        let mut pending = vec![root];
+        while let Some(current) = pending.pop() {
+            let Some((is_frame_owner, children)) = self.raw_node(current).map(|node| {
+                (
+                    matches!(node.element_name(), Some("iframe" | "frame")),
+                    node.children.clone(),
+                )
+            }) else {
+                continue;
+            };
+            if is_frame_owner {
+                self.next_embedded_frame_owner_removal_sequence = self
+                    .next_embedded_frame_owner_removal_sequence
+                    .saturating_add(1);
+                self.embedded_frame_owner_removal_sequences.insert(
+                    current.index(),
+                    self.next_embedded_frame_owner_removal_sequence,
+                );
+            }
+            pending.extend(children);
+        }
     }
 
     fn append_script_child(
@@ -8890,6 +8962,9 @@ impl NativeDocument {
 
         let old_parent = self.raw_node(child).and_then(NativeNode::parent);
         if let Some(old_parent) = old_parent {
+            if self.is_attached(child) {
+                self.record_removed_embedded_frame_owners(child);
+            }
             let Some(old_parent_node) = self.raw_node_mut(old_parent) else {
                 return Err(NativeEngineError::DetachedTarget);
             };

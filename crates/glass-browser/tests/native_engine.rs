@@ -35,7 +35,7 @@ use glass_browser::{
 };
 use sha2::{Digest, Sha256, Sha384};
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10499,6 +10499,247 @@ onconnect = event => {
         recovered_root_pong["closedPages"],
         serde_json::json!(["child", "child-next", "root-next"])
     );
+
+    session.close().await.unwrap();
+    let _ = shutdown_sender.send(());
+    server.await.unwrap();
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
+fn native_runtime_live_iframe_removal_retires_only_continuously_detached_owners() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(run_live_iframe_removal_lifecycle());
+    });
+}
+
+async fn run_live_iframe_removal_lifecycle() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-live-iframe-removal-{}.json",
+        std::process::id()
+    ));
+    let lock_path = profile_path.with_extension("lock");
+    let events_path = profile_path.with_extension("events");
+    let readers_path = profile_path.with_extension("readers");
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+    let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        loop {
+            let accepted = tokio::select! {
+                _ = &mut shutdown_receiver => break,
+                accepted = listener.accept() => accepted.unwrap(),
+            };
+            let (mut stream, _) = accepted;
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            let (content_type, body) = match path {
+                "/parent" => (
+                    "text/html",
+                    r#"<main>
+<iframe id="removed-frame" src="/removed"></iframe>
+<iframe id="moved-frame" src="/moved"></iframe>
+<iframe id="survivor-frame" src="/survivor"></iframe>
+</main>"#
+                        .to_owned(),
+                ),
+                "/removed" | "/moved" | "/survivor" => {
+                    let page_id = path.trim_start_matches('/');
+                    let nested_frame = (path == "/removed")
+                        .then_some("<iframe src=\"/nested\"></iframe>")
+                        .unwrap_or_default();
+                    (
+                        "text/html",
+                        format!(
+                            r#"<script>
+globalThis.pageId = {page_id:?};
+globalThis.sharedMessages = [];
+globalThis.sharedWorker = new SharedWorker('/live-iframe.js', {{ name: 'glass-live-iframe' }});
+sharedWorker.port.addEventListener('message', event => sharedMessages.push(event.data));
+sharedWorker.port.start();
+sharedWorker.port.postMessage({{ kind: 'connect', pageId }});
+addEventListener('unload', () => sharedWorker.port.postMessage({{ kind: 'unload', pageId }}));
+</script>{nested_frame}"#
+                        ),
+                    )
+                }
+                "/nested" => ("text/html", "<main>nested frame</main>".to_owned()),
+                "/live-iframe.js" => (
+                    "text/javascript",
+                    r#"
+let connectionCount = 0;
+const runtimeId = Date.now().toString() + '-' + Math.random().toString(36).slice(2);
+const ports = new Map();
+const closedPages = [];
+const unloadPages = [];
+onconnect = event => {
+  const port = event.ports[0];
+  const connection = ++connectionCount;
+  let pageId = null;
+  port.addEventListener('message', message => {
+    if (message.data.kind === 'connect') {
+      pageId = message.data.pageId;
+      ports.set(pageId, port);
+      port.postMessage({ kind: 'ready', pageId, connection, runtimeId });
+    } else if (message.data.kind === 'unload') {
+      unloadPages.push(pageId);
+    } else if (message.data.kind === 'ping') {
+      port.postMessage({ kind: 'pong', pageId, connection, runtimeId, closedPages: [...closedPages], unloadPages: [...unloadPages] });
+    }
+  });
+  port.addEventListener('close', () => {
+    closedPages.push(pageId);
+    ports.delete(pageId);
+    for (const otherPort of ports.values()) {
+      otherPort.postMessage({ kind: 'peer-closed', pageId, runtimeId });
+    }
+  });
+  port.start();
+};"#
+                    .to_owned(),
+                ),
+                _ => ("text/plain", "unexpected request".to_owned()),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserSession::start(
+        NativeEngineConfig::default()
+            .with_storage_path(profile_path.clone())
+            .with_initial_url(format!("http://{address}/parent")),
+    )
+    .await
+    .unwrap();
+    let initial_frames = session.list_frames().await.unwrap();
+    let root_frame_id = initial_frames[0].id.clone();
+    let direct_children = initial_frames
+        .iter()
+        .filter(|frame| frame.parent_id.as_deref() == Some(root_frame_id.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(direct_children.len(), 3);
+    let removed_frame_id = direct_children[0].id.clone();
+    let moved_frame_id = direct_children[1].id.clone();
+    let survivor_frame_id = direct_children[2].id.clone();
+    let removed_descendant_id = initial_frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some(removed_frame_id.as_str()))
+        .unwrap()
+        .id
+        .clone();
+
+    let mut runtime_id = None;
+    for (frame_id, page_id, expected_connection) in [
+        (&removed_frame_id, "removed", 1),
+        (&moved_frame_id, "moved", 2),
+        (&survivor_frame_id, "survivor", 3),
+    ] {
+        session.select_frame(frame_id).await.unwrap();
+        let ready = wait_for_shared_worker_messages(
+            &session,
+            "sharedMessages.filter(message => message.kind === 'ready')",
+        )
+        .await;
+        let ready = ready.as_array().unwrap().last().unwrap();
+        assert_eq!(ready["pageId"], page_id);
+        assert_eq!(ready["connection"], expected_connection);
+        if let Some(original_runtime) = &runtime_id {
+            assert_eq!(&ready["runtimeId"], original_runtime);
+        } else {
+            runtime_id = Some(ready["runtimeId"].clone());
+        }
+    }
+
+    session.select_frame(&root_frame_id).await.unwrap();
+    session
+        .script("document.getElementById('removed-frame').remove(); true")
+        .await
+        .unwrap();
+    let after_removal = session.list_frames().await.unwrap();
+    let after_removal_ids = after_removal
+        .iter()
+        .map(|frame| frame.id.as_str())
+        .collect::<BTreeSet<_>>();
+    assert!(!after_removal_ids.contains(removed_frame_id.as_str()));
+    assert!(!after_removal_ids.contains(removed_descendant_id.as_str()));
+    assert!(after_removal_ids.contains(moved_frame_id.as_str()));
+    assert!(after_removal_ids.contains(survivor_frame_id.as_str()));
+
+    session.select_frame(&survivor_frame_id).await.unwrap();
+    session
+        .script("sharedWorker.port.postMessage({ kind: 'ping' }); true")
+        .await
+        .unwrap();
+    let after_remove_pong = wait_for_shared_worker_messages(
+        &session,
+        "sharedMessages.filter(message => message.kind === 'pong')",
+    )
+    .await;
+    let after_remove_pong = after_remove_pong.as_array().unwrap().last().unwrap();
+    assert_eq!(after_remove_pong["runtimeId"], runtime_id.unwrap());
+    assert_eq!(
+        after_remove_pong["closedPages"],
+        serde_json::json!(["removed"])
+    );
+    assert_eq!(after_remove_pong["unloadPages"], serde_json::json!([]));
+
+    session.select_frame(&root_frame_id).await.unwrap();
+    session
+        .script(
+            "const owner = document.getElementById('moved-frame'); const parent = owner.parentNode; owner.remove(); parent.appendChild(owner); true",
+        )
+        .await
+        .unwrap();
+    let after_move = session.list_frames().await.unwrap();
+    let new_moved_frame_id = after_move
+        .iter()
+        .find(|frame| {
+            frame.parent_id.as_deref() == Some(root_frame_id.as_str())
+                && frame.url.ends_with("/moved")
+                && frame.id != moved_frame_id
+        })
+        .unwrap()
+        .id
+        .clone();
+    assert!(!after_move.iter().any(|frame| frame.id == moved_frame_id));
+    assert!(after_move.iter().any(|frame| frame.id == survivor_frame_id));
+    assert_ne!(new_moved_frame_id, moved_frame_id);
+
+    session.select_frame(&new_moved_frame_id).await.unwrap();
+    let replacement_ready = wait_for_shared_worker_messages(
+        &session,
+        "sharedMessages.filter(message => message.kind === 'ready')",
+    )
+    .await;
+    let replacement_ready = replacement_ready.as_array().unwrap().last().unwrap();
+    assert_eq!(replacement_ready["pageId"], "moved");
+    assert_eq!(replacement_ready["connection"], 4);
+    session.select_frame(&survivor_frame_id).await.unwrap();
+    session
+        .script("sharedWorker.port.postMessage({ kind: 'ping' }); true")
+        .await
+        .unwrap();
+    let after_move_pong = wait_for_shared_worker_messages(
+        &session,
+        "sharedMessages.filter(message => message.kind === 'pong')",
+    )
+    .await;
+    let after_move_pong = after_move_pong.as_array().unwrap().last().unwrap();
+    assert_eq!(
+        after_move_pong["closedPages"],
+        serde_json::json!(["removed", "moved"])
+    );
+    assert_eq!(after_move_pong["unloadPages"], serde_json::json!([]));
 
     session.close().await.unwrap();
     let _ = shutdown_sender.send(());

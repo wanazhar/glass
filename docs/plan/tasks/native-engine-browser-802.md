@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-802
 scope: glass-browser/worker-object-messageerror-recovery
-status: contracted
+status: completed locally
 depends-on: [native-engine-browser-801]
 ---
 
@@ -45,6 +45,9 @@ and preserve later valid Worker messages.
   payload's serialized `origin`. Set `target` and `currentTarget` to the
   Worker during callbacks and reset dispatch state afterward. Do not expose
   partial decoded values or transferred ports.
+- Construct successful page-side Dedicated Worker deliveries as `MessageEvent`
+  instances as well, so both event types use the same interface and target
+  lifecycle.
 - Worker objects expose `onmessageerror` and accept `messageerror` listeners
   through their existing add/remove-event API. Dispatch the property handler
   and registered listeners using the current Worker event-dispatch policy;
@@ -83,13 +86,36 @@ and preserve later valid Worker messages.
 - `docs/plan/README.md`
 - `docs/plan/native-engine-browser-profile.md`
 
-## Verification
+## Implementation and verification
+
+The page-side dispatcher now catches structured-clone envelope decode failure
+for a live Dedicated Worker proxy and dispatches a `MessageEvent` named
+`messageerror` with null data, no ports, null source, and the payload origin.
+It exposes `onmessageerror` plus registered `messageerror` listeners through
+the existing Worker dispatch policy, and resets `currentTarget`/event phase
+after callbacks. Successful page-side Worker messages now use the same
+`MessageEvent` interface and event-target lifecycle. Object-URL transfers are
+installed only after successful decoding. The worker-script `payload.error`
+ErrorEvent path is unchanged; SharedWorker decode failures remain outside the
+recovery catch.
+
+The process-backed HTTP regression
+`native_content_process_worker_proxy_dispatches_messageerror_and_recovers`
+injects a transfer-free malformed envelope through the internal page
+dispatcher and verifies event identity, handler/listener delivery, origin,
+source, target/current-target, cancellation/bubbling state, absence of worker
+errors, and dispatch-state reset. It then sends a real message through the
+Dedicated Worker and verifies a later valid `MessageEvent` arrives while the
+Worker stays live.
+
+Passed locally:
 
 - `cargo check -p glass-browser --test native_engine --locked --quiet`
-- The exact process-backed HTTP regression added for Worker-object
-  `messageerror` delivery and later valid Worker messages.
-- `cargo fmt --all -- --check`, `git diff --check`, and the focused repository
-  documentation gates.
+- `cargo test -p glass-browser --test native_engine native_content_process_worker_proxy_dispatches_messageerror_and_recovers --locked --quiet -- --exact` (1 passed)
+- `cargo fmt --all -- --check`, `git diff --check`
+- Release-truth and documentation-depth checks (see current issue #40 checkout evidence).
 
-Record results and exclusions here after implementation. Remote CI is not
-implied by local verification.
+The malformed fixture has no transferred ports or object URLs. Transfer
+rollback, SharedWorker-port and Service Worker client-side error events,
+complete EventTarget/Web IDL and WPT conformance, remote CI, and
+cross-platform certification remain open issue #40 work.

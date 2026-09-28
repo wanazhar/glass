@@ -45861,7 +45861,8 @@ fn document_bootstrap(
   globalThis.__glassSharedWorkers = sharedWorkers;
   globalThis.__glassNextWorkerId = nextWorkerId;
   globalThis.__glassDispatchWorkerMessage = (workerId, payload) => {{
-    const worker = workers.get(Number(workerId)) || sharedWorkers.get(Number(workerId));
+    const dedicatedWorker = workers.get(Number(workerId));
+    const worker = dedicatedWorker || sharedWorkers.get(Number(workerId));
     if (!worker || worker.__glassTerminated || !payload || typeof payload !== "object") return null;
     if (payload.error !== undefined && payload.error !== null) {{
       const ErrorEventConstructor = globalThis.__glassErrorEventConstructor || globalThis.ErrorEvent;
@@ -45885,18 +45886,47 @@ fn document_bootstrap(
       errorEvent.currentTarget = null;
       errorEvent.eventPhase = 0;
     }} else {{
+      let envelope;
+      try {{
+        envelope = glassMessageDecodeEnvelope(payload);
+      }} catch (_error) {{
+        if (!dedicatedWorker) throw _error;
+        const MessageEventConstructor = globalThis.__glassWorkerMessageEventConstructor
+          || globalThis.MessageEvent;
+        const messageErrorEvent = new MessageEventConstructor("messageerror", {{
+          data: null,
+          ports: [],
+          origin: String(payload.origin || ""),
+          source: null,
+          bubbles: false,
+          cancelable: false,
+        }});
+        messageErrorEvent.target = worker;
+        messageErrorEvent.currentTarget = worker;
+        messageErrorEvent.eventPhase = 2;
+        workerDispatch(worker, "messageerror", messageErrorEvent);
+        messageErrorEvent.currentTarget = null;
+        messageErrorEvent.eventPhase = 0;
+        return null;
+      }}
       if (Array.isArray(payload.object_urls))
         globalThis.__glassInstallObjectUrlTransfers(payload.object_urls);
-      const envelope = glassMessageDecodeEnvelope(payload);
-      workerDispatch(worker, "message", {{
-        type: "message",
+      const MessageEventConstructor = globalThis.__glassWorkerMessageEventConstructor
+        || globalThis.MessageEvent;
+      const messageEvent = new MessageEventConstructor("message", {{
         data: envelope.data,
         ports: envelope.ports,
         origin: String(payload.origin || ""),
         source: null,
-        target: worker,
-        currentTarget: worker,
+        bubbles: false,
+        cancelable: false,
       }});
+      messageEvent.target = worker;
+      messageEvent.currentTarget = worker;
+      messageEvent.eventPhase = 2;
+      workerDispatch(worker, "message", messageEvent);
+      messageEvent.currentTarget = null;
+      messageEvent.eventPhase = 0;
     }}
     return null;
   }};
@@ -45921,10 +45951,11 @@ fn document_bootstrap(
     globalThis.__glassNextWorkerId = nextWorkerId;
     this.url = resolved.href;
     this.onmessage = null;
+    this.onmessageerror = null;
     this.onerror = null;
     this.__glassWorkerId = workerId;
     this.__glassTerminated = false;
-    this.__glassWorkerListeners = {{ message: [], error: [] }};
+    this.__glassWorkerListeners = {{ message: [], messageerror: [], error: [] }};
     workers.set(workerId, this);
     pushCommand({{ kind: "workerCreate", worker_id: workerId, href: resolved.href, worker_type: workerType }});
   }};

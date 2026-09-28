@@ -451,10 +451,12 @@ committed cross-document navigation and successful recovery retire only the
 outgoing Document, and descendant owners destroyed with a replaced ancestor
 are retired before replacement worker effects. Same-document navigation
 retains its owner, and process evidence verifies surviving and replacement
-routes. Dynamic iframe removal from a still-live parent Document remains open,
-as do full storage-key, partition, agent-cluster, credentials, and
-SharedWorker/WPT conformance. See the
-[slice 811 task](tasks/native-engine-browser-811.md) for exact evidence.
+routes. Slice 812 is implementing dynamic iframe removal from a still-live
+parent Document, including owner detach/reinsert identity and scoped subtree
+teardown; its exact contract and evidence are in the
+[slice 812 task](tasks/native-engine-browser-812.md). Full storage-key,
+partition, agent-cluster, credentials, retained detached `WindowProxy`,
+iframe/WPT, and SharedWorker conformance remain open.
 
 This is the bounded baseline, not complete focus navigation: shadow scopes,
 flat-tree and modal-dialog inertness, browser/platform sequential-focus

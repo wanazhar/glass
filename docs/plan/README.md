@@ -79,6 +79,13 @@ the [slice 817 task](tasks/native-engine-browser-817.md), the [slice 816
 task](tasks/native-engine-browser-816.md), and the [slice 815
 task](tasks/native-engine-browser-815.md) for ordinary fan-out, profile
 write-through, and stale-snapshot journal boundaries.
+Slice 826 applies an HTTP Document's response Referrer-Policy to page Fetch
+requests whose request-level policy is empty. Its process-backed two-origin
+regression passed (1 passed, 875 filtered; 32.45 seconds), covering valid and
+unknown token ordering, invalid-only fallback, explicit override, and clearing
+policy when the same URL is served without a valid header. Meta delivery,
+element-level policy, independent worker containers, and navigation/resource
+initiators remain separate requirements; see the [slice 826 task](tasks/native-engine-browser-826.md).
 Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).

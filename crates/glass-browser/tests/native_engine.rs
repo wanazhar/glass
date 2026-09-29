@@ -33007,6 +33007,180 @@ self.addEventListener('fetch', event => {
     );
 }
 
+#[tokio::test]
+async fn native_content_process_inherits_document_referrer_policy_for_page_fetch() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_address = target_listener.local_addr().unwrap();
+    let page_origin = format!("http://{page_address}");
+    let target_origin = format!("http://{target_address}");
+
+    let (stop_page_server, mut stop_page_server_rx) = tokio::sync::oneshot::channel();
+    let page_server = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        let mut reuse_responses = 0;
+        loop {
+            let (mut stream, _) = tokio::select! {
+                _ = &mut stop_page_server_rx => break,
+                accepted = page_listener.accept() => accepted.unwrap(),
+            };
+            let request = read_http_request(&mut stream).await;
+            let target = request.split_whitespace().nth(1).unwrap_or_default();
+            let path = target.split('?').next().unwrap_or_default();
+            let (referrer_policy, body) = match path {
+                "/policy" => (
+                    "Referrer-Policy: origin, no-referrer, invalid\r\n",
+                    "policy".to_owned(),
+                ),
+                "/invalid" => (
+                    "Referrer-Policy: invalid, unknown\r\n",
+                    "invalid".to_owned(),
+                ),
+                "/reuse" => {
+                    reuse_responses += 1;
+                    let policy = if reuse_responses == 1 {
+                        "Referrer-Policy: no-referrer\r\n"
+                    } else {
+                        ""
+                    };
+                    (policy, format!("reuse-{reuse_responses}"))
+                }
+                _ => ("", "page".to_owned()),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-store\r\n{referrer_policy}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            seen.push(path.to_owned());
+        }
+        seen
+    });
+
+    let (stop_target_server, mut stop_target_server_rx) = tokio::sync::oneshot::channel();
+    let cors_page_origin = page_origin.clone();
+    let target_server = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        loop {
+            let (mut stream, _) = tokio::select! {
+                _ = &mut stop_target_server_rx => break,
+                accepted = target_listener.accept() => accepted.unwrap(),
+            };
+            let request = read_http_request(&mut stream).await;
+            let target = request
+                .split_whitespace()
+                .nth(1)
+                .expect("page Fetch request includes a target")
+                .to_owned();
+            let referer = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("referer:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
+            let case = target
+                .split_once("case=")
+                .map(|(_, value)| value)
+                .unwrap_or_default()
+                .to_owned();
+            let cors = format!("Access-Control-Allow-Origin: {cors_page_origin}\r\n");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{cors}Content-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{case}",
+                case.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            seen.push((target, referer));
+        }
+        seen
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("{page_origin}/policy?private=1#fragment")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let inherited_and_override = engine
+        .evaluate_async(&format!(
+            r#"await (async () => {{
+              const request = new Request('{target_origin}/record?case=inherited');
+              const inherited = await fetch(request).then(response => response.text());
+              const overridden = await fetch('{target_origin}/record?case=override', {{
+                referrerPolicy: 'unsafe-url'
+              }}).then(response => response.text());
+              return [request.referrerPolicy, inherited, overridden];
+            }})()"#
+        ))
+        .await
+        .unwrap();
+
+    engine
+        .navigate_async(format!("{page_origin}/invalid?private=2#fragment"))
+        .await
+        .unwrap();
+    let invalid_header = engine
+        .evaluate_async(&format!(
+            "await fetch('{target_origin}/record?case=invalid-header').then(response => response.text())"
+        ))
+        .await
+        .unwrap();
+
+    let reuse_url = format!("{page_origin}/reuse?private=3#fragment");
+    engine.navigate_async(reuse_url.clone()).await.unwrap();
+    let reuse_with_policy = engine
+        .evaluate_async(&format!(
+            "await fetch('{target_origin}/record?case=reuse-before').then(response => response.text())"
+        ))
+        .await
+        .unwrap();
+    engine.navigate_async(reuse_url).await.unwrap();
+    let reuse_without_policy = engine
+        .evaluate_async(&format!(
+            "await fetch('{target_origin}/record?case=reuse-after').then(response => response.text())"
+        ))
+        .await
+        .unwrap();
+
+    engine.close_async().await.unwrap();
+    let _ = stop_page_server.send(());
+    let _ = stop_target_server.send(());
+    let page_requests = page_server.await.unwrap();
+    let target_requests = target_server.await.unwrap();
+
+    assert_eq!(
+        inherited_and_override,
+        serde_json::json!(["", "inherited", "override"])
+    );
+    assert_eq!(invalid_header.as_str(), Some("invalid-header"));
+    assert_eq!(reuse_with_policy.as_str(), Some("reuse-before"));
+    assert_eq!(reuse_without_policy.as_str(), Some("reuse-after"));
+    assert_eq!(page_requests, ["/policy", "/invalid", "/reuse", "/reuse"]);
+
+    let referer_for = |case: &str| {
+        target_requests
+            .iter()
+            .find(|(target, _)| target.contains(&format!("case={case}")))
+            .unwrap_or_else(|| panic!("missing page Fetch request {case}"))
+            .1
+            .clone()
+    };
+    assert_eq!(referer_for("inherited"), None);
+    assert_eq!(
+        referer_for("override"),
+        Some(format!("{page_origin}/policy?private=1"))
+    );
+    for case in ["invalid-header", "reuse-after"] {
+        assert_eq!(
+            referer_for(case),
+            Some(format!("{page_origin}/")),
+            "default policy after {case}"
+        );
+    }
+    assert_eq!(referer_for("reuse-before"), None);
+    assert_eq!(target_requests.len(), 5);
+}
+
 #[test]
 fn native_runtime_shared_worker_module_credentials_cover_redirects_and_graph_cookies() {
     run_native_browser_worker_test(|runtime| {

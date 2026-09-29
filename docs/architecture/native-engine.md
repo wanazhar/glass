@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-825`; issue #40 remains open. Slice 818 synchronizes
+`native-engine-browser-826`; issue #40 remains open. Slice 818 synchronizes
 ordinary response-cookie deltas to same-backend live contexts after profile
 merge; Slice 819 verifies a live module SharedWorker's next module request.
 Slice 820 extends delivery across separately created live sessions sharing one
@@ -36,9 +36,16 @@ Fetch referrer source and all eight policy tokens through page and worker
 Requests, controlled Service Worker handoff, redirects, and cache identity;
 the process-backed two-origin regression passed (1 passed; 37.37 seconds).
 The full policy-token unit test and scoped checks are recorded in the slice
-task. Policy-container delivery from response headers, meta elements, and
-element attributes, broader Fetch/Referrer Policy WPT conformance, remote CI,
-and cross-platform coverage remain open. See the [slice 825 task](../plan/tasks/native-engine-browser-825.md),
+task. Slice 826 applies an HTTP Document's response policy to page Fetch
+requests with an empty request-level policy. Its process-backed two-origin
+regression passed (1 passed, 875 filtered; 32.45 seconds), covering
+last-recognized header tokens, ignored unknown tokens, invalid-only fallback,
+explicit override, and same-URL replacement without a valid header. The public
+`Request.referrerPolicy` remains empty when this effective default is
+inherited. Meta delivery, element-level policy, independent worker containers,
+broader Fetch/Referrer Policy WPT conformance, remote CI, and cross-platform
+coverage remain open. See the [slice 826 task](../plan/tasks/native-engine-browser-826.md),
+the [slice 825 task](../plan/tasks/native-engine-browser-825.md),
 the [slice 824 task](../plan/tasks/native-engine-browser-824.md), the [slice 823
 task](../plan/tasks/native-engine-browser-823.md), the [slice 822
 task](../plan/tasks/native-engine-browser-822.md), the [slice 821

@@ -902,6 +902,10 @@ impl fmt::Debug for NativeResourceLoader {
                 "document_policy_count",
                 &self.network.document_policies.len(),
             )
+            .field(
+                "document_referrer_policy_count",
+                &self.network.document_referrer_policies.len(),
+            )
             .field("preflight_cache_count", &self.network.preflight_cache.len())
             .field("offline", &self.environment.network.offline)
             .field(
@@ -922,6 +926,7 @@ struct NativeNetworkState {
     font_cache: BTreeMap<String, NativeFontCacheEntry>,
     cookies: Vec<NativeCookie>,
     document_policies: BTreeMap<String, NativeCspPolicy>,
+    document_referrer_policies: BTreeMap<String, NativeFetchReferrerPolicy>,
     preflight_cache: BTreeMap<String, Instant>,
 }
 
@@ -4012,8 +4017,13 @@ impl NativeResourceLoader {
             }
         }
         policy.header_policy_count = policy.policies.len();
+        let document_key = cache_key(&document_url);
         self.network
-            .store_document_policy(cache_key(&document_url), policy);
+            .store_document_policy(document_key.clone(), policy);
+        self.network.store_document_referrer_policy(
+            document_key,
+            referrer_policy_from_header_pairs(headers),
+        );
         Ok(())
     }
 
@@ -4620,6 +4630,12 @@ impl NativeResourceLoader {
                 self.cookie_changes
                     .extend(self.network.store_cookie(&cookie_url, &cookie));
             }
+            if response_headers.contains_key("referrer-policy") {
+                self.network.store_document_referrer_policy(
+                    document_cache_key.clone(),
+                    referrer_policy_from_headers(&response_headers),
+                );
+            }
             if has_set_cookie {
                 self.network.remove_cache(&document_cache_key);
             } else if let Some(entry) =
@@ -4699,6 +4715,10 @@ impl NativeResourceLoader {
         self.network.store_document_policy(
             cache_key(&final_url),
             content_security_policy(&response_headers),
+        );
+        self.network.store_document_referrer_policy(
+            cache_key(&final_url),
+            referrer_policy_from_headers(&response_headers),
         );
         if request_method == NativeNavigationMethod::Get {
             if !has_set_cookie
@@ -5130,11 +5150,16 @@ impl NativeResourceLoader {
             && cors_mode != NativeCorsMode::Navigation;
         let initial_credentials =
             fetch_credentials_for_url(credentials_mode, credentials, &document_url, &target_url);
-        let mut effective_referrer_policy = referrer_policy
-            .as_deref()
-            .map(NativeFetchReferrerPolicy::parse)
-            .transpose()?
+        let document_referrer_policy = self
+            .network
+            .document_referrer_policies
+            .get(&cache_key(&document_url))
+            .copied()
             .unwrap_or(NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin);
+        let mut effective_referrer_policy = match referrer_policy.as_deref() {
+            Some(policy) if !policy.is_empty() => NativeFetchReferrerPolicy::parse(policy)?,
+            Some(_) | None => document_referrer_policy,
+        };
         let initial_referrer = fetch_referrer_for_target(
             referrer_source.as_ref(),
             &target_url,
@@ -9148,6 +9173,22 @@ fn referrer_policy_from_headers(headers: &HeaderMap) -> Option<NativeFetchReferr
         .last()
 }
 
+fn referrer_policy_from_header_pairs(
+    headers: &[(String, String)],
+) -> Option<NativeFetchReferrerPolicy> {
+    headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("referrer-policy"))
+        .flat_map(|(_, value)| value.split(','))
+        .filter_map(|value| {
+            let value = value.trim();
+            (!value.is_empty())
+                .then(|| NativeFetchReferrerPolicy::parse(value).ok())
+                .flatten()
+        })
+        .last()
+}
+
 fn cache_key(url: &Url) -> String {
     let mut key = url.clone();
     key.set_fragment(None);
@@ -9714,6 +9755,24 @@ impl NativeNetworkState {
             self.document_policies.remove(&oldest);
         }
         self.document_policies.insert(key, policy);
+    }
+
+    fn store_document_referrer_policy(
+        &mut self,
+        key: String,
+        policy: Option<NativeFetchReferrerPolicy>,
+    ) {
+        let Some(policy) = policy else {
+            self.document_referrer_policies.remove(&key);
+            return;
+        };
+        if !self.document_referrer_policies.contains_key(&key)
+            && self.document_referrer_policies.len() >= MAX_NATIVE_CACHE_ENTRIES
+            && let Some(oldest) = self.document_referrer_policies.keys().next().cloned()
+        {
+            self.document_referrer_policies.remove(&oldest);
+        }
+        self.document_referrer_policies.insert(key, policy);
     }
 }
 

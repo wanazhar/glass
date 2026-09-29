@@ -32660,6 +32660,353 @@ self.addEventListener('fetch', event => {{
     assert!(!include_after_cookie.contains("denied-worker-omit="));
 }
 
+#[tokio::test]
+async fn native_content_process_fetch_referrer_policy_survives_service_worker_handoff() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let primary_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let primary_address = primary_listener.local_addr().unwrap();
+    let cross_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let cross_address = cross_listener.local_addr().unwrap();
+    let page_origin = format!("http://{primary_address}");
+    let cross_origin = format!("http://{cross_address}");
+    let page_server_origin = page_origin.clone();
+    let (stop_page_server, mut stop_page_server_rx) = tokio::sync::oneshot::channel();
+    let page_server = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        loop {
+            let (mut stream, _) = tokio::select! {
+                _ = &mut stop_page_server_rx => break,
+                accepted = primary_listener.accept() => accepted.unwrap(),
+            };
+            let request = read_http_request(&mut stream).await;
+            let target = request.split_whitespace().nth(1).unwrap_or_default();
+            let path = target.split('?').next().unwrap_or_default();
+            let referer = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("referer:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
+            let (content_type, body) = match path {
+                    "/page" => (
+                        "text/html",
+                        "<!doctype html><main>referrer policy</main>".to_owned(),
+                    ),
+                    "/sw.js" => (
+                        "application/javascript",
+                        "self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  const path = new URL(event.request.url).pathname;
+  if (path === '/controlled') {
+    event.respondWith(new Response('<!doctype html><main>controlled</main>', {
+      headers: { 'Content-Type': 'text/html' }
+    }));
+  } else if (path === '/sw-referrer') {
+    event.respondWith(fetch(event.request));
+  } else if (path === '/sw-inspect') {
+    const reset = new Request(event.request, { referrerPolicy: 'same-origin' });
+    event.respondWith(new Response(JSON.stringify([
+      event.request.referrer,
+      event.request.referrerPolicy,
+      reset.referrer,
+      reset.referrerPolicy,
+    ]), {
+      headers: { 'Content-Type': 'application/json' }
+    }));
+  }
+ });"
+                        .to_owned(),
+                    ),
+                    _ => (
+                        "text/plain",
+                        referer.clone().unwrap_or_else(|| "none".into()),
+                    ),
+                };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            seen.push((path.to_owned(), target.to_owned(), referer));
+        }
+        seen
+    });
+    let (stop_cross_server, mut stop_cross_server_rx) = tokio::sync::oneshot::channel();
+    let cross_server = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        loop {
+            let (mut stream, _) = tokio::select! {
+                _ = &mut stop_cross_server_rx => break,
+                accepted = cross_listener.accept() => accepted.unwrap(),
+            };
+            let request = read_http_request(&mut stream).await;
+            let target = request
+                .split_whitespace()
+                .nth(1)
+                .expect("Fetch request includes a target")
+                .to_owned();
+            let path = target.split('?').next().unwrap_or_default();
+            let referer = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("referer:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
+            let case = target
+                .split_once("case=")
+                .map(|(_, value)| value)
+                .unwrap_or_default();
+            let cors = format!("Access-Control-Allow-Origin: {page_server_origin}\r\n");
+            let response = match path {
+                "/redirect-original" => format!(
+                    "HTTP/1.1 302 Found\r\n{cors}Location: {page_server_origin}/redirect-original-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                ),
+                "/redirect-policy" => format!(
+                    "HTTP/1.1 302 Found\r\n{cors}Referrer-Policy: origin\r\nLocation: {page_server_origin}/redirect-policy-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                ),
+                _ => {
+                    let body = case.to_owned();
+                    format!(
+                        "HTTP/1.1 200 OK\r\n{cors}Content-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+            };
+            stream.write_all(response.as_bytes()).await.unwrap();
+            seen.push((target, referer));
+        }
+        seen
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{primary_address}/page?private=1")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(&format!(
+            r#"(() => {{
+              globalThis.__nativeReferrerCustomRequest = new Request("{cross_origin}/record?case=custom", {{
+                referrer: "{page_origin}/custom?key=1#fragment",
+                referrerPolicy: "unsafe-url",
+              }});
+              globalThis.__nativeReferrerPolicyResetRequest = new Request("{cross_origin}/record?case=custom-policy-reset", {{
+                referrer: "{page_origin}/custom?key=1#fragment",
+                referrerPolicy: "unsafe-url",
+              }});
+              globalThis.__nativeReferrerResetRequest = new Request("{cross_origin}/record?case=cross-referrer-reset", {{
+                referrer: "{cross_origin}/not-the-client",
+              }});
+              return null;
+            }})()"#
+        ))
+        .await
+        .unwrap();
+    let mut direct_cases = Vec::new();
+    for (case, request) in [
+        (
+            "default-cross",
+            format!(
+                "await fetch('{cross_origin}/record?case=default-cross').then(response => response.text())"
+            ),
+        ),
+        (
+            "custom",
+            "await fetch(new Request(__nativeReferrerCustomRequest)).then(response => response.text())"
+                .to_owned(),
+        ),
+        (
+            "custom-policy-reset",
+            "await fetch(__nativeReferrerPolicyResetRequest, { referrerPolicy: 'same-origin' }).then(response => response.text())"
+                .to_owned(),
+        ),
+        (
+            "cross-referrer-reset",
+            "await fetch(__nativeReferrerResetRequest).then(response => response.text())".to_owned(),
+        ),
+    ] {
+        direct_cases.push((case, engine.evaluate_async(&request).await.unwrap()));
+    }
+    let original_redirect = engine
+        .evaluate_async(&format!(
+            "await fetch('{cross_origin}/redirect-original?case=redirect-original').then(response => response.text())"
+        ))
+        .await
+        .unwrap();
+    let policy_redirect = engine
+        .evaluate_async(&format!(
+            "await fetch('{cross_origin}/redirect-policy?case=redirect-policy').then(response => response.text())"
+        ))
+        .await
+        .unwrap();
+    let same_origin = engine
+        .evaluate_async("await fetch('/same?case=same').then(response => response.text())")
+        .await
+        .unwrap();
+    let direct_results = engine
+        .evaluate_async(
+            r#"await (() => {
+              const customRequest = __nativeReferrerCustomRequest;
+              const customClone = new Request(customRequest);
+              const resetRequest = __nativeReferrerResetRequest;
+              const defaultRequest = new Request('/same');
+              const clonedRequest = new Request(defaultRequest);
+              const policyOverride = new Request(defaultRequest, { referrerPolicy: 'origin' });
+              const customInitReset = new Request(customRequest, { method: 'GET' });
+              const customPolicyOverride = new Request(customRequest, { referrerPolicy: 'origin' });
+              const invalidRequest = (() => {
+                try { new Request('/same', { referrerPolicy: 'invalid' }); return false; }
+                catch (error) { return error instanceof TypeError; }
+              })();
+              return fetch('/same?case=invalid', { referrerPolicy: 'invalid' })
+                .then(() => false, error => error instanceof TypeError)
+                .then(invalidFetch => ({
+                  referrer: defaultRequest.referrer,
+                  referrerPolicy: defaultRequest.referrerPolicy,
+                  cloneReferrer: clonedRequest.referrer,
+                  overridePolicy: policyOverride.referrerPolicy,
+                  customReferrer: customRequest.referrer,
+                  customCloneReferrer: customClone.referrer,
+                  customPolicy: customClone.referrerPolicy,
+                  customInitReferrer: customInitReset.referrer,
+                  customInitPolicy: customInitReset.referrerPolicy,
+                  customOverrideReferrer: customPolicyOverride.referrer,
+                  customOverridePolicy: customPolicyOverride.referrerPolicy,
+                  resetReferrer: resetRequest.referrer,
+                  invalidRequest,
+                  invalidFetch,
+                }));
+            })()"#,
+        )
+        .await
+        .unwrap();
+
+    engine
+        .evaluate_async(
+            "globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }); null",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(async registration => [registration.active.state, navigator.serviceWorker.controller !== null])",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["activated", true])
+    );
+    engine
+        .navigate_async(format!("http://{primary_address}/controlled"))
+        .await
+        .unwrap();
+    let sw_referrers = engine
+        .evaluate_async(
+            "await (async () => [
+              await fetch('/sw-referrer?case=sw-none', { referrerPolicy: 'no-referrer' }).then(response => response.text()),
+              await fetch('/sw-referrer?case=sw-unsafe', { referrerPolicy: 'unsafe-url' }).then(response => response.text()),
+            ])()",
+        )
+        .await
+        .unwrap();
+    let sw_request_properties = engine
+        .evaluate_async(
+            "await fetch('/sw-inspect', { referrerPolicy: 'unsafe-url' }).then(response => response.json())",
+        )
+        .await
+        .unwrap();
+    engine.close_async().await.unwrap();
+    let _ = stop_page_server.send(());
+    let _ = stop_cross_server.send(());
+    let primary_requests = page_server.await.unwrap();
+    let cross_requests = cross_server.await.unwrap();
+
+    let direct_results = direct_results.as_object().unwrap();
+    let page_referrer = format!("{page_origin}/page?private=1");
+    let controlled_referrer = format!("{page_origin}/controlled");
+    let origin_referrer = format!("{page_origin}/");
+    let custom_referrer = format!("{page_origin}/custom?key=1");
+    let direct_referrer = |case: &str| {
+        cross_requests
+            .iter()
+            .find(|(target, _)| {
+                target
+                    .split_once("case=")
+                    .is_some_and(|(_, request_case)| request_case == case)
+            })
+            .unwrap_or_else(|| panic!("missing referrer request {case}"))
+            .1
+            .as_deref()
+            .unwrap_or("")
+            .to_owned()
+    };
+    for (case, expected) in [
+        ("default-cross", origin_referrer.as_str()),
+        ("custom", custom_referrer.as_str()),
+        ("custom-policy-reset", ""),
+        ("cross-referrer-reset", origin_referrer.as_str()),
+    ] {
+        assert_eq!(
+            direct_referrer(case),
+            expected,
+            "referrer policy case {case}"
+        );
+    }
+    assert_eq!(direct_cases.len(), 4);
+    for (case, result) in &direct_cases {
+        assert_eq!(result.as_str(), Some(*case), "Fetch response for {case}");
+    }
+    assert_eq!(original_redirect, page_referrer);
+    assert_eq!(policy_redirect, origin_referrer);
+    assert_eq!(same_origin, page_referrer);
+    assert_eq!(direct_results["referrer"], "about:client");
+    assert_eq!(direct_results["referrerPolicy"], "");
+    assert_eq!(direct_results["cloneReferrer"], "about:client");
+    assert_eq!(direct_results["overridePolicy"], "origin");
+    assert_eq!(
+        direct_results["customReferrer"],
+        format!("{page_origin}/custom?key=1")
+    );
+    assert_eq!(
+        direct_results["customCloneReferrer"],
+        format!("{page_origin}/custom?key=1")
+    );
+    assert_eq!(direct_results["customPolicy"], "unsafe-url");
+    assert_eq!(direct_results["customInitReferrer"], "about:client");
+    assert_eq!(direct_results["customInitPolicy"], "");
+    assert_eq!(direct_results["customOverrideReferrer"], "about:client");
+    assert_eq!(direct_results["customOverridePolicy"], "origin");
+    assert_eq!(direct_results["resetReferrer"], "about:client");
+    assert_eq!(direct_results["invalidRequest"], true);
+    assert_eq!(direct_results["invalidFetch"], true);
+    assert_eq!(
+        sw_referrers,
+        serde_json::json!(["none", controlled_referrer])
+    );
+    assert_eq!(
+        sw_request_properties,
+        serde_json::json!(["about:client", "unsafe-url", "about:client", "same-origin"])
+    );
+    assert_eq!(
+        primary_requests.len(),
+        7,
+        "primary request targets: {:?}",
+        primary_requests
+            .iter()
+            .map(|(_, target, _)| target)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        cross_requests.len(),
+        6,
+        "cross-origin request targets: {:?}",
+        cross_requests
+            .iter()
+            .map(|(target, _)| target)
+            .collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn native_runtime_shared_worker_module_credentials_cover_redirects_and_graph_cookies() {
     run_native_browser_worker_test(|runtime| {

@@ -568,6 +568,50 @@ impl NativeFetchCredentialsMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeFetchReferrerPolicy {
+    NoReferrer,
+    NoReferrerWhenDowngrade,
+    SameOrigin,
+    Origin,
+    StrictOrigin,
+    OriginWhenCrossOrigin,
+    StrictOriginWhenCrossOrigin,
+    UnsafeUrl,
+}
+
+impl NativeFetchReferrerPolicy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NoReferrer => "no-referrer",
+            Self::NoReferrerWhenDowngrade => "no-referrer-when-downgrade",
+            Self::SameOrigin => "same-origin",
+            Self::Origin => "origin",
+            Self::StrictOrigin => "strict-origin",
+            Self::OriginWhenCrossOrigin => "origin-when-cross-origin",
+            Self::StrictOriginWhenCrossOrigin => "strict-origin-when-cross-origin",
+            Self::UnsafeUrl => "unsafe-url",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, NativeEngineError> {
+        match value {
+            "" | "strict-origin-when-cross-origin" => Ok(Self::StrictOriginWhenCrossOrigin),
+            "no-referrer" => Ok(Self::NoReferrer),
+            "no-referrer-when-downgrade" => Ok(Self::NoReferrerWhenDowngrade),
+            "same-origin" => Ok(Self::SameOrigin),
+            "origin" => Ok(Self::Origin),
+            "strict-origin" => Ok(Self::StrictOrigin),
+            "origin-when-cross-origin" => Ok(Self::OriginWhenCrossOrigin),
+            "unsafe-url" => Ok(Self::UnsafeUrl),
+            _ => Err(NativeEngineError::invalid(
+                "native Fetch referrer policy",
+                "must be a supported Referrer Policy token",
+            )),
+        }
+    }
+}
+
 fn fetch_credentials_for_url(
     mode: Option<NativeFetchCredentialsMode>,
     legacy_credentials: bool,
@@ -585,6 +629,8 @@ fn fetch_credentials_for_url(
 pub(crate) struct NativeFetchRequest<'a> {
     pub(crate) document_url: &'a str,
     pub(crate) href: &'a str,
+    pub(crate) referrer_url: Option<String>,
+    pub(crate) referrer_policy: Option<String>,
     pub(crate) method: NativeFetchMethod,
     pub(crate) body: Option<NativeRequestBody>,
     pub(crate) content_type: Option<String>,
@@ -4759,6 +4805,8 @@ impl NativeResourceLoader {
         self.fetch_request_with_headers_async(NativeFetchRequest {
             document_url,
             href,
+            referrer_url: None,
+            referrer_policy: None,
             method: NativeFetchMethod::from_navigation_method(method),
             body: body.map(NativeRequestBody::Text),
             content_type,
@@ -4814,6 +4862,8 @@ impl NativeResourceLoader {
         self.fetch_request_with_headers_async(NativeFetchRequest {
             document_url,
             href,
+            referrer_url: None,
+            referrer_policy: None,
             method: NativeFetchMethod::get(),
             body: None,
             content_type: None,
@@ -4909,6 +4959,8 @@ impl NativeResourceLoader {
         let NativeFetchRequest {
             document_url,
             href,
+            referrer_url,
+            referrer_policy,
             method,
             body,
             content_type,
@@ -4931,6 +4983,9 @@ impl NativeResourceLoader {
         }
         validate_url_text("fetch owner URL", document_url)?;
         validate_url_text("fetch URL", href)?;
+        if let Some(referrer_policy) = referrer_policy.as_deref() {
+            NativeFetchReferrerPolicy::parse(referrer_policy)?;
+        }
         let mut current_headers = validate_fetch_request_headers(&request_headers)?;
         if current_headers.contains_key("content-type") {
             return Err(NativeEngineError::invalid(
@@ -5021,6 +5076,7 @@ impl NativeResourceLoader {
                 max_response_bytes,
             });
         }
+        let referrer_source = fetch_referrer_source(referrer_url.as_deref(), &document_url)?;
         reject_credentials(&document_url)?;
         let Some(target_url) = resolve_subresource_url(&document_url, href)? else {
             return Err(NativeEngineError::UnsupportedUrl {
@@ -5074,6 +5130,16 @@ impl NativeResourceLoader {
             && cors_mode != NativeCorsMode::Navigation;
         let initial_credentials =
             fetch_credentials_for_url(credentials_mode, credentials, &document_url, &target_url);
+        let mut effective_referrer_policy = referrer_policy
+            .as_deref()
+            .map(NativeFetchReferrerPolicy::parse)
+            .transpose()?
+            .unwrap_or(NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin);
+        let initial_referrer = fetch_referrer_for_target(
+            referrer_source.as_ref(),
+            &target_url,
+            effective_referrer_policy,
+        );
         let request_cookie = if cacheable_request && initial_credentials {
             self.network.cookie_header_for_request(
                 &target_url,
@@ -5094,6 +5160,8 @@ impl NativeResourceLoader {
                 initial_credentials,
                 cors_mode,
                 request_cookie.as_deref(),
+                initial_referrer.as_deref(),
+                effective_referrer_policy.as_str(),
             )
         });
         let cached_fetch = fetch_cache_key
@@ -5149,7 +5217,7 @@ impl NativeResourceLoader {
         let mut current_request_body = request_body;
         let mut streaming_request_body_sent = current_request_body.is_some();
         let mut current_content_type = content_type;
-        let mut request_referrer = normalize_referrer(Some(document_url.as_str()), &current_url)?;
+        let mut request_referrer = initial_referrer;
         let mut redirects = 0;
         let mut redirected = false;
         let mut no_cors_cross_origin = cross_origin;
@@ -5188,6 +5256,7 @@ impl NativeResourceLoader {
                     &current_method,
                     &requested_headers,
                     current_credentials,
+                    request_referrer.as_deref(),
                 )
                 .await?;
             }
@@ -5348,7 +5417,14 @@ impl NativeResourceLoader {
                     reason: "same-origin fetch redirect has a different origin".into(),
                 });
             }
-            request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
+            if let Some(policy) = referrer_policy_from_headers(response.headers()) {
+                effective_referrer_policy = policy;
+            }
+            request_referrer = fetch_referrer_for_target(
+                referrer_source.as_ref(),
+                &next_url,
+                effective_referrer_policy,
+            );
             if current_url.origin() != next_url.origin() {
                 current_headers.remove("authorization");
             }
@@ -5541,6 +5617,7 @@ impl NativeResourceLoader {
         method: &NativeFetchMethod,
         requested_headers: &[String],
         credentials: bool,
+        referrer: Option<&str>,
     ) -> Result<(), NativeEngineError> {
         let Some(origin) = cors_origin_header(document_url, target_url, NativeCorsMode::Cors)
         else {
@@ -5570,6 +5647,9 @@ impl NativeResourceLoader {
                 .header("Origin", origin)
                 .header("Access-Control-Request-Method", method),
         );
+        if let Some(referrer) = referrer {
+            request = request.header(reqwest::header::REFERER, referrer);
+        }
         if !requested_headers.is_empty() {
             request = request.header(
                 "Access-Control-Request-Headers",
@@ -8973,6 +9053,101 @@ fn normalize_referrer(
     }
 }
 
+fn fetch_referrer_source(
+    supplied_referrer: Option<&str>,
+    owner_url: &Url,
+) -> Result<Option<Url>, NativeEngineError> {
+    let Some(supplied_referrer) = supplied_referrer else {
+        return Ok(Some(owner_url.clone()));
+    };
+    if supplied_referrer.is_empty() {
+        return Ok(None);
+    }
+    validate_url_text("fetch referrer URL", supplied_referrer)?;
+    let mut referrer = Url::parse(supplied_referrer)
+        .map_err(|_| NativeEngineError::invalid("fetch referrer URL", "must be an absolute URL"))?;
+    if !is_network_url(referrer.as_str()) {
+        return Ok(None);
+    }
+    if referrer.origin() != owner_url.origin() {
+        return Err(NativeEngineError::invalid(
+            "fetch referrer URL",
+            "must have the request owner's origin",
+        ));
+    }
+    let _ = referrer.set_username("");
+    let _ = referrer.set_password(None);
+    referrer.set_fragment(None);
+    Ok(Some(referrer))
+}
+
+fn fetch_referrer_for_target(
+    referrer_source: Option<&Url>,
+    target_url: &Url,
+    policy: NativeFetchReferrerPolicy,
+) -> Option<String> {
+    let mut source = referrer_source?.clone();
+    source.set_fragment(None);
+    if !is_network_url(source.as_str()) {
+        return None;
+    }
+    let downgrade = is_potentially_trustworthy_http_url(&source)
+        && !is_potentially_trustworthy_http_url(target_url);
+    let same_origin = source.origin() == target_url.origin();
+    let mut origin = source.origin().ascii_serialization();
+    origin.push('/');
+    match policy {
+        NativeFetchReferrerPolicy::NoReferrer => None,
+        NativeFetchReferrerPolicy::NoReferrerWhenDowngrade if downgrade => None,
+        NativeFetchReferrerPolicy::NoReferrerWhenDowngrade
+        | NativeFetchReferrerPolicy::UnsafeUrl => Some(source.to_string()),
+        NativeFetchReferrerPolicy::SameOrigin if same_origin => Some(source.to_string()),
+        NativeFetchReferrerPolicy::SameOrigin => None,
+        NativeFetchReferrerPolicy::Origin => Some(origin),
+        NativeFetchReferrerPolicy::StrictOrigin if !downgrade => Some(origin),
+        NativeFetchReferrerPolicy::StrictOrigin => None,
+        NativeFetchReferrerPolicy::OriginWhenCrossOrigin if same_origin => Some(source.to_string()),
+        NativeFetchReferrerPolicy::OriginWhenCrossOrigin => Some(origin),
+        NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin if downgrade => None,
+        NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin if same_origin => {
+            Some(source.to_string())
+        }
+        NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin => Some(origin),
+    }
+}
+
+fn is_potentially_trustworthy_http_url(url: &Url) -> bool {
+    if url.scheme() == "https" {
+        return true;
+    }
+    if url.scheme() != "http" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host == "localhost"
+        || host.ends_with(".localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+fn referrer_policy_from_headers(headers: &HeaderMap) -> Option<NativeFetchReferrerPolicy> {
+    headers
+        .get_all("referrer-policy")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .filter_map(|value| {
+            let value = value.trim();
+            (!value.is_empty())
+                .then(|| NativeFetchReferrerPolicy::parse(value).ok())
+                .flatten()
+        })
+        .last()
+}
+
 fn cache_key(url: &Url) -> String {
     let mut key = url.clone();
     key.set_fragment(None);
@@ -8988,6 +9163,8 @@ fn fetch_response_cache_key(
     credentials: bool,
     cors_mode: NativeCorsMode,
     request_cookie: Option<&str>,
+    request_referrer: Option<&str>,
+    referrer_policy: &str,
 ) -> String {
     let mut key = String::new();
     let cors_mode_key = if document_url.origin() == target_url.origin() {
@@ -9008,6 +9185,8 @@ fn fetch_response_cache_key(
         cors_mode_key.to_owned(),
         content_type.unwrap_or_default().to_owned(),
         request_cookie.unwrap_or_default().to_owned(),
+        request_referrer.unwrap_or_default().to_owned(),
+        referrer_policy.to_owned(),
     ] {
         append_fetch_cache_key_part(&mut key, &value);
     }
@@ -9930,19 +10109,21 @@ mod tests {
         JAVASCRIPT_MIME_TYPE_ESSENCES, MAX_NATIVE_CACHE_ENTRIES,
         MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, MAX_NATIVE_MEDIA_BYTES, NativeCookieProfileEntry,
         NativeCorsMode, NativeCspDirectives, NativeCspPolicy, NativeEngineConfig,
-        NativeEngineError, NativeFetchMethod, NativeInlineCspKind, NativeModuleResourceType,
-        NativeNavigationMethod, NativeNavigationPolicyKind, NativeNetworkState,
-        NativeObjectUrlResource, NativeRequestBody, NativeResource, NativeResourceLoader,
-        NativeSubresourceKind, cache_control_max_age, cache_control_requires_revalidation,
-        cached_resource_content_type_text_allowed, content_security_policy, cors_origin_header,
-        cors_preflight_response_allowed, cors_response_allowed,
-        csp_report_deliveries_for_declaration, csp_script_sources_allow_for_rooted_file,
-        csp_sources_allow, csp_sources_allow_for_redirect, csp_sources_allow_for_rooted_file,
-        data_font_bytes, data_media_metadata, decode_html_body, document_cache_fresh_until,
-        document_cache_storage_allowed, javascript_mime_essence_allowed,
-        javascript_mime_type_essence_match, media_metadata_from_bytes, mixed_content_allowed,
-        module_content_type_text_allowed, referrer_for_navigation, resolve_subresource_url,
-        subresource_integrity_matches, supported_media_type_text,
+        NativeEngineError, NativeFetchMethod, NativeFetchReferrerPolicy, NativeInlineCspKind,
+        NativeModuleResourceType, NativeNavigationMethod, NativeNavigationPolicyKind,
+        NativeNetworkState, NativeObjectUrlResource, NativeRequestBody, NativeResource,
+        NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
+        cache_control_requires_revalidation, cached_resource_content_type_text_allowed,
+        content_security_policy, cors_origin_header, cors_preflight_response_allowed,
+        cors_response_allowed, csp_report_deliveries_for_declaration,
+        csp_script_sources_allow_for_rooted_file, csp_sources_allow,
+        csp_sources_allow_for_redirect, csp_sources_allow_for_rooted_file, data_font_bytes,
+        data_media_metadata, decode_html_body, document_cache_fresh_until,
+        document_cache_storage_allowed, fetch_referrer_for_target, fetch_referrer_source,
+        javascript_mime_essence_allowed, javascript_mime_type_essence_match,
+        media_metadata_from_bytes, mixed_content_allowed, module_content_type_text_allowed,
+        referrer_for_navigation, resolve_subresource_url, subresource_integrity_matches,
+        supported_media_type_text,
     };
     use base64::Engine as _;
     use reqwest::header::{
@@ -10699,6 +10880,156 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn fetch_referrer_policy_accepts_all_standard_tokens_and_empty_default() {
+        let cases = [
+            ("", NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin),
+            ("no-referrer", NativeFetchReferrerPolicy::NoReferrer),
+            (
+                "no-referrer-when-downgrade",
+                NativeFetchReferrerPolicy::NoReferrerWhenDowngrade,
+            ),
+            ("same-origin", NativeFetchReferrerPolicy::SameOrigin),
+            ("origin", NativeFetchReferrerPolicy::Origin),
+            ("strict-origin", NativeFetchReferrerPolicy::StrictOrigin),
+            (
+                "origin-when-cross-origin",
+                NativeFetchReferrerPolicy::OriginWhenCrossOrigin,
+            ),
+            (
+                "strict-origin-when-cross-origin",
+                NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
+            ),
+            ("unsafe-url", NativeFetchReferrerPolicy::UnsafeUrl),
+        ];
+
+        for (token, expected) in cases {
+            assert_eq!(NativeFetchReferrerPolicy::parse(token).unwrap(), expected);
+        }
+        assert!(NativeFetchReferrerPolicy::parse("invalid").is_err());
+    }
+
+    #[test]
+    fn fetch_referrer_policies_compute_each_target_from_the_original_source() {
+        let source = Url::parse("https://source.test/account?token=hidden#fragment").unwrap();
+        let same_origin = Url::parse("https://source.test/next").unwrap();
+        let cross_origin = Url::parse("https://target.test/next").unwrap();
+        let downgrade = Url::parse("http://target.test/next").unwrap();
+        let full = "https://source.test/account?token=hidden";
+        let origin = "https://source.test/";
+
+        assert_eq!(
+            fetch_referrer_for_target(
+                Some(&source),
+                &same_origin,
+                NativeFetchReferrerPolicy::NoReferrer
+            ),
+            None
+        );
+        assert_eq!(
+            fetch_referrer_for_target(
+                Some(&source),
+                &cross_origin,
+                NativeFetchReferrerPolicy::NoReferrerWhenDowngrade,
+            ),
+            Some(full.into())
+        );
+        assert_eq!(
+            fetch_referrer_for_target(
+                Some(&source),
+                &downgrade,
+                NativeFetchReferrerPolicy::NoReferrerWhenDowngrade,
+            ),
+            None
+        );
+        assert_eq!(
+            fetch_referrer_for_target(
+                Some(&source),
+                &same_origin,
+                NativeFetchReferrerPolicy::SameOrigin
+            ),
+            Some(full.into())
+        );
+        assert_eq!(
+            fetch_referrer_for_target(
+                Some(&source),
+                &cross_origin,
+                NativeFetchReferrerPolicy::SameOrigin
+            ),
+            None
+        );
+        assert_eq!(
+            fetch_referrer_for_target(
+                Some(&source),
+                &cross_origin,
+                NativeFetchReferrerPolicy::Origin
+            ),
+            Some(origin.into())
+        );
+        assert_eq!(
+            fetch_referrer_for_target(
+                Some(&source),
+                &downgrade,
+                NativeFetchReferrerPolicy::StrictOrigin
+            ),
+            None
+        );
+        assert_eq!(
+            fetch_referrer_for_target(
+                Some(&source),
+                &cross_origin,
+                NativeFetchReferrerPolicy::OriginWhenCrossOrigin,
+            ),
+            Some(origin.into())
+        );
+        assert_eq!(
+            fetch_referrer_for_target(
+                Some(&source),
+                &downgrade,
+                NativeFetchReferrerPolicy::OriginWhenCrossOrigin,
+            ),
+            Some(origin.into())
+        );
+        assert_eq!(
+            fetch_referrer_for_target(
+                Some(&source),
+                &same_origin,
+                NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
+            ),
+            Some(full.into())
+        );
+        assert_eq!(
+            fetch_referrer_for_target(
+                Some(&source),
+                &downgrade,
+                NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
+            ),
+            None
+        );
+        assert_eq!(
+            fetch_referrer_for_target(
+                Some(&source),
+                &downgrade,
+                NativeFetchReferrerPolicy::UnsafeUrl
+            ),
+            Some(full.into())
+        );
+    }
+
+    #[test]
+    fn fetch_referrer_source_removes_credentials_and_fragment_and_enforces_owner_origin() {
+        let owner = Url::parse("https://source.test/page").unwrap();
+        let referrer = fetch_referrer_source(
+            Some("https://user:secret@source.test/path?query=1#fragment"),
+            &owner,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(referrer.as_str(), "https://source.test/path?query=1");
+        assert!(fetch_referrer_source(Some(""), &owner).unwrap().is_none());
+        assert!(fetch_referrer_source(Some("https://other.test/path"), &owner).is_err());
     }
 
     #[test]

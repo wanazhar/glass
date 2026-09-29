@@ -702,6 +702,8 @@ pub(crate) enum NativeScriptCommand {
         credentials: String,
         #[serde(default)]
         extended_lifetime: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        referrer_policy: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         cookie_profile: Vec<NativeCookieProfileEntry>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -713,6 +715,8 @@ pub(crate) enum NativeScriptCommand {
         href: String,
         #[serde(default)]
         worker_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        referrer_policy: Option<String>,
     },
     WorkerPostMessage {
         worker_id: u32,
@@ -1217,6 +1221,7 @@ pub(crate) struct NativeSharedWorkerCreateRequest {
     pub(crate) worker_type: String,
     pub(crate) credentials: String,
     pub(crate) extended_lifetime: bool,
+    pub(crate) referrer_policy: Option<String>,
     pub(crate) cookie_profile: Vec<NativeCookieProfileEntry>,
     pub(crate) transfer_port: NativeMessagePortTransfer,
 }
@@ -1532,6 +1537,7 @@ struct NativeDedicatedWorker {
     dynamic_import_referrers: BTreeSet<String>,
     module_sources: BTreeMap<String, String>,
     module_base_urls: BTreeMap<String, String>,
+    module_referrer_policies: BTreeMap<String, NativeFetchReferrerPolicy>,
     is_module: bool,
     is_shared: bool,
     credentials: String,
@@ -1544,12 +1550,20 @@ pub(crate) struct NativeWorkerModuleGraph {
     pub(crate) root_base_url: String,
     pub(crate) sources: BTreeMap<String, String>,
     pub(crate) base_urls: BTreeMap<String, String>,
+    pub(crate) referrer_policies: BTreeMap<String, NativeFetchReferrerPolicy>,
 }
 
 struct NativeWorkerClassicScriptGraph {
     source: String,
     import_script_counts: BTreeMap<String, usize>,
     dynamic_import_referrers: BTreeSet<String>,
+}
+
+fn effective_worker_module_referrer_policy(
+    inherited: Option<NativeFetchReferrerPolicy>,
+    response: Option<NativeFetchReferrerPolicy>,
+) -> Option<NativeFetchReferrerPolicy> {
+    inherited.map(|policy| response.unwrap_or(policy))
 }
 
 #[derive(Clone, Copy)]
@@ -1611,6 +1625,10 @@ impl NativeDedicatedWorker {
                 source,
                 &self.module_sources,
                 &self.module_base_urls,
+                &self.module_referrer_policies,
+                self.module_referrer_policies
+                    .get(&self.module_name)
+                    .copied(),
             )
         } else if self.is_shared {
             self.runtime.evaluate_shared_worker_prepared(
@@ -1628,6 +1646,10 @@ impl NativeDedicatedWorker {
                 source,
                 &self.module_sources,
                 &self.module_base_urls,
+                &self.module_referrer_policies,
+                self.module_referrer_policies
+                    .get(&self.module_name)
+                    .copied(),
                 true,
             )
         } else {
@@ -1656,6 +1678,10 @@ impl NativeDedicatedWorker {
                 source,
                 &self.module_sources,
                 &self.module_base_urls,
+                &self.module_referrer_policies,
+                self.module_referrer_policies
+                    .get(&self.module_name)
+                    .copied(),
             )
         } else if self.is_shared {
             self.runtime.evaluate_shared_worker(
@@ -1675,6 +1701,10 @@ impl NativeDedicatedWorker {
                 source,
                 &self.module_sources,
                 &self.module_base_urls,
+                &self.module_referrer_policies,
+                self.module_referrer_policies
+                    .get(&self.module_name)
+                    .copied(),
                 false,
             )
         } else {
@@ -2165,6 +2195,7 @@ impl NativeWorkerRegistry {
                     worker_type,
                     credentials,
                     extended_lifetime,
+                    referrer_policy,
                     cookie_profile: _,
                     constructor_storage_key,
                     transfer_port,
@@ -2175,6 +2206,10 @@ impl NativeWorkerRegistry {
                             "must be supplied by the browser owner",
                         )
                     })?;
+                    let referrer_policy = referrer_policy
+                        .as_deref()
+                        .map(NativeFetchReferrerPolicy::parse)
+                        .transpose()?;
                     self.create_shared_worker(
                         connection_id,
                         href,
@@ -2182,6 +2217,7 @@ impl NativeWorkerRegistry {
                         worker_type,
                         credentials,
                         extended_lifetime,
+                        referrer_policy,
                         constructor_storage_key,
                         transfer_port,
                         loader,
@@ -2193,9 +2229,21 @@ impl NativeWorkerRegistry {
                     worker_id,
                     href,
                     worker_type,
+                    referrer_policy,
                 } => {
-                    self.create_worker(worker_id, href, worker_type, loader, owner_url)
-                        .await?;
+                    let referrer_policy = referrer_policy
+                        .as_deref()
+                        .map(NativeFetchReferrerPolicy::parse)
+                        .transpose()?;
+                    self.create_worker(
+                        worker_id,
+                        href,
+                        worker_type,
+                        referrer_policy,
+                        loader,
+                        owner_url,
+                    )
+                    .await?;
                 }
                 NativeScriptCommand::WorkerPostMessage {
                     worker_id,
@@ -2227,6 +2275,7 @@ impl NativeWorkerRegistry {
         worker_id: u32,
         href: String,
         worker_type: String,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
         loader: &mut NativeResourceLoader,
         owner_url: &str,
     ) -> Result<(), NativeEngineError> {
@@ -2268,10 +2317,21 @@ impl NativeWorkerRegistry {
             String::new()
         };
 
-        let resource = match loader
-            .load_worker_async(owner_url, &href, MAX_NATIVE_SCRIPT_BYTES)
-            .await
-        {
+        let resource_result = if is_module {
+            loader
+                .load_worker_async_with_referrer_policy(
+                    owner_url,
+                    &href,
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    referrer_policy,
+                )
+                .await
+        } else {
+            loader
+                .load_worker_async(owner_url, &href, MAX_NATIVE_SCRIPT_BYTES)
+                .await
+        };
+        let resource = match resource_result {
             Ok(Some(resource)) => resource,
             Ok(None) => {
                 self.queue_error(worker_id, &href, "worker script was blocked or unavailable")?;
@@ -2289,6 +2349,7 @@ impl NativeWorkerRegistry {
             module_base_url,
             module_sources,
             module_base_urls,
+            module_referrer_policies,
             dynamic_import_referrers,
         ) = if is_module {
             let graph = match self
@@ -2298,6 +2359,10 @@ impl NativeWorkerRegistry {
                     module_request_url,
                     resource.clone(),
                     None,
+                    Some(
+                        referrer_policy
+                            .unwrap_or(NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin),
+                    ),
                 )
                 .await
             {
@@ -2314,6 +2379,7 @@ impl NativeWorkerRegistry {
                 graph.root_base_url,
                 graph.sources,
                 graph.base_urls,
+                graph.referrer_policies,
                 BTreeSet::new(),
             )
         } else {
@@ -2338,6 +2404,7 @@ impl NativeWorkerRegistry {
                 resource.url.clone(),
                 BTreeMap::new(),
                 BTreeMap::new(),
+                BTreeMap::new(),
                 graph.dynamic_import_referrers,
             )
         };
@@ -2360,6 +2427,7 @@ impl NativeWorkerRegistry {
                 dynamic_import_referrers,
                 module_sources,
                 module_base_urls,
+                module_referrer_policies,
                 is_module,
                 is_shared: false,
                 credentials: "same-origin".into(),
@@ -2394,6 +2462,7 @@ impl NativeWorkerRegistry {
         worker_type: String,
         credentials: String,
         extended_lifetime: bool,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
         constructor_storage_key: NativeSharedWorkerStorageKey,
         transfer_port: NativeMessagePortTransfer,
         loader: &mut NativeResourceLoader,
@@ -2496,6 +2565,7 @@ impl NativeWorkerRegistry {
                     &href,
                     MAX_NATIVE_SCRIPT_BYTES,
                     &credentials,
+                    referrer_policy,
                 )
                 .await
         } else {
@@ -2525,6 +2595,7 @@ impl NativeWorkerRegistry {
             module_base_url,
             module_sources,
             module_base_urls,
+            module_referrer_policies,
             dynamic_import_referrers,
         ) = if is_module {
             let graph = match self
@@ -2534,6 +2605,10 @@ impl NativeWorkerRegistry {
                     module_request_url,
                     resource.clone(),
                     Some(&credentials),
+                    Some(
+                        referrer_policy
+                            .unwrap_or(NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin),
+                    ),
                 )
                 .await
             {
@@ -2550,6 +2625,7 @@ impl NativeWorkerRegistry {
                 graph.root_base_url,
                 graph.sources,
                 graph.base_urls,
+                graph.referrer_policies,
                 BTreeSet::new(),
             )
         } else {
@@ -2574,6 +2650,7 @@ impl NativeWorkerRegistry {
                 resource.url.clone(),
                 BTreeMap::new(),
                 BTreeMap::new(),
+                BTreeMap::new(),
                 graph.dynamic_import_referrers,
             )
         };
@@ -2596,6 +2673,7 @@ impl NativeWorkerRegistry {
                 dynamic_import_referrers,
                 module_sources,
                 module_base_urls,
+                module_referrer_policies,
                 is_module,
                 is_shared: true,
                 credentials,
@@ -4191,6 +4269,10 @@ impl NativeWorkerRegistry {
         };
         let payload = if module_destination {
             let module_referrer = module_referrer.as_deref().unwrap_or_default();
+            let module_referrer_policy = referrer_policy
+                .as_deref()
+                .map(NativeFetchReferrerPolicy::parse)
+                .transpose()?;
             match self
                 .load_dynamic_worker_module(
                     worker_id,
@@ -4199,6 +4281,7 @@ impl NativeWorkerRegistry {
                     module_referrer,
                     &href,
                     module_type,
+                    module_referrer_policy,
                     loader,
                 )
                 .await
@@ -4292,6 +4375,7 @@ impl NativeWorkerRegistry {
         module_referrer: &str,
         specifier: &str,
         module_type: Option<NativeModuleResourceType>,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
         loader: &mut NativeResourceLoader,
     ) -> Result<String, NativeEngineError> {
         let target = resolve_worker_module_specifier(module_referrer, specifier)?;
@@ -4333,13 +4417,17 @@ impl NativeWorkerRegistry {
             .filter(|worker| worker.is_shared && worker.is_module)
             .map(|worker| worker.credentials.clone());
 
+        let referrer_policy =
+            referrer_policy.unwrap_or(NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin);
         let resource = loader
-            .load_worker_script_dependency_async_with_credentials(
+            .load_worker_script_dependency_async_with_referrer_source(
                 worker_url,
+                module_referrer,
                 &target,
                 MAX_NATIVE_SCRIPT_BYTES,
                 Some(module_type),
                 worker_credentials_mode.as_deref(),
+                Some(referrer_policy),
             )
             .await?
             .ok_or_else(|| NativeEngineError::Network {
@@ -4353,6 +4441,7 @@ impl NativeWorkerRegistry {
                 module_name.clone(),
                 resource,
                 worker_credentials_mode.as_deref(),
+                Some(referrer_policy),
             )
             .await?;
         let new_sources = graph
@@ -4362,6 +4451,11 @@ impl NativeWorkerRegistry {
             .collect::<BTreeMap<_, _>>();
         let new_base_urls = graph
             .base_urls
+            .into_iter()
+            .filter(|(name, _)| new_sources.contains_key(name))
+            .collect::<BTreeMap<_, _>>();
+        let new_referrer_policies = graph
+            .referrer_policies
             .into_iter()
             .filter(|(name, _)| new_sources.contains_key(name))
             .collect::<BTreeMap<_, _>>();
@@ -4393,8 +4487,14 @@ impl NativeWorkerRegistry {
         worker
             .runtime
             .extend_module_sources(new_sources.clone(), new_base_urls.clone())?;
+        worker
+            .runtime
+            .extend_module_referrer_policies(new_referrer_policies.clone())?;
         worker.module_sources.extend(new_sources);
         worker.module_base_urls.extend(new_base_urls);
+        worker
+            .module_referrer_policies
+            .extend(new_referrer_policies);
         worker
             .runtime
             .register_dynamic_module_alias(request_id, &target)
@@ -4612,6 +4712,7 @@ impl NativeWorkerRegistry {
         root_request_url: String,
         root: NativeScriptResource,
         credentials_mode: Option<&str>,
+        inherited_referrer_policy: Option<NativeFetchReferrerPolicy>,
     ) -> Result<NativeWorkerModuleGraph, NativeEngineError> {
         if root.body.is_empty() {
             return Err(NativeEngineError::invalid(
@@ -4621,12 +4722,27 @@ impl NativeWorkerRegistry {
         }
         let root_name = root_request_url;
         let root_base_url = root.url.clone();
+        let root_referrer_policy = effective_worker_module_referrer_policy(
+            inherited_referrer_policy,
+            root.response_referrer_policy,
+        );
         let mut sources = BTreeMap::from([(root_name.clone(), root.body.clone())]);
         let mut base_urls = BTreeMap::from([(root_name.clone(), root_base_url.clone())]);
-        let mut pending = VecDeque::from([(root_name.clone(), root_base_url.clone(), root.body)]);
+        let mut referrer_policies = BTreeMap::new();
+        if let Some(policy) = root_referrer_policy {
+            referrer_policies.insert(root_name.clone(), policy);
+        }
+        let mut pending = VecDeque::from([(
+            root_name.clone(),
+            root_base_url.clone(),
+            root.body,
+            root_referrer_policy,
+        )]);
         let mut total_bytes = sources.values().map(String::len).sum::<usize>();
         let mut import_edges = 0usize;
-        while let Some((module_name, module_base_url, module_source)) = pending.pop_front() {
+        while let Some((module_name, module_base_url, module_source, module_referrer_policy)) =
+            pending.pop_front()
+        {
             if module_name.starts_with(NATIVE_JSON_MODULE_NAME_PREFIX) {
                 continue;
             }
@@ -4659,22 +4775,36 @@ impl NativeWorkerRegistry {
                         sources.len().saturating_add(1),
                     ));
                 }
-                let resource = loader
-                    .load_worker_script_dependency_async_with_credentials(
-                        owner_url,
-                        &target,
-                        MAX_NATIVE_SCRIPT_BYTES,
-                        Some(request.module_type),
-                        credentials_mode,
-                    )
-                    .await?
-                    .ok_or_else(|| NativeEngineError::Network {
-                        operation: "native Worker module dependency".into(),
-                        reason: format!(
-                            "Worker module dependency {:?} was blocked or unavailable",
-                            request.specifier
-                        ),
-                    })?;
+                let resource = if let Some(referrer_policy) = module_referrer_policy {
+                    loader
+                        .load_worker_script_dependency_async_with_referrer_source(
+                            owner_url,
+                            &module_base_url,
+                            &target,
+                            MAX_NATIVE_SCRIPT_BYTES,
+                            Some(request.module_type),
+                            credentials_mode,
+                            Some(referrer_policy),
+                        )
+                        .await?
+                } else {
+                    loader
+                        .load_worker_script_dependency_async_with_credentials(
+                            owner_url,
+                            &target,
+                            MAX_NATIVE_SCRIPT_BYTES,
+                            Some(request.module_type),
+                            credentials_mode,
+                        )
+                        .await?
+                }
+                .ok_or_else(|| NativeEngineError::Network {
+                    operation: "native Worker module dependency".into(),
+                    reason: format!(
+                        "Worker module dependency {:?} was blocked or unavailable",
+                        request.specifier
+                    ),
+                })?;
                 if resource.body.is_empty() {
                     return Err(NativeEngineError::invalid(
                         "worker module source",
@@ -4690,10 +4820,17 @@ impl NativeWorkerRegistry {
                     ));
                 }
                 let base_url = resource.url;
+                let dependency_referrer_policy = effective_worker_module_referrer_policy(
+                    module_referrer_policy,
+                    resource.response_referrer_policy,
+                );
                 let source = resource.body;
                 if sources.insert(name.clone(), source.clone()).is_none() {
                     base_urls.insert(name.clone(), base_url.clone());
-                    pending.push_back((name, base_url, source));
+                    if let Some(policy) = dependency_referrer_policy {
+                        referrer_policies.insert(name.clone(), policy);
+                    }
+                    pending.push_back((name, base_url, source, dependency_referrer_policy));
                 }
             }
         }
@@ -4702,6 +4839,7 @@ impl NativeWorkerRegistry {
             root_base_url,
             sources,
             base_urls,
+            referrer_policies,
         })
     }
 }
@@ -4723,7 +4861,14 @@ pub(crate) async fn load_service_worker_source(
     let registry = NativeWorkerRegistry::new();
     if is_module {
         let module_graph = registry
-            .load_worker_module_graph(loader, owner_url, root_request_url, resource.clone(), None)
+            .load_worker_module_graph(
+                loader,
+                owner_url,
+                root_request_url,
+                resource.clone(),
+                None,
+                None,
+            )
             .await?;
         Ok((resource.body, BTreeMap::new(), Some(module_graph)))
     } else {
@@ -14752,6 +14897,7 @@ impl NativeJavaScriptRuntime {
                 name,
                 worker_type,
                 credentials,
+                referrer_policy,
                 transfer_port,
                 ..
             } => {
@@ -14776,12 +14922,17 @@ impl NativeJavaScriptRuntime {
                     ));
                 }
                 validate_native_shared_worker_options(worker_type, credentials)?;
+                referrer_policy
+                    .as_deref()
+                    .map(NativeFetchReferrerPolicy::parse)
+                    .transpose()?;
                 validate_message_port_transfers(std::slice::from_ref(transfer_port))?;
             }
             NativeScriptCommand::WorkerCreate {
                 worker_id,
                 href,
                 worker_type,
+                referrer_policy,
             } => {
                 if *worker_id == 0 {
                     return Err(NativeEngineError::invalid(
@@ -14799,6 +14950,10 @@ impl NativeJavaScriptRuntime {
                         reason: "native Worker type must be classic or module".into(),
                     });
                 }
+                referrer_policy
+                    .as_deref()
+                    .map(NativeFetchReferrerPolicy::parse)
+                    .transpose()?;
             }
             NativeScriptCommand::WorkerPostMessage {
                 worker_id, data, ..
@@ -15886,6 +16041,8 @@ impl NativeJavaScriptRuntime {
         source: &str,
         module_sources: &BTreeMap<String, String>,
         module_base_urls: &BTreeMap<String, String>,
+        module_referrer_policies: &BTreeMap<String, NativeFetchReferrerPolicy>,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
         capture_startup_runtime_errors: bool,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         if module_name.is_empty() {
@@ -15895,6 +16052,7 @@ impl NativeJavaScriptRuntime {
             ));
         }
         self.set_module_sources(module_sources.clone());
+        self.set_module_referrer_policies(module_referrer_policies.clone());
         let mut module_base_urls = module_base_urls.clone();
         module_base_urls.insert(module_name.to_owned(), module_base_url.to_owned());
         self.set_module_base_urls(module_base_urls);
@@ -15905,7 +16063,12 @@ impl NativeJavaScriptRuntime {
                 operation: "prepare Worker module referrer".into(),
                 reason: "Worker module referrer could not be encoded".into(),
             })?;
-        let source = rewrite_runtime_dynamic_module_imports(source, &referrer)?;
+        let referrer_policy = native_module_referrer_policy_expression(referrer_policy);
+        let source = rewrite_runtime_dynamic_module_imports_with_policy(
+            source,
+            &referrer,
+            &referrer_policy,
+        )?;
         let bootstrap = worker_bootstrap(
             worker_id,
             worker_url,
@@ -15989,6 +16152,8 @@ impl NativeJavaScriptRuntime {
         source: &str,
         module_sources: &BTreeMap<String, String>,
         module_base_urls: &BTreeMap<String, String>,
+        module_referrer_policies: &BTreeMap<String, NativeFetchReferrerPolicy>,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         if module_name.is_empty() {
             return Err(NativeEngineError::invalid(
@@ -15997,6 +16162,7 @@ impl NativeJavaScriptRuntime {
             ));
         }
         self.set_module_sources(module_sources.clone());
+        self.set_module_referrer_policies(module_referrer_policies.clone());
         let mut module_base_urls = module_base_urls.clone();
         module_base_urls.insert(module_name.to_owned(), module_base_url.to_owned());
         self.set_module_base_urls(module_base_urls);
@@ -16007,7 +16173,12 @@ impl NativeJavaScriptRuntime {
                 operation: "prepare SharedWorker module referrer".into(),
                 reason: "SharedWorker module referrer could not be encoded".into(),
             })?;
-        let source = rewrite_runtime_dynamic_module_imports(source, &referrer)?;
+        let referrer_policy = native_module_referrer_policy_expression(referrer_policy);
+        let source = rewrite_runtime_dynamic_module_imports_with_policy(
+            source,
+            &referrer,
+            &referrer_policy,
+        )?;
         self.evaluate_shared_worker_source(
             worker_id,
             worker_url,
@@ -21043,10 +21214,10 @@ mod native_static_dynamic_import_tests {
     use super::{
         BTreeMap, MAX_NATIVE_MODULE_IMPORTS, Module, NativeFetchReferrerPolicy,
         NativeJavaScriptRuntime, NativeModuleImportMap, NativeModuleResourceType, NativePageScript,
-        module_source_maps, native_module_loader_name, rewrite_dynamic_imports_as_rejected,
-        rewrite_dynamic_imports_as_rejected_with_count, rewrite_runtime_dynamic_module_imports,
-        rewrite_runtime_dynamic_module_imports_with_policy, rewrite_static_json_module_specifiers,
-        static_module_requests,
+        effective_worker_module_referrer_policy, module_source_maps, native_module_loader_name,
+        rewrite_dynamic_imports_as_rejected, rewrite_dynamic_imports_as_rejected_with_count,
+        rewrite_runtime_dynamic_module_imports, rewrite_runtime_dynamic_module_imports_with_policy,
+        rewrite_static_json_module_specifiers, static_module_requests,
     };
 
     #[test]
@@ -21091,6 +21262,25 @@ mod native_static_dynamic_import_tests {
         assert_eq!(
             referrer_policies["https://document.test/static.js"],
             NativeFetchReferrerPolicy::StrictOrigin
+        );
+    }
+
+    #[test]
+    fn worker_module_response_policy_overrides_inherited_policy_only_when_recognized() {
+        assert_eq!(
+            effective_worker_module_referrer_policy(
+                Some(NativeFetchReferrerPolicy::Origin),
+                Some(NativeFetchReferrerPolicy::NoReferrer),
+            ),
+            Some(NativeFetchReferrerPolicy::NoReferrer)
+        );
+        assert_eq!(
+            effective_worker_module_referrer_policy(Some(NativeFetchReferrerPolicy::Origin), None,),
+            Some(NativeFetchReferrerPolicy::Origin)
+        );
+        assert_eq!(
+            effective_worker_module_referrer_policy(None, Some(NativeFetchReferrerPolicy::Origin)),
+            None
         );
     }
 
@@ -47322,7 +47512,7 @@ fn document_bootstrap(
     this.__glassTerminated = false;
     this.__glassWorkerListeners = {{ message: [], messageerror: [], error: [] }};
     workers.set(workerId, this);
-    pushCommand({{ kind: "workerCreate", worker_id: workerId, href: resolved.href, worker_type: workerType }});
+    pushCommand({{ kind: "workerCreate", worker_id: workerId, href: resolved.href, worker_type: workerType, referrer_policy: documentReferrerPolicy.value }});
   }};
   WorkerNative.prototype.addEventListener = function(type, listener) {{
     const name = String(type);
@@ -47416,6 +47606,7 @@ fn document_bootstrap(
       worker_type: workerType,
       credentials,
       extended_lifetime: extendedLifetime,
+      referrer_policy: documentReferrerPolicy.value,
       transfer_port: preparedTransfer.descriptor,
     }});
   }};

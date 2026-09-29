@@ -26,9 +26,12 @@ version claims.
 
 ## Active plan: Glass native browser engine (issue #40)
 
-Status: the bounded foundation is complete through `native-engine-234`; local
-browser expansion implementation is locally complete through
-`native-engine-browser-828`. Slice 818 returns ordinary page-response cookie
+Status: the bounded foundation is complete through `native-engine-234`; the
+latest browser expansion with process-backed network evidence is
+`native-engine-browser-829`. Slices 830-833 remain in progress because their
+HTTP assertions cannot bind a local listener in this restricted environment;
+their scoped compile and focused unit evidence is recorded below. Slice 818
+returns ordinary page-response cookie
 journals after profile merge and synchronizes same-backend target/frame and
 SharedWorker contexts without duplicate profile writes. Slice 819 verifies
 that an already-running module SharedWorker's later module request uses the
@@ -135,6 +138,14 @@ HTTP assertions remain pending.
 The process fixture cannot bind its first local socket in this sandbox
 (`PermissionDenied`), so wire behavior is unverified. See the
 [slice 832 task](tasks/native-engine-browser-832.md).
+Slice 833 implements creator-Document referrer policy on DedicatedWorker and
+SharedWorker module entry fetches and carries per-module response policies and
+final response URLs through static and runtime imports. The scoped package
+check and focused module-policy unit group pass. The process-backed regression
+compiles but cannot bind its first local socket here (`PermissionDenied`), so
+wire behavior remains unverified and the slice stays in progress. Ordinary
+Worker requests and other worker types remain separate. See the
+[slice 833 task](tasks/native-engine-browser-833.md).
 Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).

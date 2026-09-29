@@ -4944,6 +4944,7 @@ impl NativeEngineBackend {
             worker_type: request.worker_type,
             credentials: request.credentials,
             extended_lifetime: request.extended_lifetime,
+            referrer_policy: request.referrer_policy,
             cookie_profile: Vec::new(),
             constructor_storage_key: Some(NativeSharedWorkerStorageKey::for_document(
                 &request.constructor_origin,

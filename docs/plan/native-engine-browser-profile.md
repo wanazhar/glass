@@ -238,6 +238,15 @@ unchanged. Worker/worklet module imports, classic-script dynamic imports, and
 broader Referrer Policy/Fetch and WPT conformance remain separate requirements.
 See the [slice 832 task](tasks/native-engine-browser-832.md).
 
+Slice 833 carries the owning Document's current effective policy into the
+initial DedicatedWorker and SharedWorker module-script request. The worker
+module graph then uses each referencing module's final response URL and
+effective response/inherited policy for its static and dynamic imports. This
+slice does not establish the worker-global policy container used by ordinary
+Fetch/XHR, nor ServiceWorker or classic-worker policy inheritance. Those
+remain explicit profile requirements; see the
+[slice 833 task](tasks/native-engine-browser-833.md).
+
 ### Explicit `tabindex` focus baseline
 
 Within the current light-DOM focus scope, a valid explicit `tabindex` makes an

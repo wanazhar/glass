@@ -82,11 +82,11 @@ preserving request-level policy and public Request state.
   -- --quiet` passed (1 passed, 1,650 filtered; 0.16 seconds), verifying
   inherited/explicit Fetch policy commands, async-XHR default policy, and
   unchanged public Request policy values.
-- The process-backed regression for classic and module ServiceWorker Fetch,
-  async XHR, and module dependency headers type-checks under `--tests` but was
-  not run. Prior slice verification established that this sandbox denies its
-  first loopback listener bind with `PermissionDenied`; actual HTTP assertions
-  remain unverified, so this slice stays in progress.
+- `native_content_process_service_worker_fetches_use_script_policy_container`
+  passed its focused process-backed HTTP regression locally. It verifies the
+  ServiceWorker policy container on module dependencies, Fetch, and async XHR.
+  Slice 836 remains `in-progress` because its declared dependency chain still
+  includes unresolved Slice 833.
 - Final release-truth audit passed: 1,464 Markdown files, 83 current
   documents, and zero current-claim failures. Documentation depth passed
   (93 current guides/19 substantive contracts); shortcut inventory passed

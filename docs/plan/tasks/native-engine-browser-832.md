@@ -70,10 +70,12 @@ overrides on dynamically fetched modules.
   passed (1 passed, 1,645 filtered).
 - `cargo test -p glass-browser --lib --features native-engine module_source_maps_preserve_referrer_policy_per_module_identity --locked --quiet`
   passed (1 passed, 1,646 filtered).
-- The process-backed two-origin regression compiles, but its run failed before
-  any socket or browser assertion: the sandbox denied the first
-  `TcpListener::bind` with `PermissionDenied`. Wire behavior remains
-  unverified here, so the slice stays in progress.
+- The focused process-backed batch reached all five dynamic-module requests,
+  and its actual `Referer` header assertions passed. The final runtime
+  settlement assertion failed: the inline root's imported module and import
+  promise remained `null`; the external root's dynamic and nested imports
+  settled. The slice remains in progress until inline-module dynamic import
+  execution and settlement pass.
 - `cargo fmt --all -- --check` and `git diff --check` passed.
 - Maintainer documentation gates passed: release-documentation truth (1,460
   Markdown documents, zero current-claim failures), documentation depth (93

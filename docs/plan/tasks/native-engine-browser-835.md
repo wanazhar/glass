@@ -83,11 +83,11 @@ for DedicatedWorkers, SharedWorkers, and classic ServiceWorkers.
   -- --exact --quiet` passed (1 passed, 884 filtered; 10.85 seconds), verifying
   nested fixture `importScripts()` dependencies resolve against the root
   Worker URL.
-- The process-backed DedicatedWorker/SharedWorker/ServiceWorker regression
-  compiled into the integration-test executable, but was not run: prior
-  Slice 833 execution established that this sandbox denies its first loopback
-  listener bind with `PermissionDenied`. Actual HTTP `Referer` and Service
-  Worker wire assertions remain unverified, so the slice stays in progress.
+- `native_content_process_classic_import_scripts_use_worker_policy_and_root_url`
+  passed in the focused process-backed regression batch. This verifies the
+  classic import graph's actual HTTP policy and root URL behavior locally.
+  Slice 835 remains `in-progress` because its declared predecessor chain
+  includes unresolved Slice 833.
 - Final release-truth audit passed: 1,463 Markdown files, 83 current
   documents, and zero current-claim failures. Documentation depth passed
   (93 current guides/19 substantive contracts); shortcut inventory passed

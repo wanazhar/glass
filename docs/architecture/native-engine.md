@@ -1,35 +1,22 @@
 # Native browser engine
 
-Status: The latest browser expansion with process-backed network evidence is
-`native-engine-browser-829`; issue #40 remains open. Slices 830-832 have local
-implementation and scoped compile/unit evidence, but their process-backed
-HTTP assertions are unverified because this restricted environment denies the
-fixture's first local listener bind. Slice 833 is in progress: it carries the
-creator Document's current referrer policy into module Worker entry requests
-and preserves each module's response policy and final URL through
-DedicatedWorker and SharedWorker static and dynamic imports. This does not
-cover ordinary Worker requests, classic workers, or ServiceWorker policy
-containers. Slice 833's scoped package check and focused module-policy unit
-group pass; its process-backed regression compiles but cannot bind the first
-local socket here (`PermissionDenied`), so its HTTP assertions remain
-unverified. Slice 834 is in progress: it implements the DedicatedWorker and
-SharedWorker global referrer default from the final network-script response
-policy (or the policy-container default) for ordinary Worker Fetch and XHR,
-preserving public Request policy values and explicit overrides. Its HTTP
-assertions remain unverified because the local fixture cannot bind in this
-sandbox. Slice 835 is in progress: it applies the Worker-global referrer
-policy and final root Worker URL to preloaded classic `importScripts()`
-dependencies, including nested imports and classic ServiceWorker
-dependencies. The dependency graph's network assertions are likewise pending
-an environment that permits loopback binds. See the [Slice 834 task](../plan/tasks/native-engine-browser-834.md)
-and [Slice 835 task](../plan/tasks/native-engine-browser-835.md) for exact
-verification boundaries; see the Slice 830-833 tasks for prior evidence.
-Slice 836 is in progress: ServiceWorker module dependencies inherit the
-service-worker script's response policy container, and its own Fetch and
-asynchronous XHR use that policy when the request does not specify one. The
-public Request value and explicit overrides remain unchanged. Its local HTTP
-assertions require a listener-enabled environment; see the
-[Slice 836 task](../plan/tasks/native-engine-browser-836.md).
+Status: issue #40 remains open. Local process-backed HTTP tests now run on
+this host. Slices 830 and 831 pass their wire regressions. Slice 832 verifies
+all request headers, but its inline module's dynamic import does not settle.
+Slice 833 exits the content worker during module-worker initialization before
+its HTTP assertions complete. Slices 834-836 pass their targeted process-backed
+Fetch/XHR, `importScripts()`, and ServiceWorker policy tests, but remain in
+progress behind Slice 833. The latest remote CI run, `36616367412` on
+`ee67f930`, failed and does not contain these local edits. Remote CI for these
+edits, WPT conformance, and cross-platform certification remain open. See the
+[Slice 830 task](../plan/tasks/native-engine-browser-830.md),
+[Slice 831 task](../plan/tasks/native-engine-browser-831.md),
+[Slice 832 task](../plan/tasks/native-engine-browser-832.md),
+[Slice 833 task](../plan/tasks/native-engine-browser-833.md),
+[Slice 834 task](../plan/tasks/native-engine-browser-834.md),
+[Slice 835 task](../plan/tasks/native-engine-browser-835.md), and
+[Slice 836 task](../plan/tasks/native-engine-browser-836.md) for contracts and
+verification boundaries.
 Slice 818 synchronizes
 ordinary response-cookie deltas to same-backend live contexts after profile
 merge; Slice 819 verifies a live module SharedWorker's next module request.
@@ -91,18 +78,23 @@ seconds). Module-script graphs and broader conformance remain separate
 requirements. Slice 830 extends that policy to parser-discovered and dynamic
 network stylesheet links, with `HTMLLinkElement.referrerPolicy`, redirect
 updates, and revalidation; `@import` remains on its existing request path. The
-slice is still in progress: the package test-target check and focused DOM
-policy test pass, but the process-backed HTTP regression cannot bind a local
-listener in this restricted environment, so actual request headers are not
-verified here. Slice 831 applies element/document referrer policy to module
-entries and recursive static imports, using each referencing module's final
-response URL as the dependency referrer and recognized response policy for its
-descendants. The package-scoped check and 9 focused pure tests passed, but the
-process-backed regression could not bind its first local listener in this
-restricted environment; wire behavior is unverified and the slice remains in
-progress. Dynamic `import()` policy inheritance and worker/worklet graphs
-remain separate. See the [slice 831 task](../plan/tasks/native-engine-browser-831.md).
-See the [slice 830 task](../plan/tasks/native-engine-browser-830.md)
+process-backed two-origin regression passed locally, including live
+`HTMLMetaElement.content` reflection. Slice 831 applies element/document
+referrer policy to module entries and recursive static imports, using each
+referencing module's final response URL as the dependency referrer and
+recognized response policy for its descendants. Its process-backed static
+module graph case and 9 focused pure tests passed. Slice 832 adds dynamic
+`import()` policy inheritance; the actual request headers pass, but the inline
+module import does not settle in its process-backed regression. Slice 833 adds
+the creator policy to module workers; its process-backed run exits the content
+worker during initialization. Slices 834-836 process-backed Fetch/XHR,
+`importScripts()`, and ServiceWorker policy cases pass locally, but remain in
+progress behind Slice 833. Remote CI for the current local edits, WPT
+conformance, and cross-platform certification remain open. See the
+[slice 831 task](../plan/tasks/native-engine-browser-831.md), the
+[slice 832 task](../plan/tasks/native-engine-browser-832.md), the
+[slice 833 task](../plan/tasks/native-engine-browser-833.md), and the
+[slice 830 task](../plan/tasks/native-engine-browser-830.md)
 for evidence and limits, and the [slice 829 task](../plan/tasks/native-engine-browser-829.md),
 [slice 828 task](../plan/tasks/native-engine-browser-828.md),
 [slice 827 task](../plan/tasks/native-engine-browser-827.md),

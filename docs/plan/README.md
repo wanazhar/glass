@@ -26,11 +26,15 @@ version claims.
 
 ## Active plan: Glass native browser engine (issue #40)
 
-Status: the bounded foundation is complete through `native-engine-234`; the
-latest browser expansion with process-backed network evidence is
-`native-engine-browser-829`. Slices 830-833 remain in progress because their
-HTTP assertions cannot bind a local listener in this restricted environment;
-their scoped compile and focused unit evidence is recorded below. Slice 818
+Status: the bounded foundation is complete through `native-engine-234`. Local
+process-backed HTTP tests now run on this host. Slices 830 and 831 pass their
+wire regressions. Slice 832 reaches its HTTP assertions but its inline dynamic
+module does not settle; Slice 833 exits the content worker during module-worker
+initialization. The process-backed cases for Slices 834-836 pass, but remain in
+progress because their declared dependency chain includes Slice 833. The
+latest remote CI run, `36616367412` on `ee67f930`, failed; it predates the
+current local edits. WPT conformance, remote CI for these edits, and
+cross-platform certification remain open. Slice 818
 returns ordinary page-response cookie
 journals after profile merge and synchronizes same-backend target/frame and
 SharedWorker contexts without duplicate profile writes. Slice 819 verifies
@@ -116,52 +120,47 @@ initiators, WPT conformance, remote CI, and platform certification remain open.
 See the [slice 829 task](tasks/native-engine-browser-829.md).
 Slice 830 extends element-level policy to network stylesheet links during
 parser discovery and dynamic insertion, keeping CSS `@import` on its existing
-path. Its package test-target check and focused DOM policy unit test pass. The
-two-origin HTTP regression is present and type-checks but could not start here:
-the restricted sandbox denied `TcpListener::bind` with `PermissionDenied`, so
-wire-level behavior remains unverified. See the [slice 830 task](tasks/native-engine-browser-830.md).
+path. Its process-backed two-origin HTTP regression passed (1 passed, 885
+filtered; 25.68 seconds), including dynamic meta fallback through reflected
+`HTMLMetaElement.content`, redirects, cache revalidation, and style
+application. See the [slice 830 task](tasks/native-engine-browser-830.md).
 Slice 831 applies element/document referrer policy to network module entries
 and recursive static imports, using each referencing module response URL as
 the dependency referrer and each module response's recognized policy for its
-descendants. The package-scoped check passed and 9 focused pure tests passed.
-The process-backed two-origin regression compiles but cannot bind its first
-local listener in this sandbox (`PermissionDenied`), so wire behavior remains
-unverified and the slice is still in progress. Dynamic `import()` policy
-inheritance is tracked separately by Slice 832; worker/worklet module graphs
-remain out of scope. See the
+descendants. Its process-backed static-module graph case passed with actual
+entry and dependency headers; 9 focused pure tests also pass. See the
 [slice 831 task](tasks/native-engine-browser-831.md).
 Slice 832 records the next bounded contract: preserve each page module's
 effective referrer policy in `import()` calls and through dynamically loaded
 module graphs, without changing ordinary page `fetch()`. Implementation
-remains in progress: the scoped check and both focused pure tests pass, but
-HTTP assertions remain pending.
-The process fixture cannot bind its first local socket in this sandbox
-(`PermissionDenied`), so wire behavior is unverified. See the
+remains in progress: actual headers passed for all five requests, and the
+external module graph settled, but the inline module's imported-module and
+promise-settlement values remained `null`. See the
 [slice 832 task](tasks/native-engine-browser-832.md).
 Slice 833 implements creator-Document referrer policy on DedicatedWorker and
 SharedWorker module entry fetches and carries per-module response policies and
 final response URLs through static and runtime imports. The scoped package
-check and focused module-policy unit group pass. The process-backed regression
-compiles but cannot bind its first local socket here (`PermissionDenied`), so
-wire behavior remains unverified and the slice stays in progress. Ordinary
-Worker requests and other worker types remain separate. See the
+check and focused module-policy unit group pass, but the process-backed run
+exits the content worker during initialization before its HTTP assertions
+complete. Ordinary Worker requests and other worker types remain separate.
+See the
 [slice 833 task](tasks/native-engine-browser-833.md).
 Slice 834 records the next bounded Worker policy-container contract: ordinary
 DedicatedWorker/SharedWorker Fetch and XHR inherit the initialized worker-global
 referrer policy while preserving empty public `Request.referrerPolicy` values
-and explicit overrides. Implementation and HTTP verification are in progress;
-see the [slice 834 task](tasks/native-engine-browser-834.md).
+and explicit overrides. Its process-backed Fetch/XHR regression passed locally;
+the slice remains in progress pending Slice 833. See the
+[slice 834 task](tasks/native-engine-browser-834.md).
 Slice 835 applies that Worker-global referrer policy and final root Worker URL
 to preloaded classic `importScripts()` dependencies, including nested
-DedicatedWorker, SharedWorker, and ServiceWorker imports. The compiled
-process-backed regression is pending execution where local listener binds are
-permitted; see the [slice 835 task](tasks/native-engine-browser-835.md).
+DedicatedWorker, SharedWorker, and ServiceWorker imports. Its process-backed
+regression passed locally; the slice remains in progress pending Slice 833.
+See the [slice 835 task](tasks/native-engine-browser-835.md).
 Slice 836 carries the ServiceWorker script response policy container through
 module dependency fetching and into Worker-global Fetch and asynchronous XHR,
 without changing public Request policy values or explicit overrides. Its
-process-backed HTTP assertions remain pending execution in an environment
-that permits local listener binds; see the
-[slice 836 task](tasks/native-engine-browser-836.md).
+process-backed HTTP regression passed locally; the slice remains in progress
+pending Slice 833. See the [slice 836 task](tasks/native-engine-browser-836.md).
 Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).

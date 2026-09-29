@@ -64555,6 +64555,213 @@ async fn native_content_process_applies_img_referrer_policy() {
 }
 
 #[tokio::test]
+async fn native_content_process_applies_classic_script_referrer_policy() {
+    fn request_header(request: &str, name: &str) -> Option<String> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header
+                    .eq_ignore_ascii_case(name)
+                    .then(|| value.trim().to_owned())
+            })
+        })
+    }
+
+    fn script_response(body: &str, cache_control: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nCache-Control: {cache_control}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let script_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let script_address = script_listener.local_addr().unwrap();
+    let document_url = format!("http://{page_address}/page?secret=token#fragment");
+    let document_referer = format!("http://{page_address}/page?secret=token");
+    let document_origin = format!("http://{page_address}/");
+    let script_body = "globalThis.scriptReferrerLoads = (globalThis.scriptReferrerLoads || 0) + 1;";
+    let page_document_referer = document_referer.clone();
+    let page_script_body = script_body.to_owned();
+    let page_server = tokio::spawn(async move {
+        let (mut stream, _) = page_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/page?secret=token")
+        );
+        let body = format!(
+            "<script id='same' src='/same.js'></script>\
+             <script id='default' src='http://{script_address}/default.js'></script>\
+             <script id='empty' src='http://{script_address}/empty.js' referrerpolicy=''></script>\
+             <script id='origin' src='http://{script_address}/origin.js' referrerpolicy='ORIGIN'></script>\
+             <script id='invalid' src='http://{script_address}/invalid.js' referrerpolicy='not-a-policy'></script>\
+             <script id='none' src='http://{script_address}/none.js' referrerpolicy='no-referrer'></script>\
+             <script id='redirect' src='http://{script_address}/redirect.js' referrerpolicy='no-referrer'></script>\
+             <script id='cache' src='/cache.js'></script>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nReferrer-Policy: unsafe-url\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        for expected_path in ["/same.js", "/cache.js"] {
+            let (mut stream, _) = page_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            assert_eq!(
+                request_header(&request, "referer").as_deref(),
+                Some(page_document_referer.as_str()),
+                "{expected_path} initial fetch"
+            );
+            if expected_path == "/cache.js" {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nCache-Control: no-cache\r\nETag: \"script-v1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    page_script_body.len(),
+                    page_script_body
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            } else {
+                stream
+                    .write_all(script_response(&page_script_body, "no-store").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let (mut stream, _) = page_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/cache.js"));
+        assert_eq!(request_header(&request, "referer"), None);
+        assert_eq!(
+            request_header(&request, "if-none-match").as_deref(),
+            Some("\"script-v1\"")
+        );
+        stream
+            .write_all(
+                b"HTTP/1.1 304 Not Modified\r\nCache-Control: no-cache\r\nETag: \"script-v1\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+
+        let (mut stream, _) = page_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/dynamic-default.js")
+        );
+        assert_eq!(request_header(&request, "referer"), None);
+        stream
+            .write_all(script_response(&page_script_body, "no-store").as_bytes())
+            .await
+            .unwrap();
+    });
+
+    let cross_origin_referer = document_origin.clone();
+    let full_referer = document_referer.clone();
+    let script_body = script_body.to_owned();
+    let script_server = tokio::spawn(async move {
+        let cases = [
+            ("/default.js", Some(full_referer.clone())),
+            ("/empty.js", Some(full_referer.clone())),
+            ("/origin.js", Some(cross_origin_referer.clone())),
+            ("/invalid.js", Some(full_referer)),
+            ("/none.js", None),
+            ("/redirect.js", None),
+            ("/redirect-target.js", Some(cross_origin_referer.clone())),
+        ];
+        for (expected_path, expected_referer) in cases {
+            let (mut stream, _) = script_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            assert_eq!(
+                request_header(&request, "referer"),
+                expected_referer,
+                "{expected_path}"
+            );
+            if expected_path == "/redirect.js" {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /redirect-target.js\r\nReferrer-Policy: origin\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                stream
+                    .write_all(script_response(&script_body, "no-store").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let (mut stream, _) = script_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/dynamic-origin.js")
+        );
+        assert_eq!(
+            request_header(&request, "referer").as_deref(),
+            Some(cross_origin_referer.as_str())
+        );
+        stream
+            .write_all(script_response(&script_body, "no-store").as_bytes())
+            .await
+            .unwrap();
+    });
+
+    let mut engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url(document_url)).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const origin = document.getElementById('origin'); const invalid = document.getElementById('invalid'); return [origin.referrerPolicy, invalid.referrerPolicy, invalid.getAttribute('referrerpolicy')]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["ORIGIN", "", "not-a-policy"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(&format!(
+                "(() => {{ const script = document.createElement('script'); script.src = 'http://{script_address}/dynamic-origin.js'; script.referrerPolicy = 'ORIGIN'; const reflected = [script.referrerPolicy, script.getAttribute('referrerpolicy')]; document.body.appendChild(script); return reflected; }})()"
+            ))
+            .await
+            .unwrap(),
+        serde_json::json!(["ORIGIN", "ORIGIN"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const script = document.createElement('script'); script.src = '/cache.js'; script.referrerPolicy = 'no-referrer'; document.body.appendChild(script); return script.referrerPolicy; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("no-referrer")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const meta = document.createElement('meta'); meta.setAttribute('name', 'referrer'); meta.setAttribute('content', 'no-referrer'); document.head.appendChild(meta); const script = document.createElement('script'); script.src = '/dynamic-default.js'; document.body.appendChild(script); return [script.referrerPolicy, script.hasAttribute('referrerpolicy')]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["", false])
+    );
+    assert_eq!(
+        engine.evaluate_async("scriptReferrerLoads").await.unwrap(),
+        serde_json::json!(11)
+    );
+
+    engine.close_async().await.unwrap();
+    page_server.await.unwrap();
+    script_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_reloads_the_selected_srcset_candidate_after_sizes_mutation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

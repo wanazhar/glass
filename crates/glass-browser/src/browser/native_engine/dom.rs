@@ -873,6 +873,7 @@ pub(crate) enum NativePageScriptSource {
         nonce: Option<String>,
         integrity: Option<String>,
         crossorigin: Option<String>,
+        referrer_policy: NativeFetchReferrerPolicy,
         parser_inserted: bool,
     },
     ModuleInline {
@@ -4613,6 +4614,19 @@ impl NativeDocument {
         element_policy.unwrap_or(self.document_referrer_policy)
     }
 
+    fn script_referrer_policy_for_node(&self, node_id: NativeNodeId) -> NativeFetchReferrerPolicy {
+        let element_policy = self
+            .node(node_id)
+            .filter(|node| {
+                node.element_name() == Some("script")
+                    && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI)
+                    && self.is_attached(node_id)
+            })
+            .and_then(|node| node.attribute("referrerpolicy"))
+            .and_then(parse_element_referrer_policy);
+        element_policy.unwrap_or(self.document_referrer_policy)
+    }
+
     fn apply_meta_referrer_policy_to_node(&mut self, id: NativeNodeId) {
         let policy = self.node(id).and_then(|node| {
             if !self.is_attached(id)
@@ -5514,6 +5528,7 @@ impl NativeDocument {
                                 nonce: node.attribute("nonce").map(str::to_owned),
                                 integrity: node.attribute("integrity").map(str::to_owned),
                                 crossorigin: node.attribute("crossorigin").map(str::to_owned),
+                                referrer_policy: self.script_referrer_policy_for_node(node.id()),
                                 parser_inserted: true,
                             }
                         }

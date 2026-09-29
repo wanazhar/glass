@@ -9333,6 +9333,7 @@ async fn load_page_script_source_list(
                 nonce,
                 integrity,
                 crossorigin,
+                referrer_policy,
                 parser_inserted,
             } => {
                 let object_url = runtime
@@ -9349,6 +9350,7 @@ async fn load_page_script_source_list(
                         integrity.as_deref(),
                         crossorigin.as_deref(),
                         object_url.as_ref(),
+                        Some(referrer_policy),
                     )
                     .await
                 {
@@ -9400,6 +9402,7 @@ async fn load_page_script_source_list(
                         integrity.as_deref(),
                         crossorigin.as_deref(),
                         object_url.as_ref(),
+                        None,
                     )
                     .await
                 {

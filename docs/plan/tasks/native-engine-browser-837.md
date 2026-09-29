@@ -29,8 +29,11 @@ ServiceWorker script entry fetches initiated by `register()` and
 ## Contract
 
 - A registration-entry request initiated by an active Document uses that
-  Document's creation URL as its referrer source. Fetch's referrer processing
-  removes the fragment and applies the request policy to each target URL.
+  Document's creation URL as its referrer source, even after same-document
+  `history.pushState()`/`replaceState()` changes the active URL. Keep the
+  current owner URL separate for URL resolution and origin checks. Fetch's
+  referrer processing removes the fragment and applies the request policy to
+  each target URL.
 - Capture the Document's effective policy at the call boundary. This includes
   a valid response `Referrer-Policy` and later valid `meta name="referrer"`
   updates; missing or invalid policy state uses the Document policy-container
@@ -48,7 +51,9 @@ ServiceWorker script entry fetches initiated by `register()` and
   referrer provenance.
 - A process-backed HTTP regression asserts actual entry-request `Referer`
   headers for response-header `no-referrer`, live meta `origin` and
-  `unsafe-url`, and an explicit update after a live policy change. The
+  `unsafe-url`, and an explicit update after a live policy change. It changes
+  the active URL with `pushState()` before registration and verifies that
+  `unsafe-url` still exposes only the Document's original creation URL. The
   existing Slice 836 dependency regression remains responsible for proving
   the module worker's later response policy independently.
 
@@ -70,14 +75,17 @@ ServiceWorker script entry fetches initiated by `register()` and
   passed with existing dead-code warnings from the superseded HTML parser.
 - The socket-free runtime test
   `service_worker_entry_commands_capture_live_document_referrer_policy`
-  passed (1 passed, 1,652 filtered). It verifies live meta policy capture for
+  passed (1 passed, 1,652 filtered). It verifies creation-URL retention across
+  a same-generation active-URL change, live meta policy capture for
   classic/module registration and explicit update commands, plus rejection of
   an invalid policy token.
-- `cargo test -q -p glass-browser --features native-engine --test native_engine native_content_process_service_worker_registration_uses_live_document_referrer_policy --locked -- --exact`
-  compiled the integration target but could not execute the request assertions:
-  this session's first `TcpListener::bind` returned `PermissionDenied` before
-  engine initialization. The process-backed HTTP gate remains open; compilation
-  is not wire evidence.
+- The process-backed test was previously started and its first
+  `TcpListener::bind` returned `PermissionDenied` before engine initialization.
+  The updated regression now changes the active URL with `pushState()` and
+  asserts the creation-URL Referer, and its source passed the scoped
+  `cargo check --tests`; it was not relinked/rerun because this session's same
+  listener restriction occurs before the engine or assertions. The
+  process-backed HTTP gate remains open; compilation is not wire evidence.
 - Maintainer documentation gates passed after the final documentation edit:
   release truth audited 1,465 Markdown files (83 current, 63 previous-version
   hits, 1,640 semantic hits, 0 current-claim failures); depth covered 93

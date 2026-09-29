@@ -345,6 +345,8 @@ pub(crate) enum NativeScriptCommand {
         #[serde(default)]
         worker_type: String,
         #[serde(default)]
+        referrer_url: String,
+        #[serde(default)]
         referrer_policy: String,
     },
     ServiceWorkerUnregister {
@@ -354,6 +356,8 @@ pub(crate) enum NativeScriptCommand {
     ServiceWorkerUpdate {
         request_id: u32,
         scope: String,
+        #[serde(default)]
+        referrer_url: String,
         #[serde(default)]
         referrer_policy: String,
     },
@@ -13346,6 +13350,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     worker_commands: Arc<Mutex<Vec<NativeScriptCommand>>>,
     message_port_commands: Arc<Mutex<Vec<NativeScriptCommand>>>,
     service_worker_commands: Arc<Mutex<Vec<NativeScriptCommand>>>,
+    document_creation_url_state: Arc<Mutex<Option<(u32, String)>>>,
     service_worker_registrations: Arc<Mutex<Vec<NativeServiceWorkerRegistrationState>>>,
     service_worker_clients: Arc<Mutex<Vec<serde_json::Value>>>,
     inline_script_policy: Arc<Mutex<NativeInlineScriptPolicy>>,
@@ -13536,6 +13541,7 @@ impl NativeJavaScriptRuntime {
             worker_commands: Arc::new(Mutex::new(Vec::new())),
             message_port_commands: Arc::new(Mutex::new(Vec::new())),
             service_worker_commands: Arc::new(Mutex::new(Vec::new())),
+            document_creation_url_state: Arc::new(Mutex::new(None)),
             service_worker_registrations: Arc::new(Mutex::new(Vec::new())),
             service_worker_clients: Arc::new(Mutex::new(Vec::new())),
             inline_script_policy: Arc::new(Mutex::new(NativeInlineScriptPolicy::default())),
@@ -13560,6 +13566,30 @@ impl NativeJavaScriptRuntime {
 
     pub(crate) fn set_worker_global_referrer_policy(&mut self, policy: NativeFetchReferrerPolicy) {
         self.worker_global_referrer_policy = Some(policy);
+    }
+
+    fn document_creation_url_for(
+        &self,
+        document: &NativeDocument,
+        document_url: &str,
+    ) -> Result<String, NativeEngineError> {
+        let generation = document.generation();
+        let mut state =
+            self.document_creation_url_state
+                .lock()
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "read Document creation URL".into(),
+                    reason: "Document creation URL state is unavailable".into(),
+                })?;
+        if let Some((current_generation, creation_url)) = state.as_ref()
+            && *current_generation == generation
+        {
+            return Ok(creation_url.clone());
+        }
+        validate_url_text("native Document creation URL", document_url)?;
+        let creation_url = document_url.to_owned();
+        *state = Some((generation, creation_url.clone()));
+        Ok(creation_url)
     }
 
     pub(crate) fn new_with_context_metadata_and_dialog_handler(
@@ -15277,6 +15307,7 @@ impl NativeJavaScriptRuntime {
                 script_url,
                 scope,
                 worker_type,
+                referrer_url,
                 referrer_policy,
             } => {
                 if *request_id == 0 {
@@ -15292,6 +15323,14 @@ impl NativeJavaScriptRuntime {
                         "native service worker script URL",
                         MAX_NATIVE_SCRIPT_BYTES,
                         script_url.len(),
+                    ));
+                }
+                validate_url_text("native service worker referrer URL", referrer_url)?;
+                if referrer_url.len() > MAX_NATIVE_SCRIPT_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native service worker referrer URL",
+                        MAX_NATIVE_SCRIPT_BYTES,
+                        referrer_url.len(),
                     ));
                 }
                 if scope.len() > MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES {
@@ -15330,6 +15369,7 @@ impl NativeJavaScriptRuntime {
             NativeScriptCommand::ServiceWorkerUpdate {
                 request_id,
                 scope,
+                referrer_url,
                 referrer_policy,
             } => {
                 if *request_id == 0 {
@@ -15344,6 +15384,14 @@ impl NativeJavaScriptRuntime {
                         "native service worker scope",
                         MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
                         scope.len(),
+                    ));
+                }
+                validate_url_text("native service worker referrer URL", referrer_url)?;
+                if referrer_url.len() > MAX_NATIVE_SCRIPT_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native service worker referrer URL",
+                        MAX_NATIVE_SCRIPT_BYTES,
+                        referrer_url.len(),
                     ));
                 }
                 NativeFetchReferrerPolicy::parse(referrer_policy)?;
@@ -15797,6 +15845,7 @@ impl NativeJavaScriptRuntime {
         dispatch: Option<NativePageDispatch<'_>>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         self.set_dialog_url(document_url)?;
+        let document_creation_url = self.document_creation_url_for(document, document_url)?;
         if source.is_empty() {
             return Err(NativeEngineError::invalid(
                 "script source",
@@ -15823,6 +15872,7 @@ impl NativeJavaScriptRuntime {
         let bootstrap = document_bootstrap(
             document,
             document_url,
+            &document_creation_url,
             &frame_id,
             &window_name,
             self.opener_context_id(),
@@ -17548,9 +17598,11 @@ impl NativeJavaScriptRuntime {
         let nested_scroll_offsets = self.nested_scroll_offsets();
         let history_state = self.history_state();
         let history_length = self.history_length();
+        let document_creation_url = self.document_creation_url_for(document, document_url)?;
         let bootstrap = document_bootstrap(
             document,
             document_url,
+            &document_creation_url,
             &frame_id,
             &window_name,
             self.opener_context_id(),
@@ -21671,13 +21723,42 @@ mod native_static_dynamic_import_tests {
             waiting: None,
         }]);
 
-        let evaluation = runtime
+        let initial_evaluation = runtime
             .evaluate(
                 r##"(() => {
+                  history.pushState({}, '', '/pushed?state=1');
                   navigator.serviceWorker.register('/scopes/no-ref/sw.js');
+                  return true;
+                })()"##,
+                &document,
+                document_url,
+                &origin,
+                Viewport::default(),
+            )
+            .expect("initial ServiceWorker command evaluates without network access");
+        assert_eq!(initial_evaluation.value, serde_json::json!(true));
+
+        let current_url = "https://document.test/pushed?state=1";
+        let live_policy_evaluation = runtime
+            .evaluate(
+                r##"(() => {
                   const meta = document.querySelector("meta[name=referrer]");
                   meta.content = 'origin';
                   navigator.serviceWorker.register('/scopes/origin/sw.js');
+                  return true;
+                })()"##,
+                &document,
+                current_url,
+                &origin,
+                Viewport::default(),
+            )
+            .expect("live policy command evaluates without network access");
+        assert_eq!(live_policy_evaluation.value, serde_json::json!(true));
+
+        let update_evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                  const meta = document.querySelector("meta[name=referrer]");
                   meta.content = 'unsafe-url';
                   navigator.serviceWorker.register('/scopes/module/sw.js', { type: 'module' });
                   globalThis.__glassServiceWorkerRegistrations
@@ -21686,12 +21767,12 @@ mod native_static_dynamic_import_tests {
                   return true;
                 })()"##,
                 &document,
-                document_url,
+                current_url,
                 &origin,
                 Viewport::default(),
             )
-            .expect("ServiceWorker commands evaluate without network access");
-        assert_eq!(evaluation.value, serde_json::json!(true));
+            .expect("ServiceWorker update evaluates without network access");
+        assert_eq!(update_evaluation.value, serde_json::json!(true));
 
         let command_policies = runtime
             .take_service_worker_commands()
@@ -21700,14 +21781,28 @@ mod native_static_dynamic_import_tests {
                 NativeScriptCommand::ServiceWorkerRegister {
                     script_url,
                     worker_type,
+                    referrer_url,
                     referrer_policy,
                     ..
-                } => ("register", script_url, worker_type, referrer_policy),
+                } => (
+                    "register",
+                    script_url,
+                    worker_type,
+                    referrer_url,
+                    referrer_policy,
+                ),
                 NativeScriptCommand::ServiceWorkerUpdate {
                     scope,
+                    referrer_url,
                     referrer_policy,
                     ..
-                } => ("update", scope, String::new(), referrer_policy),
+                } => (
+                    "update",
+                    scope,
+                    String::new(),
+                    referrer_url,
+                    referrer_policy,
+                ),
                 command => panic!("unexpected ServiceWorker command: {command:?}"),
             })
             .collect::<Vec<_>>();
@@ -21718,24 +21813,28 @@ mod native_static_dynamic_import_tests {
                     "register",
                     "https://document.test/scopes/no-ref/sw.js".into(),
                     "classic".into(),
+                    "https://document.test/page?private=1".into(),
                     "no-referrer".into(),
                 ),
                 (
                     "register",
                     "https://document.test/scopes/origin/sw.js".into(),
                     "classic".into(),
+                    "https://document.test/page?private=1".into(),
                     "origin".into(),
                 ),
                 (
                     "register",
                     "https://document.test/scopes/module/sw.js".into(),
                     "module".into(),
+                    "https://document.test/page?private=1".into(),
                     "unsafe-url".into(),
                 ),
                 (
                     "update",
                     "https://document.test/existing/".into(),
                     String::new(),
+                    "https://document.test/page?private=1".into(),
                     "unsafe-url".into(),
                 ),
             ]
@@ -21746,6 +21845,7 @@ mod native_static_dynamic_import_tests {
             script_url: "https://document.test/scopes/invalid/sw.js".into(),
             scope: "https://document.test/scopes/invalid/".into(),
             worker_type: "classic".into(),
+            referrer_url: "https://document.test/page".into(),
             referrer_policy: "not-a-policy".into(),
         };
         assert!(
@@ -32568,7 +32668,7 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
       return new Promise((resolve, reject) => {
         serviceWorkerPendingRequests.set(requestId, { resolve, reject, kind: "update", scope });
         try {
-          pushCommand({ kind: "serviceWorkerUpdate", request_id: requestId, scope, referrer_policy: documentReferrerPolicy.value });
+          pushCommand({ kind: "serviceWorkerUpdate", request_id: requestId, scope, referrer_url: host.creation_url, referrer_policy: documentReferrerPolicy.value });
         } catch (error) {
           serviceWorkerPendingRequests.delete(requestId);
           reject(error);
@@ -32724,6 +32824,7 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
         script_url: script.href,
         scope: requestedScope,
         worker_type: workerType,
+        referrer_url: host.creation_url,
         referrer_policy: documentReferrerPolicy.value,
       });
     } catch (error) {
@@ -34641,6 +34742,7 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
 fn document_bootstrap(
     document: &NativeDocument,
     document_url: &str,
+    document_creation_url: &str,
     context_id: &str,
     window_name: &str,
     opener_context_id: Option<&str>,
@@ -34694,6 +34796,7 @@ fn document_bootstrap(
     };
     let serialized = serde_json::to_string(&serde_json::json!({
         "url": document_url,
+        "creation_url": document_creation_url,
         "document_referrer_policy": document.document_referrer_policy().as_str(),
         "compat_mode": document.compat_mode(),
         "context_id": context_id,

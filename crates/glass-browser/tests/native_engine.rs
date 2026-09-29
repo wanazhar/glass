@@ -35713,6 +35713,15 @@ async fn native_content_process_service_worker_registration_uses_live_document_r
         NativeEngine::new(NativeEngineConfig::default().with_initial_url(page_url.clone()))
             .unwrap();
     engine.initialize_async().await.unwrap();
+    let pushed_page_url = format!("http://{address}/pushed?state=secret");
+    assert_eq!(
+        engine
+            .evaluate_async("history.pushState({}, '', '/pushed?state=secret'); location.href",)
+            .await
+            .unwrap(),
+        serde_json::json!(pushed_page_url),
+        "same-document history changes the active URL without changing the creation URL"
+    );
 
     assert_eq!(
         engine

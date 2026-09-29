@@ -173,7 +173,8 @@ process-backed HTTP regression passed locally; the slice remains in progress
 pending Slice 833. See the [slice 836 task](tasks/native-engine-browser-836.md).
 Slice 837 carries the active Document's creation URL and effective
 response/meta referrer policy through `register()` and explicit
-`ServiceWorkerRegistration.update()` entry fetches. It preserves the
+`ServiceWorkerRegistration.update()` entry fetches, preserving the original
+creation URL after same-document History API changes. It preserves the
 ServiceWorker script response policy container from Slice 836 and excludes
 background updates without an active client. Its process-backed header
 regression is blocked before engine startup by this sandbox's denied listener

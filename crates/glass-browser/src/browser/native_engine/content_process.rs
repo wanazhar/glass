@@ -8133,6 +8133,7 @@ async fn resolve_service_worker_commands(
                 script_url,
                 scope,
                 worker_type,
+                referrer_url,
                 referrer_policy,
             } => {
                 let result = match NativeFetchReferrerPolicy::parse(&referrer_policy) {
@@ -8143,6 +8144,7 @@ async fn resolve_service_worker_commands(
                                 &script_url,
                                 &scope,
                                 &worker_type,
+                                &referrer_url,
                                 referrer_policy,
                                 loader,
                             )
@@ -8204,12 +8206,13 @@ async fn resolve_service_worker_commands(
             NativeScriptCommand::ServiceWorkerUpdate {
                 request_id,
                 scope,
+                referrer_url,
                 referrer_policy,
             } => {
                 let result = match NativeFetchReferrerPolicy::parse(&referrer_policy) {
                     Ok(referrer_policy) => {
                         registry
-                            .update(&scope, document_url, referrer_policy, loader)
+                            .update(&scope, document_url, &referrer_url, referrer_policy, loader)
                             .await
                     }
                     Err(error) => Err(error),

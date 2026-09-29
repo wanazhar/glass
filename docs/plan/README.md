@@ -103,6 +103,14 @@ initiators, independent worker containers, and broader Referrer Policy/WPT
 conformance remain open; remote CI and cross-platform certification are not
 claimed. See the [slice 827 task](tasks/native-engine-browser-827.md) and
 [slice 828 task](tasks/native-engine-browser-828.md).
+Slice 829 applies `HTMLScriptElement.referrerPolicy` to external classic-script
+requests discovered in markup or inserted dynamically. Its process-backed
+two-origin regression passed (1 passed, 877 filtered; 33.70 seconds), checking
+Document response/meta fallback, empty and invalid attributes, limited-known-
+values reflection, actual same-/cross-origin Referer headers, redirect policy
+updates, and ETag/304 revalidation. Module-script graphs, workers, other
+initiators, WPT conformance, remote CI, and platform certification remain open.
+See the [slice 829 task](tasks/native-engine-browser-829.md).
 Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).

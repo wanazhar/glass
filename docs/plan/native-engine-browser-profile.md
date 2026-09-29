@@ -195,6 +195,19 @@ conformance remain open. See the [slice 826 task](tasks/native-engine-browser-82
 [slice 827 task](tasks/native-engine-browser-827.md), and
 [slice 828 task](tasks/native-engine-browser-828.md).
 
+Slice 829 implements element policy for the initial fetch of external classic
+scripts discovered in markup or inserted dynamically. The script element's
+valid policy overrides its owning Document's current response/meta policy;
+missing, empty, and invalid values inherit that live Document policy. Redirect
+requests retain the Document as referrer source, apply recognized redirect
+response policies to the next hop, and compute the outgoing Referer during
+cache revalidation. Its process-backed two-origin regression passed (1 passed,
+877 filtered; 33.70 seconds), covering actual headers, IDL reflection and
+mutation, response/meta fallback, redirects, and cache revalidation.
+Module-script graphs, worker requests, other element initiators, broader
+Referrer Policy/WPT conformance, and cross-platform parity remain separate
+requirements. See the [slice 829 task](tasks/native-engine-browser-829.md).
+
 ### Explicit `tabindex` focus baseline
 
 Within the current light-DOM focus scope, a valid explicit `tabindex` makes an

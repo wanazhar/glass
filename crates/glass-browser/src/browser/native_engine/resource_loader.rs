@@ -7466,6 +7466,7 @@ impl NativeResourceLoader {
         integrity: Option<&str>,
         crossorigin: Option<&str>,
         object_url: Option<&NativeObjectUrlResource>,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         self.load_script_like_async(
             document_url,
@@ -7479,6 +7480,7 @@ impl NativeResourceLoader {
             object_url,
             None,
             None,
+            referrer_policy,
         )
         .await
     }
@@ -7506,6 +7508,7 @@ impl NativeResourceLoader {
             object_url,
             Some(module_type),
             None,
+            None,
         )
         .await
     }
@@ -7522,6 +7525,7 @@ impl NativeResourceLoader {
             max_source_bytes,
             NativeSubresourceKind::Worker,
             true,
+            None,
             None,
             None,
             None,
@@ -7552,6 +7556,7 @@ impl NativeResourceLoader {
             None,
             Some(NativeModuleResourceType::JavaScript),
             Some(credentials_mode),
+            None,
         )
         .await
     }
@@ -7628,6 +7633,7 @@ impl NativeResourceLoader {
             None,
             module_type,
             credentials_mode,
+            None,
         )
         .await
     }
@@ -7645,6 +7651,7 @@ impl NativeResourceLoader {
         object_url: Option<&NativeObjectUrlResource>,
         module_type: Option<NativeModuleResourceType>,
         worker_credentials_mode: Option<&str>,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         if let Some(mode) = worker_credentials_mode
             && !matches!(mode, "omit" | "same-origin" | "include")
@@ -7837,7 +7844,11 @@ impl NativeResourceLoader {
             .build()
             .map_err(|error| network_error("script client construction", error))?;
         let mut current_url = target_url;
-        let mut request_referrer = normalize_referrer(Some(document_url.as_str()), &current_url)?;
+        let mut effective_referrer_policy = referrer_policy;
+        let mut request_referrer = match effective_referrer_policy {
+            Some(policy) => fetch_referrer_for_target(Some(&document_url), &current_url, policy),
+            None => normalize_referrer(Some(document_url.as_str()), &current_url)?,
+        };
         let mut redirects = 0;
         let mut has_set_cookie = false;
         let response = loop {
@@ -7911,6 +7922,11 @@ impl NativeResourceLoader {
             if !is_http_redirect(response.status()) {
                 break response;
             }
+            if let Some(policy) = referrer_policy_from_headers(response.headers())
+                && effective_referrer_policy.is_some()
+            {
+                effective_referrer_policy = Some(policy);
+            }
             if redirects >= MAX_NATIVE_NETWORK_REDIRECTS {
                 return Err(NativeEngineError::Network {
                     operation: "script redirect".into(),
@@ -7952,7 +7968,10 @@ impl NativeResourceLoader {
             {
                 return Ok(None);
             }
-            request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
+            request_referrer = match effective_referrer_policy {
+                Some(policy) => fetch_referrer_for_target(Some(&document_url), &next_url, policy),
+                None => normalize_referrer(Some(current_url.as_str()), &next_url)?,
+            };
             current_url = next_url;
             redirects += 1;
         };

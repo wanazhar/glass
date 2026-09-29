@@ -40844,6 +40844,10 @@ fn document_bootstrap(
         }},
       }});
     }}
+    if (element.tagName === "SCRIPT") {{
+      installLimitedKnownValuesStringAttributeProperty(
+        element, "referrerPolicy", "referrerpolicy", referrerPolicyAttributeValues);
+    }}
     if (["AUDIO", "VIDEO"].includes(element.tagName)) {{
       const mediaState = () => ({{
         readyState: typeof state.mediaReadyState === "function"

@@ -54,8 +54,14 @@ HTTP regression passed (1 passed, 876 filtered; 23.62 seconds), covering
 Document fallback, element overrides, IDL mutation, and actual same-/cross-
 origin `Referer` headers. Other element initiators, independent worker
 containers, broader Fetch/Referrer Policy WPT conformance, remote CI, and
-cross-platform coverage remain open. See the [slice 828 task](../plan/tasks/native-engine-browser-828.md),
-the [slice 827 task](../plan/tasks/native-engine-browser-827.md),
+cross-platform coverage remain open. Slice 829 applies the owning Document and
+`HTMLScriptElement.referrerPolicy` policy to external classic scripts, including
+dynamic insertion, redirect hops, and conditional cache revalidation. Its
+process-backed two-origin regression passed (1 passed, 877 filtered; 33.70
+seconds). Module-script graphs and broader conformance remain separate
+requirements. See the [slice 829 task](../plan/tasks/native-engine-browser-829.md),
+[slice 828 task](../plan/tasks/native-engine-browser-828.md),
+[slice 827 task](../plan/tasks/native-engine-browser-827.md),
 the [slice 826 task](../plan/tasks/native-engine-browser-826.md),
 the [slice 825 task](../plan/tasks/native-engine-browser-825.md),
 the [slice 824 task](../plan/tasks/native-engine-browser-824.md), the [slice 823

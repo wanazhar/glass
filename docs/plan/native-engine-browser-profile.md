@@ -135,8 +135,18 @@ ServiceWorker FetchEvent and a subsequent Service Worker `fetch(event.request)`.
 Its two-origin process-backed regression checks all three modes, the
 `Request.credentials` default, invalid-mode rejection, and cookie
 send/accept behavior (see the [Slice 824 task](tasks/native-engine-browser-824.md)).
+Slice 825 exposes `Request.referrer` and `Request.referrerPolicy` on page and
+worker requests, preserves the effective source through clones and controlled
+Service Worker handoff, applies the selected policy at each redirect target,
+and distinguishes cache entries by effective referrer. Its process-backed
+two-origin regression covers defaults, overrides, invalid values, policy
+outcomes, redirects, and `fetch(event.request)` (1 passed; 37.37 seconds).
+The fetch-side policy defaults to `strict-origin-when-cross-origin`; a redirect
+response's Referrer-Policy value affects the following hop. This does not yet
+deliver document/worker policy containers from response headers, meta elements,
+or element attributes, and is not complete Referrer Policy/WPT conformance.
 Full Fetch/Web IDL semantics, WPT conformance, and cross-platform parity remain
-open; see the
+open; see the [Slice 825 task](tasks/native-engine-browser-825.md),
 [Slice 822 task](tasks/native-engine-browser-822.md) and
 [Slice 823 task](tasks/native-engine-browser-823.md).
 

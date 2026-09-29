@@ -110,7 +110,7 @@ use url::Url;
 // the base64 envelope and the rest of the document state.
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 14;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 15;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -173,6 +173,9 @@ struct NativePendingControlledUpload {
     timeout: Option<Duration>,
     credentials: bool,
     credentials_mode: Option<NativeFetchCredentialsMode>,
+    referrer: Option<String>,
+    referrer_url: Option<String>,
+    referrer_policy: Option<String>,
 }
 
 type NativeScriptFetch = (
@@ -189,6 +192,9 @@ type NativeScriptFetch = (
     Option<u32>,
     bool,
     Option<NativeFetchCredentialsMode>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
     bool,
     Option<String>,
     bool,
@@ -6211,6 +6217,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         NativeFetchRedirectMode::Follow,
                         None,
                         credentials,
+                        None,
+                        None,
+                        None,
                         None,
                         "fetch",
                     )
@@ -13192,6 +13201,9 @@ fn fetch_commands(
                 href,
                 credentials,
                 credentials_mode,
+                referrer,
+                referrer_url,
+                referrer_policy,
                 method,
                 headers,
                 body,
@@ -13220,6 +13232,9 @@ fn fetch_commands(
                 *upload_stream_id,
                 *credentials,
                 credentials_mode.clone(),
+                referrer.clone(),
+                referrer_url.clone(),
+                referrer_policy.clone(),
                 destination.clone(),
                 module_referrer.clone(),
                 *module_type,
@@ -13242,6 +13257,9 @@ fn fetch_commands(
                 upload_stream_id,
                 credentials,
                 credentials_mode,
+                referrer,
+                referrer_url,
+                referrer_policy,
                 destination,
                 module_referrer,
                 module_type,
@@ -13280,6 +13298,19 @@ fn fetch_commands(
                     .as_deref()
                     .map(NativeFetchCredentialsMode::parse)
                     .transpose()?;
+                if let Some(referrer) = referrer.as_deref() {
+                    if !referrer.is_empty() {
+                        validate_url_text("script fetch referrer", referrer)?;
+                    }
+                }
+                if let Some(referrer_url) = referrer_url.as_deref() {
+                    if !referrer_url.is_empty() {
+                        validate_url_text("script fetch referrer URL", referrer_url)?;
+                    }
+                }
+                if let Some(referrer_policy) = referrer_policy.as_deref() {
+                    super::resource_loader::NativeFetchReferrerPolicy::parse(referrer_policy)?;
+                }
                 let method =
                     NativeFetchMethod::from_fetch_method(method.as_str()).map_err(|_| {
                         NativeEngineError::invalid(
@@ -13347,6 +13378,9 @@ fn fetch_commands(
                     upload_stream_id,
                     credentials,
                     credentials_mode,
+                    referrer,
+                    referrer_url,
+                    referrer_policy,
                     font_destination,
                     module_referrer,
                     module_destination,
@@ -13899,6 +13933,9 @@ async fn resolve_script_fetches(
             upload_stream_id,
             credentials,
             credentials_mode,
+            referrer,
+            referrer_url,
+            referrer_policy,
             font_destination,
             module_referrer,
             module_destination,
@@ -14015,6 +14052,9 @@ async fn resolve_script_fetches(
                             timeout,
                             credentials,
                             credentials_mode,
+                            referrer.as_deref(),
+                            referrer_url.as_deref(),
+                            referrer_policy.as_deref(),
                             "font",
                         )
                         .await
@@ -14120,6 +14160,9 @@ async fn resolve_script_fetches(
                             timeout,
                             credentials,
                             credentials_mode,
+                            referrer,
+                            referrer_url,
+                            referrer_policy,
                         },
                     );
                     continue;
@@ -14152,6 +14195,8 @@ async fn resolve_script_fetches(
                                 request_headers: headers,
                                 credentials,
                                 credentials_mode,
+                                referrer_url,
+                                referrer_policy,
                                 cors_mode,
                                 redirect_mode,
                                 cache_mode,
@@ -14180,6 +14225,9 @@ async fn resolve_script_fetches(
                     timeout,
                     credentials,
                     credentials_mode,
+                    referrer.as_deref(),
+                    referrer_url.as_deref(),
+                    referrer_policy.as_deref(),
                     "fetch",
                 )
                 .await;
@@ -14202,6 +14250,8 @@ async fn resolve_script_fetches(
                             timeout,
                             credentials,
                             credentials_mode,
+                            referrer_url,
+                            referrer_policy,
                             max_response_bytes: None,
                         })
                         .await;
@@ -14283,6 +14333,9 @@ async fn resolve_script_fetches(
                             pending_fetch.timeout,
                             pending_fetch.credentials,
                             pending_fetch.credentials_mode,
+                            pending_fetch.referrer.as_deref(),
+                            pending_fetch.referrer_url.as_deref(),
+                            pending_fetch.referrer_policy.as_deref(),
                             "fetch",
                         )
                         .await;
@@ -14301,6 +14354,8 @@ async fn resolve_script_fetches(
                                     request_headers: pending_fetch.headers,
                                     credentials: pending_fetch.credentials,
                                     credentials_mode: pending_fetch.credentials_mode,
+                                    referrer_url: pending_fetch.referrer_url,
+                                    referrer_policy: pending_fetch.referrer_policy,
                                     cors_mode: pending_fetch.cors_mode,
                                     redirect_mode: pending_fetch.redirect_mode,
                                     cache_mode: pending_fetch.cache_mode,
@@ -15180,6 +15235,9 @@ mod tests {
             href: "https://fonts.test/example.woff2".into(),
             credentials: true,
             credentials_mode: None,
+            referrer: Some("about:client".into()),
+            referrer_url: Some("https://fonts.test/page".into()),
+            referrer_policy: Some("".into()),
             method: "GET".into(),
             headers: BTreeMap::new(),
             body: None,
@@ -15196,9 +15254,9 @@ mod tests {
         };
 
         let mut font = fetch_commands(&[command(Some("font"))]).unwrap();
-        assert!(font.pop_front().is_some_and(|request| request.13));
+        assert!(font.pop_front().is_some_and(|request| request.16));
         let mut ordinary = fetch_commands(&[command(None)]).unwrap();
-        assert!(!ordinary.pop_front().unwrap().13);
+        assert!(!ordinary.pop_front().unwrap().16);
         assert!(fetch_commands(&[command(Some("image"))]).is_err());
         assert!(fetch_commands(&[command(Some("module"))]).is_err());
 
@@ -15211,8 +15269,8 @@ mod tests {
         }
         let mut module_requests = fetch_commands(&[module]).unwrap();
         let module_request = module_requests.pop_front().unwrap();
-        assert!(module_request.15);
-        assert_eq!(module_request.16, None);
+        assert!(module_request.18);
+        assert_eq!(module_request.19, None);
 
         let mut json_module = command(Some("module"));
         if let NativeScriptCommand::Fetch { module_type, .. } = &mut json_module {
@@ -15223,7 +15281,7 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .unwrap()
-                .15,
+                .19,
             Some(NativeModuleResourceType::Json)
         );
 

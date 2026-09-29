@@ -271,6 +271,12 @@ pub(crate) enum NativeScriptCommand {
         credentials: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credentials_mode: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        referrer: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        referrer_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        referrer_policy: Option<String>,
         method: String,
         #[serde(default)]
         headers: BTreeMap<String, String>,
@@ -3856,6 +3862,8 @@ impl NativeWorkerRegistry {
         content_type: Option<String>,
         credentials: bool,
         credentials_mode: NativeFetchCredentialsMode,
+        referrer_url: Option<String>,
+        referrer_policy: Option<String>,
         cors_mode: NativeCorsMode,
         redirect_mode: NativeFetchRedirectMode,
         cache_mode: NativeFetchCacheMode,
@@ -3898,6 +3906,8 @@ impl NativeWorkerRegistry {
                             request_headers: headers,
                             credentials,
                             credentials_mode: Some(credentials_mode),
+                            referrer_url,
+                            referrer_policy,
                             cors_mode,
                             redirect_mode,
                             cache_mode,
@@ -3952,6 +3962,8 @@ impl NativeWorkerRegistry {
                 request_headers: headers,
                 credentials,
                 credentials_mode: Some(credentials_mode),
+                referrer_url,
+                referrer_policy,
                 cors_mode,
                 redirect_mode,
                 cache_mode,
@@ -4031,6 +4043,9 @@ impl NativeWorkerRegistry {
             href,
             credentials,
             credentials_mode,
+            referrer: _,
+            referrer_url,
+            referrer_policy,
             method,
             headers,
             body,
@@ -4211,6 +4226,8 @@ impl NativeWorkerRegistry {
                         content_type,
                         credentials,
                         credentials_mode,
+                        referrer_url,
+                        referrer_policy,
                         cors_mode,
                         redirect_mode,
                         cache_mode,
@@ -4235,6 +4252,8 @@ impl NativeWorkerRegistry {
                 request_headers: headers,
                 credentials,
                 credentials_mode: Some(credentials_mode),
+                referrer_url,
+                referrer_policy,
                 cors_mode,
                 redirect_mode,
                 cache_mode,
@@ -18208,6 +18227,8 @@ fn run_native_sync_xhr(
     let fetch_request = NativeFetchRequest {
         document_url: &request.document_url,
         href: &request.href,
+        referrer_url: None,
+        referrer_policy: None,
         method,
         body,
         content_type: request.content_type,
@@ -24624,6 +24645,36 @@ fn worker_bootstrap(
       throw new TypeError("native Worker Request URL is invalid");
     }}
   }};
+  const workerRequestReferrerState = globalThis.__glassWorkerRequestReferrerState instanceof WeakMap
+    ? globalThis.__glassWorkerRequestReferrerState
+    : new WeakMap();
+  globalThis.__glassWorkerRequestReferrerState = workerRequestReferrerState;
+  const workerReferrerPolicyValues = new Set([
+    "", "no-referrer", "no-referrer-when-downgrade", "same-origin", "origin",
+    "strict-origin", "origin-when-cross-origin", "strict-origin-when-cross-origin", "unsafe-url",
+  ]);
+  const workerRequestReferrer = (value, inherited) => {{
+    const client = {{ referrer: "about:client", url: workerUrl }};
+    if (value === undefined) return inherited || client;
+    const source = String(value);
+    if (source === "") return {{ referrer: "", url: "" }};
+    if (source === "about:client") return inherited || client;
+    let href;
+    try {{ href = workerRequestUrl(source); }}
+    catch (_) {{ throw new TypeError("native Worker Request referrer is invalid"); }}
+    if (workerUrlParts(href).origin !== workerUrlParts(workerUrl).origin) return client;
+    const url = new WorkerURLNative(href);
+    url.username = "";
+    url.password = "";
+    url.hash = "";
+    return {{ referrer: url.href, url: url.href }};
+  }};
+  const workerRequestReferrerPolicy = (value) => {{
+    const policy = value === undefined ? "" : String(value);
+    if (!workerReferrerPolicyValues.has(policy))
+      throw new TypeError("native Worker Request referrer policy is unsupported");
+    return policy;
+  }};
   const forbiddenWorkerRequestHeader = (name) => [
     "accept-charset", "accept-encoding", "access-control-request-headers",
     "access-control-request-method", "connection", "content-length",
@@ -27749,6 +27800,7 @@ fn worker_bootstrap(
     const source = input && input.__glassWorkerRequest === true ? input : null;
     const sourceUrl = input && input.__glassUrl === true ? input : null;
     const overrides = init && typeof init === "object" ? init : {{}};
+    const requestInitIsNonEmpty = Object.keys(overrides).length > 0;
     const hasBodyOverride = Object.prototype.hasOwnProperty.call(overrides, "body");
     if (source && !hasBodyOverride && (source.bodyUsed || source.body && workerReadableStreamState(source.body).locked))
       throw new TypeError("native Worker Request body is unusable");
@@ -27797,6 +27849,16 @@ fn worker_bootstrap(
     const credentials = settings.credentials === undefined ? "same-origin" : String(settings.credentials);
     if (!["omit", "same-origin", "include"].includes(credentials))
       throw new TypeError("native Worker Request credentials are unsupported");
+    const referrer = workerRequestReferrer(
+      Object.prototype.hasOwnProperty.call(overrides, "referrer") ? overrides.referrer : undefined,
+      source && !requestInitIsNonEmpty ? workerRequestReferrerState.get(source) : null,
+    );
+    const referrerPolicy = workerRequestReferrerPolicy(
+      source && requestInitIsNonEmpty
+        && !Object.prototype.hasOwnProperty.call(overrides, "referrerPolicy")
+        ? ""
+        : settings.referrerPolicy,
+    );
     const destination = settings.destination === undefined ? "" : String(settings.destination);
     if (!["", "font", "fetch", "document"].includes(destination))
       throw new TypeError("native Worker Request destination is unsupported");
@@ -27807,6 +27869,8 @@ fn worker_bootstrap(
     settings.redirect = redirect;
     settings.cache = cache;
     settings.credentials = credentials;
+    settings.referrer = referrer.referrer;
+    settings.referrerPolicy = referrerPolicy;
     settings.destination = destination;
     settings.headers = headers;
     const signal = settings.signal === undefined ? new AbortSignalNative() : settings.signal;
@@ -27826,6 +27890,8 @@ fn worker_bootstrap(
     this.redirect = redirect;
     this.cache = cache;
     this.credentials = credentials;
+    this.referrer = referrer.referrer;
+    this.referrerPolicy = referrerPolicy;
     this.destination = destination;
     this.signal = signal;
     const bodyState = this.__glassWorkerRequestBodyState;
@@ -27842,6 +27908,7 @@ fn worker_bootstrap(
       enumerable: true,
       get() {{ return workerRequestBodyIsUsed(this); }},
     }});
+    workerRequestReferrerState.set(this, referrer);
     Object.freeze(this);
   }};
   WorkerRequestNative.prototype.clone = function() {{
@@ -28073,6 +28140,7 @@ fn worker_bootstrap(
     }}
     const optionsObject = options && typeof options === "object" ? options : {{}};
     const hasBodyOverride = Object.prototype.hasOwnProperty.call(optionsObject, "body");
+    const requestInitIsNonEmpty = Object.keys(optionsObject).length > 0;
     const settings = Object.assign({{}}, sourceRequest ? sourceRequest._settings : {{}}, optionsObject);
     const signal = settings.signal === undefined ? null : settings.signal;
     if (signal !== null && (!signal || typeof signal !== "object" || typeof signal.aborted !== "boolean"
@@ -28111,6 +28179,24 @@ fn worker_bootstrap(
     const credentialsMode = settings.credentials === undefined ? "same-origin" : String(settings.credentials);
     if (!["omit", "same-origin", "include"].includes(credentialsMode))
       return Promise.reject(new TypeError("native Worker fetch credentials are unsupported"));
+    let referrer;
+    let referrerPolicy;
+    try {{
+      const hasReferrerOverride = Object.prototype.hasOwnProperty.call(optionsObject, "referrer")
+        && optionsObject.referrer !== undefined;
+      referrer = workerRequestReferrer(
+        hasReferrerOverride ? optionsObject.referrer : undefined,
+        sourceRequest && !requestInitIsNonEmpty
+          ? workerRequestReferrerState.get(sourceRequest)
+          : null,
+      );
+      referrerPolicy = workerRequestReferrerPolicy(
+        sourceRequest && requestInitIsNonEmpty
+          && !Object.prototype.hasOwnProperty.call(optionsObject, "referrerPolicy")
+          ? ""
+          : settings.referrerPolicy,
+      );
+    }} catch (error) {{ return Promise.reject(error); }}
     let requestHeaders;
     try {{ requestHeaders = normalizeWorkerRequestHeaders(settings.headers); }}
     catch (error) {{ return Promise.reject(error); }}
@@ -28185,6 +28271,9 @@ fn worker_bootstrap(
           href,
           credentials: credentialsMode !== "omit",
           credentials_mode: credentialsMode,
+          referrer: referrer.referrer,
+          referrer_url: referrer.url,
+          referrer_policy: referrerPolicy,
           method,
           headers: requestHeaders,
           body,
@@ -33373,7 +33462,14 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       credentials: payload && typeof payload.credentialsMode === "string"
         ? payload.credentialsMode
         : payload && payload.credentials === true ? "include" : "omit",
+      referrer: payload && typeof payload.referrer === "string" ? payload.referrer : "about:client",
+      referrerPolicy: payload && typeof payload.referrerPolicy === "string"
+        ? payload.referrerPolicy : "",
       destination: String(payload && payload.destination || ""),
+    });
+    workerRequestReferrerState.set(request, {
+      referrer: request.referrer,
+      url: payload && typeof payload.referrerUrl === "string" ? payload.referrerUrl : workerUrl,
     });
     let responded = false;
     let responsePromise = null;
@@ -36196,10 +36292,41 @@ fn document_bootstrap(
       throw new TypeError("native Request URL is invalid");
     }}
   }};
+  const nativeRequestReferrerState = globalThis.__glassNativeRequestReferrerState instanceof WeakMap
+    ? globalThis.__glassNativeRequestReferrerState
+    : new WeakMap();
+  globalThis.__glassNativeRequestReferrerState = nativeRequestReferrerState;
+  const nativeReferrerPolicyValues = new Set([
+    "", "no-referrer", "no-referrer-when-downgrade", "same-origin", "origin",
+    "strict-origin", "origin-when-cross-origin", "strict-origin-when-cross-origin", "unsafe-url",
+  ]);
+  const nativeRequestReferrer = (value, inherited) => {{
+    const client = {{ referrer: "about:client", url: host.url }};
+    if (value === undefined) return inherited || client;
+    const source = String(value);
+    if (source === "") return {{ referrer: "", url: "" }};
+    if (source === "about:client") return inherited || client;
+    let href;
+    try {{ href = nativeRequestUrl(source); }}
+    catch (_) {{ throw new TypeError("native Request referrer is invalid"); }}
+    if (nativeUrlParts(href).origin !== nativeUrlParts(host.url).origin) return client;
+    const url = new URLNative(href);
+    url.username = "";
+    url.password = "";
+    url.hash = "";
+    return {{ referrer: url.href, url: url.href }};
+  }};
+  const nativeRequestReferrerPolicy = (value) => {{
+    const policy = value === undefined ? "" : String(value);
+    if (!nativeReferrerPolicyValues.has(policy))
+      throw new TypeError("native Request referrer policy is unsupported");
+    return policy;
+  }};
   const RequestNative = function(input, init) {{
     const source = input && input.__glassRequest === true ? input : null;
     const sourceUrl = input && input.__glassUrl === true ? input : null;
     const overrides = init && typeof init === "object" ? init : {{}};
+    const requestInitIsNonEmpty = Object.keys(overrides).length > 0;
     const hasBodyOverride = Object.prototype.hasOwnProperty.call(overrides, "body");
     if (source && !hasBodyOverride && (source.bodyUsed || (source.body && source.body.locked)))
       throw new TypeError("native Request body is unusable");
@@ -36241,12 +36368,24 @@ fn document_bootstrap(
     const credentialsMode = settings.credentials === undefined ? "same-origin" : String(settings.credentials);
     if (!["omit", "same-origin", "include"].includes(credentialsMode))
       throw new TypeError("native Request credentials mode is unsupported");
+    const referrer = nativeRequestReferrer(
+      Object.prototype.hasOwnProperty.call(overrides, "referrer") ? overrides.referrer : undefined,
+      source && !requestInitIsNonEmpty ? nativeRequestReferrerState.get(source) : null,
+    );
+    const referrerPolicy = nativeRequestReferrerPolicy(
+      source && requestInitIsNonEmpty
+        && !Object.prototype.hasOwnProperty.call(overrides, "referrerPolicy")
+        ? ""
+        : settings.referrerPolicy,
+    );
     const headers = new HeadersNative(settings.headers);
     settings.method = method;
     settings.mode = mode;
     settings.redirect = redirect;
     settings.cache = cache;
     settings.credentials = credentialsMode;
+    settings.referrer = referrer.referrer;
+    settings.referrerPolicy = referrerPolicy;
     settings.headers = headers;
     Object.defineProperty(this, "__glassRequest", {{ value: true }});
     Object.defineProperty(this, "_settings", {{ value: settings }});
@@ -36259,6 +36398,8 @@ fn document_bootstrap(
     this.redirect = redirect;
     this.cache = cache;
     this.credentials = credentialsMode;
+    this.referrer = referrer.referrer;
+    this.referrerPolicy = referrerPolicy;
     this.signal = settings.signal === undefined ? null : settings.signal;
     const requestBodyState = this.__glassRequestBodyState;
     requestBodyState.stream = payload.bodyNull
@@ -36273,6 +36414,7 @@ fn document_bootstrap(
       configurable: true,
       get() {{ return nativeRequestBodyIsUsed(this); }},
     }});
+    nativeRequestReferrerState.set(this, referrer);
     Object.freeze(this);
   }};
   RequestNative.prototype.clone = function() {{
@@ -36396,6 +36538,8 @@ fn document_bootstrap(
     const sourceUrl = input && input.__glassUrl === true ? input : null;
     if (typeof input !== "string" && !sourceRequest && !sourceUrl) throw new TypeError("native fetch requires a URL string, URL, or Request");
     const href = nativeRequestUrl(sourceRequest ? sourceRequest.url : sourceUrl || input);
+    const optionsObject = options && typeof options === "object" ? options : {{}};
+    const requestInitIsNonEmpty = Object.keys(optionsObject).length > 0;
     const destination = internalDestination === undefined || internalDestination === null
       ? null
       : String(internalDestination);
@@ -36413,7 +36557,7 @@ fn document_bootstrap(
     const settings = Object.assign(
       {{}},
       sourceRequest ? sourceRequest._settings : {{}},
-      options && typeof options === "object" ? options : {{}},
+      optionsObject,
     );
     const signal = settings.signal === undefined ? null : settings.signal;
     if (signal !== null && (!signal || typeof signal !== "object" || typeof signal.aborted !== "boolean" || typeof signal.addEventListener !== "function")) throw new TypeError("native fetch signal is invalid");
@@ -36432,6 +36576,24 @@ fn document_bootstrap(
     const credentialsMode = settings.credentials === undefined ? "same-origin" : String(settings.credentials);
     if (!["omit", "same-origin", "include"].includes(credentialsMode))
       return Promise.reject(new TypeError("native fetch credentials mode is unsupported"));
+    let referrer;
+    let referrerPolicy;
+    try {{
+      const hasReferrerOverride = Object.prototype.hasOwnProperty.call(optionsObject, "referrer")
+        && optionsObject.referrer !== undefined;
+      referrer = nativeRequestReferrer(
+        hasReferrerOverride ? optionsObject.referrer : undefined,
+        sourceRequest && !requestInitIsNonEmpty
+          ? nativeRequestReferrerState.get(sourceRequest)
+          : null,
+      );
+      referrerPolicy = nativeRequestReferrerPolicy(
+        sourceRequest && requestInitIsNonEmpty
+          && !Object.prototype.hasOwnProperty.call(optionsObject, "referrerPolicy")
+          ? ""
+          : settings.referrerPolicy,
+      );
+    }} catch (error) {{ return Promise.reject(error); }}
     let method;
     try {{ method = nativeFetchMethod(settings.method === undefined ? "GET" : settings.method); }}
     catch (error) {{ return Promise.reject(error); }}
@@ -36601,7 +36763,7 @@ fn document_bootstrap(
       fetchRequests.set(requestId, pending);
       if (signal) signal.addEventListener("abort", abort);
       if (!fetchRequests.has(requestId)) return;
-      pushCommand({{ kind: "fetch", request_id: requestId, href, credentials, credentials_mode: credentialsMode, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, cache, timeout_ms: timeoutMs, upload_stream_id: hasStreamedBody ? requestId : null, destination }});
+      pushCommand({{ kind: "fetch", request_id: requestId, href, credentials, credentials_mode: credentialsMode, referrer: referrer.referrer, referrer_url: referrer.url, referrer_policy: referrerPolicy, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, cache, timeout_ms: timeoutMs, upload_stream_id: hasStreamedBody ? requestId : null, destination }});
     }});
   }};
   const responseHeaders = (rawEntries, contentType) => {{

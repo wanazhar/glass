@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-824`; issue #40 remains open. Slice 818 synchronizes
+`native-engine-browser-825`; issue #40 remains open. Slice 818 synchronizes
 ordinary response-cookie deltas to same-backend live contexts after profile
 merge; Slice 819 verifies a live module SharedWorker's next module request.
 Slice 820 extends delivery across separately created live sessions sharing one
@@ -31,9 +31,15 @@ each redirect. Its two-origin process-backed regression passed (1 passed;
 warnings from the legacy HTML parser. Slice 824 carries page Fetch credentials
 through controlled ServiceWorker FetchEvent requests and Service Worker
 `fetch(event.request)`. Its two-origin regression verifies all three modes,
-defaults, invalid values, and cookie send/accept behavior. Broader Fetch/WPT
-conformance, remote CI, and cross-platform coverage remain open. See the
-[slice 824 task](../plan/tasks/native-engine-browser-824.md), the [slice 823
+defaults, invalid values, and cookie send/accept behavior. Slice 825 carries
+Fetch referrer source and all eight policy tokens through page and worker
+Requests, controlled Service Worker handoff, redirects, and cache identity;
+the process-backed two-origin regression passed (1 passed; 37.37 seconds).
+The full policy-token unit test and scoped checks are recorded in the slice
+task. Policy-container delivery from response headers, meta elements, and
+element attributes, broader Fetch/Referrer Policy WPT conformance, remote CI,
+and cross-platform coverage remain open. See the [slice 825 task](../plan/tasks/native-engine-browser-825.md),
+the [slice 824 task](../plan/tasks/native-engine-browser-824.md), the [slice 823
 task](../plan/tasks/native-engine-browser-823.md), the [slice 822
 task](../plan/tasks/native-engine-browser-822.md), the [slice 821
 task](../plan/tasks/native-engine-browser-821.md), the [slice 820

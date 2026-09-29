@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-831
 scope: glass-browser/native-engine/module-script-referrer-policy
-status: in-progress
+status: complete
 depends-on: [native-engine-browser-830]
 ---
 
@@ -77,10 +77,11 @@ including the policy inheritance rules carried by module responses.
 - `cargo test -p glass-browser --lib --features native-engine referrer --locked --quiet`
   passed (9 passed, 1,637 filtered; 8.01 seconds), including the module source
   policy and cache/304 metadata tests.
-- The process-backed two-origin regression compiles, but its run failed before
-  any request or browser assertion: the sandbox denied the first
-  `TcpListener::bind` with `PermissionDenied`. Wire behavior remains unverified
-  here, so the slice stays in progress.
+- The process-backed two-origin regression passed in the focused
+  `native_content_process_inherits_referrer_policy_through` test batch. Its
+  static-module case verified the actual entry and recursive dependency
+  `Referer` headers. The dynamic-module and module-worker failures in that same
+  batch are tracked separately in Slices 832 and 833.
 - `cargo fmt --all` and `git diff --check` passed.
 - Maintainer documentation gates passed: release-documentation truth (1,459
   Markdown documents, zero current-claim failures), documentation depth (93

@@ -83,9 +83,12 @@ requests.
   --locked -q` passed.
 - `cargo test -p glass-browser --features native-engine --lib --locked
   native_static_dynamic_import_tests --quiet` passed.
-- The process-backed regression compiled, but its run stopped at the first
-  `TcpListener::bind` with `PermissionDenied` before any HTTP assertions.
-  Creator/redirect/module `Referer` behavior therefore remains unverified.
+- The isolated process-backed regression failed during
+  `engine.initialize_async()` with `WorkerFailure` for `content process IPC`
+  (`Exited`) because the content worker closed its pipe.
+  The module-worker HTTP assertions did not complete. The slice remains in
+  progress until the worker exit is diagnosed and the full graph regression
+  passes.
 - Documentation truth (1,461 Markdown files, zero current-claim failures),
   depth, shortcut inventory, coverage, formatting, and whitespace checks pass.
 - Keep this slice `in-progress` until the process-backed assertions run in an

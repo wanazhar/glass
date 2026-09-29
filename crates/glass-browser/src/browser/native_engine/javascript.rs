@@ -41376,6 +41376,8 @@ fn document_bootstrap(
       ["max", "max"], ["step", "step"], ["method", "method"],
       ["target", "target"], ["rel", "rel"], ["download", "download"],
     ]) installStringAttributeProperty(element, property, attribute);
+    if (element.namespaceURI === HTML_NAMESPACE && element.tagName === "META")
+      installStringAttributeProperty(element, "content", "content");
     if (["A", "AREA", "BASE", "LINK"].includes(element.tagName))
       installUrlAttributeProperty(element, "href", "href", baseUrl);
     if (["IMG", "SCRIPT", "IFRAME", "FRAME", "EMBED", "SOURCE", "TRACK", "AUDIO", "VIDEO"].includes(element.tagName)) {{

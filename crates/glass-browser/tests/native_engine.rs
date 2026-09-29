@@ -29682,7 +29682,15 @@ async fn native_content_process_applies_stylesheet_link_referrer_policy() {
                     })
                     .unwrap();
             let request = read_http_request(&mut stream).await;
-            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let expected_request_target = if expected_path == "/page" {
+                "/page?secret=token"
+            } else {
+                expected_path
+            };
+            assert_eq!(
+                request.split_whitespace().nth(1),
+                Some(expected_request_target)
+            );
             match expected_path {
                 "/page" => {
                     let body = format!(
@@ -29820,13 +29828,20 @@ async fn native_content_process_applies_stylesheet_link_referrer_policy() {
         tokio::time::timeout(
             Duration::from_secs(45),
             engine.evaluate_async(&format!(
-                "(() => {{ const meta = document.createElement('meta'); meta.name = 'referrer'; meta.content = 'no-referrer'; document.head.appendChild(meta); const cached = document.createElement('link'); cached.rel = 'stylesheet'; cached.href = '/cache.css'; cached.referrerPolicy = 'no-referrer'; document.head.appendChild(cached); const origin = document.createElement('link'); origin.rel = 'stylesheet'; origin.href = 'http://{stylesheet_address}/dynamic-origin.css'; origin.referrerPolicy = 'ORIGIN'; document.head.appendChild(origin); const fallback = document.createElement('link'); fallback.rel = 'stylesheet'; fallback.href = 'http://{stylesheet_address}/dynamic-default.css'; document.head.appendChild(fallback); return [cached.referrerPolicy, origin.referrerPolicy, origin.getAttribute('referrerpolicy'), fallback.referrerPolicy]; }})()"
+                "(() => {{ const meta = document.createElement('meta'); meta.name = 'referrer'; meta.content = 'no-referrer'; document.head.appendChild(meta); const cached = document.createElement('link'); cached.rel = 'stylesheet'; cached.href = '/cache.css'; cached.referrerPolicy = 'no-referrer'; document.head.appendChild(cached); const origin = document.createElement('link'); origin.rel = 'stylesheet'; origin.href = 'http://{stylesheet_address}/dynamic-origin.css'; origin.referrerPolicy = 'ORIGIN'; document.head.appendChild(origin); const fallback = document.createElement('link'); fallback.rel = 'stylesheet'; fallback.href = 'http://{stylesheet_address}/dynamic-default.css'; document.head.appendChild(fallback); return [meta.content, meta.getAttribute('content'), cached.referrerPolicy, origin.referrerPolicy, origin.getAttribute('referrerpolicy'), fallback.referrerPolicy]; }})()"
             ))
         )
         .await
         .expect("dynamic stylesheet link processing timed out")
         .unwrap(),
-        serde_json::json!(["no-referrer", "ORIGIN", "ORIGIN", ""])
+        serde_json::json!([
+            "no-referrer",
+            "no-referrer",
+            "no-referrer",
+            "ORIGIN",
+            "ORIGIN",
+            ""
+        ])
     );
     assert_eq!(
         engine

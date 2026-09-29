@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-830
 scope: glass-browser/native-engine/stylesheet-link-referrer-policy
-status: in-progress
+status: complete
 depends-on: [native-engine-browser-829]
 ---
 
@@ -34,6 +34,9 @@ inserted HTML `<link rel="stylesheet" href>` elements.
   limited-known-values string. Invalid attribute text reads as the empty
   string. Setting the property updates the attribute, and a subsequent fetch
   observes it; it does not rewrite an already-dispatched request.
+- The live meta-derived Document default includes connected
+  `HTMLMetaElement.name` and `.content` property writes through their reflected
+  content attributes.
 - Apply the effective policy to parser-discovered and dynamically inserted
   external stylesheet requests. Keep stylesheet `@import`, font/image
   subresources, icons, preloads, other link relationships, workers, and other
@@ -72,7 +75,13 @@ inserted HTML `<link rel="stylesheet" href>` elements.
 
 - `cargo check -p glass-browser --features native-engine --lib --tests --locked -q` passed after the implementation and regression were added. It found a missing default referrer policy in a test-only legacy `NativeDocument` constructor; that constructor now initializes to the standard `strict-origin-when-cross-origin` policy.
 - `cargo test -p glass-browser --lib --features native-engine referrer --locked --quiet` passed (7 passed, 1,637 filtered; 8.07 seconds), including the focused element override, invalid-value fallback, response-header default, and parsed meta default test plus the existing token/referrer computation tests.
-- The process-backed two-origin regression is implemented and type-checks, but could not run in this environment: `TcpListener::bind("127.0.0.1:0")` returned `PermissionDenied` before any HTTP request or browser assertion. Its wire-level behavior is therefore unverified locally, not passed.
+- `cargo test -p glass-browser --features native-engine --test native_engine
+  --locked native_content_process_applies_stylesheet_link_referrer_policy --
+  --exact --nocapture` passed (1 passed, 885 filtered; 25.68 seconds). It
+  verifies query-preserving navigation, actual parser and dynamic stylesheet
+  request headers, redirects, cache revalidation, style application, and live
+  meta fallback. The dynamic case also verifies that `meta.content` reflects
+  its attribute before the stylesheet request.
 - `cargo fmt --all` and `git diff --check` passed for the slice.
 - Remote CI, WPT conformance, and cross-platform certification are outside this
   slice and must not be claimed from local results.

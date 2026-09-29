@@ -1566,6 +1566,22 @@ fn effective_worker_module_referrer_policy(
     inherited.map(|policy| response.unwrap_or(policy))
 }
 
+fn effective_worker_global_referrer_policy(
+    worker_url: &str,
+    creator_policy: Option<NativeFetchReferrerPolicy>,
+    response_policy: Option<NativeFetchReferrerPolicy>,
+) -> NativeFetchReferrerPolicy {
+    if is_network_url(worker_url) {
+        response_policy.unwrap_or(NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin)
+    } else if is_file_url(worker_url) {
+        creator_policy.unwrap_or(NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin)
+    } else {
+        response_policy
+            .or(creator_policy)
+            .unwrap_or(NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin)
+    }
+}
+
 #[derive(Clone, Copy)]
 enum NativeWorkerClassicDynamicImportMode {
     RewritePerScript,
@@ -1731,6 +1747,7 @@ impl NativeDedicatedWorker {
                 self.runtime.now_ms(),
                 import_script_counts,
                 self.is_module,
+                self.runtime.worker_global_referrer_policy,
             )?
         } else {
             worker_bootstrap(
@@ -1739,6 +1756,7 @@ impl NativeDedicatedWorker {
                 self.runtime.now_ms(),
                 import_script_counts,
                 self.is_module,
+                self.runtime.worker_global_referrer_policy,
                 true,
                 true,
                 false,
@@ -2342,6 +2360,11 @@ impl NativeWorkerRegistry {
                 return Ok(());
             }
         };
+        let worker_referrer_policy = effective_worker_global_referrer_policy(
+            &resource.url,
+            referrer_policy,
+            resource.response_referrer_policy,
+        );
         let (
             source,
             import_script_counts,
@@ -2408,7 +2431,7 @@ impl NativeWorkerRegistry {
                 graph.dynamic_import_referrers,
             )
         };
-        let runtime =
+        let mut runtime =
             match NativeJavaScriptRuntime::new_with_context_id(format!("glass-worker-{worker_id}"))
             {
                 Ok(runtime) => runtime,
@@ -2417,6 +2440,7 @@ impl NativeWorkerRegistry {
                     return Ok(());
                 }
             };
+        runtime.worker_global_referrer_policy = Some(worker_referrer_policy);
         self.workers.insert(
             worker_id,
             NativeDedicatedWorker {
@@ -2588,6 +2612,11 @@ impl NativeWorkerRegistry {
                 return Ok(());
             }
         };
+        let worker_referrer_policy = effective_worker_global_referrer_policy(
+            &resource.url,
+            referrer_policy,
+            resource.response_referrer_policy,
+        );
         let (
             source,
             import_script_counts,
@@ -2654,7 +2683,7 @@ impl NativeWorkerRegistry {
                 graph.dynamic_import_referrers,
             )
         };
-        let runtime = match NativeJavaScriptRuntime::new_with_context_id(format!(
+        let mut runtime = match NativeJavaScriptRuntime::new_with_context_id(format!(
             "glass-shared-worker-{connection_id}"
         )) {
             Ok(runtime) => runtime,
@@ -2663,6 +2692,7 @@ impl NativeWorkerRegistry {
                 return Ok(());
             }
         };
+        runtime.worker_global_referrer_policy = Some(worker_referrer_policy);
         self.workers.insert(
             connection_id,
             NativeDedicatedWorker {
@@ -13191,6 +13221,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     module_sources: Arc<Mutex<BTreeMap<String, String>>>,
     module_base_urls: Arc<Mutex<BTreeMap<String, String>>>,
     module_referrer_policies: Arc<Mutex<BTreeMap<String, NativeFetchReferrerPolicy>>>,
+    worker_global_referrer_policy: Option<NativeFetchReferrerPolicy>,
     module_import_map: Arc<Mutex<NativeModuleImportMap>>,
     dynamic_module_aliases: Arc<Mutex<BTreeMap<String, String>>>,
     dynamic_import_mode: Arc<Mutex<NativeModuleDynamicImportMode>>,
@@ -13380,6 +13411,7 @@ impl NativeJavaScriptRuntime {
             module_sources,
             module_base_urls,
             module_referrer_policies,
+            worker_global_referrer_policy: None,
             module_import_map,
             dynamic_module_aliases,
             dynamic_import_mode,
@@ -16021,6 +16053,7 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             import_script_counts,
             false,
+            self.worker_global_referrer_policy,
             true,
             true,
             false,
@@ -16075,6 +16108,7 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             &BTreeMap::new(),
             true,
+            self.worker_global_referrer_policy,
             true,
             true,
             false,
@@ -16202,6 +16236,7 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             import_script_counts,
             module_name.is_some(),
+            self.worker_global_referrer_policy,
         )?;
         self.evaluate_worker_source_with_bootstrap(
             worker_id,
@@ -16228,6 +16263,7 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             &BTreeMap::new(),
             is_module,
+            self.worker_global_referrer_policy,
         )?;
         self.evaluate_worker_source_with_bootstrap_and_event(
             worker_id,
@@ -16257,6 +16293,7 @@ impl NativeJavaScriptRuntime {
             self.now_ms(),
             import_script_counts,
             module_name.is_some(),
+            self.worker_global_referrer_policy,
             true,
             true,
             false,
@@ -18456,6 +18493,8 @@ struct NativeSyncXhrRequest {
     credentials: bool,
     #[serde(rename = "timeoutMs", default)]
     timeout_ms: Option<u32>,
+    #[serde(rename = "referrerPolicy", default)]
+    referrer_policy: Option<String>,
 }
 
 fn sync_xhr_error_payload(error: &NativeEngineError) -> serde_json::Value {
@@ -18500,7 +18539,7 @@ fn run_native_sync_xhr(
         document_url: &request.document_url,
         href: &request.href,
         referrer_url: None,
-        referrer_policy: None,
+        referrer_policy: request.referrer_policy,
         method,
         body,
         content_type: request.content_type,
@@ -21214,6 +21253,7 @@ mod native_static_dynamic_import_tests {
     use super::{
         BTreeMap, MAX_NATIVE_MODULE_IMPORTS, Module, NativeFetchReferrerPolicy,
         NativeJavaScriptRuntime, NativeModuleImportMap, NativeModuleResourceType, NativePageScript,
+        NativeScriptCommand, effective_worker_global_referrer_policy,
         effective_worker_module_referrer_policy, module_source_maps, native_module_loader_name,
         rewrite_dynamic_imports_as_rejected, rewrite_dynamic_imports_as_rejected_with_count,
         rewrite_runtime_dynamic_module_imports, rewrite_runtime_dynamic_module_imports_with_policy,
@@ -21282,6 +21322,78 @@ mod native_static_dynamic_import_tests {
             effective_worker_module_referrer_policy(None, Some(NativeFetchReferrerPolicy::Origin)),
             None
         );
+    }
+
+    #[test]
+    fn worker_global_policy_uses_network_response_and_local_creator_container() {
+        assert_eq!(
+            effective_worker_global_referrer_policy(
+                "https://worker.test/worker.js",
+                Some(NativeFetchReferrerPolicy::NoReferrer),
+                Some(NativeFetchReferrerPolicy::UnsafeUrl),
+            ),
+            NativeFetchReferrerPolicy::UnsafeUrl
+        );
+        assert_eq!(
+            effective_worker_global_referrer_policy(
+                "https://worker.test/worker.js",
+                Some(NativeFetchReferrerPolicy::NoReferrer),
+                None,
+            ),
+            NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin
+        );
+        assert_eq!(
+            effective_worker_global_referrer_policy(
+                "file:///worker.js",
+                Some(NativeFetchReferrerPolicy::Origin),
+                None,
+            ),
+            NativeFetchReferrerPolicy::Origin
+        );
+        assert_eq!(
+            effective_worker_global_referrer_policy("file:///worker.js", None, None),
+            NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin
+        );
+    }
+
+    #[test]
+    fn worker_fetch_uses_global_policy_without_changing_request_policy() {
+        let mut runtime = NativeJavaScriptRuntime::new_with_context_id("worker-fetch-policy")
+            .expect("Worker runtime is valid");
+        runtime.worker_global_referrer_policy = Some(NativeFetchReferrerPolicy::Origin);
+        let evaluation = runtime
+            .evaluate_worker_prepared(
+                1,
+                "https://worker.test/worker.js",
+                "const inherited = new Request('https://target.test/inherited'); const override = new Request('https://target.test/override'); globalThis.__observedWorkerRequestPolicies = JSON.stringify({ inheritedPolicy: inherited.referrerPolicy, overridePolicy: override.referrerPolicy }); fetch(inherited); fetch(override, { referrerPolicy: 'no-referrer' });",
+                &BTreeMap::new(),
+            )
+            .expect("Worker fetch commands are prepared");
+
+        let public_policies = runtime
+            .context
+            .with(|ctx| ctx.eval::<String, _>("globalThis.__observedWorkerRequestPolicies"))
+            .expect("public Worker request policies remain inspectable")
+            .parse::<serde_json::Value>()
+            .expect("public Worker request policies are JSON");
+        assert_eq!(
+            public_policies,
+            serde_json::json!({
+                "inheritedPolicy": "",
+                "overridePolicy": "",
+            })
+        );
+        let policies = evaluation
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                NativeScriptCommand::Fetch {
+                    referrer_policy, ..
+                } => referrer_policy.as_deref(),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(policies, ["origin", "no-referrer"]);
     }
 
     #[test]
@@ -24315,6 +24427,7 @@ fn worker_bootstrap(
     now_ms: u64,
     import_script_counts: &BTreeMap<String, usize>,
     is_module: bool,
+    worker_global_referrer_policy: Option<NativeFetchReferrerPolicy>,
     report_message_callback_errors: bool,
     forward_message_callback_errors: bool,
     capture_connect_callback_errors: bool,
@@ -24328,6 +24441,13 @@ fn worker_bootstrap(
             operation: "serialize native Worker importScripts map".into(),
             reason: "native Worker importScripts map could not be serialized".into(),
         })?;
+    let worker_global_referrer_policy = serde_json::to_string(
+        worker_global_referrer_policy.map_or("", NativeFetchReferrerPolicy::as_str),
+    )
+    .map_err(|_| NativeEngineError::Worker {
+        operation: "serialize native Worker referrer policy".into(),
+        reason: "native Worker referrer policy could not be serialized".into(),
+    })?;
     let mut random_bytes = vec![0_u8; MAX_NATIVE_WORKER_CRYPTO_POOL_BYTES];
     getrandom::fill(&mut random_bytes).map_err(|_| NativeEngineError::Worker {
         operation: "seed native Worker crypto".into(),
@@ -24361,6 +24481,7 @@ fn worker_bootstrap(
   const workerUrl = {worker_url};
   const nowMs = {now_ms};
   const initialImportScriptCounts = {import_script_counts};
+  const workerGlobalReferrerPolicy = {worker_global_referrer_policy};
   const initialWorkerCryptoBytes = {initial_random_bytes};
   const isModuleWorker = {is_module};
   const reportMessageCallbackErrors = {report_message_callback_errors};
@@ -28658,7 +28779,7 @@ fn worker_bootstrap(
           credentials_mode: credentialsMode,
           referrer: referrer.referrer,
           referrer_url: referrer.url,
-          referrer_policy: referrerPolicy,
+          referrer_policy: referrerPolicy || workerGlobalReferrerPolicy,
           method,
           headers: requestHeaders,
           body,
@@ -28861,6 +28982,7 @@ fn worker_bootstrap(
       contentType: contentType === undefined ? null : contentType,
       credentials: xhr.withCredentials,
       timeoutMs: xhr._timeout === 0 ? null : xhr._timeout,
+      referrerPolicy: workerGlobalReferrerPolicy,
     }};
   }};
   const workerXhrNormalizeOverrideMimeType = (value) => {{
@@ -30039,6 +30161,7 @@ fn service_worker_bootstrap(
         now_ms,
         import_script_counts,
         is_module,
+        None,
         true,
         false,
         false,
@@ -30060,6 +30183,7 @@ fn shared_worker_bootstrap(
     now_ms: u64,
     import_script_counts: &BTreeMap<String, usize>,
     is_module: bool,
+    worker_global_referrer_policy: Option<NativeFetchReferrerPolicy>,
 ) -> Result<String, NativeEngineError> {
     let mut bootstrap = worker_bootstrap(
         worker_id,
@@ -30067,6 +30191,7 @@ fn shared_worker_bootstrap(
         now_ms,
         import_script_counts,
         is_module,
+        worker_global_referrer_policy,
         false,
         false,
         true,

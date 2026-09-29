@@ -247,6 +247,16 @@ Fetch/XHR, nor ServiceWorker or classic-worker policy inheritance. Those
 remain explicit profile requirements; see the
 [slice 833 task](tasks/native-engine-browser-833.md).
 
+Slice 834 initializes the DedicatedWorker/SharedWorker global referrer
+default from the final network worker-script response policy, falling back to
+the policy-container default when no recognized response token exists; `file:`
+workers inherit the creator Document policy. Ordinary Worker Fetch and both
+XHR modes use that default only when a request-level policy is empty, without
+changing the public `Request.referrerPolicy` property or explicit overrides.
+ServiceWorker policy containers, nested Workers, `importScripts()`, module
+graphs, and broader Referrer Policy/Fetch or WPT conformance remain separate.
+See the [slice 834 task](tasks/native-engine-browser-834.md).
+
 ### Explicit `tabindex` focus baseline
 
 Within the current light-DOM focus scope, a valid explicit `tabindex` makes an

@@ -89,6 +89,25 @@ It is never an implicit fallback for a native request.
 | `accessibility` | semantic and assistive surface | roles, states, properties, name/description computation, focus, actions, and incremental updates for the declared DOM/layout surface | accessibility-tree differential fixtures and action/focus tests |
 | `glass-integration` | public Glass contract | stable backend capability profile, navigation, targets, DOM/AX/evidence, actions, key input, script/evaluate, waits/events, screenshots, contexts, storage, downloads/uploads, prompts, CLI, MCP, and TUI parity | all normal operations pass in native-only mode with no hidden CDP process/socket |
 
+### Shared-profile cookie synchronization
+
+When separately created native sessions use the same explicit profile path,
+accepted cookie changes are merged into the durable profile under its existing
+profile lock and then published through the bounded profile event journal.
+Another live session reads its leased journal cursor at browser operation
+boundaries, ignores its own records, coalesces external changes by cookie key,
+and applies them to its request loader and live content process before the next
+request. Applying a journal record is runtime-only: the receiving session does
+not write the same change back to the profile or republish it. Slice 820
+verifies HTTP response `Set-Cookie` updates, including response-driven
+deletion; cross-session publication of explicit cookie import and clear API
+calls remains unverified. A session with no explicit profile has no
+cross-session state; separate profile paths do not share notifications.
+Delivery is operation-boundary synchronization, not an OS file watcher or an
+interrupt to an already-running request. See the
+[Slice 820 task](tasks/native-engine-browser-820.md) for implementation and
+evidence boundaries.
+
 ### Explicit `tabindex` focus baseline
 
 Within the current light-DOM focus scope, a valid explicit `tabindex` makes an
@@ -504,8 +523,8 @@ and the Slice 814 credentials/redirect regression passed again (1 passed, 867
 filtered; 24.08 seconds). Evidence covers the owning page's next request,
 HttpOnly invisibility to script, profile reload, and deletion both immediately
 and after another reload. The scoped integration-test check passed with 68
-existing legacy HTML parser dead-code warnings. Fan-out to unrelated already-
-Slice 817 fans out accepted SharedWorker cookie changes to all already-live
+existing legacy HTML parser dead-code warnings. Fan-out to unrelated live
+target/frame contexts remained open at that point. Slice 817 fans out accepted SharedWorker cookie changes to all already-live
 target and frame processes within one backend/profile. Its process-backed
 group passed (3 passed, 866 filtered; 126.59 seconds), and the Slice 814
 credentials/redirect regression passed (1 passed, 868 filtered; 25.05
@@ -521,9 +540,16 @@ SharedWorker dynamic import after the page response sends the latest ordinary
 and HttpOnly cookies and excludes the deletion. The scoped check
 passed with existing legacy HTML parser dead-code warnings; formatting and
 diff validation passed. Direct SharedWorker Fetch API requests remain
-unverified. Separate
-backend/session notification, broader cookie/WPT conformance, and
-cross-platform coverage also remain open. See the [slice 819 task](tasks/native-engine-browser-819.md),
+unverified. Slice 820 synchronizes accepted cookie changes across separately
+created live sessions sharing one explicit profile. Its HTTP regression
+passed (1 passed, 870 filtered; 46.24 seconds): the receiver's next request
+carried the latest ordinary and HttpOnly values, omitted the deleted cookie,
+and a distinct profile remained isolated. The journal round-trip/backward-
+decode test passed (1 passed, 1,639 filtered; 0.07 seconds). Its operation-
+boundary delivery does not interrupt an in-flight request. Broader cookie/WPT
+conformance and cross-platform coverage remain open. See the
+[slice 820 task](tasks/native-engine-browser-820.md), the
+[slice 819 task](tasks/native-engine-browser-819.md),
 the [slice 818 task](tasks/native-engine-browser-818.md),
 the [slice 817 task](tasks/native-engine-browser-817.md), and
 [slice 816 task](tasks/native-engine-browser-816.md).

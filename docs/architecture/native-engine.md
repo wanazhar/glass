@@ -1,23 +1,20 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-819`; issue #40 remains open. Ordinary content-process
-response-cookie journals now return to the backend after profile merge, fan
-out to same-backend live target/frame request loaders and content processes,
-and update the SharedWorker loader/journal without duplicate profile writes.
-The process-backed page-response, peer/frame, isolation, deletion, and profile
-restart regression passed (1 passed, 869 filtered; 69.98 seconds). Slice 819's
-process-backed regression also passed (1 passed, 869 filtered; 86.02 seconds),
-verifying that an already-running module SharedWorker can dynamically import a
-same-origin resource after the page response and that the request carries the
-latest ordinary and HttpOnly cookies, excluding the deletion. The companion
-SharedWorker-originated live-context group passed in its preceding focused run
-(2 passed, 868 filtered; 115.58 seconds). The scoped
-integration-test check passed with existing dead-code warnings from the
-superseded HTML parser in `dom.rs`; formatting and diff validation passed.
-Direct SharedWorker Fetch API requests remain unverified. Cross-backend
-notification, broader cookie/WPT conformance, and cross-platform coverage
-remain open. See the [slice 819 task](../plan/tasks/native-engine-browser-819.md), the
+`native-engine-browser-820`; issue #40 remains open. Slice 818 synchronizes
+ordinary response-cookie deltas to same-backend live contexts after profile
+merge; Slice 819 verifies a live module SharedWorker's next module request.
+Slice 820 extends delivery across separately created live sessions sharing one
+explicit profile. Its process-backed HTTP regression passed (1 passed, 870
+filtered; 46.24 seconds), proving response-cookie latest-value coalescing,
+HttpOnly delivery, response-driven deletion, and separate-profile isolation.
+Explicit cookie import/clear API publication across live sessions remains
+unverified. The journal round-trip and legacy
+record decode unit test passed (1 passed, 1,639 filtered; 0.07 seconds). The
+scoped check passed with existing dead-code warnings from the superseded HTML
+parser in `dom.rs`. Direct SharedWorker Fetch API requests, broader cookie/WPT
+conformance, and cross-platform coverage remain open. See the [slice 820
+task](../plan/tasks/native-engine-browser-820.md), the [slice 819 task](../plan/tasks/native-engine-browser-819.md), the
 [slice 818 task](../plan/tasks/native-engine-browser-818.md), the
 [slice 817 task](../plan/tasks/native-engine-browser-817.md), the
 [slice 816 task](../plan/tasks/native-engine-browser-816.md), and the

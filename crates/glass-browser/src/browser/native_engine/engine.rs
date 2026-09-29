@@ -29,15 +29,16 @@ use super::interaction::{
     parse_native_shortcut, validate_native_edit_key, validate_native_key,
 };
 use super::javascript::{
-    MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_HISTORY_STATE_BYTES,
-    MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_WORKER_MESSAGES,
-    NativeCookieChange, NativeCookieProfileEntry, NativeDialog, NativeFrameScriptBinding,
-    NativeFrameScriptContext, NativeFrameScriptRequest, NativeHashChangeEvent, NativeHostEvent,
-    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
-    NativeMessagePortPageMessage, NativeMessagePortTransfer, NativePageEventBatch,
-    NativePageMessageEvent, NativePageMessagePortCommand, NativePageNavigation, NativePageScript,
-    NativePageScriptResult, NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
-    NativeScriptEvaluation, NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
+    MAX_NATIVE_COOKIE_CHANGE_BATCH, MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS,
+    MAX_NATIVE_HISTORY_STATE_BYTES, MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_SCRIPT_BYTES,
+    MAX_NATIVE_WORKER_MESSAGES, NativeCookieChange, NativeCookieProfileEntry, NativeDialog,
+    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
+    NativeHashChangeEvent, NativeHostEvent, NativeIndexedDbChange, NativeIndexedDbState,
+    NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativeMessagePortTransfer,
+    NativePageEventBatch, NativePageMessageEvent, NativePageMessagePortCommand,
+    NativePageNavigation, NativePageScript, NativePageScriptResult, NativePopupRequest,
+    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
+    NativeServiceWorkerClientLease, NativeServiceWorkerClientMessage,
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest,
     NativeSharedWorkerCreateRequest, NativeStorageEvent, NativeWebStorageState,
     NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
@@ -45,8 +46,8 @@ use super::javascript::{
     apply_document_commands_with_font_face_ack, apply_indexed_db_changes, diff_indexed_db_changes,
     execute_dynamic_page_scripts, execute_inline_scripts, frame_event_batch,
     host_click_event_batch_with_modifiers, host_event_batch, host_event_batch_at,
-    host_key_event_batch_with_modifiers, host_submit_event_batch, load_indexed_db_profile,
-    load_local_file_dynamic_module_graph_with_import_map,
+    host_key_event_batch_with_modifiers, host_submit_event_batch, load_cookie_profile,
+    load_indexed_db_profile, load_local_file_dynamic_module_graph_with_import_map,
     load_local_file_module_graph_with_import_map, load_service_worker_client_leases,
     load_web_storage_profile, new_storage_writer_id, read_storage_event_journal,
     register_storage_reader, resolve_module_request_url, save_web_storage_profile,
@@ -417,6 +418,7 @@ pub struct NativeEngine {
     storage_state_recovery_pending: bool,
     indexed_db_state_delivery_pending: bool,
     pending_external_storage_events: Vec<NativeStorageEvent>,
+    pending_external_cookie_changes: Vec<NativeCookieChange>,
     pending_dialogs: VecDeque<PendingDialog>,
     request_ledger: NativeRequestLedger,
     pending_downloads: VecDeque<NativePendingDownload>,
@@ -542,6 +544,7 @@ impl NativeEngine {
             storage_state_recovery_pending: false,
             indexed_db_state_delivery_pending: false,
             pending_external_storage_events: Vec::new(),
+            pending_external_cookie_changes: Vec::new(),
             pending_dialogs: VecDeque::new(),
             request_ledger: NativeRequestLedger::new(),
             pending_downloads: VecDeque::new(),
@@ -1368,6 +1371,7 @@ impl NativeEngine {
             Some(
                 NativeContentProcess::spawn(
                     self.config.storage_path.as_deref(),
+                    &self.storage_writer_id,
                     self.loader.allowed_file_roots(),
                     self.dialog_control.clone(),
                     self.pending_content_cookie_changes.clone(),
@@ -1857,6 +1861,7 @@ impl NativeEngine {
         if self.content_process.is_none() {
             let mut process = NativeContentProcess::spawn(
                 self.config.storage_path.as_deref(),
+                &self.storage_writer_id,
                 self.loader.allowed_file_roots(),
                 self.dialog_control.clone(),
                 self.pending_content_cookie_changes.clone(),
@@ -3005,6 +3010,8 @@ impl NativeEngine {
         self.loader.set_cookie_profiles(&profiles)?;
         if self.content_process.is_none() {
             self.persist_local_web_storage()?;
+        } else {
+            self.loader.take_cookie_changes();
         }
         Ok(())
     }
@@ -3015,7 +3022,12 @@ impl NativeEngine {
     ) -> Result<(), NativeEngineError> {
         self.apply_cookie_changes_with_persistence(changes, true)
             .await?;
-        self.persist_local_web_storage()
+        if self.content_process.is_some() {
+            let changes = self.loader.take_cookie_changes();
+            self.publish_external_cookie_changes(&changes)
+        } else {
+            self.persist_local_web_storage()
+        }
     }
 
     pub(crate) async fn apply_cookie_changes_to_runtime_async(
@@ -3034,6 +3046,9 @@ impl NativeEngine {
         self.require_running("apply native cookie changes")?;
         let mut loader = self.loader.clone();
         loader.apply_cookie_changes(changes)?;
+        if !persist_profile {
+            loader.take_cookie_changes();
+        }
         if let Some(process) = self.content_process.as_mut() {
             process
                 .apply_cookie_changes(changes, persist_profile)
@@ -3052,6 +3067,8 @@ impl NativeEngine {
         self.loader.clear_cookies();
         if self.content_process.is_none() {
             self.persist_local_web_storage()?;
+        } else {
+            self.loader.take_cookie_changes();
         }
         Ok(())
     }
@@ -6118,15 +6135,82 @@ impl NativeEngine {
             .map(|_| ())
     }
 
+    fn merge_external_cookie_changes(
+        target: &mut Vec<NativeCookieChange>,
+        changes: impl IntoIterator<Item = NativeCookieChange>,
+    ) -> Result<(), NativeEngineError> {
+        for change in changes {
+            if let Some(existing) = target.iter_mut().find(|existing| {
+                existing.name == change.name
+                    && existing.domain == change.domain
+                    && existing.path == change.path
+            }) {
+                *existing = change;
+            } else {
+                if target.len() >= MAX_NATIVE_COOKIE_CHANGE_BATCH {
+                    return Err(NativeEngineError::limit(
+                        "native pending external cookie changes",
+                        MAX_NATIVE_COOKIE_CHANGE_BATCH,
+                        target.len().saturating_add(1),
+                    ));
+                }
+                target.push(change);
+            }
+        }
+        Ok(())
+    }
+
+    fn diff_cookie_profiles(
+        before: &[NativeCookieProfileEntry],
+        after: &[NativeCookieProfileEntry],
+    ) -> Vec<NativeCookieChange> {
+        let mut changes = Vec::new();
+        for cookie in before {
+            let after_cookie = after.iter().find(|candidate| {
+                candidate.name == cookie.name
+                    && candidate.domain == cookie.domain
+                    && candidate.path == cookie.path
+            });
+            if after_cookie != Some(cookie) {
+                changes.push(NativeCookieChange {
+                    name: cookie.name.clone(),
+                    domain: cookie.domain.clone(),
+                    path: cookie.path.clone(),
+                    cookie: after_cookie.cloned(),
+                });
+            }
+        }
+        for cookie in after {
+            if !before.iter().any(|candidate| {
+                candidate.name == cookie.name
+                    && candidate.domain == cookie.domain
+                    && candidate.path == cookie.path
+            }) {
+                changes.push(NativeCookieChange {
+                    name: cookie.name.clone(),
+                    domain: cookie.domain.clone(),
+                    path: cookie.path.clone(),
+                    cookie: Some(cookie.clone()),
+                });
+            }
+        }
+        changes
+    }
+
     fn sync_external_storage_events(&mut self) -> Result<(), NativeEngineError> {
         let journal = read_storage_event_journal(
             self.config.storage_path.as_deref(),
             &self.storage_writer_id,
             &mut self.storage_event_offset,
         )?;
+        let mut external_cookie_changes = Vec::new();
         if journal.recovered {
             let profile_state = load_web_storage_profile(self.config.storage_path.as_deref())?;
             let indexed_db_state = load_indexed_db_profile(self.config.storage_path.as_deref())?;
+            let cookie_profile = load_cookie_profile(self.config.storage_path.as_deref())?;
+            let cookie_changes =
+                Self::diff_cookie_profiles(&self.loader.cookie_profile(), &cookie_profile);
+            Self::merge_external_cookie_changes(&mut external_cookie_changes, cookie_changes)?;
             self.web_storage.replace_profile_state(profile_state);
             self.indexed_db = indexed_db_state;
             self.storage_state_recovery_pending = true;
@@ -6159,6 +6243,18 @@ impl NativeEngine {
                 apply_indexed_db_changes(&mut self.indexed_db, &record.indexed_db_changes)?;
                 indexed_db_changes.extend(record.indexed_db_changes);
             }
+            Self::merge_external_cookie_changes(
+                &mut external_cookie_changes,
+                record.cookie_changes,
+            )?;
+        }
+        if !external_cookie_changes.is_empty() {
+            self.loader.apply_cookie_changes(&external_cookie_changes)?;
+            self.loader.take_cookie_changes();
+            Self::merge_external_cookie_changes(
+                &mut self.pending_external_cookie_changes,
+                external_cookie_changes,
+            )?;
         }
         if !indexed_db_changes.is_empty() {
             self.indexed_db_state_delivery_pending = true;
@@ -6191,12 +6287,14 @@ impl NativeEngine {
 
     async fn deliver_pending_external_storage_events(&mut self) -> Result<(), NativeEngineError> {
         if self.pending_external_storage_events.is_empty()
+            && self.pending_external_cookie_changes.is_empty()
             && !self.storage_state_recovery_pending
             && !self.indexed_db_state_delivery_pending
         {
             return Ok(());
         }
         let events = std::mem::take(&mut self.pending_external_storage_events);
+        let cookie_changes = std::mem::take(&mut self.pending_external_cookie_changes);
         let storage_state = self.web_storage.clone();
         let indexed_db_state = self.indexed_db.clone();
         let recovery_pending = self.storage_state_recovery_pending;
@@ -6204,6 +6302,7 @@ impl NativeEngine {
         if let Some(process) = self.content_process.as_mut() {
             if !process.refresh_health() {
                 self.pending_external_storage_events = events;
+                self.pending_external_cookie_changes = cookie_changes;
                 return Err(NativeEngineError::worker_failure(
                     "content process storage events",
                     process
@@ -6218,6 +6317,9 @@ impl NativeEngine {
                         .sync_storage_state(&storage_state, &indexed_db_state)
                         .await?;
                 }
+                if !cookie_changes.is_empty() {
+                    process.apply_cookie_changes(&cookie_changes, false).await?;
+                }
                 process.sync_storage_events(&events).await
             }
             .await;
@@ -6229,6 +6331,7 @@ impl NativeEngine {
                 }
                 Err(error) => {
                     self.pending_external_storage_events = events;
+                    self.pending_external_cookie_changes = cookie_changes;
                     Err(error)
                 }
             }
@@ -6243,6 +6346,7 @@ impl NativeEngine {
                     indexed_db_state.origin(&storage_key(&self.url, &self.origin)),
                 );
             }
+            javascript.set_cookie_state(self.loader.document_cookie(&self.url)?);
             let result = if events.is_empty() {
                 Ok(())
             } else {
@@ -6261,6 +6365,19 @@ impl NativeEngine {
         }
     }
 
+    pub(crate) fn publish_external_cookie_changes(
+        &self,
+        changes: &[NativeCookieChange],
+    ) -> Result<(), NativeEngineError> {
+        append_storage_changes(
+            self.config.storage_path.as_deref(),
+            &self.storage_writer_id,
+            &[],
+            &[],
+            changes,
+        )
+    }
+
     fn publish_content_state(
         &mut self,
         events: &[NativeStorageEvent],
@@ -6275,6 +6392,7 @@ impl NativeEngine {
             &self.storage_writer_id,
             events,
             indexed_db_changes,
+            &[],
         )?;
         Ok(())
     }
@@ -6322,6 +6440,7 @@ impl NativeEngine {
             &self.storage_writer_id,
             &storage_changes,
             &indexed_db_changes,
+            &cookie_changes,
         )?;
         Ok(())
     }

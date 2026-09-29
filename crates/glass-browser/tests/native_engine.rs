@@ -33288,6 +33288,170 @@ pageCookieWorker.port.start();
     });
 }
 
+#[test]
+fn native_runtime_cookie_changes_sync_between_live_profile_sessions() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let _guard = native_content_process_test_lock().lock().await;
+            let profile_path = std::env::temp_dir().join(format!(
+                "glass-native-cross-session-cookie-{}-profile.json",
+                std::process::id()
+            ));
+            let isolated_profile_path = std::env::temp_dir().join(format!(
+                "glass-native-cross-session-cookie-{}-isolated.json",
+                std::process::id()
+            ));
+            let profile_sidecars = [
+                profile_path.clone(),
+                profile_path.with_extension("lock"),
+                profile_path.with_extension("events"),
+                profile_path.with_extension("readers"),
+                profile_path.with_extension("clients"),
+                isolated_profile_path.clone(),
+                isolated_profile_path.with_extension("lock"),
+                isolated_profile_path.with_extension("events"),
+                isolated_profile_path.with_extension("readers"),
+                isolated_profile_path.with_extension("clients"),
+            ];
+            for path in &profile_sidecars {
+                let _ = fs::remove_file(path);
+            }
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let mut requests = Vec::new();
+                for _ in 0..6 {
+                    let (mut stream, _) = tokio::time::timeout(
+                        Duration::from_secs(30),
+                        listener.accept(),
+                    )
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "cross-session cookie request idle timeout after paths {:?}",
+                            requests
+                                .iter()
+                                .map(|(path, _): &(String, Option<String>)| path.as_str())
+                                .collect::<Vec<_>>()
+                        )
+                    })
+                    .unwrap();
+                    let request = read_http_request(&mut stream).await;
+                    let path = request
+                        .split_whitespace()
+                        .nth(1)
+                        .expect("cross-session request includes a URL")
+                        .to_owned();
+                    let cookie = request
+                        .lines()
+                        .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                        .and_then(|line| line.split_once(':'))
+                        .map(|(_, value)| value.trim().to_owned());
+                    let (extra_headers, content_type, body): (&str, &str, &str) = match path.as_str()
+                    {
+                        "/writer" | "/reader" | "/isolated" => ("", "text/html", "<p>ready</p>"),
+                        "/set" => (
+                            concat!(
+                                "Set-Cookie: cross_session=first; Path=/; SameSite=Lax\r\n",
+                                "Set-Cookie: cross_session=latest; Path=/; SameSite=Lax\r\n",
+                                "Set-Cookie: cross_http_only=secret; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                "Set-Cookie: cross_removed=temporary; Path=/; SameSite=Lax\r\n",
+                                "Set-Cookie: cross_removed=; Max-Age=0; Path=/; SameSite=Lax\r\n",
+                            ),
+                            "text/plain",
+                            "set",
+                        ),
+                        "/check-shared" => ("", "text/plain", "shared"),
+                        "/check-isolated" => ("", "text/plain", "isolated"),
+                        other => panic!("unexpected cross-session cookie request: {other}"),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    requests.push((path, cookie));
+                }
+                requests
+            });
+
+            let writer = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("http://{address}/writer")),
+            )
+            .await
+            .unwrap();
+            let reader = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("http://{address}/reader")),
+            )
+            .await
+            .unwrap();
+            let isolated = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(isolated_profile_path.clone())
+                    .with_initial_url(format!("http://{address}/isolated")),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                writer
+                    .script("await fetch('/set').then(response => response.text())")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("set")
+            );
+            assert_eq!(
+                reader
+                    .script("await fetch('/check-shared').then(response => response.text())")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("shared")
+            );
+            assert_eq!(
+                isolated
+                    .script("await fetch('/check-isolated').then(response => response.text())")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("isolated")
+            );
+
+            writer.close().await.unwrap();
+            reader.close().await.unwrap();
+            isolated.close().await.unwrap();
+            let requests = server.await.unwrap();
+            let cookie_for = |path: &str| {
+                requests
+                    .iter()
+                    .find(|(request_path, _)| request_path == path)
+                    .unwrap_or_else(|| panic!("missing request {path}"))
+                    .1
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            let shared_cookie = cookie_for("/check-shared");
+            assert!(shared_cookie.contains("cross_session=latest"));
+            assert!(shared_cookie.contains("cross_http_only=secret"));
+            assert!(!shared_cookie.contains("cross_removed="));
+            let isolated_cookie = cookie_for("/check-isolated");
+            assert!(!isolated_cookie.contains("cross_session="));
+            assert!(!isolated_cookie.contains("cross_http_only="));
+
+            for path in &profile_sidecars {
+                let _ = fs::remove_file(path);
+            }
+        });
+    });
+}
+
 #[tokio::test]
 async fn native_content_process_import_scripts_dynamic_imports_use_final_script_urls() {
     let _guard = native_content_process_test_lock().lock().await;

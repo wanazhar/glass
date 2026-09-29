@@ -110,6 +110,21 @@ interrupt to an already-running request. See the
 [Slice 820 task](tasks/native-engine-browser-820.md) for implementation and
 evidence boundaries.
 
+### Direct Fetch from SharedWorker
+
+The local content-process route supplies each SharedWorker create command with
+the constructor storage key derived from the owning document's origin,
+context, frame, and generation. Browser-coordinated SharedWorker creation
+continues to receive this key from the browser owner. A connected module
+SharedWorker can issue bounded direct Fetch API requests through its existing
+worker registry and loader, consume response bodies, and apply accepted
+response-cookie changes before its next request. Slice 822 verifies
+`credentials: include` and `credentials: omit`, ordinary and HttpOnly request
+cookies, response updates and deletion, and the subsequent request. This does
+not establish correct `same-origin` credential behavior, full Fetch/Web IDL
+semantics, WPT conformance, or cross-platform parity; see the
+[Slice 822 task](tasks/native-engine-browser-822.md).
+
 ### Explicit `tabindex` focus baseline
 
 Within the current light-DOM focus scope, a valid explicit `tabindex` makes an
@@ -526,8 +541,9 @@ filtered; 24.08 seconds). Evidence covers the owning page's next request,
 HttpOnly invisibility to script, profile reload, and deletion both immediately
 and after another reload. The scoped integration-test check passed with 68
 existing legacy HTML parser dead-code warnings. Fan-out to unrelated live
-target/frame contexts remained open at that point. Slice 817 fans out accepted SharedWorker cookie changes to all already-live
-target and frame processes within one backend/profile. Its process-backed
+target/frame contexts remained open at that point. Slice 817 fans out accepted
+SharedWorker cookie changes to all already-live target and frame processes
+within one backend/profile. Its process-backed
 group passed (3 passed, 866 filtered; 126.59 seconds), and the Slice 814
 credentials/redirect regression passed (1 passed, 868 filtered; 25.05
 seconds). Slice 818 returns ordinary content-process response-cookie journals
@@ -541,9 +557,8 @@ passes (1 passed, 869 filtered; 86.02 seconds), proving that a live module
 SharedWorker dynamic import after the page response sends the latest ordinary
 and HttpOnly cookies and excludes the deletion. The scoped check
 passed with existing legacy HTML parser dead-code warnings; formatting and
-diff validation passed. Direct SharedWorker Fetch API requests remain
-unverified. Slice 820 synchronizes accepted cookie changes across separately
-created live sessions sharing one explicit profile. Its HTTP regression
+diff validation passed. Slice 820 synchronizes accepted cookie changes across
+separately created live sessions sharing one explicit profile. Its HTTP regression
 passed (1 passed, 870 filtered; 46.24 seconds): the receiver's next request
 carried the latest ordinary and HttpOnly values, omitted the deleted cookie,
 and a distinct profile remained isolated. The journal round-trip/backward-
@@ -552,7 +567,13 @@ boundary delivery does not interrupt an in-flight request. Broader cookie/WPT
 conformance and cross-platform coverage remain open. Slice 821 verifies
 process-backed explicit cookie import and clear across live sessions (1 passed,
 870 filtered; 45.52 seconds), including a peer-written cookie, HttpOnly
-delivery, and separate-profile isolation. See the [slice 821 task](tasks/native-engine-browser-821.md), the
+delivery, and separate-profile isolation. Slice 822 fixes missing local
+SharedWorker constructor storage-key metadata and exercises direct worker
+Fetch over HTTP. Four related process-backed tests passed (68.32 seconds), and
+the existing module-import integration test passed separately (18.78 seconds).
+Exact behaviors and unverified credentials-mode boundaries are in the
+[slice 822 task](tasks/native-engine-browser-822.md). See the [slice 821
+task](tasks/native-engine-browser-821.md), the
 [slice 820 task](tasks/native-engine-browser-820.md), the
 [slice 819 task](tasks/native-engine-browser-819.md),
 the [slice 818 task](tasks/native-engine-browser-818.md),

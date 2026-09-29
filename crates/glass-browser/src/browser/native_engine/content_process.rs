@@ -46,10 +46,11 @@ use super::javascript::{
     NativeMessagePortPageMessage, NativePageEventBatch, NativePageMessagePortCommand,
     NativePageScript, NativePageScriptResult, NativePopupRequest, NativePostMessageRequest,
     NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerClientMessage,
-    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
-    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
-    NativeWorkerRegistry, NativeWorkerWebSocketCommand, append_storage_changes,
+    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest,
+    NativeSharedWorkerStorageKey, NativeStorageEvent, NativeWebStorageState,
+    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
+    NativeWorkerEventSourceCommand, NativeWorkerMessage, NativeWorkerRegistry,
+    NativeWorkerWebSocketCommand, append_storage_changes,
     apply_document_commands_with_font_face_ack, apply_page_script_evaluation,
     diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts,
     host_click_event_batch_with_modifiers, host_event_batch, host_event_batch_at,
@@ -3898,12 +3899,32 @@ fn decode_shared_worker_commands(
 }
 
 fn defer_shared_worker_commands(
-    commands: Vec<NativeScriptCommand>,
+    mut commands: Vec<NativeScriptCommand>,
     external_routing: bool,
     loader: &NativeResourceLoader,
+    owner_origin: &NativeOrigin,
+    owner_context_id: &str,
+    owner_frame_id: &str,
+    owner_document_generation: u32,
     pending: &mut VecDeque<NativeScriptCommand>,
 ) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
     if !external_routing {
+        let storage_key = NativeSharedWorkerStorageKey::for_document(
+            owner_origin,
+            owner_context_id,
+            owner_frame_id,
+            owner_document_generation,
+        );
+        for command in &mut commands {
+            if let NativeScriptCommand::SharedWorkerCreate {
+                constructor_storage_key,
+                ..
+            } = command
+                && constructor_storage_key.is_none()
+            {
+                *constructor_storage_key = Some(storage_key.clone());
+            }
+        }
         return Ok(commands);
     }
     let mut local_commands = Vec::with_capacity(commands.len());
@@ -6057,6 +6078,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             runtime.take_worker_commands(),
                                             external_shared_worker_routing,
                                             loader,
+                                            &resource.origin,
+                                            &storage_context_id,
+                                            &frame_id,
+                                            parsed.generation(),
                                             &mut pending_shared_worker_commands,
                                         )?;
                                         workers
@@ -6468,6 +6493,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     runtime.take_worker_commands(),
                     external_shared_worker_routing,
                     loader,
+                    document_origin,
+                    &storage_context_id,
+                    &frame_id,
+                    current.generation(),
                     &mut pending_shared_worker_commands,
                 )?;
                 workers
@@ -6605,6 +6634,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     runtime.take_worker_commands(),
                                     external_shared_worker_routing,
                                     loader,
+                                    document_origin,
+                                    &storage_context_id,
+                                    &frame_id,
+                                    current.generation(),
                                     &mut pending_shared_worker_commands,
                                 )?;
                                 workers

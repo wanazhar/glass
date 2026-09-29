@@ -80,8 +80,9 @@ including the policy inheritance rules carried by module responses.
 - The process-backed two-origin regression passed in the focused
   `native_content_process_inherits_referrer_policy_through` test batch. Its
   static-module case verified the actual entry and recursive dependency
-  `Referer` headers. The dynamic-module and module-worker failures in that same
-  batch are tracked separately in Slices 832 and 833.
+  `Referer` headers. The dynamic-module settlement failure remains tracked in
+  Slice 832. Slice 833's previously failing module-worker regression now passes
+  locally and remains in progress only because it depends on Slice 832.
 - `cargo fmt --all` and `git diff --check` passed.
 - Maintainer documentation gates passed: release-documentation truth (1,459
   Markdown documents, zero current-claim failures), documentation depth (93

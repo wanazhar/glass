@@ -87,7 +87,8 @@ for DedicatedWorkers, SharedWorkers, and classic ServiceWorkers.
   passed in the focused process-backed regression batch. This verifies the
   classic import graph's actual HTTP policy and root URL behavior locally.
   Slice 835 remains `in-progress` because its declared predecessor chain
-  includes unresolved Slice 833.
+  includes Slice 833, whose process-backed regression now passes but remains
+  `in-progress` pending Slice 832.
 - Final release-truth audit passed: 1,463 Markdown files, 83 current
   documents, and zero current-claim failures. Documentation depth passed
   (93 current guides/19 substantive contracts); shortcut inventory passed

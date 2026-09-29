@@ -1061,6 +1061,48 @@ enum NativeClassicWorkerScriptExecution<'js> {
     RuntimeError(Value<'js>),
 }
 
+fn retain_top_level_await_promise<'js>(
+    ctx: &Ctx<'js>,
+    promise: &rquickjs::Promise<'js>,
+) -> Result<(), NativeEngineError> {
+    ctx.eval::<(), _>("globalThis.__glassTopLevelAwaitState = { state: 'pending' };")
+        .map_err(|error| NativeEngineError::Worker {
+            operation: "prepare native Worker module promise".into(),
+            reason: format!(
+                "native Worker module promise could not be prepared: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })?;
+    let on_fulfilled: Function = ctx
+        .eval("value => { globalThis.__glassTopLevelAwaitState = { state: 'fulfilled', value: value === undefined ? null : value }; }")
+        .map_err(|error| NativeEngineError::Worker {
+            operation: "prepare native Worker module promise".into(),
+            reason: format!(
+                "native Worker module promise callback could not be created: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })?;
+    let on_rejected: Function = ctx
+        .eval("error => { globalThis.__glassTopLevelAwaitState = { state: 'rejected', error: String(error) }; }")
+        .map_err(|error| NativeEngineError::Worker {
+            operation: "prepare native Worker module promise".into(),
+            reason: format!(
+                "native Worker module rejection callback could not be created: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })?;
+    promise
+        .then()
+        .and_then(|then| then.call::<_, ()>((This(promise.clone()), on_fulfilled, on_rejected)))
+        .map_err(|error| NativeEngineError::Worker {
+            operation: "prepare native Worker module promise".into(),
+            reason: format!(
+                "native Worker module promise callback could not be attached: {}",
+                CaughtError::from_error(ctx, error)
+            ),
+        })
+}
+
 fn execute_classic_worker_script<'js>(
     ctx: Ctx<'js>,
     source: &str,
@@ -1533,6 +1575,7 @@ struct NativeDedicatedWorker {
     module_name: String,
     module_base_url: String,
     runtime: NativeJavaScriptRuntime,
+    top_level_await_pending: bool,
     import_script_counts: BTreeMap<String, usize>,
     dynamic_import_referrers: BTreeSet<String>,
     module_sources: BTreeMap<String, String>,
@@ -2449,6 +2492,7 @@ impl NativeWorkerRegistry {
                 module_name,
                 module_base_url,
                 import_script_counts,
+                top_level_await_pending: false,
                 dynamic_import_referrers,
                 module_sources,
                 module_base_urls,
@@ -2702,6 +2746,7 @@ impl NativeWorkerRegistry {
                 module_name,
                 module_base_url,
                 import_script_counts,
+                top_level_await_pending: false,
                 dynamic_import_referrers,
                 module_sources,
                 module_base_urls,
@@ -2830,7 +2875,12 @@ impl NativeWorkerRegistry {
                     evaluation_count,
                 ));
             }
-            let worker_script_error = evaluation.worker_script_error;
+            let mut worker_script_error = evaluation.worker_script_error;
+            if evaluation.top_level_await_pending
+                && let Some(worker) = self.workers.get_mut(&current_worker_id)
+            {
+                worker.top_level_await_pending = true;
+            }
             let mut closed = false;
             let message_port_commands = self
                 .workers
@@ -3005,6 +3055,27 @@ impl NativeWorkerRegistry {
                             "native Worker command",
                             "worker emitted an invalid host command",
                         ));
+                    }
+                }
+            }
+            let top_level_await_result = self
+                .workers
+                .get(&current_worker_id)
+                .filter(|worker| worker.top_level_await_pending)
+                .map(|worker| worker.runtime.take_top_level_await_result());
+            match top_level_await_result {
+                Some(Ok(Some(_))) => {
+                    if let Some(worker) = self.workers.get_mut(&current_worker_id) {
+                        worker.top_level_await_pending = false;
+                    }
+                }
+                Some(Ok(None)) | None => {}
+                Some(Err(error)) => {
+                    if let Some(worker) = self.workers.get_mut(&current_worker_id) {
+                        worker.top_level_await_pending = false;
+                    }
+                    if worker_script_error.is_none() {
+                        worker_script_error = Some(error.to_string());
                     }
                 }
             }
@@ -16558,28 +16629,45 @@ impl NativeJavaScriptRuntime {
                         });
                     }
                 }
-            } else if capture_module_worker_error && let Some(module_name) = module_name {
-                let module = Module::declare(ctx.clone(), module_name, source).map_err(|error| {
-                    NativeEngineError::Worker {
-                        operation: "evaluate native Worker module".into(),
-                        reason: format!(
-                            "native Worker module evaluation failed: {}",
-                            CaughtError::from_error(&ctx, error)
-                        ),
-                    }
-                })?;
-                let (_module, promise) = module.eval().map_err(|error| {
-                    NativeEngineError::Worker {
-                        operation: "evaluate native Worker module".into(),
-                        reason: format!(
-                            "native Worker module evaluation failed: {}",
-                            CaughtError::from_error(&ctx, error)
-                        ),
-                    }
-                })?;
+            } else if let Some(module_name) = module_name {
+                let promise = if capture_module_worker_error {
+                    let module = Module::declare(ctx.clone(), module_name, source).map_err(
+                        |error| NativeEngineError::Worker {
+                            operation: "evaluate native Worker module".into(),
+                            reason: format!(
+                                "native Worker module evaluation failed: {}",
+                                CaughtError::from_error(&ctx, error)
+                            ),
+                        },
+                    )?;
+                    let (_module, promise) = module.eval().map_err(|error| {
+                        NativeEngineError::Worker {
+                            operation: "evaluate native Worker module".into(),
+                            reason: format!(
+                                "native Worker module evaluation failed: {}",
+                                CaughtError::from_error(&ctx, error)
+                            ),
+                        }
+                    })?;
+                    promise
+                } else {
+                    Module::evaluate(ctx.clone(), module_name, source).map_err(|error| {
+                        NativeEngineError::Worker {
+                            operation: "evaluate native Worker module".into(),
+                            reason: format!(
+                                "native Worker module evaluation failed: {}",
+                                CaughtError::from_error(&ctx, error)
+                            ),
+                        }
+                    })?
+                };
                 match promise.finish::<()>() {
                     Ok(()) => {}
-                    Err(Error::Exception) => {
+                    Err(Error::WouldBlock) => {
+                        retain_top_level_await_promise(&ctx, &promise)?;
+                        top_level_await_pending = true;
+                    }
+                    Err(Error::Exception) if capture_module_worker_error => {
                         worker_script_error =
                             report_worker_script_exception(&ctx, ctx.catch())?;
                     }
@@ -16593,25 +16681,6 @@ impl NativeJavaScriptRuntime {
                         });
                     }
                 }
-                ctx.eval::<Value, _>("undefined").map_err(|error| {
-                    NativeEngineError::Worker {
-                        operation: "serialize native Worker result".into(),
-                        reason: format!(
-                            "native Worker result could not be created: {}",
-                            CaughtError::from_error(&ctx, error)
-                        ),
-                    }
-                })?
-            } else if let Some(module_name) = module_name {
-                Module::evaluate(ctx.clone(), module_name, source)
-                    .and_then(|promise| promise.finish::<()>())
-                    .map_err(|error| NativeEngineError::Worker {
-                        operation: "evaluate native Worker module".into(),
-                        reason: format!(
-                            "native Worker module evaluation failed: {}",
-                            CaughtError::from_error(&ctx, error)
-                        ),
-                    })?;
                 ctx.eval("undefined")
                     .map_err(|error| NativeEngineError::Worker {
                         operation: "serialize native Worker result".into(),

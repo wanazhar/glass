@@ -81,16 +81,30 @@ requests.
 
 - `cargo check -p glass-browser --features native-engine --lib --tests
   --locked -q` passed.
+- `cargo build -p glass-browser --features native-engine --bin
+  glass-native-content-worker --locked -q` passed, ensuring the spawned child
+  contains the current source.
 - `cargo test -p glass-browser --features native-engine --lib --locked
   native_static_dynamic_import_tests --quiet` passed.
-- The isolated process-backed regression failed during
-  `engine.initialize_async()` with `WorkerFailure` for `content process IPC`
-  (`Exited`) because the content worker closed its pipe.
-  The module-worker HTTP assertions did not complete. The slice remains in
-  progress until the worker exit is diagnosed and the full graph regression
-  passes.
-- Documentation truth (1,461 Markdown files, zero current-claim failures),
-  depth, shortcut inventory, coverage, formatting, and whitespace checks pass.
+- `RUST_BACKTRACE=1 cargo test -q -p glass-browser --features native-engine
+  --test native_engine --locked
+  native_content_process_inherits_referrer_policy_through_module_workers --
+  --exact --nocapture` passed (1 passed, 885 filtered; 18.84 seconds).
+  The regression verifies live creator-meta policy on both worker entry
+  redirects, redirect-policy updates on the final roots, response-policy
+  inheritance for static and runtime-dynamic imports, no-referrer nested
+  imports, and settled DedicatedWorker/SharedWorker messages. Module
+  evaluation now remains pending while its dynamic module fetch is handled by
+  the host, then records fulfillment or rejection through the worker event
+  pump; the previous content-process exit no longer reproduces.
+- The slice remains `in-progress` because Slice 832 is an explicit dependency
+  and its inline page-module dynamic import still does not settle. Remote CI,
+  WPT conformance, and cross-platform certification remain unclaimed.
+- Documentation truth passed (1,464 Markdown documents, 83 current documents,
+  zero current-claim failures); depth passed (93 routed guides, 19 substantive
+  contracts); coverage passed (1,464 Markdown files, 346 MCP tools, 17
+  examples, 22 public modules). `rustfmt --edition 2024` and `git diff --check`
+  passed for this checkpoint.
 - Keep this slice `in-progress` until the process-backed assertions run in an
   environment that permits loopback listeners. Remote CI, WPT conformance,
   and cross-platform certification remain unclaimed.

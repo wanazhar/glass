@@ -86,7 +86,8 @@ preserving request-level policy and public Request state.
   passed its focused process-backed HTTP regression locally. It verifies the
   ServiceWorker policy container on module dependencies, Fetch, and async XHR.
   Slice 836 remains `in-progress` because its declared dependency chain still
-  includes unresolved Slice 833.
+  includes Slice 833, whose process-backed regression now passes but remains
+  `in-progress` pending Slice 832.
 - Final release-truth audit passed: 1,464 Markdown files, 83 current
   documents, and zero current-claim failures. Documentation depth passed
   (93 current guides/19 substantive contracts); shortcut inventory passed

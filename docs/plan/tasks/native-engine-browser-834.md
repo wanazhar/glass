@@ -77,8 +77,8 @@ the public `Request.referrerPolicy` value or explicit request overrides.
 - `native_content_process_worker_fetch_and_xhr_use_worker_policy_container`
   passed in the focused process-backed regression batch. Its Worker Fetch and
   XHR wire assertions ran locally. Slice 834 remains `in-progress` because its
-  declared dependency, Slice 833, still has an unresolved module-worker process
-  exit.
+  dependency chain includes Slice 833, whose process-backed regression now
+  passes but remains `in-progress` pending Slice 832.
 - Documentation truth passed for 1,462 Markdown files with zero current-claim
   failures; depth, shortcut inventory, coverage, formatting, and whitespace
   checks also passed. Remote CI, WPT conformance, and cross-platform

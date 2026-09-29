@@ -242,9 +242,13 @@ Slice 833 carries the owning Document's current effective policy into the
 initial DedicatedWorker and SharedWorker module-script request. The worker
 module graph then uses each referencing module's final response URL and
 effective response/inherited policy for its static and dynamic imports. This
-slice does not establish the worker-global policy container used by ordinary
-Fetch/XHR, nor ServiceWorker or classic-worker policy inheritance. Those
-remain explicit profile requirements; see the
+process-backed HTTP regression passes for DedicatedWorker and SharedWorker,
+including top-level dynamic-import settlement, redirect policy changes,
+response-policy overrides, nested dependencies, and actual Referer headers.
+The slice remains in progress pending Slice 832. It does not establish the
+worker-global policy container used by ordinary Fetch/XHR, nor ServiceWorker or
+classic-worker policy inheritance. Those remain explicit profile requirements;
+see the
 [slice 833 task](tasks/native-engine-browser-833.md).
 
 Slice 834 initializes the DedicatedWorker/SharedWorker global referrer

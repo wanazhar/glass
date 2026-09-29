@@ -151,6 +151,11 @@ DedicatedWorker/SharedWorker Fetch and XHR inherit the initialized worker-global
 referrer policy while preserving empty public `Request.referrerPolicy` values
 and explicit overrides. Implementation and HTTP verification are in progress;
 see the [slice 834 task](tasks/native-engine-browser-834.md).
+Slice 835 applies that Worker-global referrer policy and final root Worker URL
+to preloaded classic `importScripts()` dependencies, including nested
+DedicatedWorker, SharedWorker, and ServiceWorker imports. The compiled
+process-backed regression is pending execution where local listener binds are
+permitted; see the [slice 835 task](tasks/native-engine-browser-835.md).
 Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).

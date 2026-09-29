@@ -2411,6 +2411,7 @@ impl NativeWorkerRegistry {
                     loader,
                     resource.clone(),
                     NativeWorkerClassicDynamicImportMode::RewritePerScript,
+                    worker_referrer_policy,
                 )
                 .await
             {
@@ -2663,6 +2664,7 @@ impl NativeWorkerRegistry {
                     loader,
                     resource.clone(),
                     NativeWorkerClassicDynamicImportMode::RewritePerScript,
+                    worker_referrer_policy,
                 )
                 .await
             {
@@ -4584,6 +4586,7 @@ impl NativeWorkerRegistry {
         loader: &mut NativeResourceLoader,
         root: NativeScriptResource,
         dynamic_import_mode: NativeWorkerClassicDynamicImportMode,
+        worker_referrer_policy: NativeFetchReferrerPolicy,
     ) -> Result<NativeWorkerClassicScriptGraph, NativeEngineError> {
         struct PendingWorkerScript {
             resource: NativeScriptResource,
@@ -4597,6 +4600,7 @@ impl NativeWorkerRegistry {
                 "must not be empty",
             ));
         }
+        let worker_url = root.url.clone();
         let root_imports = static_worker_import_specifiers(&root.body)?;
         let mut dynamic_import_referrers = BTreeSet::new();
         if matches!(
@@ -4621,9 +4625,9 @@ impl NativeWorkerRegistry {
                 }
                 let specifier = frame.imports[frame.next_import].clone();
                 frame.next_import += 1;
-                Some((frame.resource.url.clone(), specifier))
+                Some(specifier)
             });
-            if let Some((parent_url, specifier)) = next_import {
+            if let Some(specifier) = next_import {
                 import_edges = import_edges.saturating_add(1);
                 if import_edges > MAX_NATIVE_MODULE_IMPORTS {
                     return Err(NativeEngineError::limit(
@@ -4633,11 +4637,14 @@ impl NativeWorkerRegistry {
                     ));
                 }
                 let imported = loader
-                    .load_worker_script_dependency_async(
-                        &parent_url,
+                    .load_worker_script_dependency_async_with_referrer_source(
+                        &worker_url,
+                        &worker_url,
                         &specifier,
                         MAX_NATIVE_SCRIPT_BYTES,
                         None,
+                        None,
+                        Some(worker_referrer_policy),
                     )
                     .await?
                     .ok_or_else(|| NativeEngineError::Network {
@@ -4902,11 +4909,17 @@ pub(crate) async fn load_service_worker_source(
             .await?;
         Ok((resource.body, BTreeMap::new(), Some(module_graph)))
     } else {
+        let worker_referrer_policy = effective_worker_global_referrer_policy(
+            &resource.url,
+            None,
+            resource.response_referrer_policy,
+        );
         let graph = registry
             .load_worker_script_graph(
                 loader,
                 resource,
                 NativeWorkerClassicDynamicImportMode::RejectPerScript,
+                worker_referrer_policy,
             )
             .await?;
         Ok((graph.source, graph.import_script_counts, None))

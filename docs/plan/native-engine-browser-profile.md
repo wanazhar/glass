@@ -142,15 +142,22 @@ and distinguishes cache entries by effective referrer. Its process-backed
 two-origin regression covers defaults, overrides, invalid values, policy
 outcomes, redirects, and `fetch(event.request)` (1 passed; 37.37 seconds).
 The fetch-side policy defaults to `strict-origin-when-cross-origin`; a redirect
-response's Referrer-Policy value affects the following hop. Slice 826 now
-applies the HTTP Document response policy to page Fetch when its request-level
-policy is empty; its process-backed regression passed (1 passed, 875 filtered;
-32.45 seconds), covering ordered/unknown tokens, invalid-only fallback,
-explicit override, and removal of a prior same-URL policy. Meta delivery,
-element-level policy, independent worker response containers, and inheritance
-remain open. This is not complete Referrer Policy/WPT conformance; full
-Fetch/Web IDL semantics, WPT conformance, and cross-platform parity remain
-open. See the [Slice 826 task](tasks/native-engine-browser-826.md),
+response's Referrer-Policy value affects the following hop. Slice 826 applies
+the HTTP Document response policy to page Fetch when its request-level policy
+is empty; its process-backed regression passed (1 passed, 875 filtered; 32.45
+seconds), covering ordered/unknown tokens, invalid-only fallback, explicit
+override, and removal of a prior same-URL policy. Slice 827 applies parsed and
+live `meta name="referrer"` updates to the Document-owned page-Fetch default;
+its process-backed two-origin regression passed (1 passed, 875 filtered;
+52.01 seconds), covering live insertion and attribute changes, aliases,
+invalid/empty no-ops, update order, removal persistence, explicit override, and
+actual outgoing `Referer` values. Meta policy remains scoped to the Document
+and is not written into URL-keyed shared state. Element-level policy,
+independent worker response containers, and policy inheritance remain open.
+This is not complete Referrer Policy/WPT conformance; full Fetch/Web IDL
+semantics, WPT conformance, and cross-platform parity remain open. See the
+[Slice 827 task](tasks/native-engine-browser-827.md),
+[Slice 826 task](tasks/native-engine-browser-826.md),
 [Slice 825 task](tasks/native-engine-browser-825.md),
 [Slice 822 task](tasks/native-engine-browser-822.md) and
 [Slice 823 task](tasks/native-engine-browser-823.md).
@@ -173,9 +180,13 @@ The required referrer surface also includes policy delivery through `meta
 name="referrer"`, applicable element `referrerpolicy` attributes, worker
 response policy containers, and the relevant inheritance rules. These are
 distinct initiator/owner paths and must not be inferred from page Fetch
-coverage. Slice 826 covers only an HTTP Document response header as the
-environment default for page Fetch; its explicit exclusions and evidence are
-in [the slice 826 task](tasks/native-engine-browser-826.md).
+coverage. Slice 826 covers an HTTP Document response header as the initial
+default; slice 827 covers parsed and live `meta name="referrer"` updates to
+the Document-owned page-Fetch default. Neither slice covers element-level
+referrer attributes, independent worker policy containers, or other request
+initiators. Their boundaries and evidence are in the [slice 826
+task](tasks/native-engine-browser-826.md) and [slice 827
+task](tasks/native-engine-browser-827.md).
 
 ### Explicit `tabindex` focus baseline
 

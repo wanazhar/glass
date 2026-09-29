@@ -581,7 +581,7 @@ pub(crate) enum NativeFetchReferrerPolicy {
 }
 
 impl NativeFetchReferrerPolicy {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::NoReferrer => "no-referrer",
             Self::NoReferrerWhenDowngrade => "no-referrer-when-downgrade",
@@ -4025,6 +4025,23 @@ impl NativeResourceLoader {
             referrer_policy_from_header_pairs(headers),
         );
         Ok(())
+    }
+
+    pub(crate) fn document_referrer_policy(
+        &self,
+        document_url: &str,
+    ) -> Result<NativeFetchReferrerPolicy, NativeEngineError> {
+        let document_url =
+            Url::parse(document_url).map_err(|_| NativeEngineError::UnsupportedUrl {
+                reason: "Document referrer policy owner URL is not valid URL syntax".into(),
+            })?;
+        reject_credentials(&document_url)?;
+        Ok(self
+            .network
+            .document_referrer_policies
+            .get(&cache_key(&document_url))
+            .copied()
+            .unwrap_or(NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin))
     }
 
     pub(crate) fn enforce_service_worker_connect_policy(

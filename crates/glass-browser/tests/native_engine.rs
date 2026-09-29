@@ -65547,6 +65547,7 @@ async fn native_content_process_inherits_referrer_policy_through_dynamic_module_
     let document_origin = format!("http://{page_address}/");
     let module_origin = format!("http://{module_address}/");
 
+    let expected_document_origin = document_origin.clone();
     let page_server = tokio::spawn(async move {
         let (mut stream, _) = page_listener.accept().await.unwrap();
         let request = read_http_request(&mut stream).await;
@@ -65555,20 +65556,41 @@ async fn native_content_process_inherits_referrer_policy_through_dynamic_module_
             Some("/page?secret=token")
         );
         let body = format!(
-            "<script type='module' src='http://{module_address}/entry.js' referrerpolicy='unsafe-url'></script><script type='module' referrerpolicy='origin'>import('./inline-dynamic.js').then(() => {{ globalThis.inlineDynamicImportSettled = true; }});</script>"
+            "<script type='module' src='http://{module_address}/entry.js' referrerpolicy='unsafe-url'></script><script type='module' referrerpolicy='origin'>globalThis.inlineDynamicImportError = null; import('./inline-dynamic.js').then(() => {{ globalThis.inlineDynamicImportSettled = true; }}, error => {{ globalThis.inlineDynamicImportError = String(error); }});</script>"
         );
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         stream.write_all(response.as_bytes()).await.unwrap();
+        drop(stream);
+
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), page_listener.accept())
+            .await
+            .expect("inline dynamic module request must arrive on the document origin")
+            .unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/inline-dynamic.js")
+        );
+        assert_eq!(
+            request_header(&request, "referer").as_deref(),
+            Some(expected_document_origin.as_str()),
+            "/inline-dynamic.js"
+        );
+        stream
+            .write_all(
+                module_response("globalThis.inlineDynamicModuleLoaded = true;", None).as_bytes(),
+            )
+            .await
+            .unwrap();
     });
 
     let expected_document_referer = document_referer.clone();
-    let expected_document_origin = document_origin.clone();
     let expected_module_origin = module_origin.clone();
     let module_server = tokio::spawn(async move {
-        for _ in 0..5 {
+        for _ in 0..4 {
             let (mut stream, _) =
                 tokio::time::timeout(Duration::from_secs(30), module_listener.accept())
                     .await
@@ -65600,11 +65622,6 @@ async fn native_content_process_inherits_referrer_policy_through_dynamic_module_
                     "globalThis.nestedDynamicModuleLoaded = true;",
                     None,
                 ),
-                "/inline-dynamic.js" => (
-                    Some(expected_document_origin.as_str()),
-                    "globalThis.inlineDynamicModuleLoaded = true;",
-                    None,
-                ),
                 other => panic!("unexpected dynamic module graph request: {other}"),
             };
             assert_eq!(
@@ -65622,19 +65639,76 @@ async fn native_content_process_inherits_referrer_policy_through_dynamic_module_
     let mut engine =
         NativeEngine::new(NativeEngineConfig::default().with_initial_url(document_url)).unwrap();
     engine.initialize_async().await.unwrap();
-    assert_eq!(
-        engine
-            .evaluate_async(
-                "[globalThis.dynamicEntrySettled, globalThis.dynamicModuleEvaluated, globalThis.staticModuleDependencyLoaded, globalThis.nestedDynamicModuleLoaded, globalThis.nestedImportSettled, globalThis.inlineDynamicModuleLoaded, globalThis.inlineDynamicImportSettled]",
-            )
-            .await
-            .unwrap(),
-        serde_json::json!([true, true, true, true, true, true, true])
-    );
-
-    engine.close_async().await.unwrap();
+    let result = engine
+        .evaluate_async(
+            "[globalThis.dynamicEntrySettled, globalThis.dynamicModuleEvaluated, globalThis.staticModuleDependencyLoaded, globalThis.nestedDynamicModuleLoaded, globalThis.nestedImportSettled, globalThis.inlineDynamicModuleLoaded, globalThis.inlineDynamicImportSettled, globalThis.inlineDynamicImportError, globalThis.__glassFetchRequests.size]",
+        )
+        .await
+        .unwrap();
     page_server.await.unwrap();
     module_server.await.unwrap();
+    engine.close_async().await.unwrap();
+    assert_eq!(
+        result,
+        serde_json::json!([true, true, true, true, true, true, true, null, 0])
+    );
+}
+
+#[tokio::test]
+async fn native_file_content_process_settles_page_dynamic_module_graphs() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-page-dynamic-module-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let page_path = root.join("index.html");
+    let entry_path = root.join("entry.js");
+    let dynamic_path = root.join("dynamic.js");
+    let static_dependency_path = root.join("static-dep.js");
+    let nested_path = root.join("nested.js");
+    let module_path = root.join("inline-dynamic.js");
+    fs::write(
+        &entry_path,
+        "import('./dynamic.js').then(() => { globalThis.dynamicEntrySettled = true; });",
+    )
+    .unwrap();
+    fs::write(
+        &dynamic_path,
+        "import './static-dep.js'; import('./nested.js').then(() => { globalThis.nestedImportSettled = true; }); globalThis.dynamicModuleEvaluated = true;",
+    )
+    .unwrap();
+    fs::write(
+        &static_dependency_path,
+        "globalThis.staticModuleDependencyLoaded = true;",
+    )
+    .unwrap();
+    fs::write(&nested_path, "globalThis.nestedDynamicModuleLoaded = true;").unwrap();
+    fs::write(&module_path, "globalThis.inlineDynamicModuleLoaded = true;").unwrap();
+    fs::write(
+        &page_path,
+        "<html><body><script type='module' src='entry.js' referrerpolicy='unsafe-url'></script><script type='module' referrerpolicy='origin'>globalThis.inlineDynamicImportError = null; import('./inline-dynamic.js').then(() => { globalThis.inlineDynamicImportSettled = true; }, error => { globalThis.inlineDynamicImportError = String(error); globalThis.inlineDynamicImportSettled = true; });</script></body></html>",
+    )
+    .unwrap();
+    let config = NativeEngineConfig::default()
+        .with_initial_url(native_test_file_url(&page_path))
+        .with_allowed_file_root(root.clone());
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    let result = engine
+        .evaluate_async(
+            "[globalThis.dynamicEntrySettled, globalThis.dynamicModuleEvaluated, globalThis.staticModuleDependencyLoaded, globalThis.nestedDynamicModuleLoaded, globalThis.nestedImportSettled, globalThis.inlineDynamicModuleLoaded, globalThis.inlineDynamicImportSettled, globalThis.inlineDynamicImportError, globalThis.__glassFetchRequests.size]",
+        )
+        .await
+        .unwrap();
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+
+    assert_eq!(
+        result,
+        serde_json::json!([true, true, true, true, true, true, true, null, 0])
+    );
 }
 
 #[tokio::test]

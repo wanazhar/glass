@@ -70,12 +70,18 @@ overrides on dynamically fetched modules.
   passed (1 passed, 1,645 filtered).
 - `cargo test -p glass-browser --lib --features native-engine module_source_maps_preserve_referrer_policy_per_module_identity --locked --quiet`
   passed (1 passed, 1,646 filtered).
-- The focused process-backed batch reached all five dynamic-module requests,
-  and its actual `Referer` header assertions passed. The final runtime
-  settlement assertion failed: the inline root's imported module and import
-  promise remained `null`; the external root's dynamic and nested imports
-  settled. The slice remains in progress until inline-module dynamic import
-  execution and settlement pass.
+- The original HTTP fixture incorrectly routed inline
+  `./inline-dynamic.js` to the module origin. Inline module specifiers resolve
+  against the document base URL, so the original inline request's `Referer`
+  assertion was not valid conformance evidence.
+- The regression now serves `/inline-dynamic.js` from the page origin and
+  checks its origin-only `Referer` header; the module origin serves the four
+  external graph requests. The corrected process-backed test cannot run past
+  listener setup in this sandbox: the first `TcpListener::bind` returns
+  `PermissionDenied` before engine initialization. The file-backed
+  content-process graph and socket-free QuickJS tests pass, but do not replace
+  the two-origin HTTP gate. Slice 832 remains in progress pending a successful
+  run of the corrected process-backed test and the remaining broader gates.
 - `cargo fmt --all -- --check` and `git diff --check` passed.
 - Maintainer documentation gates passed: release-documentation truth (1,460
   Markdown documents, zero current-claim failures), documentation depth (93

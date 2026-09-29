@@ -1219,7 +1219,11 @@ impl NativeContentProcess {
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(if std::env::var_os("RUST_BACKTRACE").is_some() {
+                Stdio::inherit()
+            } else {
+                Stdio::null()
+            })
             .kill_on_drop(true)
             .spawn()
             .map_err(|_| {
@@ -15321,7 +15325,13 @@ mod tests {
         assert_eq!(module_request.19, None);
 
         let mut json_module = command(Some("module"));
-        if let NativeScriptCommand::Fetch { module_type, .. } = &mut json_module {
+        if let NativeScriptCommand::Fetch {
+            module_referrer,
+            module_type,
+            ..
+        } = &mut json_module
+        {
+            *module_referrer = Some("https://page.test/app.js".into());
             *module_type = Some(NativeModuleResourceType::Json);
         }
         assert_eq!(

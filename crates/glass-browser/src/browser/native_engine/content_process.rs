@@ -8133,11 +8133,24 @@ async fn resolve_service_worker_commands(
                 script_url,
                 scope,
                 worker_type,
+                referrer_policy,
             } => {
-                let payload = match registry
-                    .register(document_url, &script_url, &scope, &worker_type, loader)
-                    .await
-                {
+                let result = match NativeFetchReferrerPolicy::parse(&referrer_policy) {
+                    Ok(referrer_policy) => {
+                        registry
+                            .register(
+                                document_url,
+                                &script_url,
+                                &scope,
+                                &worker_type,
+                                referrer_policy,
+                                loader,
+                            )
+                            .await
+                    }
+                    Err(error) => Err(error),
+                };
+                let payload = match result {
                     Ok(state) => {
                         runtime.set_service_worker_registrations(
                             registry.states_for_document(document_url)?,
@@ -8188,8 +8201,20 @@ async fn resolve_service_worker_commands(
                 document_commands.extend(evaluation.commands);
                 pending.extend(runtime.take_service_worker_commands());
             }
-            NativeScriptCommand::ServiceWorkerUpdate { request_id, scope } => {
-                let payload = match registry.update(&scope, loader).await {
+            NativeScriptCommand::ServiceWorkerUpdate {
+                request_id,
+                scope,
+                referrer_policy,
+            } => {
+                let result = match NativeFetchReferrerPolicy::parse(&referrer_policy) {
+                    Ok(referrer_policy) => {
+                        registry
+                            .update(&scope, document_url, referrer_policy, loader)
+                            .await
+                    }
+                    Err(error) => Err(error),
+                };
+                let payload = match result {
                     Ok(state) => {
                         runtime.set_service_worker_registrations(
                             registry.states_for_document(document_url)?,

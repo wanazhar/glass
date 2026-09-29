@@ -171,6 +171,14 @@ module dependency fetching and into Worker-global Fetch and asynchronous XHR,
 without changing public Request policy values or explicit overrides. Its
 process-backed HTTP regression passed locally; the slice remains in progress
 pending Slice 833. See the [slice 836 task](tasks/native-engine-browser-836.md).
+Slice 837 carries the active Document's creation URL and effective
+response/meta referrer policy through `register()` and explicit
+`ServiceWorkerRegistration.update()` entry fetches. It preserves the
+ServiceWorker script response policy container from Slice 836 and excludes
+background updates without an active client. Its process-backed header
+regression is blocked before engine startup by this sandbox's denied listener
+bind; a socket-free command-capture/validation regression passes. See the
+[slice 837 task](tasks/native-engine-browser-837.md).
 Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).

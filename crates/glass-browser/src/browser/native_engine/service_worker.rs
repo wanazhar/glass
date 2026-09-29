@@ -803,6 +803,8 @@ impl NativeServiceWorkerRegistry {
     pub(crate) async fn update(
         &mut self,
         scope: &str,
+        owner_url: &str,
+        referrer_policy: NativeFetchReferrerPolicy,
         loader: &mut NativeResourceLoader,
     ) -> Result<NativeServiceWorkerRegistrationState, NativeEngineError> {
         let profile = self
@@ -839,10 +841,11 @@ impl NativeServiceWorkerRegistry {
         profile.validate()?;
         let is_module = profile.worker_type.eq_ignore_ascii_case("module");
         let resource = loader
-            .load_worker_async(
-                &profile.script_url,
+            .load_worker_async_with_referrer_policy(
+                owner_url,
                 &profile.script_url,
                 MAX_NATIVE_SCRIPT_BYTES,
+                Some(referrer_policy),
             )
             .await?
             .ok_or_else(|| NativeEngineError::Network {
@@ -940,6 +943,7 @@ impl NativeServiceWorkerRegistry {
         script_url: &str,
         scope: &str,
         worker_type: &str,
+        referrer_policy: NativeFetchReferrerPolicy,
         loader: &mut NativeResourceLoader,
     ) -> Result<NativeServiceWorkerRegistrationState, NativeEngineError> {
         let owner = parse_network_url("service worker owner URL", owner_url)?;
@@ -1029,7 +1033,12 @@ impl NativeServiceWorkerRegistry {
             ));
         }
         let resource = loader
-            .load_worker_async(owner_url, &script, MAX_NATIVE_SCRIPT_BYTES)
+            .load_worker_async_with_referrer_policy(
+                owner_url,
+                &script,
+                MAX_NATIVE_SCRIPT_BYTES,
+                Some(referrer_policy),
+            )
             .await?
             .ok_or_else(|| NativeEngineError::Network {
                 operation: "service worker registration".into(),

@@ -24,6 +24,12 @@ dependencies. The dependency graph's network assertions are likewise pending
 an environment that permits loopback binds. See the [Slice 834 task](../plan/tasks/native-engine-browser-834.md)
 and [Slice 835 task](../plan/tasks/native-engine-browser-835.md) for exact
 verification boundaries; see the Slice 830-833 tasks for prior evidence.
+Slice 836 is in progress: ServiceWorker module dependencies inherit the
+service-worker script's response policy container, and its own Fetch and
+asynchronous XHR use that policy when the request does not specify one. The
+public Request value and explicit overrides remain unchanged. Its local HTTP
+assertions require a listener-enabled environment; see the
+[Slice 836 task](../plan/tasks/native-engine-browser-836.md).
 Slice 818 synchronizes
 ordinary response-cookie deltas to same-backend live contexts after profile
 merge; Slice 819 verifies a live module SharedWorker's next module request.

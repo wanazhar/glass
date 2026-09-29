@@ -5426,23 +5426,29 @@ impl NativeEngine {
 
         let mut new_sources = BTreeMap::new();
         let mut new_base_urls = BTreeMap::new();
+        let mut new_referrer_policies = BTreeMap::new();
         for (_, script) in graph {
-            let (name, source, base_url) = match script {
+            let (name, source, base_url, referrer_policy) = match script {
                 NativePageScript::Module {
                     name,
                     source,
                     base_url,
+                    referrer_policy,
                     ..
-                }
-                | NativePageScript::ModuleDependency {
+                } => (name, source, base_url, referrer_policy),
+                NativePageScript::ModuleDependency {
                     name,
                     source,
                     base_url,
-                } => (name, source, base_url),
+                    referrer_policy,
+                } => (name, source, base_url, referrer_policy),
                 NativePageScript::Classic { .. } | NativePageScript::ImportMap(_) => continue,
             };
             new_sources.entry(name.clone()).or_insert(source);
-            new_base_urls.entry(name).or_insert(base_url);
+            new_base_urls.entry(name.clone()).or_insert(base_url);
+            if let Some(referrer_policy) = referrer_policy {
+                new_referrer_policies.entry(name).or_insert(referrer_policy);
+            }
         }
         let combined_entries = existing_sources.len().saturating_add(new_sources.len());
         if combined_entries > MAX_NATIVE_MODULE_IMPORTS {
@@ -5468,6 +5474,7 @@ impl NativeEngine {
             ));
         }
         runtime.extend_module_sources(new_sources, new_base_urls)?;
+        runtime.extend_module_referrer_policies(new_referrer_policies)?;
         runtime.register_dynamic_module_alias(request_id, &target)
     }
 
@@ -10377,6 +10384,7 @@ fn load_local_dynamic_page_script_sources(
                                     name: request_url,
                                     source,
                                     base_url: response_url,
+                                    referrer_policy: None,
                                     node_index: Some(node_index),
                                 },
                             )])

@@ -124,8 +124,17 @@ descendants. The package-scoped check passed and 9 focused pure tests passed.
 The process-backed two-origin regression compiles but cannot bind its first
 local listener in this sandbox (`PermissionDenied`), so wire behavior remains
 unverified and the slice is still in progress. Dynamic `import()` policy
-inheritance and worker/worklet module graphs remain separate. See the
+inheritance is tracked separately by Slice 832; worker/worklet module graphs
+remain out of scope. See the
 [slice 831 task](tasks/native-engine-browser-831.md).
+Slice 832 records the next bounded contract: preserve each page module's
+effective referrer policy in `import()` calls and through dynamically loaded
+module graphs, without changing ordinary page `fetch()`. Implementation
+remains in progress: the scoped check and both focused pure tests pass, but
+HTTP assertions remain pending.
+The process fixture cannot bind its first local socket in this sandbox
+(`PermissionDenied`), so wire behavior is unverified. See the
+[slice 832 task](tasks/native-engine-browser-832.md).
 Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).

@@ -9307,6 +9307,7 @@ async fn load_page_script_source_list(
                         name: name.clone(),
                         source: source.clone(),
                         base_url: document_url.to_owned(),
+                        referrer_policy: Some(referrer_policy),
                         node_index: Some(node_index),
                     },
                 ));
@@ -9431,6 +9432,7 @@ async fn load_page_script_source_list(
                                     name: name.clone(),
                                     source: source.clone(),
                                     base_url: base_url.clone(),
+                                    referrer_policy: Some(dependency_referrer_policy),
                                     node_index: Some(node_index),
                                 },
                             ));
@@ -9786,6 +9788,7 @@ async fn load_module_dependencies(
                     name: name.clone(),
                     source: source.clone(),
                     base_url: base_url.clone(),
+                    referrer_policy: dependency_referrer_policy,
                 },
             ));
             pending.push((name, base_url, source, dependency_referrer_policy));
@@ -13670,6 +13673,7 @@ async fn load_dynamic_page_module(
     request_id: u32,
     document_url: &str,
     module_referrer: &str,
+    referrer_policy: Option<NativeFetchReferrerPolicy>,
     specifier: &str,
     module_type: Option<NativeModuleResourceType>,
     runtime: &NativeJavaScriptRuntime,
@@ -13721,7 +13725,7 @@ async fn load_dynamic_page_module(
             Some("anonymous"),
             object_url.as_ref(),
             module_type,
-            None,
+            referrer_policy,
         )
         .await?
         .ok_or_else(|| NativeEngineError::Network {
@@ -13731,7 +13735,7 @@ async fn load_dynamic_page_module(
 
     let base_url = resource.url;
     let source = resource.body;
-    let initial_referrer_policy = resource.response_referrer_policy;
+    let initial_referrer_policy = resource.response_referrer_policy.or(referrer_policy);
     let (existing_sources, _) = runtime.module_sources_snapshot()?;
     let mut seen = existing_sources.keys().cloned().collect::<BTreeSet<_>>();
     if !seen.insert(module_name.clone()) {
@@ -13754,6 +13758,7 @@ async fn load_dynamic_page_module(
             name: module_name.clone(),
             source: source.clone(),
             base_url: base_url.clone(),
+            referrer_policy: initial_referrer_policy,
         },
     )];
     load_module_dependencies(
@@ -13774,18 +13779,24 @@ async fn load_dynamic_page_module(
 
     let mut new_sources = BTreeMap::new();
     let mut new_base_urls = BTreeMap::new();
+    let mut new_referrer_policies = BTreeMap::new();
     for (_, script) in graph {
         if let NativePageScript::ModuleDependency {
             name,
             source,
             base_url,
+            referrer_policy,
         } = script
         {
             new_sources.insert(name.clone(), source);
-            new_base_urls.insert(name, base_url);
+            new_base_urls.insert(name.clone(), base_url);
+            if let Some(referrer_policy) = referrer_policy {
+                new_referrer_policies.insert(name, referrer_policy);
+            }
         }
     }
     runtime.extend_module_sources(new_sources, new_base_urls)?;
+    runtime.extend_module_referrer_policies(new_referrer_policies)?;
     runtime.set_module_import_map(import_map);
     runtime.register_dynamic_module_alias(request_id, &target)
 }
@@ -13989,6 +14000,10 @@ async fn resolve_script_fetches(
                 });
             };
             if module_destination {
+                let module_referrer_policy = referrer_policy
+                    .as_deref()
+                    .map(NativeFetchReferrerPolicy::parse)
+                    .transpose()?;
                 let loaded_module = if method.as_str() == "GET"
                     && headers.is_empty()
                     && body.is_none()
@@ -14004,6 +14019,7 @@ async fn resolve_script_fetches(
                         request_id,
                         &current_url,
                         module_referrer.as_deref().unwrap_or_default(),
+                        module_referrer_policy,
                         &href,
                         module_type,
                         runtime,

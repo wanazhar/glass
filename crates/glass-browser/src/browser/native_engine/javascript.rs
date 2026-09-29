@@ -21358,14 +21358,16 @@ fn javascript_dynamic_import_call_sites_in_range(
 
 #[cfg(test)]
 mod native_static_dynamic_import_tests {
+    use super::super::config::NativeEngineLimits;
     use super::{
-        BTreeMap, MAX_NATIVE_MODULE_IMPORTS, Module, NativeFetchReferrerPolicy,
-        NativeJavaScriptRuntime, NativeModuleImportMap, NativeModuleResourceType, NativePageScript,
-        NativeScriptCommand, effective_worker_global_referrer_policy,
-        effective_worker_module_referrer_policy, module_source_maps, native_module_loader_name,
-        rewrite_dynamic_imports_as_rejected, rewrite_dynamic_imports_as_rejected_with_count,
-        rewrite_runtime_dynamic_module_imports, rewrite_runtime_dynamic_module_imports_with_policy,
-        rewrite_static_json_module_specifiers, static_module_requests,
+        BTreeMap, MAX_NATIVE_MODULE_IMPORTS, Module, NativeDocument, NativeFetchReferrerPolicy,
+        NativeJavaScriptRuntime, NativeModuleImportMap, NativeModuleResourceType, NativeOrigin,
+        NativePageEventBatch, NativePageScript, NativeScriptCommand, Viewport,
+        effective_worker_global_referrer_policy, effective_worker_module_referrer_policy,
+        module_source_maps, native_module_loader_name, rewrite_dynamic_imports_as_rejected,
+        rewrite_dynamic_imports_as_rejected_with_count, rewrite_runtime_dynamic_module_imports,
+        rewrite_runtime_dynamic_module_imports_with_policy, rewrite_static_json_module_specifiers,
+        static_module_requests,
     };
 
     #[test]
@@ -21410,6 +21412,173 @@ mod native_static_dynamic_import_tests {
         assert_eq!(
             referrer_policies["https://document.test/static.js"],
             NativeFetchReferrerPolicy::StrictOrigin
+        );
+    }
+
+    #[test]
+    fn page_module_dynamic_imports_settle_independently_after_host_responses() {
+        fn dynamic_request(
+            evaluation: &super::NativeScriptEvaluation,
+        ) -> (u32, String, Option<String>, Option<String>) {
+            evaluation
+                .commands
+                .iter()
+                .find_map(|command| match command {
+                    NativeScriptCommand::Fetch {
+                        request_id,
+                        href,
+                        destination,
+                        module_referrer,
+                        referrer_policy,
+                        ..
+                    } if destination.as_deref() == Some("module") => Some((
+                        *request_id,
+                        href.clone(),
+                        module_referrer.clone(),
+                        referrer_policy.clone(),
+                    )),
+                    _ => None,
+                })
+                .expect("dynamic import must cross the host fetch boundary")
+        }
+
+        fn resolve_import(
+            runtime: &NativeJavaScriptRuntime,
+            request_id: u32,
+            target: &str,
+            source: &str,
+            document: &NativeDocument,
+            document_url: &url::Url,
+            origin: &NativeOrigin,
+        ) {
+            let module_name =
+                native_module_loader_name(target, NativeModuleResourceType::JavaScript);
+            runtime
+                .extend_module_sources(
+                    BTreeMap::from([(module_name.clone(), source.into())]),
+                    BTreeMap::from([(module_name.clone(), target.into())]),
+                )
+                .expect("host-loaded module source must be retained");
+            runtime
+                .extend_module_referrer_policies(BTreeMap::from([(
+                    module_name,
+                    NativeFetchReferrerPolicy::Origin,
+                )]))
+                .expect("host-loaded module policy must be retained");
+            let alias = runtime
+                .register_dynamic_module_alias(request_id, target)
+                .expect("host response must register its module alias");
+            runtime
+                .resolve_fetch(
+                    request_id,
+                    &serde_json::json!({"dynamicModuleImport": {"moduleKey": alias}}),
+                    document,
+                    document_url.as_str(),
+                    origin,
+                    Viewport::default(),
+                    &NativePageEventBatch::default(),
+                )
+                .expect("host response must resume the pending import");
+            runtime.discard_dynamic_module_alias(&alias);
+        }
+
+        let document_url = url::Url::parse("https://dynamic-import.test/page?secret=token")
+            .expect("document URL is valid");
+        let document =
+            NativeDocument::parse("<html><body></body></html>", &NativeEngineLimits::default())
+                .expect("fixture document must parse");
+        let origin = NativeOrigin::from_url(&document_url).expect("document origin is valid");
+        let external_url =
+            url::Url::parse("https://module.test/entry.js").expect("external module URL is valid");
+        let external_name = external_url.to_string();
+        let external_source = "globalThis.externalImportSettled = false; globalThis.externalImportError = null; import('./external-child.js').then(() => { globalThis.externalImportSettled = true; }, error => { globalThis.externalImportError = String(error); globalThis.externalImportSettled = true; });";
+        let inline_name = format!("{}#glass-inline-module-0", document_url);
+        let inline_source = "globalThis.inlineImportSettled = false; globalThis.inlineImportError = null; import('./inline-child.js').then(() => { globalThis.inlineImportSettled = true; }, error => { globalThis.inlineImportError = String(error); globalThis.inlineImportSettled = true; });";
+        let runtime =
+            NativeJavaScriptRuntime::new_with_context_id("inline-dynamic-import-settlement")
+                .expect("native JavaScript runtime must construct");
+        runtime.set_module_sources(BTreeMap::from([
+            (external_name.clone(), external_source.into()),
+            (inline_name.clone(), inline_source.into()),
+        ]));
+        runtime.set_module_base_urls(BTreeMap::from([
+            (external_name.clone(), external_url.to_string()),
+            (inline_name.clone(), document_url.to_string()),
+        ]));
+        runtime.set_module_referrer_policies(BTreeMap::from([
+            (external_name.clone(), NativeFetchReferrerPolicy::Origin),
+            (inline_name.clone(), NativeFetchReferrerPolicy::Origin),
+        ]));
+
+        let external_evaluation = runtime
+            .evaluate_module(
+                &external_name,
+                external_source,
+                &document,
+                document_url.as_str(),
+                &origin,
+                Viewport::default(),
+            )
+            .expect("external module must emit its dynamic import request");
+        let inline_evaluation = runtime
+            .evaluate_module(
+                &inline_name,
+                inline_source,
+                &document,
+                document_url.as_str(),
+                &origin,
+                Viewport::default(),
+            )
+            .expect("inline module must emit its dynamic import request");
+        let (external_request_id, external_specifier, external_referrer, external_policy) =
+            dynamic_request(&external_evaluation);
+        let (inline_request_id, inline_specifier, inline_referrer, inline_policy) =
+            dynamic_request(&inline_evaluation);
+        assert_ne!(external_request_id, inline_request_id);
+        assert_eq!(external_referrer.as_deref(), Some(external_url.as_str()));
+        assert_eq!(external_policy.as_deref(), Some("origin"));
+        assert_eq!(inline_referrer.as_deref(), Some(document_url.as_str()));
+        assert_eq!(inline_policy.as_deref(), Some("origin"));
+
+        let external_target = external_url
+            .join(&external_specifier)
+            .expect("external dynamic module URL resolves against its referrer")
+            .to_string();
+        let inline_target = document_url
+            .join(&inline_specifier)
+            .expect("dynamic module URL resolves against its referrer")
+            .to_string();
+        resolve_import(
+            &runtime,
+            external_request_id,
+            &external_target,
+            "globalThis.externalChildEvaluated = true;",
+            &document,
+            &document_url,
+            &origin,
+        );
+        resolve_import(
+            &runtime,
+            inline_request_id,
+            &inline_target,
+            "globalThis.inlineChildEvaluated = true;",
+            &document,
+            &document_url,
+            &origin,
+        );
+
+        let state = runtime
+            .context
+            .with(|ctx| {
+                ctx.eval::<String, _>(
+                    "JSON.stringify([globalThis.externalChildEvaluated === true, globalThis.externalImportSettled, globalThis.externalImportError, globalThis.inlineChildEvaluated === true, globalThis.inlineImportSettled, globalThis.inlineImportError])",
+                )
+            })
+            .expect("settled import state must be readable");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&state).unwrap(),
+            serde_json::json!([true, true, null, true, true, null]),
+            "overlapping page-module dynamic imports must settle independently: {state}"
         );
     }
 

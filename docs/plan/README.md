@@ -26,10 +26,12 @@ version claims.
 
 ## Active plan: Glass native browser engine (issue #40)
 
-Status: the bounded foundation is complete through `native-engine-234`. Local
-process-backed HTTP tests now run on this host. Slices 830 and 831 pass their
-wire regressions. Slice 832 reaches its HTTP assertions but its inline dynamic
-module does not settle. Slice 833's process-backed DedicatedWorker and
+Status: the bounded foundation is complete through `native-engine-234`.
+Slices 830 and 831 have recorded passing wire regressions. The current agent
+sandbox denies loopback `TcpListener::bind` with `PermissionDenied`, so HTTP
+regressions cannot be rerun from this session; Slice 832's corrected
+two-origin test awaits a runner that permits local listeners. Slice 833's
+process-backed DedicatedWorker and
 SharedWorker module graphs now pass, including top-level `await import()` and
 the actual referrer-header assertions; it remains in progress pending Slice
 832. The process-backed cases for Slices 834-836 pass, but remain in progress
@@ -134,11 +136,15 @@ entry and dependency headers; 9 focused pure tests also pass. See the
 [slice 831 task](tasks/native-engine-browser-831.md).
 Slice 832 records the next bounded contract: preserve each page module's
 effective referrer policy in `import()` calls and through dynamically loaded
-module graphs, without changing ordinary page `fetch()`. Implementation
-remains in progress: actual headers passed for all five requests, and the
-external module graph settled, but the inline module's imported-module and
-promise-settlement values remained `null`. See the
-[slice 832 task](tasks/native-engine-browser-832.md).
+module graphs, without changing ordinary page `fetch()`. The earlier HTTP
+fixture incorrectly served the inline module's relative import from the
+separate module origin, invalidating that request's header evidence. The
+corrected fixture serves it from the document origin and checks the
+origin-only `Referer`; the current sandbox denies the process-backed test's
+TCP listener bind before engine startup. Socket-free QuickJS tests and the
+file-backed process graph pass, but do not replace the two-origin HTTP gate.
+Slice 832 remains in progress pending a successful run of the corrected test.
+See the [slice 832 task](tasks/native-engine-browser-832.md).
 Slice 833 implements creator-Document referrer policy on DedicatedWorker and
 SharedWorker module entry fetches and carries per-module response policies and
 final response URLs through static and runtime imports. Its process-backed HTTP

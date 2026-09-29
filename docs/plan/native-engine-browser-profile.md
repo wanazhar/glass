@@ -182,11 +182,18 @@ response policy containers, and the relevant inheritance rules. These are
 distinct initiator/owner paths and must not be inferred from page Fetch
 coverage. Slice 826 covers an HTTP Document response header as the initial
 default; slice 827 covers parsed and live `meta name="referrer"` updates to
-the Document-owned page-Fetch default. Neither slice covers element-level
-referrer attributes, independent worker policy containers, or other request
-initiators. Their boundaries and evidence are in the [slice 826
-task](tasks/native-engine-browser-826.md) and [slice 827
-task](tasks/native-engine-browser-827.md).
+the Document-owned page-Fetch default. Slice 828 implements the `img`
+referrer-policy content attribute and limited-known-values IDL reflection.
+Missing, empty, and invalid attributes inherit the owning Document's current
+response/meta policy. Image redirects retain the original Document as the
+referrer source and apply a recognized redirect response policy to the next
+hop. The process-backed local HTTP test passed (1 passed, 876 filtered; 23.62
+seconds), covering same-/cross-origin headers, element overrides, IDL
+mutation, invalid fallback, and redirect updates. Other element initiators,
+independent worker policy containers, and broader Referrer Policy/WPT
+conformance remain open. See the [slice 826 task](tasks/native-engine-browser-826.md),
+[slice 827 task](tasks/native-engine-browser-827.md), and
+[slice 828 task](tasks/native-engine-browser-828.md).
 
 ### Explicit `tabindex` focus baseline
 

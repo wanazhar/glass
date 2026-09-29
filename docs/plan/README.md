@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is locally complete through
-`native-engine-browser-825`. Slice 818 returns ordinary page-response cookie
+`native-engine-browser-828`. Slice 818 returns ordinary page-response cookie
 journals after profile merge and synchronizes same-backend target/frame and
 SharedWorker contexts without duplicate profile writes. Slice 819 verifies
 that an already-running module SharedWorker's later module request uses the
@@ -93,9 +93,16 @@ passed (1 passed, 875 filtered; 52.01 seconds), covering subtree insertion,
 live `name`/`content` changes, legacy aliases, invalid/empty no-ops, update
 order, removal persistence, explicit override, and 17 actual target requests.
 The policy remains per Document and is not stored in URL-keyed shared state.
-Element-level policy, independent worker containers, and non-Fetch request
-initiators remain separate requirements; remote CI and cross-platform
-certification are not claimed. See the [slice 827 task](tasks/native-engine-browser-827.md).
+Slice 828 applies `HTMLImageElement.referrerPolicy` to network image requests
+and uses the owning Document's current response/meta policy when the attribute
+is missing, empty, or invalid. Its process-backed test passed (1 passed, 876
+filtered; 23.62 seconds), checking same-origin and cross-origin Referer values,
+IDL mutation before dispatch, invalid-value fallback, and redirect policy
+updates against actual local HTTP requests. Navigation and other element
+initiators, independent worker containers, and broader Referrer Policy/WPT
+conformance remain open; remote CI and cross-platform certification are not
+claimed. See the [slice 827 task](tasks/native-engine-browser-827.md) and
+[slice 828 task](tasks/native-engine-browser-828.md).
 Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).

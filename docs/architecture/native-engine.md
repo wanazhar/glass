@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-827`; issue #40 remains open. Slice 818 synchronizes
+`native-engine-browser-828`; issue #40 remains open. Slice 818 synchronizes
 ordinary response-cookie deltas to same-backend live contexts after profile
 merge; Slice 819 verifies a live module SharedWorker's next module request.
 Slice 820 extends delivery across separately created live sessions sharing one
@@ -48,9 +48,14 @@ that Document-owned default. Its process-backed two-origin regression passed
 insertion, `name`/`content` changes, aliases, invalid/empty no-ops, insertion
 order, removal persistence, explicit override, and 17 actual target requests.
 Meta state remains scoped to each live Document and is not written back to
-URL-keyed shared state. Element-level policy, independent worker containers,
-broader Fetch/Referrer Policy WPT conformance, remote CI, and cross-platform
-coverage remain open. See the [slice 827 task](../plan/tasks/native-engine-browser-827.md),
+URL-keyed shared state. Slice 828 applies the `img` element's effective
+referrer policy to image requests and redirect hops. Its process-backed local
+HTTP regression passed (1 passed, 876 filtered; 23.62 seconds), covering
+Document fallback, element overrides, IDL mutation, and actual same-/cross-
+origin `Referer` headers. Other element initiators, independent worker
+containers, broader Fetch/Referrer Policy WPT conformance, remote CI, and
+cross-platform coverage remain open. See the [slice 828 task](../plan/tasks/native-engine-browser-828.md),
+the [slice 827 task](../plan/tasks/native-engine-browser-827.md),
 the [slice 826 task](../plan/tasks/native-engine-browser-826.md),
 the [slice 825 task](../plan/tasks/native-engine-browser-825.md),
 the [slice 824 task](../plan/tasks/native-engine-browser-824.md), the [slice 823

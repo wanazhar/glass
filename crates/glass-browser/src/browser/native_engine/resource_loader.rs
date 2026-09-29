@@ -6271,8 +6271,13 @@ impl NativeResourceLoader {
         document_url: &str,
         src: &str,
     ) -> Result<Option<NativeImage>, NativeEngineError> {
-        self.load_image_async_with_object_url(document_url, src, None)
-            .await
+        self.load_image_async_with_object_url_and_referrer_policy(
+            document_url,
+            src,
+            None,
+            NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
+        )
+        .await
     }
 
     pub(crate) async fn load_image_async_with_object_url(
@@ -6280,6 +6285,22 @@ impl NativeResourceLoader {
         document_url: &str,
         src: &str,
         object_url: Option<&NativeObjectUrlResource>,
+    ) -> Result<Option<NativeImage>, NativeEngineError> {
+        self.load_image_async_with_object_url_and_referrer_policy(
+            document_url,
+            src,
+            object_url,
+            NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_image_async_with_object_url_and_referrer_policy(
+        &mut self,
+        document_url: &str,
+        src: &str,
+        object_url: Option<&NativeObjectUrlResource>,
+        referrer_policy: NativeFetchReferrerPolicy,
     ) -> Result<Option<NativeImage>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text("image URL", src)?;
@@ -6350,7 +6371,9 @@ impl NativeResourceLoader {
             .build()
             .map_err(|error| network_error("image client construction", error))?;
         let mut current_url = target_url;
-        let mut request_referrer = normalize_referrer(Some(document_url.as_str()), &current_url)?;
+        let mut effective_referrer_policy = referrer_policy;
+        let mut request_referrer =
+            fetch_referrer_for_target(Some(&document_url), &current_url, effective_referrer_policy);
         let mut redirects = 0;
         let mut pending_cookies = Vec::new();
         let response = loop {
@@ -6430,7 +6453,14 @@ impl NativeResourceLoader {
             {
                 return Ok(None);
             }
-            request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
+            if let Some(policy) = referrer_policy_from_headers(response.headers()) {
+                effective_referrer_policy = policy;
+            }
+            request_referrer = fetch_referrer_for_target(
+                Some(&document_url),
+                &next_url,
+                effective_referrer_policy,
+            );
             current_url = next_url;
             redirects += 1;
         };

@@ -41,9 +41,10 @@ use super::origin::NativeOrigin;
 use super::resource_loader::{
     JAVASCRIPT_MIME_TYPE_ESSENCES, MAX_NATIVE_CSP_VIOLATIONS, NativeCorsMode, NativeCspViolation,
     NativeFetchCacheMode, NativeFetchCredentialsMode, NativeFetchMethod, NativeFetchRedirectMode,
-    NativeFetchRequest, NativeFetchResponse, NativeFetchResponseStream, NativeInlineScriptPolicy,
-    NativeModuleResourceType, NativeNavigationMethod, NativeObjectUrlResource,
-    NativeObjectUrlTransfer, NativeRequestBody, NativeResourceLoader, NativeScriptResource,
+    NativeFetchReferrerPolicy, NativeFetchRequest, NativeFetchResponse, NativeFetchResponseStream,
+    NativeInlineScriptPolicy, NativeModuleResourceType, NativeNavigationMethod,
+    NativeObjectUrlResource, NativeObjectUrlTransfer, NativeRequestBody, NativeResourceLoader,
+    NativeScriptResource,
 };
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
 use aes::{Aes128, Aes192, Aes256};
@@ -8150,40 +8151,52 @@ pub(crate) enum NativePageScript {
         name: String,
         source: String,
         base_url: String,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
         node_index: Option<u32>,
     },
     ModuleDependency {
         name: String,
         source: String,
         base_url: String,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
     },
     ImportMap(NativeModuleImportMap),
 }
 
 fn module_source_maps(
     sources: &[NativePageScript],
-) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+) -> (
+    BTreeMap<String, String>,
+    BTreeMap<String, String>,
+    BTreeMap<String, NativeFetchReferrerPolicy>,
+) {
     let mut module_sources = BTreeMap::new();
     let mut module_base_urls = BTreeMap::new();
+    let mut module_referrer_policies = BTreeMap::new();
     for source in sources {
-        let (name, module_source, base_url) = match source {
+        let (name, module_source, base_url, referrer_policy) = match source {
             NativePageScript::Module {
                 name,
                 source,
                 base_url,
+                referrer_policy,
                 ..
-            }
-            | NativePageScript::ModuleDependency {
+            } => (name, source, base_url, referrer_policy),
+            NativePageScript::ModuleDependency {
                 name,
                 source,
                 base_url,
-            } => (name, source, base_url),
+                referrer_policy,
+            } => (name, source, base_url, referrer_policy),
             NativePageScript::Classic { .. } | NativePageScript::ImportMap(_) => continue,
         };
         module_sources.insert(name.clone(), module_source.clone());
         module_base_urls.insert(name.clone(), base_url.clone());
+        if let Some(referrer_policy) = referrer_policy {
+            module_referrer_policies.insert(name.clone(), *referrer_policy);
+        }
     }
-    (module_sources, module_base_urls)
+    (module_sources, module_base_urls, module_referrer_policies)
 }
 
 struct NativeModuleResolver {
@@ -8302,6 +8315,7 @@ enum NativeModuleDynamicImportMode {
 struct NativeModuleLoader {
     sources: Arc<Mutex<BTreeMap<String, String>>>,
     module_base_urls: Arc<Mutex<BTreeMap<String, String>>>,
+    module_referrer_policies: Arc<Mutex<BTreeMap<String, NativeFetchReferrerPolicy>>>,
     dynamic_import_mode: Arc<Mutex<NativeModuleDynamicImportMode>>,
 }
 
@@ -8361,14 +8375,29 @@ impl Loader for NativeModuleLoader {
                         serde_json::to_string(&module_base_url).map_err(|_| {
                             Error::new_loading_message(name, "module base URL could not be encoded")
                         })?;
-                    rewrite_runtime_dynamic_module_imports(&source, &module_referrer).map_err(
-                        |_| {
+                    let referrer_policy = self
+                        .module_referrer_policies
+                        .lock()
+                        .map_err(|_| {
                             Error::new_loading_message(
                                 name,
-                                "transformed module exceeds its size limit",
+                                "module referrer policies are unavailable",
                             )
-                        },
-                    )?
+                        })?
+                        .get(name)
+                        .copied();
+                    let referrer_policy = native_module_referrer_policy_expression(referrer_policy);
+                    rewrite_runtime_dynamic_module_imports_with_policy(
+                        &source,
+                        &module_referrer,
+                        &referrer_policy,
+                    )
+                    .map_err(|_| {
+                        Error::new_loading_message(
+                            name,
+                            "transformed module exceeds its size limit",
+                        )
+                    })?
                 }
                 NativeModuleDynamicImportMode::Reject => {
                     rewrite_dynamic_imports_as_rejected(&source).map_err(|_| {
@@ -8753,6 +8782,7 @@ fn load_local_file_module_graph_with_import_map_and_existing(
             name: root_name.clone(),
             source: root_source.clone(),
             base_url: root_base_url.clone(),
+            referrer_policy: None,
             node_index,
         },
     )];
@@ -8849,6 +8879,7 @@ fn load_local_file_module_graph_with_import_map_and_existing(
                     name: name.clone(),
                     source: source.clone(),
                     base_url: base_url.clone(),
+                    referrer_policy: None,
                 },
             ));
             pending.push((name, base_url, source));
@@ -8948,7 +8979,7 @@ pub(crate) fn execute_page_scripts(
         .as_mut()
         .expect("page script runtime initialized")
         .set_ready_state("loading");
-    let (module_sources, module_base_urls) = module_source_maps(sources);
+    let (module_sources, module_base_urls, module_referrer_policies) = module_source_maps(sources);
     runtime
         .as_ref()
         .expect("page script runtime initialized")
@@ -8957,6 +8988,10 @@ pub(crate) fn execute_page_scripts(
         .as_ref()
         .expect("page script runtime initialized")
         .set_module_base_urls(module_base_urls);
+    runtime
+        .as_ref()
+        .expect("page script runtime initialized")
+        .set_module_referrer_policies(module_referrer_policies);
     let mut pending_fetches = Vec::new();
     let mut websocket_commands = Vec::new();
     let mut event_source_commands = Vec::new();
@@ -9340,13 +9375,20 @@ pub(crate) fn execute_dynamic_page_scripts(
     resource_events: &[(u32, NativeEventKind)],
     csp_violations: &[NativeCspViolation],
 ) -> Result<NativePageScriptResult, NativeEngineError> {
-    let (new_module_sources, new_module_base_urls) = module_source_maps(&sources);
+    let (new_module_sources, new_module_base_urls, new_module_referrer_policies) =
+        module_source_maps(&sources);
     let (mut module_sources, mut module_base_urls) = runtime.module_sources_snapshot()?;
+    let mut module_referrer_policies = runtime.module_referrer_policies_snapshot()?;
     for (name, source) in new_module_sources {
         module_sources.entry(name).or_insert(source);
     }
     for (name, base_url) in new_module_base_urls {
         module_base_urls.entry(name).or_insert(base_url);
+    }
+    for (name, referrer_policy) in new_module_referrer_policies {
+        module_referrer_policies
+            .entry(name)
+            .or_insert(referrer_policy);
     }
     if module_sources.len() > MAX_NATIVE_MODULE_IMPORTS {
         return Err(NativeEngineError::limit(
@@ -9369,6 +9411,7 @@ pub(crate) fn execute_dynamic_page_scripts(
     }
     runtime.set_module_sources(module_sources);
     runtime.set_module_base_urls(module_base_urls);
+    runtime.set_module_referrer_policies(module_referrer_policies);
 
     let mut pending = VecDeque::from(sources);
     let mut pending_fetches = Vec::new();
@@ -9746,11 +9789,15 @@ pub(crate) fn page_script_sources_to_scripts(
                 node_index: Some(node_index),
             }),
             NativePageScriptSource::ModuleInline {
-                source, node_index, ..
+                source,
+                node_index,
+                referrer_policy,
+                ..
             } => Some(NativePageScript::Module {
                 name: format!("{document_url}#{module_name_prefix}-{node_index}-{index}"),
                 source,
                 base_url: document_url.to_owned(),
+                referrer_policy: Some(referrer_policy),
                 node_index: Some(node_index),
             }),
             NativePageScriptSource::External { .. }
@@ -12998,6 +13045,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     environment: Arc<Mutex<NativeEnvironmentOverrides>>,
     module_sources: Arc<Mutex<BTreeMap<String, String>>>,
     module_base_urls: Arc<Mutex<BTreeMap<String, String>>>,
+    module_referrer_policies: Arc<Mutex<BTreeMap<String, NativeFetchReferrerPolicy>>>,
     module_import_map: Arc<Mutex<NativeModuleImportMap>>,
     dynamic_module_aliases: Arc<Mutex<BTreeMap<String, String>>>,
     dynamic_import_mode: Arc<Mutex<NativeModuleDynamicImportMode>>,
@@ -13088,6 +13136,7 @@ impl NativeJavaScriptRuntime {
         })?;
         let module_sources = Arc::new(Mutex::new(BTreeMap::new()));
         let module_base_urls = Arc::new(Mutex::new(BTreeMap::new()));
+        let module_referrer_policies = Arc::new(Mutex::new(BTreeMap::new()));
         let module_import_map = Arc::new(Mutex::new(NativeModuleImportMap::default()));
         let dynamic_module_aliases = Arc::new(Mutex::new(BTreeMap::new()));
         let dynamic_import_mode = Arc::new(Mutex::new(NativeModuleDynamicImportMode::Preserve));
@@ -13100,6 +13149,7 @@ impl NativeJavaScriptRuntime {
             NativeModuleLoader {
                 sources: Arc::clone(&module_sources),
                 module_base_urls: Arc::clone(&module_base_urls),
+                module_referrer_policies: Arc::clone(&module_referrer_policies),
                 dynamic_import_mode: Arc::clone(&dynamic_import_mode),
             },
         );
@@ -13184,6 +13234,7 @@ impl NativeJavaScriptRuntime {
             environment: Arc::new(Mutex::new(NativeEnvironmentOverrides::default())),
             module_sources,
             module_base_urls,
+            module_referrer_policies,
             module_import_map,
             dynamic_module_aliases,
             dynamic_import_mode,
@@ -15136,6 +15187,41 @@ impl NativeJavaScriptRuntime {
         if let Ok(mut current) = self.module_sources.lock() {
             *current = sources;
         }
+    }
+
+    pub(crate) fn set_module_referrer_policies(
+        &self,
+        policies: BTreeMap<String, NativeFetchReferrerPolicy>,
+    ) {
+        if let Ok(mut current) = self.module_referrer_policies.lock() {
+            *current = policies;
+        }
+    }
+
+    pub(crate) fn module_referrer_policies_snapshot(
+        &self,
+    ) -> Result<BTreeMap<String, NativeFetchReferrerPolicy>, NativeEngineError> {
+        self.module_referrer_policies
+            .lock()
+            .map(|current| current.clone())
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "read native module referrer policies".into(),
+                reason: "native module referrer policy map is unavailable".into(),
+            })
+    }
+
+    pub(crate) fn extend_module_referrer_policies(
+        &self,
+        policies: BTreeMap<String, NativeFetchReferrerPolicy>,
+    ) -> Result<(), NativeEngineError> {
+        self.module_referrer_policies
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "install native module referrer policies".into(),
+                reason: "native module referrer policy map is unavailable".into(),
+            })?
+            .extend(policies);
+        Ok(())
     }
 
     pub(crate) fn module_sources_snapshot(
@@ -17110,7 +17196,21 @@ impl NativeJavaScriptRuntime {
                 operation: "prepare dynamic module referrer".into(),
                 reason: "module base URL could not be encoded".into(),
             })?;
-        let source = rewrite_runtime_dynamic_module_imports(source, &module_referrer)?;
+        let referrer_policy = self
+            .module_referrer_policies
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "read module referrer policy".into(),
+                reason: "native module referrer policy map is unavailable".into(),
+            })?
+            .get(name)
+            .copied();
+        let referrer_policy = native_module_referrer_policy_expression(referrer_policy);
+        let source = rewrite_runtime_dynamic_module_imports_with_policy(
+            source,
+            &module_referrer,
+            &referrer_policy,
+        )?;
         let source = rewrite_static_json_module_specifiers(&source)?;
         let storage_events = self.take_storage_events();
         let proxy_updates = self.take_window_proxy_updates();
@@ -20434,9 +20534,44 @@ fn rewrite_runtime_dynamic_module_imports(
         .map(|(rewritten, _)| rewritten)
 }
 
+fn rewrite_runtime_dynamic_module_imports_with_policy(
+    source: &str,
+    referrer_expression: &str,
+    referrer_policy_expression: &str,
+) -> Result<String, NativeEngineError> {
+    rewrite_runtime_dynamic_module_imports_with_count_and_policy(
+        source,
+        referrer_expression,
+        referrer_policy_expression,
+    )
+    .map(|(rewritten, _)| rewritten)
+}
+
+fn native_module_referrer_policy_expression(
+    referrer_policy: Option<NativeFetchReferrerPolicy>,
+) -> String {
+    // The enum serializes only the fixed Referrer Policy tokens recognized by
+    // the native Fetch implementation, so each value is safe as a JS literal.
+    referrer_policy
+        .map(|policy| format!("'{}'", policy.as_str()))
+        .unwrap_or_else(|| "null".into())
+}
+
 fn rewrite_runtime_dynamic_module_imports_with_count(
     source: &str,
     referrer_expression: &str,
+) -> Result<(String, usize), NativeEngineError> {
+    rewrite_runtime_dynamic_module_imports_with_count_and_policy(
+        source,
+        referrer_expression,
+        "null",
+    )
+}
+
+fn rewrite_runtime_dynamic_module_imports_with_count_and_policy(
+    source: &str,
+    referrer_expression: &str,
+    referrer_policy_expression: &str,
 ) -> Result<(String, usize), NativeEngineError> {
     let bytes = source.as_bytes();
     let sites = javascript_dynamic_import_call_sites(bytes);
@@ -20458,6 +20593,8 @@ fn rewrite_runtime_dynamic_module_imports_with_count(
         output.push_str(&source[copied_until..start]);
         output.push_str("globalThis.__glassDynamicImport(");
         output.push_str(referrer_expression);
+        output.push(',');
+        output.push_str(referrer_policy_expression);
         output.push(',');
         copied_until = open + 1;
         rewritten_import_calls = rewritten_import_calls.saturating_add(1);
@@ -20904,12 +21041,58 @@ fn javascript_dynamic_import_call_sites_in_range(
 #[cfg(test)]
 mod native_static_dynamic_import_tests {
     use super::{
-        BTreeMap, MAX_NATIVE_MODULE_IMPORTS, Module, NativeJavaScriptRuntime,
-        NativeModuleImportMap, NativeModuleResourceType, native_module_loader_name,
-        rewrite_dynamic_imports_as_rejected, rewrite_dynamic_imports_as_rejected_with_count,
-        rewrite_runtime_dynamic_module_imports, rewrite_static_json_module_specifiers,
+        BTreeMap, MAX_NATIVE_MODULE_IMPORTS, Module, NativeFetchReferrerPolicy,
+        NativeJavaScriptRuntime, NativeModuleImportMap, NativeModuleResourceType, NativePageScript,
+        module_source_maps, native_module_loader_name, rewrite_dynamic_imports_as_rejected,
+        rewrite_dynamic_imports_as_rejected_with_count, rewrite_runtime_dynamic_module_imports,
+        rewrite_runtime_dynamic_module_imports_with_policy, rewrite_static_json_module_specifiers,
         static_module_requests,
     };
+
+    #[test]
+    fn module_source_maps_preserve_referrer_policy_per_module_identity() {
+        let sources = [
+            NativePageScript::Module {
+                name: "https://document.test/#inline-1".into(),
+                source: "import('./one.js')".into(),
+                base_url: "https://document.test/".into(),
+                referrer_policy: Some(NativeFetchReferrerPolicy::NoReferrer),
+                node_index: Some(1),
+            },
+            NativePageScript::Module {
+                name: "https://document.test/#inline-2".into(),
+                source: "import('./two.js')".into(),
+                base_url: "https://document.test/".into(),
+                referrer_policy: Some(NativeFetchReferrerPolicy::Origin),
+                node_index: Some(2),
+            },
+            NativePageScript::ModuleDependency {
+                name: "https://document.test/static.js".into(),
+                source: "import('./nested.js')".into(),
+                base_url: "https://cdn.test/static.js".into(),
+                referrer_policy: Some(NativeFetchReferrerPolicy::StrictOrigin),
+            },
+        ];
+
+        let (module_sources, module_base_urls, referrer_policies) = module_source_maps(&sources);
+        assert_eq!(module_sources.len(), 3);
+        assert_eq!(
+            module_base_urls["https://document.test/#inline-1"],
+            "https://document.test/"
+        );
+        assert_eq!(
+            referrer_policies["https://document.test/#inline-1"],
+            NativeFetchReferrerPolicy::NoReferrer
+        );
+        assert_eq!(
+            referrer_policies["https://document.test/#inline-2"],
+            NativeFetchReferrerPolicy::Origin
+        );
+        assert_eq!(
+            referrer_policies["https://document.test/static.js"],
+            NativeFetchReferrerPolicy::StrictOrigin
+        );
+    }
 
     #[test]
     fn static_module_prefetch_preserves_json_import_attributes() {
@@ -21147,12 +21330,23 @@ mod native_static_dynamic_import_tests {
             "all three actual ImportCalls should be rewritten: {rewritten}"
         );
         assert!(rewritten.contains(
-            "globalThis.__glassDynamicImport(import.meta.url,'./literal.json', { with: { type: 'json' } })"
+            "globalThis.__glassDynamicImport(import.meta.url,null,'./literal.json', { with: { type: 'json' } })"
         ));
         assert!(rewritten.contains(
-            "globalThis.__glassDynamicImport(import.meta.url,/* first arg */ getName(), options)"
+            "globalThis.__glassDynamicImport(import.meta.url,null,/* first arg */ getName(), options)"
         ));
-        assert!(rewritten.contains("__glassDynamicImport(import.meta.url,getNestedName())"));
+        assert!(rewritten.contains("__glassDynamicImport(import.meta.url,null,getNestedName())"));
+
+        let inherited_policy = rewrite_runtime_dynamic_module_imports_with_policy(
+            "import('./child.js')",
+            "import.meta.url",
+            "'origin'",
+        )
+        .expect("bounded dynamic imports must carry their fetch policy");
+        assert_eq!(
+            inherited_policy,
+            "globalThis.__glassDynamicImport(import.meta.url,'origin','./child.js')"
+        );
         assert!(rewritten.contains("import './static-declaration.js'"));
         assert!(rewritten.contains("module.import(getName())"));
         assert!(rewritten.contains("module?.import(getOptionalName())"));
@@ -28899,7 +29093,7 @@ fn worker_bootstrap(
   globalThis.__glassWorkerFetchRequests = workerFetchRequests;
   globalThis.__glassNextWorkerFetchRequestId = nextWorkerFetchRequestId;
   globalThis.fetch = workerFetchNative;
-  globalThis.__glassDynamicImport = (referrer, specifier, options) => {{
+  globalThis.__glassDynamicImport = (referrer, referrerPolicy, specifier, options) => {{
     const intrinsics = globalThis.__glassDynamicImportIntrinsics;
     return new intrinsics.PromiseConstructor((resolve, reject) => {{
       let normalizedReferrer;
@@ -28932,6 +29126,7 @@ fn worker_bootstrap(
           content_type: null, mode: "cors", redirect: "follow",
           cache: "default", timeout_ms: null, upload_stream_id: null,
           destination: "module", module_referrer: normalizedReferrer,
+          referrer_policy: referrerPolicy,
           module_type: normalizedRequest.moduleType,
         }});
       }} catch (error) {{
@@ -35243,7 +35438,7 @@ fn document_bootstrap(
   let nextFetchRequestId = Number.isSafeInteger(globalThis.__glassNextFetchRequestId)
     ? globalThis.__glassNextFetchRequestId
     : 1;
-  globalThis.__glassDynamicImport = (referrer, specifier, options) => {{
+  globalThis.__glassDynamicImport = (referrer, referrerPolicy, specifier, options) => {{
     const intrinsics = globalThis.__glassDynamicImportIntrinsics;
     return new intrinsics.PromiseConstructor((resolve, reject) => {{
       let normalizedReferrer;
@@ -35277,6 +35472,7 @@ fn document_bootstrap(
           redirect: "follow", cache: "default", timeout_ms: null,
           upload_stream_id: null, destination: "module",
           module_referrer: normalizedReferrer,
+          referrer_policy: referrerPolicy,
           module_type: normalizedRequest.moduleType,
         }});
       }} catch (error) {{

@@ -229,6 +229,15 @@ inheritance from the active module, module workers/worklets, preloads, and
 broader Referrer Policy/Fetch and WPT conformance remain separate requirements.
 See the [slice 831 task](tasks/native-engine-browser-831.md).
 
+Slice 832 carries the effective fetch referrer policy of each page module into
+its runtime `import()` requests and through each dynamically loaded module's
+static and later dynamic dependencies. The active module response URL remains
+the referrer source, and a dynamically loaded module's recognized response
+policy becomes its dependency policy. Ordinary `fetch()` requests are
+unchanged. Worker/worklet module imports, classic-script dynamic imports, and
+broader Referrer Policy/Fetch and WPT conformance remain separate requirements.
+See the [slice 832 task](tasks/native-engine-browser-832.md).
+
 ### Explicit `tabindex` focus baseline
 
 Within the current light-DOM focus scope, a valid explicit `tabindex` makes an

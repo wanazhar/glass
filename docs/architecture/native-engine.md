@@ -4,7 +4,12 @@ Status: The latest locally completed browser expansion is
 `native-engine-browser-829`; issue #40 remains open. Slices 830 and 831 are
 in progress: 830's process-backed HTTP assertions are unverified in this
 restricted environment, and 831 covers module entry/static-import referrer
-policy inheritance. Slice 818 synchronizes
+policy inheritance. Slice 832 carries each page module's effective policy
+through `import()` and dynamically fetched module graphs. Its package-scoped
+check and both dynamic-import rewrite and module-map unit tests pass.
+Process-backed `Referer` assertions remain pending: the fixture cannot bind its
+first local listener in this sandbox, so network behavior remains unverified.
+Slice 818 synchronizes
 ordinary response-cookie deltas to same-backend live contexts after profile
 merge; Slice 819 verifies a live module SharedWorker's next module request.
 Slice 820 extends delivery across separately created live sessions sharing one

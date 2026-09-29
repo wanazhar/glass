@@ -29586,6 +29586,218 @@ async fn native_content_process_revalidates_stylesheet_and_script_subresources()
 }
 
 #[tokio::test]
+async fn native_content_process_applies_stylesheet_link_referrer_policy() {
+    fn request_header(request: &str, name: &str) -> Option<String> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header
+                    .eq_ignore_ascii_case(name)
+                    .then(|| value.trim().to_owned())
+            })
+        })
+    }
+
+    fn css_response(body: &str, cache_headers: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\n{cache_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let stylesheet_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let stylesheet_address = stylesheet_listener.local_addr().unwrap();
+    let document_url = format!("http://{page_address}/page?secret=token#fragment");
+    let document_referer = format!("http://{page_address}/page?secret=token");
+    let document_origin = format!("http://{page_address}/");
+
+    let page_server_referer = document_referer.clone();
+    let page_server = tokio::spawn(async move {
+        for expected_path in [
+            "/page",
+            "/same.css",
+            "/import.css",
+            "/cache.css",
+            "/cache.css",
+        ] {
+            let (mut stream, _) =
+                tokio::time::timeout(Duration::from_secs(20), page_listener.accept())
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("timed out waiting for page-origin request {expected_path}")
+                    })
+                    .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            match expected_path {
+                "/page" => {
+                    let body = format!(
+                        "<link id='same' rel='stylesheet' href='/same.css' referrerpolicy='no-referrer'>\
+                         <link id='default' rel='stylesheet' href='http://{stylesheet_address}/default.css'>\
+                         <link id='empty' rel='stylesheet' href='http://{stylesheet_address}/empty.css' referrerpolicy=''>\
+                         <link id='origin' rel='stylesheet' href='http://{stylesheet_address}/origin.css' referrerpolicy='ORIGIN'>\
+                         <link id='invalid' rel='stylesheet' href='http://{stylesheet_address}/invalid.css' referrerpolicy='not-a-policy'>\
+                         <link id='none' rel='stylesheet' href='http://{stylesheet_address}/none.css' referrerpolicy='no-referrer'>\
+                         <link id='redirect' rel='stylesheet' href='http://{stylesheet_address}/redirect.css' referrerpolicy='no-referrer'>\
+                         <link id='cache' rel='stylesheet' href='/cache.css'>\
+                         <div id='target'>Stylesheet link policy</div>"
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nReferrer-Policy: unsafe-url\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+                "/same.css" => {
+                    assert_eq!(request_header(&request, "referer"), None);
+                    let body = "@import url('/import.css'); #target { color: red; }";
+                    stream
+                        .write_all(css_response(body, "Cache-Control: no-store\r\n").as_bytes())
+                        .await
+                        .unwrap();
+                }
+                "/import.css" => {
+                    // @import is a distinct request path and does not inherit the link's
+                    // no-referrer policy in this bounded slice.
+                    assert_eq!(
+                        request_header(&request, "referer").as_deref(),
+                        Some(page_server_referer.as_str())
+                    );
+                    let body = "#target { font-style: italic; }";
+                    stream
+                        .write_all(css_response(body, "Cache-Control: no-store\r\n").as_bytes())
+                        .await
+                        .unwrap();
+                }
+                "/cache.css" if request_header(&request, "if-none-match").is_none() => {
+                    assert_eq!(
+                        request_header(&request, "referer").as_deref(),
+                        Some(page_server_referer.as_str())
+                    );
+                    let body = "#target { text-decoration: underline; }";
+                    stream
+                        .write_all(
+                            css_response(body, "Cache-Control: no-cache\r\nETag: \"style-v1\"\r\n")
+                                .as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                }
+                "/cache.css" => {
+                    assert_eq!(request_header(&request, "referer"), None);
+                    assert_eq!(
+                        request_header(&request, "if-none-match").as_deref(),
+                        Some("\"style-v1\"")
+                    );
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 304 Not Modified\r\nCache-Control: no-cache\r\nETag: \"style-v1\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+        }
+    });
+
+    let stylesheet_origin = document_origin.clone();
+    let stylesheet_full_referrer = document_referer.clone();
+    let stylesheet_server = tokio::spawn(async move {
+        let cases = [
+            ("/default.css", Some(stylesheet_full_referrer.clone())),
+            ("/empty.css", Some(stylesheet_full_referrer.clone())),
+            ("/origin.css", Some(stylesheet_origin.clone())),
+            ("/invalid.css", Some(stylesheet_full_referrer.clone())),
+            ("/none.css", None),
+            ("/redirect.css", None),
+            ("/redirect-target.css", Some(stylesheet_origin.clone())),
+            ("/dynamic-origin.css", Some(stylesheet_origin)),
+            ("/dynamic-default.css", None),
+        ];
+        for (expected_path, expected_referer) in cases {
+            let (mut stream, _) =
+                tokio::time::timeout(Duration::from_secs(20), stylesheet_listener.accept())
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("timed out waiting for stylesheet-origin request {expected_path}")
+                    })
+                    .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            assert_eq!(
+                request_header(&request, "referer"),
+                expected_referer,
+                "{expected_path}"
+            );
+            if expected_path == "/redirect.css" {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /redirect-target.css\r\nReferrer-Policy: origin\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                let body = "#target { }";
+                stream
+                    .write_all(css_response(body, "Cache-Control: no-store\r\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+
+    let mut engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url(document_url)).unwrap();
+    tokio::time::timeout(Duration::from_secs(45), engine.initialize_async())
+        .await
+        .expect("native engine initialization timed out")
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const origin = document.getElementById('origin'); const invalid = document.getElementById('invalid'); return [origin.referrerPolicy, invalid.referrerPolicy, invalid.getAttribute('referrerpolicy')]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["ORIGIN", "", "not-a-policy"])
+    );
+    assert_eq!(
+        tokio::time::timeout(
+            Duration::from_secs(45),
+            engine.evaluate_async(&format!(
+                "(() => {{ const meta = document.createElement('meta'); meta.name = 'referrer'; meta.content = 'no-referrer'; document.head.appendChild(meta); const cached = document.createElement('link'); cached.rel = 'stylesheet'; cached.href = '/cache.css'; cached.referrerPolicy = 'no-referrer'; document.head.appendChild(cached); const origin = document.createElement('link'); origin.rel = 'stylesheet'; origin.href = 'http://{stylesheet_address}/dynamic-origin.css'; origin.referrerPolicy = 'ORIGIN'; document.head.appendChild(origin); const fallback = document.createElement('link'); fallback.rel = 'stylesheet'; fallback.href = 'http://{stylesheet_address}/dynamic-default.css'; document.head.appendChild(fallback); return [cached.referrerPolicy, origin.referrerPolicy, origin.getAttribute('referrerpolicy'), fallback.referrerPolicy]; }})()"
+            ))
+        )
+        .await
+        .expect("dynamic stylesheet link processing timed out")
+        .unwrap(),
+        serde_json::json!(["no-referrer", "ORIGIN", "ORIGIN", ""])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ color: getComputedStyle(document.getElementById('target')).color, fontStyle: getComputedStyle(document.getElementById('target')).fontStyle })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({ "color": "rgb(255, 0, 0)", "fontStyle": "italic" })
+    );
+
+    engine.close_async().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), page_server)
+        .await
+        .expect("page-origin stylesheet request fixture did not finish")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), stylesheet_server)
+        .await
+        .expect("stylesheet-origin request fixture did not finish")
+        .unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_resolves_network_css_urls_against_stylesheet() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

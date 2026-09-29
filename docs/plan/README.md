@@ -111,6 +111,12 @@ values reflection, actual same-/cross-origin Referer headers, redirect policy
 updates, and ETag/304 revalidation. Module-script graphs, workers, other
 initiators, WPT conformance, remote CI, and platform certification remain open.
 See the [slice 829 task](tasks/native-engine-browser-829.md).
+Slice 830 extends element-level policy to network stylesheet links during
+parser discovery and dynamic insertion, keeping CSS `@import` on its existing
+path. Its package test-target check and focused DOM policy unit test pass. The
+two-origin HTTP regression is present and type-checks but could not start here:
+the restricted sandbox denied `TcpListener::bind` with `PermissionDenied`, so
+wire-level behavior remains unverified. See the [slice 830 task](tasks/native-engine-browser-830.md).
 Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).

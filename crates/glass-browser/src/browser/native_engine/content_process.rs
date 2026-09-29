@@ -8533,12 +8533,15 @@ async fn load_content_resource(
         .take(MAX_CONTENT_STYLESHEETS)
     {
         let (node_index, href, integrity, crossorigin) = href;
+        let referrer_policy = discovery.stylesheet_link_referrer_policy_for_node_index(node_index);
         let body = match loader
-            .load_stylesheet_async(
+            .load_stylesheet_async_with_object_url_and_referrer_policy(
                 &resource.url,
                 &href,
                 integrity.as_deref(),
                 crossorigin.as_deref(),
+                None,
+                Some(referrer_policy),
             )
             .await
         {
@@ -9110,13 +9113,15 @@ async fn load_dynamic_external_stylesheets(
             loaded_bytes = loaded_bytes.saturating_sub(previous_body.len());
         }
         let object_url = runtime.object_url_resource(&href)?;
+        let referrer_policy = document.stylesheet_link_referrer_policy_for_node_index(node_index);
         let body = match loader
-            .load_stylesheet_async_with_object_url(
+            .load_stylesheet_async_with_object_url_and_referrer_policy(
                 document_url,
                 &href,
                 integrity.as_deref(),
                 crossorigin.as_deref(),
                 object_url.as_ref(),
+                Some(referrer_policy),
             )
             .await
         {

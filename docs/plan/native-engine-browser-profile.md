@@ -208,6 +208,14 @@ Module-script graphs, worker requests, other element initiators, broader
 Referrer Policy/WPT conformance, and cross-platform parity remain separate
 requirements. See the [slice 829 task](tasks/native-engine-browser-829.md).
 
+Slice 830's contract extends element-level referrer policy to network
+stylesheet requests initiated by HTML stylesheet links. It covers parser and
+dynamic link fetches, `HTMLLinkElement.referrerPolicy`, the live Document
+response/meta default, redirect policy updates, and cache revalidation. CSS
+`@import` and stylesheet subresources remain distinct initiators. This is a
+bounded extension of GCWP-0.1, not a profile-version or promotion-threshold
+change; see the [slice 830 task](tasks/native-engine-browser-830.md).
+
 ### Explicit `tabindex` focus baseline
 
 Within the current light-DOM focus scope, a valid explicit `tabindex` makes an

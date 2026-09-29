@@ -1504,6 +1504,7 @@ impl NativeDocument {
             max_nodes: limits.max_nodes,
             max_dom_depth: limits.max_dom_depth,
             quirks_mode: super::html_parser::HtmlParsedQuirksMode::NoQuirks,
+            document_referrer_policy: NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
             nodes: vec![NativeNode {
                 id: root,
                 parent: None,
@@ -4621,6 +4622,23 @@ impl NativeDocument {
                 node.element_name() == Some("script")
                     && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI)
                     && self.is_attached(node_id)
+            })
+            .and_then(|node| node.attribute("referrerpolicy"))
+            .and_then(parse_element_referrer_policy);
+        element_policy.unwrap_or(self.document_referrer_policy)
+    }
+
+    pub(crate) fn stylesheet_link_referrer_policy_for_node_index(
+        &self,
+        node_index: u32,
+    ) -> NativeFetchReferrerPolicy {
+        let element_policy = self
+            .nodes
+            .get(node_index as usize)
+            .filter(|node| {
+                node.element_name() == Some("link")
+                    && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI)
+                    && self.is_attached(node.id())
             })
             .and_then(|node| node.attribute("referrerpolicy"))
             .and_then(parse_element_referrer_policy);
@@ -15695,6 +15713,42 @@ mod tests {
             }
         }
         identities
+    }
+
+    #[test]
+    fn stylesheet_link_referrer_policy_uses_element_or_document_default() {
+        let limits = NativeEngineLimits::default();
+        let document = NativeDocument::parse_with_generation_and_referrer_policy(
+            "<link id='default' rel='stylesheet' href='/default.css'>\
+             <link id='origin' rel='stylesheet' href='/origin.css' referrerpolicy='ORIGIN'>\
+             <link id='invalid' rel='stylesheet' href='/invalid.css' referrerpolicy='invalid'>",
+            &limits,
+            1,
+            NativeFetchReferrerPolicy::UnsafeUrl,
+        )
+        .unwrap();
+        let policy_for = |id| {
+            document.stylesheet_link_referrer_policy_for_node_index(
+                document.find_element_by_id(id).unwrap().index,
+            )
+        };
+        assert_eq!(policy_for("default"), NativeFetchReferrerPolicy::UnsafeUrl);
+        assert_eq!(policy_for("origin"), NativeFetchReferrerPolicy::Origin);
+        assert_eq!(policy_for("invalid"), NativeFetchReferrerPolicy::UnsafeUrl);
+
+        let live_meta_default = NativeDocument::parse_with_generation_and_referrer_policy(
+            "<meta name='referrer' content='no-referrer'>\
+             <link id='default' rel='stylesheet' href='/default.css'>",
+            &limits,
+            1,
+            NativeFetchReferrerPolicy::UnsafeUrl,
+        )
+        .unwrap();
+        let default_link = live_meta_default.find_element_by_id("default").unwrap();
+        assert_eq!(
+            live_meta_default.stylesheet_link_referrer_policy_for_node_index(default_link.index),
+            NativeFetchReferrerPolicy::NoReferrer
+        );
     }
 
     #[test]

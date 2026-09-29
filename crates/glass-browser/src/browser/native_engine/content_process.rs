@@ -69,11 +69,11 @@ use super::resource_loader::{
     MAX_NATIVE_CSP_VIOLATIONS, MAX_NATIVE_RESPONSE_HEADER_BYTES,
     MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES, MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
     MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode, NativeCspViolation, NativeFetchCacheMode,
-    NativeFetchCredentialsMode, NativeFetchMethod, NativeFetchRedirectMode, NativeFetchRequest,
-    NativeFetchResponse, NativeFetchResponseStream, NativeModuleResourceType,
-    NativeNavigationMethod, NativeNavigationPolicyKind, NativeNavigationRequest,
-    NativeObjectUrlResource, NativeRequestBody, NativeResource, NativeResourceLoader,
-    NativeStylesheetResource, NativeWebSocketTarget, resolve_subresource_url,
+    NativeFetchCredentialsMode, NativeFetchMethod, NativeFetchRedirectMode,
+    NativeFetchReferrerPolicy, NativeFetchRequest, NativeFetchResponse, NativeFetchResponseStream,
+    NativeModuleResourceType, NativeNavigationMethod, NativeNavigationPolicyKind,
+    NativeNavigationRequest, NativeObjectUrlResource, NativeRequestBody, NativeResource,
+    NativeResourceLoader, NativeStylesheetResource, NativeWebSocketTarget, resolve_subresource_url,
     schedule_native_csp_report_deliveries, validate_target_navigation_payload,
 };
 #[cfg(windows)]
@@ -9289,6 +9289,7 @@ async fn load_page_script_source_list(
                 timing,
                 node_index,
                 nonce,
+                referrer_policy,
                 parser_inserted: _,
             } => {
                 if !loader.allows_inline_script(document_url, &source, nonce.as_deref())? {
@@ -9314,6 +9315,7 @@ async fn load_page_script_source_list(
                     &name,
                     document_url,
                     &source,
+                    Some(referrer_policy),
                     timing,
                     loader,
                     runtime,
@@ -9383,6 +9385,7 @@ async fn load_page_script_source_list(
                 nonce,
                 integrity,
                 crossorigin,
+                referrer_policy,
                 parser_inserted,
             } => {
                 let request_url = match resolve_module_request_url(document_url, &href) {
@@ -9407,7 +9410,7 @@ async fn load_page_script_source_list(
                         integrity.as_deref(),
                         crossorigin.as_deref(),
                         object_url.as_ref(),
-                        None,
+                        Some(referrer_policy),
                     )
                     .await
                 {
@@ -9417,6 +9420,8 @@ async fn load_page_script_source_list(
                             let name = request_url;
                             let base_url = resource.url;
                             let source = resource.body;
+                            let dependency_referrer_policy =
+                                resource.response_referrer_policy.unwrap_or(referrer_policy);
                             let mut seen = BTreeSet::new();
                             seen.insert(name.clone());
                             let mut total_bytes = source.len();
@@ -9434,6 +9439,7 @@ async fn load_page_script_source_list(
                                 &name,
                                 &base_url,
                                 &source,
+                                Some(dependency_referrer_policy),
                                 timing,
                                 loader,
                                 runtime,
@@ -9683,6 +9689,7 @@ async fn load_module_dependencies(
     module_identity: &str,
     module_base_url: &str,
     source: &str,
+    referrer_policy: Option<NativeFetchReferrerPolicy>,
     timing: NativePageScriptTiming,
     loader: &mut NativeResourceLoader,
     runtime: Option<&NativeJavaScriptRuntime>,
@@ -9695,9 +9702,12 @@ async fn load_module_dependencies(
         module_identity.to_owned(),
         module_base_url.to_owned(),
         source.to_owned(),
+        referrer_policy,
     )];
     let mut requested_urls = seen.clone();
-    while let Some((module_identity, current_base_url, current_source)) = pending.pop() {
+    while let Some((module_identity, current_base_url, current_source, current_policy)) =
+        pending.pop()
+    {
         if module_identity.starts_with(NATIVE_JSON_MODULE_NAME_PREFIX) {
             continue;
         }
@@ -9730,8 +9740,9 @@ async fn load_module_dependencies(
                 .flatten();
             let integrity = import_map.integrity_for_url(&target);
             let resource = loader
-                .load_module_dependency_async(
+                .load_module_dependency_with_referrer_async(
                     owner_url,
+                    &current_base_url,
                     &target,
                     MAX_NATIVE_SCRIPT_BYTES,
                     true,
@@ -9739,6 +9750,7 @@ async fn load_module_dependencies(
                     Some("anonymous"),
                     object_url.as_ref(),
                     request.module_type,
+                    current_policy,
                 )
                 .await?;
             let Some(resource) = resource else {
@@ -9759,6 +9771,7 @@ async fn load_module_dependencies(
             }
             let base_url = resource.url;
             let source = resource.body;
+            let dependency_referrer_policy = resource.response_referrer_policy.or(current_policy);
             *total_bytes = total_bytes.saturating_add(source.len());
             if *total_bytes > MAX_NATIVE_SCRIPT_BYTES.saturating_mul(MAX_NATIVE_MODULE_IMPORTS) {
                 return Err(NativeEngineError::limit(
@@ -9775,7 +9788,7 @@ async fn load_module_dependencies(
                     base_url: base_url.clone(),
                 },
             ));
-            pending.push((name, base_url, source));
+            pending.push((name, base_url, source, dependency_referrer_policy));
         }
     }
     Ok(())
@@ -13698,8 +13711,9 @@ async fn load_dynamic_page_module(
     let object_url = runtime.object_url_resource(&target)?;
     let integrity = import_map.integrity_for_url(&target);
     let resource = loader
-        .load_module_dependency_async(
+        .load_module_dependency_with_referrer_async(
             document_url,
+            module_referrer,
             &target,
             MAX_NATIVE_SCRIPT_BYTES,
             false,
@@ -13707,6 +13721,7 @@ async fn load_dynamic_page_module(
             Some("anonymous"),
             object_url.as_ref(),
             module_type,
+            None,
         )
         .await?
         .ok_or_else(|| NativeEngineError::Network {
@@ -13716,6 +13731,7 @@ async fn load_dynamic_page_module(
 
     let base_url = resource.url;
     let source = resource.body;
+    let initial_referrer_policy = resource.response_referrer_policy;
     let (existing_sources, _) = runtime.module_sources_snapshot()?;
     let mut seen = existing_sources.keys().cloned().collect::<BTreeSet<_>>();
     if !seen.insert(module_name.clone()) {
@@ -13745,6 +13761,7 @@ async fn load_dynamic_page_module(
         &module_name,
         &base_url,
         &source,
+        initial_referrer_policy,
         NativePageScriptTiming::ParserBlocking,
         loader,
         Some(runtime),

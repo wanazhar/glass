@@ -64974,6 +64974,139 @@ async fn native_content_process_applies_classic_script_referrer_policy() {
 }
 
 #[tokio::test]
+async fn native_content_process_inherits_referrer_policy_through_static_module_graphs() {
+    fn request_header(request: &str, name: &str) -> Option<String> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header
+                    .eq_ignore_ascii_case(name)
+                    .then(|| value.trim().to_owned())
+            })
+        })
+    }
+
+    fn module_response(body: &str, referrer_policy: Option<&str>) -> String {
+        let referrer_policy_header = referrer_policy
+            .map(|policy| format!("Referrer-Policy: {policy}\r\n"))
+            .unwrap_or_default();
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nAccess-Control-Allow-Origin: *\r\n{referrer_policy_header}Cache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let module_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let module_address = module_listener.local_addr().unwrap();
+    let document_url = format!("http://{page_address}/page?secret=token#fragment");
+    let document_referer = format!("http://{page_address}/page?secret=token");
+    let document_origin = format!("http://{page_address}/");
+    let module_origin = format!("http://{module_address}/");
+    let module_child_url = format!("http://{module_address}/child.js");
+
+    let page_server = tokio::spawn(async move {
+        let (mut stream, _) = page_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/page?secret=token")
+        );
+        let body = format!(
+            "<script>const dynamicModule = document.createElement('script'); dynamicModule.type = 'module'; dynamicModule.referrerPolicy = 'origin'; dynamicModule.src = 'http://{module_address}/dynamic.js'; document.head.appendChild(dynamicModule);</script>\
+             <script id='entry' type='module' src='http://{module_address}/entry.js' referrerpolicy='unsafe-url'></script>\
+             <script id='inline' type='module' referrerpolicy='no-referrer'>import 'http://{module_address}/inline.js';</script>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let expected_document_referer = document_referer.clone();
+    let expected_document_origin = document_origin.clone();
+    let expected_module_origin = module_origin.clone();
+    let expected_child_url = module_child_url.clone();
+    let module_server = tokio::spawn(async move {
+        for _ in 0..7 {
+            let (mut stream, _) =
+                tokio::time::timeout(Duration::from_secs(30), module_listener.accept())
+                    .await
+                    .expect("module graph request must arrive")
+                    .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("module request must include a path");
+            let (referer, body, policy) = match path {
+                "/entry.js" => (
+                    Some(expected_document_referer.as_str()),
+                    "import './redirect.js'; globalThis.moduleEntryLoaded = true;",
+                    Some("origin"),
+                ),
+                "/redirect.js" => (Some(expected_module_origin.as_str()), "", None),
+                "/child.js" => (
+                    None,
+                    "import './leaf.js'; globalThis.moduleChildLoaded = true;",
+                    Some("unsafe-url"),
+                ),
+                "/leaf.js" => (
+                    Some(expected_child_url.as_str()),
+                    "globalThis.moduleLeafLoaded = true;",
+                    None,
+                ),
+                "/inline.js" => (None, "import './inline-leaf.js';", None),
+                "/inline-leaf.js" => (None, "globalThis.inlineModuleLoaded = true;", None),
+                "/dynamic.js" => (
+                    Some(expected_document_origin.as_str()),
+                    "globalThis.dynamicModuleLoaded = true;",
+                    None,
+                ),
+                other => panic!("unexpected module graph request: {other}"),
+            };
+            assert_eq!(
+                request_header(&request, "referer").as_deref(),
+                referer,
+                "{path}"
+            );
+            if path == "/redirect.js" {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /child.js\r\nAccess-Control-Allow-Origin: *\r\nReferrer-Policy: no-referrer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                stream
+                    .write_all(module_response(body, policy.as_deref()).as_bytes())
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+
+    let mut engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url(document_url)).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "[globalThis.moduleEntryLoaded, globalThis.moduleChildLoaded, globalThis.moduleLeafLoaded, globalThis.inlineModuleLoaded, globalThis.dynamicModuleLoaded]",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, true, true, true, true])
+    );
+
+    engine.close_async().await.unwrap();
+    page_server.await.unwrap();
+    module_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_reloads_the_selected_srcset_candidate_after_sizes_mutation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -216,6 +216,19 @@ response/meta default, redirect policy updates, and cache revalidation. CSS
 bounded extension of GCWP-0.1, not a profile-version or promotion-threshold
 change; see the [slice 830 task](tasks/native-engine-browser-830.md).
 
+Slice 831 extends script-element referrer policy to network module-script
+entries and recursive static imports. The root fetch uses the Document URL as
+its referrer; each imported module uses its referencing module's response URL,
+including the final URL after redirects. A module response's recognized
+`Referrer-Policy` header becomes the policy for that module's dependencies;
+redirect response policy changes apply to the next redirect hop. Cached module
+responses retain this metadata and 304 updates must preserve or replace it
+according to the response headers. This is a bounded extension of GCWP-0.1,
+not a profile-version or promotion-threshold change. Dynamic `import()`
+inheritance from the active module, module workers/worklets, preloads, and
+broader Referrer Policy/Fetch and WPT conformance remain separate requirements.
+See the [slice 831 task](tasks/native-engine-browser-831.md).
+
 ### Explicit `tabindex` focus baseline
 
 Within the current light-DOM focus scope, a valid explicit `tabindex` makes an

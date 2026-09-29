@@ -881,6 +881,7 @@ pub(crate) enum NativePageScriptSource {
         timing: NativePageScriptTiming,
         node_index: u32,
         nonce: Option<String>,
+        referrer_policy: NativeFetchReferrerPolicy,
         parser_inserted: bool,
     },
     ModuleExternal {
@@ -890,6 +891,7 @@ pub(crate) enum NativePageScriptSource {
         nonce: Option<String>,
         integrity: Option<String>,
         crossorigin: Option<String>,
+        referrer_policy: NativeFetchReferrerPolicy,
         parser_inserted: bool,
     },
     ImportMap {
@@ -5536,6 +5538,7 @@ impl NativeDocument {
                                 nonce: node.attribute("nonce").map(str::to_owned),
                                 integrity: node.attribute("integrity").map(str::to_owned),
                                 crossorigin: node.attribute("crossorigin").map(str::to_owned),
+                                referrer_policy: self.script_referrer_policy_for_node(node.id()),
                                 parser_inserted: true,
                             }
                         } else {
@@ -5560,6 +5563,7 @@ impl NativeDocument {
                         timing,
                         node_index: node.id().index(),
                         nonce: node.attribute("nonce").map(str::to_owned),
+                        referrer_policy: self.script_referrer_policy_for_node(node.id()),
                         parser_inserted: true,
                     }
                 } else {
@@ -15752,6 +15756,57 @@ mod tests {
     }
 
     #[test]
+    fn module_script_sources_capture_element_or_live_document_referrer_policy() {
+        let document = NativeDocument::parse_with_generation_and_referrer_policy(
+            "<script id='default' type='module'>import '/default.js';</script>\
+             <script id='origin' type='module' referrerpolicy='ORIGIN'>import '/origin.js';</script>\
+             <script id='invalid' type='module' referrerpolicy='invalid'>import '/invalid.js';</script>\
+             <script id='external' type='module' src='/entry.js' referrerpolicy='no-referrer'></script>",
+            &NativeEngineLimits::default(),
+            1,
+            NativeFetchReferrerPolicy::UnsafeUrl,
+        )
+        .unwrap();
+
+        let sources = document.page_script_sources(8, 4096);
+        let policies = sources
+            .iter()
+            .map(|source| match source {
+                NativePageScriptSource::ModuleInline {
+                    source,
+                    referrer_policy,
+                    ..
+                } => (source.clone(), *referrer_policy),
+                NativePageScriptSource::ModuleExternal {
+                    href,
+                    referrer_policy,
+                    ..
+                } => (href.clone(), *referrer_policy),
+                _ => panic!("expected only module script sources"),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            policies,
+            [
+                (
+                    "import '/default.js';".into(),
+                    NativeFetchReferrerPolicy::UnsafeUrl
+                ),
+                (
+                    "import '/origin.js';".into(),
+                    NativeFetchReferrerPolicy::Origin
+                ),
+                (
+                    "import '/invalid.js';".into(),
+                    NativeFetchReferrerPolicy::UnsafeUrl
+                ),
+                ("/entry.js".into(), NativeFetchReferrerPolicy::NoReferrer),
+            ]
+        );
+    }
+
+    #[test]
     fn native_document_subtree_transfer_is_identity_mapped_and_atomic() {
         let limits = NativeEngineLimits::default();
         let mut source = NativeDocument::parse(
@@ -19736,6 +19791,7 @@ mod tests {
                 r#"(() => {
                     const module = document.createElement('script');
                     module.type = 'module';
+                    module.referrerPolicy = 'origin';
                     module.textContent = "import 'pkg';";
                     const map = document.createElement('script');
                     map.type = 'importmap';
@@ -19783,7 +19839,11 @@ mod tests {
                     source: Some(map_source),
                     ..
                 },
-                NativePageScriptSource::ModuleInline { source, .. },
+                NativePageScriptSource::ModuleInline {
+                    source,
+                    referrer_policy: NativeFetchReferrerPolicy::Origin,
+                    ..
+                },
             ] if map_source.contains("\"pkg\":\"/mapped.js\"")
                 && source.contains("import 'pkg'")
         ));

@@ -40848,6 +40848,10 @@ fn document_bootstrap(
       installLimitedKnownValuesStringAttributeProperty(
         element, "referrerPolicy", "referrerpolicy", referrerPolicyAttributeValues);
     }}
+    if (element.tagName === "LINK") {{
+      installLimitedKnownValuesStringAttributeProperty(
+        element, "referrerPolicy", "referrerpolicy", referrerPolicyAttributeValues);
+    }}
     if (["AUDIO", "VIDEO"].includes(element.tagName)) {{
       const mediaState = () => ({{
         readyState: typeof state.mediaReadyState === "function"

@@ -5945,6 +5945,26 @@ impl NativeResourceLoader {
         crossorigin: Option<&str>,
         object_url: Option<&NativeObjectUrlResource>,
     ) -> Result<Option<NativeStylesheetResource>, NativeEngineError> {
+        self.load_stylesheet_async_with_object_url_and_referrer_policy(
+            document_url,
+            href,
+            integrity,
+            crossorigin,
+            object_url,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_stylesheet_async_with_object_url_and_referrer_policy(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        integrity: Option<&str>,
+        crossorigin: Option<&str>,
+        object_url: Option<&NativeObjectUrlResource>,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
+    ) -> Result<Option<NativeStylesheetResource>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
         validate_url_text("stylesheet URL", href)?;
         let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
@@ -6043,7 +6063,11 @@ impl NativeResourceLoader {
             .build()
             .map_err(|error| network_error("CSS client construction", error))?;
         let mut current_url = target_url;
-        let mut request_referrer = normalize_referrer(Some(document_url.as_str()), &current_url)?;
+        let mut effective_referrer_policy = referrer_policy;
+        let mut request_referrer = match effective_referrer_policy {
+            Some(policy) => fetch_referrer_for_target(Some(&document_url), &current_url, policy),
+            None => normalize_referrer(Some(document_url.as_str()), &current_url)?,
+        };
         let mut redirects = 0;
         let mut pending_cookies = Vec::new();
         let response = loop {
@@ -6137,7 +6161,15 @@ impl NativeResourceLoader {
             {
                 return Ok(None);
             }
-            request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
+            if let Some(policy) = referrer_policy_from_headers(response.headers())
+                && effective_referrer_policy.is_some()
+            {
+                effective_referrer_policy = Some(policy);
+            }
+            request_referrer = match effective_referrer_policy {
+                Some(policy) => fetch_referrer_for_target(Some(&document_url), &next_url, policy),
+                None => normalize_referrer(Some(current_url.as_str()), &next_url)?,
+            };
             current_url = next_url;
             redirects += 1;
         };

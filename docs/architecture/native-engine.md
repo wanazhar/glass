@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-828`; issue #40 remains open. Slice 818 synchronizes
+`native-engine-browser-829`; issue #40 remains open. Slice 818 synchronizes
 ordinary response-cookie deltas to same-backend live contexts after profile
 merge; Slice 819 verifies a live module SharedWorker's next module request.
 Slice 820 extends delivery across separately created live sessions sharing one
@@ -59,7 +59,14 @@ cross-platform coverage remain open. Slice 829 applies the owning Document and
 dynamic insertion, redirect hops, and conditional cache revalidation. Its
 process-backed two-origin regression passed (1 passed, 877 filtered; 33.70
 seconds). Module-script graphs and broader conformance remain separate
-requirements. See the [slice 829 task](../plan/tasks/native-engine-browser-829.md),
+requirements. Slice 830 extends that policy to parser-discovered and dynamic
+network stylesheet links, with `HTMLLinkElement.referrerPolicy`, redirect
+updates, and revalidation; `@import` remains on its existing request path. The
+slice is still in progress: the package test-target check and focused DOM
+policy test pass, but the process-backed HTTP regression cannot bind a local
+listener in this restricted environment, so actual request headers are not
+verified here. See the [slice 830 task](../plan/tasks/native-engine-browser-830.md)
+for evidence and limits, and the [slice 829 task](../plan/tasks/native-engine-browser-829.md),
 [slice 828 task](../plan/tasks/native-engine-browser-828.md),
 [slice 827 task](../plan/tasks/native-engine-browser-827.md),
 the [slice 826 task](../plan/tasks/native-engine-browser-826.md),

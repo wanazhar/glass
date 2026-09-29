@@ -7616,23 +7616,6 @@ impl NativeResourceLoader {
         .await
     }
 
-    pub(crate) async fn load_worker_script_dependency_async(
-        &mut self,
-        document_url: &str,
-        href: &str,
-        max_source_bytes: usize,
-        module_type: Option<NativeModuleResourceType>,
-    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
-        self.load_worker_script_dependency_async_with_credentials(
-            document_url,
-            href,
-            max_source_bytes,
-            module_type,
-            None,
-        )
-        .await
-    }
-
     pub(crate) async fn load_worker_script_dependency_async_with_credentials(
         &mut self,
         document_url: &str,
@@ -7664,7 +7647,7 @@ impl NativeResourceLoader {
         referrer_policy: Option<NativeFetchReferrerPolicy>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
-        validate_url_text("worker module referrer URL", referrer_url)?;
+        validate_url_text("worker script referrer URL", referrer_url)?;
         validate_url_text("script URL", href)?;
         let crossorigin = credentials_mode
             .map(worker_module_crossorigin)

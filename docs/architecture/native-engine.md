@@ -12,13 +12,18 @@ cover ordinary Worker requests, classic workers, or ServiceWorker policy
 containers. Slice 833's scoped package check and focused module-policy unit
 group pass; its process-backed regression compiles but cannot bind the first
 local socket here (`PermissionDenied`), so its HTTP assertions remain
-unverified. Slice 834 is in progress: it initializes the DedicatedWorker and
+unverified. Slice 834 is in progress: it implements the DedicatedWorker and
 SharedWorker global referrer default from the final network-script response
-policy (or the policy-container default) and applies it to ordinary Worker
-Fetch and XHR while preserving public Request policy values and explicit
-overrides. See the [Slice 834 task](../plan/tasks/native-engine-browser-834.md)
-for its verification boundary. See the Slice 830-833 tasks for exact evidence
-and boundaries.
+policy (or the policy-container default) for ordinary Worker Fetch and XHR,
+preserving public Request policy values and explicit overrides. Its HTTP
+assertions remain unverified because the local fixture cannot bind in this
+sandbox. Slice 835 is in progress: it applies the Worker-global referrer
+policy and final root Worker URL to preloaded classic `importScripts()`
+dependencies, including nested imports and classic ServiceWorker
+dependencies. The dependency graph's network assertions are likewise pending
+an environment that permits loopback binds. See the [Slice 834 task](../plan/tasks/native-engine-browser-834.md)
+and [Slice 835 task](../plan/tasks/native-engine-browser-835.md) for exact
+verification boundaries; see the Slice 830-833 tasks for prior evidence.
 Slice 818 synchronizes
 ordinary response-cookie deltas to same-backend live contexts after profile
 merge; Slice 819 verifies a live module SharedWorker's next module request.

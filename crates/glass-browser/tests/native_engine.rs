@@ -4353,6 +4353,58 @@ async fn native_local_worker_import_scripts_dynamic_import_uses_source_url() {
 }
 
 #[tokio::test]
+async fn native_local_worker_import_scripts_nested_urls_use_worker_root_url() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://worker-import-base.test/page.html",
+            "<html><body><main>Native</main></body></html>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-import-base.test/workers/root.js",
+            "importScripts('bridge/bridge.js'); postMessage(globalThis.nestedImportValue);",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-import-base.test/workers/bridge/bridge.js",
+            "importScripts('nested.js');",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://worker-import-base.test/workers/nested.js",
+            "globalThis.nestedImportValue = 'root-based';",
+        )
+        .unwrap()
+        .with_initial_url("fixture://worker-import-base.test/page.html");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    engine
+        .evaluate_async(
+            "globalThis.workerMessages = []; globalThis.worker = new Worker('/workers/root.js'); worker.onmessage = event => workerMessages.push(event.data); true",
+        )
+        .await
+        .unwrap();
+    let mut messages = serde_json::Value::Null;
+    for _ in 0..5 {
+        messages = engine.evaluate_async("workerMessages").await.unwrap();
+        if messages
+            .as_array()
+            .is_some_and(|messages| !messages.is_empty())
+        {
+            break;
+        }
+    }
+    engine.close_async().await.unwrap();
+
+    assert_eq!(
+        messages,
+        serde_json::json!(["root-based"]),
+        "nested importScripts() specifiers resolve against the WorkerGlobalScope URL, not the imported script response URL"
+    );
+}
+
+#[tokio::test]
 async fn native_json_module_worker_graphs_support_dedicated_and_shared_workers() {
     let config = NativeEngineConfig::default()
         .with_fixture(
@@ -35243,6 +35295,190 @@ async fn native_content_process_import_scripts_dynamic_imports_use_final_script_
             "/workers/shared.js",
         ]
     );
+}
+
+#[tokio::test]
+async fn native_content_process_classic_import_scripts_use_worker_policy_and_root_url() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let mut requests = Vec::new();
+            for _ in 0..10 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("classic Worker importScripts request includes a URL")
+                    .to_owned();
+                let referer = request.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("referer")
+                        .then(|| value.trim().to_owned())
+                });
+                let (extra_headers, content_type, body) = match path.as_str() {
+                    "/page" => (
+                        "",
+                        "text/html",
+                        "<script>globalThis.workerResults = {}; globalThis.workerErrors = []; globalThis.registrationState = 'pending'; const dedicated = new Worker('/workers/dedicated/root.js'); dedicated.onmessage = event => workerResults.dedicated = event.data; dedicated.onerror = event => workerErrors.push(String(event.message)); const shared = new SharedWorker('/workers/shared/root.js'); shared.port.onmessage = event => workerResults.shared = event.data; shared.port.start(); navigator.serviceWorker.register('/workers/service/root.js', { scope: '/workers/service/' }).then(() => registrationState = 'ready', error => registrationState = String(error));</script>",
+                    ),
+                    "/workers/dedicated/root.js" => (
+                        "Referrer-Policy: no-referrer\r\n",
+                        "application/javascript",
+                        "importScripts('bridge/bridge.js'); postMessage({ kind: 'dedicated', value: globalThis.dedicatedValue });",
+                    ),
+                    "/workers/dedicated/bridge/bridge.js" => (
+                        "Referrer-Policy: unsafe-url\r\n",
+                        "application/javascript",
+                        "importScripts('leaf.js'); globalThis.dedicatedBridge = true;",
+                    ),
+                    "/workers/dedicated/leaf.js" => (
+                        "",
+                        "application/javascript",
+                        "globalThis.dedicatedValue = 'dedicated-loaded';",
+                    ),
+                    "/workers/shared/root.js" => (
+                        "Referrer-Policy: origin\r\n",
+                        "application/javascript",
+                        "importScripts('bridge/bridge.js'); onconnect = event => event.ports[0].postMessage({ kind: 'shared', value: globalThis.sharedValue });",
+                    ),
+                    "/workers/shared/bridge/bridge.js" => (
+                        "Referrer-Policy: unsafe-url\r\n",
+                        "application/javascript",
+                        "importScripts('leaf.js'); globalThis.sharedBridge = true;",
+                    ),
+                    "/workers/shared/leaf.js" => (
+                        "",
+                        "application/javascript",
+                        "globalThis.sharedValue = 'shared-loaded';",
+                    ),
+                    "/workers/service/root.js" => (
+                        "Referrer-Policy: future-policy\r\n",
+                        "application/javascript",
+                        "importScripts('bridge/bridge.js'); self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));",
+                    ),
+                    "/workers/service/bridge/bridge.js" => (
+                        "Referrer-Policy: unsafe-url\r\n",
+                        "application/javascript",
+                        "importScripts('leaf.js'); globalThis.serviceBridge = true;",
+                    ),
+                    "/workers/service/leaf.js" => (
+                        "",
+                        "application/javascript",
+                        "globalThis.serviceValue = 'service-loaded';",
+                    ),
+                    other => panic!("unexpected classic importScripts request: {other}"),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push((path, referer));
+            }
+            requests.sort();
+            requests
+        })
+        .await
+        .expect("classic Worker importScripts policy requests stay within their time bound")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let mut result = serde_json::Value::Null;
+    for _ in 0..12 {
+        result = engine
+            .evaluate_async(
+                "({ results: Object.values(workerResults).sort((a, b) => String(a.kind).localeCompare(String(b.kind))), registration: registrationState, errors: workerErrors })",
+            )
+            .await
+            .unwrap();
+        if result["results"]
+            .as_array()
+            .is_some_and(|results| results.len() == 2)
+            && result["registration"] == "ready"
+        {
+            break;
+        }
+    }
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "results": [
+                {"kind": "dedicated", "value": "dedicated-loaded"},
+                {"kind": "shared", "value": "shared-loaded"},
+            ],
+            "registration": "ready",
+            "errors": [],
+        }),
+        "all classic worker kinds must execute their fully preloaded nested importScripts graph"
+    );
+    let expected_paths = [
+        "/page",
+        "/workers/dedicated/root.js",
+        "/workers/dedicated/bridge/bridge.js",
+        "/workers/dedicated/leaf.js",
+        "/workers/shared/root.js",
+        "/workers/shared/bridge/bridge.js",
+        "/workers/shared/leaf.js",
+        "/workers/service/root.js",
+        "/workers/service/bridge/bridge.js",
+        "/workers/service/leaf.js",
+    ];
+    let mut actual_paths = requests
+        .iter()
+        .map(|(path, _)| path.as_str())
+        .collect::<Vec<_>>();
+    actual_paths.sort_unstable();
+    let mut expected_paths = expected_paths.to_vec();
+    expected_paths.sort_unstable();
+    assert_eq!(actual_paths, expected_paths);
+
+    let origin = format!("http://{address}");
+    let referer_for = |path: &str| {
+        requests
+            .iter()
+            .find(|(request_path, _)| request_path == path)
+            .unwrap_or_else(|| panic!("missing request {path}"))
+            .1
+            .as_deref()
+            .map(str::to_owned)
+    };
+    for path in [
+        "/workers/dedicated/bridge/bridge.js",
+        "/workers/dedicated/leaf.js",
+    ] {
+        assert_eq!(referer_for(path), None, "no-referrer policy for {path}");
+    }
+    for path in [
+        "/workers/shared/bridge/bridge.js",
+        "/workers/shared/leaf.js",
+    ] {
+        assert_eq!(
+            referer_for(path),
+            Some(format!("{origin}/")),
+            "the SharedWorker root's origin policy must persist through nested imports for {path}"
+        );
+    }
+    let service_worker_referrer = format!("{origin}/workers/service/root.js");
+    for path in [
+        "/workers/service/bridge/bridge.js",
+        "/workers/service/leaf.js",
+    ] {
+        assert_eq!(
+            referer_for(path),
+            Some(service_worker_referrer.clone()),
+            "unknown root policy falls back to strict-origin-when-cross-origin, and imported response policy does not replace it for {path}"
+        );
+    }
 }
 
 #[tokio::test]

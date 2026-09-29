@@ -257,6 +257,17 @@ ServiceWorker policy containers, nested Workers, `importScripts()`, module
 graphs, and broader Referrer Policy/Fetch or WPT conformance remain separate.
 See the [slice 834 task](tasks/native-engine-browser-834.md).
 
+Slice 835 carries the effective Worker-global referrer policy and the final
+root Worker URL into statically discovered classic `importScripts()` graphs.
+Every dependency, including nested imports, resolves against and uses the
+root Worker URL as its request referrer; imported-script response policies do
+not replace the Worker-global policy. The same classic dependency path is
+covered for ServiceWorkers using their root response policy or the standard
+default. Runtime/dynamic `importScripts()` timing, module workers, ordinary
+ServiceWorker Fetch/XHR, broader Referrer Policy/Fetch or WPT conformance,
+remote CI, and cross-platform certification remain open. See the
+[slice 835 task](tasks/native-engine-browser-835.md).
+
 ### Explicit `tabindex` focus baseline
 
 Within the current light-DOM focus scope, a valid explicit `tabindex` makes an

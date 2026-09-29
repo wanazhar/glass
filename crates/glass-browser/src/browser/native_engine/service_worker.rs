@@ -804,9 +804,17 @@ impl NativeServiceWorkerRegistry {
         &mut self,
         scope: &str,
         owner_url: &str,
+        referrer_url: &str,
         referrer_policy: NativeFetchReferrerPolicy,
         loader: &mut NativeResourceLoader,
     ) -> Result<NativeServiceWorkerRegistrationState, NativeEngineError> {
+        let owner = parse_network_url("service worker owner URL", owner_url)?;
+        let referrer = parse_network_url("service worker referrer URL", referrer_url)?;
+        if NativeOrigin::from_url(&owner)? != NativeOrigin::from_url(&referrer)? {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "service worker referrer must be same-origin with its client".into(),
+            });
+        }
         let profile = self
             .registration_profiles
             .iter()
@@ -842,7 +850,7 @@ impl NativeServiceWorkerRegistry {
         let is_module = profile.worker_type.eq_ignore_ascii_case("module");
         let resource = loader
             .load_worker_async_with_referrer_policy(
-                owner_url,
+                referrer_url,
                 &profile.script_url,
                 MAX_NATIVE_SCRIPT_BYTES,
                 Some(referrer_policy),
@@ -943,18 +951,23 @@ impl NativeServiceWorkerRegistry {
         script_url: &str,
         scope: &str,
         worker_type: &str,
+        referrer_url: &str,
         referrer_policy: NativeFetchReferrerPolicy,
         loader: &mut NativeResourceLoader,
     ) -> Result<NativeServiceWorkerRegistrationState, NativeEngineError> {
         let owner = parse_network_url("service worker owner URL", owner_url)?;
+        let referrer = parse_network_url("service worker referrer URL", referrer_url)?;
         let script = resolve_same_origin_url(&owner, "service worker script URL", script_url)?;
         let scope = resolve_same_origin_url(&owner, "service worker scope", scope)?;
         let owner_origin = NativeOrigin::from_url(&owner)?;
-        if NativeOrigin::from_url(&script)? != owner_origin
+        if NativeOrigin::from_url(&referrer)? != owner_origin
+            || NativeOrigin::from_url(&script)? != owner_origin
             || NativeOrigin::from_url(&scope)? != owner_origin
         {
             return Err(NativeEngineError::UnsupportedUrl {
-                reason: "service worker script and scope must be same-origin with the page".into(),
+                reason:
+                    "service worker referrer, script, and scope must be same-origin with the page"
+                        .into(),
             });
         }
         let script = without_fragment(script.as_str()).to_owned();
@@ -1034,7 +1047,7 @@ impl NativeServiceWorkerRegistry {
         }
         let resource = loader
             .load_worker_async_with_referrer_policy(
-                owner_url,
+                referrer_url,
                 &script,
                 MAX_NATIVE_SCRIPT_BYTES,
                 Some(referrer_policy),

@@ -43,6 +43,13 @@ jobs:
       - name: Check both product packages
         shell: bash
         run: scripts/check-rust-workspace.sh fast-check
+      - name: Install Linux native-engine sandbox prerequisite
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+      - name: Build native content worker test prerequisite
+        run: cargo build --package glass-browser --features native-engine --bin glass-native-content-worker --locked
       - name: Run glass-dev browser-free contract tests
         run: cargo test --package glass-dev --tests --all-features --locked -- --nocapture
       - name: Certify native Windows named-pipe daemon lifecycle
@@ -73,6 +80,12 @@ jobs:
             ${{ runner.os }}-cargo-${{ github.job }}-
       - name: Check native engine feature
         run: cargo check --package glass-browser --features native-engine --locked
+      - name: Install native-engine sandbox prerequisite
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+      - name: Build native content worker test prerequisite
+        run: cargo build --package glass-browser --features native-engine --bin glass-native-content-worker --locked
       - name: Test native engine feature
         run: cargo test --package glass-browser --features native-engine --tests --locked
       - name: Lint native engine feature
@@ -102,6 +115,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}-
             ${{ runner.os }}-cargo-${{ github.job }}-
+
+      - name: Install native-engine sandbox prerequisite
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
 
       - name: Run common source certification
         env:

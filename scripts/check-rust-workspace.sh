@@ -20,6 +20,9 @@ case "$action" in
     cargo check --package glass-dev --all-targets --all-features --locked
     ;;
   test)
+    # Native-engine tests spawn this dependency-package process; cargo test
+    # does not build binaries from a dependency package on its own.
+    cargo build --package glass-browser --features native-engine --bin glass-native-content-worker --locked
     cargo test --package glass-browser --all-targets --all-features --locked
     cargo test --package glass-dev --all-targets --all-features --locked
     ;;

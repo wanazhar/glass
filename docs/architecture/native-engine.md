@@ -12,7 +12,13 @@ cover ordinary Worker requests, classic workers, or ServiceWorker policy
 containers. Slice 833's scoped package check and focused module-policy unit
 group pass; its process-backed regression compiles but cannot bind the first
 local socket here (`PermissionDenied`), so its HTTP assertions remain
-unverified. See the Slice 830-833 tasks for exact evidence and boundaries.
+unverified. Slice 834 is in progress: it initializes the DedicatedWorker and
+SharedWorker global referrer default from the final network-script response
+policy (or the policy-container default) and applies it to ordinary Worker
+Fetch and XHR while preserving public Request policy values and explicit
+overrides. See the [Slice 834 task](../plan/tasks/native-engine-browser-834.md)
+for its verification boundary. See the Slice 830-833 tasks for exact evidence
+and boundaries.
 Slice 818 synchronizes
 ordinary response-cookie deltas to same-backend live contexts after profile
 merge; Slice 819 verifies a live module SharedWorker's next module request.

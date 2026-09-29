@@ -146,6 +146,11 @@ compiles but cannot bind its first local socket here (`PermissionDenied`), so
 wire behavior remains unverified and the slice stays in progress. Ordinary
 Worker requests and other worker types remain separate. See the
 [slice 833 task](tasks/native-engine-browser-833.md).
+Slice 834 records the next bounded Worker policy-container contract: ordinary
+DedicatedWorker/SharedWorker Fetch and XHR inherit the initialized worker-global
+referrer policy while preserving empty public `Request.referrerPolicy` values
+and explicit overrides. Implementation and HTTP verification are in progress;
+see the [slice 834 task](tasks/native-engine-browser-834.md).
 Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).

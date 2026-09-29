@@ -65389,6 +65389,221 @@ async fn native_content_process_inherits_referrer_policy_through_module_workers(
 }
 
 #[tokio::test]
+async fn native_content_process_worker_fetch_and_xhr_use_worker_policy_container() {
+    fn request_header(request: &str, name: &str) -> Option<String> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header
+                    .eq_ignore_ascii_case(name)
+                    .then(|| value.trim().to_owned())
+            })
+        })
+    }
+
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_address = target_listener.local_addr().unwrap();
+    let page_origin = format!("http://{page_address}");
+    let target_origin = format!("http://{target_address}");
+    let policy_worker_url = format!("{page_origin}/worker-policy.js?token=worker");
+    let shared_worker_url = format!("{page_origin}/worker-shared.js?token=shared");
+    let page = r#"<script>
+      globalThis.workerMessages = [];
+      const policyWorker = new Worker('/worker-policy.js?token=worker');
+      policyWorker.onmessage = event => workerMessages.push(event.data);
+      const defaultWorker = new Worker('/worker-default.js');
+      defaultWorker.onmessage = event => workerMessages.push(event.data);
+      const invalidWorker = new Worker('/worker-invalid.js');
+      invalidWorker.onmessage = event => workerMessages.push(event.data);
+      const sharedWorker = new SharedWorker('/worker-shared.js?token=shared');
+      sharedWorker.port.onmessage = event => workerMessages.push({ type: 'shared', value: event.data });
+    </script>"#;
+    let policy_worker = format!(
+        r#"const target = '{target_origin}/record?case=';
+          const sourceRequest = new Request(target + 'source-request', {{ referrerPolicy: 'no-referrer' }});
+          const xhrAsync = new Promise(resolve => {{
+            const xhr = new XMLHttpRequest();
+            xhr.onload = () => resolve(xhr.status);
+            xhr.onerror = () => resolve(0);
+            xhr.open('GET', target + 'xhr-async');
+            xhr.send();
+          }});
+          const xhrSync = new XMLHttpRequest();
+          xhrSync.open('GET', target + 'xhr-sync', false);
+          xhrSync.send();
+          Promise.all([
+            fetch(new Request(target + 'fetch-default')).then(response => response.text()),
+            fetch(target + 'fetch-init', {{ referrerPolicy: 'origin' }}).then(response => response.text()),
+            fetch(sourceRequest).then(response => response.text()),
+            xhrAsync,
+          ]).then(results => postMessage({{
+            type: 'policy',
+            requestPolicy: new Request(target + 'visible').referrerPolicy,
+            sourceRequestPolicy: sourceRequest.referrerPolicy,
+            results,
+            xhrSyncStatus: xhrSync.status,
+          }})).catch(error => postMessage({{ type: 'policy-error', message: String(error) }}));"#
+    );
+    let default_worker = format!(
+        "fetch('{target_origin}/record?case=header-absent').then(response => postMessage({{ type: 'default', status: response.status }})).catch(error => postMessage({{ type: 'default-error', message: String(error) }}));"
+    );
+    let invalid_worker = format!(
+        "fetch('{target_origin}/record?case=header-invalid').then(response => postMessage({{ type: 'invalid', status: response.status }})).catch(error => postMessage({{ type: 'invalid-error', message: String(error) }}));"
+    );
+    let shared_worker = format!(
+        r#"onconnect = event => {{
+          const port = event.ports[0];
+          fetch('{target_origin}/record?case=shared').then(response => response.text())
+            .then(value => port.postMessage(value))
+            .catch(error => port.postMessage('error:' + String(error)));
+        }};"#
+    );
+    let page_server = tokio::spawn(async move {
+        for _ in 0..5 {
+            let (mut stream, _) =
+                tokio::time::timeout(Duration::from_secs(30), page_listener.accept())
+                    .await
+                    .expect("Document and Worker scripts should be requested")
+                    .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("Worker script request has a path")
+                .split('?')
+                .next()
+                .unwrap_or_default();
+            let (content_type, referrer_policy, body) = match path {
+                "/page" => (
+                    "text/html",
+                    "Referrer-Policy: no-referrer\r\n",
+                    page.to_owned(),
+                ),
+                "/worker-policy.js" => (
+                    "text/javascript",
+                    "Referrer-Policy: unsafe-url\r\n",
+                    policy_worker.clone(),
+                ),
+                "/worker-default.js" => ("text/javascript", "", default_worker.clone()),
+                "/worker-invalid.js" => (
+                    "text/javascript",
+                    "Referrer-Policy: unknown-policy\r\n",
+                    invalid_worker.clone(),
+                ),
+                "/worker-shared.js" => (
+                    "text/javascript",
+                    "Referrer-Policy: unsafe-url\r\n",
+                    shared_worker.clone(),
+                ),
+                other => panic!("unexpected Worker policy fixture request: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nCache-Control: no-store\r\n{referrer_policy}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let target_server = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            let (mut stream, _) =
+                tokio::time::timeout(Duration::from_secs(30), target_listener.accept())
+                    .await
+                    .expect("all Worker Fetch/XHR requests should reach the target")
+                    .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("target request has a path")
+                .to_owned();
+            let case = path
+                .split_once("case=")
+                .map(|(_, value)| value.to_owned())
+                .expect("target request includes its case marker");
+            let referer = request_header(&request, "referer");
+            let body = case.as_str();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            seen.push((case, referer));
+        }
+        seen
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("{page_origin}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let mut messages = serde_json::Value::Null;
+    for _ in 0..8 {
+        messages = engine.evaluate_async("workerMessages").await.unwrap();
+        if messages.as_array().is_some_and(|items| items.len() == 4) {
+            break;
+        }
+    }
+    assert_eq!(messages.as_array().map(Vec::len), Some(4), "{messages}");
+    assert!(
+        messages.as_array().unwrap().contains(&serde_json::json!({
+            "type": "policy",
+            "requestPolicy": "",
+            "sourceRequestPolicy": "no-referrer",
+            "results": ["fetch-default", "fetch-init", "source-request", 200],
+            "xhrSyncStatus": 200,
+        })),
+        "{messages}"
+    );
+    assert!(
+        messages.as_array().unwrap().contains(&serde_json::json!({
+            "type": "default", "status": 200
+        })),
+        "{messages}"
+    );
+    assert!(
+        messages.as_array().unwrap().contains(&serde_json::json!({
+            "type": "invalid", "status": 200
+        })),
+        "{messages}"
+    );
+    assert!(
+        messages.as_array().unwrap().contains(&serde_json::json!({
+            "type": "shared", "value": "shared"
+        })),
+        "{messages}"
+    );
+
+    engine.close_async().await.unwrap();
+    page_server.await.unwrap();
+    let seen = target_server.await.unwrap();
+    let observed = seen.into_iter().collect::<BTreeMap<_, _>>();
+    let worker_origin = format!("{page_origin}/");
+    let expected_referers = [
+        ("fetch-default", Some(policy_worker_url.as_str())),
+        ("fetch-init", Some(worker_origin.as_str())),
+        ("source-request", None),
+        ("xhr-async", Some(policy_worker_url.as_str())),
+        ("xhr-sync", Some(policy_worker_url.as_str())),
+        ("header-absent", Some(worker_origin.as_str())),
+        ("header-invalid", Some(worker_origin.as_str())),
+        ("shared", Some(shared_worker_url.as_str())),
+    ];
+    for (case, expected) in expected_referers {
+        assert_eq!(
+            observed.get(case).and_then(Option::as_deref),
+            expected,
+            "case={case}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_content_process_reloads_the_selected_srcset_candidate_after_sizes_mutation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

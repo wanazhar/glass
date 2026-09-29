@@ -31980,6 +31980,140 @@ async fn native_content_process_resolves_runtime_shared_worker_module_imports() 
     );
 }
 
+#[tokio::test]
+async fn native_content_process_shared_worker_fetch_api_uses_live_cookies() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for _ in 0..5 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "SharedWorker Fetch API request idle timeout after paths {:?}",
+                        requests
+                            .iter()
+                            .map(|(path, _): &(String, Option<String>)| path)
+                            .collect::<Vec<_>>()
+                    )
+                })
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("SharedWorker Fetch API request includes a URL")
+                .to_owned();
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
+            let (extra_headers, content_type, body): (&str, &str, &str) = match path.as_str() {
+                "/page" => (
+                    concat!(
+                        "Set-Cookie: worker_fetch=initial; Path=/; SameSite=Lax\r\n",
+                        "Set-Cookie: worker_fetch_secret=initial-secret; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "Set-Cookie: worker_fetch_removed=temporary; Path=/; SameSite=Lax\r\n",
+                        "Set-Cookie: worker_fetch_removed=; Max-Age=0; Path=/; SameSite=Lax\r\n",
+                    ),
+                    "text/html",
+                    "<script>globalThis.sharedFetchMessages = []; globalThis.sharedFetchWorker = new SharedWorker('/shared-fetch.js', { type: 'module', name: 'direct-fetch' }); sharedFetchWorker.port.onmessage = event => sharedFetchMessages.push(event.data); sharedFetchWorker.port.start();</script>",
+                ),
+                "/shared-fetch.js" => (
+                    "",
+                    "application/javascript",
+                    "globalThis.onconnect = event => { const port = event.ports[0]; port.postMessage({ kind: 'ready' }); port.onmessage = async message => { if (message.data !== 'fetch') return; try { const included = await fetch('/include', { credentials: 'include' }); const includeBody = await included.text(); const omitted = await fetch('/omit', { credentials: 'omit' }); const omitBody = await omitted.text(); const after = await fetch('/after', { credentials: 'include' }); const afterBody = await after.text(); port.postMessage({ kind: 'complete', values: [includeBody, omitBody, afterBody], statuses: [included.status, omitted.status, after.status] }); } catch (error) { port.postMessage({ kind: 'error', message: String(error) }); } }; };",
+                ),
+                "/include" => (
+                    concat!(
+                        "Set-Cookie: worker_fetch=latest; Path=/; SameSite=Lax\r\n",
+                        "Set-Cookie: worker_fetch_secret=latest-secret; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "Set-Cookie: worker_fetch_removed=; Max-Age=0; Path=/; SameSite=Lax\r\n",
+                    ),
+                    "text/plain",
+                    "included",
+                ),
+                "/omit" => ("", "text/plain", "omitted"),
+                "/after" => ("", "text/plain", "after"),
+                other => panic!("unexpected SharedWorker Fetch API request: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push((path, cookie));
+        }
+        requests
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    for _ in 0..4 {
+        let messages = engine.evaluate_async("sharedFetchMessages").await.unwrap();
+        if messages
+            .as_array()
+            .is_some_and(|messages| messages.iter().any(|message| message["kind"] == "ready"))
+        {
+            break;
+        }
+    }
+    assert_eq!(
+        engine.evaluate_async("sharedFetchMessages").await.unwrap(),
+        serde_json::json!([{ "kind": "ready" }])
+    );
+    engine
+        .evaluate_async("sharedFetchWorker.port.postMessage('fetch')")
+        .await
+        .unwrap();
+    for _ in 0..8 {
+        let complete = engine
+            .evaluate_async("sharedFetchMessages.some(message => message.kind === 'complete' || message.kind === 'error')")
+            .await
+            .unwrap();
+        if complete == serde_json::json!(true) {
+            break;
+        }
+    }
+    let messages = engine.evaluate_async("sharedFetchMessages").await.unwrap();
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(
+        messages,
+        serde_json::json!([
+            { "kind": "ready" },
+            { "kind": "complete", "values": ["included", "omitted", "after"], "statuses": [200, 200, 200] },
+        ]),
+        "a connected SharedWorker Fetch API must resolve response bodies and report the later request"
+    );
+    let cookie_for = |path: &str| {
+        requests
+            .iter()
+            .find(|(request_path, _)| request_path == path)
+            .unwrap_or_else(|| panic!("missing SharedWorker fetch request {path}"))
+            .1
+            .as_deref()
+            .unwrap_or("")
+            .to_owned()
+    };
+    let included_cookie = cookie_for("/include");
+    assert!(included_cookie.contains("worker_fetch=initial"));
+    assert!(included_cookie.contains("worker_fetch_secret=initial-secret"));
+    assert!(!included_cookie.contains("worker_fetch_removed="));
+    assert!(cookie_for("/omit").is_empty());
+    let after_cookie = cookie_for("/after");
+    assert!(after_cookie.contains("worker_fetch=latest"));
+    assert!(after_cookie.contains("worker_fetch_secret=latest-secret"));
+    assert!(!after_cookie.contains("worker_fetch_removed="));
+}
+
 #[test]
 fn native_runtime_shared_worker_module_credentials_cover_redirects_and_graph_cookies() {
     run_native_browser_worker_test(|runtime| {

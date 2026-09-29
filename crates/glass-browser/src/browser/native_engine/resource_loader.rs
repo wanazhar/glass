@@ -539,6 +539,41 @@ pub(crate) fn validate_target_navigation_payload(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeFetchCredentialsMode {
+    Omit,
+    SameOrigin,
+    Include,
+}
+
+impl NativeFetchCredentialsMode {
+    pub(crate) fn parse(value: &str) -> Result<Self, NativeEngineError> {
+        match value {
+            "omit" => Ok(Self::Omit),
+            "same-origin" => Ok(Self::SameOrigin),
+            "include" => Ok(Self::Include),
+            _ => Err(NativeEngineError::invalid(
+                "native Fetch credentials mode",
+                "must be omit, same-origin, or include",
+            )),
+        }
+    }
+}
+
+fn fetch_credentials_for_url(
+    mode: Option<NativeFetchCredentialsMode>,
+    legacy_credentials: bool,
+    owner_url: &Url,
+    request_url: &Url,
+) -> bool {
+    match mode {
+        Some(NativeFetchCredentialsMode::Omit) => false,
+        Some(NativeFetchCredentialsMode::SameOrigin) => owner_url.origin() == request_url.origin(),
+        Some(NativeFetchCredentialsMode::Include) => true,
+        None => legacy_credentials,
+    }
+}
+
 pub(crate) struct NativeFetchRequest<'a> {
     pub(crate) document_url: &'a str,
     pub(crate) href: &'a str,
@@ -547,6 +582,7 @@ pub(crate) struct NativeFetchRequest<'a> {
     pub(crate) content_type: Option<String>,
     pub(crate) request_headers: BTreeMap<String, String>,
     pub(crate) credentials: bool,
+    pub(crate) credentials_mode: Option<NativeFetchCredentialsMode>,
     pub(crate) cors_mode: NativeCorsMode,
     pub(crate) redirect_mode: NativeFetchRedirectMode,
     pub(crate) cache_mode: NativeFetchCacheMode,
@@ -4720,6 +4756,7 @@ impl NativeResourceLoader {
             content_type,
             request_headers: BTreeMap::new(),
             credentials,
+            credentials_mode: None,
             cors_mode: NativeCorsMode::Cors,
             redirect_mode: NativeFetchRedirectMode::Follow,
             cache_mode: NativeFetchCacheMode::Default,
@@ -4774,6 +4811,7 @@ impl NativeResourceLoader {
             content_type: None,
             request_headers: BTreeMap::new(),
             credentials: true,
+            credentials_mode: None,
             cors_mode: NativeCorsMode::Navigation,
             redirect_mode: NativeFetchRedirectMode::Follow,
             cache_mode: NativeFetchCacheMode::NoStore,
@@ -4868,6 +4906,7 @@ impl NativeResourceLoader {
             content_type,
             request_headers,
             credentials,
+            credentials_mode,
             cors_mode,
             redirect_mode,
             cache_mode,
@@ -5025,7 +5064,9 @@ impl NativeResourceLoader {
             && body.is_none()
             && redirect_mode == NativeFetchRedirectMode::Follow
             && cors_mode != NativeCorsMode::Navigation;
-        let request_cookie = if cacheable_request && credentials {
+        let initial_credentials =
+            fetch_credentials_for_url(credentials_mode, credentials, &document_url, &target_url);
+        let request_cookie = if cacheable_request && initial_credentials {
             self.network.cookie_header_for_request(
                 &target_url,
                 Some(&document_url),
@@ -5042,7 +5083,7 @@ impl NativeResourceLoader {
                 &method,
                 &current_headers,
                 content_type.as_deref(),
-                credentials,
+                initial_credentials,
                 cors_mode,
                 request_cookie.as_deref(),
             )
@@ -5108,6 +5149,12 @@ impl NativeResourceLoader {
         let response = loop {
             let mut request_url = current_url.clone();
             request_url.set_fragment(None);
+            let current_credentials = fetch_credentials_for_url(
+                credentials_mode,
+                credentials,
+                &document_url,
+                &current_url,
+            );
             let requested_headers =
                 cors_preflight_request_headers(current_content_type.as_deref(), &current_headers);
             let cross_origin_request = document_url.origin() != current_url.origin();
@@ -5132,7 +5179,7 @@ impl NativeResourceLoader {
                     &request_url,
                     &current_method,
                     &requested_headers,
-                    credentials,
+                    current_credentials,
                 )
                 .await?;
             }
@@ -5177,7 +5224,7 @@ impl NativeResourceLoader {
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
-            if credentials
+            if current_credentials
                 && let Some(cookie) = self.network.cookie_header_for_request(
                     &current_url,
                     Some(&document_url),
@@ -5193,13 +5240,15 @@ impl NativeResourceLoader {
                 .send()
                 .await
                 .map_err(|error| network_error("fetch request", error))?;
-            for value in response
-                .headers()
-                .get_all(reqwest::header::SET_COOKIE)
-                .iter()
-            {
-                if let Ok(cookie) = value.to_str() {
-                    pending_cookies.push((current_url.clone(), cookie.to_owned()));
+            if current_credentials {
+                for value in response
+                    .headers()
+                    .get_all(reqwest::header::SET_COOKIE)
+                    .iter()
+                {
+                    if let Ok(cookie) = value.to_str() {
+                        pending_cookies.push((current_url.clone(), cookie.to_owned()));
+                    }
                 }
             }
             if !is_http_redirect(response.status()) {
@@ -5316,6 +5365,8 @@ impl NativeResourceLoader {
             redirected = true;
         };
         let final_url = current_url;
+        let final_credentials =
+            fetch_credentials_for_url(credentials_mode, credentials, &document_url, &final_url);
         let status = response.status().as_u16();
         let status_text = response
             .status()
@@ -5364,7 +5415,12 @@ impl NativeResourceLoader {
             });
         }
         if cors_mode == NativeCorsMode::Cors
-            && !cors_response_allowed(&response_headers, &document_url, &final_url, credentials)
+            && !cors_response_allowed(
+                &response_headers,
+                &document_url,
+                &final_url,
+                final_credentials,
+            )
         {
             return Err(NativeEngineError::Network {
                 operation: "fetch CORS policy".into(),
@@ -5400,7 +5456,7 @@ impl NativeResourceLoader {
             exposed_response_headers(
                 &response_headers,
                 document_url.origin() == final_url.origin(),
-                credentials,
+                final_credentials,
             )?
         };
         let mut fetch_response = NativeFetchResponse {

@@ -32114,6 +32114,294 @@ async fn native_content_process_shared_worker_fetch_api_uses_live_cookies() {
     assert!(!after_cookie.contains("worker_fetch_removed="));
 }
 
+#[tokio::test]
+async fn native_content_process_shared_worker_fetch_credentials_modes_follow_redirects() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let primary_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let primary_address = primary_listener.local_addr().unwrap();
+    let cross_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let cross_address = cross_listener.local_addr().unwrap();
+    let page_origin = format!("http://{primary_address}");
+    let cross_origin = format!("http://{cross_address}");
+    let worker_cross_origin = cross_origin.clone();
+
+    let primary_server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(45), async move {
+            let mut requests = Vec::new();
+            let worker_script = format!(
+                r#"globalThis.onconnect = event => {{
+                  const port = event.ports[0];
+                  port.postMessage({{ kind: "ready" }});
+                  port.onmessage = async message => {{
+                    if (message.data !== "fetch") return;
+                    try {{
+                      const crossOrigin = "{worker_cross_origin}";
+                      const values = [];
+                      const defaultResponse = await fetch("/same-default");
+                      values.push(await defaultResponse.text());
+                      const request = new Request("/same-request");
+                      const requestResponse = await fetch(request);
+                      values.push(await requestResponse.text());
+                      const explicit = await fetch("/same-explicit", {{ credentials: "same-origin" }});
+                      values.push(await explicit.text());
+                      const sameOrigin = await fetch(crossOrigin + "/same-origin");
+                      values.push(await sameOrigin.text());
+                      const afterSameOrigin = await fetch(crossOrigin + "/after-same-origin");
+                      values.push(await afterSameOrigin.text());
+                      const redirected = await fetch("/redirect-to-cross");
+                      values.push(await redirected.text());
+                      const afterRedirect = await fetch("/after-redirect");
+                      values.push(await afterRedirect.text());
+                      const included = await fetch(crossOrigin + "/include", {{ credentials: "include" }});
+                      values.push(await included.text());
+                      const includeAfter = await fetch(crossOrigin + "/include-after", {{ credentials: "include" }});
+                      values.push(await includeAfter.text());
+                      const omitted = await fetch(crossOrigin + "/omit", {{ credentials: "omit" }});
+                      values.push(await omitted.text());
+                      const afterOmit = await fetch(crossOrigin + "/after-omit", {{ credentials: "include" }});
+                      values.push(await afterOmit.text());
+                      const invalidRejected = await fetch(crossOrigin + "/invalid", {{ credentials: "invalid" }})
+                        .then(() => false, error => error instanceof TypeError);
+                      port.postMessage({{
+                        kind: "complete",
+                        values,
+                        statuses: [defaultResponse.status, requestResponse.status, explicit.status,
+                          sameOrigin.status, afterSameOrigin.status, redirected.status,
+                          afterRedirect.status, included.status, includeAfter.status,
+                          omitted.status, afterOmit.status],
+                        requestCredentials: request.credentials,
+                        redirected: redirected.redirected,
+                        invalidRejected,
+                      }});
+                    }} catch (error) {{
+                      port.postMessage({{ kind: "error", message: String(error) }});
+                    }}
+                  }};
+                }};"#
+            );
+            for _ in 0..7 {
+                let (mut stream, _) = primary_listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("primary Fetch request includes a URL")
+                    .to_owned();
+                let cookie = request
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim().to_owned());
+                let (status, extra_headers, content_type, body): (&str, &str, &str, &str) =
+                    match path.as_str() {
+                        "/page" => (
+                            "200 OK",
+                            "Set-Cookie: root=seed; Path=/; SameSite=Lax\r\n",
+                            "text/html",
+                            "<script>globalThis.sharedFetchMessages = []; globalThis.sharedFetchWorker = new SharedWorker('/shared-fetch-credentials.js', { type: 'module', name: 'fetch-credentials' }); sharedFetchWorker.port.onmessage = event => sharedFetchMessages.push(event.data); sharedFetchWorker.port.start();</script>",
+                        ),
+                        "/shared-fetch-credentials.js" => (
+                            "200 OK",
+                            "",
+                            "application/javascript",
+                            worker_script.as_str(),
+                        ),
+                        "/same-default" => (
+                            "200 OK",
+                            "Set-Cookie: default=accepted; Path=/; SameSite=Lax\r\n",
+                            "text/plain",
+                            "default",
+                        ),
+                        "/same-request" => ("200 OK", "", "text/plain", "request"),
+                        "/same-explicit" => ("200 OK", "", "text/plain", "explicit"),
+                        "/redirect-to-cross" => (
+                            "302 Found",
+                            "",
+                            "text/plain",
+                            "redirecting",
+                        ),
+                        "/after-redirect" => ("200 OK", "", "text/plain", "after-redirect"),
+                        other => panic!("unexpected primary Fetch request: {other}"),
+                    };
+                let extra_headers = if path == "/redirect-to-cross" {
+                    format!(
+                        "Location: {}/redirect-target\r\nSet-Cookie: hop=accepted; Path=/; SameSite=Lax\r\n",
+                        worker_cross_origin
+                    )
+                } else {
+                    extra_headers.to_owned()
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push((path, cookie));
+            }
+            requests
+        })
+        .await
+        .expect("primary SharedWorker credential requests stay within the time bound")
+    });
+
+    let cross_server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(45), async move {
+            let mut requests = Vec::new();
+            for _ in 0..7 {
+                let (mut stream, _) = cross_listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("cross-origin Fetch request includes a URL")
+                    .to_owned();
+                let cookie = request
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim().to_owned());
+                let (extra_headers, body) = match path.as_str() {
+                    "/same-origin" => (
+                        "Access-Control-Allow-Origin: *\r\nSet-Cookie: cross_same=ignored; Path=/; SameSite=Lax\r\n".to_owned(),
+                        "same-origin",
+                    ),
+                    "/after-same-origin" => {
+                        ("Access-Control-Allow-Origin: *\r\n".to_owned(), "after-same-origin")
+                    }
+                    "/redirect-target" => (
+                        "Access-Control-Allow-Origin: *\r\nSet-Cookie: cross_redirect=ignored; Path=/; SameSite=Lax\r\n".to_owned(),
+                        "redirect-target",
+                    ),
+                    "/include" => (
+                        format!(
+                            "Access-Control-Allow-Origin: {page_origin}\r\nAccess-Control-Allow-Credentials: true\r\nSet-Cookie: cross=accepted; Path=/; SameSite=Lax\r\n"
+                        ),
+                        "include",
+                    ),
+                    "/include-after" => (
+                        format!(
+                            "Access-Control-Allow-Origin: {page_origin}\r\nAccess-Control-Allow-Credentials: true\r\n"
+                        ),
+                        "include-after",
+                    ),
+                    "/omit" => (
+                        "Access-Control-Allow-Origin: *\r\nSet-Cookie: omitted=ignored; Path=/; SameSite=Lax\r\n".to_owned(),
+                        "omit",
+                    ),
+                    "/after-omit" => (
+                        format!(
+                            "Access-Control-Allow-Origin: {page_origin}\r\nAccess-Control-Allow-Credentials: true\r\n"
+                        ),
+                        "after-omit",
+                    ),
+                    other => panic!("unexpected cross-origin Fetch request: {other}"),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n{extra_headers}Content-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push((path, cookie));
+            }
+            requests
+        })
+        .await
+        .expect("cross-origin SharedWorker credential requests stay within the time bound")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{primary_address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let ready = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let messages = engine.evaluate_async("sharedFetchMessages").await.unwrap();
+            if messages
+                .as_array()
+                .is_some_and(|messages| messages.iter().any(|message| message["kind"] == "ready"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(ready.is_ok(), "module SharedWorker must announce readiness");
+    engine
+        .evaluate_async("sharedFetchWorker.port.postMessage('fetch')")
+        .await
+        .unwrap();
+    let messages = tokio::time::timeout(Duration::from_secs(40), async {
+        loop {
+            let messages = engine.evaluate_async("sharedFetchMessages").await.unwrap();
+            if messages.as_array().is_some_and(|messages| {
+                messages
+                    .iter()
+                    .any(|message| message["kind"] == "complete" || message["kind"] == "error")
+            }) {
+                break messages;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("worker credential requests must settle");
+    engine.close_async().await.unwrap();
+    let primary_requests = primary_server.await.unwrap();
+    let cross_requests = cross_server.await.unwrap();
+
+    assert_eq!(
+        messages,
+        serde_json::json!([
+            { "kind": "ready" },
+            {
+                "kind": "complete",
+                "values": ["default", "request", "explicit", "same-origin", "after-same-origin", "redirect-target", "after-redirect", "include", "include-after", "omit", "after-omit"],
+                "statuses": [200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200],
+                "requestCredentials": "same-origin",
+                "redirected": true,
+                "invalidRejected": true,
+            },
+        ]),
+        "worker Fetch must preserve same-origin credentials, CORS, redirect, and invalid-mode semantics"
+    );
+    let cookie_for = |requests: &[(String, Option<String>)], path: &str| {
+        requests
+            .iter()
+            .find(|(request_path, _)| request_path == path)
+            .unwrap_or_else(|| panic!("missing Fetch request {path}"))
+            .1
+            .as_deref()
+            .unwrap_or("")
+            .to_owned()
+    };
+    let default_cookie = cookie_for(&primary_requests, "/same-default");
+    assert!(default_cookie.contains("root=seed"));
+    let request_cookie = cookie_for(&primary_requests, "/same-request");
+    assert!(request_cookie.contains("default=accepted"));
+    let explicit_cookie = cookie_for(&primary_requests, "/same-explicit");
+    assert!(explicit_cookie.contains("default=accepted"));
+    let same_origin_cookie = cookie_for(&cross_requests, "/same-origin");
+    assert!(same_origin_cookie.is_empty());
+    assert!(cookie_for(&cross_requests, "/after-same-origin").is_empty());
+    assert!(cookie_for(&cross_requests, "/redirect-target").is_empty());
+    let after_redirect_cookie = cookie_for(&primary_requests, "/after-redirect");
+    assert!(after_redirect_cookie.contains("hop=accepted"));
+    assert!(!after_redirect_cookie.contains("cross_redirect="));
+    let include_cookie = cookie_for(&cross_requests, "/include");
+    assert!(include_cookie.contains("root=seed"));
+    assert!(include_cookie.contains("default=accepted"));
+    assert!(!include_cookie.contains("cross_same="));
+    assert!(!include_cookie.contains("cross_redirect="));
+    let include_after_cookie = cookie_for(&cross_requests, "/include-after");
+    assert!(include_after_cookie.contains("cross=accepted"));
+    assert!(cookie_for(&cross_requests, "/omit").is_empty());
+    let after_omit_cookie = cookie_for(&cross_requests, "/after-omit");
+    assert!(after_omit_cookie.contains("cross=accepted"));
+    assert!(!after_omit_cookie.contains("omitted="));
+}
+
 #[test]
 fn native_runtime_shared_worker_module_credentials_cover_redirects_and_graph_cookies() {
     run_native_browser_worker_test(|runtime| {

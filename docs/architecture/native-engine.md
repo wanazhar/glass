@@ -1,7 +1,7 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-822`; issue #40 remains open. Slice 818 synchronizes
+`native-engine-browser-823`; issue #40 remains open. Slice 818 synchronizes
 ordinary response-cookie deltas to same-backend live contexts after profile
 merge; Slice 819 verifies a live module SharedWorker's next module request.
 Slice 820 extends delivery across separately created live sessions sharing one
@@ -23,8 +23,14 @@ request; four related process-backed tests passed (68.32 seconds), including
 the new regression, and the adjacent module-import test passed separately
 (18.78 seconds). The browser-owned SharedWorker route is unchanged. The scoped
 check passed with existing dead-code warnings from the superseded HTML parser
-in `dom.rs`. Same-origin credential-mode behavior, broader cookie/Fetch WPT
-conformance, and cross-platform coverage remain open. See the [slice 822
+in `dom.rs`. Slice 823 preserves `omit`, `same-origin`, and `include` through
+direct worker Fetch requests and reevaluates cookie send/accept behavior at
+each redirect. Its two-origin process-backed regression passed (1 passed;
+21.71 seconds), and the separate module-graph credentials regression passed
+(1 passed; 24.50 seconds). The scoped check passed with 68 existing dead-code
+warnings from the legacy HTML parser. Page Fetch, Service Worker Fetch, broader
+Fetch/WPT conformance, remote CI, and cross-platform coverage remain open. See
+the [slice 823 task](../plan/tasks/native-engine-browser-823.md), the [slice 822
 task](../plan/tasks/native-engine-browser-822.md), the [slice 821
 task](../plan/tasks/native-engine-browser-821.md), the [slice 820
 task](../plan/tasks/native-engine-browser-820.md), the [slice 819 task](../plan/tasks/native-engine-browser-819.md), the

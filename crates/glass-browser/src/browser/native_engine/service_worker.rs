@@ -30,8 +30,8 @@ use super::javascript::{
 use super::origin::NativeOrigin;
 use super::resource_loader::{
     NativeCorsMode, NativeFetchCacheMode, NativeFetchCredentialsMode, NativeFetchMethod,
-    NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse, NativeNavigationRequest,
-    NativeRequestBody, NativeResource, NativeResourceLoader,
+    NativeFetchRedirectMode, NativeFetchReferrerPolicy, NativeFetchRequest, NativeFetchResponse,
+    NativeNavigationRequest, NativeRequestBody, NativeResource, NativeResourceLoader,
 };
 use base64::Engine as _;
 use serde_json::{Value, json};
@@ -586,11 +586,13 @@ impl NativeServiceWorkerRegistry {
         source: String,
         import_script_counts: BTreeMap<String, usize>,
         module_graph: Option<NativeWorkerModuleGraph>,
+        worker_referrer_policy: NativeFetchReferrerPolicy,
     ) -> Result<NativeServiceWorker, NativeEngineError> {
         let worker_id = self.next_worker_id()?;
-        let runtime = NativeJavaScriptRuntime::new_with_context_id(format!(
+        let mut runtime = NativeJavaScriptRuntime::new_with_context_id(format!(
             "glass-service-worker-{worker_id}"
         ))?;
+        runtime.set_worker_global_referrer_policy(worker_referrer_policy);
         let module_name = if is_module {
             let graph = module_graph.ok_or_else(|| {
                 NativeEngineError::invalid(
@@ -662,14 +664,15 @@ impl NativeServiceWorkerRegistry {
             })?;
         let is_module = worker_type.eq_ignore_ascii_case("module");
         let root_request_url = resolve_module_request_url(script_url, script_url)?;
-        let (source, import_script_counts, module_graph) = load_service_worker_source(
-            loader,
-            script_url,
-            root_request_url,
-            resource.clone(),
-            is_module,
-        )
-        .await?;
+        let (source, import_script_counts, module_graph, worker_referrer_policy) =
+            load_service_worker_source(
+                loader,
+                script_url,
+                root_request_url,
+                resource.clone(),
+                is_module,
+            )
+            .await?;
         self.instantiate_worker(
             loader,
             resource.url,
@@ -678,6 +681,7 @@ impl NativeServiceWorkerRegistry {
             source,
             import_script_counts,
             module_graph,
+            worker_referrer_policy,
         )
         .await
     }
@@ -847,14 +851,15 @@ impl NativeServiceWorkerRegistry {
             })?;
         let root_request_url =
             resolve_module_request_url(&profile.script_url, &profile.script_url)?;
-        let (source, import_script_counts, module_graph) = load_service_worker_source(
-            loader,
-            &profile.script_url,
-            root_request_url,
-            resource.clone(),
-            is_module,
-        )
-        .await?;
+        let (source, import_script_counts, module_graph, worker_referrer_policy) =
+            load_service_worker_source(
+                loader,
+                &profile.script_url,
+                root_request_url,
+                resource.clone(),
+                is_module,
+            )
+            .await?;
         let worker = self
             .instantiate_worker(
                 loader,
@@ -864,6 +869,7 @@ impl NativeServiceWorkerRegistry {
                 source,
                 import_script_counts,
                 module_graph,
+                worker_referrer_policy,
             )
             .await?;
         self.install_worker(worker, loader).await
@@ -1030,14 +1036,15 @@ impl NativeServiceWorkerRegistry {
                 reason: "service worker script was blocked or unavailable".into(),
             })?;
         let root_request_url = resolve_module_request_url(owner_url, &script)?;
-        let (source, import_script_counts, module_graph) = load_service_worker_source(
-            loader,
-            owner_url,
-            root_request_url,
-            resource.clone(),
-            is_module,
-        )
-        .await?;
+        let (source, import_script_counts, module_graph, worker_referrer_policy) =
+            load_service_worker_source(
+                loader,
+                owner_url,
+                root_request_url,
+                resource.clone(),
+                is_module,
+            )
+            .await?;
         let worker = self
             .instantiate_worker(
                 loader,
@@ -1047,6 +1054,7 @@ impl NativeServiceWorkerRegistry {
                 source,
                 import_script_counts,
                 module_graph,
+                worker_referrer_policy,
             )
             .await?;
         self.install_worker(worker, loader).await

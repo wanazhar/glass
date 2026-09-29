@@ -156,6 +156,12 @@ to preloaded classic `importScripts()` dependencies, including nested
 DedicatedWorker, SharedWorker, and ServiceWorker imports. The compiled
 process-backed regression is pending execution where local listener binds are
 permitted; see the [slice 835 task](tasks/native-engine-browser-835.md).
+Slice 836 carries the ServiceWorker script response policy container through
+module dependency fetching and into Worker-global Fetch and asynchronous XHR,
+without changing public Request policy values or explicit overrides. Its
+process-backed HTTP assertions remain pending execution in an environment
+that permits local listener binds; see the
+[slice 836 task](tasks/native-engine-browser-836.md).
 Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).

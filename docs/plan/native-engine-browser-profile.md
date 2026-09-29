@@ -268,6 +268,16 @@ ServiceWorker Fetch/XHR, broader Referrer Policy/Fetch or WPT conformance,
 remote CI, and cross-platform certification remain open. See the
 [slice 835 task](tasks/native-engine-browser-835.md).
 
+Slice 836 applies the fetched ServiceWorker script resource's policy
+container to module dependency requests and to Fetch and asynchronous XHR
+started by the ServiceWorker itself. An empty request policy inherits the
+worker-global default without changing the public `Request.referrerPolicy`;
+explicit request policies remain authoritative. FetchEvent request provenance,
+the ServiceWorker registration entry request, synchronous XHR, navigation
+preload, dynamic module imports, broader Referrer Policy/Fetch or WPT
+conformance, remote CI, and cross-platform certification remain separate.
+See the [slice 836 task](tasks/native-engine-browser-836.md).
+
 ### Explicit `tabindex` focus baseline
 
 Within the current light-DOM focus scope, a valid explicit `tabindex` makes an

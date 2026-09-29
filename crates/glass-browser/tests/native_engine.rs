@@ -35482,6 +35482,164 @@ async fn native_content_process_classic_import_scripts_use_worker_policy_and_roo
 }
 
 #[tokio::test]
+async fn native_content_process_service_worker_fetches_use_script_policy_container() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let mut requests = Vec::new();
+            for _ in 0..13 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("ServiceWorker policy request includes a URL")
+                    .to_owned();
+                let referer = request.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("referer")
+                        .then(|| value.trim().to_owned())
+                });
+                let (extra_headers, content_type, body) = match path.as_str() {
+                    "/page" => (
+                        "",
+                        "text/html",
+                        "<script>globalThis.registrationStates = ['pending', 'pending', 'pending']; const track = (index, script, options) => navigator.serviceWorker.register(script, options).then(() => registrationStates[index] = 'ready', error => registrationStates[index] = String(error)); globalThis.registrationPromise = Promise.all([track(0, '/scopes/no-ref/sw.js'), track(1, '/scopes/origin/sw.js'), track(2, '/scopes/module/sw.js', { type: 'module' })]);</script>",
+                    ),
+                    "/scopes/no-ref/sw.js" => (
+                        "Referrer-Policy: no-referrer\r\n",
+                        "application/javascript",
+                        "self.addEventListener('install', event => event.waitUntil((async () => { await fetch('/probe/no-ref/fetch'); await new Promise((resolve, reject) => { const xhr = new XMLHttpRequest(); xhr.onload = resolve; xhr.onerror = () => reject(new Error('XHR failed')); xhr.open('GET', '/probe/no-ref/xhr'); xhr.send(); }); await self.skipWaiting(); })()));",
+                    ),
+                    "/scopes/origin/sw.js" => (
+                        "Referrer-Policy: origin\r\n",
+                        "application/javascript",
+                        "self.addEventListener('install', event => event.waitUntil((async () => { await fetch('/probe/origin/fetch'); await fetch('/probe/origin/override', { referrerPolicy: 'no-referrer' }); await new Promise((resolve, reject) => { const xhr = new XMLHttpRequest(); xhr.onload = resolve; xhr.onerror = () => reject(new Error('XHR failed')); xhr.open('GET', '/probe/origin/xhr'); xhr.send(); }); await self.skipWaiting(); })()));",
+                    ),
+                    "/scopes/module/sw.js" => (
+                        "",
+                        "application/javascript",
+                        "import { bridgeValue } from './bridge.js'; self.addEventListener('install', event => event.waitUntil((async () => { await fetch('/probe/module/fetch'); await new Promise((resolve, reject) => { const xhr = new XMLHttpRequest(); xhr.onload = resolve; xhr.onerror = () => reject(new Error('XHR failed')); xhr.open('GET', '/probe/module/xhr'); xhr.send(); }); await self.skipWaiting(); })()));",
+                    ),
+                    "/scopes/module/bridge.js" => (
+                        "Referrer-Policy: origin\r\n",
+                        "application/javascript",
+                        "import { leafValue } from './leaf.js'; export const bridgeValue = leafValue;",
+                    ),
+                    "/scopes/module/leaf.js" => (
+                        "",
+                        "application/javascript",
+                        "export const leafValue = 'loaded';",
+                    ),
+                    path if path.starts_with("/probe/") => (
+                        "",
+                        "text/plain",
+                        "ok",
+                    ),
+                    other => panic!("unexpected ServiceWorker policy request: {other}"),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push((path, referer));
+            }
+            requests.sort();
+            requests
+        })
+        .await
+        .expect("ServiceWorker policy requests stay within their time bound")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let mut states = serde_json::Value::Null;
+    for _ in 0..16 {
+        states = engine.evaluate_async("registrationStates").await.unwrap();
+        if states
+            .as_array()
+            .is_some_and(|states| states.iter().all(|state| state == "ready"))
+        {
+            break;
+        }
+    }
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(states, serde_json::json!(["ready", "ready", "ready"]));
+    let expected_paths = [
+        "/page",
+        "/scopes/no-ref/sw.js",
+        "/probe/no-ref/fetch",
+        "/probe/no-ref/xhr",
+        "/scopes/origin/sw.js",
+        "/probe/origin/fetch",
+        "/probe/origin/override",
+        "/probe/origin/xhr",
+        "/scopes/module/sw.js",
+        "/scopes/module/bridge.js",
+        "/scopes/module/leaf.js",
+        "/probe/module/fetch",
+        "/probe/module/xhr",
+    ];
+    let mut actual_paths = requests
+        .iter()
+        .map(|(path, _)| path.as_str())
+        .collect::<Vec<_>>();
+    actual_paths.sort_unstable();
+    let mut expected_paths = expected_paths.to_vec();
+    expected_paths.sort_unstable();
+    assert_eq!(actual_paths, expected_paths);
+
+    let origin = format!("http://{address}");
+    let root_referrer = |path: &str| format!("{origin}{path}");
+    let referer_for = |path: &str| {
+        requests
+            .iter()
+            .find(|(request_path, _)| request_path == path)
+            .unwrap_or_else(|| panic!("missing request {path}"))
+            .1
+            .as_deref()
+            .map(str::to_owned)
+    };
+    for path in ["/probe/no-ref/fetch", "/probe/no-ref/xhr"] {
+        assert_eq!(
+            referer_for(path),
+            None,
+            "ServiceWorker no-referrer for {path}"
+        );
+    }
+    assert_eq!(
+        referer_for("/probe/origin/fetch"),
+        Some(format!("{origin}/"))
+    );
+    assert_eq!(referer_for("/probe/origin/xhr"), Some(format!("{origin}/")));
+    assert_eq!(referer_for("/probe/origin/override"), None);
+    for path in ["/probe/module/fetch", "/probe/module/xhr"] {
+        assert_eq!(
+            referer_for(path),
+            Some(root_referrer("/scopes/module/sw.js")),
+            "missing root response policy defaults to strict-origin-when-cross-origin for {path}"
+        );
+    }
+    assert_eq!(
+        referer_for("/scopes/module/bridge.js"),
+        Some(root_referrer("/scopes/module/sw.js"))
+    );
+    assert_eq!(
+        referer_for("/scopes/module/leaf.js"),
+        Some(format!("{origin}/")),
+        "a module dependency response policy governs its descendants"
+    );
+}
+
+#[tokio::test]
 async fn native_content_process_form_attribute_associates_external_controls() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

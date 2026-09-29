@@ -26031,7 +26031,30 @@ mod tests {
             super::super::dom::NativeDocument::parse(html, &NativeEngineLimits::default())
                 .expect("fixture document");
         let root = document.node(document.root()).expect("document root");
-        let child = *root.children().first().expect("fixture element");
+        let html_id = root
+            .children()
+            .iter()
+            .copied()
+            .find(|id| document.node(*id).and_then(NativeNode::element_name) == Some("html"))
+            .expect("parsed document element");
+        let html = document.node(html_id).expect("parsed html element");
+        let body_id = html
+            .children()
+            .iter()
+            .copied()
+            .find(|id| document.node(*id).and_then(NativeNode::element_name) == Some("body"))
+            .expect("parsed body element");
+        let body = document.node(body_id).expect("parsed body element");
+        let child = body
+            .children()
+            .iter()
+            .copied()
+            .find(|id| {
+                document
+                    .node(*id)
+                    .is_some_and(|node| node.element_name().is_some())
+            })
+            .expect("fixture element in body");
         document.node(child).expect("fixture element").clone()
     }
 
@@ -26499,7 +26522,7 @@ mod tests {
     #[test]
     fn document_selector_matches_bounded_attribute_namespace_selectors() {
         let document = NativeDocument::parse(
-            "<main><svg id='svg' href='plain' xlink:href='target'></svg><div id='html' xml:lang='en'></div></main>",
+            "<main><svg id='svg' href='plain' xlink:href='target' xml:lang='en'></svg><div id='html' xml:lang='en'></div></main>",
             &NativeEngineLimits::default(),
         )
         .expect("attribute namespace selector fixture document");
@@ -26521,7 +26544,7 @@ mod tests {
         assert_eq!(matched_ids("[xlink|href='target']"), vec!["svg"]);
         assert_eq!(matched_ids("[*|href]"), vec!["svg"]);
         assert_eq!(matched_ids("[|href]"), vec!["svg"]);
-        assert_eq!(matched_ids("[xml|lang='en']"), vec!["html"]);
+        assert_eq!(matched_ids("[xml|lang='en']"), vec!["svg"]);
         assert!(matched_ids("[svg|href]").is_empty());
     }
 
@@ -27147,7 +27170,7 @@ mod tests {
     #[test]
     fn document_selector_matches_bounded_language_pseudo_class() {
         let document = NativeDocument::parse(
-            "<main id='english' lang='en'><section id='inherit'><p id='french' lang='fr-FR'><span id='french-child'></span></p><p id='german' xml:lang='de-DE'></p><p id='plain'></p></section></main>",
+            "<main id='english' lang='en'><section id='inherit'><p id='french' lang='fr-FR'><span id='french-child'></span></p><p id='german' lang='de-DE'></p><p id='plain'></p></section></main>",
             &NativeEngineLimits::default(),
         )
         .expect("language pseudo-class fixture document");
@@ -27181,7 +27204,7 @@ mod tests {
         ])
         .expect("language pseudo-class stylesheet");
         let document = NativeDocument::parse(
-            "<main lang='en'><p id='plain'></p><p id='french' lang='fr-FR'><span id='french-child'></span></p><p id='german' xml:lang='de-DE'></p></main>",
+            "<main lang='en'><p id='plain'></p><p id='french' lang='fr-FR'><span id='french-child'></span></p><p id='german' lang='de-DE'></p></main>",
             &NativeEngineLimits::default(),
         )
         .expect("language pseudo-class cascade document");
@@ -45127,7 +45150,7 @@ mod tests {
     #[test]
     fn font_family_and_size_are_inherited_with_css_wide_resets() {
         let document = NativeDocument::parse(
-            "<style>#parent { font-family: sans-serif; font-size: 24px; } #clear { font-family: initial; font-size: initial; } #inherit { font-family: inherit; font-size: inherit; } #invalid { font-family: sans-serif,; font-size: 400px; } #absolute { font-size: 9pt; } #relative { font-size: 1.5em; } #percent { font-size: 125%; } #relative-invalid { font-size: 2000%; } #nested { font-size: 32px; } #rem { font-size: 1.5rem; } #rem-invalid { font-size: 20rem; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='inherit'>Inherit</span><span id='invalid'>Invalid</span><span id='absolute'>Absolute</span><span id='relative'>Relative</span><span id='percent'>Percent</span><span id='relative-invalid'>Relative invalid</span><span id='nested'><span id='rem'>Rem</span><span id='rem-invalid'>Rem invalid</span></span></div>",
+            "<style>html { font-size: 24px; } #parent { font-family: sans-serif; font-size: 24px; } #clear { font-family: initial; font-size: initial; } #inherit { font-family: inherit; font-size: inherit; } #invalid { font-family: sans-serif,; font-size: 400px; } #absolute { font-size: 9pt; } #relative { font-size: 1.5em; } #percent { font-size: 125%; } #relative-invalid { font-size: 2000%; } #nested { font-size: 32px; } #rem { font-size: 1.5rem; } #rem-invalid { font-size: 20rem; }</style><div id='parent'><span id='child'>Child</span><span id='clear'>Clear</span><span id='inherit'>Inherit</span><span id='invalid'>Invalid</span><span id='absolute'>Absolute</span><span id='relative'>Relative</span><span id='percent'>Percent</span><span id='relative-invalid'>Relative invalid</span><span id='nested'><span id='rem'>Rem</span><span id='rem-invalid'>Rem invalid</span></span></div>",
             &NativeEngineLimits::default(),
         )
         .unwrap();

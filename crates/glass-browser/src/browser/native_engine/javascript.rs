@@ -33370,7 +33370,9 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       body,
       mode: String(payload && payload.mode || "same-origin"),
       redirect: String(payload && payload.redirect || "follow"),
-      credentials: payload && payload.credentials === true ? "include" : "omit",
+      credentials: payload && typeof payload.credentialsMode === "string"
+        ? payload.credentialsMode
+        : payload && payload.credentials === true ? "include" : "omit",
       destination: String(payload && payload.destination || ""),
     });
     let responded = false;
@@ -36236,11 +36238,15 @@ fn document_bootstrap(
       throw new TypeError("native Request cache mode is unsupported");
     if (cache === "only-if-cached" && mode !== "same-origin")
       throw new TypeError("native only-if-cached Requests require same-origin mode");
+    const credentialsMode = settings.credentials === undefined ? "same-origin" : String(settings.credentials);
+    if (!["omit", "same-origin", "include"].includes(credentialsMode))
+      throw new TypeError("native Request credentials mode is unsupported");
     const headers = new HeadersNative(settings.headers);
     settings.method = method;
     settings.mode = mode;
     settings.redirect = redirect;
     settings.cache = cache;
+    settings.credentials = credentialsMode;
     settings.headers = headers;
     Object.defineProperty(this, "__glassRequest", {{ value: true }});
     Object.defineProperty(this, "_settings", {{ value: settings }});
@@ -36252,7 +36258,7 @@ fn document_bootstrap(
     this.mode = mode;
     this.redirect = redirect;
     this.cache = cache;
-    this.credentials = settings.credentials === undefined ? "same-origin" : String(settings.credentials);
+    this.credentials = credentialsMode;
     this.signal = settings.signal === undefined ? null : settings.signal;
     const requestBodyState = this.__glassRequestBodyState;
     requestBodyState.stream = payload.bodyNull
@@ -36423,6 +36429,9 @@ fn document_bootstrap(
       return Promise.reject(new TypeError("native fetch cache mode is unsupported"));
     if (cache === "only-if-cached" && mode !== "same-origin")
       return Promise.reject(new TypeError("native only-if-cached fetches require same-origin mode"));
+    const credentialsMode = settings.credentials === undefined ? "same-origin" : String(settings.credentials);
+    if (!["omit", "same-origin", "include"].includes(credentialsMode))
+      return Promise.reject(new TypeError("native fetch credentials mode is unsupported"));
     let method;
     try {{ method = nativeFetchMethod(settings.method === undefined ? "GET" : settings.method); }}
     catch (error) {{ return Promise.reject(error); }}
@@ -36567,7 +36576,7 @@ fn document_bootstrap(
       return Promise.reject(new TypeError("native object URL is revoked or unavailable"));
     nextFetchRequestId += 1;
     globalThis.__glassNextFetchRequestId = nextFetchRequestId;
-    const credentials = settings.credentials !== "omit";
+    const credentials = credentialsMode !== "omit";
     const timeoutSetting = settings.__glassTimeoutMs === undefined
       ? null
       : Number(settings.__glassTimeoutMs);
@@ -36592,7 +36601,7 @@ fn document_bootstrap(
       fetchRequests.set(requestId, pending);
       if (signal) signal.addEventListener("abort", abort);
       if (!fetchRequests.has(requestId)) return;
-      pushCommand({{ kind: "fetch", request_id: requestId, href, credentials, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, cache, timeout_ms: timeoutMs, upload_stream_id: hasStreamedBody ? requestId : null, destination }});
+      pushCommand({{ kind: "fetch", request_id: requestId, href, credentials, credentials_mode: credentialsMode, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, cache, timeout_ms: timeoutMs, upload_stream_id: hasStreamedBody ? requestId : null, destination }});
     }});
   }};
   const responseHeaders = (rawEntries, contentType) => {{

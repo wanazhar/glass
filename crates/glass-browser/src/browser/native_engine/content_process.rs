@@ -69,12 +69,12 @@ use super::resource_loader::{
     MAX_NATIVE_CSP_VIOLATIONS, MAX_NATIVE_RESPONSE_HEADER_BYTES,
     MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES, MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
     MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode, NativeCspViolation, NativeFetchCacheMode,
-    NativeFetchMethod, NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse,
-    NativeFetchResponseStream, NativeModuleResourceType, NativeNavigationMethod,
-    NativeNavigationPolicyKind, NativeNavigationRequest, NativeObjectUrlResource,
-    NativeRequestBody, NativeResource, NativeResourceLoader, NativeStylesheetResource,
-    NativeWebSocketTarget, resolve_subresource_url, schedule_native_csp_report_deliveries,
-    validate_target_navigation_payload,
+    NativeFetchCredentialsMode, NativeFetchMethod, NativeFetchRedirectMode, NativeFetchRequest,
+    NativeFetchResponse, NativeFetchResponseStream, NativeModuleResourceType,
+    NativeNavigationMethod, NativeNavigationPolicyKind, NativeNavigationRequest,
+    NativeObjectUrlResource, NativeRequestBody, NativeResource, NativeResourceLoader,
+    NativeStylesheetResource, NativeWebSocketTarget, resolve_subresource_url,
+    schedule_native_csp_report_deliveries, validate_target_navigation_payload,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -172,6 +172,7 @@ struct NativePendingControlledUpload {
     cache_mode: NativeFetchCacheMode,
     timeout: Option<Duration>,
     credentials: bool,
+    credentials_mode: Option<NativeFetchCredentialsMode>,
 }
 
 type NativeScriptFetch = (
@@ -187,6 +188,7 @@ type NativeScriptFetch = (
     Option<Duration>,
     Option<u32>,
     bool,
+    Option<NativeFetchCredentialsMode>,
     bool,
     Option<String>,
     bool,
@@ -6209,6 +6211,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         NativeFetchRedirectMode::Follow,
                         None,
                         credentials,
+                        None,
                         "fetch",
                     )
                     .await;
@@ -13188,7 +13191,7 @@ fn fetch_commands(
                 worker_id: _,
                 href,
                 credentials,
-                credentials_mode: _,
+                credentials_mode,
                 method,
                 headers,
                 body,
@@ -13216,6 +13219,7 @@ fn fetch_commands(
                 *timeout_ms,
                 *upload_stream_id,
                 *credentials,
+                credentials_mode.clone(),
                 destination.clone(),
                 module_referrer.clone(),
                 *module_type,
@@ -13237,6 +13241,7 @@ fn fetch_commands(
                 timeout_ms,
                 upload_stream_id,
                 credentials,
+                credentials_mode,
                 destination,
                 module_referrer,
                 module_type,
@@ -13271,6 +13276,10 @@ fn fetch_commands(
                     }
                 };
                 let cache_mode = NativeFetchCacheMode::from_option(cache.as_deref())?;
+                let credentials_mode = credentials_mode
+                    .as_deref()
+                    .map(NativeFetchCredentialsMode::parse)
+                    .transpose()?;
                 let method =
                     NativeFetchMethod::from_fetch_method(method.as_str()).map_err(|_| {
                         NativeEngineError::invalid(
@@ -13337,6 +13346,7 @@ fn fetch_commands(
                     timeout,
                     upload_stream_id,
                     credentials,
+                    credentials_mode,
                     font_destination,
                     module_referrer,
                     module_destination,
@@ -13888,6 +13898,7 @@ async fn resolve_script_fetches(
             timeout,
             upload_stream_id,
             credentials,
+            credentials_mode,
             font_destination,
             module_referrer,
             module_destination,
@@ -14003,6 +14014,7 @@ async fn resolve_script_fetches(
                             redirect_mode,
                             timeout,
                             credentials,
+                            credentials_mode,
                             "font",
                         )
                         .await
@@ -14107,6 +14119,7 @@ async fn resolve_script_fetches(
                             cache_mode,
                             timeout,
                             credentials,
+                            credentials_mode,
                         },
                     );
                     continue;
@@ -14138,7 +14151,7 @@ async fn resolve_script_fetches(
                                 content_type,
                                 request_headers: headers,
                                 credentials,
-                                credentials_mode: None,
+                                credentials_mode,
                                 cors_mode,
                                 redirect_mode,
                                 cache_mode,
@@ -14166,6 +14179,7 @@ async fn resolve_script_fetches(
                     redirect_mode,
                     timeout,
                     credentials,
+                    credentials_mode,
                     "fetch",
                 )
                 .await;
@@ -14187,7 +14201,7 @@ async fn resolve_script_fetches(
                             cache_mode,
                             timeout,
                             credentials,
-                            credentials_mode: None,
+                            credentials_mode,
                             max_response_bytes: None,
                         })
                         .await;
@@ -14268,6 +14282,7 @@ async fn resolve_script_fetches(
                             pending_fetch.redirect_mode,
                             pending_fetch.timeout,
                             pending_fetch.credentials,
+                            pending_fetch.credentials_mode,
                             "fetch",
                         )
                         .await;
@@ -14285,7 +14300,7 @@ async fn resolve_script_fetches(
                                     content_type: pending_fetch.content_type,
                                     request_headers: pending_fetch.headers,
                                     credentials: pending_fetch.credentials,
-                                    credentials_mode: None,
+                                    credentials_mode: pending_fetch.credentials_mode,
                                     cors_mode: pending_fetch.cors_mode,
                                     redirect_mode: pending_fetch.redirect_mode,
                                     cache_mode: pending_fetch.cache_mode,
@@ -15181,9 +15196,9 @@ mod tests {
         };
 
         let mut font = fetch_commands(&[command(Some("font"))]).unwrap();
-        assert!(font.pop_front().is_some_and(|request| request.12));
+        assert!(font.pop_front().is_some_and(|request| request.13));
         let mut ordinary = fetch_commands(&[command(None)]).unwrap();
-        assert!(!ordinary.pop_front().unwrap().12);
+        assert!(!ordinary.pop_front().unwrap().13);
         assert!(fetch_commands(&[command(Some("image"))]).is_err());
         assert!(fetch_commands(&[command(Some("module"))]).is_err());
 
@@ -15196,8 +15211,8 @@ mod tests {
         }
         let mut module_requests = fetch_commands(&[module]).unwrap();
         let module_request = module_requests.pop_front().unwrap();
-        assert!(module_request.14);
-        assert_eq!(module_request.15, None);
+        assert!(module_request.15);
+        assert_eq!(module_request.16, None);
 
         let mut json_module = command(Some("module"));
         if let NativeScriptCommand::Fetch { module_type, .. } = &mut json_module {

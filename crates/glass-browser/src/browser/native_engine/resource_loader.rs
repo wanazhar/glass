@@ -547,6 +547,14 @@ pub(crate) enum NativeFetchCredentialsMode {
 }
 
 impl NativeFetchCredentialsMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Omit => "omit",
+            Self::SameOrigin => "same-origin",
+            Self::Include => "include",
+        }
+    }
+
     pub(crate) fn parse(value: &str) -> Result<Self, NativeEngineError> {
         match value {
             "omit" => Ok(Self::Omit),

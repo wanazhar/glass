@@ -130,8 +130,12 @@ Slice 823 preserves the mode through direct worker Fetch requests and verifies
 same-origin, cross-origin, redirect, and response-cookie behavior with a
 two-origin process-backed regression (1 passed; 21.71 seconds). The separate
 SharedWorker module-graph credentials regression also passed (1 passed; 24.50
-seconds). Page and Service Worker Fetch owners remain separate paths. Full
-Fetch/Web IDL semantics, WPT conformance, and cross-platform parity remain
+seconds). Slice 824 carries page Fetch credentials through the controlled
+ServiceWorker FetchEvent and a subsequent Service Worker `fetch(event.request)`.
+Its two-origin process-backed regression checks all three modes, the
+`Request.credentials` default, invalid-mode rejection, and cookie
+send/accept behavior (see the [Slice 824 task](tasks/native-engine-browser-824.md)).
+Full Fetch/Web IDL semantics, WPT conformance, and cross-platform parity remain
 open; see the
 [Slice 822 task](tasks/native-engine-browser-822.md) and
 [Slice 823 task](tasks/native-engine-browser-823.md).

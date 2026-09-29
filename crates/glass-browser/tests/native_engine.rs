@@ -32402,6 +32402,264 @@ async fn native_content_process_shared_worker_fetch_credentials_modes_follow_red
     assert!(!after_omit_cookie.contains("omitted="));
 }
 
+#[tokio::test]
+async fn native_content_process_page_fetch_credentials_survive_service_worker_handoff() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let primary_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let primary_address = primary_listener.local_addr().unwrap();
+    let cross_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let cross_address = cross_listener.local_addr().unwrap();
+    let page_origin = format!("http://{primary_address}");
+    let cross_origin = format!("http://{cross_address}");
+    let worker_cross_origin = cross_origin.clone();
+
+    let primary_server = tokio::spawn(async move {
+        for (expected_path, content_type, headers, body) in [
+            (
+                "/page",
+                "text/html",
+                "Set-Cookie: root=seed; Path=/; SameSite=Lax\r\n",
+                "<!doctype html><script>globalThis.registrationPromise = null;</script>",
+            ),
+            (
+                "/sw.js",
+                "application/javascript",
+                "",
+                "service worker body is generated below",
+            ),
+        ] {
+            let (mut stream, _) = primary_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let body = if expected_path == "/sw.js" {
+                format!(
+                    r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {{
+  const requestUrl = new URL(event.request.url);
+  if (requestUrl.pathname === '/controlled') {{
+    event.respondWith(new Response('<!doctype html><main>controlled</main>', {{
+      headers: {{ 'Content-Type': 'text/html' }}
+    }}));
+  }} else if (requestUrl.pathname === '/probe') {{
+    const credentialsMode = event.request.credentials;
+    const caseName = requestUrl.searchParams.get('case') || '';
+    const upstreamUrl = '{worker_cross_origin}/probe?case=' + encodeURIComponent(caseName);
+    event.respondWith(fetch(upstreamUrl, {{ credentials: credentialsMode }}).then(response => response.text()).then(body =>
+      new Response(credentialsMode + ':' + body, {{
+        headers: {{ 'Content-Type': 'text/plain' }}
+      }})));
+  }}
+}});"#
+                )
+            } else {
+                body.to_owned()
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let cross_server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async move {
+            let mut requests = Vec::new();
+            for _ in 0..7 {
+                let (mut stream, _) = cross_listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                let target = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("page Fetch includes a request target")
+                    .to_owned();
+                let (path, query) = target
+                    .split_once('?')
+                    .expect("credential request carries a query");
+                assert!(path == "/probe" || path == "/direct");
+                let case = query
+                    .strip_prefix("case=")
+                    .expect("credential request carries a case")
+                    .to_owned();
+                let cookie = request
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim().to_owned());
+                let cors_headers = if case.contains("include") {
+                    format!(
+                        "Access-Control-Allow-Origin: {page_origin}\r\nAccess-Control-Allow-Credentials: true\r\n"
+                    )
+                } else {
+                    "Access-Control-Allow-Origin: *\r\n".to_owned()
+                };
+                let cookie_header = match case.as_str() {
+                    "direct-same-origin" => {
+                        "Set-Cookie: denied-direct-same=1; Path=/; SameSite=Lax\r\n"
+                    }
+                    "direct-omit" => {
+                        "Set-Cookie: denied-direct-omit=1; Path=/; SameSite=Lax\r\n"
+                    }
+                    "direct-include" => {
+                        "Set-Cookie: accepted-page=1; Path=/; SameSite=Lax\r\n"
+                    }
+                    "sw-same-origin" => {
+                        "Set-Cookie: denied-worker-same=1; Path=/; SameSite=Lax\r\n"
+                    }
+                    "sw-omit" => {
+                        "Set-Cookie: denied-worker-omit=1; Path=/; SameSite=Lax\r\n"
+                    }
+                    "sw-include" => {
+                        "Set-Cookie: accepted-worker=1; Path=/; SameSite=Lax\r\n"
+                    }
+                    "sw-include-after" => "",
+                    other => panic!("unexpected credentials case: {other}"),
+                };
+                let body = cookie.as_deref().unwrap_or("none");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n{cors_headers}{cookie_header}Content-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push((case, cookie));
+            }
+            requests
+        })
+        .await
+        .expect("Service Worker Fetch credential cases complete within the time bound")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{primary_address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let direct_same_origin = engine
+        .evaluate_async(&format!(
+            "await fetch('{cross_origin}/direct?case=direct-same-origin', {{ credentials: 'same-origin' }}).then(response => response.text())"
+        ))
+        .await
+        .unwrap();
+    let direct_omit = engine
+        .evaluate_async(&format!(
+            "await fetch('{cross_origin}/direct?case=direct-omit', {{ credentials: 'omit' }}).then(response => response.text())"
+        ))
+        .await
+        .unwrap();
+    let direct_include = engine
+        .evaluate_async(&format!(
+            "await fetch('{cross_origin}/direct?case=direct-include', {{ credentials: 'include' }}).then(response => response.text())"
+        ))
+        .await
+        .unwrap();
+    engine
+        .evaluate_async(
+            "globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }); null",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(async registration => [registration.active.state, navigator.serviceWorker.controller !== null])",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["activated", true])
+    );
+    engine
+        .navigate_async(format!("http://{primary_address}/controlled"))
+        .await
+        .unwrap();
+    let worker_same_origin = engine
+        .evaluate_async(&format!(
+            "await fetch('/probe?case=sw-same-origin', {{ credentials: 'same-origin' }}).then(response => response.text())"
+        ))
+        .await
+        .unwrap();
+    let worker_omit = engine
+        .evaluate_async(&format!(
+            "await fetch('/probe?case=sw-omit', {{ credentials: 'omit' }}).then(response => response.text())"
+        ))
+        .await
+        .unwrap();
+    let worker_include = engine
+        .evaluate_async(&format!(
+            "await fetch('/probe?case=sw-include', {{ credentials: 'include' }}).then(response => response.text())"
+        ))
+        .await
+        .unwrap();
+    let worker_include_after = engine
+        .evaluate_async(&format!(
+            "await fetch('/probe?case=sw-include-after', {{ credentials: 'include' }}).then(response => response.text())"
+        ))
+        .await
+        .unwrap();
+    let request_credentials = engine
+        .evaluate_async(&format!("new Request('{cross_origin}/probe').credentials"))
+        .await
+        .unwrap();
+    let invalid_request = engine
+        .evaluate_async(&format!(
+            "(() => {{ try {{ new Request('{cross_origin}/probe', {{ credentials: 'invalid' }}); return false; }} catch (error) {{ return error instanceof TypeError; }} }})()"
+        ))
+        .await
+        .unwrap();
+    let invalid_fetch = engine
+        .evaluate_async(&format!(
+            "await fetch('{cross_origin}/probe?case=invalid', {{ credentials: 'invalid' }}).then(() => false, error => error instanceof TypeError)"
+        ))
+        .await
+        .unwrap();
+    engine.close_async().await.unwrap();
+    primary_server.await.unwrap();
+    let cross_requests = cross_server.await.unwrap();
+
+    assert_eq!(direct_same_origin, "none");
+    assert_eq!(direct_omit, "none");
+    assert!(direct_include.as_str().unwrap().contains("root=seed"));
+    assert_eq!(worker_same_origin, "same-origin:none");
+    assert_eq!(worker_omit, "omit:none");
+    assert!(worker_include.as_str().unwrap().starts_with("include:"));
+    assert!(
+        worker_include_after
+            .as_str()
+            .unwrap()
+            .starts_with("include:")
+    );
+    assert_eq!(request_credentials, "same-origin");
+    assert_eq!(invalid_request, true);
+    assert_eq!(invalid_fetch, true);
+
+    let cookie_for = |case: &str| {
+        cross_requests
+            .iter()
+            .find(|(request_case, _)| request_case == case)
+            .unwrap_or_else(|| panic!("missing Service Worker Fetch request {case}"))
+            .1
+            .as_deref()
+            .unwrap_or("")
+            .to_owned()
+    };
+    assert!(cookie_for("direct-same-origin").is_empty());
+    assert!(cookie_for("direct-omit").is_empty());
+    assert!(cookie_for("direct-include").contains("root=seed"));
+    assert!(cookie_for("sw-same-origin").is_empty());
+    assert!(cookie_for("sw-omit").is_empty());
+    assert!(cookie_for("sw-include").contains("root=seed"));
+    let worker_include_cookie = cookie_for("sw-include");
+    assert!(worker_include_cookie.contains("accepted-page=1"));
+    assert!(!worker_include_cookie.contains("denied-direct-same="));
+    assert!(!worker_include_cookie.contains("denied-direct-omit="));
+    let include_after_cookie = cookie_for("sw-include-after");
+    assert!(include_after_cookie.contains("root=seed"));
+    assert!(include_after_cookie.contains("accepted-page=1"));
+    assert!(include_after_cookie.contains("accepted-worker=1"));
+    assert!(!include_after_cookie.contains("denied-worker-same="));
+    assert!(!include_after_cookie.contains("denied-worker-omit="));
+}
+
 #[test]
 fn native_runtime_shared_worker_module_credentials_cover_redirects_and_graph_cookies() {
     run_native_browser_worker_test(|runtime| {

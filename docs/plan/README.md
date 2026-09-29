@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is locally complete through
-`native-engine-browser-823`. Slice 818 returns ordinary page-response cookie
+`native-engine-browser-824`. Slice 818 returns ordinary page-response cookie
 journals after profile merge and synchronizes same-backend target/frame and
 SharedWorker contexts without duplicate profile writes. Slice 819 verifies
 that an already-running module SharedWorker's later module request uses the
@@ -58,9 +58,13 @@ each redirect hop. Its two-origin process-backed regression passed (1 passed;
 response-cookie acceptance/rejection, and invalid-mode rejection. The existing
 module-graph credentials regression also passed separately (1 passed; 24.50
 seconds). The scoped check passed with 68 existing dead-code warnings from the
-legacy HTML parser. Page Fetch, Service Worker Fetch, broader Fetch/cookie WPT
-conformance, remote CI, and cross-platform coverage remain open. See the
-[slice 823 task](tasks/native-engine-browser-823.md), the [slice 822
+legacy HTML parser. Slice 824 carries page Fetch credential modes through
+controlled Service Worker FetchEvent requests and `fetch(event.request)`,
+including per-URL cookie policy. Its two-origin regression covers all three
+modes, defaults, invalid values, and Set-Cookie acceptance/rejection. Broader
+Fetch/cookie WPT conformance, remote CI, and cross-platform coverage remain
+open. See the [slice 824 task](tasks/native-engine-browser-824.md), the [slice 823
+task](tasks/native-engine-browser-823.md), the [slice 822
 task](tasks/native-engine-browser-822.md), the [slice 821
 task](tasks/native-engine-browser-821.md), the [slice 820
 task](tasks/native-engine-browser-820.md),

@@ -29,9 +29,11 @@ version claims.
 Status: the bounded foundation is complete through `native-engine-234`. Local
 process-backed HTTP tests now run on this host. Slices 830 and 831 pass their
 wire regressions. Slice 832 reaches its HTTP assertions but its inline dynamic
-module does not settle; Slice 833 exits the content worker during module-worker
-initialization. The process-backed cases for Slices 834-836 pass, but remain in
-progress because their declared dependency chain includes Slice 833. The
+module does not settle. Slice 833's process-backed DedicatedWorker and
+SharedWorker module graphs now pass, including top-level `await import()` and
+the actual referrer-header assertions; it remains in progress pending Slice
+832. The process-backed cases for Slices 834-836 pass, but remain in progress
+because their declared dependency chain includes Slice 832/833. The
 latest remote CI run, `36616367412` on `ee67f930`, failed; it predates the
 current local edits. WPT conformance, remote CI for these edits, and
 cross-platform certification remain open. Slice 818
@@ -139,11 +141,13 @@ promise-settlement values remained `null`. See the
 [slice 832 task](tasks/native-engine-browser-832.md).
 Slice 833 implements creator-Document referrer policy on DedicatedWorker and
 SharedWorker module entry fetches and carries per-module response policies and
-final response URLs through static and runtime imports. The scoped package
-check and focused module-policy unit group pass, but the process-backed run
-exits the content worker during initialization before its HTTP assertions
-complete. Ordinary Worker requests and other worker types remain separate.
-See the
+final response URLs through static and runtime imports. Its process-backed HTTP
+regression now passes (1 passed, 885 filtered; 18.84 seconds), verifying the
+creator policy after a live meta update, redirect policy, static and dynamic
+module headers, nested imports, and settled results for both worker types. The
+runtime preserves pending module evaluation across host fetch dispatch. The
+slice remains in progress pending Slice 832; ordinary Worker requests and
+other worker types remain separate. See the
 [slice 833 task](tasks/native-engine-browser-833.md).
 Slice 834 records the next bounded Worker policy-container contract: ordinary
 DedicatedWorker/SharedWorker Fetch and XHR inherit the initialized worker-global

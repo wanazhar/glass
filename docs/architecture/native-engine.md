@@ -3,10 +3,12 @@
 Status: issue #40 remains open. Local process-backed HTTP tests now run on
 this host. Slices 830 and 831 pass their wire regressions. Slice 832 verifies
 all request headers, but its inline module's dynamic import does not settle.
-Slice 833 exits the content worker during module-worker initialization before
-its HTTP assertions complete. Slices 834-836 pass their targeted process-backed
-Fetch/XHR, `importScripts()`, and ServiceWorker policy tests, but remain in
-progress behind Slice 833. The latest remote CI run, `36616367412` on
+Slice 833's DedicatedWorker and SharedWorker module graphs now pass their
+process-backed HTTP regression, including top-level `await import()` settlement
+and actual request-header assertions. Slice 833 remains in progress pending
+Slice 832. Slices 834-836 pass their targeted process-backed Fetch/XHR,
+`importScripts()`, and ServiceWorker policy tests, but remain in progress behind
+the same dependency chain. The latest remote CI run, `36616367412` on
 `ee67f930`, failed and does not contain these local edits. Remote CI for these
 edits, WPT conformance, and cross-platform certification remain open. See the
 [Slice 830 task](../plan/tasks/native-engine-browser-830.md),
@@ -86,10 +88,13 @@ recognized response policy for its descendants. Its process-backed static
 module graph case and 9 focused pure tests passed. Slice 832 adds dynamic
 `import()` policy inheritance; the actual request headers pass, but the inline
 module import does not settle in its process-backed regression. Slice 833 adds
-the creator policy to module workers; its process-backed run exits the content
-worker during initialization. Slices 834-836 process-backed Fetch/XHR,
-`importScripts()`, and ServiceWorker policy cases pass locally, but remain in
-progress behind Slice 833. Remote CI for the current local edits, WPT
+the creator policy to module workers. Its process-backed DedicatedWorker and
+SharedWorker regression now passes, including dynamic-import top-level await,
+redirect-policy updates, per-module overrides, nested imports, and actual
+headers. Slice 833 remains in progress pending Slice 832. Slices 834-836
+process-backed Fetch/XHR, `importScripts()`, and ServiceWorker policy cases
+pass locally, but remain in progress behind this dependency chain. Remote CI
+for the current local edits, WPT
 conformance, and cross-platform certification remain open. See the
 [slice 831 task](../plan/tasks/native-engine-browser-831.md), the
 [slice 832 task](../plan/tasks/native-engine-browser-832.md), the

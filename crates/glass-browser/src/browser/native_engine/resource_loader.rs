@@ -655,6 +655,7 @@ pub(crate) struct NativeWebSocketTarget {
 pub(crate) struct NativeScriptResource {
     pub(crate) url: String,
     pub(crate) body: String,
+    pub(crate) response_referrer_policy: Option<NativeFetchReferrerPolicy>,
 }
 
 /// A bounded report-only CSP violation waiting for delivery to the owning
@@ -946,6 +947,7 @@ struct NativeTextCacheEntry {
     fresh_until: Option<Instant>,
     etag: Option<String>,
     last_modified: Option<String>,
+    referrer_policy: Option<NativeFetchReferrerPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1114,6 +1116,7 @@ impl NativeTextCacheEntry {
             fresh_until: document_cache_fresh_until(headers, now),
             etag: response_header_text(headers, reqwest::header::ETAG),
             last_modified: response_header_text(headers, reqwest::header::LAST_MODIFIED),
+            referrer_policy: referrer_policy_from_headers(headers),
         })
     }
 
@@ -1138,6 +1141,9 @@ impl NativeTextCacheEntry {
         }
         if let Some(content_type) = response_header_text(headers, reqwest::header::CONTENT_TYPE) {
             self.content_type = Some(content_type);
+        }
+        if headers.contains_key("referrer-policy") {
+            self.referrer_policy = referrer_policy_from_headers(headers);
         }
         Some(self)
     }
@@ -7394,6 +7400,7 @@ impl NativeResourceLoader {
         Ok(Some(NativeScriptResource {
             url: target_url.to_string(),
             body,
+            response_referrer_policy: None,
         }))
     }
 
@@ -7485,6 +7492,7 @@ impl NativeResourceLoader {
         Ok(Some(NativeScriptResource {
             url: target_url.to_string(),
             body,
+            response_referrer_policy: None,
         }))
     }
 
@@ -7517,9 +7525,10 @@ impl NativeResourceLoader {
         .await
     }
 
-    pub(crate) async fn load_module_dependency_async(
+    pub(crate) async fn load_module_dependency_with_referrer_async(
         &mut self,
         document_url: &str,
+        referrer_url: &str,
         href: &str,
         max_source_bytes: usize,
         parser_inserted: bool,
@@ -7527,8 +7536,9 @@ impl NativeResourceLoader {
         crossorigin: Option<&str>,
         object_url: Option<&NativeObjectUrlResource>,
         module_type: NativeModuleResourceType,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
-        self.load_script_like_async(
+        self.load_script_like_async_with_referrer_source(
             document_url,
             href,
             max_source_bytes,
@@ -7540,7 +7550,8 @@ impl NativeResourceLoader {
             object_url,
             Some(module_type),
             None,
-            None,
+            referrer_policy,
+            Some(referrer_url),
         )
         .await
     }
@@ -7651,6 +7662,7 @@ impl NativeResourceLoader {
             return Ok(Some(NativeScriptResource {
                 url: resource.url,
                 body: resource.body,
+                response_referrer_policy: None,
             }));
         }
         self.load_script_like_async(
@@ -7684,6 +7696,40 @@ impl NativeResourceLoader {
         module_type: Option<NativeModuleResourceType>,
         worker_credentials_mode: Option<&str>,
         referrer_policy: Option<NativeFetchReferrerPolicy>,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        self.load_script_like_async_with_referrer_source(
+            document_url,
+            href,
+            max_source_bytes,
+            subresource_kind,
+            parser_inserted,
+            nonce,
+            integrity,
+            crossorigin,
+            object_url,
+            module_type,
+            worker_credentials_mode,
+            referrer_policy,
+            None,
+        )
+        .await
+    }
+
+    async fn load_script_like_async_with_referrer_source(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        max_source_bytes: usize,
+        subresource_kind: NativeSubresourceKind,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+        integrity: Option<&str>,
+        crossorigin: Option<&str>,
+        object_url: Option<&NativeObjectUrlResource>,
+        module_type: Option<NativeModuleResourceType>,
+        worker_credentials_mode: Option<&str>,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
+        referrer_source_url: Option<&str>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         if let Some(mode) = worker_credentials_mode
             && !matches!(mode, "omit" | "same-origin" | "include")
@@ -7747,6 +7793,7 @@ impl NativeResourceLoader {
                 return Ok(Some(NativeScriptResource {
                     url: resource.url,
                     body: resource.body,
+                    response_referrer_policy: None,
                 }));
             }
             if subresource_kind == NativeSubresourceKind::Worker
@@ -7832,6 +7879,7 @@ impl NativeResourceLoader {
             return Ok(Some(NativeScriptResource {
                 url: target_url.to_string(),
                 body,
+                response_referrer_policy: None,
             }));
         }
         let requested_cache_key = cache_key(&target_url);
@@ -7864,6 +7912,7 @@ impl NativeResourceLoader {
                 Ok(Some(NativeScriptResource {
                     url: cached.url.clone(),
                     body: cached.body.clone(),
+                    response_referrer_policy: cached.referrer_policy,
                 }))
             } else {
                 Ok(None)
@@ -7877,9 +7926,19 @@ impl NativeResourceLoader {
             .map_err(|error| network_error("script client construction", error))?;
         let mut current_url = target_url;
         let mut effective_referrer_policy = referrer_policy;
+        let initial_referrer_source_url = match referrer_source_url {
+            Some(source) => Url::parse(without_fragment(source)).map_err(|_| {
+                NativeEngineError::UnsupportedUrl {
+                    reason: "module referrer URL is not valid URL syntax".into(),
+                }
+            })?,
+            None => document_url.clone(),
+        };
         let mut request_referrer = match effective_referrer_policy {
-            Some(policy) => fetch_referrer_for_target(Some(&document_url), &current_url, policy),
-            None => normalize_referrer(Some(document_url.as_str()), &current_url)?,
+            Some(policy) => {
+                fetch_referrer_for_target(Some(&initial_referrer_source_url), &current_url, policy)
+            }
+            None => normalize_referrer(Some(initial_referrer_source_url.as_str()), &current_url)?,
         };
         let mut redirects = 0;
         let mut has_set_cookie = false;
@@ -8000,9 +8059,16 @@ impl NativeResourceLoader {
             {
                 return Ok(None);
             }
+            let next_referrer_source_url = if referrer_source_url.is_some() {
+                initial_referrer_source_url.as_str()
+            } else {
+                current_url.as_str()
+            };
             request_referrer = match effective_referrer_policy {
-                Some(policy) => fetch_referrer_for_target(Some(&document_url), &next_url, policy),
-                None => normalize_referrer(Some(current_url.as_str()), &next_url)?,
+                Some(policy) => {
+                    fetch_referrer_for_target(Some(&initial_referrer_source_url), &next_url, policy)
+                }
+                None => normalize_referrer(Some(next_referrer_source_url), &next_url)?,
             };
             current_url = next_url;
             redirects += 1;
@@ -8024,6 +8090,11 @@ impl NativeResourceLoader {
             let cached_resource = NativeScriptResource {
                 url: cached.url.clone(),
                 body: cached.body.clone(),
+                response_referrer_policy: if response_headers.contains_key("referrer-policy") {
+                    referrer_policy_from_headers(&response_headers)
+                } else {
+                    cached.referrer_policy
+                },
             };
             if !cached_resource_content_type_text_allowed(
                 module_type,
@@ -8117,6 +8188,7 @@ impl NativeResourceLoader {
         let resource = NativeScriptResource {
             url: current_url.to_string(),
             body,
+            response_referrer_policy: referrer_policy_from_headers(&response_headers),
         };
         if subresource_kind == NativeSubresourceKind::Script && worker_credentials_mode.is_none() {
             if !has_set_cookie
@@ -10269,7 +10341,7 @@ mod tests {
         NativeEngineError, NativeFetchMethod, NativeFetchReferrerPolicy, NativeInlineCspKind,
         NativeModuleResourceType, NativeNavigationMethod, NativeNavigationPolicyKind,
         NativeNetworkState, NativeObjectUrlResource, NativeRequestBody, NativeResource,
-        NativeResourceLoader, NativeSubresourceKind, cache_control_max_age,
+        NativeResourceLoader, NativeSubresourceKind, NativeTextCacheEntry, cache_control_max_age,
         cache_control_requires_revalidation, cached_resource_content_type_text_allowed,
         content_security_policy, cors_origin_header, cors_preflight_response_allowed,
         cors_response_allowed, csp_report_deliveries_for_declaration,
@@ -11011,6 +11083,64 @@ mod tests {
 
         headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
         assert!(!document_cache_storage_allowed(&headers));
+    }
+
+    #[test]
+    fn script_cache_preserves_module_response_referrer_policy_across_revalidation() {
+        let now = Instant::now();
+        let mut response_headers = HeaderMap::new();
+        response_headers.insert(
+            CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=60"),
+        );
+        response_headers.insert(
+            HeaderName::from_static("referrer-policy"),
+            HeaderValue::from_static("origin"),
+        );
+        let entry = NativeTextCacheEntry::from_response(
+            "https://module.test/entry.js".into(),
+            "export {};".into(),
+            &response_headers,
+            now,
+        )
+        .expect("cacheable module response metadata must be retained");
+        assert_eq!(
+            entry.referrer_policy,
+            Some(NativeFetchReferrerPolicy::Origin)
+        );
+
+        let absent_header = HeaderMap::new();
+        let unchanged = entry
+            .clone()
+            .refresh_from_not_modified(&absent_header, now)
+            .unwrap();
+        assert_eq!(
+            unchanged.referrer_policy,
+            Some(NativeFetchReferrerPolicy::Origin)
+        );
+
+        let mut replacement_headers = HeaderMap::new();
+        replacement_headers.insert(
+            HeaderName::from_static("referrer-policy"),
+            HeaderValue::from_static("no-referrer"),
+        );
+        let replaced = entry
+            .clone()
+            .refresh_from_not_modified(&replacement_headers, now)
+            .unwrap();
+        assert_eq!(
+            replaced.referrer_policy,
+            Some(NativeFetchReferrerPolicy::NoReferrer)
+        );
+
+        replacement_headers.insert(
+            HeaderName::from_static("referrer-policy"),
+            HeaderValue::from_static("not-a-policy"),
+        );
+        let ignored = entry
+            .refresh_from_not_modified(&replacement_headers, now)
+            .unwrap();
+        assert_eq!(ignored.referrer_policy, None);
     }
 
     #[test]

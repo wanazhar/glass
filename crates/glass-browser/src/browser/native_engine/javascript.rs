@@ -8538,6 +8538,7 @@ pub(crate) fn execute_inline_scripts(
                 timing,
                 node_index,
                 nonce,
+                referrer_policy: _,
                 parser_inserted: _,
             } => {
                 if !loader.allows_inline_script(document_url, &source, nonce.as_deref())? {

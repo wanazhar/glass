@@ -1,7 +1,10 @@
 # Native browser engine
 
 Status: The latest locally completed browser expansion is
-`native-engine-browser-829`; issue #40 remains open. Slice 818 synchronizes
+`native-engine-browser-829`; issue #40 remains open. Slices 830 and 831 are
+in progress: 830's process-backed HTTP assertions are unverified in this
+restricted environment, and 831 covers module entry/static-import referrer
+policy inheritance. Slice 818 synchronizes
 ordinary response-cookie deltas to same-backend live contexts after profile
 merge; Slice 819 verifies a live module SharedWorker's next module request.
 Slice 820 extends delivery across separately created live sessions sharing one
@@ -65,7 +68,15 @@ updates, and revalidation; `@import` remains on its existing request path. The
 slice is still in progress: the package test-target check and focused DOM
 policy test pass, but the process-backed HTTP regression cannot bind a local
 listener in this restricted environment, so actual request headers are not
-verified here. See the [slice 830 task](../plan/tasks/native-engine-browser-830.md)
+verified here. Slice 831 applies element/document referrer policy to module
+entries and recursive static imports, using each referencing module's final
+response URL as the dependency referrer and recognized response policy for its
+descendants. The package-scoped check and 9 focused pure tests passed, but the
+process-backed regression could not bind its first local listener in this
+restricted environment; wire behavior is unverified and the slice remains in
+progress. Dynamic `import()` policy inheritance and worker/worklet graphs
+remain separate. See the [slice 831 task](../plan/tasks/native-engine-browser-831.md).
+See the [slice 830 task](../plan/tasks/native-engine-browser-830.md)
 for evidence and limits, and the [slice 829 task](../plan/tasks/native-engine-browser-829.md),
 [slice 828 task](../plan/tasks/native-engine-browser-828.md),
 [slice 827 task](../plan/tasks/native-engine-browser-827.md),

@@ -117,6 +117,15 @@ path. Its package test-target check and focused DOM policy unit test pass. The
 two-origin HTTP regression is present and type-checks but could not start here:
 the restricted sandbox denied `TcpListener::bind` with `PermissionDenied`, so
 wire-level behavior remains unverified. See the [slice 830 task](tasks/native-engine-browser-830.md).
+Slice 831 applies element/document referrer policy to network module entries
+and recursive static imports, using each referencing module response URL as
+the dependency referrer and each module response's recognized policy for its
+descendants. The package-scoped check passed and 9 focused pure tests passed.
+The process-backed two-origin regression compiles but cannot bind its first
+local listener in this sandbox (`PermissionDenied`), so wire behavior remains
+unverified and the slice is still in progress. Dynamic `import()` policy
+inheritance and worker/worklet module graphs remain separate. See the
+[slice 831 task](tasks/native-engine-browser-831.md).
 Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).

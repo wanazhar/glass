@@ -89,6 +89,14 @@ fn parse_meta_referrer_policy(value: &str) -> Option<NativeFetchReferrerPolicy> 
     NativeFetchReferrerPolicy::parse(value).ok()
 }
 
+fn parse_element_referrer_policy(value: &str) -> Option<NativeFetchReferrerPolicy> {
+    if value.is_empty() {
+        return None;
+    }
+    let value = value.to_ascii_lowercase();
+    NativeFetchReferrerPolicy::parse(&value).ok()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeImageMapShape {
     Default,
@@ -4587,6 +4595,22 @@ impl NativeDocument {
 
     pub(crate) const fn document_referrer_policy(&self) -> NativeFetchReferrerPolicy {
         self.document_referrer_policy
+    }
+
+    pub(crate) fn image_referrer_policy_for_node(
+        &self,
+        node_id: NativeNodeId,
+    ) -> NativeFetchReferrerPolicy {
+        let element_policy = self
+            .node(node_id)
+            .filter(|node| {
+                node.element_name() == Some("img")
+                    && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI)
+                    && self.is_attached(node_id)
+            })
+            .and_then(|node| node.attribute("referrerpolicy"))
+            .and_then(parse_element_referrer_policy);
+        element_policy.unwrap_or(self.document_referrer_policy)
     }
 
     fn apply_meta_referrer_policy_to_node(&mut self, id: NativeNodeId) {

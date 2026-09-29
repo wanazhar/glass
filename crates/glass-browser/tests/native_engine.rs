@@ -64437,6 +64437,124 @@ async fn native_content_process_loads_external_png_through_document_wire() {
 }
 
 #[tokio::test]
+async fn native_content_process_applies_img_referrer_policy() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let image_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let image_address = image_listener.local_addr().unwrap();
+    let document_url = format!("http://{page_address}/page?source=policy#fragment");
+    let document_referer = document_url.split('#').next().unwrap().to_owned();
+    let same_origin_referer = document_referer.clone();
+    let document_origin = format!("http://{page_address}/");
+    let page_png = native_test_png_bytes();
+    let image_png = page_png.clone();
+    let page_server = tokio::spawn(async move {
+        let (mut stream, _) = page_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/page?source=policy")
+        );
+        let body = format!(
+            "<meta name='referrer' content='strict-origin-when-cross-origin'>\
+             <img id='same-origin' src='/same.png'>\
+             <img id='default-cross-origin' src='http://{image_address}/default.png'>\
+             <img id='explicit-origin' src='http://{image_address}/origin.png' referrerpolicy='ORIGIN'>\
+             <img id='no-referrer' src='http://{image_address}/no-referrer.png' referrerpolicy='no-referrer'>\
+             <img id='invalid' src='http://{image_address}/invalid.png' referrerpolicy='not-a-policy'>\
+             <img id='redirect' src='http://{image_address}/redirect.png' referrerpolicy='unsafe-url'>\
+             <div id='dynamic'></div>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = page_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/same.png"));
+        let actual_referer = request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(name, value)| {
+                name.eq_ignore_ascii_case("referer")
+                    .then(|| value.trim().to_owned())
+            })
+        });
+        assert_eq!(
+            actual_referer.as_deref(),
+            Some(same_origin_referer.as_str())
+        );
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            page_png.len()
+        );
+        stream.write_all(headers.as_bytes()).await.unwrap();
+        stream.write_all(&page_png).await.unwrap();
+    });
+
+    let cross_origin_referer = document_origin.clone();
+    let redirect_initial_referer = document_referer.clone();
+    let redirect_target_referer = document_origin.clone();
+    let dynamic_referer = document_referer.clone();
+    let image_server = tokio::spawn(async move {
+        let cases = [
+            ("/default.png", Some(cross_origin_referer)),
+            ("/origin.png", Some(document_origin.clone())),
+            ("/no-referrer.png", None),
+            ("/invalid.png", Some(document_origin)),
+            ("/redirect.png", Some(redirect_initial_referer)),
+            ("/redirect-target.png", Some(redirect_target_referer)),
+            ("/dynamic.png", Some(dynamic_referer)),
+        ];
+        for (expected_path, expected_referer) in cases {
+            let (mut stream, _) = image_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let actual_referer = request.lines().find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("referer")
+                        .then(|| value.trim().to_owned())
+                })
+            });
+            assert_eq!(actual_referer, expected_referer, "{expected_path}");
+            if expected_path == "/redirect.png" {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /redirect-target.png\r\nReferrer-Policy: origin\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    image_png.len()
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(&image_png).await.unwrap();
+            }
+        }
+    });
+
+    let mut engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url(document_url)).unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(&format!(
+                "(() => {{ const probe = document.createElement('img'); probe.setAttribute('referrerpolicy', 'not-a-policy'); const reflectedInvalid = probe.referrerPolicy; const image = document.createElement('img'); image.referrerPolicy = 'unsafe-url'; const reflected = [image.referrerPolicy, image.getAttribute('referrerpolicy')]; image.src = 'http://{image_address}/dynamic.png'; document.body.appendChild(image); return [reflectedInvalid, probe.getAttribute('referrerpolicy'), ...reflected]; }})()"
+            ))
+            .await
+            .unwrap(),
+        serde_json::json!(["", "not-a-policy", "unsafe-url", "unsafe-url"])
+    );
+
+    engine.close_async().await.unwrap();
+    page_server.await.unwrap();
+    image_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_reloads_the_selected_srcset_candidate_after_sizes_mutation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

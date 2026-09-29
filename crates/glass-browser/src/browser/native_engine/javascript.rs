@@ -40712,6 +40712,24 @@ fn document_bootstrap(
       set(next) {{ element.setAttribute(attribute, String(next)); }},
     }});
   }};
+  const referrerPolicyAttributeValues = new Set([
+    "", "no-referrer", "no-referrer-when-downgrade", "same-origin",
+    "origin", "strict-origin", "origin-when-cross-origin",
+    "strict-origin-when-cross-origin", "unsafe-url",
+  ]);
+  const asciiLowercaseAttributeValue = (value) => String(value).replace(/[A-Z]/g, (character) =>
+    String.fromCharCode(character.charCodeAt(0) + 32));
+  const installLimitedKnownValuesStringAttributeProperty = (element, property, attribute, values) => {{
+    Object.defineProperty(element, property, {{
+      enumerable: true,
+      configurable: false,
+      get() {{
+        const value = element.getAttribute(attribute);
+        return value !== null && values.has(asciiLowercaseAttributeValue(value)) ? value : "";
+      }},
+      set(next) {{ element.setAttribute(attribute, String(next)); }},
+    }});
+  }};
   const nativeMediaTypeSupported = (value) => {{
     const mediaType = String(value === undefined || value === null ? "" : value)
       .split(";", 1)[0]
@@ -40785,6 +40803,8 @@ fn document_bootstrap(
     if (element.tagName === "SOURCE")
       installStringAttributeProperty(element, "media", "media");
     if (element.tagName === "IMG") {{
+      installLimitedKnownValuesStringAttributeProperty(
+        element, "referrerPolicy", "referrerpolicy", referrerPolicyAttributeValues);
       const imageState = () => ({{
         complete: typeof state.imageComplete === "function"
           ? Boolean(state.imageComplete())

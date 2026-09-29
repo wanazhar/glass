@@ -8826,14 +8826,15 @@ async fn load_external_images(
             .map(|runtime| runtime.object_url_resource(&source))
             .transpose()?
             .flatten();
-        let image = match runtime {
-            None => loader.load_image_async(document_url, &source).await,
-            Some(_) => {
-                loader
-                    .load_image_async_with_object_url(document_url, &source, object_url.as_ref())
-                    .await
-            }
-        };
+        let referrer_policy = document.image_referrer_policy_for_node(node_id);
+        let image = loader
+            .load_image_async_with_object_url_and_referrer_policy(
+                document_url,
+                &source,
+                object_url.as_ref(),
+                referrer_policy,
+            )
+            .await;
         let event_kind = match image {
             Ok(Some(image)) => {
                 document.set_image_resource(node_index, source, image)?;

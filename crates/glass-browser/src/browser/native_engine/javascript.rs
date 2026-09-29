@@ -40,8 +40,8 @@ use super::module_import_map::NativeModuleImportMap;
 use super::origin::NativeOrigin;
 use super::resource_loader::{
     JAVASCRIPT_MIME_TYPE_ESSENCES, MAX_NATIVE_CSP_VIOLATIONS, NativeCorsMode, NativeCspViolation,
-    NativeFetchCacheMode, NativeFetchMethod, NativeFetchRedirectMode, NativeFetchRequest,
-    NativeFetchResponse, NativeFetchResponseStream, NativeInlineScriptPolicy,
+    NativeFetchCacheMode, NativeFetchCredentialsMode, NativeFetchMethod, NativeFetchRedirectMode,
+    NativeFetchRequest, NativeFetchResponse, NativeFetchResponseStream, NativeInlineScriptPolicy,
     NativeModuleResourceType, NativeNavigationMethod, NativeObjectUrlResource,
     NativeObjectUrlTransfer, NativeRequestBody, NativeResourceLoader, NativeScriptResource,
 };
@@ -269,6 +269,8 @@ pub(crate) enum NativeScriptCommand {
         worker_id: Option<u32>,
         href: String,
         credentials: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credentials_mode: Option<String>,
         method: String,
         #[serde(default)]
         headers: BTreeMap<String, String>,
@@ -3853,6 +3855,7 @@ impl NativeWorkerRegistry {
         headers: BTreeMap<String, String>,
         content_type: Option<String>,
         credentials: bool,
+        credentials_mode: NativeFetchCredentialsMode,
         cors_mode: NativeCorsMode,
         redirect_mode: NativeFetchRedirectMode,
         cache_mode: NativeFetchCacheMode,
@@ -3894,6 +3897,7 @@ impl NativeWorkerRegistry {
                             content_type,
                             request_headers: headers,
                             credentials,
+                            credentials_mode: Some(credentials_mode),
                             cors_mode,
                             redirect_mode,
                             cache_mode,
@@ -3947,6 +3951,7 @@ impl NativeWorkerRegistry {
                 content_type,
                 request_headers: headers,
                 credentials,
+                credentials_mode: Some(credentials_mode),
                 cors_mode,
                 redirect_mode,
                 cache_mode,
@@ -4025,6 +4030,7 @@ impl NativeWorkerRegistry {
             worker_id: Some(command_worker_id),
             href,
             credentials,
+            credentials_mode,
             method,
             headers,
             body,
@@ -4051,6 +4057,15 @@ impl NativeWorkerRegistry {
                 "worker id does not match the owning worker",
             ));
         }
+        let credentials_mode = credentials_mode
+            .as_deref()
+            .map(NativeFetchCredentialsMode::parse)
+            .transpose()?
+            .unwrap_or(if credentials {
+                NativeFetchCredentialsMode::Include
+            } else {
+                NativeFetchCredentialsMode::Omit
+            });
         let module_destination = match destination.as_deref() {
             None | Some("") if module_referrer.is_none() => false,
             Some("module") if module_referrer.is_some() => true,
@@ -4195,6 +4210,7 @@ impl NativeWorkerRegistry {
                         headers,
                         content_type,
                         credentials,
+                        credentials_mode,
                         cors_mode,
                         redirect_mode,
                         cache_mode,
@@ -4218,6 +4234,7 @@ impl NativeWorkerRegistry {
                 content_type,
                 request_headers: headers,
                 credentials,
+                credentials_mode: Some(credentials_mode),
                 cors_mode,
                 redirect_mode,
                 cache_mode,
@@ -18196,6 +18213,7 @@ fn run_native_sync_xhr(
         content_type: request.content_type,
         request_headers: request.headers,
         credentials: request.credentials,
+        credentials_mode: None,
         cors_mode: NativeCorsMode::Cors,
         redirect_mode: NativeFetchRedirectMode::Follow,
         cache_mode: NativeFetchCacheMode::Default,
@@ -28090,6 +28108,9 @@ fn worker_bootstrap(
       return Promise.reject(new TypeError("native Worker fetch cache mode is unsupported"));
     if (cache === "only-if-cached" && mode !== "same-origin")
       return Promise.reject(new TypeError("native Worker only-if-cached fetches require same-origin mode"));
+    const credentialsMode = settings.credentials === undefined ? "same-origin" : String(settings.credentials);
+    if (!["omit", "same-origin", "include"].includes(credentialsMode))
+      return Promise.reject(new TypeError("native Worker fetch credentials are unsupported"));
     let requestHeaders;
     try {{ requestHeaders = normalizeWorkerRequestHeaders(settings.headers); }}
     catch (error) {{ return Promise.reject(error); }}
@@ -28162,7 +28183,8 @@ fn worker_bootstrap(
           request_id: requestId,
           worker_id: workerId,
           href,
-          credentials: settings.credentials !== "omit",
+          credentials: credentialsMode !== "omit",
+          credentials_mode: credentialsMode,
           method,
           headers: requestHeaders,
           body,

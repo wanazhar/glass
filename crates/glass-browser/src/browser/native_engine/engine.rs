@@ -5240,6 +5240,7 @@ impl NativeEngine {
             worker_id,
             href,
             credentials,
+            credentials_mode: _,
             method,
             headers,
             body,

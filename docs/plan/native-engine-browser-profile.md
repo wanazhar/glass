@@ -120,10 +120,21 @@ SharedWorker can issue bounded direct Fetch API requests through its existing
 worker registry and loader, consume response bodies, and apply accepted
 response-cookie changes before its next request. Slice 822 verifies
 `credentials: include` and `credentials: omit`, ordinary and HttpOnly request
-cookies, response updates and deletion, and the subsequent request. This does
-not establish correct `same-origin` credential behavior, full Fetch/Web IDL
-semantics, WPT conformance, or cross-platform parity; see the
-[Slice 822 task](tasks/native-engine-browser-822.md).
+cookies, response updates and deletion, and the subsequent request. For direct
+worker Fetch, `Request.credentials` defaults to `same-origin`. For each URL in
+a redirect chain, the loader sends and accepts cookies only when the mode is
+`include`, or when the mode is `same-origin` and that URL has the worker's
+origin. `omit` sends no cookies and ignores response cookies. These modes are
+defined by the [Fetch Standard credentials mode](https://fetch.spec.whatwg.org/#concept-request-credentials-mode).
+Slice 823 preserves the mode through direct worker Fetch requests and verifies
+same-origin, cross-origin, redirect, and response-cookie behavior with a
+two-origin process-backed regression (1 passed; 21.71 seconds). The separate
+SharedWorker module-graph credentials regression also passed (1 passed; 24.50
+seconds). Page and Service Worker Fetch owners remain separate paths. Full
+Fetch/Web IDL semantics, WPT conformance, and cross-platform parity remain
+open; see the
+[Slice 822 task](tasks/native-engine-browser-822.md) and
+[Slice 823 task](tasks/native-engine-browser-823.md).
 
 ### Explicit `tabindex` focus baseline
 

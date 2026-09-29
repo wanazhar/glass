@@ -29,9 +29,9 @@ use super::javascript::{
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
-    NativeCorsMode, NativeFetchCacheMode, NativeFetchMethod, NativeFetchRedirectMode,
-    NativeFetchRequest, NativeFetchResponse, NativeNavigationRequest, NativeRequestBody,
-    NativeResource, NativeResourceLoader,
+    NativeCorsMode, NativeFetchCacheMode, NativeFetchCredentialsMode, NativeFetchMethod,
+    NativeFetchRedirectMode, NativeFetchRequest, NativeFetchResponse, NativeNavigationRequest,
+    NativeRequestBody, NativeResource, NativeResourceLoader,
 };
 use base64::Engine as _;
 use serde_json::{Value, json};
@@ -1792,6 +1792,7 @@ impl NativeServiceWorkerRegistry {
                 NativeFetchRedirectMode::Follow,
                 None,
                 true,
+                None,
                 "document",
             )
             .await?;
@@ -1854,6 +1855,7 @@ impl NativeServiceWorkerRegistry {
         redirect_mode: NativeFetchRedirectMode,
         _timeout: Option<Duration>,
         credentials: bool,
+        credentials_mode: Option<NativeFetchCredentialsMode>,
         destination: &str,
     ) -> Result<NativeServiceWorkerFetchOutcome, NativeEngineError> {
         let owner = parse_network_url("service worker fetch owner URL", document_url)?;
@@ -1910,6 +1912,7 @@ impl NativeServiceWorkerRegistry {
             "mode": cors_mode_text(cors_mode),
             "redirect": redirect_mode_text(redirect_mode),
             "credentials": credentials,
+            "credentialsMode": credentials_mode.map(NativeFetchCredentialsMode::as_str),
             "destination": destination,
             "clientId": client_id,
             "clientUrl": client_url,
@@ -2642,6 +2645,7 @@ async fn open_service_worker_fetch_upload(
     headers: BTreeMap<String, String>,
     content_type: Option<String>,
     credentials: bool,
+    credentials_mode: NativeFetchCredentialsMode,
     cors_mode: NativeCorsMode,
     redirect_mode: NativeFetchRedirectMode,
     cache_mode: NativeFetchCacheMode,
@@ -2679,7 +2683,7 @@ async fn open_service_worker_fetch_upload(
                     content_type,
                     request_headers: headers,
                     credentials,
-                    credentials_mode: None,
+                    credentials_mode: Some(credentials_mode),
                     cors_mode,
                     redirect_mode,
                     cache_mode,
@@ -2763,7 +2767,7 @@ async fn resolve_service_worker_fetch_command(
         worker_id,
         href,
         credentials,
-        credentials_mode: _,
+        credentials_mode,
         method,
         headers,
         body,
@@ -2842,6 +2846,15 @@ async fn resolve_service_worker_fetch_command(
     let cors_mode = parse_cors_mode(mode.as_deref().unwrap_or("same-origin"))?;
     let redirect_mode = parse_redirect_mode(redirect.as_deref().unwrap_or("follow"))?;
     let cache_mode = NativeFetchCacheMode::from_option(cache.as_deref())?;
+    let credentials_mode = credentials_mode
+        .as_deref()
+        .map(NativeFetchCredentialsMode::parse)
+        .transpose()?
+        .unwrap_or(if credentials {
+            NativeFetchCredentialsMode::Include
+        } else {
+            NativeFetchCredentialsMode::Omit
+        });
     let response = if upload_stream_id.is_some() {
         open_service_worker_fetch_upload(
             worker,
@@ -2852,6 +2865,7 @@ async fn resolve_service_worker_fetch_command(
             headers,
             content_type,
             credentials,
+            credentials_mode,
             cors_mode,
             redirect_mode,
             cache_mode,
@@ -2869,7 +2883,7 @@ async fn resolve_service_worker_fetch_command(
                 content_type,
                 request_headers: headers,
                 credentials,
-                credentials_mode: None,
+                credentials_mode: Some(credentials_mode),
                 cors_mode,
                 redirect_mode,
                 cache_mode,

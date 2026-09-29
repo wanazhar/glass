@@ -157,6 +157,7 @@ const NATIVE_SERVICE_WORKER_CLIENT_LEASE_TTL: Duration = Duration::from_secs(15 
 const NATIVE_SERVICE_WORKER_CLIENT_HEARTBEAT: Duration = Duration::from_secs(30);
 pub(crate) const MAX_NATIVE_COOKIE_PROFILE_ENTRIES: usize = 128;
 pub(crate) const MAX_NATIVE_COOKIE_PROFILE_BYTES: usize = 4096;
+pub(crate) const MAX_NATIVE_COOKIE_CHANGE_BATCH: usize = MAX_NATIVE_COOKIE_PROFILE_ENTRIES * 2;
 pub(crate) const MAX_NATIVE_DIALOGS: usize = 32;
 pub(crate) const MAX_NATIVE_DIALOG_TEXT_BYTES: usize = 256;
 const MAX_NATIVE_INDEXED_DB_DATABASES: usize = 16;
@@ -6140,6 +6141,8 @@ pub(crate) struct NativeStorageJournalRecord {
     pub(crate) event: Option<NativeStorageEvent>,
     #[serde(default)]
     pub(crate) indexed_db_changes: Vec<NativeIndexedDbChange>,
+    #[serde(default)]
+    pub(crate) cookie_changes: Vec<NativeCookieChange>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -6793,6 +6796,46 @@ fn validate_storage_journal_event(event: &NativeStorageEvent) -> Result<(), Nati
     state.apply_storage_event(event)
 }
 
+fn validate_storage_journal_cookie_changes(
+    changes: &[NativeCookieChange],
+) -> Result<(), NativeEngineError> {
+    if changes.len() > MAX_NATIVE_COOKIE_CHANGE_BATCH {
+        return Err(NativeEngineError::limit(
+            "native cookie journal changes",
+            MAX_NATIVE_COOKIE_CHANGE_BATCH,
+            changes.len(),
+        ));
+    }
+    for change in changes {
+        let key = NativeCookieProfileEntry {
+            name: change.name.clone(),
+            value: String::new(),
+            domain: change.domain.clone(),
+            path: change.path.clone(),
+            host_only: true,
+            secure: false,
+            http_only: false,
+            same_site: None,
+            priority: None,
+            expires_at_unix_seconds: None,
+        };
+        validate_cookie_profile_entry(&key)?;
+        if let Some(cookie) = change.cookie.as_ref() {
+            if cookie.name != change.name
+                || cookie.domain != change.domain
+                || cookie.path != change.path
+            {
+                return Err(NativeEngineError::invalid(
+                    "native cookie journal change",
+                    "cookie key does not match its change key",
+                ));
+            }
+            validate_cookie_profile_entry(cookie)?;
+        }
+    }
+    Ok(())
+}
+
 fn decode_storage_journal_record(
     bytes: &[u8],
 ) -> Result<NativeStorageJournalRecord, NativeEngineError> {
@@ -6806,10 +6849,13 @@ fn decode_storage_journal_record(
     if let Some(event) = record.event.as_ref() {
         validate_storage_journal_event(event)?;
     }
-    if record.indexed_db_changes.is_empty() && record.event.is_none() {
+    if record.indexed_db_changes.is_empty()
+        && record.event.is_none()
+        && record.cookie_changes.is_empty()
+    {
         return Err(NativeEngineError::invalid(
             "native Web Storage event journal",
-            "must contain a storage event or IndexedDB changes",
+            "must contain a storage event, IndexedDB changes, or cookie changes",
         ));
     }
     if record.indexed_db_changes.len() > MAX_NATIVE_INDEXED_DB_CHANGES {
@@ -6822,6 +6868,7 @@ fn decode_storage_journal_record(
     for change in &record.indexed_db_changes {
         validate_indexed_db_change(change)?;
     }
+    validate_storage_journal_cookie_changes(&record.cookie_changes)?;
     Ok(record)
 }
 
@@ -6910,14 +6957,16 @@ pub(crate) fn append_storage_changes(
     writer_id: &str,
     events: &[NativeStorageEvent],
     indexed_db_changes: &[NativeIndexedDbChange],
+    cookie_changes: &[NativeCookieChange],
 ) -> Result<(), NativeEngineError> {
     let Some(path) = path else {
         return Ok(());
     };
-    if events.is_empty() && indexed_db_changes.is_empty() {
+    if events.is_empty() && indexed_db_changes.is_empty() && cookie_changes.is_empty() {
         return Ok(());
     }
     validate_context_id(writer_id)?;
+    validate_storage_journal_cookie_changes(cookie_changes)?;
     let _lock = lock_web_storage_profile(path, true)?;
     let journal_path = storage_event_journal_path(path);
     let mut existing = match fs::read(&journal_path) {
@@ -6960,6 +7009,7 @@ pub(crate) fn append_storage_changes(
             writer_id: writer_id.to_owned(),
             event: Some(event.clone()),
             indexed_db_changes: Vec::new(),
+            cookie_changes: Vec::new(),
         };
         let mut encoded = serde_json::to_vec(&record).map_err(|_| NativeEngineError::Worker {
             operation: "encode native Web Storage event journal".into(),
@@ -6983,10 +7033,25 @@ pub(crate) fn append_storage_changes(
             writer_id: writer_id.to_owned(),
             event: None,
             indexed_db_changes: indexed_db_changes.to_vec(),
+            cookie_changes: Vec::new(),
         };
         let mut encoded = serde_json::to_vec(&record).map_err(|_| NativeEngineError::Worker {
             operation: "encode native Web Storage event journal".into(),
             reason: "native Web Storage event journal record cannot be encoded".into(),
+        })?;
+        encoded.push(b'\n');
+        payload.extend(encoded);
+    }
+    if !cookie_changes.is_empty() {
+        let record = NativeStorageJournalRecord {
+            writer_id: writer_id.to_owned(),
+            event: None,
+            indexed_db_changes: Vec::new(),
+            cookie_changes: cookie_changes.to_vec(),
+        };
+        let mut encoded = serde_json::to_vec(&record).map_err(|_| NativeEngineError::Worker {
+            operation: "encode native cookie event journal".into(),
+            reason: "native cookie event journal record cannot be encoded".into(),
         })?;
         encoded.push(b'\n');
         payload.extend(encoded);
@@ -7074,7 +7139,7 @@ pub(crate) fn append_storage_events(
     writer_id: &str,
     events: &[NativeStorageEvent],
 ) -> Result<(), NativeEngineError> {
-    append_storage_changes(path, writer_id, events, &[])
+    append_storage_changes(path, writer_id, events, &[], &[])
 }
 
 fn write_storage_event_journal(path: &Path, bytes: &[u8]) -> Result<(), NativeEngineError> {
@@ -7157,6 +7222,64 @@ mod storage_journal_tests {
             new_value: Some("x".repeat(crate::browser_backend::MAX_TEXT_BYTES)),
             url: "https://journal.test/".into(),
         }
+    }
+
+    fn journal_cookie_change(name: &str, value: Option<&str>) -> NativeCookieChange {
+        NativeCookieChange {
+            name: name.into(),
+            domain: "journal.test".into(),
+            path: "/".into(),
+            cookie: value.map(|value| NativeCookieProfileEntry {
+                name: name.into(),
+                value: value.into(),
+                domain: "journal.test".into(),
+                path: "/".into(),
+                host_only: true,
+                secure: false,
+                http_only: false,
+                same_site: Some("Lax".into()),
+                priority: None,
+                expires_at_unix_seconds: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn cookie_changes_round_trip_through_profile_journal_and_old_records_decode() {
+        let profile_path = test_profile_path("cookie-roundtrip");
+        remove_test_profile(&profile_path);
+        register_storage_reader(Some(&profile_path), "reader", 0).unwrap();
+        let changes = [
+            journal_cookie_change("visible", Some("first")),
+            journal_cookie_change("visible", Some("latest")),
+            journal_cookie_change("removed", None),
+        ];
+        append_storage_changes(Some(&profile_path), "writer", &[], &[], &changes).unwrap();
+
+        let mut cursor = 0;
+        let journal =
+            read_storage_event_journal(Some(&profile_path), "reader", &mut cursor).unwrap();
+        assert!(!journal.recovered);
+        assert_eq!(journal.records.len(), 1);
+        assert_eq!(journal.records[0].cookie_changes, changes);
+
+        let old_record = serde_json::json!({
+            "writer_id": "writer",
+            "event": journal_event(0),
+            "indexed_db_changes": [],
+        });
+        let old_record = serde_json::to_vec(&old_record).unwrap();
+        let decoded = decode_storage_journal_record(&old_record).unwrap();
+        assert!(decoded.cookie_changes.is_empty());
+
+        let mut invalid = journal_cookie_change("visible", Some("value"));
+        invalid.cookie.as_mut().unwrap().name = "different".into();
+        assert!(
+            append_storage_changes(Some(&profile_path), "writer", &[], &[], &[invalid]).is_err()
+        );
+
+        unregister_storage_reader(Some(&profile_path), "reader").unwrap();
+        remove_test_profile(&profile_path);
     }
 
     #[test]

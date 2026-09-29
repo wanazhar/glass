@@ -49,11 +49,12 @@ use super::javascript::{
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
-    NativeWorkerRegistry, NativeWorkerWebSocketCommand, apply_document_commands_with_font_face_ack,
-    apply_page_script_evaluation, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_page_scripts, host_click_event_batch_with_modifiers, host_event_batch,
-    host_event_batch_at, host_key_event_batch, host_key_event_batch_with_modifiers,
-    host_submit_event_batch, load_indexed_db_profile, load_service_worker_cache_profile,
+    NativeWorkerRegistry, NativeWorkerWebSocketCommand, append_storage_changes,
+    apply_document_commands_with_font_face_ack, apply_page_script_evaluation,
+    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts,
+    host_click_event_batch_with_modifiers, host_event_batch, host_event_batch_at,
+    host_key_event_batch, host_key_event_batch_with_modifiers, host_submit_event_batch,
+    load_indexed_db_profile, load_service_worker_cache_profile,
     load_service_worker_registration_profiles, load_web_storage_profile, native_module_loader_name,
     order_page_scripts, page_script_sources_to_scripts, resolve_module_request_url,
     save_service_worker_cache_profile, save_web_storage_profile, static_module_requests,
@@ -1075,6 +1076,8 @@ pub(crate) struct NativeContentProcess {
     frame_id: Option<String>,
     dialog_control: NativeDialogControlPlane,
     pending_cookie_changes: Arc<Mutex<Vec<NativeCookieChange>>>,
+    storage_path: Option<PathBuf>,
+    storage_writer_id: String,
     #[cfg(windows)]
     sandbox: NativeContentSandbox,
 }
@@ -1183,6 +1186,7 @@ struct NativeWorkerDialogDecision {
 impl NativeContentProcess {
     pub(crate) async fn spawn(
         storage_path: Option<&Path>,
+        storage_writer_id: &str,
         allowed_file_roots: &[PathBuf],
         dialog_control: NativeDialogControlPlane,
         pending_cookie_changes: Arc<Mutex<Vec<NativeCookieChange>>>,
@@ -1248,6 +1252,8 @@ impl NativeContentProcess {
             frame_id: None,
             dialog_control,
             pending_cookie_changes,
+            storage_path: storage_path.map(Path::to_path_buf),
+            storage_writer_id: storage_writer_id.to_owned(),
             #[cfg(windows)]
             sandbox,
         };
@@ -2689,6 +2695,15 @@ impl NativeContentProcess {
                 operation: "decode content process cookie changes".into(),
                 reason: "content process returned an invalid cookie change journal".into(),
             })?;
+        if !changes.is_empty() {
+            append_storage_changes(
+                self.storage_path.as_deref(),
+                &self.storage_writer_id,
+                &[],
+                &[],
+                &changes,
+            )?;
+        }
         let mut pending =
             self.pending_cookie_changes
                 .lock()
@@ -15223,6 +15238,7 @@ mod tests {
     async fn refresh_health_detects_an_exited_content_worker() {
         let mut process = NativeContentProcess::spawn(
             None,
+            "test-writer",
             &[],
             NativeDialogControlPlane::default(),
             Arc::new(Mutex::new(Vec::new())),
@@ -15269,6 +15285,7 @@ mod tests {
         let control = NativeDialogControlPlane::for_modal_owner();
         let mut process = NativeContentProcess::spawn(
             None,
+            "test-writer",
             &[],
             control.clone(),
             Arc::new(Mutex::new(Vec::new())),
@@ -15375,6 +15392,7 @@ mod tests {
         let control = NativeDialogControlPlane::for_modal_owner();
         let mut process = NativeContentProcess::spawn(
             None,
+            "test-writer",
             &[],
             control.clone(),
             Arc::new(Mutex::new(Vec::new())),

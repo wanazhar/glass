@@ -8509,7 +8509,12 @@ async fn load_content_resource(
     if navigation.object_url.is_none() {
         service_workers.commit_document(&resource.url)?;
     }
-    let mut discovery = NativeDocument::parse(&resource.body, &limits)?;
+    let mut discovery = NativeDocument::parse_with_generation_and_referrer_policy(
+        &resource.body,
+        &limits,
+        1,
+        loader.document_referrer_policy(&resource.url)?,
+    )?;
     loader.apply_meta_content_security_policies(
         &resource.url,
         &discovery.content_security_policy_meta(),
@@ -8580,12 +8585,13 @@ async fn load_content_resource(
             })
         })
         .collect::<Vec<_>>();
-    let mut document = NativeDocument::parse_with_stylesheets_and_inline_style_policy(
+    let mut document = NativeDocument::parse_with_stylesheets_inline_policy_and_referrer_policy(
         &resource.body,
         &limits,
         &external_stylesheets,
         1,
         Some(&allowed_inline_style_nodes),
+        loader.document_referrer_policy(&resource.url)?,
     )?;
     document.set_css_target_from_url(&resource.url)?;
     document.set_viewport(viewport)?;

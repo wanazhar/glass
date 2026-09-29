@@ -83,9 +83,19 @@ Slice 826 applies an HTTP Document's response Referrer-Policy to page Fetch
 requests whose request-level policy is empty. Its process-backed two-origin
 regression passed (1 passed, 875 filtered; 32.45 seconds), covering valid and
 unknown token ordering, invalid-only fallback, explicit override, and clearing
-policy when the same URL is served without a valid header. Meta delivery,
-element-level policy, independent worker containers, and navigation/resource
-initiators remain separate requirements; see the [slice 826 task](tasks/native-engine-browser-826.md).
+policy when the same URL is served without a valid header. Meta delivery is
+implemented by slice 827; element-level policy, independent worker containers,
+and navigation/resource initiators remain separate requirements. See the
+[slice 826 task](tasks/native-engine-browser-826.md).
+Slice 827 applies parsed and live `meta name="referrer"` updates to that
+Document-owned page-Fetch default. Its process-backed two-origin regression
+passed (1 passed, 875 filtered; 52.01 seconds), covering subtree insertion,
+live `name`/`content` changes, legacy aliases, invalid/empty no-ops, update
+order, removal persistence, explicit override, and 17 actual target requests.
+The policy remains per Document and is not stored in URL-keyed shared state.
+Element-level policy, independent worker containers, and non-Fetch request
+initiators remain separate requirements; remote CI and cross-platform
+certification are not claimed. See the [slice 827 task](tasks/native-engine-browser-827.md).
 Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).

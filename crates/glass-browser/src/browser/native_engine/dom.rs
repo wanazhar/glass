@@ -34,8 +34,9 @@ use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
-    MAX_NATIVE_CSP_POLICIES, MAX_NATIVE_MEDIA_BYTES, NativeMediaMetadata, NativeNavigationRequest,
-    NativeRequestBody, javascript_mime_type_essence_match,
+    MAX_NATIVE_CSP_POLICIES, MAX_NATIVE_MEDIA_BYTES, NativeFetchReferrerPolicy,
+    NativeMediaMetadata, NativeNavigationRequest, NativeRequestBody,
+    javascript_mime_type_essence_match,
 };
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES, TextFragmentTerms, Viewport},
@@ -72,6 +73,21 @@ const MAX_FORM_CONTROLS: usize = 128;
 const MAX_IMAGE_SRCSET_CANDIDATES: usize = 32;
 const MAX_IMAGE_DENSITY_MILLI: u32 = 64_000;
 const DEFAULT_IMAGE_DENSITY_MILLI: u32 = 1_000;
+
+fn parse_meta_referrer_policy(value: &str) -> Option<NativeFetchReferrerPolicy> {
+    if value.is_empty() {
+        return None;
+    }
+    let value = value.to_ascii_lowercase();
+    let value = match value.as_str() {
+        "never" => "no-referrer",
+        "default" => "strict-origin-when-cross-origin",
+        "always" => "unsafe-url",
+        "origin-when-crossorigin" => "origin-when-cross-origin",
+        value => value,
+    };
+    NativeFetchReferrerPolicy::parse(value).ok()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeImageMapShape {
@@ -240,6 +256,8 @@ pub(crate) struct NativeDocumentWire {
     pub(crate) computed_styles: Vec<NativeComputedStyle>,
     #[serde(default)]
     pub(crate) quirks_mode: super::html_parser::HtmlParsedQuirksMode,
+    #[serde(default)]
+    pub(crate) document_referrer_policy: String,
     #[serde(default)]
     pub(crate) viewport: Viewport,
     #[serde(default)]
@@ -919,6 +937,7 @@ pub struct NativeDocument {
     max_nodes: usize,
     max_dom_depth: usize,
     quirks_mode: super::html_parser::HtmlParsedQuirksMode,
+    document_referrer_policy: NativeFetchReferrerPolicy,
     nodes: Vec<NativeNode>,
     stylesheet: NativeStylesheet,
     font_resources: Vec<NativeFontFaceResource>,
@@ -1128,6 +1147,22 @@ impl NativeDocument {
         Self::parse_with_stylesheets(source, limits, &[], generation)
     }
 
+    pub(crate) fn parse_with_generation_and_referrer_policy(
+        source: &str,
+        limits: &NativeEngineLimits,
+        generation: u32,
+        initial_referrer_policy: NativeFetchReferrerPolicy,
+    ) -> Result<Self, NativeEngineError> {
+        Self::parse_with_stylesheets_inline_policy_and_referrer_policy(
+            source,
+            limits,
+            &[],
+            generation,
+            None,
+            initial_referrer_policy,
+        )
+    }
+
     pub(crate) fn parse_with_stylesheets(
         source: &str,
         limits: &NativeEngineLimits,
@@ -1149,6 +1184,24 @@ impl NativeDocument {
         external_stylesheets: &[String],
         generation: u32,
         allowed_inline_style_nodes: Option<&BTreeSet<u32>>,
+    ) -> Result<Self, NativeEngineError> {
+        Self::parse_with_stylesheets_inline_policy_and_referrer_policy(
+            source,
+            limits,
+            external_stylesheets,
+            generation,
+            allowed_inline_style_nodes,
+            NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
+        )
+    }
+
+    pub(crate) fn parse_with_stylesheets_inline_policy_and_referrer_policy(
+        source: &str,
+        limits: &NativeEngineLimits,
+        external_stylesheets: &[String],
+        generation: u32,
+        allowed_inline_style_nodes: Option<&BTreeSet<u32>>,
+        initial_referrer_policy: NativeFetchReferrerPolicy,
     ) -> Result<Self, NativeEngineError> {
         limits.validate()?;
         if source.len() > limits.max_document_bytes {
@@ -1197,6 +1250,7 @@ impl NativeDocument {
         let mut document = Self::empty();
         document.generation = generation;
         document.revision = u64::from(generation);
+        document.document_referrer_policy = initial_referrer_policy;
         document.root = root;
         document.max_nodes = limits.max_nodes;
         document.max_dom_depth = limits.max_dom_depth;
@@ -1296,6 +1350,7 @@ impl NativeDocument {
                         native_node.state.namespace_uri = Some(namespace.clone());
                         native_node.state.attribute_namespaces = attribute_namespaces;
                     }
+                    self.apply_meta_referrer_policy_to_node(id);
                     if let Some(template_contents_index) = node.template_contents {
                         let template_contents =
                             parsed.get(template_contents_index).ok_or_else(|| {
@@ -3354,6 +3409,7 @@ impl NativeDocument {
             computed_styles,
             viewport: self.viewport,
             quirks_mode: self.quirks_mode,
+            document_referrer_policy: self.document_referrer_policy.as_str().to_owned(),
             font_resources,
             blocked_inline_style_nodes: self
                 .nodes
@@ -3397,6 +3453,13 @@ impl NativeDocument {
     ) -> Result<Self, NativeEngineError> {
         let viewport = wire.viewport;
         let quirks_mode = wire.quirks_mode;
+        let document_referrer_policy =
+            NativeFetchReferrerPolicy::parse(&wire.document_referrer_policy).map_err(|_| {
+                NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid Document referrer policy".into(),
+                }
+            })?;
         let embedded_frame_owner_removal_sequences = wire.embedded_frame_owner_removal_sequences;
         let next_embedded_frame_owner_removal_sequence =
             wire.next_embedded_frame_owner_removal_sequence;
@@ -4311,6 +4374,7 @@ impl NativeDocument {
             max_nodes: limits.max_nodes,
             max_dom_depth: limits.max_dom_depth,
             quirks_mode,
+            document_referrer_policy,
             nodes,
             stylesheet: NativeStylesheet::default(),
             font_resources: font_resources.clone(),
@@ -4474,6 +4538,7 @@ impl NativeDocument {
             max_nodes: MAX_NATIVE_NODES,
             max_dom_depth: MAX_NATIVE_DOM_DEPTH,
             quirks_mode: super::html_parser::HtmlParsedQuirksMode::NoQuirks,
+            document_referrer_policy: NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
             nodes: vec![NativeNode {
                 id: root,
                 parent: None,
@@ -4518,6 +4583,45 @@ impl NativeDocument {
 
     pub(crate) const fn compat_mode(&self) -> &'static str {
         self.quirks_mode.compat_mode()
+    }
+
+    pub(crate) const fn document_referrer_policy(&self) -> NativeFetchReferrerPolicy {
+        self.document_referrer_policy
+    }
+
+    fn apply_meta_referrer_policy_to_node(&mut self, id: NativeNodeId) {
+        let policy = self.node(id).and_then(|node| {
+            if !self.is_attached(id)
+                || node.element_name() != Some("meta")
+                || node.state.namespace_uri.as_deref() != Some(HTML_NAMESPACE_URI)
+                || !node
+                    .attribute("name")
+                    .is_some_and(|name| name.eq_ignore_ascii_case("referrer"))
+            {
+                return None;
+            }
+            parse_meta_referrer_policy(node.attribute("content")?)
+        });
+        if let Some(policy) = policy {
+            self.document_referrer_policy = policy;
+        }
+    }
+
+    fn apply_meta_referrer_policy_subtree(&mut self, root: NativeNodeId) {
+        let mut pending = vec![root];
+        let mut remaining = self.nodes.len();
+        while let Some(id) = pending.pop() {
+            if remaining == 0 {
+                break;
+            }
+            remaining -= 1;
+            let children = self
+                .node(id)
+                .map(|node| node.children().to_vec())
+                .unwrap_or_default();
+            self.apply_meta_referrer_policy_to_node(id);
+            pending.extend(children.into_iter().rev());
+        }
     }
 
     pub const fn diagnostics_truncated(&self) -> bool {
@@ -7789,6 +7893,7 @@ impl NativeDocument {
             node.state.attribute_namespaces.remove(&name);
         }
         self.computed_styles = None;
+        self.apply_meta_referrer_policy_to_node(id);
         Ok(())
     }
 
@@ -7826,6 +7931,7 @@ impl NativeDocument {
         attributes.remove(&name);
         node.state.attribute_namespaces.remove(&name);
         self.computed_styles = None;
+        self.apply_meta_referrer_policy_to_node(id);
         Ok(())
     }
 
@@ -8984,6 +9090,7 @@ impl NativeDocument {
             .unwrap_or(parent_node.children.len());
         parent_node.children.insert(insertion_index, child);
         self.capture_attached_content_security_policy_meta();
+        self.apply_meta_referrer_policy_subtree(child);
         Ok(())
     }
 

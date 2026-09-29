@@ -33737,6 +33737,7 @@ fn document_bootstrap(
     };
     let serialized = serde_json::to_string(&serde_json::json!({
         "url": document_url,
+        "document_referrer_policy": document.document_referrer_policy().as_str(),
         "compat_mode": document.compat_mode(),
         "context_id": context_id,
         "frame_id": context_id,
@@ -33784,6 +33785,23 @@ fn document_bootstrap(
     let mut bootstrap = format!(
         r###"(() => {{
   const host = {serialized};
+  const documentContextId = String(host.context_id || "native");
+  const documentGeneration = Number(host.generation) || 0;
+  const initialDocumentReferrerPolicy = String(
+    host.document_referrer_policy || "strict-origin-when-cross-origin",
+  );
+  const documentReferrerPolicyStates = globalThis.__glassDocumentReferrerPolicyStates instanceof Map
+    ? globalThis.__glassDocumentReferrerPolicyStates
+    : (globalThis.__glassDocumentReferrerPolicyStates = new Map());
+  let documentReferrerPolicy = documentReferrerPolicyStates.get(documentContextId);
+  if (!documentReferrerPolicy || documentReferrerPolicy.generation !== documentGeneration) {{
+    documentReferrerPolicy = {{ generation: documentGeneration, value: initialDocumentReferrerPolicy }};
+    documentReferrerPolicyStates.set(documentContextId, documentReferrerPolicy);
+  }} else {{
+    documentReferrerPolicy.value = initialDocumentReferrerPolicy;
+  }}
+  let applyDynamicReferrerMetaPolicyToNode = null;
+  let captureDynamicReferrerMetaPolicy = null;
   globalThis.__glassMessageRealmKey = "page:" + String(host.context_id || "native");
   const initialPageCryptoBytes = {initial_page_crypto_bytes};
   const state = host.state;
@@ -36763,7 +36781,7 @@ fn document_bootstrap(
       fetchRequests.set(requestId, pending);
       if (signal) signal.addEventListener("abort", abort);
       if (!fetchRequests.has(requestId)) return;
-      pushCommand({{ kind: "fetch", request_id: requestId, href, credentials, credentials_mode: credentialsMode, referrer: referrer.referrer, referrer_url: referrer.url, referrer_policy: referrerPolicy, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, cache, timeout_ms: timeoutMs, upload_stream_id: hasStreamedBody ? requestId : null, destination }});
+      pushCommand({{ kind: "fetch", request_id: requestId, href, credentials, credentials_mode: credentialsMode, referrer: referrer.referrer, referrer_url: referrer.url, referrer_policy: referrerPolicy || documentReferrerPolicy.value, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, cache, timeout_ms: timeoutMs, upload_stream_id: hasStreamedBody ? requestId : null, destination }});
     }});
   }};
   const responseHeaders = (rawEntries, contentType) => {{
@@ -41586,7 +41604,10 @@ fn document_bootstrap(
         value,
         namespace_uri: namespaceURI === null ? "" : namespaceURI,
       }});
-      if (namespaceURI === null) captureDynamicCspMetaPolicy(element);
+      if (namespaceURI === null) {{
+        captureDynamicCspMetaPolicy(element);
+        if (applyDynamicReferrerMetaPolicyToNode) applyDynamicReferrerMetaPolicyToNode(element);
+      }}
       if (oldValue !== value && typeof globalThis.__glassQueueNativeCustomElementReaction === "function") {{
         globalThis.__glassQueueNativeCustomElementReaction(
           element,
@@ -41922,6 +41943,7 @@ fn document_bootstrap(
         element.__glassSyncContent();
         pushCommand({{ kind: "setAttribute", node_index: entry.nodeIndex, name: key, value: stringValue, namespace_uri: "" }});
         captureDynamicCspMetaPolicy(element);
+        if (applyDynamicReferrerMetaPolicyToNode) applyDynamicReferrerMetaPolicyToNode(element);
         if (oldValue !== stringValue && typeof globalThis.__glassQueueNativeCustomElementReaction === "function") {{
           globalThis.__glassQueueNativeCustomElementReaction(
             element,
@@ -42857,6 +42879,46 @@ fn document_bootstrap(
     String.fromCharCode(character.charCodeAt(0) + 32));
   const dynamicCspMetaProcessedThisTurn = new WeakSet();
   let dynamicCspMetaPolicyFailure = false;
+  applyDynamicReferrerMetaPolicyToNode = (node) => {{
+    if (!node || Number(node.nodeType) !== 1
+        || asciiLowercase(String(node.localName || "")) !== "meta"
+        || asciiLowercase(String(node.getAttribute("name") || "")) !== "referrer") return;
+    if (!liveDocumentElements().includes(node)) return;
+    const content = node.getAttribute("content");
+    if (content === null || String(content).length === 0) return;
+    let value = asciiLowercase(String(content));
+    if (value === "never") value = "no-referrer";
+    else if (value === "default") value = "strict-origin-when-cross-origin";
+    else if (value === "always") value = "unsafe-url";
+    else if (value === "origin-when-crossorigin") value = "origin-when-cross-origin";
+    if ([
+      "no-referrer",
+      "no-referrer-when-downgrade",
+      "same-origin",
+      "origin",
+      "strict-origin",
+      "origin-when-cross-origin",
+      "strict-origin-when-cross-origin",
+      "unsafe-url",
+    ].includes(value)) {{
+      documentReferrerPolicy.value = value;
+    }}
+  }};
+  captureDynamicReferrerMetaPolicy = (root) => {{
+    const pending = [root];
+    let remaining = {native_dom_max_nodes};
+    while (pending.length > 0 && remaining > 0) {{
+      const node = pending.pop();
+      remaining -= 1;
+      const children = Array.isArray(node && node.__glassChildren)
+        ? node.__glassChildren
+        : [];
+      for (let index = children.length - 1; index >= 0; index -= 1) {{
+        pending.push(children[index]);
+      }}
+      applyDynamicReferrerMetaPolicyToNode(node);
+    }}
+  }};
   captureDynamicCspMetaPolicy = (node) => {{
     if (!node || Number(node.nodeType) !== 1
         || String(node.localName || "").toLowerCase() !== "meta"
@@ -42886,6 +42948,7 @@ fn document_bootstrap(
   }};
   const executeInsertedScripts = (node) => {{
     if (suppressHostCommands > 0 || !node) return;
+    if (captureDynamicReferrerMetaPolicy) captureDynamicReferrerMetaPolicy(node);
     captureDynamicCspMetaPolicy(node);
     if (Number(node.nodeType) === 1 && String(node.localName || "").toLowerCase() === "script"
         && node.__glassDynamicScriptStarted === false) {{

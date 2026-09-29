@@ -8601,8 +8601,12 @@ impl NativeEngine {
         let generation = u32::try_from(revision).map_err(|_| {
             NativeEngineError::limit("document generations", u32::MAX as usize, usize::MAX)
         })?;
-        let mut document =
-            NativeDocument::parse_with_generation(&resource.body, &self.config.limits, generation)?;
+        let mut document = NativeDocument::parse_with_generation_and_referrer_policy(
+            &resource.body,
+            &self.config.limits,
+            generation,
+            self.loader.document_referrer_policy(&resource.url)?,
+        )?;
         document.set_viewport(self.config.viewport)?;
         let initial_events = if is_file_url(&resource.url) {
             self.loader.apply_meta_content_security_policies(
@@ -8630,12 +8634,13 @@ impl NativeEngine {
                     })
                 })
                 .collect::<Vec<_>>();
-            document = NativeDocument::parse_with_stylesheets_and_inline_style_policy(
+            document = NativeDocument::parse_with_stylesheets_inline_policy_and_referrer_policy(
                 &resource.body,
                 &self.config.limits,
                 &external_stylesheets,
                 generation,
                 Some(&allowed_inline_style_nodes),
+                self.loader.document_referrer_policy(&resource.url)?,
             )?;
             document.mark_inline_style_reports_seen();
             document.mark_content_security_policy_meta_processed();

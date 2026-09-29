@@ -33038,6 +33038,10 @@ async fn native_content_process_inherits_document_referrer_policy_for_page_fetch
                     "Referrer-Policy: invalid, unknown\r\n",
                     "invalid".to_owned(),
                 ),
+                "/meta" => (
+                    "Referrer-Policy: no-referrer\r\n",
+                    "<!doctype html><html><head><meta name=\"REFERRER\" content=\"origin-when-crossorigin\"></head><body></body></html>".to_owned(),
+                ),
                 "/reuse" => {
                     reuse_responses += 1;
                     let policy = if reuse_responses == 1 {
@@ -33142,6 +33146,128 @@ async fn native_content_process_inherits_document_referrer_policy_for_page_fetch
         .await
         .unwrap();
 
+    let meta_page_url = format!("{page_origin}/meta?private=4");
+    engine
+        .navigate_async(format!("{meta_page_url}#fragment"))
+        .await
+        .unwrap();
+    let meta_initial = engine
+        .evaluate_async(&format!(
+            r#"await (async () => {{
+              const request = new Request('{target_origin}/record?case=meta-parsed');
+              const parsed = await fetch(request).then(response => response.text());
+              return [request.referrerPolicy, parsed];
+            }})()"#
+        ))
+        .await
+        .unwrap();
+    let meta_insertion_and_content = engine
+        .evaluate_async(&format!(
+            r#"await (async () => {{
+              const container = document.createElement('div');
+              const dynamic = document.createElement('meta');
+              dynamic.setAttribute('name', 'referrer');
+              dynamic.setAttribute('content', 'always');
+              container.appendChild(dynamic);
+              document.head.appendChild(container);
+              const inserted = await fetch('{target_origin}/record?case=meta-inserted').then(response => response.text());
+              const currentDynamic = document.querySelectorAll('meta')[1];
+              currentDynamic.setAttribute('content', 'No-Referrer');
+              const contentChanged = await fetch('{target_origin}/record?case=meta-content').then(response => response.text());
+              return [inserted, contentChanged];
+            }})()"#
+        ))
+        .await
+        .unwrap();
+    let meta_name_ignored = engine
+        .evaluate_async(&format!(
+            r#"await (async () => {{
+              const dynamic = document.querySelectorAll('meta')[1];
+              dynamic.setAttribute('name', 'other');
+              dynamic.setAttribute('content', 'origin');
+              const nameIgnored = await fetch('{target_origin}/record?case=meta-name-ignored').then(response => response.text());
+              return nameIgnored;
+            }})()"#
+        ))
+        .await
+        .unwrap();
+    let meta_name_changed = engine
+        .evaluate_async(&format!(
+            r#"await (async () => {{
+              const currentDynamic = document.querySelectorAll('meta')[1];
+              currentDynamic.setAttribute('name', 'REFERRER');
+              const nameChanged = await fetch('{target_origin}/record?case=meta-name').then(response => response.text());
+              return [nameChanged,
+                currentDynamic.getAttribute('name'), currentDynamic.getAttribute('content')];
+            }})()"#
+        ))
+        .await
+        .unwrap();
+    let meta_empty_and_untrimmed = engine
+        .evaluate_async(&format!(
+            r#"await (async () => {{
+              const dynamic = document.querySelectorAll('meta')[1];
+              dynamic.setAttribute('content', '');
+              const emptyContent = await fetch('{target_origin}/record?case=meta-empty').then(response => response.text());
+              const currentDynamic = document.querySelectorAll('meta')[1];
+              currentDynamic.setAttribute('content', ' no-referrer');
+              const untrimmedContent = await fetch('{target_origin}/record?case=meta-untrimmed').then(response => response.text());
+              return [emptyContent, untrimmedContent];
+            }})()"#
+        ))
+        .await
+        .unwrap();
+    let meta_tree_order_and_removal = engine
+        .evaluate_async(&format!(
+            r#"await (async () => {{
+              const earlier = document.createElement('meta');
+              earlier.setAttribute('name', 'referrer');
+              earlier.setAttribute('content', 'never');
+              document.head.insertBefore(earlier, document.head.firstChild);
+              const treeOrder = await fetch('{target_origin}/record?case=meta-tree-order').then(response => response.text());
+              document.querySelectorAll('meta')[0].remove();
+              const removed = await fetch('{target_origin}/record?case=meta-removed').then(response => response.text());
+              return [treeOrder, removed];
+            }})()"#
+        ))
+        .await
+        .unwrap();
+    let meta_invalid_and_default = engine
+        .evaluate_async(&format!(
+            r#"await (async () => {{
+              const dynamic = document.querySelectorAll('meta')[1];
+              dynamic.setAttribute('content', 'not-a-policy');
+              const invalid = await fetch('{target_origin}/record?case=meta-invalid').then(response => response.text());
+              const currentDynamic = document.querySelectorAll('meta')[1];
+              currentDynamic.setAttribute('content', 'default');
+              const defaultAlias = await fetch('{target_origin}/record?case=meta-default').then(response => response.text());
+              return [invalid, defaultAlias];
+            }})()"#
+        ))
+        .await
+        .unwrap();
+    let meta_explicit_override = engine
+        .evaluate_async(&format!(
+            r#"await (async () => {{
+              const overridden = await fetch('{target_origin}/record?case=meta-override', {{
+                referrerPolicy: 'unsafe-url',
+              }}).then(response => response.text());
+              return overridden;
+            }})()"#
+        ))
+        .await
+        .unwrap();
+    let live_meta_results = serde_json::Value::Array(vec![
+        meta_initial,
+        meta_insertion_and_content,
+        meta_name_ignored,
+        meta_name_changed,
+        meta_empty_and_untrimmed,
+        meta_tree_order_and_removal,
+        meta_invalid_and_default,
+        meta_explicit_override,
+    ]);
+
     engine.close_async().await.unwrap();
     let _ = stop_page_server.send(());
     let _ = stop_target_server.send(());
@@ -33155,12 +33281,32 @@ async fn native_content_process_inherits_document_referrer_policy_for_page_fetch
     assert_eq!(invalid_header.as_str(), Some("invalid-header"));
     assert_eq!(reuse_with_policy.as_str(), Some("reuse-before"));
     assert_eq!(reuse_without_policy.as_str(), Some("reuse-after"));
-    assert_eq!(page_requests, ["/policy", "/invalid", "/reuse", "/reuse"]);
+    assert_eq!(
+        live_meta_results,
+        serde_json::json!([
+            ["", "meta-parsed"],
+            ["meta-inserted", "meta-content"],
+            "meta-name-ignored",
+            ["meta-name", "REFERRER", "origin"],
+            ["meta-empty", "meta-untrimmed"],
+            ["meta-tree-order", "meta-removed"],
+            ["meta-invalid", "meta-default"],
+            "meta-override"
+        ])
+    );
+    assert_eq!(
+        page_requests,
+        ["/policy", "/invalid", "/reuse", "/reuse", "/meta"]
+    );
 
     let referer_for = |case: &str| {
         target_requests
             .iter()
-            .find(|(target, _)| target.contains(&format!("case={case}")))
+            .find(|(target, _)| {
+                target
+                    .split_once("case=")
+                    .is_some_and(|(_, request_case)| request_case == case)
+            })
             .unwrap_or_else(|| panic!("missing page Fetch request {case}"))
             .1
             .clone()
@@ -33178,7 +33324,37 @@ async fn native_content_process_inherits_document_referrer_policy_for_page_fetch
         );
     }
     assert_eq!(referer_for("reuse-before"), None);
-    assert_eq!(target_requests.len(), 5);
+    let meta_page_referrer = format!("{page_origin}/meta?private=4");
+    for case in [
+        "meta-parsed",
+        "meta-name",
+        "meta-empty",
+        "meta-untrimmed",
+        "meta-default",
+    ] {
+        assert_eq!(
+            referer_for(case),
+            Some(format!("{page_origin}/")),
+            "meta policy {case}"
+        );
+    }
+    for case in ["meta-inserted", "meta-override"] {
+        assert_eq!(
+            referer_for(case),
+            Some(meta_page_referrer.clone()),
+            "meta policy {case}"
+        );
+    }
+    for case in [
+        "meta-content",
+        "meta-name-ignored",
+        "meta-tree-order",
+        "meta-removed",
+        "meta-invalid",
+    ] {
+        assert_eq!(referer_for(case), None, "meta policy {case}");
+    }
+    assert_eq!(target_requests.len(), 17);
 }
 
 #[test]

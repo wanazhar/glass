@@ -142,13 +142,40 @@ and distinguishes cache entries by effective referrer. Its process-backed
 two-origin regression covers defaults, overrides, invalid values, policy
 outcomes, redirects, and `fetch(event.request)` (1 passed; 37.37 seconds).
 The fetch-side policy defaults to `strict-origin-when-cross-origin`; a redirect
-response's Referrer-Policy value affects the following hop. This does not yet
-deliver document/worker policy containers from response headers, meta elements,
-or element attributes, and is not complete Referrer Policy/WPT conformance.
-Full Fetch/Web IDL semantics, WPT conformance, and cross-platform parity remain
-open; see the [Slice 825 task](tasks/native-engine-browser-825.md),
+response's Referrer-Policy value affects the following hop. Slice 826 now
+applies the HTTP Document response policy to page Fetch when its request-level
+policy is empty; its process-backed regression passed (1 passed, 875 filtered;
+32.45 seconds), covering ordered/unknown tokens, invalid-only fallback,
+explicit override, and removal of a prior same-URL policy. Meta delivery,
+element-level policy, independent worker response containers, and inheritance
+remain open. This is not complete Referrer Policy/WPT conformance; full
+Fetch/Web IDL semantics, WPT conformance, and cross-platform parity remain
+open. See the [Slice 826 task](tasks/native-engine-browser-826.md),
+[Slice 825 task](tasks/native-engine-browser-825.md),
 [Slice 822 task](tasks/native-engine-browser-822.md) and
 [Slice 823 task](tasks/native-engine-browser-823.md).
+
+### Fetch referrer policy containers
+
+This elaborates the existing `network-origin` requirement for referrer
+handling and the `html-dom` requirement for document policies; it does not
+change GCWP-0.1's scope, version, or promotion thresholds. The policy container
+created from an HTTP(S) Document response supplies the default referrer policy
+for requests whose own `referrerPolicy` is empty. The Fetch `Request` property
+remains empty in that case; the effective request policy comes from the
+client's Document policy container. A response `Referrer-Policy` header uses
+the last recognized policy token; unknown tokens are ignored, and no recognized
+token leaves the default `strict-origin-when-cross-origin` policy in effect.
+Redirect response policies update the request before the next hop as described
+above.
+
+The required referrer surface also includes policy delivery through `meta
+name="referrer"`, applicable element `referrerpolicy` attributes, worker
+response policy containers, and the relevant inheritance rules. These are
+distinct initiator/owner paths and must not be inferred from page Fetch
+coverage. Slice 826 covers only an HTTP Document response header as the
+environment default for page Fetch; its explicit exclusions and evidence are
+in [the slice 826 task](tasks/native-engine-browser-826.md).
 
 ### Explicit `tabindex` focus baseline
 

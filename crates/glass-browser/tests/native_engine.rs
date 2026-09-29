@@ -35655,6 +35655,157 @@ async fn native_content_process_service_worker_fetches_use_script_policy_contain
 }
 
 #[tokio::test]
+async fn native_content_process_service_worker_registration_uses_live_document_referrer_policy() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for _ in 0..5 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let target = request
+                .split_whitespace()
+                .nth(1)
+                .expect("ServiceWorker registration request includes a target")
+                .to_owned();
+            let path = target.split('?').next().unwrap_or_default();
+            let referer = request.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("referer")
+                    .then(|| value.trim().to_owned())
+            });
+            let (extra_headers, content_type, body) = match path {
+                "/page" => (
+                    "Referrer-Policy: no-referrer\r\n",
+                    "text/html",
+                    "<!doctype html><meta name='referrer' content='no-referrer'><main>register</main>",
+                ),
+                "/scopes/no-ref/sw.js" => (
+                    "Referrer-Policy: unsafe-url\r\nCache-Control: no-store\r\n",
+                    "application/javascript",
+                    "self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));",
+                ),
+                "/scopes/origin/sw.js" => (
+                    "Referrer-Policy: no-referrer\r\nCache-Control: no-store\r\n",
+                    "application/javascript",
+                    "self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));",
+                ),
+                "/scopes/module/sw.js" => (
+                    "Referrer-Policy: no-referrer\r\nCache-Control: no-store\r\n",
+                    "application/javascript",
+                    "self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));",
+                ),
+                other => panic!("unexpected ServiceWorker registration request: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push((target, referer));
+        }
+        requests
+    });
+
+    let page_url = format!("http://{address}/page?private=1");
+    let mut engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url(page_url.clone()))
+            .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await navigator.serviceWorker.register('/scopes/no-ref/sw.js').then(() => 'registered')",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("registered")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "document.querySelector('meta[name=referrer]').content = 'origin'; 'origin'",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("origin")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await navigator.serviceWorker.register('/scopes/origin/sw.js').then(() => 'registered')",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("registered")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "document.querySelector('meta[name=referrer]').content = 'unsafe-url'; 'unsafe-url'",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("unsafe-url")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await navigator.serviceWorker.register('/scopes/module/sw.js', { type: 'module' }).then(reg => { globalThis.__slice837Registration = reg; return 'registered'; })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("registered")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "document.querySelector('meta[name=referrer]').content = 'no-referrer'; 'no-referrer'",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("no-referrer")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("await globalThis.__slice837Registration.update(); 'updated'",)
+            .await
+            .unwrap(),
+        serde_json::json!("updated")
+    );
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(
+        requests
+            .iter()
+            .map(|(target, _)| target.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "/page?private=1",
+            "/scopes/no-ref/sw.js",
+            "/scopes/origin/sw.js",
+            "/scopes/module/sw.js",
+            "/scopes/module/sw.js",
+        ]
+    );
+    let origin = format!("http://{address}/");
+    assert_eq!(requests[1].1, None, "response policy is not retroactive");
+    assert_eq!(requests[2].1.as_deref(), Some(origin.as_str()));
+    assert_eq!(
+        requests[3].1.as_deref(),
+        Some(page_url.as_str()),
+        "unsafe-url uses the active Document URL including its query"
+    );
+    assert_eq!(
+        requests[4].1, None,
+        "update captures the live Document policy"
+    );
+}
+
+#[tokio::test]
 async fn native_content_process_form_attribute_associates_external_controls() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

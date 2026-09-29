@@ -282,6 +282,16 @@ preload, dynamic module imports, broader Referrer Policy/Fetch or WPT
 conformance, remote CI, and cross-platform certification remain separate.
 See the [slice 836 task](tasks/native-engine-browser-836.md).
 
+Slice 837 applies the active Document's creation URL and effective
+response/meta policy container to ServiceWorker entry requests initiated by
+`register()` and `ServiceWorkerRegistration.update()`. The captured policy is
+transported with the command so a live meta update is not lost at the
+Document-to-host boundary. This policy controls only the entry request; the
+fetched ServiceWorker script response continues to own the worker's policy
+container and dependency behavior from Slice 836. Background restoration and
+soft updates without an active client retain separate provenance. See the
+[slice 837 task](tasks/native-engine-browser-837.md).
+
 ### Explicit `tabindex` focus baseline
 
 Within the current light-DOM focus scope, a valid explicit `tabindex` makes an

@@ -1,23 +1,25 @@
 # Native browser engine
 
-Status: issue #40 remains open. Local process-backed HTTP tests now run on
-this host. Slices 830 and 831 pass their wire regressions. Slice 832 verifies
-all request headers, but its inline module's dynamic import does not settle.
-Slice 833's DedicatedWorker and SharedWorker module graphs now pass their
-process-backed HTTP regression, including top-level `await import()` settlement
-and actual request-header assertions. Slice 833 remains in progress pending
-Slice 832. Slices 834-836 pass their targeted process-backed Fetch/XHR,
-`importScripts()`, and ServiceWorker policy tests, but remain in progress behind
-the same dependency chain. The latest remote CI run, `36616367412` on
-`ee67f930`, failed and does not contain these local edits. Remote CI for these
-edits, WPT conformance, and cross-platform certification remain open. See the
+Status: issue #40 remains open. This session's sandbox denies local TCP
+listener binding with `PermissionDenied`, so process-backed HTTP regressions
+cannot execute here. Slices 830 and 831, and 833-836, retain previously
+recorded passing wire results, but the corrected Slice 832 regression has not
+been rerun and its inline import settlement remains unverified. The new Slice
+837 socket-free command-capture test passes, but its HTTP regression stops at
+`TcpListener::bind` before engine initialization. Slice 833 remains in progress
+pending Slice 832; Slices 834-837 remain in progress behind that dependency
+chain. The latest
+recorded remote CI run, `36616367412` on `ee67f930`, failed and does not contain
+these local edits. Remote CI for these edits, WPT conformance, and
+cross-platform certification remain open. See the
 [Slice 830 task](../plan/tasks/native-engine-browser-830.md),
 [Slice 831 task](../plan/tasks/native-engine-browser-831.md),
 [Slice 832 task](../plan/tasks/native-engine-browser-832.md),
 [Slice 833 task](../plan/tasks/native-engine-browser-833.md),
 [Slice 834 task](../plan/tasks/native-engine-browser-834.md),
-[Slice 835 task](../plan/tasks/native-engine-browser-835.md), and
-[Slice 836 task](../plan/tasks/native-engine-browser-836.md) for contracts and
+[Slice 835 task](../plan/tasks/native-engine-browser-835.md),
+[Slice 836 task](../plan/tasks/native-engine-browser-836.md), and
+[Slice 837 task](../plan/tasks/native-engine-browser-837.md) for contracts and
 verification boundaries.
 Slice 818 synchronizes
 ordinary response-cookie deltas to same-backend live contexts after profile

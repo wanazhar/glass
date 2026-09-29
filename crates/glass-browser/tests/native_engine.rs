@@ -65229,6 +65229,166 @@ async fn native_content_process_inherits_referrer_policy_through_dynamic_module_
 }
 
 #[tokio::test]
+async fn native_content_process_inherits_referrer_policy_through_module_workers() {
+    fn request_header(request: &str, name: &str) -> Option<String> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header
+                    .eq_ignore_ascii_case(name)
+                    .then(|| value.trim().to_owned())
+            })
+        })
+    }
+
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let document_url = format!("http://{address}/page?secret=token");
+    let origin = format!("http://{address}/");
+    let server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async move {
+            let mut observed = BTreeMap::new();
+            for _ in 0..11 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("module Worker request includes a URL")
+                    .to_owned();
+                let referer = request_header(&request, "referer");
+                let (status, extra_headers, body) = match path.as_str() {
+                    "/page?secret=token" => (
+                        "200 OK",
+                        "Content-Type: text/html\r\nReferrer-Policy: unsafe-url\r\n",
+                        "<meta name='referrer' content='unsafe-url'><script>document.querySelector('meta').content='no-referrer';globalThis.workerResults=[];globalThis.sharedResults=[];const worker=new Worker('/dedicated-entry.js',{type:'module'});worker.onmessage=event=>workerResults.push(event.data);const shared=new SharedWorker('/shared-entry.js',{type:'module',name:'slice-833'});shared.port.onmessage=event=>sharedResults.push(event.data);shared.port.start();</script>",
+                    ),
+                    "/dedicated-entry.js" => (
+                        "302 Found",
+                        "Location: /dedicated/root.js?final=1\r\nReferrer-Policy: origin\r\n",
+                        "",
+                    ),
+                    "/shared-entry.js" => (
+                        "302 Found",
+                        "Location: /shared/root.js?final=1\r\nReferrer-Policy: origin\r\n",
+                        "",
+                    ),
+                    "/dedicated/root.js?final=1" => (
+                        "200 OK",
+                        "Content-Type: application/javascript\r\nReferrer-Policy: origin\r\n",
+                        "import { value as staticValue } from './static.js'; const dynamic = await import('./dynamic.js'); postMessage({ staticValue, dynamicValue: dynamic.value, nestedValue: await dynamic.nested });",
+                    ),
+                    "/shared/root.js?final=1" => (
+                        "200 OK",
+                        "Content-Type: application/javascript\r\nReferrer-Policy: origin\r\n",
+                        "import { value as staticValue } from './static.js'; const dynamic = await import('./dynamic.js'); const result = { staticValue, dynamicValue: dynamic.value, nestedValue: await dynamic.nested }; self.onconnect = event => event.ports[0].postMessage(result);",
+                    ),
+                    "/dedicated/static.js" => (
+                        "200 OK",
+                        "Content-Type: application/javascript\r\n",
+                        "export const value = 'dedicated-static';",
+                    ),
+                    "/shared/static.js" => (
+                        "200 OK",
+                        "Content-Type: application/javascript\r\n",
+                        "export const value = 'shared-static';",
+                    ),
+                    "/dedicated/dynamic.js" => (
+                        "200 OK",
+                        "Content-Type: application/javascript\r\nReferrer-Policy: no-referrer\r\n",
+                        "export const value = 'dedicated-dynamic'; export const nested = import('./nested.js').then(module => module.value);",
+                    ),
+                    "/shared/dynamic.js" => (
+                        "200 OK",
+                        "Content-Type: application/javascript\r\nReferrer-Policy: no-referrer\r\n",
+                        "export const value = 'shared-dynamic'; export const nested = import('./nested.js').then(module => module.value);",
+                    ),
+                    "/dedicated/nested.js" => (
+                        "200 OK",
+                        "Content-Type: application/javascript\r\n",
+                        "export const value = 'dedicated-nested';",
+                    ),
+                    "/shared/nested.js" => (
+                        "200 OK",
+                        "Content-Type: application/javascript\r\n",
+                        "export const value = 'shared-nested';",
+                    ),
+                    other => panic!("unexpected module Worker request: {other}"),
+                };
+                let content_type = if extra_headers.contains("Content-Type") {
+                    ""
+                } else {
+                    "Content-Type: application/javascript\r\n"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\n{content_type}{extra_headers}Cache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                observed.insert(path, referer);
+            }
+            observed
+        })
+        .await
+        .expect("module Worker graph requests stay within their time bound")
+    });
+
+    let mut engine =
+        NativeEngine::new(NativeEngineConfig::default().with_initial_url(document_url)).unwrap();
+    engine.initialize_async().await.unwrap();
+    let result = engine
+        .evaluate_async("({ dedicated: workerResults, shared: sharedResults })")
+        .await
+        .unwrap();
+    engine.close_async().await.unwrap();
+    let observed = server.await.unwrap();
+
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "dedicated": [{
+                "staticValue": "dedicated-static",
+                "dynamicValue": "dedicated-dynamic",
+                "nestedValue": "dedicated-nested",
+            }],
+            "shared": [{
+                "staticValue": "shared-static",
+                "dynamicValue": "shared-dynamic",
+                "nestedValue": "shared-nested",
+            }],
+        })
+    );
+    for path in ["/dedicated-entry.js", "/shared-entry.js"] {
+        assert_eq!(
+            observed.get(path).and_then(Option::as_deref),
+            None,
+            "{path}"
+        );
+    }
+    for path in [
+        "/dedicated/root.js?final=1",
+        "/shared/root.js?final=1",
+        "/dedicated/static.js",
+        "/shared/static.js",
+        "/dedicated/dynamic.js",
+        "/shared/dynamic.js",
+    ] {
+        assert_eq!(
+            observed.get(path).and_then(Option::as_deref),
+            Some(origin.as_str()),
+            "{path}"
+        );
+    }
+    for path in ["/dedicated/nested.js", "/shared/nested.js"] {
+        assert_eq!(
+            observed.get(path).and_then(Option::as_deref),
+            None,
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_content_process_reloads_the_selected_srcset_candidate_after_sizes_mutation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -7562,6 +7562,17 @@ impl NativeResourceLoader {
         href: &str,
         max_source_bytes: usize,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        self.load_worker_async_with_referrer_policy(document_url, href, max_source_bytes, None)
+            .await
+    }
+
+    pub(crate) async fn load_worker_async_with_referrer_policy(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        max_source_bytes: usize,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         self.load_script_like_async(
             document_url,
             href,
@@ -7574,7 +7585,7 @@ impl NativeResourceLoader {
             None,
             None,
             None,
-            None,
+            referrer_policy,
         )
         .await
     }
@@ -7585,6 +7596,7 @@ impl NativeResourceLoader {
         href: &str,
         max_source_bytes: usize,
         credentials_mode: &str,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         let crossorigin = worker_module_crossorigin(credentials_mode)?;
         self.load_script_like_async(
@@ -7599,7 +7611,7 @@ impl NativeResourceLoader {
             None,
             Some(NativeModuleResourceType::JavaScript),
             Some(credentials_mode),
-            None,
+            referrer_policy,
         )
         .await
     }
@@ -7629,7 +7641,30 @@ impl NativeResourceLoader {
         module_type: Option<NativeModuleResourceType>,
         credentials_mode: Option<&str>,
     ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        self.load_worker_script_dependency_async_with_referrer_source(
+            document_url,
+            document_url,
+            href,
+            max_source_bytes,
+            module_type,
+            credentials_mode,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_worker_script_dependency_async_with_referrer_source(
+        &mut self,
+        document_url: &str,
+        referrer_url: &str,
+        href: &str,
+        max_source_bytes: usize,
+        module_type: Option<NativeModuleResourceType>,
+        credentials_mode: Option<&str>,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
         validate_url_text("document URL", document_url)?;
+        validate_url_text("worker module referrer URL", referrer_url)?;
         validate_url_text("script URL", href)?;
         let crossorigin = credentials_mode
             .map(worker_module_crossorigin)
@@ -7640,7 +7675,7 @@ impl NativeResourceLoader {
                 "must be positive",
             ));
         }
-        if let Ok(owner_url) = Url::parse(without_fragment(document_url))
+        if let Ok(owner_url) = Url::parse(without_fragment(referrer_url))
             && owner_url.scheme().eq_ignore_ascii_case("fixture")
         {
             let target_url = Url::parse(href)
@@ -7665,7 +7700,7 @@ impl NativeResourceLoader {
                 response_referrer_policy: None,
             }));
         }
-        self.load_script_like_async(
+        self.load_script_like_async_with_referrer_source(
             document_url,
             href,
             max_source_bytes,
@@ -7677,7 +7712,8 @@ impl NativeResourceLoader {
             None,
             module_type,
             credentials_mode,
-            None,
+            referrer_policy,
+            Some(referrer_url),
         )
         .await
     }

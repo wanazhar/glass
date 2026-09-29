@@ -3444,6 +3444,7 @@ impl NativeEngine {
                 worker_type,
                 credentials,
                 extended_lifetime,
+                referrer_policy,
                 cookie_profile,
                 constructor_storage_key: _,
                 transfer_port,
@@ -3463,6 +3464,10 @@ impl NativeEngine {
             validate_context_id(&self.config.context_id)?;
             validate_context_id(&self.frame_id)?;
             validate_native_shared_worker_options(&worker_type, &credentials)?;
+            referrer_policy
+                .as_deref()
+                .map(super::resource_loader::NativeFetchReferrerPolicy::parse)
+                .transpose()?;
             validate_message_port_transfers(std::slice::from_ref(&transfer_port))?;
             let document_generation = self.document.generation();
             self.pending_shared_worker_creates
@@ -3478,6 +3483,7 @@ impl NativeEngine {
                     worker_type,
                     credentials,
                     extended_lifetime,
+                    referrer_policy,
                     cookie_profile,
                     transfer_port,
                 });

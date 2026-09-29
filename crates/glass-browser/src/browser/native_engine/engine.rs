@@ -3004,6 +3004,8 @@ impl NativeEngine {
             .iter()
             .map(profile_from_public_cookie)
             .collect::<Result<Vec<_>, _>>()?;
+        self.sync_external_storage_events()?;
+        self.deliver_pending_external_storage_events().await?;
         if let Some(process) = self.content_process.as_mut() {
             process.set_cookies(&profiles).await?;
         }
@@ -3061,6 +3063,8 @@ impl NativeEngine {
     /// Clear all cookies in the native profile and active content realm.
     pub async fn clear_cookies_async(&mut self) -> Result<(), NativeEngineError> {
         self.require_running("clear cookies")?;
+        self.sync_external_storage_events()?;
+        self.deliver_pending_external_storage_events().await?;
         if let Some(process) = self.content_process.as_mut() {
             process.clear_cookies().await?;
         }

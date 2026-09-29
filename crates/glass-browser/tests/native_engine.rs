@@ -33321,7 +33321,7 @@ fn native_runtime_cookie_changes_sync_between_live_profile_sessions() {
             let address = listener.local_addr().unwrap();
             let server = tokio::spawn(async move {
                 let mut requests = Vec::new();
-                for _ in 0..6 {
+                for _ in 0..8 {
                     let (mut stream, _) = tokio::time::timeout(
                         Duration::from_secs(30),
                         listener.accept(),
@@ -33364,6 +33364,8 @@ fn native_runtime_cookie_changes_sync_between_live_profile_sessions() {
                         ),
                         "/check-shared" => ("", "text/plain", "shared"),
                         "/check-isolated" => ("", "text/plain", "isolated"),
+                        "/check-import" => ("", "text/plain", "imported"),
+                        "/check-clear" => ("", "text/plain", "cleared"),
                         other => panic!("unexpected cross-session cookie request: {other}"),
                     };
                     let response = format!(
@@ -33422,6 +33424,55 @@ fn native_runtime_cookie_changes_sync_between_live_profile_sessions() {
                     .value,
                 serde_json::json!("isolated")
             );
+            writer
+                .native_set_cookies(&[Cookie {
+                    name: "api_import".into(),
+                    value: "visible".into(),
+                    domain: address.ip().to_string(),
+                    path: "/".into(),
+                    expires: 0.0,
+                    http_only: true,
+                    secure: false,
+                    same_site: Some("Lax".into()),
+                    is_session: true,
+                    size: None,
+                    priority: None,
+                }])
+                .await
+                .unwrap();
+            assert_eq!(
+                reader
+                    .script("await fetch('/check-import').then(response => response.text())")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("imported")
+            );
+            reader
+                .native_set_cookies(&[Cookie {
+                    name: "peer_added".into(),
+                    value: "peer_value".into(),
+                    domain: address.ip().to_string(),
+                    path: "/".into(),
+                    expires: 0.0,
+                    http_only: false,
+                    secure: false,
+                    same_site: Some("Lax".into()),
+                    is_session: true,
+                    size: None,
+                    priority: None,
+                }])
+                .await
+                .unwrap();
+            writer.native_clear_cookies().await.unwrap();
+            assert_eq!(
+                reader
+                    .script("await fetch('/check-clear').then(response => response.text())")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("cleared")
+            );
 
             writer.close().await.unwrap();
             reader.close().await.unwrap();
@@ -33441,6 +33492,15 @@ fn native_runtime_cookie_changes_sync_between_live_profile_sessions() {
             assert!(shared_cookie.contains("cross_session=latest"));
             assert!(shared_cookie.contains("cross_http_only=secret"));
             assert!(!shared_cookie.contains("cross_removed="));
+            let imported_cookie = cookie_for("/check-import");
+            assert!(imported_cookie.contains("cross_session=latest"));
+            assert!(imported_cookie.contains("cross_http_only=secret"));
+            assert!(
+                imported_cookie.contains("api_import=visible"),
+                "API import was not delivered; request cookies={imported_cookie:?}"
+            );
+            assert!(!imported_cookie.contains("cross_removed="));
+            assert!(cookie_for("/check-clear").is_empty());
             let isolated_cookie = cookie_for("/check-isolated");
             assert!(!isolated_cookie.contains("cross_session="));
             assert!(!isolated_cookie.contains("cross_http_only="));

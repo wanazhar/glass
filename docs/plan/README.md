@@ -28,7 +28,7 @@ version claims.
 
 Status: the bounded foundation is complete through `native-engine-234`; local
 browser expansion implementation is locally complete through
-`native-engine-browser-820`. Slice 818 returns ordinary page-response cookie
+`native-engine-browser-821`. Slice 818 returns ordinary page-response cookie
 journals after profile merge and synchronizes same-backend target/frame and
 SharedWorker contexts without duplicate profile writes. Slice 819 verifies
 that an already-running module SharedWorker's later module request uses the
@@ -36,13 +36,18 @@ updated cookies. Slice 820 synchronizes cookie deltas between separately
 created live sessions sharing one explicit profile. Its process-backed HTTP
 regression passed (1 passed, 870 filtered; 46.24 seconds), verifying response
 cookie latest-value coalescing, HttpOnly delivery, response-driven deletion,
-and separate-profile isolation. Explicit cookie import/clear API publication
-across live sessions remains unverified;
-the journal round-trip/backward-decode unit test passed (1 passed, 1,639
+and separate-profile isolation; the journal round-trip/backward-decode unit
+test passed (1 passed, 1,639
 filtered; 0.07 seconds). The scoped check passed with existing dead-code
 warnings from the superseded HTML parser. Direct SharedWorker Fetch API
 requests, broader cookie/WPT conformance, and cross-platform coverage remain
-open. See the [slice 820 task](tasks/native-engine-browser-820.md),
+open. Slice 821 verifies explicit native cookie import/clear API changes are
+persisted before journal publication and observed by a second live session at
+its next request, including clearing a peer-written cookie after pre-operation
+synchronization; the process-backed regression passed (1 passed, 870
+filtered; 45.52 seconds). See the [slice 821
+task](tasks/native-engine-browser-821.md), the [slice 820
+task](tasks/native-engine-browser-820.md),
 the [slice 819 task](tasks/native-engine-browser-819.md),
 the [slice 818 task](tasks/native-engine-browser-818.md),
 the [slice 817 task](tasks/native-engine-browser-817.md), the [slice 816

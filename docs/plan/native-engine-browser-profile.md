@@ -98,10 +98,12 @@ Another live session reads its leased journal cursor at browser operation
 boundaries, ignores its own records, coalesces external changes by cookie key,
 and applies them to its request loader and live content process before the next
 request. Applying a journal record is runtime-only: the receiving session does
-not write the same change back to the profile or republish it. Slice 820
-verifies HTTP response `Set-Cookie` updates, including response-driven
-deletion; cross-session publication of explicit cookie import and clear API
-calls remains unverified. A session with no explicit profile has no
+not write the same change back to the profile or republish it. Slices 820-821
+verify HTTP response `Set-Cookie` updates and explicit native cookie
+import/clear API calls across live sessions, including response-driven
+deletion. Slice 821 verifies that API changes are persisted before journal
+publication and that API clear includes a cookie written by a peer before the
+clearing session synchronizes. A session with no explicit profile has no
 cross-session state; separate profile paths do not share notifications.
 Delivery is operation-boundary synchronization, not an OS file watcher or an
 interrupt to an already-running request. See the
@@ -547,7 +549,10 @@ carried the latest ordinary and HttpOnly values, omitted the deleted cookie,
 and a distinct profile remained isolated. The journal round-trip/backward-
 decode test passed (1 passed, 1,639 filtered; 0.07 seconds). Its operation-
 boundary delivery does not interrupt an in-flight request. Broader cookie/WPT
-conformance and cross-platform coverage remain open. See the
+conformance and cross-platform coverage remain open. Slice 821 verifies
+process-backed explicit cookie import and clear across live sessions (1 passed,
+870 filtered; 45.52 seconds), including a peer-written cookie, HttpOnly
+delivery, and separate-profile isolation. See the [slice 821 task](tasks/native-engine-browser-821.md), the
 [slice 820 task](tasks/native-engine-browser-820.md), the
 [slice 819 task](tasks/native-engine-browser-819.md),
 the [slice 818 task](tasks/native-engine-browser-818.md),

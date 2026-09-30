@@ -22393,6 +22393,61 @@ mod native_static_dynamic_import_tests {
     }
 
     #[test]
+    fn service_worker_fetch_respond_with_stops_later_listeners() {
+        let runtime =
+            NativeJavaScriptRuntime::new_with_context_id("sw-fetch-respond-with-stops-listeners")
+                .expect("ServiceWorker runtime is valid");
+        let worker_id = 47;
+        let worker_url = "https://preload.test/sw.js";
+        runtime
+            .evaluate_service_worker_source(
+                worker_id,
+                worker_url,
+                None,
+                r#"self.addEventListener('fetch', event => {
+  event.respondWith(new Response('first response'));
+});
+self.addEventListener('fetch', () => {
+  globalThis.__laterFetchListenerRan = true;
+});"#,
+                &BTreeMap::new(),
+            )
+            .expect("fetch listeners install");
+        let request = serde_json::json!({
+            "url": "https://preload.test/page",
+            "method": "GET",
+            "headers": [],
+            "bodyNull": true,
+            "mode": "navigate",
+            "redirect": "follow",
+            "credentialsMode": "include",
+            "destination": "document",
+        });
+
+        let evaluation = runtime
+            .evaluate_service_worker_fetch(worker_id, worker_url, &request, false)
+            .expect("FetchEvent settles after its first respondWith");
+        assert_eq!(evaluation.value["handled"], true);
+        let encoded = evaluation.value["response"]["bodyBase64"]
+            .as_str()
+            .expect("response body is base64 encoded");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .expect("response body uses valid base64"),
+            b"first response"
+        );
+        let later_listener_ran = runtime.context.with(|ctx| {
+            ctx.eval::<bool, _>("globalThis.__laterFetchListenerRan === true")
+                .expect("listener state can be inspected")
+        });
+        assert!(
+            !later_listener_ran,
+            "respondWith stops invocation of later fetch listeners"
+        );
+    }
+
+    #[test]
     fn service_worker_preload_response_is_undefined_when_not_started() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("sw-preload-not-started")
             .expect("ServiceWorker runtime is valid");
@@ -35302,6 +35357,7 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       url: payload && typeof payload.referrerUrl === "string" ? payload.referrerUrl : workerUrl,
     });
     let responded = false;
+    let immediatePropagationStopped = false;
     let responsePromise = null;
     let dispatching = true;
     let pendingLifetimePromises = 0;
@@ -35337,11 +35393,17 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
           throw new TypeError("ExtendableEvent.waitUntil called on an incompatible receiver");
         extendLifetime(value);
       },
+      stopImmediatePropagation() {
+        if (this !== event)
+          throw new TypeError("Event.stopImmediatePropagation called on an incompatible receiver");
+        immediatePropagationStopped = true;
+      },
       respondWith(value) {
         if (!dispatching)
           throw new DOMExceptionNative("FetchEvent is not being dispatched", "InvalidStateError");
         if (responded) throw new DOMExceptionNative("service worker fetch already responded", "InvalidStateError");
         responded = true;
+        immediatePropagationStopped = true;
         responsePromise = serviceWorkerPromiseResolve(value);
         extendLifetime(responsePromise);
       },
@@ -35360,11 +35422,14 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
         catch (error) { reportWorkerCallbackException(error, false); }
       }
     } catch (error) { reportWorkerCallbackException(error, false); }
-    for (const callback of callbacks.slice()) {
-      try {
-        if (typeof callback === "function") callback.call(globalThis, event);
-        else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
-      } catch (error) { reportWorkerCallbackException(error, false); }
+    if (!immediatePropagationStopped) {
+      for (const callback of callbacks.slice()) {
+        try {
+          if (typeof callback === "function") callback.call(globalThis, event);
+          else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
+        } catch (error) { reportWorkerCallbackException(error, false); }
+        if (immediatePropagationStopped) break;
+      }
     }
     dispatching = false;
     serviceWorkerFetchLifetimes.add(lifetimePromise);

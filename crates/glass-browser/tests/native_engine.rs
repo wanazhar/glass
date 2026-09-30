@@ -12469,15 +12469,20 @@ self.addEventListener('fetch', event => {
     let mut navigation = Box::pin(session.navigate(format!("http://{address}/early-response")));
     let mut preload_seen = Box::pin(preload_seen_rx);
     let mut preload_was_seen = false;
-    let mut navigation_result = tokio::select! {
-        biased;
-        seen = preload_seen.as_mut() => {
-            seen.expect("server observed navigation preload");
-            preload_was_seen = true;
-            None
-        },
-        result = navigation.as_mut() => Some(result),
-    };
+    let mut navigation_result = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            biased;
+            seen = preload_seen.as_mut() => {
+                seen.expect("server observed navigation preload");
+                preload_was_seen = true;
+                None
+            },
+            result = navigation.as_mut() => Some(result),
+        }
+    })
+    .await
+    .ok()
+    .flatten();
     let completed_before_preload_response = if navigation_result.is_some() {
         true
     } else if let Ok(result) =

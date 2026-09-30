@@ -6,8 +6,9 @@ use super::config::{
     validate_url_text, validate_window_name, without_fragment,
 };
 use super::content_process::{
-    NativeContentLoad, NativeContentLoadResult, NativeContentMutation, NativeContentNavigation,
-    NativeContentProcess, NativeContentScriptResult, merge_dynamic_page_script_result,
+    NativeContentAsyncEffectNotification, NativeContentLoad, NativeContentLoadResult,
+    NativeContentMutation, NativeContentNavigation, NativeContentProcess,
+    NativeContentScriptResult, merge_dynamic_page_script_result,
 };
 use super::css::{
     FontWeightValue, NativeFontFaceSource, absolutize_stylesheet_urls, css_import_matches,
@@ -405,6 +406,7 @@ pub struct NativeEngine {
     runtime: NativeRuntimeShared,
     runtime_worker: Option<NativeRuntimeWorker>,
     content_process: Option<NativeContentProcess>,
+    content_process_event_notify: Option<Arc<tokio::sync::Notify>>,
     pending_content_cookie_changes: Arc<Mutex<Vec<NativeCookieChange>>>,
     external_shared_worker_routing: bool,
     javascript: Option<NativeJavaScriptRuntime>,
@@ -531,6 +533,7 @@ impl NativeEngine {
             runtime,
             runtime_worker: None,
             content_process: None,
+            content_process_event_notify: None,
             pending_content_cookie_changes: Arc::new(Mutex::new(Vec::new())),
             external_shared_worker_routing: false,
             javascript: None,
@@ -752,6 +755,25 @@ impl NativeEngine {
         }
         if let Some(javascript) = self.javascript.as_ref() {
             javascript.set_frame_id(self.frame_id.clone());
+        }
+    }
+
+    pub(crate) fn set_content_process_event_notify(&mut self, notify: Arc<tokio::sync::Notify>) {
+        self.content_process_event_notify = Some(notify);
+    }
+
+    pub(crate) fn content_process_event_notify(&self) -> Option<Arc<tokio::sync::Notify>> {
+        self.content_process_event_notify.clone()
+    }
+
+    // Consumed by the backend event pump in the dependent owner-pump slice.
+    #[allow(dead_code)]
+    pub(crate) fn take_async_effect_notifications(
+        &mut self,
+    ) -> Result<Vec<NativeContentAsyncEffectNotification>, NativeEngineError> {
+        match self.content_process.as_mut() {
+            Some(process) => process.take_async_effect_notifications(),
+            None => Ok(Vec::new()),
         }
     }
 
@@ -1369,12 +1391,13 @@ impl NativeEngine {
         let initial_url = self.config.initial_url.clone();
         let mut content_process = if is_network_url(&initial_url) {
             Some(
-                NativeContentProcess::spawn(
+                NativeContentProcess::spawn_with_event_notify(
                     self.config.storage_path.as_deref(),
                     &self.storage_writer_id,
                     self.loader.allowed_file_roots(),
                     self.dialog_control.clone(),
                     self.pending_content_cookie_changes.clone(),
+                    self.content_process_event_notify.clone(),
                 )
                 .await?,
             )
@@ -1862,12 +1885,13 @@ impl NativeEngine {
             self.content_process.take();
         }
         if self.content_process.is_none() {
-            let mut process = NativeContentProcess::spawn(
+            let mut process = NativeContentProcess::spawn_with_event_notify(
                 self.config.storage_path.as_deref(),
                 &self.storage_writer_id,
                 self.loader.allowed_file_roots(),
                 self.dialog_control.clone(),
                 self.pending_content_cookie_changes.clone(),
+                self.content_process_event_notify.clone(),
             )
             .await?;
             process

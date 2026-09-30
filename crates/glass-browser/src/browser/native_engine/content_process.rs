@@ -97,7 +97,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::process::{Child, ChildStdin};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::{
@@ -110,8 +110,12 @@ use url::Url;
 // document snapshot channel. Keep the channel finite while leaving room for
 // the base64 envelope and the rest of the document state.
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
+// One in-flight frame is enough for an event notification or a request reply;
+// limiting this to one avoids buffering many maximum-sized IPC responses.
+const MAX_CONTENT_PROCESS_OUTPUT_FRAMES: usize = 1;
+const MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS: usize = MAX_CONTENT_PROCESS_OUTPUT_FRAMES;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 16;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 17;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1076,13 +1080,23 @@ pub(crate) struct NativeContentScriptResult {
     pub(crate) window_name: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NativeContentAsyncEffectNotification {
+    pub(crate) sequence: u64,
+    pub(crate) context_id: String,
+    pub(crate) frame_id: String,
+}
+
 /// Process-backed lifecycle and bounded document-transfer channel for one
 /// native content runtime.
 pub(crate) struct NativeContentProcess {
     child: Child,
     stdin: ChildStdin,
-    stdout: ChildStdout,
+    stdout_frames: mpsc::Receiver<Result<Vec<u8>, NativeEngineError>>,
+    stdout_reader: tokio::task::JoinHandle<()>,
     next_request_id: u64,
+    next_async_event_sequence: u64,
+    pending_async_effect_notifications: VecDeque<NativeContentAsyncEffectNotification>,
     healthy: bool,
     failure_kind: Option<NativeWorkerFailureKind>,
     scroll_offset: NativePoint,
@@ -1209,13 +1223,183 @@ struct NativeWorkerDialogDecision {
     prompt_value: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeContentAsyncEffectsReady {
+    kind: String,
+    protocol: u64,
+    sequence: u64,
+    context_id: String,
+    frame_id: String,
+}
+
+fn decode_async_effects_ready(
+    value: &Value,
+    expected_sequence: u64,
+    expected_context_id: Option<&str>,
+    expected_frame_id: Option<&str>,
+) -> Result<Option<NativeContentAsyncEffectsReady>, NativeEngineError> {
+    if value.get("kind").and_then(Value::as_str) != Some("async_effects_ready") {
+        return Ok(None);
+    }
+    let event: NativeContentAsyncEffectsReady =
+        serde_json::from_value(value.clone()).map_err(|_| {
+            NativeEngineError::worker_failure(
+                "content process asynchronous event",
+                NativeWorkerFailureKind::Protocol,
+                "content process emitted a malformed asynchronous event notification",
+            )
+        })?;
+    if event.kind != "async_effects_ready"
+        || event.protocol != CONTENT_WORKER_PROTOCOL_VERSION
+        || event.sequence != expected_sequence
+        || expected_context_id != Some(event.context_id.as_str())
+        || expected_frame_id != Some(event.frame_id.as_str())
+    {
+        return Err(NativeEngineError::worker_failure(
+            "content process asynchronous event",
+            NativeWorkerFailureKind::Protocol,
+            "content process asynchronous event identity or sequence is invalid",
+        ));
+    }
+    Ok(Some(event))
+}
+
+fn content_worker_effects_pending(
+    pending_worker_messages: &VecDeque<NativeWorkerMessage>,
+    pending_message_port_messages: &VecDeque<NativeMessagePortPageMessage>,
+    pending_page_message_port_commands: &VecDeque<NativePageMessagePortCommand>,
+    pending_shared_worker_commands: &VecDeque<NativeScriptCommand>,
+    pending_service_worker_client_messages: &VecDeque<NativeServiceWorkerClientMessage>,
+    pending_external_service_worker_client_messages: &VecDeque<NativeServiceWorkerClientMessage>,
+    pending_service_worker_open_windows: &VecDeque<NativeServiceWorkerOpenWindowRequest>,
+    pending_lifetime_cookie_changes: &[NativeCookieChange],
+) -> Result<bool, NativeEngineError> {
+    for (name, length, limit) in [
+        (
+            "content-process pending worker messages",
+            pending_worker_messages.len(),
+            MAX_NATIVE_WORKER_MESSAGES,
+        ),
+        (
+            "content-process pending MessagePort messages",
+            pending_message_port_messages.len(),
+            MAX_NATIVE_WORKER_MESSAGES,
+        ),
+        (
+            "content-process pending page MessagePort commands",
+            pending_page_message_port_commands.len(),
+            MAX_NATIVE_EFFECTS,
+        ),
+        (
+            "content-process pending SharedWorker commands",
+            pending_shared_worker_commands.len(),
+            MAX_NATIVE_EFFECTS,
+        ),
+        (
+            "content-process pending ServiceWorker client messages",
+            pending_service_worker_client_messages.len(),
+            MAX_NATIVE_WORKER_MESSAGES,
+        ),
+        (
+            "content-process pending external ServiceWorker client messages",
+            pending_external_service_worker_client_messages.len(),
+            MAX_NATIVE_WORKER_MESSAGES,
+        ),
+        (
+            "content-process pending ServiceWorker openWindow requests",
+            pending_service_worker_open_windows.len(),
+            MAX_NATIVE_EFFECTS,
+        ),
+        (
+            "content-process pending lifetime cookie changes",
+            pending_lifetime_cookie_changes.len(),
+            MAX_NATIVE_COOKIE_CHANGE_BATCH,
+        ),
+    ] {
+        if length > limit {
+            return Err(NativeEngineError::limit(name, limit, length));
+        }
+    }
+    Ok(!pending_worker_messages.is_empty()
+        || !pending_message_port_messages.is_empty()
+        || !pending_page_message_port_commands.is_empty()
+        || !pending_shared_worker_commands.is_empty()
+        || !pending_service_worker_client_messages.is_empty()
+        || !pending_external_service_worker_client_messages.is_empty()
+        || !pending_service_worker_open_windows.is_empty()
+        || !pending_lifetime_cookie_changes.is_empty())
+}
+
+async fn write_async_effects_ready(
+    stdout: &mut (impl AsyncWrite + Unpin),
+    has_pending_effects: bool,
+    notification_pending: &mut bool,
+    next_sequence: &mut u64,
+    context_id: &str,
+    frame_id: &str,
+) -> Result<(), NativeEngineError> {
+    if !has_pending_effects || *notification_pending {
+        return Ok(());
+    }
+    if context_id.is_empty() || frame_id.is_empty() {
+        return Err(NativeEngineError::worker_failure(
+            "content process asynchronous event",
+            NativeWorkerFailureKind::Protocol,
+            "content process cannot announce effects without an owner identity",
+        ));
+    }
+    let sequence = *next_sequence;
+    let next = sequence.checked_add(1).ok_or_else(|| {
+        NativeEngineError::worker_failure(
+            "content process asynchronous event",
+            NativeWorkerFailureKind::Protocol,
+            "content process asynchronous event sequence is exhausted",
+        )
+    })?;
+    write_value_frame(
+        stdout,
+        &json!({
+            "kind": "async_effects_ready",
+            "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+            "sequence": sequence,
+            "context_id": context_id,
+            "frame_id": frame_id,
+        }),
+    )
+    .await?;
+    *next_sequence = next;
+    *notification_pending = true;
+    Ok(())
+}
+
 impl NativeContentProcess {
+    #[cfg(test)]
     pub(crate) async fn spawn(
         storage_path: Option<&Path>,
         storage_writer_id: &str,
         allowed_file_roots: &[PathBuf],
         dialog_control: NativeDialogControlPlane,
         pending_cookie_changes: Arc<Mutex<Vec<NativeCookieChange>>>,
+    ) -> Result<Self, NativeEngineError> {
+        Self::spawn_with_event_notify(
+            storage_path,
+            storage_writer_id,
+            allowed_file_roots,
+            dialog_control,
+            pending_cookie_changes,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn spawn_with_event_notify(
+        storage_path: Option<&Path>,
+        storage_writer_id: &str,
+        allowed_file_roots: &[PathBuf],
+        dialog_control: NativeDialogControlPlane,
+        pending_cookie_changes: Arc<Mutex<Vec<NativeCookieChange>>>,
+        event_notify: Option<Arc<tokio::sync::Notify>>,
     ) -> Result<Self, NativeEngineError> {
         let path = worker_binary_path()?;
         if let Some(storage_path) = storage_path
@@ -1268,11 +1452,19 @@ impl NativeContentProcess {
                 "native content worker stdout is unavailable",
             )
         })?;
+        let (stdout_sender, stdout_frames) = mpsc::channel(MAX_CONTENT_PROCESS_OUTPUT_FRAMES);
+        let stdout_notify = event_notify.clone();
+        let stdout_reader = tokio::spawn(async move {
+            forward_content_process_output(stdout, stdout_sender, stdout_notify).await;
+        });
         let mut process = Self {
             child,
             stdin,
-            stdout,
+            stdout_frames,
+            stdout_reader,
             next_request_id: 1,
+            next_async_event_sequence: 1,
+            pending_async_effect_notifications: VecDeque::new(),
             healthy: true,
             failure_kind: None,
             scroll_offset: NativePoint { x: 0, y: 0 },
@@ -1332,6 +1524,8 @@ impl NativeContentProcess {
     ) -> Result<(), NativeEngineError> {
         environment.validate()?;
         let id = self.next_id();
+        self.context_id = Some(context_id.to_owned());
+        self.frame_id = Some(frame_id.to_owned());
         let response = self
             .exchange(json!({
                 "kind": "start",
@@ -1359,8 +1553,6 @@ impl NativeContentProcess {
         if result.is_ok() {
             self.scroll_offset = NativePoint { x: 0, y: 0 };
             self.nested_scroll_offsets.clear();
-            self.context_id = Some(context_id.to_owned());
-            self.frame_id = Some(frame_id.to_owned());
         }
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::Protocol);
@@ -2088,7 +2280,15 @@ impl NativeContentProcess {
                     .into(),
             });
         }
-        decode_script_response(&response, id)
+        let result = decode_script_response(&response, id);
+        if result.is_ok() {
+            // A successful script turn receives every queued event represented
+            // by notifications read before its response. Its typed response
+            // carries the resulting effects, so the owner need not run a
+            // second empty script turn for the same notification.
+            self.pending_async_effect_notifications.clear();
+        }
+        result
     }
 
     pub(crate) async fn resolve_service_worker_open_window(
@@ -2720,6 +2920,97 @@ impl NativeContentProcess {
         }
     }
 
+    fn accept_async_effects_ready(&mut self, value: &Value) -> Result<bool, NativeEngineError> {
+        let Some(event) = decode_async_effects_ready(
+            value,
+            self.next_async_event_sequence,
+            self.context_id.as_deref(),
+            self.frame_id.as_deref(),
+        )?
+        else {
+            return Ok(false);
+        };
+        if self.pending_async_effect_notifications.len() >= MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS {
+            return Err(NativeEngineError::worker_failure(
+                "content process asynchronous event",
+                NativeWorkerFailureKind::Protocol,
+                "content process exceeded the pending asynchronous notification limit",
+            ));
+        }
+        self.next_async_event_sequence = event.sequence.checked_add(1).ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "content process asynchronous event",
+                NativeWorkerFailureKind::Protocol,
+                "content process asynchronous event sequence is exhausted",
+            )
+        })?;
+        self.pending_async_effect_notifications
+            .push_back(NativeContentAsyncEffectNotification {
+                sequence: event.sequence,
+                context_id: event.context_id,
+                frame_id: event.frame_id,
+            });
+        Ok(true)
+    }
+
+    pub(crate) fn take_async_effect_notifications(
+        &mut self,
+    ) -> Result<Vec<NativeContentAsyncEffectNotification>, NativeEngineError> {
+        loop {
+            match self.stdout_frames.try_recv() {
+                Ok(Ok(payload)) => {
+                    let value: Value = serde_json::from_slice(&payload).map_err(|_| {
+                        NativeEngineError::worker_failure(
+                            "content process asynchronous event",
+                            NativeWorkerFailureKind::Protocol,
+                            "content process emitted invalid JSON while idle",
+                        )
+                    })?;
+                    if !self.accept_async_effects_ready(&value)? {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process asynchronous event",
+                            NativeWorkerFailureKind::Protocol,
+                            "content process emitted an unsolicited response while idle",
+                        ));
+                    }
+                }
+                Ok(Err(error)) => return Err(error),
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    return Err(NativeEngineError::worker_failure(
+                        "content process asynchronous event",
+                        NativeWorkerFailureKind::Exited,
+                        "content process output stream closed",
+                    ));
+                }
+            }
+        }
+        Ok(self.pending_async_effect_notifications.drain(..).collect())
+    }
+
+    async fn read_response_value(&mut self) -> Result<Value, NativeEngineError> {
+        loop {
+            let payload = self.stdout_frames.recv().await.ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process IPC",
+                    NativeWorkerFailureKind::Transport,
+                    "content process output reader stopped",
+                )
+            })??;
+            let value: Value = serde_json::from_slice(&payload).map_err(|_| {
+                NativeEngineError::worker_failure(
+                    "decode content IPC",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process returned invalid JSON",
+                )
+            })?;
+            if self.accept_async_effects_ready(&value)? {
+                continue;
+            }
+            return Ok(value);
+        }
+    }
+
     fn collect_cookie_changes(&mut self, response: &Value) -> Result<(), NativeEngineError> {
         let Some(value) = response.get("cookie_changes") else {
             return Ok(());
@@ -2810,12 +3101,7 @@ impl NativeContentProcess {
         write_frame(&mut self.stdin, &payload).await?;
         let mut resumed_dialog: Option<NativeDialogWait> = None;
         loop {
-            let response = read_frame(&mut self.stdout).await?;
-            let response: Value =
-                serde_json::from_slice(&response).map_err(|_| NativeEngineError::Worker {
-                    operation: "decode content IPC".into(),
-                    reason: "content process returned an invalid response".into(),
-                })?;
+            let response = self.read_response_value().await?;
             if response.get("kind").and_then(Value::as_str) != Some("dialog_open") {
                 if let Some(dialog) = resumed_dialog.take() {
                     dialog.finish();
@@ -2932,6 +3218,7 @@ impl NativeContentProcess {
 impl Drop for NativeContentProcess {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
+        self.stdout_reader.abort();
     }
 }
 
@@ -2995,6 +3282,26 @@ async fn read_frame(reader: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>, Na
             reason: "content process returned a truncated frame".into(),
         })?;
     Ok(payload)
+}
+
+async fn forward_content_process_output(
+    mut reader: impl AsyncRead + Unpin,
+    sender: mpsc::Sender<Result<Vec<u8>, NativeEngineError>>,
+    notify: Option<Arc<tokio::sync::Notify>>,
+) {
+    loop {
+        let frame = read_frame(&mut reader).await;
+        let stop = frame.is_err();
+        if sender.send(frame).await.is_err() {
+            break;
+        }
+        if let Some(notify) = notify.as_ref() {
+            notify.notify_one();
+        }
+        if stop {
+            break;
+        }
+    }
 }
 
 fn write_sync_frame(mut writer: impl Write, payload: &[u8]) -> std::io::Result<()> {
@@ -5006,6 +5313,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut pending_shared_worker_commands: VecDeque<NativeScriptCommand> = VecDeque::new();
     let mut pending_service_worker_client_messages: VecDeque<NativeServiceWorkerClientMessage> =
         VecDeque::new();
+    let mut pending_external_service_worker_client_messages: VecDeque<
+        NativeServiceWorkerClientMessage,
+    > = VecDeque::new();
+    let mut pending_service_worker_open_windows: VecDeque<NativeServiceWorkerOpenWindowRequest> =
+        VecDeque::new();
     let mut websocket_connections = BTreeMap::new();
     let mut worker_websocket_connections = BTreeMap::new();
     let mut fetch_stream_connections = BTreeMap::new();
@@ -5030,6 +5342,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut frame_script_bindings = Vec::new();
     let mut pending_service_worker_navigation: Option<Value> = None;
     let mut external_shared_worker_routing = false;
+    let mut next_async_effect_sequence = 1_u64;
+    let mut async_effect_notification_pending = false;
     let dialog_rpc_for_handler = Arc::clone(&dialog_rpc);
     let dialog_handler: NativeDialogHandler =
         Arc::new(move |dialog, url| dialog_rpc_for_handler.request_dialog(dialog, url));
@@ -5053,12 +5367,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }))
             }
             completion = service_workers.next_lifetime_fetch_task(),
-                if service_workers.has_lifetime_fetch_tasks() =>
+                if !async_effect_notification_pending && service_workers.has_lifetime_fetch_tasks() =>
             {
                 NativeContentProcessInput::ServiceWorkerLifetimeFetch(completion?)
             }
             _ = tokio::time::sleep(Duration::from_millis(worker_timer_delay_ms.unwrap_or_default())),
-                if worker_timer_delay_ms.is_some() =>
+                if !async_effect_notification_pending && worker_timer_delay_ms.is_some() =>
             {
                 NativeContentProcessInput::WorkerTimer
             }
@@ -5078,6 +5392,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 pending_message_port_messages.extend(service_workers.take_message_port_messages());
                 pending_service_worker_client_messages
                     .extend(service_workers.take_client_messages());
+                pending_external_service_worker_client_messages
+                    .extend(service_workers.take_external_client_messages());
+                pending_service_worker_open_windows.extend(service_workers.take_open_windows());
                 refresh_content_runtime_cookie(
                     javascript_runtime.as_ref(),
                     resource_loader.as_ref(),
@@ -5097,6 +5414,25 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     cookie_changes,
                     "Service Worker lifetime cookie changes",
                 )?;
+                let has_pending_effects = content_worker_effects_pending(
+                    &pending_worker_messages,
+                    &pending_message_port_messages,
+                    &pending_page_message_port_commands,
+                    &pending_shared_worker_commands,
+                    &pending_service_worker_client_messages,
+                    &pending_external_service_worker_client_messages,
+                    &pending_service_worker_open_windows,
+                    &pending_lifetime_cookie_changes,
+                )?;
+                write_async_effects_ready(
+                    &mut stdout,
+                    has_pending_effects,
+                    &mut async_effect_notification_pending,
+                    &mut next_async_effect_sequence,
+                    &storage_context_id,
+                    &frame_id,
+                )
+                .await?;
                 continue;
             }
             NativeContentProcessInput::ServiceWorkerLifetimeFetch(None) => continue,
@@ -5141,6 +5477,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     .extend(workers.take_page_message_port_commands());
                 pending_service_worker_client_messages
                     .extend(service_workers.take_client_messages());
+                pending_external_service_worker_client_messages
+                    .extend(service_workers.take_external_client_messages());
+                pending_service_worker_open_windows.extend(service_workers.take_open_windows());
                 refresh_content_runtime_cookie(
                     javascript_runtime.as_ref(),
                     resource_loader.as_ref(),
@@ -5160,6 +5499,25 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     cookie_changes,
                     "worker timer cookie changes",
                 )?;
+                let has_pending_effects = content_worker_effects_pending(
+                    &pending_worker_messages,
+                    &pending_message_port_messages,
+                    &pending_page_message_port_commands,
+                    &pending_shared_worker_commands,
+                    &pending_service_worker_client_messages,
+                    &pending_external_service_worker_client_messages,
+                    &pending_service_worker_open_windows,
+                    &pending_lifetime_cookie_changes,
+                )?;
+                write_async_effects_ready(
+                    &mut stdout,
+                    has_pending_effects,
+                    &mut async_effect_notification_pending,
+                    &mut next_async_effect_sequence,
+                    &storage_context_id,
+                    &frame_id,
+                )
+                .await?;
                 continue;
             }
         };
@@ -5177,6 +5535,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             .get("kind")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        if kind == "script" {
+            async_effect_notification_pending = false;
+        }
         if let (Some(runtime), Some(loader)) =
             (javascript_runtime.as_ref(), resource_loader.as_mut())
             && let Some(updated_loader) = runtime.take_sync_xhr_loader()
@@ -5935,6 +6296,10 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         pending_worker_messages.clear();
                         pending_message_port_messages.clear();
                         pending_service_worker_client_messages.clear();
+                        pending_external_service_worker_client_messages.clear();
+                        pending_page_message_port_commands.clear();
+                        pending_shared_worker_commands.clear();
+                        pending_service_worker_open_windows.clear();
                         service_workers.clear_page_message_port_routes();
                     }
                     let load_request = if resume_service_worker_fetch {
@@ -7922,10 +8287,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             document_url.as_deref(),
             document_origin.as_ref(),
         )?;
-        let mut service_worker_open_windows = decode_service_worker_open_window_requests(
+        let mut service_worker_open_windows = pending_service_worker_open_windows
+            .drain(..)
+            .collect::<Vec<_>>();
+        service_worker_open_windows.extend(decode_service_worker_open_window_requests(
             &response,
             "merge content process openWindow",
-        )?;
+        )?);
         service_worker_open_windows.extend(service_workers.take_open_windows());
         if service_worker_open_windows.len() > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(
@@ -7934,10 +8302,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 service_worker_open_windows.len(),
             ));
         }
-        let mut service_worker_client_messages = decode_service_worker_client_messages(
+        let mut service_worker_client_messages = pending_external_service_worker_client_messages
+            .drain(..)
+            .collect::<Vec<_>>();
+        service_worker_client_messages.extend(decode_service_worker_client_messages(
             &response,
             "merge content process client messages",
-        )?;
+        )?);
         service_worker_client_messages.extend(service_workers.take_external_client_messages());
         if service_worker_client_messages.len() > MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
@@ -8148,7 +8519,26 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             );
             object.insert("window_name".into(), Value::String(response_window_name));
         }
+        let has_pending_effects = content_worker_effects_pending(
+            &pending_worker_messages,
+            &pending_message_port_messages,
+            &pending_page_message_port_commands,
+            &pending_shared_worker_commands,
+            &pending_service_worker_client_messages,
+            &pending_external_service_worker_client_messages,
+            &pending_service_worker_open_windows,
+            &pending_lifetime_cookie_changes,
+        )?;
         write_value_frame(&mut stdout, &response).await?;
+        write_async_effects_ready(
+            &mut stdout,
+            has_pending_effects,
+            &mut async_effect_notification_pending,
+            &mut next_async_effect_sequence,
+            &storage_context_id,
+            &frame_id,
+        )
+        .await?;
     }
 }
 
@@ -15637,6 +16027,206 @@ mod tests {
 
         drop(input_tx);
         reader_thread.join().unwrap();
+    }
+
+    #[test]
+    fn content_async_effect_notifications_validate_sequence_and_owner() {
+        let frame = |sequence| {
+            json!({
+                "kind": "async_effects_ready",
+                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "sequence": sequence,
+                "context_id": "target-7",
+                "frame_id": "target-7:frame-2",
+            })
+        };
+        let accepted =
+            decode_async_effects_ready(&frame(1), 1, Some("target-7"), Some("target-7:frame-2"))
+                .unwrap()
+                .expect("event-ready frame");
+        assert_eq!(accepted.sequence, 1);
+        assert_eq!(accepted.context_id, "target-7");
+        assert_eq!(accepted.frame_id, "target-7:frame-2");
+
+        assert!(
+            decode_async_effects_ready(&frame(2), 1, Some("target-7"), Some("target-7:frame-2"),)
+                .is_err()
+        );
+        assert!(
+            decode_async_effects_ready(
+                &frame(1),
+                1,
+                Some("other-target"),
+                Some("target-7:frame-2"),
+            )
+            .is_err()
+        );
+        let mut unknown_field = frame(1);
+        unknown_field["effects"] = json!([]);
+        assert!(
+            decode_async_effects_ready(
+                &unknown_field,
+                1,
+                Some("target-7"),
+                Some("target-7:frame-2"),
+            )
+            .is_err()
+        );
+        assert!(
+            decode_async_effects_ready(
+                &json!({"kind":"pong"}),
+                1,
+                Some("target-7"),
+                Some("target-7:frame-2"),
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn content_async_effect_notification_is_single_flight_until_script_ack() {
+        let (mut writer, mut reader) = tokio::io::duplex(1024);
+        let mut notification_pending = false;
+        let mut next_sequence = 1;
+        write_async_effects_ready(
+            &mut writer,
+            true,
+            &mut notification_pending,
+            &mut next_sequence,
+            "target-7",
+            "target-7:frame-2",
+        )
+        .await
+        .unwrap();
+        write_async_effects_ready(
+            &mut writer,
+            true,
+            &mut notification_pending,
+            &mut next_sequence,
+            "target-7",
+            "target-7:frame-2",
+        )
+        .await
+        .unwrap();
+
+        let first: Value = serde_json::from_slice(&read_frame(&mut reader).await.unwrap()).unwrap();
+        assert_eq!(first["sequence"], 1);
+        assert_eq!(next_sequence, 2);
+        assert!(notification_pending);
+        assert!(
+            timeout(Duration::from_millis(5), read_frame(&mut reader))
+                .await
+                .is_err()
+        );
+
+        notification_pending = false;
+        write_async_effects_ready(
+            &mut writer,
+            true,
+            &mut notification_pending,
+            &mut next_sequence,
+            "target-7",
+            "target-7:frame-2",
+        )
+        .await
+        .unwrap();
+        let second: Value =
+            serde_json::from_slice(&read_frame(&mut reader).await.unwrap()).unwrap();
+        assert_eq!(second["sequence"], 2);
+        assert_eq!(next_sequence, 3);
+    }
+
+    #[tokio::test]
+    async fn content_async_effect_output_reader_preserves_bounded_frame_order() {
+        let (mut writer, reader) = tokio::io::duplex(128);
+        let (sender, mut receiver) = mpsc::channel(MAX_CONTENT_PROCESS_OUTPUT_FRAMES);
+        let event_notify = Arc::new(tokio::sync::Notify::new());
+        let reader_task = tokio::spawn(forward_content_process_output(
+            reader,
+            sender,
+            Some(Arc::clone(&event_notify)),
+        ));
+
+        write_frame(&mut writer, b"first").await.unwrap();
+        write_frame(&mut writer, b"second").await.unwrap();
+        write_frame(&mut writer, b"third").await.unwrap();
+        timeout(Duration::from_secs(1), event_notify.notified())
+            .await
+            .unwrap();
+        assert_eq!(receiver.len(), MAX_CONTENT_PROCESS_OUTPUT_FRAMES);
+        assert_eq!(receiver.recv().await.unwrap().unwrap(), b"first");
+        assert_eq!(receiver.recv().await.unwrap().unwrap(), b"second");
+        assert_eq!(receiver.recv().await.unwrap().unwrap(), b"third");
+        drop(receiver);
+        drop(writer);
+        timeout(Duration::from_secs(1), reader_task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
+    fn content_async_effect_queue_is_bounded_and_observes_queued_messages() {
+        let mut worker_messages = VecDeque::new();
+        let no_effects = content_worker_effects_pending(
+            &worker_messages,
+            &VecDeque::new(),
+            &VecDeque::new(),
+            &VecDeque::new(),
+            &VecDeque::new(),
+            &VecDeque::new(),
+            &VecDeque::new(),
+            &[],
+        )
+        .unwrap();
+        assert!(!no_effects);
+
+        worker_messages.push_back(NativeWorkerMessage {
+            worker_id: 1,
+            data: json!("ready"),
+            error: None,
+            transfer_ports: Vec::new(),
+            object_urls: Vec::new(),
+        });
+        assert!(
+            content_worker_effects_pending(
+                &worker_messages,
+                &VecDeque::new(),
+                &VecDeque::new(),
+                &VecDeque::new(),
+                &VecDeque::new(),
+                &VecDeque::new(),
+                &VecDeque::new(),
+                &[],
+            )
+            .unwrap()
+        );
+
+        let message = NativeWorkerMessage {
+            worker_id: 1,
+            data: json!("bounded"),
+            error: None,
+            transfer_ports: Vec::new(),
+            object_urls: Vec::new(),
+        };
+        worker_messages.clear();
+        for _ in 0..=MAX_NATIVE_WORKER_MESSAGES {
+            worker_messages.push_back(message.clone());
+        }
+        assert!(
+            content_worker_effects_pending(
+                &worker_messages,
+                &VecDeque::new(),
+                &VecDeque::new(),
+                &VecDeque::new(),
+                &VecDeque::new(),
+                &VecDeque::new(),
+                &VecDeque::new(),
+                &[],
+            )
+            .is_err()
+        );
     }
 
     #[test]

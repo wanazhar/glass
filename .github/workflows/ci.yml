@@ -50,6 +50,9 @@ jobs:
           sudo apt-get install --yes bubblewrap
       - name: Build native content worker test prerequisite
         run: cargo build --package glass-browser --features native-engine --bin glass-native-content-worker --locked
+      - name: Run native-engine navigation preload process tests
+        if: runner.os != 'Linux'
+        run: cargo test --package glass-browser --test native_engine --features native-engine --locked navigation_preload -- --nocapture --test-threads=1
       - name: Run glass-dev browser-free contract tests
         run: cargo test --package glass-dev --tests --all-features --locked -- --nocapture
       - name: Certify native Windows named-pipe daemon lifecycle

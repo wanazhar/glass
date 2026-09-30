@@ -39,6 +39,7 @@ use base64::Engine as _;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
+use tokio::task::{AbortHandle, JoinSet};
 use url::Url;
 
 const MAX_NATIVE_SERVICE_WORKER_CLIENTS: usize =
@@ -93,6 +94,33 @@ struct NativeServiceWorkerFetchContinuation {
     pending: VecDeque<NativeScriptCommand>,
     value: Value,
     awaiting: bool,
+}
+
+pub(crate) struct NativeServiceWorkerFetchTaskResult {
+    worker_id: u32,
+    request_id: u32,
+    fallback_url: String,
+    payload: Value,
+    loader: NativeResourceLoader,
+}
+
+struct NativeServiceWorkerFetchTaskRequest {
+    request_id: u32,
+    worker_id: u32,
+    href: String,
+    credentials: bool,
+    credentials_mode: NativeFetchCredentialsMode,
+    referrer_url: Option<String>,
+    referrer_policy: Option<String>,
+    method: NativeFetchMethod,
+    headers: BTreeMap<String, String>,
+    body: Option<NativeRequestBody>,
+    content_type: Option<String>,
+    cors_mode: NativeCorsMode,
+    redirect_mode: NativeFetchRedirectMode,
+    cache_mode: NativeFetchCacheMode,
+    timeout: Option<Duration>,
+    upload_stream_id: Option<u32>,
 }
 
 enum NativeServiceWorkerFetchSettlement {
@@ -177,6 +205,8 @@ pub(crate) struct NativeServiceWorkerRegistry {
     pending_client_messages: VecDeque<NativeServiceWorkerClientMessage>,
     pending_open_windows: VecDeque<NativeServiceWorkerOpenWindowRequest>,
     pending_fetches: BTreeMap<(u32, u32), NativeServiceWorkerFetchContinuation>,
+    lifetime_fetch_tasks: JoinSet<NativeServiceWorkerFetchTaskResult>,
+    lifetime_fetch_abort_handles: BTreeMap<(u32, u32), AbortHandle>,
     completed_fetches: VecDeque<NativeServiceWorkerFetchCompletion>,
     announced_open_windows: BTreeSet<(u32, u32)>,
     message_port_routes: BTreeMap<String, u32>,
@@ -201,6 +231,8 @@ impl Default for NativeServiceWorkerRegistry {
             pending_client_messages: VecDeque::new(),
             pending_open_windows: VecDeque::new(),
             pending_fetches: BTreeMap::new(),
+            lifetime_fetch_tasks: JoinSet::new(),
+            lifetime_fetch_abort_handles: BTreeMap::new(),
             completed_fetches: VecDeque::new(),
             announced_open_windows: BTreeSet::new(),
             message_port_routes: BTreeMap::new(),
@@ -1641,6 +1673,8 @@ impl NativeServiceWorkerRegistry {
                     current_client_id.as_deref().unwrap_or_default(),
                     &fallback_url,
                     &mut self.pending_open_windows,
+                    &mut self.lifetime_fetch_tasks,
+                    &mut self.lifetime_fetch_abort_handles,
                 )
                 .await?
             } else {
@@ -1656,6 +1690,8 @@ impl NativeServiceWorkerRegistry {
                     current_client_id.as_deref().unwrap_or_default(),
                     &fallback_url,
                     &mut self.pending_open_windows,
+                    &mut self.lifetime_fetch_tasks,
+                    &mut self.lifetime_fetch_abort_handles,
                 )
                 .await?
             };
@@ -2299,6 +2335,8 @@ impl NativeServiceWorkerRegistry {
             &client_id,
             target.as_str(),
             &mut self.pending_open_windows,
+            &mut self.lifetime_fetch_tasks,
+            &mut self.lifetime_fetch_abort_handles,
         )
         .await?;
         let (value, suspended, client_messages) = match settlement {
@@ -2353,6 +2391,149 @@ impl NativeServiceWorkerRegistry {
             }
         }
         Ok(NativeServiceWorkerFetchOutcome::Handled(response))
+    }
+
+    pub(crate) fn has_lifetime_fetch_tasks(&self) -> bool {
+        !self.lifetime_fetch_tasks.is_empty()
+    }
+
+    pub(crate) async fn next_lifetime_fetch_task(
+        &mut self,
+    ) -> Result<Option<NativeServiceWorkerFetchTaskResult>, NativeEngineError> {
+        loop {
+            let Some(result) = self.lifetime_fetch_tasks.join_next().await else {
+                return Ok(None);
+            };
+            match result {
+                Ok(completion) => {
+                    self.lifetime_fetch_abort_handles
+                        .remove(&(completion.worker_id, completion.request_id));
+                    return Ok(Some(completion));
+                }
+                Err(error) if error.is_cancelled() => {
+                    self.lifetime_fetch_abort_handles
+                        .retain(|_, handle| !handle.is_finished());
+                }
+                Err(error) => {
+                    self.lifetime_fetch_abort_handles
+                        .retain(|_, handle| !handle.is_finished());
+                    return Err(NativeEngineError::Worker {
+                        operation: "service worker lifetime fetch".into(),
+                        reason: format!("background fetch task failed: {error}"),
+                    });
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn resolve_lifetime_fetch_task(
+        &mut self,
+        completion: NativeServiceWorkerFetchTaskResult,
+        loader: &mut NativeResourceLoader,
+    ) -> Result<(), NativeEngineError> {
+        loader.merge_fetch_task_state(completion.loader)?;
+        let scope = self
+            .registrations
+            .iter()
+            .find_map(|(scope, worker)| (worker.id == completion.worker_id).then(|| scope.clone()))
+            .or_else(|| {
+                self.waiting_workers.iter().find_map(|(scope, worker)| {
+                    (worker.id == completion.worker_id).then(|| scope.clone())
+                })
+            });
+        let Some(scope) = scope else {
+            return Ok(());
+        };
+        let worker_is_waiting = !self
+            .registrations
+            .get(&scope)
+            .is_some_and(|worker| worker.id == completion.worker_id);
+        let current_client_id =
+            (!self.current_client_id.is_empty()).then(|| self.current_client_id.clone());
+        let (settlement, clients_claim_requested, message_port_commands) = if worker_is_waiting {
+            let worker = self
+                .waiting_workers
+                .get_mut(&scope)
+                .expect("waiting Service Worker was located above");
+            let evaluation = worker.runtime.resolve_service_worker_fetch(
+                worker.id,
+                &worker.script_url,
+                completion.request_id,
+                &completion.payload,
+                worker.is_module,
+            )?;
+            let settlement = settle_service_worker_fetch(
+                worker,
+                loader,
+                evaluation,
+                &mut self.cache_state,
+                current_client_id.as_deref().unwrap_or_default(),
+                &completion.fallback_url,
+                &mut self.pending_open_windows,
+                &mut self.lifetime_fetch_tasks,
+                &mut self.lifetime_fetch_abort_handles,
+            )
+            .await?;
+            let message_port_commands = worker.runtime.take_message_port_commands();
+            (
+                settlement,
+                worker.clients_claim_requested,
+                message_port_commands,
+            )
+        } else {
+            let worker = self
+                .registrations
+                .get_mut(&scope)
+                .expect("active Service Worker was located above");
+            let evaluation = worker.runtime.resolve_service_worker_fetch(
+                worker.id,
+                &worker.script_url,
+                completion.request_id,
+                &completion.payload,
+                worker.is_module,
+            )?;
+            let settlement = settle_service_worker_fetch(
+                worker,
+                loader,
+                evaluation,
+                &mut self.cache_state,
+                current_client_id.as_deref().unwrap_or_default(),
+                &completion.fallback_url,
+                &mut self.pending_open_windows,
+                &mut self.lifetime_fetch_tasks,
+                &mut self.lifetime_fetch_abort_handles,
+            )
+            .await?;
+            let message_port_commands = worker.runtime.take_message_port_commands();
+            (
+                settlement,
+                worker.clients_claim_requested,
+                message_port_commands,
+            )
+        };
+        if clients_claim_requested {
+            self.claim_current_client(&scope)?;
+        }
+        self.collect_message_port_commands(completion.worker_id, message_port_commands)?;
+        match settlement {
+            NativeServiceWorkerFetchSettlement::Complete {
+                client_messages, ..
+            } => self.enqueue_client_messages(client_messages)?,
+            NativeServiceWorkerFetchSettlement::Suspended {
+                continuation,
+                client_messages,
+            } => {
+                self.enqueue_client_messages(client_messages)?;
+                let key = (continuation.worker_id, continuation.open_window_request_id);
+                if self.pending_fetches.insert(key, continuation).is_some() {
+                    return Err(NativeEngineError::Worker {
+                        operation: "service worker lifetime fetch".into(),
+                        reason: "fetch continuation identifier collided".into(),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     fn matching_scope(&self, target: &Url) -> Result<Option<String>, NativeEngineError> {
@@ -2616,6 +2797,11 @@ impl NativeServiceWorkerRegistry {
     fn remove_worker_routes(&mut self, worker_id: u32) {
         self.message_port_routes
             .retain(|_, route_worker_id| *route_worker_id != worker_id);
+        for ((pending_worker_id, _), abort_handle) in &self.lifetime_fetch_abort_handles {
+            if *pending_worker_id == worker_id {
+                abort_handle.abort();
+            }
+        }
         let live_bridge_keys = self
             .message_port_routes
             .keys()
@@ -3103,14 +3289,10 @@ async fn open_service_worker_fetch_upload(
     }
 }
 
-async fn resolve_service_worker_fetch_command(
-    worker: &mut NativeServiceWorker,
-    loader: &mut NativeResourceLoader,
+fn prepare_service_worker_fetch_request(
+    worker: &NativeServiceWorker,
     command: NativeScriptCommand,
-    pending: &mut VecDeque<NativeScriptCommand>,
-    awaiting: &mut bool,
-    value: &mut Value,
-) -> Result<bool, NativeEngineError> {
+) -> Result<Option<NativeServiceWorkerFetchTaskRequest>, NativeEngineError> {
     let NativeScriptCommand::Fetch {
         request_id,
         worker_id,
@@ -3135,7 +3317,7 @@ async fn resolve_service_worker_fetch_command(
         module_type,
     } = command
     else {
-        return Ok(false);
+        return Ok(None);
     };
     let Some(worker_id) = worker_id else {
         return Err(NativeEngineError::Worker {
@@ -3155,8 +3337,8 @@ async fn resolve_service_worker_fetch_command(
             "service worker fetch destinations and module metadata are not supported",
         ));
     }
-    let request_body = if let Some(upload_stream_id) = upload_stream_id {
-        if upload_stream_id != request_id {
+    let request_body = if let Some(stream_id) = upload_stream_id {
+        if stream_id != request_id {
             return Err(NativeEngineError::invalid(
                 "service worker fetch request upload stream",
                 "upload stream identifier must match its fetch request",
@@ -3207,46 +3389,155 @@ async fn resolve_service_worker_fetch_command(
         } else {
             NativeFetchCredentialsMode::Omit
         });
-    let response = if upload_stream_id.is_some() {
+    Ok(Some(NativeServiceWorkerFetchTaskRequest {
+        request_id,
+        worker_id,
+        href,
+        credentials,
+        credentials_mode,
+        referrer_url,
+        referrer_policy,
+        method,
+        headers,
+        body: request_body,
+        content_type,
+        cors_mode,
+        redirect_mode,
+        cache_mode,
+        timeout: timeout_ms.map(|value| Duration::from_millis(u64::from(value))),
+        upload_stream_id,
+    }))
+}
+
+async fn fetch_service_worker_request(
+    loader: &mut NativeResourceLoader,
+    worker_url: &str,
+    request: NativeServiceWorkerFetchTaskRequest,
+) -> Value {
+    let response = loader
+        .fetch_request_with_headers_async(NativeFetchRequest {
+            document_url: worker_url,
+            href: &request.href,
+            method: request.method,
+            body: request.body,
+            content_type: request.content_type,
+            request_headers: request.headers,
+            credentials: request.credentials,
+            credentials_mode: Some(request.credentials_mode),
+            referrer_url: request.referrer_url,
+            referrer_policy: request.referrer_policy,
+            cors_mode: request.cors_mode,
+            redirect_mode: request.redirect_mode,
+            cache_mode: request.cache_mode,
+            timeout: request.timeout,
+            max_response_bytes: None,
+        })
+        .await;
+    let payload = match response {
+        Ok(response) => service_worker_fetch_payload(response),
+        Err(error) => json!({
+            "error": error.to_string(),
+            "timeout": false,
+        }),
+    };
+    payload
+}
+
+fn schedule_service_worker_lifetime_fetch(
+    worker: &NativeServiceWorker,
+    loader: &NativeResourceLoader,
+    command: NativeScriptCommand,
+    fallback_url: &str,
+    tasks: &mut JoinSet<NativeServiceWorkerFetchTaskResult>,
+    abort_handles: &mut BTreeMap<(u32, u32), AbortHandle>,
+) -> Result<bool, NativeEngineError> {
+    let Some(request) = prepare_service_worker_fetch_request(worker, command)? else {
+        return Ok(false);
+    };
+    if request.upload_stream_id.is_some() {
+        return Ok(false);
+    }
+    if tasks.len() >= MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "native Service Worker lifetime fetch tasks",
+            MAX_NATIVE_EFFECTS,
+            tasks.len().saturating_add(1),
+        ));
+    }
+    let key = (request.worker_id, request.request_id);
+    if abort_handles.contains_key(&key) {
+        return Err(NativeEngineError::Worker {
+            operation: "schedule service worker lifetime fetch".into(),
+            reason: "fetch request identifier is already active".into(),
+        });
+    }
+    let worker_id = request.worker_id;
+    let request_id = request.request_id;
+    let worker_url = worker.script_url.clone();
+    let fallback_url = fallback_url.to_owned();
+    let mut task_loader = loader.clone();
+    let abort = tasks.spawn(async move {
+        let payload = fetch_service_worker_request(&mut task_loader, &worker_url, request).await;
+        NativeServiceWorkerFetchTaskResult {
+            worker_id,
+            request_id,
+            fallback_url,
+            payload,
+            loader: task_loader,
+        }
+    });
+    abort_handles.insert(key, abort);
+    Ok(true)
+}
+
+async fn resolve_service_worker_fetch_command(
+    worker: &mut NativeServiceWorker,
+    loader: &mut NativeResourceLoader,
+    command: NativeScriptCommand,
+    pending: &mut VecDeque<NativeScriptCommand>,
+    awaiting: &mut bool,
+    value: &mut Value,
+) -> Result<bool, NativeEngineError> {
+    let Some(request) = prepare_service_worker_fetch_request(worker, command)? else {
+        return Ok(false);
+    };
+    let request_id = request.request_id;
+    let response = if request.upload_stream_id.is_some() {
         open_service_worker_fetch_upload(
             worker,
             loader,
-            request_id,
-            href,
-            method,
-            headers,
-            content_type,
-            credentials,
-            credentials_mode,
-            referrer_url,
-            referrer_policy,
-            cors_mode,
-            redirect_mode,
-            cache_mode,
-            timeout_ms.map(|value| Duration::from_millis(u64::from(value))),
+            request.request_id,
+            request.href,
+            request.method,
+            request.headers,
+            request.content_type,
+            request.credentials,
+            request.credentials_mode,
+            request.referrer_url,
+            request.referrer_policy,
+            request.cors_mode,
+            request.redirect_mode,
+            request.cache_mode,
+            request.timeout,
             pending,
         )
         .await?
     } else {
-        loader
-            .fetch_request_with_headers_async(NativeFetchRequest {
-                document_url: &worker.script_url,
-                href: &href,
-                method,
-                body: request_body,
-                content_type,
-                request_headers: headers,
-                credentials,
-                credentials_mode: Some(credentials_mode),
-                referrer_url,
-                referrer_policy,
-                cors_mode,
-                redirect_mode,
-                cache_mode,
-                timeout: timeout_ms.map(|value| Duration::from_millis(u64::from(value))),
-                max_response_bytes: None,
-            })
-            .await
+        let payload = fetch_service_worker_request(loader, &worker.script_url, request).await;
+        let resolved = worker.runtime.resolve_service_worker_fetch(
+            worker.id,
+            &worker.script_url,
+            request_id,
+            &payload,
+            worker.is_module,
+        )?;
+        pending.extend(resolved.commands);
+        *awaiting |= resolved.top_level_await_pending;
+        if let Some(resolved_value) = worker.runtime.take_top_level_await_result()? {
+            *value = resolved_value;
+            *awaiting = false;
+        }
+        return Ok(true);
     };
     let payload = match response {
         Ok(response) => service_worker_fetch_payload(response),
@@ -3258,7 +3549,7 @@ async fn resolve_service_worker_fetch_command(
     let resolved = worker.runtime.resolve_service_worker_fetch(
         worker.id,
         &worker.script_url,
-        request_id,
+        request.request_id,
         &payload,
         worker.is_module,
     )?;
@@ -3751,6 +4042,8 @@ async fn settle_service_worker_fetch(
     _current_client_id: &str,
     fallback_url: &str,
     pending_open_windows: &mut VecDeque<NativeServiceWorkerOpenWindowRequest>,
+    lifetime_fetch_tasks: &mut JoinSet<NativeServiceWorkerFetchTaskResult>,
+    lifetime_fetch_abort_handles: &mut BTreeMap<(u32, u32), AbortHandle>,
 ) -> Result<NativeServiceWorkerFetchSettlement, NativeEngineError> {
     let mut pending = VecDeque::from(evaluation.commands);
     let mut value = evaluation.value;
@@ -3770,6 +4063,30 @@ async fn settle_service_worker_fetch(
                 MAX_NATIVE_MODULE_IMPORTS,
                 resolved_fetches,
             ));
+        }
+        if !awaiting
+            && matches!(
+                &command,
+                NativeScriptCommand::Fetch {
+                    upload_stream_id: None,
+                    ..
+                }
+            )
+        {
+            if !schedule_service_worker_lifetime_fetch(
+                worker,
+                loader,
+                command,
+                fallback_url,
+                lifetime_fetch_tasks,
+                lifetime_fetch_abort_handles,
+            )? {
+                return Err(NativeEngineError::Worker {
+                    operation: "schedule service worker lifetime fetch".into(),
+                    reason: "fetch task was not eligible for asynchronous execution".into(),
+                });
+            }
+            continue;
         }
         if apply_service_worker_lifecycle_command(worker, &command)? {
             continue;
@@ -4138,6 +4455,7 @@ fn parse_redirect_mode(value: &str) -> Result<NativeFetchRedirectMode, NativeEng
 #[cfg(test)]
 mod navigation_preload_tests {
     use super::*;
+    use crate::browser::native_engine::config::{NativeEngineConfig, NativeFixture};
 
     fn test_worker(script_url: &str, scope: &str) -> NativeServiceWorker {
         NativeServiceWorker {
@@ -4317,5 +4635,115 @@ mod navigation_preload_tests {
                 .expect("cross-origin navigation cannot match this registration")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn independent_response_survives_and_retains_lifetime_fetch_work() {
+        let worker_url = "fixture://worker-lifetime.test/sw.js";
+        let target_url = "fixture://worker-lifetime.test/page";
+        let fetched_url = "fixture://worker-lifetime.test/lifetime.txt";
+        let mut config = NativeEngineConfig::default();
+        config.fixtures.push(
+            NativeFixture::new(fetched_url, "lifetime body")
+                .expect("lifetime fetch fixture is valid"),
+        );
+        let mut loader = NativeResourceLoader::new(&config).expect("test loader constructs");
+        let mut worker = test_worker(worker_url, "fixture://worker-lifetime.test/");
+        worker
+            .runtime
+            .evaluate_service_worker_source(
+                worker.id,
+                &worker.script_url,
+                None,
+                r#"self.addEventListener('fetch', event => {
+  event.waitUntil(fetch('fixture://worker-lifetime.test/lifetime.txt', {
+    mode: 'same-origin',
+  }).then(response => response.text()).then(text => {
+    globalThis.__lifetimeFetchText = text;
+  }));
+  event.respondWith(new Response('response is ready'));
+});"#,
+                &BTreeMap::new(),
+            )
+            .expect("worker fetch handler installs");
+        let evaluation = worker
+            .runtime
+            .evaluate_service_worker_fetch(
+                worker.id,
+                &worker.script_url,
+                &json!({
+                    "url": target_url,
+                    "method": "GET",
+                    "headers": [],
+                    "bodyNull": true,
+                    "mode": "navigate",
+                    "redirect": "follow",
+                    "credentialsMode": "include",
+                    "destination": "document",
+                }),
+                false,
+            )
+            .expect("FetchEvent returns its independent response");
+        let mut cache_state = NativeServiceWorkerCacheState::default();
+        let mut pending_open_windows = VecDeque::new();
+        let mut lifetime_fetch_tasks = JoinSet::new();
+        let mut lifetime_fetch_abort_handles = BTreeMap::new();
+        let settlement = settle_service_worker_fetch(
+            &mut worker,
+            &mut loader,
+            evaluation,
+            &mut cache_state,
+            "",
+            target_url,
+            &mut pending_open_windows,
+            &mut lifetime_fetch_tasks,
+            &mut lifetime_fetch_abort_handles,
+        )
+        .await
+        .expect("settled response preserves unrelated fetch lifetime work");
+        let NativeServiceWorkerFetchSettlement::Complete { value, .. } = settlement else {
+            panic!("independent response must not suspend");
+        };
+        assert_eq!(value["handled"], true);
+        let response_body = base64::engine::general_purpose::STANDARD
+            .decode(
+                value["response"]["bodyBase64"]
+                    .as_str()
+                    .expect("response body is encoded"),
+            )
+            .expect("response body encoding is valid");
+        assert_eq!(response_body, b"response is ready");
+        assert_eq!(lifetime_fetch_tasks.len(), 1);
+
+        let completion = lifetime_fetch_tasks
+            .join_next()
+            .await
+            .expect("lifetime fetch task remains owned")
+            .expect("lifetime fetch task completes");
+        loader
+            .merge_fetch_task_state(completion.loader)
+            .expect("lifetime fetch state merges into the worker loader");
+        let resolved = worker
+            .runtime
+            .resolve_service_worker_fetch(
+                worker.id,
+                &worker.script_url,
+                completion.request_id,
+                &completion.payload,
+                worker.is_module,
+            )
+            .expect("lifetime fetch promise settles in the worker realm");
+        assert!(resolved.commands.is_empty());
+        let settled = worker
+            .runtime
+            .evaluate_service_worker_source(
+                worker.id,
+                &worker.script_url,
+                None,
+                "globalThis.__lifetimeFetchText;",
+                &BTreeMap::new(),
+            )
+            .expect("lifetime result is observable in the worker realm");
+        assert_eq!(settled.value, "lifetime body");
     }
 }

@@ -81,8 +81,8 @@ use super::sandbox::NativeContentSandbox;
 use super::sandbox::prepare_worker_command;
 use super::service_worker::{
     NativeServiceWorkerFetchCompletion, NativeServiceWorkerFetchOutcome,
-    NativeServiceWorkerNavigationOutcome, NativeServiceWorkerNavigationPreloadResult,
-    NativeServiceWorkerRegistry,
+    NativeServiceWorkerFetchTaskResult, NativeServiceWorkerNavigationOutcome,
+    NativeServiceWorkerNavigationPreloadResult, NativeServiceWorkerRegistry,
 };
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
@@ -139,6 +139,11 @@ enum NativeContentTaskSource {
     FetchUpload,
     EventSource,
     Timer,
+}
+
+enum NativeContentProcessInput {
+    Request(Result<Vec<u8>, NativeEngineError>),
+    ServiceWorkerLifetimeFetch(Option<NativeServiceWorkerFetchTaskResult>),
 }
 
 impl NativeContentTaskSource {
@@ -2981,6 +2986,19 @@ async fn read_frame(reader: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>, Na
     Ok(payload)
 }
 
+async fn forward_content_ipc_frames(
+    mut reader: impl AsyncRead + Unpin,
+    sender: mpsc::Sender<Result<Vec<u8>, NativeEngineError>>,
+) {
+    loop {
+        let frame = read_frame(&mut reader).await;
+        let stop = frame.is_err();
+        if sender.send(frame).await.is_err() || stop {
+            break;
+        }
+    }
+}
+
 fn write_sync_frame(mut writer: impl Write, payload: &[u8]) -> std::io::Result<()> {
     if payload.len() > MAX_CONTENT_IPC_FRAME_BYTES {
         return Err(std::io::Error::new(
@@ -4922,8 +4940,11 @@ async fn load_font_faces(
 
 #[doc(hidden)]
 pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
-    let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
+    let (ipc_request_tx, mut ipc_request_rx) = mpsc::channel(1);
+    let _ipc_reader = tokio::spawn(async move {
+        forward_content_ipc_frames(tokio::io::stdin(), ipc_request_tx).await;
+    });
     let mut running = false;
     let mut document: Option<NativeDocument> = None;
     let mut pending_space_activation: Option<(NativeNodeId, Option<NativeCheckableKind>)> = None;
@@ -4955,6 +4976,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut worker_event_source_connections = BTreeMap::new();
     let mut storage_state = NativeWebStorageState::default();
     let mut indexed_db_state = NativeIndexedDbState::default();
+    let mut pending_lifetime_cookie_changes = Vec::new();
     let mut storage_profile_path: Option<PathBuf> = None;
     let mut allowed_file_roots: Vec<PathBuf> = Vec::new();
     let mut storage_context_id = NATIVE_CONTEXT_ID.to_owned();
@@ -4972,7 +4994,59 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let dialog_handler: NativeDialogHandler =
         Arc::new(move |dialog, url| dialog_rpc_for_handler.request_dialog(dialog, url));
     loop {
-        let payload = read_frame(&mut stdin).await?;
+        let input = tokio::select! {
+            request = ipc_request_rx.recv() => {
+                NativeContentProcessInput::Request(request.unwrap_or_else(|| {
+                    Err(NativeEngineError::Worker {
+                        operation: "read content IPC".into(),
+                        reason: "content process stdin reader stopped".into(),
+                    })
+                }))
+            }
+            completion = service_workers.next_lifetime_fetch_task(),
+                if service_workers.has_lifetime_fetch_tasks() =>
+            {
+                NativeContentProcessInput::ServiceWorkerLifetimeFetch(completion?)
+            }
+        };
+        let payload = match input {
+            NativeContentProcessInput::Request(payload) => payload?,
+            NativeContentProcessInput::ServiceWorkerLifetimeFetch(Some(completion)) => {
+                let Some(loader) = resource_loader.as_mut() else {
+                    return Err(NativeEngineError::Worker {
+                        operation: "Service Worker lifetime fetch completion".into(),
+                        reason: "content process has no resource loader".into(),
+                    });
+                };
+                service_workers
+                    .resolve_lifetime_fetch_task(completion, loader)
+                    .await?;
+                pending_message_port_messages.extend(service_workers.take_message_port_messages());
+                pending_service_worker_client_messages
+                    .extend(service_workers.take_client_messages());
+                refresh_content_runtime_cookie(
+                    javascript_runtime.as_ref(),
+                    resource_loader.as_ref(),
+                    document_url.as_deref(),
+                )?;
+                let cookie_changes = persist_content_profile(
+                    storage_profile_path.as_deref(),
+                    &storage_state,
+                    &indexed_db_state,
+                    &[],
+                    &[],
+                    &mut service_workers,
+                    &mut resource_loader,
+                )?;
+                merge_cookie_change_batch(
+                    &mut pending_lifetime_cookie_changes,
+                    cookie_changes,
+                    "Service Worker lifetime cookie changes",
+                )?;
+                continue;
+            }
+            NativeContentProcessInput::ServiceWorkerLifetimeFetch(None) => continue,
+        };
         let request: Value =
             serde_json::from_slice(&payload).map_err(|_| NativeEngineError::Worker {
                 operation: "decode content IPC".into(),
@@ -7778,10 +7852,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 &mut resource_loader,
             )?
         };
+        merge_cookie_change_batch(
+            &mut pending_lifetime_cookie_changes,
+            cookie_changes,
+            "content process cookie changes",
+        )?;
         let cookie_changes = if is_cookie_change_sync {
             Vec::new()
         } else {
-            cookie_changes
+            std::mem::take(&mut pending_lifetime_cookie_changes)
         };
         let encoded_cookie_changes =
             serde_json::to_value(cookie_changes).map_err(|_| NativeEngineError::Worker {
@@ -15374,6 +15453,28 @@ fn worker_binary_path() -> Result<PathBuf, NativeEngineError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn content_ipc_reader_preserves_partial_frame_while_other_work_runs() {
+        let (mut writer, reader) = tokio::io::duplex(8);
+        let (frame_tx, mut frame_rx) = mpsc::channel(1);
+        let reader_task = tokio::spawn(forward_content_ipc_frames(reader, frame_tx));
+        writer.write_all(&[0, 0]).await.unwrap();
+        tokio::task::yield_now().await;
+
+        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+        completion_tx.send(()).unwrap();
+        tokio::select! {
+            biased;
+            completion = completion_rx => completion.unwrap(),
+            frame = frame_rx.recv() => panic!("partial frame unexpectedly completed: {frame:?}"),
+        }
+
+        writer.write_all(&[0, 3, b'o', b'k', b'!']).await.unwrap();
+        assert_eq!(frame_rx.recv().await.unwrap().unwrap(), b"ok!");
+        drop(writer);
+        reader_task.await.unwrap();
+    }
 
     #[test]
     fn fetch_commands_accept_only_the_private_font_and_module_destinations() {

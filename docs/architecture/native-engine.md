@@ -25,14 +25,22 @@ The separate navigation referrer-policy unit had passed before this change;
 the preload tests cover readable cloned responses, immutable headers, absent
 preloads, and network errors. The FetchEvent runtime now settles an independent
 `respondWith()` response without waiting for a pending JavaScript-only
-`waitUntil()` promise and retains that event lifetime. Native host commands
-started by `waitUntil()` are still handled in the response settlement loop, so
-they may delay the response; independent background execution and continuation
-coverage remain open. The first `respondWith()` now suppresses later registered
-FetchEvent listeners, with a socket-free regression. `onfetch` now participates
-in that same ordered sequence: replacement preserves its registration
-position, while null/deactivation and reactivation remove it and append a new
-position. Two socket-free ordering regressions pass in the five-test
+`waitUntil()` promise and retains that event lifetime. A fixture-backed
+registry regression now runs a bodyless native `fetch()` from `waitUntil()`
+after the independent response is ready, then resolves its promise callback in
+the same worker realm. The content child multiplexes owned fetch-task
+completions with incoming IPC, persists resulting loader/cache state, and
+queues cookie changes for the next parent response; worker-route removal
+aborts outstanding tasks.
+Streaming upload fetches and fetch commands encountered while the
+`respondWith()` response is still pending can still delay settlement.
+Browser-facing effects produced by later lifetime callbacks are queued in the
+child and are not delivered out-of-band to the parent yet. The first
+`respondWith()` now suppresses later registered FetchEvent listeners, with a
+socket-free regression. `onfetch` now participates in that same ordered
+sequence: replacement preserves its registration position, while
+null/deactivation and reactivation remove it and append a new position. Two
+socket-free ordering regressions pass in the five-test
 `service_worker_fetch_` group. The remaining ServiceWorker WPT cases are not
 certified.
 The source document's Referrer-Policy now crosses the content-process boundary

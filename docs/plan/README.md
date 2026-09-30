@@ -186,11 +186,17 @@ backward-compatible profile defaults. Its scoped native-engine check and two
 socket-free unit tests pass. The process-backed persistence regression
 compiles but could not run because this sandbox denies local TCP listener
 binding, so end-to-end persistence remains unverified and the slice stays
-in-progress. This does not complete request preloading: the current FetchEvent
-shim still resolves `preloadResponse` to `undefined`. Slice 839 tracks the
-network request, parallel FetchEvent delivery, response body, and cancellation
-contract; Navigation Preload remains incomplete until that integration is
-implemented and verified. See the [slice 838
+in-progress. Before Slice 839, the FetchEvent shim resolved `preloadResponse`
+to `undefined`. Slice 839 now wires an eligible enabled GET navigation through
+the native loader alongside FetchEvent dispatch, exposes navigation request
+mode, resolves `preloadResponse`, and reuses a successful preload when the
+handler does not call `respondWith`. The scoped native-engine check and five
+socket-free navigation-preload unit tests pass. Process-backed
+request/header/no-duplicate and cancellation tests compile with `--tests` but
+have not run here because local TCP listener binding is denied, so actual
+network, overlap, and cancellation behavior remain unverified. Navigation
+Preload remains incomplete until those integrations run and pass. See the
+[slice 838
 task](tasks/native-engine-browser-838.md) and [slice 839
 task](tasks/native-engine-browser-839.md).
 Slice 814 applies module SharedWorker credentials to root, static-graph, and

@@ -1,6 +1,6 @@
 id: native-engine-browser-839
 scope: glass-browser/native-engine/service-worker-navigation-preload-fetch
-status: pending
+status: in-progress
 depends-on: [native-engine-browser-838]
 ---
 
@@ -36,6 +36,9 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   cancellation aborts it. It must not block dispatch while waiting for the
   network response or allow a late response to mutate a committed/cancelled
   navigation.
+- The navigation `FetchEvent.request` exposes `mode === "navigate"`. Create
+  that internal request without weakening the public `Request` constructor's
+  rejection of `new Request(url, { mode: "navigate" })`.
 - `FetchEvent.preloadResponse` resolves to an immutable, readable native
   `Response` on success, rejects with `TypeError` on a network error, and
   resolves to `undefined` when the algorithm does not start a preload.
@@ -44,9 +47,9 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   not call `respondWith`, follow the Service Workers fetch algorithm without
   issuing a duplicate request when the preload result is reusable.
 - Tests assert the actual request method, URL, configured header, number of
-  network requests, overlap with FetchEvent dispatch, FetchEvent response
-  semantics, network failure, and cancellation. Include non-GET, disabled,
-  absent-listener, and enabled-listener controls.
+  network requests, overlap with FetchEvent dispatch, navigation request mode,
+  FetchEvent response semantics, network failure, and cancellation. Include
+  non-GET, disabled, absent-listener, and enabled-listener controls.
 - Process-backed network assertions are required; a pure command or mocked
   loader test alone does not close this slice.
 
@@ -71,3 +74,10 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 - Relevant Fetch and Service Worker WPT cases, with selected cases and
   deviations recorded.
 - `git diff --check`.
+
+## Current Evidence
+
+- `cargo check -p glass-browser --features native-engine --lib --tests --locked -q` passes.
+- `cargo test -p glass-browser --lib --features native-engine --locked navigation_preload -- --quiet` passes (five socket-free unit tests).
+- Process-backed HTTP request/header/no-duplicate and navigation-cancellation regressions compile with `--tests`; they have not run in this sandbox because local TCP listener binding is denied.
+- The process-backed tests still need execution evidence for actual method/header/count, preload/dispatch overlap, HTTP failure, and cancellation. WPT, remote CI, and cross-platform validation remain open.

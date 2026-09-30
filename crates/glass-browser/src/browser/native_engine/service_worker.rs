@@ -79,6 +79,12 @@ pub(crate) enum NativeServiceWorkerNavigationPreloadResult {
     InvalidState,
 }
 
+pub(super) struct NativeServiceWorkerNavigationPreloadRequest {
+    request_id: u32,
+    scope: String,
+    header_value: String,
+}
+
 struct NativeServiceWorkerFetchContinuation {
     worker_id: u32,
     open_window_request_id: u32,
@@ -161,6 +167,7 @@ pub(crate) struct NativeServiceWorkerRegistry {
     registrations: BTreeMap<String, NativeServiceWorker>,
     waiting_workers: BTreeMap<String, NativeServiceWorker>,
     next_worker_id: u32,
+    next_navigation_preload_request_id: u32,
     next_timer_worker_id: u32,
     cache_state: NativeServiceWorkerCacheState,
     registration_profiles: Vec<NativeServiceWorkerRegistrationProfile>,
@@ -184,6 +191,7 @@ impl Default for NativeServiceWorkerRegistry {
             registrations: BTreeMap::new(),
             waiting_workers: BTreeMap::new(),
             next_worker_id: 1,
+            next_navigation_preload_request_id: 1,
             next_timer_worker_id: 0,
             cache_state: NativeServiceWorkerCacheState::default(),
             registration_profiles: Vec::new(),
@@ -1920,7 +1928,7 @@ impl NativeServiceWorkerRegistry {
         &mut self,
         loader: &mut NativeResourceLoader,
         navigation: &NativeNavigationRequest,
-        _referrer: Option<&str>,
+        referrer: Option<&str>,
     ) -> Result<NativeServiceWorkerNavigationOutcome, NativeEngineError> {
         let target = parse_network_url(
             "service worker navigation URL",
@@ -1928,6 +1936,17 @@ impl NativeServiceWorkerRegistry {
         )?;
         self.activate_waiting_for_navigation(loader, &target)
             .await?;
+        let navigation_preload = self
+            .navigation_preload_configuration(&target, navigation.method.as_str())?
+            .map(|(scope, header_value)| {
+                let request_id = self.allocate_navigation_preload_request_id()?;
+                Ok(NativeServiceWorkerNavigationPreloadRequest {
+                    request_id,
+                    scope,
+                    header_value,
+                })
+            })
+            .transpose()?;
         let outcome = self
             .intercept_fetch(
                 loader,
@@ -1946,6 +1965,8 @@ impl NativeServiceWorkerRegistry {
                 None,
                 None,
                 "document",
+                navigation_preload,
+                referrer,
             )
             .await?;
         let response = match outcome {
@@ -1973,6 +1994,52 @@ impl NativeServiceWorkerRegistry {
         ))
     }
 
+    fn navigation_preload_configuration(
+        &self,
+        target: &Url,
+        method: &str,
+    ) -> Result<Option<(String, String)>, NativeEngineError> {
+        if method != "GET" {
+            return Ok(None);
+        }
+        let Some(scope) = self.matching_scope(target)? else {
+            return Ok(None);
+        };
+        let Some(profile) = self
+            .registration_profiles
+            .iter()
+            .find(|profile| profile.scope == scope)
+        else {
+            return Ok(None);
+        };
+        if !profile.navigation_preload_enabled {
+            return Ok(None);
+        }
+        let Some(worker) = self.registrations.get(&scope) else {
+            return Ok(None);
+        };
+        if !worker.runtime.has_service_worker_fetch_listener()? {
+            return Ok(None);
+        }
+        Ok(Some((
+            scope,
+            profile.navigation_preload_header_value.clone(),
+        )))
+    }
+
+    fn allocate_navigation_preload_request_id(&mut self) -> Result<u32, NativeEngineError> {
+        let request_id = self.next_navigation_preload_request_id;
+        if request_id == 0 {
+            return Err(NativeEngineError::limit(
+                "native ServiceWorker navigation preload request ids",
+                u32::MAX as usize,
+                u32::MAX as usize,
+            ));
+        }
+        self.next_navigation_preload_request_id = request_id.checked_add(1).unwrap_or_default();
+        Ok(request_id)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn fetch_is_controlled(
         &self,
@@ -1994,7 +2061,7 @@ impl NativeServiceWorkerRegistry {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn intercept_fetch(
+    pub(super) async fn intercept_fetch(
         &mut self,
         loader: &mut NativeResourceLoader,
         document_url: &str,
@@ -2012,6 +2079,8 @@ impl NativeServiceWorkerRegistry {
         referrer_url: Option<&str>,
         referrer_policy: Option<&str>,
         destination: &str,
+        navigation_preload: Option<NativeServiceWorkerNavigationPreloadRequest>,
+        navigation_referrer: Option<&str>,
     ) -> Result<NativeServiceWorkerFetchOutcome, NativeEngineError> {
         let owner = parse_network_url("service worker fetch owner URL", document_url)?;
         let target =
@@ -2027,6 +2096,14 @@ impl NativeServiceWorkerRegistry {
         let Some(scope) = scope else {
             return Ok(NativeServiceWorkerFetchOutcome::NotHandled);
         };
+        if let Some(preload) = navigation_preload.as_ref()
+            && (!is_navigation || method != "GET" || preload.scope != scope)
+        {
+            return Err(NativeEngineError::invalid(
+                "native ServiceWorker navigation preload request",
+                "must match an eligible GET navigation and its registration scope",
+            ));
+        }
         if !is_navigation {
             if destination == "font" {
                 loader.enforce_service_worker_font_policy(&owner, &target)?;
@@ -2064,7 +2141,11 @@ impl NativeServiceWorkerRegistry {
             "bodyBase64": body_base64,
             "bodyNull": body_null,
             "contentType": content_type,
-            "mode": cors_mode_text(cors_mode),
+            "mode": if is_navigation {
+                "navigate"
+            } else {
+                cors_mode_text(cors_mode)
+            },
             "redirect": redirect_mode_text(redirect_mode),
             "credentials": credentials,
             "credentialsMode": credentials_mode.map(NativeFetchCredentialsMode::as_str),
@@ -2089,6 +2170,9 @@ impl NativeServiceWorkerRegistry {
             "focused": current_client.as_ref().is_some_and(|state| state.focused),
             "controlled": controlled,
             "clients": clients,
+            "navigationPreloadRequestId": navigation_preload
+                .as_ref()
+                .map(|preload| preload.request_id),
         });
         let Some(worker) = self.registrations.get_mut(&scope) else {
             return Ok(NativeServiceWorkerFetchOutcome::NotHandled);
@@ -2100,12 +2184,76 @@ impl NativeServiceWorkerRegistry {
                 .cloned()
                 .unwrap_or_default(),
         );
-        let evaluation = worker.runtime.evaluate_service_worker_fetch(
-            worker.id,
-            &worker.script_url,
-            &payload,
-            worker.is_module,
-        )?;
+        let mut preload_response = None;
+        let evaluation = if let Some(preload) = navigation_preload.as_ref() {
+            let worker_id = worker.id;
+            let worker_url = worker.script_url.clone();
+            let is_module = worker.is_module;
+            let preload_request = async {
+                Ok::<_, NativeEngineError>(
+                    loader
+                        .fetch_navigation_preload_async(
+                            target.as_str(),
+                            navigation_referrer,
+                            &preload.header_value,
+                        )
+                        .await,
+                )
+            };
+            let dispatch_fetch = async {
+                worker.runtime.evaluate_service_worker_fetch(
+                    worker_id,
+                    &worker_url,
+                    &payload,
+                    is_module,
+                )
+            };
+            let (preload_result, mut evaluation) =
+                tokio::try_join!(preload_request, dispatch_fetch)?;
+            let resolve_payload = match &preload_result {
+                Ok(response) => service_worker_fetch_payload(response.clone()),
+                Err(error) => {
+                    let message = error.to_string().chars().take(1024).collect::<String>();
+                    json!({"error": message})
+                }
+            };
+            let resolved = worker.runtime.resolve_service_worker_navigation_preload(
+                worker_id,
+                &worker_url,
+                preload.request_id,
+                &resolve_payload,
+                is_module,
+            )?;
+            if evaluation
+                .commands
+                .len()
+                .saturating_add(resolved.commands.len())
+                > MAX_NATIVE_WORKER_MESSAGES
+            {
+                return Err(NativeEngineError::limit(
+                    "native ServiceWorker navigation preload commands",
+                    MAX_NATIVE_WORKER_MESSAGES,
+                    evaluation
+                        .commands
+                        .len()
+                        .saturating_add(resolved.commands.len()),
+                ));
+            }
+            evaluation.commands.extend(resolved.commands);
+            evaluation.top_level_await_pending |= resolved.top_level_await_pending;
+            if evaluation.worker_script_error.is_none() {
+                evaluation.worker_script_error = resolved.worker_script_error;
+            }
+            preload_response = preload_result.ok();
+            evaluation
+        } else {
+            worker.runtime.evaluate_service_worker_fetch(
+                worker.id,
+                &worker.script_url,
+                &payload,
+                worker.is_module,
+            )?
+        };
         let worker_id = worker.id;
         let settlement = settle_service_worker_fetch(
             worker,
@@ -2149,6 +2297,9 @@ impl NativeServiceWorkerRegistry {
             return Ok(NativeServiceWorkerFetchOutcome::Suspended);
         }
         if value.get("handled").and_then(Value::as_bool) != Some(true) {
+            if let Some(response) = preload_response {
+                return Ok(NativeServiceWorkerFetchOutcome::Handled(response));
+            }
             return Ok(NativeServiceWorkerFetchOutcome::NotHandled);
         }
         let response = value
@@ -4050,6 +4201,85 @@ mod navigation_preload_tests {
                     None,
                 )
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn navigation_preload_requires_enabled_scope_and_fetch_listener() {
+        let scope = "https://navigation-preload.test/";
+        let target =
+            Url::parse("https://navigation-preload.test/page").expect("navigation target parses");
+        let mut registry = NativeServiceWorkerRegistry::default();
+        registry
+            .registration_profiles
+            .push(NativeServiceWorkerRegistrationProfile {
+                script_url: "https://navigation-preload.test/sw.js".into(),
+                scope: scope.into(),
+                worker_type: "classic".into(),
+                navigation_preload_enabled: false,
+                navigation_preload_header_value: "true".into(),
+                waiting: None,
+            });
+        let worker = test_worker("https://navigation-preload.test/sw.js", scope);
+        assert!(
+            registry
+                .navigation_preload_configuration(&target, "GET")
+                .expect("no active worker does not start a preload")
+                .is_none()
+        );
+        registry.registrations.insert(scope.into(), worker);
+        assert!(
+            registry
+                .navigation_preload_configuration(&target, "GET")
+                .expect("an active worker without a fetch listener does not preload")
+                .is_none()
+        );
+        let worker = registry
+            .registrations
+            .get_mut(scope)
+            .expect("test registration retains its active worker");
+        worker
+            .runtime
+            .evaluate_service_worker_source(
+                worker.id,
+                &worker.script_url,
+                None,
+                "self.addEventListener('fetch', () => {});",
+                &BTreeMap::new(),
+            )
+            .expect("fetch listener installs");
+        assert!(
+            registry
+                .navigation_preload_configuration(&target, "GET")
+                .expect("disabled navigation preload does not start a request")
+                .is_none()
+        );
+        registry
+            .registration_profiles
+            .iter_mut()
+            .find(|profile| profile.scope == scope)
+            .expect("test registration has a profile")
+            .navigation_preload_enabled = true;
+        assert!(
+            registry
+                .navigation_preload_configuration(&target, "POST")
+                .expect("non-GET navigation does not start a preload")
+                .is_none()
+        );
+        assert_eq!(
+            registry
+                .navigation_preload_configuration(&target, "GET")
+                .expect("enabled registration with a fetch listener starts a preload"),
+            Some((scope.into(), "true".into()))
+        );
+        assert!(
+            registry
+                .navigation_preload_configuration(
+                    &Url::parse("https://other.test/page").expect("cross-origin URL parses"),
+                    "GET",
+                )
+                .expect("cross-origin navigation cannot match this registration")
+                .is_none()
         );
     }
 }

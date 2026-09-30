@@ -9,7 +9,7 @@ use super::image::{MAX_NATIVE_IMAGE_TRANSFER_BYTES, NativeImage, decode_image_by
 use super::interaction::MAX_NATIVE_FORM_BODY_BYTES;
 use super::javascript::{
     MAX_NATIVE_COOKIE_PROFILE_ENTRIES, MAX_NATIVE_SCRIPT_BYTES, NativeCookieChange,
-    NativeCookieProfileEntry, load_cookie_profile,
+    NativeCookieProfileEntry, load_cookie_profile, validate_navigation_preload_header_value,
 };
 use super::origin::NativeOrigin;
 use base64::Engine as _;
@@ -4926,7 +4926,60 @@ impl NativeResourceLoader {
         &mut self,
         request: NativeFetchRequest<'_>,
     ) -> Result<NativeFetchResponse, NativeEngineError> {
-        let opened = self.open_fetch_response_stream_async(request).await?;
+        self.fetch_request_with_navigation_context_async(request, false)
+            .await
+    }
+
+    pub(crate) async fn fetch_navigation_preload_async(
+        &mut self,
+        target_url: &str,
+        referrer: Option<&str>,
+        header_value: &str,
+    ) -> Result<NativeFetchResponse, NativeEngineError> {
+        validate_navigation_preload_header_value(header_value)?;
+        let referrer = referrer.filter(|value| !value.is_empty());
+        let owner_url = referrer.unwrap_or(target_url);
+        let referrer_url = referrer.map(str::to_owned).unwrap_or_default();
+        let request = NativeFetchRequest {
+            document_url: owner_url,
+            href: target_url,
+            referrer_url: Some(referrer_url),
+            // Preserve the source document policy and let redirects update it
+            // through the normal Fetch request path.
+            referrer_policy: None,
+            method: NativeFetchMethod::get(),
+            body: None,
+            content_type: None,
+            request_headers: BTreeMap::from([
+                (
+                    "accept".to_owned(),
+                    "text/html,application/xhtml+xml".to_owned(),
+                ),
+                (
+                    "service-worker-navigation-preload".to_owned(),
+                    header_value.to_owned(),
+                ),
+            ]),
+            credentials: true,
+            credentials_mode: Some(NativeFetchCredentialsMode::Include),
+            cors_mode: NativeCorsMode::Navigation,
+            redirect_mode: NativeFetchRedirectMode::Follow,
+            cache_mode: NativeFetchCacheMode::Default,
+            timeout: None,
+            max_response_bytes: Some(self.max_document_bytes.min(MAX_NATIVE_FORM_BODY_BYTES)),
+        };
+        self.fetch_request_with_navigation_context_async(request, true)
+            .await
+    }
+
+    async fn fetch_request_with_navigation_context_async(
+        &mut self,
+        request: NativeFetchRequest<'_>,
+        top_level_navigation: bool,
+    ) -> Result<NativeFetchResponse, NativeEngineError> {
+        let opened = self
+            .open_fetch_response_stream_with_context_async(request, None, top_level_navigation)
+            .await?;
         self.finish_fetch_response_stream_async(opened).await
     }
 
@@ -4985,7 +5038,7 @@ impl NativeResourceLoader {
         &mut self,
         request: NativeFetchRequest<'_>,
     ) -> Result<NativeFetchResponseStream, NativeEngineError> {
-        self.open_fetch_response_stream_with_body_async(request, None)
+        self.open_fetch_response_stream_with_context_async(request, None, false)
             .await
     }
 
@@ -4998,6 +5051,16 @@ impl NativeResourceLoader {
         &mut self,
         request: NativeFetchRequest<'_>,
         request_body: Option<reqwest::Body>,
+    ) -> Result<NativeFetchResponseStream, NativeEngineError> {
+        self.open_fetch_response_stream_with_context_async(request, request_body, false)
+            .await
+    }
+
+    async fn open_fetch_response_stream_with_context_async(
+        &mut self,
+        request: NativeFetchRequest<'_>,
+        request_body: Option<reqwest::Body>,
+        top_level_navigation: bool,
     ) -> Result<NativeFetchResponseStream, NativeEngineError> {
         let NativeFetchRequest {
             document_url,
@@ -5133,7 +5196,7 @@ impl NativeResourceLoader {
                 reason: "same-origin fetch target has a different origin".into(),
             });
         }
-        if !mixed_content_allowed(&document_url, &target_url) {
+        if !top_level_navigation && !mixed_content_allowed(&document_url, &target_url) {
             return Err(NativeEngineError::Network {
                 operation: "fetch policy".into(),
                 reason: "HTTPS documents cannot fetch HTTP resources".into(),
@@ -5170,7 +5233,7 @@ impl NativeResourceLoader {
         let cacheable_request = matches!(method.as_str(), "GET" | "HEAD")
             && body.is_none()
             && redirect_mode == NativeFetchRedirectMode::Follow
-            && cors_mode != NativeCorsMode::Navigation;
+            && (cors_mode != NativeCorsMode::Navigation || top_level_navigation);
         let initial_credentials =
             fetch_credentials_for_url(credentials_mode, credentials, &document_url, &target_url);
         let document_referrer_policy = self
@@ -5188,11 +5251,16 @@ impl NativeResourceLoader {
             &target_url,
             effective_referrer_policy,
         );
+        let cookie_initiator = if top_level_navigation {
+            referrer_source.as_ref()
+        } else {
+            Some(&document_url)
+        };
         let request_cookie = if cacheable_request && initial_credentials {
             self.network.cookie_header_for_request(
                 &target_url,
-                Some(&document_url),
-                false,
+                cookie_initiator,
+                top_level_navigation,
                 method.clone(),
             )
         } else {
@@ -5308,10 +5376,14 @@ impl NativeResourceLoader {
                 )
                 .await?;
             }
+            let accept = current_headers
+                .get("accept")
+                .map(String::as_str)
+                .unwrap_or("*/*");
             let mut request = self.apply_environment_headers(
                 client
                     .request(current_method.reqwest_method(), request_url)
-                    .header(reqwest::header::ACCEPT, "*/*"),
+                    .header(reqwest::header::ACCEPT, accept),
             );
             if let Some(body) = current_request_body.take() {
                 request = request.body(body);
@@ -5331,6 +5403,9 @@ impl NativeResourceLoader {
                 request = request.header(reqwest::header::CACHE_CONTROL, cache_control);
             }
             for (name, value) in &current_headers {
+                if name == "accept" {
+                    continue;
+                }
                 request = request.header(name, value);
             }
             if redirects == 0
@@ -5352,8 +5427,8 @@ impl NativeResourceLoader {
             if current_credentials
                 && let Some(cookie) = self.network.cookie_header_for_request(
                     &current_url,
-                    Some(&document_url),
-                    false,
+                    cookie_initiator,
+                    top_level_navigation,
                     current_method.clone(),
                 )
             {
@@ -5587,7 +5662,7 @@ impl NativeResourceLoader {
         } else {
             exposed_response_headers(
                 &response_headers,
-                document_url.origin() == final_url.origin(),
+                top_level_navigation || document_url.origin() == final_url.origin(),
                 final_credentials,
             )?
         };

@@ -6227,6 +6227,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         None,
                         None,
                         "fetch",
+                        None,
+                        None,
                     )
                     .await;
                 pending_message_port_messages.extend(service_workers.take_message_port_messages());
@@ -14182,6 +14184,8 @@ async fn resolve_script_fetches(
                             referrer_url.as_deref(),
                             referrer_policy.as_deref(),
                             "font",
+                            None,
+                            None,
                         )
                         .await
                 } else {
@@ -14355,6 +14359,8 @@ async fn resolve_script_fetches(
                     referrer_url.as_deref(),
                     referrer_policy.as_deref(),
                     "fetch",
+                    None,
+                    None,
                 )
                 .await;
             let payload = match intercepted {
@@ -14463,6 +14469,8 @@ async fn resolve_script_fetches(
                             pending_fetch.referrer_url.as_deref(),
                             pending_fetch.referrer_policy.as_deref(),
                             "fetch",
+                            None,
+                            None,
                         )
                         .await;
                     match intercepted {

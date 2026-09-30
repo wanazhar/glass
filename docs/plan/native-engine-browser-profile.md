@@ -339,9 +339,15 @@ The `respondWith()` promise determines when the fetch response is ready;
 unrelated `waitUntil()` promises extend the FetchEvent lifetime independently
 and must not delay returning that response or turn their rejection into a
 navigation failure. The `respondWith()` promise itself also extends the event
-lifetime. Calling `respondWith()` stops later FetchEvent listeners. The worker
-owner must retain and continue pending lifetime work,
-including native host commands, after returning the response. A socket-free
+lifetime. `self.onfetch` participates in the same registration-ordered
+FetchEvent listener sequence as `addEventListener("fetch", ...)`, per the
+[HTML event-handler IDL algorithm](https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-idl-attributes):
+setting its handler while inactive registers it at that point, replacing an
+active handler keeps its position, setting it to `null` removes it, and
+reactivation registers it again at the end. Calling `respondWith()` stops only
+later listeners in that sequence. The worker owner must retain and continue
+pending lifetime work, including native host commands, after returning the
+response. A socket-free
 runtime regression verifies response settlement with a pending JavaScript-only
 `waitUntil()` promise; asynchronous host-command lifetime scheduling remains
 unverified and is a completion gate for Slice 839.

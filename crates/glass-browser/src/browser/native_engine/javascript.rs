@@ -22448,6 +22448,123 @@ self.addEventListener('fetch', () => {
     }
 
     #[test]
+    fn service_worker_fetch_onfetch_replacement_preserves_listener_order() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id(
+            "sw-fetch-onfetch-replacement-preserves-order",
+        )
+        .expect("ServiceWorker runtime is valid");
+        let worker_id = 48;
+        let worker_url = "https://preload.test/sw.js";
+        runtime
+            .evaluate_service_worker_source(
+                worker_id,
+                worker_url,
+                None,
+                r#"globalThis.__fetchOrder = [];
+self.addEventListener('fetch', () => globalThis.__fetchOrder.push('early'));
+self.onfetch = () => globalThis.__fetchOrder.push('replaced');
+self.addEventListener('fetch', () => globalThis.__fetchOrder.push('middle'));
+self.onfetch = () => globalThis.__fetchOrder.push('onfetch');
+self.addEventListener('fetch', event => {
+  globalThis.__fetchOrder.push('respond');
+  event.respondWith(new Response('ordered response'));
+});
+self.addEventListener('fetch', () => globalThis.__fetchOrder.push('late'));"#,
+                &BTreeMap::new(),
+            )
+            .expect("fetch listeners install");
+        let request = serde_json::json!({
+            "url": "https://preload.test/page",
+            "method": "GET",
+            "headers": [],
+            "bodyNull": true,
+            "mode": "navigate",
+            "redirect": "follow",
+            "credentialsMode": "include",
+            "destination": "document",
+        });
+
+        let evaluation = runtime
+            .evaluate_service_worker_fetch(worker_id, worker_url, &request, false)
+            .expect("FetchEvent handlers dispatch in their registration order");
+
+        assert_eq!(evaluation.value["handled"], true);
+        let body = base64::engine::general_purpose::STANDARD
+            .decode(
+                evaluation.value["response"]["bodyBase64"]
+                    .as_str()
+                    .expect("response body is base64 encoded"),
+            )
+            .expect("response body uses valid base64");
+        assert_eq!(body, b"ordered response");
+        let order = runtime.context.with(|ctx| {
+            ctx.eval::<String, _>("globalThis.__fetchOrder.join(',')")
+                .expect("FetchEvent registration order can be inspected")
+        });
+        assert_eq!(order, "early,onfetch,middle,respond");
+    }
+
+    #[test]
+    fn service_worker_fetch_onfetch_reactivation_appends_and_respond_with_stops_later() {
+        let runtime =
+            NativeJavaScriptRuntime::new_with_context_id("sw-fetch-onfetch-reactivation-appends")
+                .expect("ServiceWorker runtime is valid");
+        let worker_id = 49;
+        let worker_url = "https://preload.test/sw.js";
+        runtime
+            .evaluate_service_worker_source(
+                worker_id,
+                worker_url,
+                None,
+                r#"globalThis.__fetchOrder = [];
+self.addEventListener('fetch', () => globalThis.__fetchOrder.push('early'));
+self.onfetch = () => globalThis.__fetchOrder.push('deactivated handler');
+self.addEventListener('fetch', () => globalThis.__fetchOrder.push('before deactivation'));
+self.onfetch = null;
+self.addEventListener('fetch', () => globalThis.__fetchOrder.push('after deactivation'));
+self.onfetch = event => {
+  globalThis.__fetchOrder.push('reactivated handler');
+  event.respondWith(new Response('reactivated response'));
+};
+self.addEventListener('fetch', () => globalThis.__fetchOrder.push('later listener'));"#,
+                &BTreeMap::new(),
+            )
+            .expect("fetch listeners install");
+        let request = serde_json::json!({
+            "url": "https://preload.test/page",
+            "method": "GET",
+            "headers": [],
+            "bodyNull": true,
+            "mode": "navigate",
+            "redirect": "follow",
+            "credentialsMode": "include",
+            "destination": "document",
+        });
+
+        let evaluation = runtime
+            .evaluate_service_worker_fetch(worker_id, worker_url, &request, false)
+            .expect("reactivated onfetch handler dispatches in its new position");
+
+        assert_eq!(evaluation.value["handled"], true);
+        let body = base64::engine::general_purpose::STANDARD
+            .decode(
+                evaluation.value["response"]["bodyBase64"]
+                    .as_str()
+                    .expect("response body is base64 encoded"),
+            )
+            .expect("response body uses valid base64");
+        assert_eq!(body, b"reactivated response");
+        let order = runtime.context.with(|ctx| {
+            ctx.eval::<String, _>("globalThis.__fetchOrder.join(',')")
+                .expect("FetchEvent registration order can be inspected")
+        });
+        assert_eq!(
+            order,
+            "early,before deactivation,after deactivation,reactivated handler"
+        );
+    }
+
+    #[test]
     fn service_worker_preload_response_is_undefined_when_not_started() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("sw-preload-not-started")
             .expect("ServiceWorker runtime is valid");
@@ -35414,22 +35531,13 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       configurable: false,
       writable: false,
     });
-    const callbacks = listeners.get("fetch") || [];
-    try {
-      const handler = globalThis.onfetch;
-      if (typeof handler === "function") {
-        try { handler.call(globalThis, event); }
-        catch (error) { reportWorkerCallbackException(error, false); }
-      }
-    } catch (error) { reportWorkerCallbackException(error, false); }
-    if (!immediatePropagationStopped) {
-      for (const callback of callbacks.slice()) {
-        try {
-          if (typeof callback === "function") callback.call(globalThis, event);
-          else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
-        } catch (error) { reportWorkerCallbackException(error, false); }
-        if (immediatePropagationStopped) break;
-      }
+    const callbacks = (listeners.get("fetch") || []).slice();
+    for (const callback of callbacks) {
+      try {
+        if (typeof callback === "function") callback.call(globalThis, event);
+        else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
+      } catch (error) { reportWorkerCallbackException(error, false); }
+      if (immediatePropagationStopped) break;
     }
     dispatching = false;
     serviceWorkerFetchLifetimes.add(lifetimePromise);
@@ -35442,10 +35550,57 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
     return responsePromise.then(response => serviceWorkerFetchResponse(response))
       .then(response => ({ handled: true, response }));
   };
+  let serviceWorkerFetchHandlerSlots =
+    globalThis.__glassServiceWorkerFetchHandlerSlots instanceof Map
+      ? globalThis.__glassServiceWorkerFetchHandlerSlots
+      : null;
+  if (!serviceWorkerFetchHandlerSlots) {
+    serviceWorkerFetchHandlerSlots = new Map();
+    Object.defineProperty(globalThis, "__glassServiceWorkerFetchHandlerSlots", {
+      value: serviceWorkerFetchHandlerSlots,
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+  }
+  const setServiceWorkerFetchHandler = (value) => {
+    const handlerValue = typeof value === "function" ? value : null;
+    const current = serviceWorkerFetchHandlerSlots.get("fetch") || null;
+    if (handlerValue === null) {
+      if (current) {
+        current.active = false;
+        const callbacks = listeners.get("fetch") || [];
+        listeners.set("fetch", callbacks.filter((callback) => callback !== current.listener));
+        serviceWorkerFetchHandlerSlots.delete("fetch");
+      }
+      globalThis.__glassServiceWorkerOnFetch = null;
+      return;
+    }
+    if (current && current.active) {
+      current.value = handlerValue;
+      globalThis.__glassServiceWorkerOnFetch = handlerValue;
+      return;
+    }
+    const slot = { active: true, value: handlerValue, listener: null };
+    slot.listener = (event) => {
+      if (!slot.active || typeof slot.value !== "function") return undefined;
+      return slot.value.call(globalThis, event);
+    };
+    const callbacks = listeners.get("fetch") || [];
+    callbacks.push(slot.listener);
+    listeners.set("fetch", callbacks);
+    serviceWorkerFetchHandlerSlots.set("fetch", slot);
+    globalThis.__glassServiceWorkerOnFetch = handlerValue;
+  };
   if (!Object.prototype.hasOwnProperty.call(globalThis, "onfetch")) {
     Object.defineProperty(globalThis, "onfetch", {
-      configurable: true, enumerable: true, get() { return globalThis.__glassServiceWorkerOnFetch || null; },
-      set(value) { globalThis.__glassServiceWorkerOnFetch = typeof value === "function" ? value : null; },
+      configurable: true,
+      enumerable: true,
+      get() {
+        const slot = serviceWorkerFetchHandlerSlots.get("fetch");
+        return slot && slot.active ? slot.value : null;
+      },
+      set(value) { setServiceWorkerFetchHandler(value); },
     });
   }
   globalThis.__glassHasServiceWorkerFetchListener = () => {

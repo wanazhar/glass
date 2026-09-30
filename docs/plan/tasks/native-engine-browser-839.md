@@ -21,6 +21,7 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 - [Service Workers: Handle Fetch](https://www.w3.org/TR/service-workers/#handle-fetch)
 - [Service Workers: `FetchEvent.preloadResponse`](https://www.w3.org/TR/service-workers/#dom-fetchevent-preloadresponse)
 - [Service Workers: `FetchEvent.respondWith()`](https://www.w3.org/TR/service-workers/#dom-fetchevent-respondwith)
+- [HTML Standard: event handler IDL attributes](https://html.spec.whatwg.org/multipage/webappapis.html#event-handler-idl-attributes)
 - [Fetch Standard](https://fetch.spec.whatwg.org/)
 
 ## Contract
@@ -63,6 +64,12 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   response deadline. Calling `respondWith()` stops invocation of later
   listeners for that FetchEvent, as required by the FetchEvent dispatch
   algorithm.
+- Dispatch `self.onfetch` in registration order as an event-handler listener
+  in the same sequence as `addEventListener("fetch", ...)`: its first
+  non-null assignment registers its position, replacing its callback while
+  active preserves that position, assigning `null` removes it, and assigning a
+  callback again registers it at the then-current end. A `respondWith()` call
+  stops only listeners later in that ordered sequence.
 - Preserve response status, URL, headers, redirect state, and bounded body
   bytes without consuming the worker-visible body. When the fetch handler does
   not call `respondWith`, follow the Service Workers fetch algorithm without
@@ -73,7 +80,9 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   policy updates, FetchEvent response semantics, network failure, and
   cancellation. Also verify a pending unrelated `waitUntil()` does not delay an
   independent response, while its lifetime work remains alive and can settle;
-  verify `respondWith()` suppresses later listeners.
+  verify `onfetch` and registered callbacks run in registration order across
+  handler replacement and deactivation/reactivation, and verify
+  `respondWith()` suppresses only later listeners in that order.
   Include non-GET,
   disabled, absent-listener, and enabled-listener controls.
 - Process-backed network assertions are required; a pure command or mocked
@@ -105,7 +114,7 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 
 - `cargo check -p glass-browser --features native-engine --lib --tests --locked -q` passes on the current revision.
 - `cargo test -p glass-browser --lib --features native-engine --locked navigation_preload -- --quiet` passes (six socket-free tests, including the immediate-response runtime regression).
-- `cargo test -p glass-browser --lib --features native-engine --locked service_worker_fetch_ -- --quiet` passes (three socket-free runtime tests, including independent `waitUntil()` lifetime and listener suppression).
+- `cargo test -p glass-browser --lib --features native-engine --locked service_worker_fetch_ -- --quiet` passes (five socket-free runtime tests, including independent `waitUntil()` lifetime, listener suppression, `onfetch` registration order, handler replacement, and deactivation/reactivation).
 - `cargo fmt --all -- --check`, release-documentation truth, documentation depth, TUI shortcut inventory, and `git diff --check` pass.
 - The response test proves headers are immutable and both the original and
   cloned response bodies remain readable. It also verifies the policy-reduced
@@ -116,8 +125,10 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   worker. This does not prove that host commands emitted by lifetime work
   continue asynchronously: the current Rust settlement loop still processes
   FetchEvent host commands before returning the response.
-- A socket-free runtime regression verifies that the first `respondWith()`
-  suppresses later registered FetchEvent listeners.
+- Two socket-free runtime regressions verify that `onfetch` shares the ordered
+  FetchEvent listener sequence, replacement preserves its position,
+  deactivation/reactivation appends it at the new position, and `respondWith()`
+  suppresses only later listeners.
 - The new process-backed independent-response regression compiles as part of
   `cargo check --tests` and the integration-test target. Running it fails at
   `TcpListener::bind("127.0.0.1:0")` with `PermissionDenied` before engine

@@ -7101,6 +7101,7 @@ impl NativeDocument {
                 NativeScriptCommand::ServiceWorkerRegister { .. }
                 | NativeScriptCommand::ServiceWorkerUnregister { .. }
                 | NativeScriptCommand::ServiceWorkerUpdate { .. }
+                | NativeScriptCommand::ServiceWorkerNavigationPreload { .. }
                 | NativeScriptCommand::ServiceWorkerSkipWaiting { .. }
                 | NativeScriptCommand::ServiceWorkerClientsClaim { .. }
                 | NativeScriptCommand::ServiceWorkerPostMessage { .. }

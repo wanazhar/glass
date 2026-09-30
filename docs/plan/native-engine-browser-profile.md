@@ -293,6 +293,48 @@ and dependency behavior from Slice 836. Background restoration and soft
 updates without an active client retain separate provenance. See the
 [slice 837 task](tasks/native-engine-browser-837.md).
 
+### Service Worker Navigation Preload
+
+Each ServiceWorker registration exposes one stable
+`NavigationPreloadManager` through its `[SameObject] navigationPreload`
+property. Its `enable()`, `disable()`, `setHeaderValue(value)`, and
+`getState()` methods return promises. Enablement starts false and the header
+value starts as the byte string `true`. `enable()`, `disable()`, and
+`setHeaderValue()` reject with `InvalidStateError` when the registration has no
+active worker; `getState()` remains available and returns both `enabled` and
+`headerValue`. Header input follows Web IDL `ByteString` conversion and Fetch
+header-value normalization; an invalid normalized value rejects with
+`TypeError`.
+
+The enabled flag and header value belong to the ServiceWorker registration.
+Persist both in the registration profile, default missing fields when reading
+older profiles, and preserve them across script updates, worker promotion,
+profile merge, and content-process restoration.
+
+For an enabled registration whose active worker has a non-empty `fetch`
+listener set, a matching `GET` navigation starts a cloned network request
+without ServiceWorker interception and appends the
+`Service-Worker-Navigation-Preload` header with the configured byte value. The
+request starts in parallel with FetchEvent dispatch. `FetchEvent.preloadResponse`
+resolves to an immutable `Response` when the preload succeeds, rejects with
+`TypeError` on a network error, and is resolved with `undefined` when the
+preload algorithm does not start. The response remains readable through the
+normal bounded Response body APIs. Navigation cancellation aborts the preload;
+the regular navigation request's origin, credentials, redirects, network
+policy, resource limits, and response handling continue to apply. The preload
+must not recurse through ServiceWorker interception or silently trigger a
+different browser backend. See the [Service Workers Navigation Preload
+contract](https://w3c.github.io/ServiceWorker/#navigationpreloadmanager) and
+[Fetch dispatch algorithm](https://w3c.github.io/ServiceWorker/#handle-fetch).
+
+The current FetchEvent shim resolves `preloadResponse` to `undefined` for every
+request. Slice 838 implements the manager and durable registration settings;
+its scoped compile and socket-free unit tests pass, but its process-backed
+persistence regression cannot run in this sandbox because TCP listener binding
+is denied. Slice 839 implements request dispatch, response delivery, and
+cancellation. Until both slices are implemented and verified, Navigation
+Preload is incomplete in the native engine.
+
 ### Explicit `tabindex` focus baseline
 
 Within the current light-DOM focus scope, a valid explicit `tabindex` makes an

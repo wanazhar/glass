@@ -12099,6 +12099,15 @@ self.addEventListener('fetch', event => {
             .unwrap(),
         serde_json::json!(["activated", format!("http://{address}/sw.js")])
     );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(async reg => { await reg.navigationPreload.enable(); await reg.navigationPreload.setHeaderValue('cache-preview'); return reg.navigationPreload.getState(); })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"enabled": true, "headerValue": "cache-preview"})
+    );
     engine
         .navigate_async(format!("http://{address}/controlled"))
         .await
@@ -12127,6 +12136,8 @@ self.addEventListener('fetch', event => {
     let profile = fs::read_to_string(&profile_path).unwrap();
     assert!(profile.contains("service_worker_caches"));
     assert!(profile.contains("service_worker_registrations"));
+    assert!(profile.contains("navigation_preload_enabled"));
+    assert!(profile.contains("cache-preview"));
 
     let mut reopened = NativeEngine::new(
         NativeEngineConfig::default()
@@ -12138,11 +12149,16 @@ self.addEventListener('fetch', event => {
     assert_eq!(
         reopened
             .evaluate_async(
-                "await registrationPromise.then(reg => [restoredController, reg.active.state, reg.active.scriptURL])",
+                "await registrationPromise.then(async reg => [restoredController, reg.active.state, reg.active.scriptURL, await reg.navigationPreload.getState()])",
             )
             .await
             .unwrap(),
-        serde_json::json!([true, "activated", format!("http://{address}/sw.js")])
+        serde_json::json!([
+            true,
+            "activated",
+            format!("http://{address}/sw.js"),
+            {"enabled": true, "headerValue": "cache-preview"}
+        ])
     );
     assert_eq!(
         reopened

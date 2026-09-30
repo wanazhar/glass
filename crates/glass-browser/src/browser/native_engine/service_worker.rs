@@ -23,9 +23,10 @@ use super::javascript::{
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest,
     NativeServiceWorkerRegistrationProfile, NativeServiceWorkerRegistrationState,
     NativeServiceWorkerWorkerProfile, NativeServiceWorkerWorkerState, NativeWorkerModuleGraph,
-    load_service_worker_source, resolve_module_request_url, validate_message_port_transfers,
-    validate_native_message_payload, validate_native_object_url_transfers,
-    validate_native_service_worker_cache_request_headers, validate_service_worker_client_states,
+    default_navigation_preload_header_value, load_service_worker_source,
+    resolve_module_request_url, validate_message_port_transfers, validate_native_message_payload,
+    validate_native_object_url_transfers, validate_native_service_worker_cache_request_headers,
+    validate_navigation_preload_header_value, validate_service_worker_client_states,
 };
 use super::origin::NativeOrigin;
 use super::resource_loader::{
@@ -71,6 +72,11 @@ pub(crate) enum NativeServiceWorkerFetchOutcome {
 pub(crate) struct NativeServiceWorkerFetchCompletion {
     pub(crate) worker_id: u32,
     pub(crate) response: Option<NativeFetchResponse>,
+}
+
+pub(crate) enum NativeServiceWorkerNavigationPreloadResult {
+    State { enabled: bool, header_value: String },
+    InvalidState,
 }
 
 struct NativeServiceWorkerFetchContinuation {
@@ -426,6 +432,99 @@ impl NativeServiceWorkerRegistry {
         &self,
     ) -> &BTreeMap<String, Option<NativeServiceWorkerRegistrationProfile>> {
         &self.registration_changes
+    }
+
+    pub(crate) fn apply_navigation_preload_operation(
+        &mut self,
+        document_url: &str,
+        scope: &str,
+        operation: &str,
+        header_value: Option<&str>,
+    ) -> Result<NativeServiceWorkerNavigationPreloadResult, NativeEngineError> {
+        let document = parse_network_url("navigation preload document URL", document_url)?;
+        let registration_scope = parse_network_url("navigation preload registration scope", scope)?;
+        if NativeOrigin::from_url(&document)? != NativeOrigin::from_url(&registration_scope)? {
+            return Err(NativeEngineError::UnsupportedUrl {
+                reason: "navigation preload scope must be same-origin with its document".into(),
+            });
+        }
+
+        let profile_index = self
+            .registration_profiles
+            .iter()
+            .position(|profile| profile.scope == scope);
+        let registration_exists = profile_index.is_some()
+            || self.registrations.contains_key(scope)
+            || self.waiting_workers.contains_key(scope);
+        if !registration_exists {
+            return Err(NativeEngineError::invalid(
+                "native service worker navigation preload scope",
+                "does not identify a registration",
+            ));
+        }
+        if !matches!(
+            operation,
+            "enable" | "disable" | "setHeaderValue" | "getState"
+        ) {
+            return Err(NativeEngineError::invalid(
+                "native service worker navigation preload operation",
+                "is not supported",
+            ));
+        }
+        if operation == "setHeaderValue" {
+            validate_navigation_preload_header_value(header_value.ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native service worker navigation preload header value",
+                    "is required for setHeaderValue",
+                )
+            })?)?;
+        } else if header_value.is_some() {
+            return Err(NativeEngineError::invalid(
+                "native service worker navigation preload header value",
+                "is only valid for setHeaderValue",
+            ));
+        }
+
+        if operation != "getState" && !self.registrations.contains_key(scope) {
+            return Ok(NativeServiceWorkerNavigationPreloadResult::InvalidState);
+        }
+
+        let profile_index = profile_index.ok_or_else(|| {
+            NativeEngineError::invalid(
+                "native service worker navigation preload profile",
+                "registration settings are unavailable",
+            )
+        })?;
+        let profile = &mut self.registration_profiles[profile_index];
+        let changed = match operation {
+            "enable" if !profile.navigation_preload_enabled => {
+                profile.navigation_preload_enabled = true;
+                true
+            }
+            "disable" if profile.navigation_preload_enabled => {
+                profile.navigation_preload_enabled = false;
+                true
+            }
+            "setHeaderValue" => {
+                let value = header_value.expect("setHeaderValue input was validated");
+                if profile.navigation_preload_header_value == value {
+                    false
+                } else {
+                    profile.navigation_preload_header_value = value.to_owned();
+                    true
+                }
+            }
+            "enable" | "disable" | "getState" => false,
+            _ => unreachable!("NavigationPreload operation was validated above"),
+        };
+        let state = NativeServiceWorkerNavigationPreloadResult::State {
+            enabled: profile.navigation_preload_enabled,
+            header_value: profile.navigation_preload_header_value.clone(),
+        };
+        if changed {
+            self.record_registration_change(scope);
+        }
+        Ok(state)
     }
 
     pub(crate) fn clear_registration_changes(&mut self) {
@@ -827,6 +926,8 @@ impl NativeServiceWorkerRegistry {
                         script_url: worker.script_url.clone(),
                         scope: worker.scope.clone(),
                         worker_type: worker_type_name(worker),
+                        navigation_preload_enabled: false,
+                        navigation_preload_header_value: default_navigation_preload_header_value(),
                         waiting: None,
                     })
             })
@@ -836,6 +937,8 @@ impl NativeServiceWorkerRegistry {
                         script_url: worker.script_url.clone(),
                         scope: worker.scope.clone(),
                         worker_type: worker_type_name(worker),
+                        navigation_preload_enabled: false,
+                        navigation_preload_header_value: default_navigation_preload_header_value(),
                         waiting: None,
                     }
                 })
@@ -887,13 +990,27 @@ impl NativeServiceWorkerRegistry {
     }
 
     fn remember_registration(&mut self, worker: &NativeServiceWorker) {
+        let navigation_preload = self
+            .registration_profiles
+            .iter()
+            .find(|profile| profile.scope == worker.scope)
+            .map(|profile| {
+                (
+                    profile.navigation_preload_enabled,
+                    profile.navigation_preload_header_value.clone(),
+                )
+            });
         self.registration_profiles
             .retain(|profile| profile.scope != worker.scope);
+        let (navigation_preload_enabled, navigation_preload_header_value) = navigation_preload
+            .unwrap_or_else(|| (false, default_navigation_preload_header_value()));
         self.registration_profiles
             .push(NativeServiceWorkerRegistrationProfile {
                 script_url: worker.script_url.clone(),
                 scope: worker.scope.clone(),
                 worker_type: worker_type_name(worker),
+                navigation_preload_enabled,
+                navigation_preload_header_value,
                 waiting: None,
             });
         self.registration_profiles
@@ -929,6 +1046,8 @@ impl NativeServiceWorkerRegistry {
                 script_url: active.script_url.clone(),
                 scope: active.scope.clone(),
                 worker_type: worker_type_name(active),
+                navigation_preload_enabled: false,
+                navigation_preload_header_value: default_navigation_preload_header_value(),
                 waiting: Some(waiting),
             });
         self.registration_profiles
@@ -3826,5 +3945,111 @@ fn parse_redirect_mode(value: &str) -> Result<NativeFetchRedirectMode, NativeEng
             "service worker fetch redirect mode",
             "must be follow, error, or manual",
         )),
+    }
+}
+
+#[cfg(test)]
+mod navigation_preload_tests {
+    use super::*;
+
+    fn test_worker(script_url: &str, scope: &str) -> NativeServiceWorker {
+        NativeServiceWorker {
+            id: 1,
+            script_url: script_url.into(),
+            scope: scope.into(),
+            is_module: false,
+            runtime: NativeJavaScriptRuntime::new_with_context_id("navigation-preload-test")
+                .expect("test worker runtime constructs"),
+            import_script_counts: BTreeMap::new(),
+            skip_waiting_requested: false,
+            clients_claim_requested: false,
+            fetch_upload_connections: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn navigation_preload_state_requires_active_worker_and_survives_replacement() {
+        let document_url = "https://navigation-preload.test/page";
+        let scope = "https://navigation-preload.test/";
+        let mut registry = NativeServiceWorkerRegistry::default();
+        registry
+            .registration_profiles
+            .push(NativeServiceWorkerRegistrationProfile {
+                script_url: "https://navigation-preload.test/sw.js".into(),
+                scope: scope.into(),
+                worker_type: "classic".into(),
+                navigation_preload_enabled: false,
+                navigation_preload_header_value: "true".into(),
+                waiting: None,
+            });
+
+        assert!(matches!(
+            registry
+                .apply_navigation_preload_operation(document_url, scope, "enable", None)
+                .expect("inactive registration reports a Web API state failure"),
+            NativeServiceWorkerNavigationPreloadResult::InvalidState
+        ));
+        assert!(matches!(
+            registry
+                .apply_navigation_preload_operation(document_url, scope, "getState", None)
+                .expect("state can be read without an active worker"),
+            NativeServiceWorkerNavigationPreloadResult::State {
+                enabled: false,
+                header_value,
+            } if header_value == "true"
+        ));
+
+        registry.registrations.insert(
+            scope.into(),
+            test_worker("https://navigation-preload.test/sw.js", scope),
+        );
+        assert!(matches!(
+            registry
+                .apply_navigation_preload_operation(document_url, scope, "enable", None)
+                .expect("active registration enables preloading"),
+            NativeServiceWorkerNavigationPreloadResult::State {
+                enabled: true,
+                header_value,
+            } if header_value == "true"
+        ));
+        registry
+            .apply_navigation_preload_operation(
+                document_url,
+                scope,
+                "setHeaderValue",
+                Some("release-preview"),
+            )
+            .expect("active registration updates its header value");
+
+        registry.remember_registration(&test_worker(
+            "https://navigation-preload.test/sw-v2.js",
+            scope,
+        ));
+        let profile = registry
+            .registration_profiles()
+            .into_iter()
+            .find(|profile| profile.scope == scope)
+            .expect("replacement keeps its registration profile");
+        assert_eq!(
+            profile.script_url,
+            "https://navigation-preload.test/sw-v2.js"
+        );
+        assert!(profile.navigation_preload_enabled);
+        assert_eq!(profile.navigation_preload_header_value, "release-preview");
+        assert_eq!(
+            registry.registration_changes().get(scope),
+            Some(&Some(profile))
+        );
+
+        assert!(
+            registry
+                .apply_navigation_preload_operation(
+                    "https://other.test/page",
+                    scope,
+                    "getState",
+                    None,
+                )
+                .is_err()
+        );
     }
 }

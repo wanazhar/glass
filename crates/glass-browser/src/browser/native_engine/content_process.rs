@@ -81,7 +81,8 @@ use super::sandbox::NativeContentSandbox;
 use super::sandbox::prepare_worker_command;
 use super::service_worker::{
     NativeServiceWorkerFetchCompletion, NativeServiceWorkerFetchOutcome,
-    NativeServiceWorkerNavigationOutcome, NativeServiceWorkerRegistry,
+    NativeServiceWorkerNavigationOutcome, NativeServiceWorkerNavigationPreloadResult,
+    NativeServiceWorkerRegistry,
 };
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
@@ -8238,6 +8239,51 @@ async fn resolve_service_worker_commands(
                     return Err(NativeEngineError::Worker {
                         operation: "service worker update response".into(),
                         reason: "service worker update response remained pending".into(),
+                    });
+                }
+                document_commands.extend(evaluation.commands);
+                pending.extend(runtime.take_service_worker_commands());
+            }
+            NativeScriptCommand::ServiceWorkerNavigationPreload {
+                request_id,
+                scope,
+                operation,
+                header_value,
+            } => {
+                let payload = match registry.apply_navigation_preload_operation(
+                    document_url,
+                    &scope,
+                    &operation,
+                    header_value.as_deref(),
+                ) {
+                    Ok(NativeServiceWorkerNavigationPreloadResult::State {
+                        enabled,
+                        header_value,
+                    }) => json!({
+                        "operation": operation,
+                        "state": {
+                            "enabled": enabled,
+                            "headerValue": header_value,
+                        },
+                    }),
+                    Ok(NativeServiceWorkerNavigationPreloadResult::InvalidState) => json!({
+                        "error": "ServiceWorker registration has no active worker",
+                        "errorName": "InvalidStateError",
+                    }),
+                    Err(error) => json!({"error":error.to_string()}),
+                };
+                let evaluation = runtime.resolve_service_worker_registration(
+                    request_id,
+                    &payload,
+                    document,
+                    document_url,
+                    document_origin,
+                    viewport,
+                )?;
+                if evaluation.top_level_await_pending {
+                    return Err(NativeEngineError::Worker {
+                        operation: "service worker navigation preload response".into(),
+                        reason: "navigation preload response remained pending".into(),
                     });
                 }
                 document_commands.extend(evaluation.commands);

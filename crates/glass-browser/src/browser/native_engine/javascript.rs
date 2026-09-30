@@ -86,6 +86,50 @@ fn default_classic_worker_type() -> String {
     "classic".into()
 }
 
+pub(crate) fn default_navigation_preload_header_value() -> String {
+    "true".into()
+}
+
+pub(crate) fn validate_navigation_preload_header_value(
+    value: &str,
+) -> Result<(), NativeEngineError> {
+    let byte_len = value.chars().count();
+    if byte_len > MAX_NATIVE_FETCH_HEADER_VALUE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native ServiceWorker navigation preload header value",
+            MAX_NATIVE_FETCH_HEADER_VALUE_BYTES,
+            byte_len,
+        ));
+    }
+    if value
+        .chars()
+        .any(|character| u32::from(character) > u32::from(u8::MAX))
+    {
+        return Err(NativeEngineError::invalid(
+            "native ServiceWorker navigation preload header value",
+            "must be a ByteString",
+        ));
+    }
+    if matches!(value.chars().next(), Some('\t' | ' '))
+        || matches!(value.chars().next_back(), Some('\t' | ' '))
+    {
+        return Err(NativeEngineError::invalid(
+            "native ServiceWorker navigation preload header value",
+            "must already be Fetch-normalized",
+        ));
+    }
+    if value
+        .chars()
+        .any(|character| matches!(character, '\0' | '\r' | '\n'))
+    {
+        return Err(NativeEngineError::invalid(
+            "native ServiceWorker navigation preload header value",
+            "must not contain NUL or HTTP newline bytes",
+        ));
+    }
+    Ok(())
+}
+
 fn default_same_origin_credentials() -> String {
     "same-origin".into()
 }
@@ -360,6 +404,13 @@ pub(crate) enum NativeScriptCommand {
         referrer_url: String,
         #[serde(default)]
         referrer_policy: String,
+    },
+    ServiceWorkerNavigationPreload {
+        request_id: u32,
+        scope: String,
+        operation: String,
+        #[serde(default)]
+        header_value: Option<String>,
     },
     ServiceWorkerSkipWaiting {
         worker_id: u32,
@@ -916,6 +967,10 @@ pub(crate) struct NativeServiceWorkerRegistrationProfile {
     pub(crate) scope: String,
     #[serde(default = "default_classic_worker_type")]
     pub(crate) worker_type: String,
+    #[serde(default)]
+    pub(crate) navigation_preload_enabled: bool,
+    #[serde(default = "default_navigation_preload_header_value")]
+    pub(crate) navigation_preload_header_value: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) waiting: Option<NativeServiceWorkerWorkerProfile>,
 }
@@ -946,6 +1001,7 @@ impl NativeServiceWorkerRegistrationProfile {
                 self.scope.len(),
             ));
         }
+        validate_navigation_preload_header_value(&self.navigation_preload_header_value)?;
         let script = Url::parse(without_fragment(&self.script_url)).map_err(|_| {
             NativeEngineError::UnsupportedUrl {
                 reason: "native service worker registration script URL is invalid".into(),
@@ -7744,14 +7800,27 @@ mod storage_journal_tests {
             script_url: "https://registration.test/one/sw.js".into(),
             scope: "https://registration.test/one/".into(),
             worker_type: "classic".into(),
+            navigation_preload_enabled: true,
+            navigation_preload_header_value: "release-candidate".into(),
             waiting: None,
         };
         let second = NativeServiceWorkerRegistrationProfile {
             script_url: "https://registration.test/two/sw.js".into(),
             scope: "https://registration.test/two/".into(),
             worker_type: "classic".into(),
+            navigation_preload_enabled: false,
+            navigation_preload_header_value: "true".into(),
             waiting: None,
         };
+        let legacy_profile: NativeServiceWorkerRegistrationProfile =
+            serde_json::from_value(serde_json::json!({
+                "script_url": "https://registration.test/legacy/sw.js",
+                "scope": "https://registration.test/legacy/",
+                "worker_type": "classic",
+            }))
+            .expect("older ServiceWorker profiles decode with navigation preload defaults");
+        assert!(!legacy_profile.navigation_preload_enabled);
+        assert_eq!(legacy_profile.navigation_preload_header_value, "true");
 
         save_service_worker_cache_profile(
             Some(&profile_path),
@@ -15296,6 +15365,7 @@ impl NativeJavaScriptRuntime {
             NativeScriptCommand::ServiceWorkerRegister { .. }
                 | NativeScriptCommand::ServiceWorkerUnregister { .. }
                 | NativeScriptCommand::ServiceWorkerUpdate { .. }
+                | NativeScriptCommand::ServiceWorkerNavigationPreload { .. }
                 | NativeScriptCommand::ServiceWorkerPostMessage { .. }
         );
         if !is_service_worker_command {
@@ -15395,6 +15465,39 @@ impl NativeJavaScriptRuntime {
                     ));
                 }
                 NativeFetchReferrerPolicy::parse(referrer_policy)?;
+            }
+            NativeScriptCommand::ServiceWorkerNavigationPreload {
+                request_id,
+                scope,
+                operation,
+                header_value,
+            } => {
+                if *request_id == 0 {
+                    return Err(NativeEngineError::invalid(
+                        "native service worker request id",
+                        "must be positive",
+                    ));
+                }
+                validate_url_text("native service worker scope", scope)?;
+                if scope.len() > MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "native service worker scope",
+                        MAX_NATIVE_SERVICE_WORKER_SCOPE_BYTES,
+                        scope.len(),
+                    ));
+                }
+                match (operation.as_str(), header_value.as_deref()) {
+                    ("enable" | "disable" | "getState", None) => {}
+                    ("setHeaderValue", Some(value)) => {
+                        validate_navigation_preload_header_value(value)?;
+                    }
+                    _ => {
+                        return Err(NativeEngineError::invalid(
+                            "native service worker navigation preload operation",
+                            "operation and header value do not match the API contract",
+                        ));
+                    }
+                }
             }
             NativeScriptCommand::ServiceWorkerPostMessage {
                 scope,
@@ -21851,6 +21954,107 @@ mod native_static_dynamic_import_tests {
         assert!(
             runtime
                 .apply_service_worker_command(&invalid_policy)
+                .is_err()
+        );
+        assert!(runtime.take_service_worker_commands().is_empty());
+    }
+
+    #[test]
+    fn service_worker_navigation_preload_manager_is_stable_and_validates_header_values() {
+        let document_url = "https://document.test/page";
+        let document =
+            NativeDocument::parse("<html><body></body></html>", &NativeEngineLimits::default())
+                .expect("Navigation Preload fixture parses");
+        let origin =
+            NativeOrigin::from_url(&url::Url::parse(document_url).expect("Document URL parses"))
+                .expect("Document origin is valid");
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("sw-navigation-preload")
+            .expect("native JavaScript runtime must construct");
+        runtime.set_service_worker_registrations(vec![NativeServiceWorkerRegistrationState {
+            script_url: "https://document.test/sw.js".into(),
+            scope: "https://document.test/".into(),
+            state: "activated".into(),
+            controlled: true,
+            lifecycle: Vec::new(),
+            active: Some(NativeServiceWorkerWorkerState {
+                script_url: "https://document.test/sw.js".into(),
+                state: "activated".into(),
+            }),
+            waiting: None,
+        }]);
+
+        let evaluation = runtime
+            .evaluate(
+                r##"(() => {
+                  const registration = globalThis.__glassServiceWorkerRegistrations
+                    .get('https://document.test/');
+                  const manager = registration.navigationPreload;
+                  const sameObject = manager === registration.navigationPreload
+                    && manager instanceof NavigationPreloadManager;
+                  globalThis.__navigationPreloadState = manager.getState();
+                  manager.enable();
+                  manager.setHeaderValue('\tglass-preview  \t');
+                  manager.disable();
+                  manager.getState();
+                  return sameObject;
+                })()"##,
+                &document,
+                document_url,
+                &origin,
+                Viewport::default(),
+            )
+            .expect("NavigationPreloadManager methods queue host commands");
+        assert_eq!(evaluation.value, serde_json::json!(true));
+
+        let operations = runtime
+            .take_service_worker_commands()
+            .into_iter()
+            .map(|command| match command {
+                NativeScriptCommand::ServiceWorkerNavigationPreload {
+                    operation,
+                    header_value,
+                    ..
+                } => (operation, header_value),
+                command => panic!("unexpected Navigation Preload command: {command:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            operations,
+            [
+                ("getState".into(), None),
+                ("enable".into(), None),
+                ("setHeaderValue".into(), Some("glass-preview".into())),
+                ("disable".into(), None),
+                ("getState".into(), None),
+            ]
+        );
+
+        for valid in ["", "true", "header\tvalue", "latin-1-\u{00ff}"] {
+            super::validate_navigation_preload_header_value(valid)
+                .expect("normalized ByteString header value is valid");
+        }
+        for invalid in [
+            " leading",
+            "trailing ",
+            "nul\0value",
+            "line\nvalue",
+            "wide-\u{0100}",
+        ] {
+            assert!(
+                super::validate_navigation_preload_header_value(invalid).is_err(),
+                "header value {invalid:?} is rejected at the native boundary"
+            );
+        }
+
+        let invalid_command = NativeScriptCommand::ServiceWorkerNavigationPreload {
+            request_id: 91,
+            scope: "https://document.test/".into(),
+            operation: "setHeaderValue".into(),
+            header_value: Some("not-normalized ".into()),
+        };
+        assert!(
+            runtime
+                .apply_service_worker_command(&invalid_command)
                 .is_err()
         );
         assert!(runtime.take_service_worker_commands().is_empty());
@@ -32566,6 +32770,11 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
   const ServiceWorkerRegistrationNative = typeof globalThis.__glassServiceWorkerRegistrationConstructor === "function"
     ? globalThis.__glassServiceWorkerRegistrationConstructor
     : function ServiceWorkerRegistration() { throw new TypeError("Illegal constructor"); };
+  const NavigationPreloadManagerNative = typeof globalThis.__glassNavigationPreloadManagerConstructor === "function"
+    ? globalThis.__glassNavigationPreloadManagerConstructor
+    : function NavigationPreloadManager() { throw new TypeError("Illegal constructor"); };
+  const serviceWorkerNavigationPreloadManagerByRegistration = new WeakMap();
+  const serviceWorkerRegistrationByNavigationPreloadManager = new WeakMap();
   if (!ServiceWorkerNative.prototype.postMessage) {
     ServiceWorkerNative.prototype.postMessage = function(message, options) {
       const envelope = glassMessageCloneWithTransfers(
@@ -32583,8 +32792,10 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
   }
   globalThis.__glassServiceWorkerConstructor = ServiceWorkerNative;
   globalThis.__glassServiceWorkerRegistrationConstructor = ServiceWorkerRegistrationNative;
+  globalThis.__glassNavigationPreloadManagerConstructor = NavigationPreloadManagerNative;
   globalThis.ServiceWorker = ServiceWorkerNative;
   globalThis.ServiceWorkerRegistration = ServiceWorkerRegistrationNative;
+  globalThis.NavigationPreloadManager = NavigationPreloadManagerNative;
   const serviceWorkerListeners = (target) => {
     if (!(target.__glassServiceWorkerListeners instanceof Map)) {
       Object.defineProperty(target, "__glassServiceWorkerListeners", {
@@ -32633,6 +32844,53 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
   if (!ServiceWorkerRegistrationNative.prototype.dispatchEvent) ServiceWorkerRegistrationNative.prototype.dispatchEvent = function(event) {
     return serviceWorkerDispatchEvent(this, event);
   };
+  const serviceWorkerNavigationPreloadRegistration = (manager) => {
+    const registration = serviceWorkerRegistrationByNavigationPreloadManager.get(manager);
+    if (!registration) throw new TypeError("Illegal invocation");
+    return registration;
+  };
+  const serviceWorkerNavigationPreloadRequest = (manager, operation, headerValue) => {
+    const registration = serviceWorkerNavigationPreloadRegistration(manager);
+    const payload = { scope: String(registration.scope), operation };
+    if (headerValue !== undefined) payload.header_value = headerValue;
+    return serviceWorkerQueueRequest("serviceWorkerNavigationPreload", payload);
+  };
+  NavigationPreloadManagerNative.prototype.enable = function() {
+    return serviceWorkerNavigationPreloadRequest(this, "enable");
+  };
+  NavigationPreloadManagerNative.prototype.disable = function() {
+    return serviceWorkerNavigationPreloadRequest(this, "disable");
+  };
+  NavigationPreloadManagerNative.prototype.setHeaderValue = function(value) {
+    const byteString = "" + value;
+    for (let index = 0; index < byteString.length; index += 1) {
+      if (byteString.charCodeAt(index) > 255)
+        throw new TypeError("NavigationPreloadManager header value is not a ByteString");
+    }
+    const headerValue = byteString.replace(/^[\t ]+|[\t ]+$/g, "");
+    if (headerValue.length > __GLASS_SERVICE_WORKER_NAVIGATION_PRELOAD_HEADER_VALUE_LIMIT__)
+      return Promise.reject(new RangeError("NavigationPreloadManager header value exceeds its byte limit"));
+    if (/[\u0000\r\n]/.test(headerValue))
+      return Promise.reject(new TypeError("NavigationPreloadManager header value is invalid"));
+    return serviceWorkerNavigationPreloadRequest(this, "setHeaderValue", headerValue);
+  };
+  NavigationPreloadManagerNative.prototype.getState = function() {
+    return serviceWorkerNavigationPreloadRequest(this, "getState");
+  };
+  const serviceWorkerNavigationPreloadManager = (registration) => {
+    let manager = serviceWorkerNavigationPreloadManagerByRegistration.get(registration);
+    if (!manager) {
+      manager = Object.create(NavigationPreloadManagerNative.prototype);
+      serviceWorkerNavigationPreloadManagerByRegistration.set(registration, manager);
+      serviceWorkerRegistrationByNavigationPreloadManager.set(manager, registration);
+    }
+    return manager;
+  };
+  if (!Object.getOwnPropertyDescriptor(ServiceWorkerRegistrationNative.prototype, "navigationPreload"))
+    Object.defineProperty(ServiceWorkerRegistrationNative.prototype, "navigationPreload", {
+      configurable: true, enumerable: true,
+      get() { return serviceWorkerNavigationPreloadManager(this); },
+    });
   const serviceWorkerMakeWorker = (state, scope) => {
     const worker = Object.create(ServiceWorkerNative.prototype);
     worker.scriptURL = String(state && state.script_url || "");
@@ -32881,7 +33139,23 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
     if (!pending) return null;
     serviceWorkerPendingRequests.delete(Number(requestId));
     if (payload && payload.error) {
-      pending.reject(new Error(String(payload.error)));
+      const message = String(payload.error);
+      pending.reject(payload.errorName
+        ? new DOMExceptionNative(message, String(payload.errorName))
+        : new Error(message));
+      return null;
+    }
+    if (pending.kind === "serviceWorkerNavigationPreload") {
+      if (payload && payload.operation === "getState") {
+        const state = payload.state;
+        if (!state || typeof state.enabled !== "boolean" || typeof state.headerValue !== "string") {
+          pending.reject(new Error("native navigation preload state response was invalid"));
+          return null;
+        }
+        pending.resolve({ enabled: state.enabled, headerValue: state.headerValue });
+      } else {
+        pending.resolve(undefined);
+      }
       return null;
     }
     if (pending.kind === "serviceWorkerRegister" || pending.kind === "update") {
@@ -32977,10 +33251,15 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
 "###;
 
 fn service_worker_page_script() -> String {
-    NATIVE_SERVICE_WORKER_PAGE_SCRIPT.replace(
-        "__GLASS_SERVICE_WORKER_MESSAGE_LIMIT__",
-        &MAX_NATIVE_POST_MESSAGE_BYTES.to_string(),
-    )
+    NATIVE_SERVICE_WORKER_PAGE_SCRIPT
+        .replace(
+            "__GLASS_SERVICE_WORKER_MESSAGE_LIMIT__",
+            &MAX_NATIVE_POST_MESSAGE_BYTES.to_string(),
+        )
+        .replace(
+            "__GLASS_SERVICE_WORKER_NAVIGATION_PRELOAD_HEADER_VALUE_LIMIT__",
+            &MAX_NATIVE_FETCH_HEADER_VALUE_BYTES.to_string(),
+        )
 }
 
 const NATIVE_XML_DOCUMENT_SCRIPT: &str = r###"

@@ -180,6 +180,19 @@ background updates without an active client. Its process-backed header
 regression is blocked before engine startup by this sandbox's denied listener
 bind; a socket-free command-capture/validation regression passes. See the
 [slice 837 task](tasks/native-engine-browser-837.md).
+Slice 838 implements the per-registration `NavigationPreloadManager` API,
+typed state errors, and durable enabled/header-value settings, with
+backward-compatible profile defaults. Its scoped native-engine check and two
+socket-free unit tests pass. The process-backed persistence regression
+compiles but could not run because this sandbox denies local TCP listener
+binding, so end-to-end persistence remains unverified and the slice stays
+in-progress. This does not complete request preloading: the current FetchEvent
+shim still resolves `preloadResponse` to `undefined`. Slice 839 tracks the
+network request, parallel FetchEvent delivery, response body, and cancellation
+contract; Navigation Preload remains incomplete until that integration is
+implemented and verified. See the [slice 838
+task](tasks/native-engine-browser-838.md) and [slice 839
+task](tasks/native-engine-browser-839.md).
 Slice 814 applies module SharedWorker credentials to root, static-graph, and
 dynamic-import fetches while leaving classic SharedWorker fetching unchanged;
 see the [slice 814 task](tasks/native-engine-browser-814.md).

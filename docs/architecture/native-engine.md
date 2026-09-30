@@ -8,7 +8,13 @@ been rerun and its inline import settlement remains unverified. The new Slice
 837 socket-free command-capture test passes, but its HTTP regression stops at
 `TcpListener::bind` before engine initialization. Slice 833 remains in progress
 pending Slice 832; Slices 834-837 remain in progress behind that dependency
-chain. The latest
+chain. Slice 838 implements the page-facing NavigationPreloadManager and
+durable registration settings; its scoped native-engine check and two
+socket-free unit tests pass. The extended process-backed restart regression
+compiles but cannot execute here because local TCP listener binding is denied,
+so end-to-end persistence remains unverified and Slice 838 stays in progress.
+Slice 839's network preload and `FetchEvent.preloadResponse` integration has
+not started. The latest
 recorded remote CI run, `36616367412` on `ee67f930`, failed and does not contain
 these local edits. Remote CI for these edits, WPT conformance, and
 cross-platform certification remain open. See the
@@ -19,7 +25,9 @@ cross-platform certification remain open. See the
 [Slice 834 task](../plan/tasks/native-engine-browser-834.md),
 [Slice 835 task](../plan/tasks/native-engine-browser-835.md),
 [Slice 836 task](../plan/tasks/native-engine-browser-836.md), and
-[Slice 837 task](../plan/tasks/native-engine-browser-837.md) for contracts and
+[Slice 837 task](../plan/tasks/native-engine-browser-837.md),
+[Slice 838 task](../plan/tasks/native-engine-browser-838.md), and
+[Slice 839 task](../plan/tasks/native-engine-browser-839.md) for contracts and
 verification boundaries.
 Slice 818 synchronizes
 ordinary response-cookie deltas to same-backend live contexts after profile

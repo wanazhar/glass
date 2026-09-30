@@ -22174,6 +22174,10 @@ mod native_static_dynamic_import_tests {
   catch (error) { constructorRejectsNavigationMode = error instanceof TypeError; }
   event.respondWith(event.preloadResponse.then(async response => {
     if (!(response instanceof Response)) return new Response('missing');
+    const clonedResponse = response.clone();
+    let immutableHeaders = false;
+    try { response.headers.set('x-preload-marker', 'mutated'); }
+    catch (error) { immutableHeaders = error instanceof TypeError; }
     return new Response(JSON.stringify({
       status: response.status,
       url: response.url,
@@ -22183,7 +22187,9 @@ mod native_static_dynamic_import_tests {
       clonedMode: clonedNavigationMode,
       constructorRejectsNavigationMode,
       marker: response.headers.get('x-preload-marker'),
+      immutableHeaders,
       body: await response.text(),
+      clonedBody: await clonedResponse.text(),
     }), { headers: { 'Content-Type': 'application/json' } });
   }));
 });"#,
@@ -22243,7 +22249,7 @@ mod native_static_dynamic_import_tests {
                     "statusText": "",
                     "headers": [["content-type", "application/json"]],
                     "contentType": "application/json",
-                    "bodyBase64": base64::engine::general_purpose::STANDARD.encode(r#"{"status":200,"url":"https://preload.test/final-page","redirected":true,"type":"basic","mode":"navigate","clonedMode":"navigate","constructorRejectsNavigationMode":true,"marker":"preserved","body":"preloaded body"}"#),
+                    "bodyBase64": base64::engine::general_purpose::STANDARD.encode(r#"{"status":200,"url":"https://preload.test/final-page","redirected":true,"type":"basic","mode":"navigate","clonedMode":"navigate","constructorRejectsNavigationMode":true,"marker":"preserved","immutableHeaders":true,"body":"preloaded body","clonedBody":"preloaded body"}"#),
                     "bodyNull": false,
                     "redirected": false,
                 }
@@ -22257,6 +22263,48 @@ mod native_static_dynamic_import_tests {
                 .is_err(),
             "the host rejects stale navigation-preload request ids"
         );
+    }
+
+    #[test]
+    fn service_worker_preload_response_is_undefined_when_not_started() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("sw-preload-not-started")
+            .expect("ServiceWorker runtime is valid");
+        let worker_id = 44;
+        let worker_url = "https://preload.test/sw.js";
+        runtime
+            .evaluate_service_worker_source(
+                worker_id,
+                worker_url,
+                None,
+                "self.addEventListener('fetch', event => event.respondWith(event.preloadResponse.then(response => new Response(response === undefined ? 'undefined' : 'present'))));",
+                &BTreeMap::new(),
+            )
+            .expect("fetch listener installs");
+        let request = serde_json::json!({
+            "url": "https://preload.test/page",
+            "method": "GET",
+            "headers": [],
+            "bodyNull": true,
+            "mode": "navigate",
+            "redirect": "follow",
+            "credentialsMode": "include",
+            "destination": "document",
+        });
+        runtime
+            .evaluate_service_worker_fetch(worker_id, worker_url, &request, false)
+            .expect("fetch event dispatches without a preload request");
+        let settled = runtime
+            .take_top_level_await_result()
+            .expect("ServiceWorker response promise settles")
+            .expect("fetch handler responds without a preload");
+        assert_eq!(settled["handled"], true);
+        let encoded = settled["response"]["bodyBase64"]
+            .as_str()
+            .expect("response body is base64 encoded");
+        let body = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("response body uses valid base64");
+        assert_eq!(body, b"undefined");
     }
 
     #[test]

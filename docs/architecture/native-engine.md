@@ -16,7 +16,9 @@ so end-to-end persistence remains unverified and Slice 838 stays in progress.
 Slice 839 now starts eligible GET preloads through the native loader alongside
 FetchEvent dispatch, resolves `preloadResponse`, and reuses the result when
 the handler does not call `respondWith`. The scoped native-engine check and
-five socket-free navigation-preload unit tests pass. Process-backed request,
+six socket-free navigation-preload unit tests pass, covering readable cloned
+responses, immutable response headers, absent preloads, and network errors.
+Process-backed request,
 header, no-duplicate-request, and cancellation regressions compile with
 `--tests` but have not run here because local TCP listener binding is denied;
 actual network, overlap, cancellation, WPT, remote-CI, and cross-platform proof

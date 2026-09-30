@@ -335,6 +335,16 @@ For a navigation event, `FetchEvent.request.mode` is `"navigate"`. The host
 creates that internal request directly; the public `Request` constructor still
 rejects an explicitly supplied `{ mode: "navigate" }`.
 
+The `respondWith()` promise determines when the fetch response is ready;
+unrelated `waitUntil()` promises extend the FetchEvent lifetime independently
+and must not delay returning that response or turn their rejection into a
+navigation failure. The `respondWith()` promise itself also extends the event
+lifetime. The worker owner must retain and continue pending lifetime work,
+including native host commands, after returning the response. A socket-free
+runtime regression verifies response settlement with a pending JavaScript-only
+`waitUntil()` promise; asynchronous host-command lifetime scheduling remains
+unverified and is a completion gate for Slice 839.
+
 Before Slice 839, the FetchEvent shim resolved `preloadResponse` to `undefined`
 for every request. Slice 838 implements the manager and durable registration
 settings; its scoped compile and socket-free unit tests pass, but its

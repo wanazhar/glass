@@ -22319,6 +22319,80 @@ mod native_static_dynamic_import_tests {
     }
 
     #[test]
+    fn service_worker_fetch_response_does_not_wait_for_wait_until_lifetime() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id(
+            "sw-fetch-response-independent-of-wait-until",
+        )
+        .expect("ServiceWorker runtime is valid");
+        let worker_id = 46;
+        let worker_url = "https://preload.test/sw.js";
+        runtime
+            .evaluate_service_worker_source(
+                worker_id,
+                worker_url,
+                None,
+                r#"self.addEventListener('fetch', event => {
+  event.waitUntil(Promise.resolve().then(() => {
+    event.waitUntil(new Promise(resolve => {
+      globalThis.__resolveFetchWaitUntil = resolve;
+    }));
+  }));
+  event.respondWith(new Response('response is ready'));
+});"#,
+                &BTreeMap::new(),
+            )
+            .expect("fetch listener installs");
+        let request = serde_json::json!({
+            "url": "https://preload.test/page",
+            "method": "GET",
+            "headers": [],
+            "bodyNull": true,
+            "mode": "navigate",
+            "redirect": "follow",
+            "credentialsMode": "include",
+            "destination": "document",
+        });
+
+        let evaluation = runtime
+            .evaluate_service_worker_fetch(worker_id, worker_url, &request, false)
+            .expect("FetchEvent response settles independently of waitUntil");
+
+        assert!(
+            !evaluation.top_level_await_pending,
+            "a pending waitUntil promise must not hold the navigation response"
+        );
+        assert_eq!(evaluation.value["handled"], true);
+        let encoded = evaluation.value["response"]["bodyBase64"]
+            .as_str()
+            .expect("response body is base64 encoded");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .expect("response body uses valid base64"),
+            b"response is ready"
+        );
+
+        let pending_lifetimes = runtime.context.with(|ctx| {
+            ctx.eval::<usize, _>("globalThis.__glassServiceWorkerFetchLifetimes.size")
+                .expect("pending lifetime promise remains retained by the worker")
+        });
+        assert_eq!(pending_lifetimes, 1);
+
+        let remaining_lifetimes = runtime.context.with(|ctx| {
+            ctx.eval::<(), _>("globalThis.__resolveFetchWaitUntil();")
+                .expect("test can settle the independent lifetime promise");
+            for _ in 0..MAX_NATIVE_MODULE_IMPORTS {
+                if !ctx.execute_pending_job() {
+                    break;
+                }
+            }
+            ctx.eval::<usize, _>("globalThis.__glassServiceWorkerFetchLifetimes.size")
+                .expect("settled lifetime promise is retired")
+        });
+        assert_eq!(remaining_lifetimes, 0);
+    }
+
+    #[test]
     fn service_worker_preload_response_is_undefined_when_not_started() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("sw-preload-not-started")
             .expect("ServiceWorker runtime is valid");
@@ -35090,6 +35164,11 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       : new Map();
   globalThis.__glassServiceWorkerNavigationPreloadPendingResponses =
     serviceWorkerNavigationPreloadPendingResponses;
+  const serviceWorkerFetchLifetimes =
+    globalThis.__glassServiceWorkerFetchLifetimes instanceof Set
+      ? globalThis.__glassServiceWorkerFetchLifetimes
+      : new Set();
+  globalThis.__glassServiceWorkerFetchLifetimes = serviceWorkerFetchLifetimes;
   const serviceWorkerDispatchMessage = (payload) => {
     const source = serviceWorkerClientFromState(payload && payload.source);
     if (!source) throw new TypeError("native Service Worker message source is unavailable");
@@ -35224,7 +35303,27 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
     });
     let responded = false;
     let responsePromise = null;
-    const waitUntilPromises = [];
+    let dispatching = true;
+    let pendingLifetimePromises = 0;
+    let lifetimeSettled = false;
+    let resolveLifetime;
+    const lifetimePromise = new serviceWorkerPromiseConstructor(resolve => {
+      resolveLifetime = resolve;
+    });
+    const settleLifetime = () => {
+      if (lifetimeSettled || dispatching || pendingLifetimePromises !== 0) return;
+      lifetimeSettled = true;
+      resolveLifetime(undefined);
+    };
+    const extendLifetime = value => {
+      if (!dispatching && pendingLifetimePromises === 0)
+        throw new DOMExceptionNative("Service Worker event is not active", "InvalidStateError");
+      pendingLifetimePromises += 1;
+      serviceWorkerPromiseResolve(value).then(
+        () => { pendingLifetimePromises -= 1; settleLifetime(); },
+        () => { pendingLifetimePromises -= 1; settleLifetime(); },
+      );
+    };
     const event = {
       type: "fetch",
       request,
@@ -35233,11 +35332,18 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       isReload: false,
       isHistoryNavigation: false,
       preloadResponse,
-      waitUntil(value) { waitUntilPromises.push(Promise.resolve(value)); },
+      waitUntil(value) {
+        if (this !== event)
+          throw new TypeError("ExtendableEvent.waitUntil called on an incompatible receiver");
+        extendLifetime(value);
+      },
       respondWith(value) {
+        if (!dispatching)
+          throw new DOMExceptionNative("FetchEvent is not being dispatched", "InvalidStateError");
         if (responded) throw new DOMExceptionNative("service worker fetch already responded", "InvalidStateError");
         responded = true;
-        responsePromise = Promise.resolve(value);
+        responsePromise = serviceWorkerPromiseResolve(value);
+        extendLifetime(responsePromise);
       },
     };
     Object.defineProperty(event, "preloadResponse", {
@@ -35260,10 +35366,16 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
         else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
       } catch (error) { reportWorkerCallbackException(error, false); }
     }
-    const lifetime = value => Promise.all(waitUntilPromises).then(() => value);
-    if (!responded) return lifetime({ handled: false });
+    dispatching = false;
+    serviceWorkerFetchLifetimes.add(lifetimePromise);
+    lifetimePromise.then(
+      () => { serviceWorkerFetchLifetimes.delete(lifetimePromise); },
+      () => { serviceWorkerFetchLifetimes.delete(lifetimePromise); },
+    );
+    settleLifetime();
+    if (!responded) return { handled: false };
     return responsePromise.then(response => serviceWorkerFetchResponse(response))
-      .then(response => lifetime({ handled: true, response }));
+      .then(response => ({ handled: true, response }));
   };
   if (!Object.prototype.hasOwnProperty.call(globalThis, "onfetch")) {
     Object.defineProperty(globalThis, "onfetch", {

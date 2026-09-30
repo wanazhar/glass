@@ -18,8 +18,9 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 - `docs/plan/native-engine-browser-profile.md`
 - `docs/plan/tasks/native-engine-browser-838.md`
 - [Issue #40](https://github.com/wanazhar/glass/issues/40)
-- [Service Workers: Handle Fetch](https://w3c.github.io/ServiceWorker/#handle-fetch)
-- [Service Workers: `FetchEvent.preloadResponse`](https://w3c.github.io/ServiceWorker/#dom-fetchevent-preloadresponse)
+- [Service Workers: Handle Fetch](https://www.w3.org/TR/service-workers/#handle-fetch)
+- [Service Workers: `FetchEvent.preloadResponse`](https://www.w3.org/TR/service-workers/#dom-fetchevent-preloadresponse)
+- [Service Workers: `FetchEvent.respondWith()`](https://www.w3.org/TR/service-workers/#dom-fetchevent-respondwith)
 - [Fetch Standard](https://fetch.spec.whatwg.org/)
 
 ## Contract
@@ -59,7 +60,9 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   failure. The `respondWith()` promise itself also extends the event lifetime.
   Lifetime work, including native host commands it emits, must remain owned and
   continue after the response is returned; it must not be dropped to meet the
-  response deadline.
+  response deadline. Calling `respondWith()` stops invocation of later
+  listeners for that FetchEvent, as required by the FetchEvent dispatch
+  algorithm.
 - Preserve response status, URL, headers, redirect state, and bounded body
   bytes without consuming the worker-visible body. When the fetch handler does
   not call `respondWith`, follow the Service Workers fetch algorithm without
@@ -69,7 +72,8 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   `Request.referrer`/`referrerPolicy`, source-document `Referer` policy, redirect
   policy updates, FetchEvent response semantics, network failure, and
   cancellation. Also verify a pending unrelated `waitUntil()` does not delay an
-  independent response, while its lifetime work remains alive and can settle.
+  independent response, while its lifetime work remains alive and can settle;
+  verify `respondWith()` suppresses later listeners.
   Include non-GET,
   disabled, absent-listener, and enabled-listener controls.
 - Process-backed network assertions are required; a pure command or mocked
@@ -101,7 +105,7 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 
 - `cargo check -p glass-browser --features native-engine --lib --tests --locked -q` passes on the current revision.
 - `cargo test -p glass-browser --lib --features native-engine --locked navigation_preload -- --quiet` passes (six socket-free tests, including the immediate-response runtime regression).
-- `cargo test -p glass-browser --lib --features native-engine --locked service_worker_fetch_response_does_not_wait_for_wait_until_lifetime -- --quiet` passes (one socket-free regression).
+- `cargo test -p glass-browser --lib --features native-engine --locked service_worker_fetch_ -- --quiet` passes (three socket-free runtime tests, including independent `waitUntil()` lifetime and listener suppression).
 - `cargo fmt --all -- --check`, release-documentation truth, documentation depth, TUI shortcut inventory, and `git diff --check` pass.
 - The response test proves headers are immutable and both the original and
   cloned response bodies remain readable. It also verifies the policy-reduced
@@ -112,6 +116,8 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   worker. This does not prove that host commands emitted by lifetime work
   continue asynchronously: the current Rust settlement loop still processes
   FetchEvent host commands before returning the response.
+- A socket-free runtime regression verifies that the first `respondWith()`
+  suppresses later registered FetchEvent listeners.
 - The new process-backed independent-response regression compiles as part of
   `cargo check --tests` and the integration-test target. Running it fails at
   `TcpListener::bind("127.0.0.1:0")` with `PermissionDenied` before engine

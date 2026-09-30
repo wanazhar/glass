@@ -339,7 +339,8 @@ The `respondWith()` promise determines when the fetch response is ready;
 unrelated `waitUntil()` promises extend the FetchEvent lifetime independently
 and must not delay returning that response or turn their rejection into a
 navigation failure. The `respondWith()` promise itself also extends the event
-lifetime. The worker owner must retain and continue pending lifetime work,
+lifetime. Calling `respondWith()` stops later FetchEvent listeners. The worker
+owner must retain and continue pending lifetime work,
 including native host commands, after returning the response. A socket-free
 runtime regression verifies response settlement with a pending JavaScript-only
 `waitUntil()` promise; asynchronous host-command lifetime scheduling remains

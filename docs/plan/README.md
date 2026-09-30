@@ -220,6 +220,11 @@ The content worker now has a single blocking stdin reader that routes dialog
 decision frames to the synchronous dialog host and ordinary IPC frames to the
 asynchronous loop; its socket-free regression verifies both routes without
 claiming process-backed dialog or out-of-band browser-effect delivery.
+Slice 840 now provides the bounded, sequenced child-to-owner effect-ready
+transport. Slice 841 is ready and owns backend wakeup, exact target/frame
+routing, callback delivery, and cascaded effect processing. See the
+[slice 840 task](tasks/native-engine-browser-840.md) and
+[slice 841 task](tasks/native-engine-browser-841.md).
 Process-backed request/header/no-duplicate, cancellation, source-document
 referrer-policy/redirect, and worker-visible `Request.referrer` regression
 sources previously compiled with `--tests` but have not run here because local

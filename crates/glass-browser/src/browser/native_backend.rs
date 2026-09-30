@@ -44,7 +44,7 @@ use crate::browser_backend::{
 };
 use base64::Engine as _;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Stable backend ID for the Glass-owned native engine.
 pub const NATIVE_ENGINE_BACKEND_ID: &str = "native-engine";
@@ -550,6 +550,7 @@ impl NativeTargetState {
 pub struct NativeEngineBackend {
     profile: BackendProfile,
     engine: Mutex<NativeEngine>,
+    content_process_event_notify: Arc<tokio::sync::Notify>,
     dialog_control: NativeDialogControlPlane,
     targets: Mutex<NativeTargetState>,
     shared_workers: Mutex<NativeSharedWorkerCoordinator>,
@@ -579,13 +580,17 @@ impl NativeEngineBackend {
     ) -> Result<Self, BrowserBackendError> {
         let profile = Self::profile_for(env!("CARGO_PKG_VERSION"))?;
         let active_target_id = config.context_id.clone();
-        let engine = NativeEngine::new_with_browser_shared_workers(config, dialog_control.clone())
-            .map_err(native_error)?;
+        let content_process_event_notify = Arc::new(tokio::sync::Notify::new());
+        let mut engine =
+            NativeEngine::new_with_browser_shared_workers(config, dialog_control.clone())
+                .map_err(native_error)?;
+        engine.set_content_process_event_notify(Arc::clone(&content_process_event_notify));
         let shared_workers = NativeSharedWorkerCoordinator::new(engine.clone_resource_loader());
         let active_name = native_window_name(&engine.config().window_name);
         Ok(Self {
             profile,
             engine: Mutex::new(engine),
+            content_process_event_notify,
             dialog_control,
             targets: Mutex::new(NativeTargetState::new(active_target_id, active_name)),
             shared_workers: Mutex::new(shared_workers),
@@ -3146,6 +3151,7 @@ impl NativeEngineBackend {
             config
         };
         let dialog_control = self.dialog_control.clone();
+        let content_process_event_notify = Arc::clone(&self.content_process_event_notify);
         let navigation = navigation.clone();
         let task_target_id = target_id.clone();
         let task_opener_id = opener_id.clone();
@@ -3163,6 +3169,7 @@ impl NativeEngineBackend {
         ) = tokio::spawn(async move {
             let mut engine = NativeEngine::new_with_browser_shared_workers(config, dialog_control)
                 .map_err(native_error)?;
+            engine.set_content_process_event_notify(content_process_event_notify);
             if let Err(error) = engine.initialize_async().await {
                 let _ = engine.close_async().await;
                 return Err(native_error(error));
@@ -8747,6 +8754,9 @@ async fn reconcile_native_frames(
             engine.dialog_control_plane(),
         )
         .map_err(native_error)?;
+        if let Some(notify) = engine.content_process_event_notify() {
+            child.set_content_process_event_notify(notify);
+        }
         child.set_frame_id(frame_id.clone());
         child.inherit_service_worker_clients(&parent_service_worker_clients);
         child.set_embedding_frame_policy(

@@ -39,6 +39,13 @@ routed to the synchronous dialog host, while ordinary requests go to the
 asynchronous worker loop. This prevents competing stdin readers; a socket-free
 regression verifies the two routes, but does not claim process-backed dialog
 or out-of-band browser-effect delivery.
+Worker timer and lifetime effects are still delivered at an operation
+boundary: effects produced while the content child is idle remain queued until
+the next parent request. Slice 840 provides bounded asynchronous event
+notifications over a single bounded stdout reader; Slice 841 covers the
+owner-side event pump and exact target/frame routing required to remove that
+gap. Until Slice 841 is complete, the notifications do not automatically run
+page callbacks.
 Streaming upload fetches and fetch commands encountered while the
 `respondWith()` response is still pending can still delay settlement.
 Browser-facing effects produced by later lifetime callbacks are queued in the

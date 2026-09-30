@@ -33,6 +33,11 @@ and intends to use [Semantic Versioning](https://semver.org/).
   offsets and embedded alpha under finite raster budgets; unsupported or
   malformed payloads fall back to existing outline rendering.
 
+### Fixed
+
+- Native content-worker dialog IPC now uses one stdin reader to route dialog
+  decisions separately from ordinary asynchronous requests.
+
 ### Changed
 
 - Breaking: `BrowserSession::start` now accepts `NativeEngineConfig` and starts

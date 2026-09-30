@@ -133,6 +133,13 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   realms while IPC is idle. A socket-free ServiceWorker registry regression
   verifies a `waitUntil()` timer callback runs after its independent FetchEvent
   response settles. Process-backed idle-timer and WPT evidence remain open.
+- Content-worker stdin now has one blocking reader that routes normal request
+  frames to the asynchronous loop and `dialog_decision` frames to the
+  synchronous dialog host. The regression
+  `content_ipc_reader_routes_dialog_decisions_without_stealing_requests`
+  passes using a blocking in-memory reader; this verifies demultiplexing but
+  does not establish process-backed dialog behavior or out-of-band event
+  delivery.
 - This does not close lifetime scheduling. Streaming upload Fetch commands
   still use the synchronous upload driver, and a Fetch command encountered
   while the `respondWith()` promise is still pending is resolved in the

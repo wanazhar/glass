@@ -202,9 +202,14 @@ with `PermissionDenied` before engine startup. The current scoped check and
 six socket-free navigation-preload tests pass, including the new runtime test.
 The FetchEvent runtime separately returns an independent `respondWith()`
 response while a JavaScript-only `waitUntil()` promise remains pending and
-retained by the worker. Native host commands emitted by lifetime promises still
-run through the response settlement loop and may delay that response; their
-independent scheduling remains open. The runtime now also stops later
+retained by the worker. A bodyless native Fetch emitted by `waitUntil()` after
+that response settles is now scheduled as owned background work and resumes in
+the same worker realm. The content child also advances the earliest due
+DedicatedWorker, SharedWorker, or ServiceWorker timer while waiting for IPC,
+then persists loader/cache/cookie changes. Streaming uploads and Fetch
+commands encountered while the `respondWith()` response is still pending can
+still delay settlement; browser-facing effects from later lifetime callbacks
+remain queued until a parent response. The runtime now also stops later
 FetchEvent listeners after the first `respondWith()` call. `self.onfetch` is
 dispatched in registration order with `addEventListener("fetch", ...)`;
 replacing an active handler preserves its position, and null/deactivation then

@@ -29,9 +29,11 @@ preloads, and network errors. The FetchEvent runtime now settles an independent
 registry regression now runs a bodyless native `fetch()` from `waitUntil()`
 after the independent response is ready, then resolves its promise callback in
 the same worker realm. The content child multiplexes owned fetch-task
-completions with incoming IPC, persists resulting loader/cache state, and
-queues cookie changes for the next parent response; worker-route removal
-aborts outstanding tasks.
+completions and the earliest due DedicatedWorker, SharedWorker, and
+ServiceWorker timer with incoming IPC. Timer turns run through the existing
+bounded worker queues; resulting loader/cache state is persisted and cookie
+changes are queued for the next parent response. Worker-route removal aborts
+outstanding fetch tasks.
 Streaming upload fetches and fetch commands encountered while the
 `respondWith()` response is still pending can still delay settlement.
 Browser-facing effects produced by later lifetime callbacks are queued in the

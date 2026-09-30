@@ -128,6 +128,11 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   between incoming IPC and these task completions, persists resulting
   loader/cache state, and queues cookie changes for its next response.
   Removing the worker's routes aborts its outstanding tasks.
+- The content-process wait loop now also selects the earliest due timer across
+  DedicatedWorker, SharedWorker, active ServiceWorker, and waiting ServiceWorker
+  realms while IPC is idle. A socket-free ServiceWorker registry regression
+  verifies a `waitUntil()` timer callback runs after its independent FetchEvent
+  response settles. Process-backed idle-timer and WPT evidence remain open.
 - This does not close lifetime scheduling. Streaming upload Fetch commands
   still use the synchronous upload driver, and a Fetch command encountered
   while the `respondWith()` promise is still pending is resolved in the

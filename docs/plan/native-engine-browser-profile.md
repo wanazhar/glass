@@ -338,11 +338,13 @@ process-backed persistence regression cannot run in this sandbox because TCP
 listener binding is denied. Slice 839 now starts eligible GET preloads through
 the native loader alongside FetchEvent dispatch, exposes navigation request
 mode, delivers the bounded response through `preloadResponse`, and reuses it
-for an unhandled navigation. Its scoped native-engine check and five
-socket-free unit tests pass. Process-backed HTTP/header/no-duplicate and
-cancellation test sources compile with `--tests` but have not run here because
-local TCP listener binding is denied; actual network, overlap, and cancellation
-behavior remain unverified. Navigation Preload is still incomplete until
+for an unhandled navigation. Its scoped native-engine check and six
+socket-free unit tests pass, covering response cloning, immutable headers,
+the no-preload result, eligibility, and network errors. Process-backed
+HTTP/header/no-duplicate and cancellation test sources compile with `--tests`
+but have not run here because local TCP listener binding is denied; actual
+network, overlap, and cancellation behavior remain unverified. Navigation
+Preload is still incomplete until
 those integrations and remaining CI/WPT/platform evidence pass.
 
 ### Explicit `tabindex` focus baseline

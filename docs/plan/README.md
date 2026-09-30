@@ -190,12 +190,14 @@ in-progress. Before Slice 839, the FetchEvent shim resolved `preloadResponse`
 to `undefined`. Slice 839 now wires an eligible enabled GET navigation through
 the native loader alongside FetchEvent dispatch, exposes navigation request
 mode, resolves `preloadResponse`, and reuses a successful preload when the
-handler does not call `respondWith`. The scoped native-engine check and five
-socket-free navigation-preload unit tests pass. Process-backed
-request/header/no-duplicate and cancellation tests compile with `--tests` but
-have not run here because local TCP listener binding is denied, so actual
-network, overlap, and cancellation behavior remain unverified. Navigation
-Preload remains incomplete until those integrations run and pass. See the
+handler does not call `respondWith`. The scoped native-engine check and six
+socket-free navigation-preload unit tests pass, covering response cloning,
+immutable headers, absent preloads, eligibility, and network errors.
+Process-backed request/header/no-duplicate and cancellation test sources
+compile with `--tests` but have not run here because local TCP listener binding
+is denied, so actual network, overlap, and cancellation behavior remain
+unverified. Navigation Preload remains incomplete until those integrations run
+and pass. See the
 [slice 838
 task](tasks/native-engine-browser-838.md) and [slice 839
 task](tasks/native-engine-browser-839.md).

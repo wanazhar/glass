@@ -78,6 +78,8 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 ## Current Evidence
 
 - `cargo check -p glass-browser --features native-engine --lib --tests --locked -q` passes.
-- `cargo test -p glass-browser --lib --features native-engine --locked navigation_preload -- --quiet` passes (five socket-free unit tests).
+- `cargo test -p glass-browser --lib --features native-engine --locked navigation_preload -- --quiet` passes (five socket-free tests).
+- `service_worker_preload_response_is_undefined_when_not_started` passes separately (one test).
+- The response test also proves headers are immutable and both the original and cloned response bodies remain readable.
 - Process-backed HTTP request/header/no-duplicate and navigation-cancellation regressions compile with `--tests`; they have not run in this sandbox because local TCP listener binding is denied.
 - The process-backed tests still need execution evidence for actual method/header/count, preload/dispatch overlap, HTTP failure, and cancellation. WPT, remote CI, and cross-platform validation remain open.

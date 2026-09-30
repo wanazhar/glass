@@ -352,9 +352,13 @@ response. A fixture-backed registry regression verifies that a bodyless native
 settles and resolves its promise callback in the same worker realm. The content
 child multiplexes those fetch completions with incoming IPC, persists resulting
 loader/cache state, queues cookie changes for the next parent response, and
-aborts tasks when their worker routes are removed. Streaming upload commands
-and fetch commands encountered while the `respondWith()` response is still
-pending can still delay settlement. Browser-facing effects from later
+aborts tasks when their worker routes are removed. The child also selects the
+earliest due DedicatedWorker, SharedWorker, or ServiceWorker timer while idle
+on IPC, runs a bounded timer turn through the existing host-command queues,
+and persists its loader/cache and cookie effects. Page-facing worker messages
+remain queued until a parent response can carry them. Streaming upload
+commands and fetch commands encountered while the `respondWith()` response is
+still pending can still delay settlement. Browser-facing effects from later
 lifetime callbacks remain queued in the child rather than delivered
 out-of-band to the parent.
 Process-backed HTTP evidence, those remaining command paths, WPT, CI, and

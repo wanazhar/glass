@@ -2242,6 +2242,16 @@ impl NativeWorkerRegistry {
         self.pending_event_source_commands.drain(..).collect()
     }
 
+    pub(crate) fn next_timer_delay_ms(&self) -> Result<Option<u64>, NativeEngineError> {
+        let mut earliest = None;
+        for worker in self.workers.values() {
+            if let Some(delay) = worker.runtime.next_worker_timer_delay_ms()? {
+                earliest = Some(earliest.map_or(delay, |current: u64| current.min(delay)));
+            }
+        }
+        Ok(earliest)
+    }
+
     /// Run one due timer turn for the next worker that has work ready. Worker
     /// callbacks stay inside their isolated realm and can only emit the
     /// bounded worker message/lifecycle/fetch commands. A rotating cursor

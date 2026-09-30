@@ -1248,6 +1248,20 @@ impl NativeServiceWorkerRegistry {
         self.message_port_routes.clear();
     }
 
+    pub(crate) fn next_timer_delay_ms(&self) -> Result<Option<u64>, NativeEngineError> {
+        let mut earliest = None;
+        for worker in self
+            .registrations
+            .values()
+            .chain(self.waiting_workers.values())
+        {
+            if let Some(delay) = worker.runtime.next_worker_timer_delay_ms()? {
+                earliest = Some(earliest.map_or(delay, |current: u64| current.min(delay)));
+            }
+        }
+        Ok(earliest)
+    }
+
     /// Admit at most one due Service Worker timer turn at a page host
     /// boundary. Active and waiting workers share a rotating worker-id cursor
     /// so one continuously-ready registration cannot monopolize delivery to
@@ -4635,6 +4649,98 @@ mod navigation_preload_tests {
                 .expect("cross-origin navigation cannot match this registration")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn wait_until_timer_runs_after_fetch_response_settles() {
+        let worker_url = "fixture://worker-timer.test/sw.js";
+        let scope = "fixture://worker-timer.test/";
+        let target_url = "fixture://worker-timer.test/page";
+        let worker = test_worker(worker_url, scope);
+        worker
+            .runtime
+            .evaluate_service_worker_source(
+                worker.id,
+                &worker.script_url,
+                None,
+                r#"self.addEventListener('fetch', event => {
+  event.waitUntil(new Promise(resolve => setTimeout(() => {
+    globalThis.__waitUntilTimerSettled = true;
+    resolve();
+  }, 0)));
+  event.respondWith(new Response('response ready'));
+});"#,
+                &BTreeMap::new(),
+            )
+            .expect("worker installs fetch handler");
+
+        let mut registry = NativeServiceWorkerRegistry::default();
+        registry.registrations.insert(scope.into(), worker);
+        let mut loader = NativeResourceLoader::new(&NativeEngineConfig::default())
+            .expect("test resource loader constructs");
+        let evaluation = registry
+            .registrations
+            .get(scope)
+            .expect("active worker is registered")
+            .runtime
+            .evaluate_service_worker_fetch(
+                1,
+                worker_url,
+                &json!({
+                    "url": target_url,
+                    "method": "GET",
+                    "headers": [],
+                    "bodyNull": true,
+                    "mode": "navigate",
+                    "redirect": "follow",
+                    "credentialsMode": "include",
+                    "destination": "document",
+                }),
+                false,
+            )
+            .expect("fetch response settles independently of waitUntil timer");
+        let NativeServiceWorkerFetchSettlement::Complete { value, .. } =
+            settle_service_worker_fetch(
+                registry
+                    .registrations
+                    .get_mut(scope)
+                    .expect("active worker remains registered"),
+                &mut loader,
+                evaluation,
+                &mut registry.cache_state,
+                "",
+                target_url,
+                &mut registry.pending_open_windows,
+                &mut registry.lifetime_fetch_tasks,
+                &mut registry.lifetime_fetch_abort_handles,
+            )
+            .await
+            .expect("independent response settles")
+        else {
+            panic!("independent response must not suspend");
+        };
+        assert_eq!(value["handled"], true);
+        assert_eq!(registry.next_timer_delay_ms().unwrap(), Some(0));
+
+        registry
+            .run_due_timers(&mut loader)
+            .await
+            .expect("worker timer runs as a background event-loop turn");
+        let result = registry
+            .registrations
+            .get(scope)
+            .expect("active worker remains registered")
+            .runtime
+            .evaluate_service_worker_source(
+                1,
+                worker_url,
+                None,
+                "globalThis.__waitUntilTimerSettled",
+                &BTreeMap::new(),
+            )
+            .expect("completed lifetime callback remains observable");
+        assert_eq!(result.value, true);
+        assert_eq!(registry.next_timer_delay_ms().unwrap(), None);
     }
 
     #[tokio::test]

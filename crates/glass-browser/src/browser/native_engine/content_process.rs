@@ -144,6 +144,7 @@ enum NativeContentTaskSource {
 enum NativeContentProcessInput {
     Request(Result<Vec<u8>, NativeEngineError>),
     ServiceWorkerLifetimeFetch(Option<NativeServiceWorkerFetchTaskResult>),
+    WorkerTimer,
 }
 
 impl NativeContentTaskSource {
@@ -4994,6 +4995,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let dialog_handler: NativeDialogHandler =
         Arc::new(move |dialog, url| dialog_rpc_for_handler.request_dialog(dialog, url));
     loop {
+        let worker_timer_delay_ms = if resource_loader.is_some() {
+            service_workers
+                .next_timer_delay_ms()?
+                .into_iter()
+                .chain(workers.next_timer_delay_ms()?)
+                .min()
+        } else {
+            None
+        };
         let input = tokio::select! {
             request = ipc_request_rx.recv() => {
                 NativeContentProcessInput::Request(request.unwrap_or_else(|| {
@@ -5007,6 +5017,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 if service_workers.has_lifetime_fetch_tasks() =>
             {
                 NativeContentProcessInput::ServiceWorkerLifetimeFetch(completion?)
+            }
+            _ = tokio::time::sleep(Duration::from_millis(worker_timer_delay_ms.unwrap_or_default())),
+                if worker_timer_delay_ms.is_some() =>
+            {
+                NativeContentProcessInput::WorkerTimer
             }
         };
         let payload = match input {
@@ -5046,6 +5061,68 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 continue;
             }
             NativeContentProcessInput::ServiceWorkerLifetimeFetch(None) => continue,
+            NativeContentProcessInput::WorkerTimer => {
+                {
+                    let Some(loader) = resource_loader.as_mut() else {
+                        return Err(NativeEngineError::Worker {
+                            operation: "content process worker timers".into(),
+                            reason: "content process has no resource loader".into(),
+                        });
+                    };
+                    service_workers.run_due_timers(loader).await?;
+                    workers.run_due_timers(loader).await?;
+                    process_worker_websocket_commands(
+                        workers.take_websocket_commands(),
+                        &mut worker_websocket_connections,
+                        Some(&*loader),
+                    )?;
+                    process_worker_event_source_commands(
+                        workers.take_event_source_commands(),
+                        &mut worker_event_source_connections,
+                        Some(&*loader),
+                    )?;
+                    pump_worker_websocket_event(
+                        &mut workers,
+                        &mut worker_websocket_connections,
+                        loader,
+                    )
+                    .await?;
+                    pump_worker_event_source_event(
+                        &mut workers,
+                        &mut worker_event_source_connections,
+                        loader,
+                    )
+                    .await?;
+                    workers.pump_fetch_stream_events(loader).await?;
+                }
+                pending_worker_messages.extend(workers.take_messages());
+                pending_message_port_messages.extend(workers.take_message_port_messages());
+                pending_message_port_messages.extend(service_workers.take_message_port_messages());
+                pending_page_message_port_commands
+                    .extend(workers.take_page_message_port_commands());
+                pending_service_worker_client_messages
+                    .extend(service_workers.take_client_messages());
+                refresh_content_runtime_cookie(
+                    javascript_runtime.as_ref(),
+                    resource_loader.as_ref(),
+                    document_url.as_deref(),
+                )?;
+                let cookie_changes = persist_content_profile(
+                    storage_profile_path.as_deref(),
+                    &storage_state,
+                    &indexed_db_state,
+                    &[],
+                    &[],
+                    &mut service_workers,
+                    &mut resource_loader,
+                )?;
+                merge_cookie_change_batch(
+                    &mut pending_lifetime_cookie_changes,
+                    cookie_changes,
+                    "worker timer cookie changes",
+                )?;
+                continue;
+            }
         };
         let request: Value =
             serde_json::from_slice(&payload).map_err(|_| NativeEngineError::Worker {

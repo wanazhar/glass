@@ -12210,6 +12210,15 @@ self.addEventListener('fetch', event => {
         headers: { 'Content-Type': 'text/html' },
       }),
     ));
+  } else if (pathname === '/request-referrer') {
+    const observed = JSON.stringify({
+      referrer: event.request.referrer,
+      referrerPolicy: event.request.referrerPolicy,
+    });
+    event.respondWith(Promise.resolve(new Response(
+      '<!doctype html><html><body>' + observed + '</body></html>',
+      { headers: { 'Content-Type': 'text/html' } },
+    )));
   }
 });"#;
     let server = tokio::spawn(async move {
@@ -12223,12 +12232,25 @@ self.addEventListener('fetch', event => {
                 "<!doctype html><html><body>unhandled preload body</body></html>",
             ),
             (
+                "/request-referrer",
+                Some("glass-nav-preload"),
+                "text/html",
+                "<!doctype html><html><body>unused preload body</body></html>",
+            ),
+            (
                 "/handled",
                 Some("glass-nav-preload"),
                 "text/plain",
                 "handled preload body",
             ),
             ("/failed", Some("glass-nav-preload"), "text/html", ""),
+            ("/redirect", Some("glass-nav-preload"), "", ""),
+            (
+                "/redirected",
+                Some("glass-nav-preload"),
+                "text/html",
+                "<!doctype html><html><body>redirected preload final</body></html>",
+            ),
         ] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
@@ -12248,12 +12270,44 @@ self.addEventListener('fetch', event => {
                         .contains("service-worker-navigation-preload:")
                 );
             }
+            let has_referer = request
+                .lines()
+                .any(|line| line.to_ascii_lowercase().starts_with("referer:"));
+            if matches!(
+                expected_path,
+                "/sw.js" | "/controlled" | "/request-referrer" | "/redirected"
+            ) {
+                assert!(
+                    !has_referer,
+                    "Referrer-Policy should suppress Referer for {expected_path}: {request}"
+                );
+            }
+            if expected_path == "/redirect" {
+                assert!(
+                    has_referer,
+                    "the initial same-origin redirect should retain its Referer: {request}"
+                );
+            }
             if expected_path == "/failed" {
                 drop(stream);
                 continue;
             }
+            if expected_path == "/redirect" {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /redirected\r\nReferrer-Policy: no-referrer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
+            let referrer_policy_header = if matches!(expected_path, "/register" | "/controlled") {
+                "Referrer-Policy: no-referrer\r\n"
+            } else {
+                ""
+            };
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nX-Preload-Marker: upstream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{referrer_policy_header}X-Preload-Marker: upstream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(response.as_bytes()).await.unwrap();
@@ -12288,6 +12342,18 @@ self.addEventListener('fetch', event => {
     );
 
     engine
+        .navigate_async(format!("http://{address}/request-referrer"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.body.innerText")
+            .await
+            .unwrap(),
+        serde_json::json!(r#"{"referrer":"","referrerPolicy":"no-referrer"}"#)
+    );
+
+    engine
         .navigate_async(format!("http://{address}/handled"))
         .await
         .unwrap();
@@ -12309,6 +12375,18 @@ self.addEventListener('fetch', event => {
             .await
             .unwrap(),
         serde_json::json!("preload-TypeError")
+    );
+
+    engine
+        .navigate_async(format!("http://{address}/redirect"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.body.innerText")
+            .await
+            .unwrap(),
+        serde_json::json!("redirected preload final")
     );
 
     engine.close_async().await.unwrap();

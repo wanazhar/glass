@@ -4435,6 +4435,20 @@ impl NativeResourceLoader {
         navigation: &NativeNavigationRequest,
         referrer: Option<&str>,
     ) -> Result<NativeResource, NativeEngineError> {
+        self.load_async_request_with_referrer_policy(
+            navigation,
+            referrer,
+            NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_async_request_with_referrer_policy(
+        &mut self,
+        navigation: &NativeNavigationRequest,
+        referrer: Option<&str>,
+        referrer_policy: NativeFetchReferrerPolicy,
+    ) -> Result<NativeResource, NativeEngineError> {
         if navigation.object_url.is_some() {
             return self.load_object_url_request(navigation);
         }
@@ -4502,10 +4516,11 @@ impl NativeResourceLoader {
             reason: "HTTP(S) navigation URL is not valid URL syntax".into(),
         })?;
         reject_credentials(&parsed)?;
-        let referrer = normalize_referrer(referrer, &parsed)?;
-        let navigation_initiator = referrer
-            .as_deref()
-            .and_then(|value| Url::parse(without_fragment(value)).ok());
+        let referrer_source = parse_navigation_referrer_source(referrer)?;
+        let navigation_initiator = referrer_source.as_ref();
+        let mut effective_referrer_policy = referrer_policy;
+        let mut request_referrer =
+            fetch_referrer_for_target(referrer_source.as_ref(), &parsed, effective_referrer_policy);
         let document_cache_key = cache_key(&parsed);
         let stale_cached_document = if request_method == NativeNavigationMethod::Get {
             self.network
@@ -4528,7 +4543,6 @@ impl NativeResourceLoader {
             .build()
             .map_err(|error| network_error("HTTP client construction", error))?;
         let mut current_url = parsed.clone();
-        let mut request_referrer = referrer;
         let mut current_method = request_method;
         let mut current_body = request_body;
         let mut current_content_type = request_content_type;
@@ -4566,7 +4580,7 @@ impl NativeResourceLoader {
             }
             if let Some(cookie) = self.network.cookie_header_for_request(
                 &current_url,
-                navigation_initiator.as_ref(),
+                navigation_initiator,
                 true,
                 current_method,
             ) {
@@ -4617,7 +4631,14 @@ impl NativeResourceLoader {
                     reason: "HTTP(S) navigation redirected to a non-HTTP(S) URL".into(),
                 });
             }
-            request_referrer = normalize_referrer(Some(current_url.as_str()), &next_url)?;
+            if let Some(policy) = referrer_policy_from_headers(response.headers()) {
+                effective_referrer_policy = policy;
+            }
+            request_referrer = fetch_referrer_for_target(
+                referrer_source.as_ref(),
+                &next_url,
+                effective_referrer_policy,
+            );
             if matches!(
                 response.status(),
                 reqwest::StatusCode::MOVED_PERMANENTLY
@@ -4934,6 +4955,7 @@ impl NativeResourceLoader {
         &mut self,
         target_url: &str,
         referrer: Option<&str>,
+        referrer_policy: NativeFetchReferrerPolicy,
         header_value: &str,
     ) -> Result<NativeFetchResponse, NativeEngineError> {
         validate_navigation_preload_header_value(header_value)?;
@@ -4944,9 +4966,7 @@ impl NativeResourceLoader {
             document_url: owner_url,
             href: target_url,
             referrer_url: Some(referrer_url),
-            // Preserve the source document policy and let redirects update it
-            // through the normal Fetch request path.
-            referrer_policy: None,
+            referrer_policy: Some(referrer_policy.as_str().to_owned()),
             method: NativeFetchMethod::get(),
             body: None,
             content_type: None,
@@ -9290,9 +9310,22 @@ pub(crate) fn javascript_mime_type_essence_match(value: &str) -> bool {
         .any(|candidate| value.eq_ignore_ascii_case(candidate))
 }
 
+#[cfg(test)]
 pub(crate) fn referrer_for_navigation(
     current_url: &str,
     target_url: &str,
+) -> Result<Option<String>, NativeEngineError> {
+    referrer_for_navigation_with_policy(
+        current_url,
+        target_url,
+        NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
+    )
+}
+
+pub(crate) fn referrer_for_navigation_with_policy(
+    current_url: &str,
+    target_url: &str,
+    policy: NativeFetchReferrerPolicy,
 ) -> Result<Option<String>, NativeEngineError> {
     validate_url_text("navigation URL", target_url)?;
     let target = Url::parse(without_fragment(target_url)).map_err(|_| {
@@ -9310,7 +9343,8 @@ pub(crate) fn referrer_for_navigation(
     if !is_network_url(current.as_str()) {
         return Ok(None);
     }
-    normalize_referrer(Some(current.as_str()), &target)
+    reject_credentials(&current)?;
+    Ok(fetch_referrer_for_target(Some(&current), &target, policy))
 }
 
 fn normalize_referrer(
@@ -9340,6 +9374,25 @@ fn normalize_referrer(
     } else {
         Ok(Some(source.origin().ascii_serialization()))
     }
+}
+
+fn parse_navigation_referrer_source(
+    referrer: Option<&str>,
+) -> Result<Option<Url>, NativeEngineError> {
+    let Some(referrer) = referrer else {
+        return Ok(None);
+    };
+    validate_url_text("navigation referrer", referrer)?;
+    let mut source =
+        Url::parse(without_fragment(referrer)).map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "navigation referrer is not valid URL syntax".into(),
+        })?;
+    if !is_network_url(source.as_str()) {
+        return Ok(None);
+    }
+    reject_credentials(&source)?;
+    source.set_fragment(None);
+    Ok(Some(source))
 }
 
 fn fetch_referrer_source(
@@ -10445,8 +10498,8 @@ mod tests {
         document_cache_storage_allowed, fetch_referrer_for_target, fetch_referrer_source,
         javascript_mime_essence_allowed, javascript_mime_type_essence_match,
         media_metadata_from_bytes, mixed_content_allowed, module_content_type_text_allowed,
-        referrer_for_navigation, resolve_subresource_url, subresource_integrity_matches,
-        supported_media_type_text,
+        referrer_for_navigation, referrer_for_navigation_with_policy, resolve_subresource_url,
+        subresource_integrity_matches, supported_media_type_text,
     };
     use base64::Engine as _;
     use reqwest::header::{
@@ -11250,7 +11303,7 @@ mod tests {
         assert_eq!(
             referrer_for_navigation("http://source.test/path/page", "http://target.test/next")
                 .unwrap(),
-            Some("http://source.test".into())
+            Some("http://source.test/".into())
         );
         assert_eq!(
             referrer_for_navigation("https://source.test/path", "http://target.test/next").unwrap(),
@@ -11260,6 +11313,35 @@ mod tests {
             referrer_for_navigation("data:text/html,<p>local</p>", "http://target.test/next")
                 .unwrap(),
             None
+        );
+    }
+
+    #[test]
+    fn navigation_referrer_policy_is_applied_before_cross_origin_requests() {
+        let source = "https://source.test/path/page?token=secret#fragment";
+        let target = "https://target.test/next";
+        assert_eq!(
+            referrer_for_navigation_with_policy(
+                source,
+                target,
+                NativeFetchReferrerPolicy::NoReferrer,
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            referrer_for_navigation_with_policy(source, target, NativeFetchReferrerPolicy::Origin,)
+                .unwrap(),
+            Some("https://source.test/".into())
+        );
+        assert_eq!(
+            referrer_for_navigation_with_policy(
+                source,
+                target,
+                NativeFetchReferrerPolicy::UnsafeUrl,
+            )
+            .unwrap(),
+            Some("https://source.test/path/page?token=secret".into())
         );
     }
 

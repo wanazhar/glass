@@ -64,10 +64,10 @@ use super::origin::NativeOrigin;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
-    NativeCspViolation, NativeFetchResponse, NativeModuleResourceType, NativeNavigationMethod,
-    NativeNavigationPolicyKind, NativeNavigationRequest, NativeObjectUrlTransfer, NativeResource,
-    NativeResourceLoader, csp_sources_allow, csp_sources_allow_for_redirect,
-    referrer_for_navigation, validate_target_navigation_payload,
+    NativeCspViolation, NativeFetchReferrerPolicy, NativeFetchResponse, NativeModuleResourceType,
+    NativeNavigationMethod, NativeNavigationPolicyKind, NativeNavigationRequest,
+    NativeObjectUrlTransfer, NativeResource, NativeResourceLoader, csp_sources_allow,
+    csp_sources_allow_for_redirect, validate_target_navigation_payload,
 };
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
@@ -1407,6 +1407,7 @@ impl NativeEngine {
                 .load_content_with_page_navigation(
                     NativeNavigationRequest::get(initial_url.clone()),
                     None,
+                    self.document.document_referrer_policy(),
                     HistoryCommit::Push,
                     0,
                     None,
@@ -1752,12 +1753,14 @@ impl NativeEngine {
             return Ok(self.snapshot_unchecked());
         }
         if is_network_url(url) {
-            let referrer = referrer_for_navigation(&self.url, url)?;
+            let referrer = Some(self.url.clone());
+            let referrer_policy = self.document.document_referrer_policy();
             self.ensure_content_process().await?;
             let Some((content, history_commit, page_navigation_handoffs, initial_url)) = self
                 .load_content_with_page_navigation(
                     navigation,
                     referrer,
+                    referrer_policy,
                     history_commit,
                     page_navigation_handoffs,
                     cancellation.clone(),
@@ -1892,6 +1895,7 @@ impl NativeEngine {
         &mut self,
         mut navigation: NativeNavigationRequest,
         mut referrer: Option<String>,
+        mut referrer_policy: NativeFetchReferrerPolicy,
         mut history_commit: HistoryCommit,
         mut page_navigation_handoffs: usize,
         cancellation: Option<NativeNavigationCancellation>,
@@ -1938,6 +1942,7 @@ impl NativeEngine {
                             &self.config.limits,
                             self.config.viewport,
                             referrer.as_deref(),
+                            referrer_policy,
                             &client_id,
                             &service_worker_clients,
                             cancellation.as_ref(),
@@ -2023,7 +2028,9 @@ impl NativeEngine {
             } else {
                 HistoryCommit::Push
             };
-            referrer = referrer_for_navigation(&content.url, &target_url)?;
+            referrer = Some(content.url.clone());
+            referrer_policy =
+                NativeFetchReferrerPolicy::parse(&content.document.document_referrer_policy)?;
         }
     }
 
@@ -9631,12 +9638,14 @@ impl NativeEngine {
             return Ok(Some(self.snapshot_unchecked()));
         }
         if is_network_url(&target_url) {
-            let referrer = referrer_for_navigation(&self.url, &target_url)?;
+            let referrer = Some(self.url.clone());
+            let referrer_policy = self.document.document_referrer_policy();
             self.ensure_content_process().await?;
             let Some((content, history_commit, page_navigation_handoffs, initial_url)) = self
                 .load_content_with_page_navigation(
                     NativeNavigationRequest::get(target_url),
                     referrer,
+                    referrer_policy,
                     history_commit,
                     0,
                     None,

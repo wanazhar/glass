@@ -22185,6 +22185,8 @@ mod native_static_dynamic_import_tests {
       type: response.type,
       mode: navigationRequest.mode,
       clonedMode: clonedNavigationMode,
+      referrer: navigationRequest.referrer,
+      referrerPolicy: navigationRequest.referrerPolicy,
       constructorRejectsNavigationMode,
       marker: response.headers.get('x-preload-marker'),
       immutableHeaders,
@@ -22212,6 +22214,9 @@ mod native_static_dynamic_import_tests {
             "redirect": "follow",
             "credentialsMode": "include",
             "destination": "document",
+            "referrer": "https://source.test/",
+            "referrerUrl": "https://source.test/path/page?token=secret#fragment",
+            "referrerPolicy": "strict-origin-when-cross-origin",
             "navigationPreloadRequestId": request_id,
         });
         let dispatched = runtime
@@ -22249,7 +22254,7 @@ mod native_static_dynamic_import_tests {
                     "statusText": "",
                     "headers": [["content-type", "application/json"]],
                     "contentType": "application/json",
-                    "bodyBase64": base64::engine::general_purpose::STANDARD.encode(r#"{"status":200,"url":"https://preload.test/final-page","redirected":true,"type":"basic","mode":"navigate","clonedMode":"navigate","constructorRejectsNavigationMode":true,"marker":"preserved","immutableHeaders":true,"body":"preloaded body","clonedBody":"preloaded body"}"#),
+                    "bodyBase64": base64::engine::general_purpose::STANDARD.encode(r#"{"status":200,"url":"https://preload.test/final-page","redirected":true,"type":"basic","mode":"navigate","clonedMode":"navigate","referrer":"https://source.test/","referrerPolicy":"strict-origin-when-cross-origin","constructorRejectsNavigationMode":true,"marker":"preserved","immutableHeaders":true,"body":"preloaded body","clonedBody":"preloaded body"}"#),
                     "bodyNull": false,
                     "redirected": false,
                 }
@@ -26204,7 +26209,7 @@ fn worker_bootstrap(
     "", "no-referrer", "no-referrer-when-downgrade", "same-origin", "origin",
     "strict-origin", "origin-when-cross-origin", "strict-origin-when-cross-origin", "unsafe-url",
   ]);
-  const workerRequestReferrer = (value, inherited) => {{
+  const workerRequestReferrer = (value, inherited, allowCrossOrigin = false) => {{
     const client = {{ referrer: "about:client", url: workerUrl }};
     if (value === undefined) return inherited || client;
     const source = String(value);
@@ -26213,7 +26218,8 @@ fn worker_bootstrap(
     let href;
     try {{ href = workerRequestUrl(source); }}
     catch (_) {{ throw new TypeError("native Worker Request referrer is invalid"); }}
-    if (workerUrlParts(href).origin !== workerUrlParts(workerUrl).origin) return client;
+    if (!allowCrossOrigin && workerUrlParts(href).origin !== workerUrlParts(workerUrl).origin)
+      return client;
     const url = new WorkerURLNative(href);
     url.username = "";
     url.password = "";
@@ -29436,6 +29442,7 @@ fn worker_bootstrap(
     const referrer = workerRequestReferrer(
       Object.prototype.hasOwnProperty.call(overrides, "referrer") ? overrides.referrer : undefined,
       source && !requestInitIsNonEmpty ? workerRequestReferrerState.get(source) : null,
+      internalNavigationRequest,
     );
     const referrerPolicy = workerRequestReferrerPolicy(
       source && requestInitIsNonEmpty

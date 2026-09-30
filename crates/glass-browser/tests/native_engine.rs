@@ -12532,6 +12532,144 @@ self.addEventListener('fetch', event => {
 }
 
 #[tokio::test]
+async fn native_service_worker_wait_until_fetch_does_not_delay_response() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (lifetime_seen_tx, lifetime_seen_rx) = oneshot::channel();
+    let (release_lifetime_tx, release_lifetime_rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let registration_page = "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>waitUntil fetch</main></body></html>";
+    let worker_script = r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  const path = new URL(event.request.url).pathname;
+  if (path === '/start') {
+    event.waitUntil(fetch('/lifetime').then(response => response.text()).then(text => {
+      globalThis.__nativeLifetimeResult = text;
+    }));
+    event.respondWith(new Response(
+      '<!doctype html><html><body>fast response</body></html>',
+      { headers: { 'Content-Type': 'text/html' } },
+    ));
+  } else if (path === '/verify') {
+    event.respondWith(new Response(
+      '<!doctype html><html><body>' +
+        (globalThis.__nativeLifetimeResult || 'pending') +
+        '</body></html>',
+      { headers: { 'Content-Type': 'text/html' } },
+    ));
+  }
+});"#;
+    let server = tokio::spawn(async move {
+        let mut shutdown_rx = shutdown_rx;
+        let mut release_lifetime_rx = release_lifetime_rx;
+        let mut lifetime_seen_tx = Some(lifetime_seen_tx);
+        loop {
+            let accepted = tokio::select! {
+                biased;
+                _ = &mut shutdown_rx => return,
+                accepted = listener.accept() => accepted.unwrap(),
+            };
+            let (mut stream, _) = accepted;
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            let (content_type, body) = match path {
+                "/register" => ("text/html", registration_page),
+                "/sw.js" => ("application/javascript", worker_script),
+                "/lifetime" => {
+                    if let Some(sender) = lifetime_seen_tx.take() {
+                        let _ = sender.send(());
+                    }
+                    tokio::select! {
+                        biased;
+                        _ = &mut shutdown_rx => return,
+                        _ = &mut release_lifetime_rx => {}
+                    }
+                    ("text/plain", "lifetime finished")
+                }
+                _ => ("text/plain", "unexpected network request"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+        }
+    });
+
+    let session = BrowserSession::start_default().await.unwrap();
+    session
+        .navigate(format!("http://{address}/register"))
+        .await
+        .unwrap();
+    session
+        .script("await navigator.serviceWorker.ready")
+        .await
+        .unwrap();
+
+    let mut navigation = Box::pin(session.navigate(format!("http://{address}/start")));
+    let mut lifetime_seen = Box::pin(lifetime_seen_rx);
+    let mut navigation_result = None;
+    let first_event = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            biased;
+            seen = lifetime_seen.as_mut() => {
+                seen.expect("server observed the waitUntil fetch");
+                true
+            },
+            result = navigation.as_mut() => {
+                navigation_result = Some(result);
+                false
+            },
+        }
+    })
+    .await
+    .unwrap_or(false);
+    let lifetime_fetch_reached_server = first_event
+        || (navigation_result.is_some()
+            && tokio::time::timeout(Duration::from_secs(5), lifetime_seen.as_mut())
+                .await
+                .is_ok());
+    let completed_before_lifetime_response = if navigation_result.is_some() {
+        true
+    } else if lifetime_fetch_reached_server {
+        match tokio::time::timeout(Duration::from_secs(5), navigation.as_mut()).await {
+            Ok(result) => {
+                navigation_result = Some(result);
+                true
+            }
+            Err(_) => false,
+        }
+    } else {
+        false
+    };
+
+    let _ = release_lifetime_tx.send(());
+    if navigation_result.is_none() {
+        navigation_result = tokio::time::timeout(Duration::from_secs(5), navigation.as_mut())
+            .await
+            .ok();
+    }
+    drop(navigation);
+    let _ = shutdown_tx.send(());
+    session.close().await.unwrap();
+    server.await.unwrap();
+
+    assert!(
+        lifetime_fetch_reached_server,
+        "the worker lifetime fetch must reach the HTTP server"
+    );
+    assert!(
+        completed_before_lifetime_response,
+        "an independent response must commit before the waitUntil fetch is released"
+    );
+    navigation_result
+        .expect("navigation settles after the lifetime fetch is released")
+        .expect("navigation succeeds");
+}
+
+#[tokio::test]
 async fn native_service_worker_navigation_preload_is_cancelled_with_navigation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -347,10 +347,18 @@ active handler keeps its position, setting it to `null` removes it, and
 reactivation registers it again at the end. Calling `respondWith()` stops only
 later listeners in that sequence. The worker owner must retain and continue
 pending lifetime work, including native host commands, after returning the
-response. A socket-free
-runtime regression verifies response settlement with a pending JavaScript-only
-`waitUntil()` promise; asynchronous host-command lifetime scheduling remains
-unverified and is a completion gate for Slice 839.
+response. A fixture-backed registry regression verifies that a bodyless native
+`fetch()` started by `waitUntil()` continues after an independent response
+settles and resolves its promise callback in the same worker realm. The content
+child multiplexes those fetch completions with incoming IPC, persists resulting
+loader/cache state, queues cookie changes for the next parent response, and
+aborts tasks when their worker routes are removed. Streaming upload commands
+and fetch commands encountered while the `respondWith()` response is still
+pending can still delay settlement. Browser-facing effects from later
+lifetime callbacks remain queued in the child rather than delivered
+out-of-band to the parent.
+Process-backed HTTP evidence, those remaining command paths, WPT, CI, and
+cross-platform validation remain completion gates for Slice 839.
 
 Before Slice 839, the FetchEvent shim resolved `preloadResponse` to `undefined`
 for every request. Slice 838 implements the manager and durable registration

@@ -115,24 +115,35 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 - `cargo check -p glass-browser --features native-engine --lib --tests --locked -q` passes on the current revision.
 - `cargo test -p glass-browser --lib --features native-engine --locked navigation_preload -- --quiet` passes (six socket-free tests, including the immediate-response runtime regression).
 - `cargo test -p glass-browser --lib --features native-engine --locked service_worker_fetch_ -- --quiet` passes (five socket-free runtime tests, including independent `waitUntil()` lifetime, listener suppression, `onfetch` registration order, handler replacement, and deactivation/reactivation).
+- `cargo test -p glass-browser --lib --features native-engine --locked independent_response_survives_and_retains_lifetime_fetch_work -- --nocapture` passes. Its fixture-backed native-loader fetch returns the independent response first, remains owned by the Service Worker registry, then resolves the `waitUntil(fetch())` continuation in the same worker realm.
 - `cargo fmt --all -- --check`, release-documentation truth, documentation depth, TUI shortcut inventory, and `git diff --check` pass.
 - The response test proves headers are immutable and both the original and
   cloned response bodies remain readable. It also verifies the policy-reduced
   cross-origin `Request.referrer` and that public `Request` construction still
   rejects navigation mode.
-- A socket-free runtime regression returns an independent response while a
-  JavaScript-only `waitUntil()` promise remains pending and retained by the
-  worker. This does not prove that host commands emitted by lifetime work
-  continue asynchronously: the current Rust settlement loop still processes
-  FetchEvent host commands before returning the response.
+- The fixture-backed registry regression confirms that a bodyless host Fetch
+  command emitted by `waitUntil()` does not delay an already-settled response;
+  its native network task remains owned, and its Promise continuation later
+  executes in the same Service Worker realm. The content-process loop selects
+  between incoming IPC and these task completions, persists resulting
+  loader/cache state, and queues cookie changes for its next response.
+  Removing the worker's routes aborts its outstanding tasks.
+- This does not close lifetime scheduling. Streaming upload Fetch commands
+  still use the synchronous upload driver, and a Fetch command encountered
+  while the `respondWith()` promise is still pending is resolved in the
+  response settlement loop. Client messages, `openWindow()`, and MessagePort
+  effects emitted by a later lifetime continuation are retained in the child
+  queues but are not delivered out-of-band to the parent.
 - Two socket-free runtime regressions verify that `onfetch` shares the ordered
   FetchEvent listener sequence, replacement preserves its position,
   deactivation/reactivation appends it at the new position, and `respondWith()`
   suppresses only later listeners.
-- The new process-backed independent-response regression compiles as part of
-  `cargo check --tests` and the integration-test target. Running it fails at
-  `TcpListener::bind("127.0.0.1:0")` with `PermissionDenied` before engine
-  startup, so its behavioral assertion is not yet verified.
+- The new process-backed `waitUntil(fetch())` response-deadline regression
+  compiles with the integration-test target. Its HTTP assertion is not
+  executable in this sandbox: the test's `TcpListener::bind("127.0.0.1:0")`
+  fails with `PermissionDenied` before engine startup. The existing
+  process-backed navigation-preload deadline regression has the same
+  environment limitation.
 - Process-backed HTTP request/header/no-duplicate, navigation-cancellation,
   source-policy/redirect, worker-visible `Request.referrer`, and independent-
   response behavior still need execution evidence. WPT, remote CI, and

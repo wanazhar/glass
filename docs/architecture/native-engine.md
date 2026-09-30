@@ -34,6 +34,11 @@ ServiceWorker timer with incoming IPC. Timer turns run through the existing
 bounded worker queues; resulting loader/cache state is persisted and cookie
 changes are queued for the next parent response. Worker-route removal aborts
 outstanding fetch tasks.
+Content-worker stdin has one blocking reader: framed dialog decisions are
+routed to the synchronous dialog host, while ordinary requests go to the
+asynchronous worker loop. This prevents competing stdin readers; a socket-free
+regression verifies the two routes, but does not claim process-backed dialog
+or out-of-band browser-effect delivery.
 Streaming upload fetches and fetch commands encountered while the
 `respondWith()` response is still pending can still delay settlement.
 Browser-facing effects produced by later lifetime callbacks are queued in the

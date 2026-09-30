@@ -216,6 +216,10 @@ replacing an active handler preserves its position, and null/deactivation then
 reactivation registers a new position. Two socket-free ordering regressions
 pass in the five-test `service_worker_fetch_` group. Network-backed and
 ServiceWorker WPT validation remains open.
+The content worker now has a single blocking stdin reader that routes dialog
+decision frames to the synchronous dialog host and ordinary IPC frames to the
+asynchronous loop; its socket-free regression verifies both routes without
+claiming process-backed dialog or out-of-band browser-effect delivery.
 Process-backed request/header/no-duplicate, cancellation, source-document
 referrer-policy/redirect, and worker-visible `Request.referrer` regression
 sources previously compiled with `--tests` but have not run here because local

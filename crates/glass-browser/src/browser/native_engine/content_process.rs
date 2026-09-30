@@ -1102,19 +1102,23 @@ struct NativeWorkerDialogRpc {
     next_dialog_id: AtomicU64,
     active_request_id: AtomicU64,
     enabled: AtomicBool,
+    dialog_waiting: Arc<AtomicBool>,
+    dialog_decisions: Mutex<std::sync::mpsc::Receiver<Result<NativeWorkerDialogDecision, String>>>,
 }
 
-impl Default for NativeWorkerDialogRpc {
-    fn default() -> Self {
+impl NativeWorkerDialogRpc {
+    fn new(
+        dialog_decisions: std::sync::mpsc::Receiver<Result<NativeWorkerDialogDecision, String>>,
+    ) -> Self {
         Self {
             next_dialog_id: AtomicU64::new(1),
             active_request_id: AtomicU64::new(0),
             enabled: AtomicBool::new(false),
+            dialog_waiting: Arc::new(AtomicBool::new(false)),
+            dialog_decisions: Mutex::new(dialog_decisions),
         }
     }
-}
 
-impl NativeWorkerDialogRpc {
     fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Release);
     }
@@ -1162,12 +1166,18 @@ impl NativeWorkerDialogRpc {
         });
         let encoded = serde_json::to_vec(&event)
             .map_err(|_| "native dialog event could not be encoded".to_owned())?;
-        write_sync_frame(std::io::stdout(), &encoded)
-            .map_err(|_| "native dialog event could not be sent to its owner".to_owned())?;
-        let response = read_sync_frame(std::io::stdin())
-            .map_err(|_| "native dialog decision could not be read from its owner".to_owned())?;
-        let decision: NativeWorkerDialogDecision = serde_json::from_slice(&response)
-            .map_err(|_| "native dialog decision was malformed".to_owned())?;
+        self.dialog_waiting.store(true, Ordering::Release);
+        let decision = (|| {
+            write_sync_frame(std::io::stdout(), &encoded)
+                .map_err(|_| "native dialog event could not be sent to its owner".to_owned())?;
+            self.dialog_decisions
+                .lock()
+                .map_err(|_| "native dialog decision queue was poisoned".to_owned())?
+                .recv()
+                .map_err(|_| "native dialog decision channel was closed".to_owned())?
+        })();
+        self.dialog_waiting.store(false, Ordering::Release);
+        let decision = decision?;
         if decision.kind != "dialog_decision"
             || decision.request_id != request_id
             || decision.dialog_id != dialog_id
@@ -2987,19 +2997,6 @@ async fn read_frame(reader: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>, Na
     Ok(payload)
 }
 
-async fn forward_content_ipc_frames(
-    mut reader: impl AsyncRead + Unpin,
-    sender: mpsc::Sender<Result<Vec<u8>, NativeEngineError>>,
-) {
-    loop {
-        let frame = read_frame(&mut reader).await;
-        let stop = frame.is_err();
-        if sender.send(frame).await.is_err() || stop {
-            break;
-        }
-    }
-}
-
 fn write_sync_frame(mut writer: impl Write, payload: &[u8]) -> std::io::Result<()> {
     if payload.len() > MAX_CONTENT_IPC_FRAME_BYTES {
         return Err(std::io::Error::new(
@@ -3031,6 +3028,41 @@ fn read_sync_frame(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
     let mut payload = vec![0; length];
     reader.read_exact(&mut payload)?;
     Ok(payload)
+}
+
+fn forward_content_ipc_frames(
+    mut reader: impl Read,
+    request_sender: mpsc::Sender<Result<Vec<u8>, NativeEngineError>>,
+    dialog_waiting: Arc<AtomicBool>,
+    dialog_sender: std::sync::mpsc::Sender<Result<NativeWorkerDialogDecision, String>>,
+) {
+    loop {
+        let payload = match read_sync_frame(&mut reader) {
+            Ok(payload) => payload,
+            Err(_) => {
+                if dialog_waiting.swap(false, Ordering::AcqRel) {
+                    let _ = dialog_sender.send(Err(
+                        "content process pipe closed before its dialog decision".into(),
+                    ));
+                } else {
+                    let _ = request_sender.blocking_send(Err(NativeEngineError::Worker {
+                        operation: "read content IPC".into(),
+                        reason: "content process exited or closed its pipe".into(),
+                    }));
+                }
+                break;
+            }
+        };
+        if dialog_waiting.swap(false, Ordering::AcqRel) {
+            let decision = serde_json::from_slice(&payload)
+                .map_err(|_| "native dialog decision was malformed".to_owned());
+            if dialog_sender.send(decision).is_err() {
+                break;
+            }
+        } else if request_sender.blocking_send(Ok(payload)).is_err() {
+            break;
+        }
+    }
 }
 
 fn require_response_kind(
@@ -4943,8 +4975,16 @@ async fn load_font_faces(
 pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut stdout = tokio::io::stdout();
     let (ipc_request_tx, mut ipc_request_rx) = mpsc::channel(1);
-    let _ipc_reader = tokio::spawn(async move {
-        forward_content_ipc_frames(tokio::io::stdin(), ipc_request_tx).await;
+    let (dialog_decision_tx, dialog_decision_rx) = std::sync::mpsc::channel();
+    let dialog_rpc = Arc::new(NativeWorkerDialogRpc::new(dialog_decision_rx));
+    let dialog_waiting = Arc::clone(&dialog_rpc.dialog_waiting);
+    let _ipc_reader = std::thread::spawn(move || {
+        forward_content_ipc_frames(
+            std::io::stdin(),
+            ipc_request_tx,
+            dialog_waiting,
+            dialog_decision_tx,
+        );
     });
     let mut running = false;
     let mut document: Option<NativeDocument> = None;
@@ -4990,7 +5030,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut frame_script_bindings = Vec::new();
     let mut pending_service_worker_navigation: Option<Value> = None;
     let mut external_shared_worker_routing = false;
-    let dialog_rpc = Arc::new(NativeWorkerDialogRpc::default());
     let dialog_rpc_for_handler = Arc::clone(&dialog_rpc);
     let dialog_handler: NativeDialogHandler =
         Arc::new(move |dialog, url| dialog_rpc_for_handler.request_dialog(dialog, url));
@@ -15532,25 +15571,72 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn content_ipc_reader_preserves_partial_frame_while_other_work_runs() {
-        let (mut writer, reader) = tokio::io::duplex(8);
-        let (frame_tx, mut frame_rx) = mpsc::channel(1);
-        let reader_task = tokio::spawn(forward_content_ipc_frames(reader, frame_tx));
-        writer.write_all(&[0, 0]).await.unwrap();
-        tokio::task::yield_now().await;
-
-        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
-        completion_tx.send(()).unwrap();
-        tokio::select! {
-            biased;
-            completion = completion_rx => completion.unwrap(),
-            frame = frame_rx.recv() => panic!("partial frame unexpectedly completed: {frame:?}"),
+    async fn content_ipc_reader_routes_dialog_decisions_without_stealing_requests() {
+        struct ChannelReader {
+            receiver: std::sync::mpsc::Receiver<Vec<u8>>,
+            pending: VecDeque<u8>,
         }
 
-        writer.write_all(&[0, 3, b'o', b'k', b'!']).await.unwrap();
-        assert_eq!(frame_rx.recv().await.unwrap().unwrap(), b"ok!");
-        drop(writer);
-        reader_task.await.unwrap();
+        impl Read for ChannelReader {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                if output.is_empty() {
+                    return Ok(0);
+                }
+                while self.pending.is_empty() {
+                    match self.receiver.recv() {
+                        Ok(chunk) => self.pending.extend(chunk),
+                        Err(_) => return Ok(0),
+                    }
+                }
+                let count = output.len().min(self.pending.len());
+                for byte in &mut output[..count] {
+                    *byte = self.pending.pop_front().expect("pending frame byte");
+                }
+                Ok(count)
+            }
+        }
+
+        fn send_frame(sender: &std::sync::mpsc::Sender<Vec<u8>>, payload: &[u8]) {
+            let mut frame = Vec::new();
+            write_sync_frame(&mut frame, payload).unwrap();
+            sender.send(frame).unwrap();
+        }
+
+        let (input_tx, input_rx) = std::sync::mpsc::channel();
+        let reader = ChannelReader {
+            receiver: input_rx,
+            pending: VecDeque::new(),
+        };
+        let (request_tx, mut request_rx) = mpsc::channel(1);
+        let (dialog_tx, dialog_rx) = std::sync::mpsc::channel();
+        let dialog_waiting = Arc::new(AtomicBool::new(false));
+        let reader_waiting = Arc::clone(&dialog_waiting);
+        let reader_thread = std::thread::spawn(move || {
+            forward_content_ipc_frames(reader, request_tx, reader_waiting, dialog_tx);
+        });
+
+        let request = serde_json::to_vec(&json!({"kind": "ping", "id": 7})).unwrap();
+        send_frame(&input_tx, &request);
+        assert_eq!(request_rx.recv().await.unwrap().unwrap(), request);
+
+        dialog_waiting.store(true, Ordering::Release);
+        let decision = serde_json::to_vec(&json!({
+            "kind": "dialog_decision",
+            "request_id": 7,
+            "dialog_id": 3,
+            "accepted": true,
+            "prompt_value": "approved",
+        }))
+        .unwrap();
+        send_frame(&input_tx, &decision);
+        let routed = dialog_rx.recv().unwrap().unwrap();
+        assert_eq!(routed.request_id, 7);
+        assert_eq!(routed.dialog_id, 3);
+        assert!(routed.accepted);
+        assert_eq!(routed.prompt_value.as_deref(), Some("approved"));
+
+        drop(input_tx);
+        reader_thread.join().unwrap();
     }
 
     #[test]

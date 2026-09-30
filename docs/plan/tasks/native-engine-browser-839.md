@@ -53,6 +53,13 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 - `FetchEvent.preloadResponse` resolves to an immutable, readable native
   `Response` on success, rejects with `TypeError` on a network error, and
   resolves to `undefined` when the algorithm does not start a preload.
+- The `respondWith()` promise alone determines when the FetchEvent response is
+  ready. Independent `waitUntil()` promises extend the event lifetime without
+  delaying that response or converting their rejection into a navigation
+  failure. The `respondWith()` promise itself also extends the event lifetime.
+  Lifetime work, including native host commands it emits, must remain owned and
+  continue after the response is returned; it must not be dropped to meet the
+  response deadline.
 - Preserve response status, URL, headers, redirect state, and bounded body
   bytes without consuming the worker-visible body. When the fetch handler does
   not call `respondWith`, follow the Service Workers fetch algorithm without
@@ -61,7 +68,9 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   network requests, overlap with FetchEvent dispatch, navigation request mode,
   `Request.referrer`/`referrerPolicy`, source-document `Referer` policy, redirect
   policy updates, FetchEvent response semantics, network failure, and
-  cancellation. Include non-GET,
+  cancellation. Also verify a pending unrelated `waitUntil()` does not delay an
+  independent response, while its lifetime work remains alive and can settle.
+  Include non-GET,
   disabled, absent-listener, and enabled-listener controls.
 - Process-backed network assertions are required; a pure command or mocked
   loader test alone does not close this slice.
@@ -92,11 +101,17 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 
 - `cargo check -p glass-browser --features native-engine --lib --tests --locked -q` passes on the current revision.
 - `cargo test -p glass-browser --lib --features native-engine --locked navigation_preload -- --quiet` passes (six socket-free tests, including the immediate-response runtime regression).
+- `cargo test -p glass-browser --lib --features native-engine --locked service_worker_fetch_response_does_not_wait_for_wait_until_lifetime -- --quiet` passes (one socket-free regression).
 - `cargo fmt --all -- --check`, release-documentation truth, documentation depth, TUI shortcut inventory, and `git diff --check` pass.
 - The response test proves headers are immutable and both the original and
   cloned response bodies remain readable. It also verifies the policy-reduced
   cross-origin `Request.referrer` and that public `Request` construction still
   rejects navigation mode.
+- A socket-free runtime regression returns an independent response while a
+  JavaScript-only `waitUntil()` promise remains pending and retained by the
+  worker. This does not prove that host commands emitted by lifetime work
+  continue asynchronously: the current Rust settlement loop still processes
+  FetchEvent host commands before returning the response.
 - The new process-backed independent-response regression compiles as part of
   `cargo check --tests` and the integration-test target. Running it fails at
   `TcpListener::bind("127.0.0.1:0")` with `PermissionDenied` before engine

@@ -23,7 +23,12 @@ before engine startup. The scoped native-engine check and the new socket-free
 runtime regression pass as part of six socket-free navigation-preload tests.
 The separate navigation referrer-policy unit had passed before this change;
 the preload tests cover readable cloned responses, immutable headers, absent
-preloads, and network errors.
+preloads, and network errors. The FetchEvent runtime now settles an independent
+`respondWith()` response without waiting for a pending JavaScript-only
+`waitUntil()` promise and retains that event lifetime. Native host commands
+started by `waitUntil()` are still handled in the response settlement loop, so
+they may delay the response; independent background execution and continuation
+coverage remain open.
 The source document's Referrer-Policy now crosses the content-process boundary
 separately from its URL; the raw URL remains internal while the worker-visible
 `FetchEvent.request.referrer` is policy-filtered. The policy is applied to the

@@ -190,8 +190,8 @@ in-progress. Before Slice 839, the FetchEvent shim resolved `preloadResponse`
 to `undefined`. Slice 839 now wires an eligible enabled GET navigation through
 the native loader alongside FetchEvent dispatch, exposes navigation request
 mode, resolves `preloadResponse`, and reuses a successful preload when the
-handler does not call `respondWith`. The scoped native-engine check and seven
-socket-free unit tests pass, covering referrer-policy application, response
+handler does not call `respondWith`. The scoped native-engine check and eight
+socket-free regressions pass, covering referrer-policy application, response
 cloning, immutable headers, absent preloads, eligibility, and network errors.
 The full source URL stays internal to fetch calculations; the ServiceWorker
 sees the policy-filtered `FetchEvent.request.referrer`.
@@ -200,6 +200,11 @@ waiting for a still-pending preload body; a process-backed gated-response
 regression compiles, but running it stops at `TcpListener::bind("127.0.0.1:0")`
 with `PermissionDenied` before engine startup. The current scoped check and
 six socket-free navigation-preload tests pass, including the new runtime test.
+The FetchEvent runtime separately returns an independent `respondWith()`
+response while a JavaScript-only `waitUntil()` promise remains pending and
+retained by the worker. Native host commands emitted by lifetime promises still
+run through the response settlement loop and may delay that response; their
+independent scheduling remains open.
 Process-backed request/header/no-duplicate, cancellation, source-document
 referrer-policy/redirect, and worker-visible `Request.referrer` regression
 sources previously compiled with `--tests` but have not run here because local

@@ -205,7 +205,12 @@ response while a JavaScript-only `waitUntil()` promise remains pending and
 retained by the worker. Native host commands emitted by lifetime promises still
 run through the response settlement loop and may delay that response; their
 independent scheduling remains open. The runtime now also stops later
-FetchEvent listeners after the first `respondWith()` call.
+FetchEvent listeners after the first `respondWith()` call. `self.onfetch` is
+dispatched in registration order with `addEventListener("fetch", ...)`;
+replacing an active handler preserves its position, and null/deactivation then
+reactivation registers a new position. Two socket-free ordering regressions
+pass in the five-test `service_worker_fetch_` group. Network-backed and
+ServiceWorker WPT validation remains open.
 Process-backed request/header/no-duplicate, cancellation, source-document
 referrer-policy/redirect, and worker-visible `Request.referrer` regression
 sources previously compiled with `--tests` but have not run here because local

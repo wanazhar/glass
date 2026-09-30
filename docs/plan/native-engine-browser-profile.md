@@ -342,15 +342,21 @@ process-backed persistence regression cannot run in this sandbox because TCP
 listener binding is denied. Slice 839 now starts eligible GET preloads through
 the native loader alongside FetchEvent dispatch, exposes navigation request
 mode, delivers the bounded response through `preloadResponse`, and reuses it
-for an unhandled navigation. Its scoped native-engine check and seven
-socket-free unit tests pass, covering referrer-policy application, response
-cloning, immutable headers, the no-preload result, eligibility, and network
-errors. Existing process-backed HTTP/header/no-duplicate, cancellation,
-source-policy/redirect, and worker-visible `Request.referrer` regression
-sources compile with `--tests`, but have not run here because local TCP listener
-binding is denied; actual network, overlap, and cancellation behavior remain
-unverified. Navigation Preload is still incomplete until
-those integrations and remaining CI/WPT/platform evidence pass.
+for an unhandled navigation. An already-settled independent ServiceWorker
+response now returns without waiting for a still-pending preload body; a
+process-backed gated-response regression compiles, but running it stops at
+`TcpListener::bind("127.0.0.1:0")` with `PermissionDenied` before engine
+startup. The current scoped native-engine check and new socket-free runtime
+test pass as part of six socket-free navigation-preload tests. The separate
+navigation referrer-policy unit had passed before this change; the preload
+tests cover response cloning, immutable headers, the no-preload result,
+eligibility, and network errors. Existing process-backed
+HTTP/header/no-duplicate, cancellation, source-policy/redirect, and
+worker-visible `Request.referrer` regression sources previously compiled with
+`--tests`, but have not run here because local TCP listener binding is denied;
+actual network, overlap, and cancellation behavior remain unverified.
+Navigation Preload is still incomplete until those integrations and remaining
+CI/WPT/platform evidence pass.
 
 ### Explicit `tabindex` focus baseline
 

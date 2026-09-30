@@ -2207,34 +2207,51 @@ impl NativeServiceWorkerRegistry {
                         "must be present for an eligible preload",
                     )
                 })?;
-            let preload_request = async {
-                Ok::<_, NativeEngineError>(
-                    loader
-                        .fetch_navigation_preload_async(
-                            target.as_str(),
-                            navigation_referrer,
-                            preload_referrer_policy,
-                            &preload.header_value,
-                        )
-                        .await,
-                )
+            let mut preload_request = Box::pin(loader.fetch_navigation_preload_async(
+                target.as_str(),
+                navigation_referrer,
+                preload_referrer_policy,
+                &preload.header_value,
+            ));
+            let mut preload_result = tokio::select! {
+                biased;
+                result = &mut preload_request => Some(result),
+                _ = tokio::task::yield_now() => None,
             };
-            let dispatch_fetch = async {
-                worker.runtime.evaluate_service_worker_fetch(
-                    worker_id,
-                    &worker_url,
-                    &payload,
-                    is_module,
-                )
+            let mut evaluation = worker.runtime.evaluate_service_worker_fetch(
+                worker_id,
+                &worker_url,
+                &payload,
+                is_module,
+            )?;
+            let fetch_handler_responded = !evaluation.top_level_await_pending
+                && evaluation.value.get("handled").and_then(Value::as_bool) == Some(true);
+            if fetch_handler_responded && preload_result.is_none() {
+                preload_result = std::future::poll_fn(|context| {
+                    std::task::Poll::Ready(match preload_request.as_mut().poll(context) {
+                        std::task::Poll::Ready(result) => Some(result),
+                        std::task::Poll::Pending => None,
+                    })
+                })
+                .await;
+            }
+            let preload_result = match preload_result {
+                Some(result) => Some(result),
+                None if fetch_handler_responded => {
+                    drop(preload_request);
+                    None
+                }
+                None => Some(preload_request.await),
             };
-            let (preload_result, mut evaluation) =
-                tokio::try_join!(preload_request, dispatch_fetch)?;
             let resolve_payload = match &preload_result {
-                Ok(response) => service_worker_fetch_payload(response.clone()),
-                Err(error) => {
+                Some(Ok(response)) => service_worker_fetch_payload(response.clone()),
+                Some(Err(error)) => {
                     let message = error.to_string().chars().take(1024).collect::<String>();
                     json!({"error": message})
                 }
+                None => json!({
+                    "error": "navigation preload was aborted after the ServiceWorker response settled"
+                }),
             };
             let resolved = worker.runtime.resolve_service_worker_navigation_preload(
                 worker_id,
@@ -2263,7 +2280,7 @@ impl NativeServiceWorkerRegistry {
             if evaluation.worker_script_error.is_none() {
                 evaluation.worker_script_error = resolved.worker_script_error;
             }
-            preload_response = preload_result.ok();
+            preload_response = preload_result.and_then(Result::ok);
             evaluation
         } else {
             worker.runtime.evaluate_service_worker_fetch(

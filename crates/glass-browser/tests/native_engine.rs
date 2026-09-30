@@ -12394,6 +12394,139 @@ self.addEventListener('fetch', event => {
 }
 
 #[tokio::test]
+async fn native_service_worker_navigation_preload_does_not_delay_independent_response() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (preload_seen_tx, preload_seen_rx) = oneshot::channel();
+    let (release_preload_tx, release_preload_rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let registration_page = "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>preload overlap</main></body></html>";
+    let worker_script = r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  if (new URL(event.request.url).pathname === '/early-response')
+    event.respondWith(new Response('<!doctype html><html><body>ServiceWorker response before preload</body></html>', {
+      headers: { 'Content-Type': 'text/html' },
+    }));
+});"#;
+    let server = tokio::spawn(async move {
+        let mut shutdown_rx = shutdown_rx;
+        for (expected_path, content_type, body) in [
+            ("/register", "text/html", registration_page),
+            ("/sw.js", "application/javascript", worker_script),
+        ] {
+            let accepted = tokio::select! {
+                biased;
+                _ = &mut shutdown_rx => return,
+                accepted = listener.accept() => accepted.unwrap(),
+            };
+            let (mut stream, _) = accepted;
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().next(), Some("GET"));
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+
+        let accepted = tokio::select! {
+            biased;
+            _ = &mut shutdown_rx => return,
+            accepted = listener.accept() => accepted.unwrap(),
+        };
+        let (mut stream, _) = accepted;
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().next(), Some("GET"));
+        assert_eq!(request.split_whitespace().nth(1), Some("/early-response"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("service-worker-navigation-preload: true")
+        );
+        let _ = preload_seen_tx.send(());
+        let _ = release_preload_rx.await;
+        let body = "<!doctype html><html><body>unused delayed preload</body></html>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+    });
+
+    let session = BrowserSession::start_default().await.unwrap();
+    session
+        .navigate(format!("http://{address}/register"))
+        .await
+        .unwrap();
+    session
+        .script("await navigator.serviceWorker.ready.then(async registration => { await registration.navigationPreload.enable(); if (!registration.active) throw new Error('active ServiceWorker is missing'); })")
+        .await
+        .unwrap();
+
+    let mut navigation = Box::pin(session.navigate(format!("http://{address}/early-response")));
+    let mut preload_seen = Box::pin(preload_seen_rx);
+    let mut preload_was_seen = false;
+    let mut navigation_result = tokio::select! {
+        biased;
+        seen = preload_seen.as_mut() => {
+            seen.expect("server observed navigation preload");
+            preload_was_seen = true;
+            None
+        },
+        result = navigation.as_mut() => Some(result),
+    };
+    let completed_before_preload_response = if navigation_result.is_some() {
+        true
+    } else if let Ok(result) =
+        tokio::time::timeout(Duration::from_secs(5), navigation.as_mut()).await
+    {
+        navigation_result = Some(result);
+        true
+    } else {
+        false
+    };
+    let response_body = if matches!(navigation_result.as_ref(), Some(Ok(_))) {
+        session
+            .script("document.body.innerText")
+            .await
+            .ok()
+            .map(|result| result.value)
+    } else {
+        None
+    };
+
+    let _ = release_preload_tx.send(());
+    let _ = shutdown_tx.send(());
+    if navigation_result.is_none() {
+        navigation_result = tokio::time::timeout(Duration::from_secs(5), navigation.as_mut())
+            .await
+            .ok();
+    }
+    drop(navigation);
+    session.close().await.unwrap();
+    server.await.unwrap();
+
+    assert!(
+        preload_was_seen,
+        "the enabled preload request must reach the server before the test can prove its response is still pending"
+    );
+    assert!(
+        completed_before_preload_response,
+        "an independent ServiceWorker response must commit without waiting for the preload body"
+    );
+    navigation_result
+        .expect("ServiceWorker navigation settles after preload release")
+        .expect("ServiceWorker navigation succeeds");
+    assert_eq!(
+        response_body,
+        Some(serde_json::json!("ServiceWorker response before preload"))
+    );
+}
+
+#[tokio::test]
 async fn native_service_worker_navigation_preload_is_cancelled_with_navigation() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

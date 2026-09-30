@@ -195,11 +195,16 @@ socket-free unit tests pass, covering referrer-policy application, response
 cloning, immutable headers, absent preloads, eligibility, and network errors.
 The full source URL stays internal to fetch calculations; the ServiceWorker
 sees the policy-filtered `FetchEvent.request.referrer`.
+An already-settled independent ServiceWorker response now returns without
+waiting for a still-pending preload body; a process-backed gated-response
+regression compiles, but running it stops at `TcpListener::bind("127.0.0.1:0")`
+with `PermissionDenied` before engine startup. The current scoped check and
+six socket-free navigation-preload tests pass, including the new runtime test.
 Process-backed request/header/no-duplicate, cancellation, source-document
 referrer-policy/redirect, and worker-visible `Request.referrer` regression
-sources compile with `--tests` but have not run here because local TCP listener
-binding is denied, so actual network,
-overlap, and cancellation behavior remain unverified. Navigation Preload
+sources previously compiled with `--tests` but have not run here because local
+TCP listener binding is denied, so actual network, overlap, and cancellation
+behavior remain unverified. Navigation Preload
 remains incomplete until those integrations run and pass. See the
 [slice 838
 task](tasks/native-engine-browser-838.md) and [slice 839

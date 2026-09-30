@@ -15,17 +15,23 @@ compiles but cannot execute here because local TCP listener binding is denied,
 so end-to-end persistence remains unverified and Slice 838 stays in progress.
 Slice 839 now starts eligible GET preloads through the native loader alongside
 FetchEvent dispatch, resolves `preloadResponse`, and reuses the result when
-the handler does not call `respondWith`. The scoped native-engine check and
-seven socket-free unit tests pass, covering referrer-policy application,
-readable cloned responses, immutable response headers, absent preloads, and
-network errors.
+the handler does not call `respondWith`. An already-settled ServiceWorker
+response no longer waits for a still-pending, unused preload body; a
+process-backed gated-response regression was added and compiled. Running that
+test stops at `TcpListener::bind("127.0.0.1:0")` with `PermissionDenied`
+before engine startup. The scoped native-engine check and the new socket-free
+runtime regression pass as part of six socket-free navigation-preload tests.
+The separate navigation referrer-policy unit had passed before this change;
+the preload tests cover readable cloned responses, immutable headers, absent
+preloads, and network errors.
 The source document's Referrer-Policy now crosses the content-process boundary
 separately from its URL; the raw URL remains internal while the worker-visible
 `FetchEvent.request.referrer` is policy-filtered. The policy is applied to the
 initial request and redirect targets. Process-backed request, header,
 no-duplicate-request, cancellation, source-policy/redirect, and worker-visible
-`Request.referrer` regression sources compile with `--tests` but have not run
-here because local TCP listener binding is denied; actual network, overlap,
+`Request.referrer` regression sources previously compiled with `--tests` but
+have not run here because local TCP listener binding is denied. The gated-
+response test also cannot run past the denied listener. Actual network, overlap,
 cancellation, WPT, remote-CI, and cross-platform proof remain open.
 The last recorded remote CI run, `36616367412` on `ee67f930`, failed and does
 not contain these local edits. See the

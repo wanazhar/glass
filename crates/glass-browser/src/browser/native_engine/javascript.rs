@@ -22271,6 +22271,54 @@ mod native_static_dynamic_import_tests {
     }
 
     #[test]
+    fn service_worker_navigation_preload_does_not_delay_independent_response() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id(
+            "sw-navigation-preload-independent-response",
+        )
+        .expect("ServiceWorker runtime is valid");
+        let worker_id = 45;
+        let worker_url = "https://preload.test/sw.js";
+        runtime
+            .evaluate_service_worker_source(
+                worker_id,
+                worker_url,
+                None,
+                "self.addEventListener('fetch', event => event.respondWith(new Response('independent response')));",
+                &BTreeMap::new(),
+            )
+            .expect("fetch listener installs");
+        let request_id = 75;
+        let request = serde_json::json!({
+            "url": "https://preload.test/page",
+            "method": "GET",
+            "headers": [],
+            "bodyNull": true,
+            "mode": "navigate",
+            "redirect": "follow",
+            "credentialsMode": "include",
+            "destination": "document",
+            "navigationPreloadRequestId": request_id,
+        });
+
+        let evaluation = runtime
+            .evaluate_service_worker_fetch(worker_id, worker_url, &request, false)
+            .expect("FetchEvent dispatch returns the independent response");
+
+        assert!(
+            !evaluation.top_level_await_pending,
+            "an independent response must not await the pending preload promise"
+        );
+        assert_eq!(evaluation.value["handled"], true);
+        let encoded = evaluation.value["response"]["bodyBase64"]
+            .as_str()
+            .expect("independent response body is base64 encoded");
+        let body = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("independent response body uses valid base64");
+        assert_eq!(body, b"independent response");
+    }
+
+    #[test]
     fn service_worker_preload_response_is_undefined_when_not_started() {
         let runtime = NativeJavaScriptRuntime::new_with_context_id("sw-preload-not-started")
             .expect("ServiceWorker runtime is valid");

@@ -44,7 +44,9 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 - Start the preload concurrently with FetchEvent dispatch. Navigation
   cancellation aborts it. It must not block dispatch while waiting for the
   network response or allow a late response to mutate a committed/cancelled
-  navigation.
+  navigation. If the handler has already produced its own response while the
+  preload is still pending, commit the ServiceWorker response without waiting
+  for the unused preload body and abort that pending request.
 - The navigation `FetchEvent.request` exposes `mode === "navigate"`. Create
   that internal request without weakening the public `Request` constructor's
   rejection of `new Request(url, { mode: "navigate" })`.
@@ -88,16 +90,18 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 
 ## Current Evidence
 
-- `cargo check -p glass-browser --features native-engine --lib --tests --locked -q` passes.
-- `cargo test -p glass-browser --lib --features native-engine --locked navigation_preload -- --quiet` passes (five socket-free tests).
-- `service_worker_preload_response_is_undefined_when_not_started` passes separately (one test).
-- `navigation_referrer_policy_is_applied_before_cross_origin_requests` passes separately (one test).
+- `cargo check -p glass-browser --features native-engine --lib --tests --locked -q` passes on the current revision.
+- `cargo test -p glass-browser --lib --features native-engine --locked navigation_preload -- --quiet` passes (six socket-free tests, including the immediate-response runtime regression).
+- `cargo fmt --all -- --check`, release-documentation truth, documentation depth, TUI shortcut inventory, and `git diff --check` pass.
 - The response test proves headers are immutable and both the original and
   cloned response bodies remain readable. It also verifies the policy-reduced
   cross-origin `Request.referrer` and that public `Request` construction still
   rejects navigation mode.
+- The new process-backed independent-response regression compiles as part of
+  `cargo check --tests` and the integration-test target. Running it fails at
+  `TcpListener::bind("127.0.0.1:0")` with `PermissionDenied` before engine
+  startup, so its behavioral assertion is not yet verified.
 - Process-backed HTTP request/header/no-duplicate, navigation-cancellation,
-  source-policy/redirect, and worker-visible `Request.referrer` regressions
-  compile with `--tests`; they have not run in this sandbox because local TCP
-  listener binding is denied.
-- The process-backed tests still need execution evidence for actual method/header/count, preload/dispatch overlap, HTTP failure, and cancellation. WPT, remote CI, and cross-platform validation remain open.
+  source-policy/redirect, worker-visible `Request.referrer`, and independent-
+  response behavior still need execution evidence. WPT, remote CI, and
+  cross-platform validation remain open.

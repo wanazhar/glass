@@ -16,14 +16,19 @@ so end-to-end persistence remains unverified and Slice 838 stays in progress.
 Slice 839 now starts eligible GET preloads through the native loader alongside
 FetchEvent dispatch, resolves `preloadResponse`, and reuses the result when
 the handler does not call `respondWith`. The scoped native-engine check and
-six socket-free navigation-preload unit tests pass, covering readable cloned
-responses, immutable response headers, absent preloads, and network errors.
-Process-backed request,
-header, no-duplicate-request, and cancellation regressions compile with
-`--tests` but have not run here because local TCP listener binding is denied;
-actual network, overlap, cancellation, WPT, remote-CI, and cross-platform proof
-remain open. The last recorded remote CI run, `36616367412` on `ee67f930`,
-failed and does not contain these local edits. See the
+seven socket-free unit tests pass, covering referrer-policy application,
+readable cloned responses, immutable response headers, absent preloads, and
+network errors.
+The source document's Referrer-Policy now crosses the content-process boundary
+separately from its URL; the raw URL remains internal while the worker-visible
+`FetchEvent.request.referrer` is policy-filtered. The policy is applied to the
+initial request and redirect targets. Process-backed request, header,
+no-duplicate-request, cancellation, source-policy/redirect, and worker-visible
+`Request.referrer` regression sources compile with `--tests` but have not run
+here because local TCP listener binding is denied; actual network, overlap,
+cancellation, WPT, remote-CI, and cross-platform proof remain open.
+The last recorded remote CI run, `36616367412` on `ee67f930`, failed and does
+not contain these local edits. See the
 [Slice 830 task](../plan/tasks/native-engine-browser-830.md),
 [Slice 831 task](../plan/tasks/native-engine-browser-831.md),
 [Slice 832 task](../plan/tasks/native-engine-browser-832.md),

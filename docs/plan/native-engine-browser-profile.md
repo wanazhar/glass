@@ -323,7 +323,11 @@ normal bounded Response body APIs. Navigation cancellation aborts the preload;
 the regular navigation request's origin, credentials, redirects, network
 policy, resource limits, and response handling continue to apply. The preload
 must not recurse through ServiceWorker interception or silently trigger a
-different browser backend. See the [Service Workers Navigation Preload
+different browser backend. Keep the source Document URL and its effective
+Referrer-Policy separate across the content-process boundary. Retain the full
+URL internally for fetch calculation, but expose `FetchEvent.request.referrer`
+only after applying that policy. Recompute the `Referer` for each redirect
+using any response policy update. See the [Service Workers Navigation Preload
 contract](https://w3c.github.io/ServiceWorker/#navigationpreloadmanager) and
 [Fetch dispatch algorithm](https://w3c.github.io/ServiceWorker/#handle-fetch).
 
@@ -338,13 +342,14 @@ process-backed persistence regression cannot run in this sandbox because TCP
 listener binding is denied. Slice 839 now starts eligible GET preloads through
 the native loader alongside FetchEvent dispatch, exposes navigation request
 mode, delivers the bounded response through `preloadResponse`, and reuses it
-for an unhandled navigation. Its scoped native-engine check and six
-socket-free unit tests pass, covering response cloning, immutable headers,
-the no-preload result, eligibility, and network errors. Process-backed
-HTTP/header/no-duplicate and cancellation test sources compile with `--tests`
-but have not run here because local TCP listener binding is denied; actual
-network, overlap, and cancellation behavior remain unverified. Navigation
-Preload is still incomplete until
+for an unhandled navigation. Its scoped native-engine check and seven
+socket-free unit tests pass, covering referrer-policy application, response
+cloning, immutable headers, the no-preload result, eligibility, and network
+errors. Existing process-backed HTTP/header/no-duplicate, cancellation,
+source-policy/redirect, and worker-visible `Request.referrer` regression
+sources compile with `--tests`, but have not run here because local TCP listener
+binding is denied; actual network, overlap, and cancellation behavior remain
+unverified. Navigation Preload is still incomplete until
 those integrations and remaining CI/WPT/platform evidence pass.
 
 ### Explicit `tabindex` focus baseline

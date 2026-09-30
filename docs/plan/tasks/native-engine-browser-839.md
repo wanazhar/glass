@@ -32,6 +32,15 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   interception for that clone. Reuse the native loader's URL, origin,
   credentials, redirect, network-policy, cookie, response-size, and
   cancellation behavior; do not create a second browser/backend path.
+- Carry the source Document URL and its effective Referrer-Policy separately
+  across the browser/content-process boundary. Apply that policy to the
+  initial preload and recompute the `Referer` after redirects, including
+  response `Referrer-Policy` updates; never infer policy from an already
+  shortened referrer URL. Expose `FetchEvent.request.referrer` in its
+  policy-filtered form, including a reduced cross-origin value, while retaining
+  the full source URL only in internal request state for network and preload
+  calculations. Only the internal navigation token may bypass the public
+  Request constructor's same-origin referrer restriction.
 - Start the preload concurrently with FetchEvent dispatch. Navigation
   cancellation aborts it. It must not block dispatch while waiting for the
   network response or allow a late response to mutate a committed/cancelled
@@ -48,8 +57,10 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   issuing a duplicate request when the preload result is reusable.
 - Tests assert the actual request method, URL, configured header, number of
   network requests, overlap with FetchEvent dispatch, navigation request mode,
-  FetchEvent response semantics, network failure, and cancellation. Include
-  non-GET, disabled, absent-listener, and enabled-listener controls.
+  `Request.referrer`/`referrerPolicy`, source-document `Referer` policy, redirect
+  policy updates, FetchEvent response semantics, network failure, and
+  cancellation. Include non-GET,
+  disabled, absent-listener, and enabled-listener controls.
 - Process-backed network assertions are required; a pure command or mocked
   loader test alone does not close this slice.
 
@@ -80,6 +91,13 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 - `cargo check -p glass-browser --features native-engine --lib --tests --locked -q` passes.
 - `cargo test -p glass-browser --lib --features native-engine --locked navigation_preload -- --quiet` passes (five socket-free tests).
 - `service_worker_preload_response_is_undefined_when_not_started` passes separately (one test).
-- The response test also proves headers are immutable and both the original and cloned response bodies remain readable.
-- Process-backed HTTP request/header/no-duplicate and navigation-cancellation regressions compile with `--tests`; they have not run in this sandbox because local TCP listener binding is denied.
+- `navigation_referrer_policy_is_applied_before_cross_origin_requests` passes separately (one test).
+- The response test proves headers are immutable and both the original and
+  cloned response bodies remain readable. It also verifies the policy-reduced
+  cross-origin `Request.referrer` and that public `Request` construction still
+  rejects navigation mode.
+- Process-backed HTTP request/header/no-duplicate, navigation-cancellation,
+  source-policy/redirect, and worker-visible `Request.referrer` regressions
+  compile with `--tests`; they have not run in this sandbox because local TCP
+  listener binding is denied.
 - The process-backed tests still need execution evidence for actual method/header/count, preload/dispatch overlap, HTTP failure, and cancellation. WPT, remote CI, and cross-platform validation remain open.

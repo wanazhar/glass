@@ -33,6 +33,7 @@ use super::resource_loader::{
     NativeCorsMode, NativeFetchCacheMode, NativeFetchCredentialsMode, NativeFetchMethod,
     NativeFetchRedirectMode, NativeFetchReferrerPolicy, NativeFetchRequest, NativeFetchResponse,
     NativeNavigationRequest, NativeRequestBody, NativeResource, NativeResourceLoader,
+    referrer_for_navigation_with_policy,
 };
 use base64::Engine as _;
 use serde_json::{Value, json};
@@ -1929,6 +1930,7 @@ impl NativeServiceWorkerRegistry {
         loader: &mut NativeResourceLoader,
         navigation: &NativeNavigationRequest,
         referrer: Option<&str>,
+        referrer_policy: NativeFetchReferrerPolicy,
     ) -> Result<NativeServiceWorkerNavigationOutcome, NativeEngineError> {
         let target = parse_network_url(
             "service worker navigation URL",
@@ -1947,6 +1949,13 @@ impl NativeServiceWorkerRegistry {
                 })
             })
             .transpose()?;
+        let request_referrer = match referrer {
+            Some(source) => Some(
+                referrer_for_navigation_with_policy(source, &navigation.url, referrer_policy)?
+                    .unwrap_or_default(),
+            ),
+            None => None,
+        };
         let outcome = self
             .intercept_fetch(
                 loader,
@@ -1961,9 +1970,9 @@ impl NativeServiceWorkerRegistry {
                 None,
                 true,
                 None,
-                None,
-                None,
-                None,
+                request_referrer.as_deref(),
+                Some(referrer.unwrap_or_default()),
+                Some(referrer_policy.as_str()),
                 "document",
                 navigation_preload,
                 referrer,
@@ -2189,12 +2198,22 @@ impl NativeServiceWorkerRegistry {
             let worker_id = worker.id;
             let worker_url = worker.script_url.clone();
             let is_module = worker.is_module;
+            let preload_referrer_policy = referrer_policy
+                .map(NativeFetchReferrerPolicy::parse)
+                .transpose()?
+                .ok_or_else(|| {
+                    NativeEngineError::invalid(
+                        "native ServiceWorker navigation preload policy",
+                        "must be present for an eligible preload",
+                    )
+                })?;
             let preload_request = async {
                 Ok::<_, NativeEngineError>(
                     loader
                         .fetch_navigation_preload_async(
                             target.as_str(),
                             navigation_referrer,
+                            preload_referrer_policy,
                             &preload.header_value,
                         )
                         .await,

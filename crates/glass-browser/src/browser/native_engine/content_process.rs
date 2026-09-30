@@ -111,7 +111,7 @@ use url::Url;
 // the base64 envelope and the rest of the document state.
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 15;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 16;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1638,6 +1638,7 @@ impl NativeContentProcess {
         limits: &NativeEngineLimits,
         viewport: Viewport,
         referrer: Option<&str>,
+        referrer_policy: NativeFetchReferrerPolicy,
         client_id: &str,
         service_worker_clients: &[NativeServiceWorkerClientState],
         cancellation: Option<&NativeNavigationCancellation>,
@@ -1647,6 +1648,7 @@ impl NativeContentProcess {
             limits,
             viewport,
             referrer,
+            referrer_policy,
             client_id,
             service_worker_clients,
             cancellation,
@@ -1661,6 +1663,7 @@ impl NativeContentProcess {
         limits: &NativeEngineLimits,
         viewport: Viewport,
         referrer: Option<&str>,
+        referrer_policy: NativeFetchReferrerPolicy,
         client_id: &str,
         service_worker_clients: &[NativeServiceWorkerClientState],
         cancellation: Option<&NativeNavigationCancellation>,
@@ -1686,6 +1689,7 @@ impl NativeContentProcess {
             "content_type": navigation.body_content_type,
             "object_url": navigation.object_url,
             "referrer": referrer,
+            "referrer_policy": referrer_policy.as_str(),
             "max_document_bytes": limits.max_document_bytes,
             "max_nodes": limits.max_nodes,
             "max_dom_depth": limits.max_dom_depth,
@@ -8518,6 +8522,16 @@ async fn load_content_resource(
             })
         })
         .transpose()?;
+    let referrer_policy = request
+        .get("referrer_policy")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            NativeEngineError::invalid(
+                "content-process referrer policy",
+                "must be a supported Referrer-Policy token",
+            )
+        })
+        .and_then(NativeFetchReferrerPolicy::parse)?;
     let client_id = request.get("client_id").and_then(Value::as_str);
     if let Some(value) = request.get("service_worker_clients") {
         let clients: Vec<NativeServiceWorkerClientState> = serde_json::from_value(value.clone())
@@ -8551,7 +8565,7 @@ async fn load_content_resource(
     loader.set_environment(environment)?;
     let resource = if navigation.object_url.is_some() {
         loader
-            .load_async_request_with_referrer(&navigation, referrer)
+            .load_async_request_with_referrer_policy(&navigation, referrer, referrer_policy)
             .await?
     } else if let Some(completion) = resumed_fetch {
         match completion.response {
@@ -8566,7 +8580,7 @@ async fn load_content_resource(
             }
             None => {
                 loader
-                    .load_async_request_with_referrer(&navigation, referrer)
+                    .load_async_request_with_referrer_policy(&navigation, referrer, referrer_policy)
                     .await?
             }
         }
@@ -8574,13 +8588,13 @@ async fn load_content_resource(
         service_workers.begin_document(url, client_id)?;
         service_workers.restore_for_document(url, loader).await?;
         match service_workers
-            .intercept_navigation(loader, &navigation, referrer)
+            .intercept_navigation(loader, &navigation, referrer, referrer_policy)
             .await?
         {
             NativeServiceWorkerNavigationOutcome::Handled(resource) => resource,
             NativeServiceWorkerNavigationOutcome::NotHandled => {
                 loader
-                    .load_async_request_with_referrer(&navigation, referrer)
+                    .load_async_request_with_referrer_policy(&navigation, referrer, referrer_policy)
                     .await?
             }
             NativeServiceWorkerNavigationOutcome::Suspended => return Ok(None),
@@ -15572,6 +15586,7 @@ mod tests {
                     &NativeEngineLimits::default(),
                     Viewport::default(),
                     None,
+                    super::super::resource_loader::NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
                     super::super::browsing_context::NATIVE_CONTEXT_ID,
                     &[],
                     None,
@@ -15673,6 +15688,7 @@ mod tests {
                 &NativeEngineLimits::default(),
                 Viewport::default(),
                 None,
+                super::super::resource_loader::NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
                 super::super::browsing_context::NATIVE_CONTEXT_ID,
                 &[],
                 None,
@@ -15728,6 +15744,7 @@ mod tests {
                     &limits,
                     Viewport::default(),
                     None,
+                    super::super::resource_loader::NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
                     super::super::browsing_context::NATIVE_CONTEXT_ID,
                     &[],
                     None,

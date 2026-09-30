@@ -12182,6 +12182,249 @@ self.addEventListener('fetch', event => {
 }
 
 #[tokio::test]
+async fn native_service_worker_navigation_preload_sends_header_and_reuses_response() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let register_page = "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>preload registration</main></body></html>";
+    let worker_script = r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  const pathname = new URL(event.request.url).pathname;
+  if (pathname === '/handled') {
+    event.respondWith(event.preloadResponse.then(async response => {
+      if (!response) return new Response('missing preload', { status: 503 });
+      return new Response('<!doctype html><html><body>' + [
+        response.status,
+        new URL(response.url).pathname,
+        response.headers.get('x-preload-marker'),
+        await response.text(),
+      ].join('/') + '</body></html>', {
+        headers: { 'Content-Type': 'text/html' },
+      });
+    }));
+  } else if (pathname === '/failed') {
+    event.respondWith(event.preloadResponse.then(
+      () => new Response('unexpected preload response'),
+      error => new Response('<!doctype html><html><body>preload-' + error.name + '</body></html>', {
+        headers: { 'Content-Type': 'text/html' },
+      }),
+    ));
+  }
+});"#;
+    let server = tokio::spawn(async move {
+        for (expected_path, expected_preload_header, content_type, body) in [
+            ("/register", None, "text/html", register_page),
+            ("/sw.js", None, "application/javascript", worker_script),
+            (
+                "/controlled",
+                Some("glass-nav-preload"),
+                "text/html",
+                "<!doctype html><html><body>unhandled preload body</body></html>",
+            ),
+            (
+                "/handled",
+                Some("glass-nav-preload"),
+                "text/plain",
+                "handled preload body",
+            ),
+            ("/failed", Some("glass-nav-preload"), "text/html", ""),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().next(), Some("GET"));
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if let Some(expected_value) = expected_preload_header {
+                assert!(
+                    request.to_ascii_lowercase().contains(&format!(
+                        "service-worker-navigation-preload: {expected_value}"
+                    )),
+                    "navigation preload header missing from {expected_path}: {request}"
+                );
+            } else {
+                assert!(
+                    !request
+                        .to_ascii_lowercase()
+                        .contains("service-worker-navigation-preload:")
+                );
+            }
+            if expected_path == "/failed" {
+                drop(stream);
+                continue;
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nX-Preload-Marker: upstream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/register")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(async reg => { await reg.navigationPreload.enable(); await reg.navigationPreload.setHeaderValue('glass-nav-preload'); return reg.navigationPreload.getState(); })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"enabled": true, "headerValue": "glass-nav-preload"})
+    );
+
+    engine
+        .navigate_async(format!("http://{address}/controlled"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.body.innerText")
+            .await
+            .unwrap(),
+        serde_json::json!("unhandled preload body")
+    );
+
+    engine
+        .navigate_async(format!("http://{address}/handled"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.body.innerText")
+            .await
+            .unwrap(),
+        serde_json::json!("200//handled/upstream/handled preload body")
+    );
+
+    engine
+        .navigate_async(format!("http://{address}/failed"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.body.innerText")
+            .await
+            .unwrap(),
+        serde_json::json!("preload-TypeError")
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_service_worker_navigation_preload_is_cancelled_with_navigation() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (preload_seen_tx, preload_seen_rx) = oneshot::channel();
+    let (preload_closed_tx, preload_closed_rx) = oneshot::channel();
+    let registration_page = "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>preload cancellation</main></body></html>";
+    let worker_script = r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  if (new URL(event.request.url).pathname === '/slow')
+    event.respondWith(event.preloadResponse.then(response => response || new Response('missing preload')));
+});"#;
+    let server = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            match path {
+                "/register" => {
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{registration_page}",
+                        registration_page.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+                "/sw.js" => {
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{worker_script}",
+                        worker_script.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+                "/slow" => {
+                    assert_eq!(request.split_whitespace().next(), Some("GET"));
+                    assert!(
+                        request
+                            .to_ascii_lowercase()
+                            .contains("service-worker-navigation-preload: true")
+                    );
+                    let _ = preload_seen_tx.send(());
+                    let mut byte = [0_u8; 1];
+                    let closed =
+                        tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte))
+                            .await
+                            .is_ok_and(|result| !matches!(result, Ok(read) if read > 0));
+                    let _ = preload_closed_tx.send(closed);
+                    return;
+                }
+                other => panic!("unexpected navigation preload request: {other}: {request}"),
+            }
+        }
+    });
+
+    let session = BrowserSession::start_default().await.unwrap();
+    session
+        .navigate(format!("http://{address}/register"))
+        .await
+        .unwrap();
+    session
+        .script("await navigator.serviceWorker.ready.then(async registration => { await registration.navigationPreload.enable(); if (!registration.active) throw new Error('active ServiceWorker is missing'); })")
+        .await
+        .unwrap();
+    let initial = session.evidence(EvidenceLevel::Compact).await.unwrap();
+    {
+        let navigation = session.navigate(format!("http://{address}/slow"));
+        tokio::pin!(navigation);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                result = &mut navigation => panic!("preload navigation completed before cancellation: {result:?}"),
+                seen = preload_seen_rx => seen.expect("server observed the navigation preload"),
+            }
+        })
+        .await
+        .expect("navigation preload did not reach the fixture server");
+
+        let stopped = tokio::time::timeout(
+            Duration::from_secs(5),
+            session.stop_loading_with_revision(initial.revision),
+        )
+        .await
+        .expect("stop-loading did not settle promptly")
+        .unwrap();
+        assert_eq!(stopped.action, "stopLoading");
+        assert_eq!(stopped.current_revision, initial.revision);
+        let error = tokio::time::timeout(Duration::from_secs(5), &mut navigation)
+            .await
+            .expect("cancelled navigation did not settle")
+            .expect_err("cancelled navigation must not commit");
+        assert!(matches!(
+            error.downcast_ref::<BrowserBackendError>(),
+            Some(BrowserBackendError::Lifecycle { state, .. }) if state == "cancelled"
+        ));
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), preload_closed_rx)
+            .await
+            .expect("cancelled preload connection did not close")
+            .expect("fixture server reports preload connection state"),
+        "navigation cancellation must close the in-flight preload request"
+    );
+    let after_cancel = session.evidence(EvidenceLevel::Compact).await.unwrap();
+    assert_eq!(after_cancel.url, initial.url);
+    assert_eq!(after_cancel.revision, initial.revision);
+    session.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_persists_waiting_service_worker_across_restart() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

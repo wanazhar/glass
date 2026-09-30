@@ -327,13 +327,23 @@ different browser backend. See the [Service Workers Navigation Preload
 contract](https://w3c.github.io/ServiceWorker/#navigationpreloadmanager) and
 [Fetch dispatch algorithm](https://w3c.github.io/ServiceWorker/#handle-fetch).
 
-The current FetchEvent shim resolves `preloadResponse` to `undefined` for every
-request. Slice 838 implements the manager and durable registration settings;
-its scoped compile and socket-free unit tests pass, but its process-backed
-persistence regression cannot run in this sandbox because TCP listener binding
-is denied. Slice 839 implements request dispatch, response delivery, and
-cancellation. Until both slices are implemented and verified, Navigation
-Preload is incomplete in the native engine.
+For a navigation event, `FetchEvent.request.mode` is `"navigate"`. The host
+creates that internal request directly; the public `Request` constructor still
+rejects an explicitly supplied `{ mode: "navigate" }`.
+
+Before Slice 839, the FetchEvent shim resolved `preloadResponse` to `undefined`
+for every request. Slice 838 implements the manager and durable registration
+settings; its scoped compile and socket-free unit tests pass, but its
+process-backed persistence regression cannot run in this sandbox because TCP
+listener binding is denied. Slice 839 now starts eligible GET preloads through
+the native loader alongside FetchEvent dispatch, exposes navigation request
+mode, delivers the bounded response through `preloadResponse`, and reuses it
+for an unhandled navigation. Its scoped native-engine check and five
+socket-free unit tests pass. Process-backed HTTP/header/no-duplicate and
+cancellation test sources compile with `--tests` but have not run here because
+local TCP listener binding is denied; actual network, overlap, and cancellation
+behavior remain unverified. Navigation Preload is still incomplete until
+those integrations and remaining CI/WPT/platform evidence pass.
 
 ### Explicit `tabindex` focus baseline
 

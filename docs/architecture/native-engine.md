@@ -13,11 +13,15 @@ durable registration settings; its scoped native-engine check and two
 socket-free unit tests pass. The extended process-backed restart regression
 compiles but cannot execute here because local TCP listener binding is denied,
 so end-to-end persistence remains unverified and Slice 838 stays in progress.
-Slice 839's network preload and `FetchEvent.preloadResponse` integration has
-not started. The latest
-recorded remote CI run, `36616367412` on `ee67f930`, failed and does not contain
-these local edits. Remote CI for these edits, WPT conformance, and
-cross-platform certification remain open. See the
+Slice 839 now starts eligible GET preloads through the native loader alongside
+FetchEvent dispatch, resolves `preloadResponse`, and reuses the result when
+the handler does not call `respondWith`. The scoped native-engine check and
+five socket-free navigation-preload unit tests pass. Process-backed request,
+header, no-duplicate-request, and cancellation regressions compile with
+`--tests` but have not run here because local TCP listener binding is denied;
+actual network, overlap, cancellation, WPT, remote-CI, and cross-platform proof
+remain open. The last recorded remote CI run, `36616367412` on `ee67f930`,
+failed and does not contain these local edits. See the
 [Slice 830 task](../plan/tasks/native-engine-browser-830.md),
 [Slice 831 task](../plan/tasks/native-engine-browser-831.md),
 [Slice 832 task](../plan/tasks/native-engine-browser-832.md),

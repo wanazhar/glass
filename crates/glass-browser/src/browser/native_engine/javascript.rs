@@ -1553,6 +1553,10 @@ enum NativeWorkerDispatch<'a> {
         request_id: u32,
         payload: &'a serde_json::Value,
     },
+    ServiceWorkerNavigationPreload {
+        request_id: u32,
+        payload: &'a serde_json::Value,
+    },
     ServiceWorkerFetch {
         payload: &'a serde_json::Value,
     },
@@ -17133,6 +17137,67 @@ impl NativeJavaScriptRuntime {
         )
     }
 
+    pub(crate) fn has_service_worker_fetch_listener(&self) -> Result<bool, NativeEngineError> {
+        self.context.with(|ctx| {
+            let has_listener: Function = ctx
+                .globals()
+                .get("__glassHasServiceWorkerFetchListener")
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "inspect native ServiceWorker fetch listeners".into(),
+                    reason: format!(
+                        "ServiceWorker listener query is unavailable: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })?;
+            has_listener
+                .call(())
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "inspect native ServiceWorker fetch listeners".into(),
+                    reason: format!(
+                        "ServiceWorker listener query failed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })
+        })
+    }
+
+    pub(crate) fn resolve_service_worker_navigation_preload(
+        &self,
+        worker_id: u32,
+        worker_url: &str,
+        request_id: u32,
+        payload: &serde_json::Value,
+        is_module: bool,
+    ) -> Result<NativeScriptEvaluation, NativeEngineError> {
+        if request_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "native service worker navigation preload request id",
+                "must be positive",
+            ));
+        }
+        let bootstrap = service_worker_bootstrap(
+            worker_id,
+            worker_url,
+            self.now_ms(),
+            &BTreeMap::new(),
+            is_module,
+            self.worker_global_referrer_policy,
+        )?;
+        self.evaluate_worker_source_with_bootstrap_and_event(
+            worker_id,
+            worker_url,
+            None,
+            "undefined;",
+            bootstrap,
+            true,
+            false,
+            Some(NativeWorkerDispatch::ServiceWorkerNavigationPreload {
+                request_id,
+                payload,
+            }),
+        )
+    }
+
     pub(crate) fn evaluate_service_worker_lifecycle(
         &self,
         worker_id: u32,
@@ -20486,6 +20551,7 @@ fn dispatch_worker_event<'js>(
                 "native Worker fetch response",
                 request_id,
                 payload,
+                false,
             )?;
             false
         }
@@ -20496,6 +20562,7 @@ fn dispatch_worker_event<'js>(
                 "native Worker fetch response stream event",
                 stream_id,
                 payload,
+                false,
             )?;
             false
         }
@@ -20506,6 +20573,7 @@ fn dispatch_worker_event<'js>(
                 "native Worker fetch request upload event",
                 stream_id,
                 payload,
+                false,
             )?;
             false
         }
@@ -20519,6 +20587,7 @@ fn dispatch_worker_event<'js>(
                 "native service-worker cache response",
                 request_id,
                 payload,
+                false,
             )?;
             false
         }
@@ -20532,6 +20601,21 @@ fn dispatch_worker_event<'js>(
                 "native service-worker openWindow response",
                 request_id,
                 payload,
+                false,
+            )?;
+            false
+        }
+        NativeWorkerDispatch::ServiceWorkerNavigationPreload {
+            request_id,
+            payload,
+        } => {
+            dispatch_worker_resolver(
+                &ctx,
+                "__glassResolveServiceWorkerNavigationPreload",
+                "native ServiceWorker navigation preload response",
+                request_id,
+                payload,
+                true,
             )?;
             false
         }
@@ -20580,6 +20664,7 @@ fn dispatch_worker_event<'js>(
                 "native Worker WebSocket event",
                 socket_id,
                 payload,
+                false,
             )?;
             false
         }
@@ -20595,6 +20680,7 @@ fn dispatch_worker_event<'js>(
                 "native Worker EventSource event",
                 source_id,
                 payload,
+                false,
             )?;
             false
         }
@@ -20733,6 +20819,7 @@ fn dispatch_worker_resolver(
     operation: &str,
     request_id: u32,
     payload: &serde_json::Value,
+    require_resolution: bool,
 ) -> Result<(), NativeEngineError> {
     let payload = native_structured_payload(ctx, payload, operation)?;
     let resolve: Function =
@@ -20745,7 +20832,7 @@ fn dispatch_worker_resolver(
                     CaughtError::from_error(ctx, error)
                 ),
             })?;
-    resolve
+    let resolved = resolve
         .call::<_, Value>((request_id, payload))
         .map_err(|error| NativeEngineError::Worker {
             operation: format!("dispatch {operation}"),
@@ -20754,6 +20841,12 @@ fn dispatch_worker_resolver(
                 CaughtError::from_error(ctx, error)
             ),
         })?;
+    if require_resolution && resolved.as_bool() != Some(true) {
+        return Err(NativeEngineError::Worker {
+            operation: format!("dispatch {operation}"),
+            reason: "the matching pending request was not found".into(),
+        });
+    }
     Ok(())
 }
 
@@ -21536,6 +21629,7 @@ mod native_static_dynamic_import_tests {
         rewrite_runtime_dynamic_module_imports_with_policy, rewrite_static_json_module_specifiers,
         static_module_requests,
     };
+    use base64::Engine as _;
 
     #[test]
     fn module_source_maps_preserve_referrer_policy_per_module_identity() {
@@ -22058,6 +22152,167 @@ mod native_static_dynamic_import_tests {
                 .is_err()
         );
         assert!(runtime.take_service_worker_commands().is_empty());
+    }
+
+    #[test]
+    fn service_worker_navigation_preload_response_resolves_to_a_readable_response() {
+        let runtime =
+            NativeJavaScriptRuntime::new_with_context_id("sw-navigation-preload-response")
+                .expect("ServiceWorker runtime is valid");
+        let worker_id = 42;
+        let worker_url = "https://preload.test/sw.js";
+        runtime
+            .evaluate_service_worker_source(
+                worker_id,
+                worker_url,
+                None,
+                r#"self.addEventListener('fetch', event => {
+  const navigationRequest = event.request;
+  const clonedNavigationMode = navigationRequest.clone().mode;
+  let constructorRejectsNavigationMode = false;
+  try { new Request(navigationRequest.url, { mode: 'navigate' }); }
+  catch (error) { constructorRejectsNavigationMode = error instanceof TypeError; }
+  event.respondWith(event.preloadResponse.then(async response => {
+    if (!(response instanceof Response)) return new Response('missing');
+    return new Response(JSON.stringify({
+      status: response.status,
+      url: response.url,
+      redirected: response.redirected,
+      type: response.type,
+      mode: navigationRequest.mode,
+      clonedMode: clonedNavigationMode,
+      constructorRejectsNavigationMode,
+      marker: response.headers.get('x-preload-marker'),
+      body: await response.text(),
+    }), { headers: { 'Content-Type': 'application/json' } });
+  }));
+});"#,
+                &BTreeMap::new(),
+            )
+            .expect("fetch listener installs");
+        assert!(
+            runtime
+                .has_service_worker_fetch_listener()
+                .expect("listener presence is observable by the host")
+        );
+
+        let request_id = 73;
+        let request = serde_json::json!({
+            "url": "https://preload.test/page",
+            "method": "GET",
+            "headers": [],
+            "bodyNull": true,
+            "mode": "navigate",
+            "redirect": "follow",
+            "credentialsMode": "include",
+            "destination": "document",
+            "navigationPreloadRequestId": request_id,
+        });
+        let dispatched = runtime
+            .evaluate_service_worker_fetch(worker_id, worker_url, &request, false)
+            .expect("fetch event starts while preload promise is pending");
+        assert!(dispatched.top_level_await_pending);
+
+        let response = serde_json::json!({
+            "url": "https://preload.test/final-page",
+            "status": 200,
+            "statusText": "OK",
+            "headers": [["x-preload-marker", "preserved"]],
+            "contentType": "text/plain",
+            "bodyBase64": base64::engine::general_purpose::STANDARD.encode("preloaded body"),
+            "bodyNull": false,
+            "redirected": true,
+            "opaque": false,
+            "opaqueRedirect": false,
+        });
+        let resolved = runtime
+            .resolve_service_worker_navigation_preload(
+                worker_id, worker_url, request_id, &response, false,
+            )
+            .expect("host response resolves FetchEvent.preloadResponse");
+        assert!(resolved.commands.is_empty());
+        assert_eq!(
+            runtime
+                .take_top_level_await_result()
+                .expect("ServiceWorker response promise settles"),
+            Some(serde_json::json!({
+                "handled": true,
+                "response": {
+                    "url": "",
+                    "status": 200,
+                    "statusText": "",
+                    "headers": [["content-type", "application/json"]],
+                    "contentType": "application/json",
+                    "bodyBase64": base64::engine::general_purpose::STANDARD.encode(r#"{"status":200,"url":"https://preload.test/final-page","redirected":true,"type":"basic","mode":"navigate","clonedMode":"navigate","constructorRejectsNavigationMode":true,"marker":"preserved","body":"preloaded body"}"#),
+                    "bodyNull": false,
+                    "redirected": false,
+                }
+            }))
+        );
+        assert!(
+            runtime
+                .resolve_service_worker_navigation_preload(
+                    worker_id, worker_url, request_id, &response, false,
+                )
+                .is_err(),
+            "the host rejects stale navigation-preload request ids"
+        );
+    }
+
+    #[test]
+    fn service_worker_navigation_preload_network_error_rejects_type_error() {
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("sw-navigation-preload-error")
+            .expect("ServiceWorker runtime is valid");
+        let worker_id = 43;
+        let worker_url = "https://preload.test/sw.js";
+        runtime
+            .evaluate_service_worker_source(
+                worker_id,
+                worker_url,
+                None,
+                "self.addEventListener('fetch', event => event.respondWith(event.preloadResponse.then(() => new Response('unexpected'), error => new Response(error.name))));",
+                &BTreeMap::new(),
+            )
+            .expect("fetch listener installs");
+        let request_id = 74;
+        let request = serde_json::json!({
+            "url": "https://preload.test/page",
+            "method": "GET",
+            "headers": [],
+            "bodyNull": true,
+            "mode": "navigate",
+            "redirect": "follow",
+            "credentialsMode": "include",
+            "destination": "document",
+            "navigationPreloadRequestId": request_id,
+        });
+        let dispatched = runtime
+            .evaluate_service_worker_fetch(worker_id, worker_url, &request, false)
+            .expect("fetch event starts with a pending preload response");
+        assert!(dispatched.top_level_await_pending);
+
+        let rejected = runtime
+            .resolve_service_worker_navigation_preload(
+                worker_id,
+                worker_url,
+                request_id,
+                &serde_json::json!({"error": "connection refused"}),
+                false,
+            )
+            .expect("network failure rejects the pending preload promise");
+        assert!(rejected.commands.is_empty());
+        let settled = runtime
+            .take_top_level_await_result()
+            .expect("network-error FetchEvent response settles")
+            .expect("fetch handler handles the network error");
+        assert_eq!(settled["handled"], true);
+        let encoded = settled["response"]["bodyBase64"]
+            .as_str()
+            .expect("typed network error response body is encoded");
+        let body = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("network error response body uses valid base64");
+        assert_eq!(body, b"TypeError");
     }
 
     #[test]
@@ -29041,15 +29296,46 @@ fn worker_bootstrap(
     try {{ return Promise.resolve(transform(payload.bytes.slice(), payload)); }}
     catch (error) {{ return Promise.reject(error); }}
   }};
+  const workerNavigationRequestToken = (() => {{
+    const existing = globalThis.__glassWorkerNavigationRequestToken;
+    if (existing && typeof existing === "object") return existing;
+    const token = Object.freeze({{}});
+    Object.defineProperty(globalThis, "__glassWorkerNavigationRequestToken", {{
+      value: token,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    }});
+    return token;
+  }})();
+  const workerNavigationRequestInstances = (() => {{
+    const existing = globalThis.__glassWorkerNavigationRequestInstances;
+    if (existing instanceof WeakSet) return existing;
+    const instances = new WeakSet();
+    Object.defineProperty(globalThis, "__glassWorkerNavigationRequestInstances", {{
+      value: instances,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    }});
+    return instances;
+  }})();
   const WorkerRequestNative = typeof globalThis.__glassWorkerRequestConstructor === "function"
     ? globalThis.__glassWorkerRequestConstructor
-    : function(input, init) {{
+    : function(input, init, internalNavigationToken) {{
     if (!(this instanceof WorkerRequestNative)) throw new TypeError("native Worker Request requires new");
     const source = input && input.__glassWorkerRequest === true ? input : null;
     const sourceUrl = input && input.__glassUrl === true ? input : null;
     const overrides = init && typeof init === "object" ? init : {{}};
     const requestInitIsNonEmpty = Object.keys(overrides).length > 0;
     const hasBodyOverride = Object.prototype.hasOwnProperty.call(overrides, "body");
+    const inheritedNavigationRequest = source
+      && workerNavigationRequestInstances.has(source)
+      && !requestInitIsNonEmpty;
+    if (source && workerNavigationRequestInstances.has(source)
+        && requestInitIsNonEmpty && !Object.prototype.hasOwnProperty.call(overrides, "mode")
+        && String(settings.mode).toLowerCase() === "navigate")
+      settings.mode = "same-origin";
     if (source && !hasBodyOverride && (source.bodyUsed || source.body && workerReadableStreamState(source.body).locked))
       throw new TypeError("native Worker Request body is unusable");
     if (!source && !sourceUrl && typeof input !== "string")
@@ -29084,7 +29370,9 @@ fn worker_bootstrap(
     if (["GET", "HEAD"].includes(method) && !payload.bodyNull)
       throw new TypeError("native Worker " + method + " Requests must not have a body");
     const mode = settings.mode === undefined ? "cors" : String(settings.mode).toLowerCase();
-    if (!["cors", "no-cors", "same-origin"].includes(mode))
+    const internalNavigationRequest = mode === "navigate"
+      && (internalNavigationToken === workerNavigationRequestToken || inheritedNavigationRequest);
+    if (!["cors", "no-cors", "same-origin"].includes(mode) && !internalNavigationRequest)
       throw new TypeError("native Worker Request mode is unsupported");
     const redirect = settings.redirect === undefined ? "follow" : String(settings.redirect).toLowerCase();
     if (!["follow", "error", "manual"].includes(redirect))
@@ -29157,6 +29445,7 @@ fn worker_bootstrap(
       get() {{ return workerRequestBodyIsUsed(this); }},
     }});
     workerRequestReferrerState.set(this, referrer);
+    if (internalNavigationRequest) workerNavigationRequestInstances.add(this);
     Object.freeze(this);
   }};
   WorkerRequestNative.prototype.clone = function() {{
@@ -30969,6 +31258,10 @@ fn service_worker_bootstrap_script() -> String {
         .replace(
             "__GLASS_SERVICE_WORKER_CACHE_ENTRY_LIMIT__",
             &MAX_NATIVE_SERVICE_WORKER_CACHE_ENTRIES.to_string(),
+        )
+        .replace(
+            "__GLASS_SERVICE_WORKER_PRELOAD_LIMIT__",
+            &MAX_NATIVE_WORKER_MESSAGES.to_string(),
         )
 }
 
@@ -34688,6 +34981,12 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
     });
   }
   const serviceWorkerPromiseResolve = globalThis.__glassServiceWorkerPromiseResolve;
+  const serviceWorkerNavigationPreloadPendingResponses =
+    globalThis.__glassServiceWorkerNavigationPreloadPendingResponses instanceof Map
+      ? globalThis.__glassServiceWorkerNavigationPreloadPendingResponses
+      : new Map();
+  globalThis.__glassServiceWorkerNavigationPreloadPendingResponses =
+    serviceWorkerNavigationPreloadPendingResponses;
   const serviceWorkerDispatchMessage = (payload) => {
     const source = serviceWorkerClientFromState(payload && payload.source);
     if (!source) throw new TypeError("native Service Worker message source is unavailable");
@@ -34790,11 +35089,23 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
         && !requestHeaders.some(entry => Array.isArray(entry)
           && String(entry[0]).toLowerCase() === "content-type"))
       requestHeaders.push(["content-type", String(payload.contentType)]);
+    const preloadRequestId = payload && Number.isSafeInteger(payload.navigationPreloadRequestId)
+      ? Number(payload.navigationPreloadRequestId)
+      : 0;
+    let preloadResponse = Promise.resolve(undefined);
+    if (preloadRequestId > 0) {
+      if (serviceWorkerNavigationPreloadPendingResponses.size >= __GLASS_SERVICE_WORKER_PRELOAD_LIMIT__)
+        throw new RangeError("native ServiceWorker navigation preload limit exceeded");
+      preloadResponse = new serviceWorkerPromiseConstructor((resolve, reject) => {
+        serviceWorkerNavigationPreloadPendingResponses.set(preloadRequestId, { resolve, reject });
+      });
+    }
+    const requestMode = String(payload && payload.mode || "same-origin");
     const request = new WorkerRequestNative(String(payload && payload.url || workerUrl), {
       method: String(payload && payload.method || "GET"),
       headers: requestHeaders,
       body,
-      mode: String(payload && payload.mode || "same-origin"),
+      mode: requestMode,
       redirect: String(payload && payload.redirect || "follow"),
       credentials: payload && typeof payload.credentialsMode === "string"
         ? payload.credentialsMode
@@ -34803,7 +35114,7 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       referrerPolicy: payload && typeof payload.referrerPolicy === "string"
         ? payload.referrerPolicy : "",
       destination: String(payload && payload.destination || ""),
-    });
+    }, requestMode === "navigate" ? workerNavigationRequestToken : undefined);
     workerRequestReferrerState.set(request, {
       referrer: request.referrer,
       url: payload && typeof payload.referrerUrl === "string" ? payload.referrerUrl : workerUrl,
@@ -34818,7 +35129,7 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       resultingClientId: String(payload && payload.resultingClientId || ""),
       isReload: false,
       isHistoryNavigation: false,
-      preloadResponse: Promise.resolve(undefined),
+      preloadResponse,
       waitUntil(value) { waitUntilPromises.push(Promise.resolve(value)); },
       respondWith(value) {
         if (responded) throw new DOMExceptionNative("service worker fetch already responded", "InvalidStateError");
@@ -34826,6 +35137,12 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
         responsePromise = Promise.resolve(value);
       },
     };
+    Object.defineProperty(event, "preloadResponse", {
+      value: preloadResponse,
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
     const callbacks = listeners.get("fetch") || [];
     try {
       const handler = globalThis.onfetch;
@@ -34851,6 +35168,28 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       set(value) { globalThis.__glassServiceWorkerOnFetch = typeof value === "function" ? value : null; },
     });
   }
+  globalThis.__glassHasServiceWorkerFetchListener = () => {
+    const callbacks = listeners.get("fetch") || [];
+    return typeof globalThis.onfetch === "function" || callbacks.length > 0;
+  };
+  globalThis.__glassResolveServiceWorkerNavigationPreload = (requestId, payload) => {
+    const id = Number(requestId);
+    if (!Number.isSafeInteger(id) || id <= 0)
+      throw new TypeError("native ServiceWorker navigation preload request id is invalid");
+    const pending = serviceWorkerNavigationPreloadPendingResponses.get(id);
+    if (!pending) return false;
+    serviceWorkerNavigationPreloadPendingResponses.delete(id);
+    if (payload && typeof payload.error === "string") {
+      pending.reject(new TypeError(payload.error));
+      return true;
+    }
+    try {
+      pending.resolve(responseFromWorkerFetch(payload));
+    } catch (error) {
+      pending.reject(new TypeError(String(error && error.message || error)));
+    }
+    return true;
+  };
   globalThis.__glassDispatchServiceWorkerFetch = serviceWorkerDispatchFetch;
   globalThis.skipWaiting = () => {
     const workerId = Number.isSafeInteger(globalThis.__glassWorkerId)

@@ -181,12 +181,15 @@ later updates in the browser-coordinated SharedWorker loader.
   `cargo check -p glass-browser --features native-engine --lib --test
   native_engine --locked --quiet` passed (2.17 seconds; existing superseded
   HTML-parser dead-code warnings). The focused unit regression passed (1
-  passed, 1,686 filtered; 10.39-second runtime). The exact parent process
-  regression has not yet been rerun, so the cookie snapshot/override/deletion
-  path remains unverified. Fresh independent review is also pending.
-- The previous blocked review remains open pending a passing process-backed
-  regression and fresh independent review. Selected WPT and broader
-  parent-only acceptance tests have not been run.
+  passed, 1,686 filtered; 10.39-second runtime).
+- Independent review 02 ran the exact parent process regression under a
+  90-second bound. The integration binary started `running 1 test` but
+  produced no result before timeout exit 124 at 1m30.037s. A post-timeout
+  process check found no remaining matching test processes. The reviewer found
+  no additional static lock/order defect, but recorded a blocking P2 because
+  parent cookie snapshot, override replay, and deletion remain unverified.
+  See [review 02](../reviews/native-engine-browser-842-02.md). Selected WPT
+  and broader parent-only acceptance tests have not been run.
 - `python3 scripts/check-documentation-coverage.py` reports one unrelated
   stale live measurement in `docs/mcp-schema-budget.md`: it omits the live
   row ``| Serialized `tools` array | 173,741 UTF-8 bytes |``.

@@ -499,10 +499,17 @@ request.
 
 The current content-process implementation still receives and persists full
 cookie profiles, including HttpOnly state. That behavior is a known mismatch
-with the target contract, not an allowed mirror. [Slice
-842](../plan/tasks/native-engine-browser-842.md) tracks the migration; the
-versioned details and acceptance checks are in the [Glass Core Web
-Profile](../plan/native-engine-browser-profile.md#parent-owned-cookie-authority).
+with the target contract, not an allowed mirror. Slice 842 is in progress: the
+browser-coordinated SharedWorker create message no longer carries a cookie
+profile, and the coordinator now seeds its loader from the parent-owned engine
+resolved by the exact source frame while holding that owner's lock, then
+replays its existing cookie overrides. This closes only that creation-payload
+authority path; the content process still mirrors complete profiles and can
+persist cookie state, and its general page/worker network requests are not yet
+fully brokered by the parent. See the [Slice
+842 task](../plan/tasks/native-engine-browser-842.md) and the versioned
+[Glass Core Web Profile](../plan/native-engine-browser-profile.md#parent-owned-cookie-authority)
+for the remaining boundary and acceptance checks.
 
 ## HTML parser ownership
 

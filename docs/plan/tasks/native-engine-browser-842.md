@@ -98,17 +98,31 @@ behavior, profile persistence, and shared-profile synchronization.
 ## Current Evidence
 
 - The current content-process protocol accepts complete cookie profiles and
-  cookie changes; the child owns a `NativeResourceLoader`, persists cookie
-  state, and supplies a full profile (including HttpOnly entries) with
-  externally routed SharedWorker creation. Parent-side loaders also exist,
-  but this duplicate authority is not compliant with this task.
+  cookie changes; the child still owns a `NativeResourceLoader` and persists
+  cookie state. This checkpoint removes the full profile from externally
+  routed SharedWorker creation. The parent resolves the exact source frame,
+  checks context and document generation under that owner's lock, seeds its
+  SharedWorker loader from the parent engine's profile, and replays the
+  coordinator's cookie overrides. It does not remove the child's general
+  profile mirror/persistence or implement the general parent network broker.
 - Slices 820-823 provide process-backed evidence for profile journals,
   import/clear, and SharedWorker Fetch credential behavior. Those results are
   baseline behavior to preserve, not evidence that the parent-only boundary is
   implemented.
+- `cargo check -p glass-browser --features native-engine --lib --tests --locked --quiet`
+  passed (exit 0; existing superseded HTML-parser dead-code warnings).
+- `shared_worker_create_serialization_has_no_cookie_profile` passed (1 passed,
+  1,682 filtered). `native_content_process_shared_worker_fetch_api_uses_live_cookies`
+  passed (1 passed, 891 filtered).
+- `native_content_process_shared_worker_fetch_credentials_modes_follow_redirects`
+  failed twice (exit 101), timing out while waiting for the worker's Fetch
+  sequence to settle at `tests/native_engine.rs:33229`. The cause is
+  undiagnosed; credential/redirect behavior is not verified by this
+  checkpoint.
+- Formatting, `git diff --check`, the exact-owner stale-create regression,
+  selected WPT, and broader parent-only acceptance tests have not been run.
 - The documentation coverage check currently reports an unrelated stale live
   measurement in `docs/mcp-schema-budget.md` (`Serialized tools` array); the
   new Slice 842 documents themselves are inventoried. Do not fold that separate
   MCP measurement repair into this cookie task.
-- No implementation or verification for this slice has been performed yet.
 - Issue #40 remains open.

@@ -763,8 +763,6 @@ pub(crate) enum NativeScriptCommand {
         extended_lifetime: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         referrer_policy: Option<String>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        cookie_profile: Vec<NativeCookieProfileEntry>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         constructor_storage_key: Option<NativeSharedWorkerStorageKey>,
         transfer_port: NativeMessagePortTransfer,
@@ -1328,7 +1326,6 @@ pub(crate) struct NativeSharedWorkerCreateRequest {
     pub(crate) credentials: String,
     pub(crate) extended_lifetime: bool,
     pub(crate) referrer_policy: Option<String>,
-    pub(crate) cookie_profile: Vec<NativeCookieProfileEntry>,
     pub(crate) transfer_port: NativeMessagePortTransfer,
 }
 
@@ -1392,6 +1389,35 @@ mod native_shared_worker_storage_key_tests {
             first_document,
             NativeSharedWorkerStorageKey::for_document(&origin, "target-b", "frame-a", 1),
         );
+    }
+}
+
+#[cfg(test)]
+mod native_shared_worker_command_protocol_tests {
+    use super::{NativeMessagePortTransfer, NativeScriptCommand};
+
+    #[test]
+    fn shared_worker_create_serialization_has_no_cookie_profile() {
+        let command = NativeScriptCommand::SharedWorkerCreate {
+            connection_id: 1,
+            href: "https://example.test/worker.js".into(),
+            name: "worker".into(),
+            worker_type: "module".into(),
+            credentials: "same-origin".into(),
+            extended_lifetime: false,
+            referrer_policy: None,
+            constructor_storage_key: None,
+            transfer_port: NativeMessagePortTransfer {
+                bridge_key: "bridge-1".into(),
+                port_id: 1,
+                peer_id: 2,
+                hidden: false,
+            },
+        };
+
+        let payload = serde_json::to_value(command).expect("SharedWorker command serializes");
+        assert_eq!(payload["kind"], "sharedWorkerCreate");
+        assert!(payload.get("cookie_profile").is_none());
     }
 }
 
@@ -2335,7 +2361,6 @@ impl NativeWorkerRegistry {
                     credentials,
                     extended_lifetime,
                     referrer_policy,
-                    cookie_profile: _,
                     constructor_storage_key,
                     transfer_port,
                 } => {

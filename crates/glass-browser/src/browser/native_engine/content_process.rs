@@ -4276,7 +4276,6 @@ fn decode_shared_worker_commands(
 fn defer_shared_worker_commands(
     mut commands: Vec<NativeScriptCommand>,
     external_routing: bool,
-    loader: &NativeResourceLoader,
     owner_origin: &NativeOrigin,
     owner_context_id: &str,
     owner_frame_id: &str,
@@ -4304,7 +4303,7 @@ fn defer_shared_worker_commands(
     }
     let mut local_commands = Vec::with_capacity(commands.len());
     for mut command in commands {
-        if let NativeScriptCommand::SharedWorkerCreate { cookie_profile, .. } = &mut command {
+        if let NativeScriptCommand::SharedWorkerCreate { .. } = &mut command {
             if pending.len() >= MAX_NATIVE_EFFECTS {
                 return Err(NativeEngineError::limit(
                     "content-process pending SharedWorker commands",
@@ -4312,7 +4311,6 @@ fn defer_shared_worker_commands(
                     pending.len().saturating_add(1),
                 ));
             }
-            *cookie_profile = loader.cookie_profile();
             pending.push_back(command);
         } else {
             local_commands.push(command);
@@ -6649,7 +6647,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         let worker_commands = defer_shared_worker_commands(
                                             runtime.take_worker_commands(),
                                             external_shared_worker_routing,
-                                            loader,
                                             &resource.origin,
                                             &storage_context_id,
                                             &frame_id,
@@ -7070,7 +7067,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 let worker_commands = defer_shared_worker_commands(
                     runtime.take_worker_commands(),
                     external_shared_worker_routing,
-                    loader,
                     document_origin,
                     &storage_context_id,
                     &frame_id,
@@ -7211,7 +7207,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 let dynamic_worker_commands = defer_shared_worker_commands(
                                     runtime.take_worker_commands(),
                                     external_shared_worker_routing,
-                                    loader,
                                     document_origin,
                                     &storage_context_id,
                                     &frame_id,

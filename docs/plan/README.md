@@ -265,8 +265,14 @@ acceptance, and persistence. Content processes receive only a document-scoped
 non-HttpOnly `document.cookie` projection and return typed writes/requests to
 the parent; HttpOnly cookie values and cookie-bearing profile files must not
 cross that boundary. The current implementation still mirrors full profiles
-and allows child-side persistence, so this is an explicit open gap. See the
-[Slice 842 task](tasks/native-engine-browser-842.md) and [cookie authority
+and allows child-side persistence, so this is an explicit open gap. The first
+code checkpoint removes the content child's full profile from the
+browser-coordinated SharedWorker-create message; the parent now reads the
+profile from the exact source frame owner and replays coordinator overrides.
+The scoped check, no-profile serialization test, and existing live-cookie
+request test pass. The credentials/redirect process regression timed out twice
+and awaits diagnosis; this batch does not close Slice 842. See the [Slice 842
+task](tasks/native-engine-browser-842.md) and [cookie authority
 contract](../architecture/native-engine.md#cookie-authority-and-process-boundary).
 Process-backed request/header/no-duplicate, cancellation, source-document
 referrer-policy/redirect, and worker-visible `Request.referrer` regression

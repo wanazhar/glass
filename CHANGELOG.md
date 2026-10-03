@@ -79,10 +79,17 @@ and intends to use [Semantic Versioning](https://semver.org/).
   dynamic module dependencies now use the parent's specialized script loader.
   Cookie writes are applied before loading; the child receives only bounded
   source, final URL, response Referrer-Policy, and the script-visible cookie
-  projection. The process regression verifies the entry-script request, a
-  classic `importScripts()` dependency, and HttpOnly cookies set by both
-  responses; module-graph variants still need dedicated process-backed
-  coverage. ServiceWorker timer/lifetime work, page subresources,
+  projection. HTTP(S) dynamic page classic/module script elements, their static
+  module dependencies, and runtime `import()` requests discovered during an
+  explicit parent-brokered page turn now use the same parent authority; local
+  blob/file sources remain local. The process regression verifies a dynamic
+  module root and its static dependency, including same-turn setter writes,
+  HttpOnly response-cookie propagation, and the script-visible projection.
+  The existing nested dynamic classic-script regression passed (1 test; 19.89
+  seconds); runtime `import()` still needs cookie-specific process coverage. Parser-loaded
+  page scripts, initial navigation resources, and other page subresources are
+  not covered by this checkpoint. ServiceWorker timer/lifetime work, other page
+  subresources,
   independently delivered SharedWorker events,
   module/font destinations, and other autonomous worker network turns remain
   outside this broker path. The child still has a full cookie mirror and

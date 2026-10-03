@@ -274,6 +274,28 @@ projection and existing native Fetch behavior.
   page-resource broker coverage, ServiceWorker timer/lifetime requests, and
   other unbrokered network
   classes remain open.
+- HTTP(S) dynamic page-script loads discovered during an explicit,
+  parent-brokered page script turn now use the parent loader. This includes
+  dynamically attached classic/module script elements, static module graph
+  dependencies, and runtime `import()` requests; the parent validates the page
+  owner and bounded parent-observed script/referrer URLs, applies setter writes
+  before the request, and returns only bounded source, final URL, response
+  Referrer-Policy, and the script-visible cookie projection. Blob, file, and
+  other non-network sources retain the local loader. The process-backed
+  `native_content_process_dynamic_page_module_uses_parent_cookie_authority`
+  regression passed (1 passed; 23.24 seconds), proving the page's ordinary and
+  HttpOnly cookies reach a dynamically attached module, the module's HttpOnly
+  `Set-Cookie` reaches its static dependency, a same-turn setter reaches the
+  parent request, and HttpOnly remains absent from `document.cookie`. The
+  existing `native_content_process_uses_dynamic_import_map_for_a_later_module_root`
+  regression also passed (1 passed; 20.92 seconds). Runtime `import()` does
+  not yet have a cookie-specific regression. The existing
+  `native_content_process_runs_nested_dynamic_external_scripts` regression
+  passed (1 passed; 19.89 seconds), covering the dynamically attached classic
+  child script branch. Parser-discovered scripts during
+  initial document loading, page stylesheets/images/fonts/media, other initial
+  resources, and other unbrokered requests still use the child loader; the
+  complete content-process cookie profile and persistence paths also remain.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.

@@ -16880,6 +16880,114 @@ async fn native_content_process_runs_nested_dynamic_external_scripts() {
 }
 
 #[tokio::test]
+async fn native_content_process_dynamic_page_module_uses_parent_cookie_authority() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for _ in 0..3 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("parent-brokered dynamic module request should reach the local server")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("request includes a path")
+                .to_owned();
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
+            let (headers, content_type, body) = match path.as_str() {
+                "/page" => (
+                    concat!(
+                        "Set-Cookie: page_session=initial; Path=/; SameSite=Lax\r\n",
+                        "Set-Cookie: page_secret=initial-secret; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    ),
+                    "text/html",
+                    "<html><body><p>Native content</p></body></html>",
+                ),
+                "/parent.mjs" => (
+                    "Set-Cookie: parent_script_secret=module-root; HttpOnly; Path=/\r\n",
+                    "application/javascript",
+                    "import { value } from './dependency.mjs'; document.body.setAttribute('data-parent-module', value);",
+                ),
+                "/dependency.mjs" => (
+                    "",
+                    "application/javascript",
+                    "export const value = 'module dependency loaded';",
+                ),
+                other => panic!("unexpected parent-brokered dynamic module path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push((path, cookie));
+        }
+        requests
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "document.cookie = 'same_turn=present; Path=/'; const script = document.createElement('script'); script.type = 'module'; script.src = '/parent.mjs'; document.body.appendChild(script); true",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.body.getAttribute('data-parent-module')")
+            .await
+            .unwrap(),
+        serde_json::json!("module dependency loaded")
+    );
+    let public_cookies = engine.evaluate_async("document.cookie").await.unwrap();
+    assert!(
+        public_cookies
+            .as_str()
+            .is_some_and(|cookies| cookies.contains("page_session=initial"))
+    );
+    assert!(
+        !public_cookies
+            .as_str()
+            .is_some_and(|cookies| cookies.contains("page_secret"))
+    );
+    let stored_cookies = engine.cookies_async().await.unwrap();
+    assert!(stored_cookies.iter().any(|cookie| {
+        cookie.name == "parent_script_secret" && cookie.value == "module-root" && cookie.http_only
+    }));
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(
+        requests
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect::<Vec<_>>(),
+        ["/page", "/parent.mjs", "/dependency.mjs"]
+    );
+    let root_cookie = requests[1].1.as_deref().unwrap_or_default();
+    assert!(root_cookie.contains("page_session=initial"));
+    assert!(root_cookie.contains("page_secret=initial-secret"));
+    assert!(root_cookie.contains("same_turn=present"));
+    let dependency_cookie = requests[2].1.as_deref().unwrap_or_default();
+    assert!(dependency_cookie.contains("page_session=initial"));
+    assert!(dependency_cookie.contains("page_secret=initial-secret"));
+    assert!(dependency_cookie.contains("parent_script_secret=module-root"));
+    assert!(dependency_cookie.contains("same_turn=present"));
+}
+
+#[tokio::test]
 async fn native_content_process_resolves_dynamic_script_fetch() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

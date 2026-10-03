@@ -70,10 +70,18 @@ and the visible cookie projection. The process-backed
 `browser_owned_worker_timer_fetch_uses_parent_cookie_authority` regression
 passes with the entry-script request and its HttpOnly response cookie covered.
 The same regression covers a classic `importScripts()` dependency and an
-HttpOnly cookie set by that dependency; module-graph variants still need
-dedicated process-backed coverage. The full cookie profile remains mirrored
-into the content process, and page subresources plus other network classes
-are not all brokered; issue
+HttpOnly cookie set by that dependency. HTTP(S) dynamic page classic/module
+script elements, their static module dependencies, and runtime `import()`
+requests discovered during explicit parent-brokered script turns use that same
+parent authority; local blob/file sources remain local. A second process-backed
+regression verifies a dynamically attached page module and static dependency,
+same-turn setter propagation, and HttpOnly response-cookie delivery while
+keeping those values out of `document.cookie`; a dynamic import-map/module
+regression also passes. Runtime `import()` does not yet have cookie-specific
+process coverage. Parser-discovered initial page scripts, initial/navigation
+resources, page stylesheets/images/fonts/media, and other network classes are
+not all brokered. The full cookie profile remains mirrored into the content
+process; issue
 #40 is still open.
 
 CI runs the full native-engine feature suite on Linux and the socket-free
@@ -562,11 +570,17 @@ standalone `NativeEngine` retains its local timer path. The process-backed
 passed (1 passed; 21.59 seconds) at that earlier checkpoint, checking the
 initial HttpOnly request cookie, a parent-accepted HttpOnly response update on
 the next worker request, and the script-visible projection. At that checkpoint
-worker-script loading was outside the verified broker path; Slice 843 now
-verifies the entry script and classic `importScripts()` dependency, while
-module-graph process coverage is still outstanding. ServiceWorker timer and
-lifetime work, independently delivered SharedWorker events, and
-module-destination Fetch remain outside the verified broker path.
+worker-script loading was outside the verified broker path. Slice 843 now
+brokers worker entry scripts, classic `importScripts()` dependencies, and
+static/dynamic worker module dependencies; the recorded worker HTTP regression
+verifies entry and classic imported-script cookie propagation, while worker
+module-graph process coverage remains outstanding. It also brokers HTTP(S)
+dynamic page classic/module script elements, their static dependencies, and
+runtime `import()` requests from explicit parent-brokered script turns. The
+dynamic page module regression verifies the root/dependency cookie chain;
+runtime `import()` still lacks a cookie-specific process regression.
+ServiceWorker timer and lifetime work, independently delivered SharedWorker
+events, and module-destination Fetch remain outside the verified broker path.
 An awaited ordinary Fetch issued by a controlled Service Worker while handling
 an explicit page Fetch now also uses that operation's parent broker. The
 process-backed regression
@@ -593,9 +607,10 @@ explicit page-script turn use the same bounded buffering path. The process-backe
 regression verifies the request cookie and a same-turn follow-up after an
 HttpOnly response cookie. Service Worker-originated upload streams and worker
 streams from autonomous turns remain outside this broker path. Content-side
-Service Worker interception remains in place; initial document/resource loading, module/font
-destinations, and other Service Worker internal network requests are not yet
-parent-brokered. The child still
+Service Worker interception remains in place; parser-discovered initial page
+scripts, initial document/resource loading, stylesheets, images, fonts, media,
+module/font Fetch destinations, and other Service Worker internal network
+requests are not yet parent-brokered. The child still
 receives the shared storage path and complete profile and can rewrite the
 combined storage snapshot, so its write capability is not yet removed. The
 content process still loads complete cookie profiles and mirrors cookies for

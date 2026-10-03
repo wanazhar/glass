@@ -283,8 +283,14 @@ Independent review found a same-owner document-generation race and an
 early-error orphan-route path. The current patch synchronizes generation
 validation, the parent snapshot, and route registration; it also changes the
 busy-owner MessagePort delivery path and adds socket-free regressions. The
-patch is not yet compiled or tested, so Slice 842 remains open pending focused
-behavioral verification and re-review. Separately,
+scoped check and both unit tests now pass, but the process regression stalls:
+a bounded debugger trace shows the async-effect pump blocked on the target
+registry during MessagePort delivery, caused by parked-frame delivery holding
+the registry across an owner await. The current patch snapshots the owner,
+releases the registry before awaiting, and adds a barrier-based socket-free
+regression. Those latest changes have not yet been checked, and the parent
+process regression still has no pass evidence, so Slice 842 remains open
+pending focused behavioral verification and re-review. Separately,
 the local content-process
 credentials/redirect regression timed out twice at
 `crates/glass-browser/tests/native_engine.rs:33229`; that unresolved route is

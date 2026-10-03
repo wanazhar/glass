@@ -526,6 +526,12 @@ struct NativeServiceWorkerPublicationTestHook {
     resume: tokio::sync::Notify,
 }
 
+#[cfg(test)]
+struct NativePageMessagePortDeliveryTestHook {
+    route_resolved: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
+}
+
 fn native_frame_route_in_state(
     targets: &NativeTargetState,
     frame_id: &str,
@@ -697,6 +703,8 @@ pub struct NativeEngineBackendInner {
     #[cfg(test)]
     service_worker_client_publication_hook:
         Mutex<Option<Arc<NativeServiceWorkerPublicationTestHook>>>,
+    #[cfg(test)]
+    page_message_port_delivery_hook: Mutex<Option<Arc<NativePageMessagePortDeliveryTestHook>>>,
 }
 
 /// Semantic adapter around the native browser's target-owned engine pool.
@@ -786,6 +794,8 @@ impl NativeEngineBackend {
                 service_worker_client_sync: tokio::sync::Mutex::new(()),
                 #[cfg(test)]
                 service_worker_client_publication_hook: Mutex::new(None),
+                #[cfg(test)]
+                page_message_port_delivery_hook: Mutex::new(None),
             }),
             pump_handle: false,
         })
@@ -6121,6 +6131,8 @@ impl NativeEngineBackend {
         let Some(route_info) = self.page_message_port_route(&command.bridge_key).await? else {
             return Ok(NativeQueuedBrowserEffects::default());
         };
+        #[cfg(test)]
+        self.pause_page_message_port_delivery_for_test().await;
         let Some(route) = self.frame_route(&route_info.frame_id)? else {
             return Ok(NativeQueuedBrowserEffects::default());
         };
@@ -6133,58 +6145,91 @@ impl NativeEngineBackend {
                 (result, owner_id)
             }
             NativeFrameRoute::ActiveParked => {
-                let mut targets = self.lock_targets(BackendOperation::Script)?;
-                let owner_id = targets.active_target_id.clone().ok_or_else(|| {
-                    BrowserBackendError::SelectionFailed {
-                        reason: "native MessagePort owner target disappeared during delivery"
-                            .into(),
-                    }
-                })?;
-                let frame = targets
-                    .active_frames
-                    .parked
-                    .get_mut(&route_info.frame_id)
-                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                        reason: "native MessagePort owner frame disappeared during delivery".into(),
+                let (frame_owner, owner_id) = {
+                    let targets = self.lock_targets(BackendOperation::Script)?;
+                    let owner_id = targets.active_target_id.clone().ok_or_else(|| {
+                        BrowserBackendError::SelectionFailed {
+                            reason: "native MessagePort owner target disappeared during delivery"
+                                .into(),
+                        }
                     })?;
-                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
+                    let frame_owner = targets
+                        .active_frames
+                        .parked
+                        .get(&route_info.frame_id)
+                        .map(|frame| Arc::clone(&frame.engine))
+                        .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                            reason: "native MessagePort owner frame disappeared during delivery"
+                                .into(),
+                        })?;
+                    (frame_owner, owner_id)
+                };
+                let mut frame_engine = lock_native_engine_owner(&frame_owner).await;
+                if owner_id != route_info.context_id || frame_engine.config().context_id != owner_id
+                {
+                    return Err(BrowserBackendError::SelectionFailed {
+                        reason: "native MessagePort owner changed during delivery".into(),
+                    });
+                }
                 let result =
                     dispatch_page_message_port_to_native_frame(&mut frame_engine, &command).await?;
                 (result, owner_id)
             }
             NativeFrameRoute::ParkedSelected { target_id } => {
-                let mut targets = self.lock_targets(BackendOperation::Script)?;
-                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
-                    BrowserBackendError::SelectionFailed {
-                        reason: "native MessagePort owner target disappeared during delivery"
-                            .into(),
-                    }
-                })?;
-                let mut target_engine = lock_native_engine_owner(&target.engine).await;
+                let target_owner = {
+                    let targets = self.lock_targets(BackendOperation::Script)?;
+                    targets
+                        .parked
+                        .get(&target_id)
+                        .map(|target| Arc::clone(&target.engine))
+                        .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                            reason: "native MessagePort owner target disappeared during delivery"
+                                .into(),
+                        })?
+                };
+                let mut target_engine = lock_native_engine_owner(&target_owner).await;
+                if target_id != route_info.context_id
+                    || target_engine.config().context_id != target_id
+                {
+                    return Err(BrowserBackendError::SelectionFailed {
+                        reason: "native MessagePort owner changed during delivery".into(),
+                    });
+                }
                 let result =
                     dispatch_page_message_port_to_native_frame(&mut target_engine, &command)
                         .await?;
                 (result, target_id)
             }
             NativeFrameRoute::ParkedParked { target_id } => {
-                let mut targets = self.lock_targets(BackendOperation::Script)?;
-                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
-                    BrowserBackendError::SelectionFailed {
-                        reason: "native MessagePort owner target disappeared during delivery"
-                            .into(),
-                    }
-                })?;
-                let frame = target
-                    .frames
-                    .parked
-                    .get_mut(&route_info.frame_id)
-                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                        reason: "native MessagePort owner frame disappeared during delivery".into(),
+                let (frame_owner, owner_id) = {
+                    let targets = self.lock_targets(BackendOperation::Script)?;
+                    let target = targets.parked.get(&target_id).ok_or_else(|| {
+                        BrowserBackendError::SelectionFailed {
+                            reason: "native MessagePort owner target disappeared during delivery"
+                                .into(),
+                        }
                     })?;
-                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
+                    let frame_owner = target
+                        .frames
+                        .parked
+                        .get(&route_info.frame_id)
+                        .map(|frame| Arc::clone(&frame.engine))
+                        .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                            reason: "native MessagePort owner frame disappeared during delivery"
+                                .into(),
+                        })?;
+                    (frame_owner, target_id)
+                };
+                let mut frame_engine = lock_native_engine_owner(&frame_owner).await;
+                if owner_id != route_info.context_id || frame_engine.config().context_id != owner_id
+                {
+                    return Err(BrowserBackendError::SelectionFailed {
+                        reason: "native MessagePort owner changed during delivery".into(),
+                    });
+                }
                 let result =
                     dispatch_page_message_port_to_native_frame(&mut frame_engine, &command).await?;
-                (result, target_id)
+                (result, owner_id)
             }
         };
         self.sync_target_name(&owner_id, &runtime_effects.window_name)?;
@@ -6208,6 +6253,19 @@ impl NativeEngineBackend {
             )?;
         }
         Ok(runtime_effects.browser)
+    }
+
+    #[cfg(test)]
+    async fn pause_page_message_port_delivery_for_test(&self) {
+        let hook = self
+            .page_message_port_delivery_hook
+            .lock()
+            .expect("page MessagePort delivery test hook must be available")
+            .clone();
+        if let Some(hook) = hook {
+            hook.route_resolved.notify_one();
+            hook.resume.notified().await;
+        }
     }
 
     async fn navigate_active_frame_request(
@@ -10236,10 +10294,12 @@ where
 mod tests {
     use super::{
         BackendOperation, NativeBrowserEffectSource, NativeContentAsyncEffectNotification,
-        NativeEngineBackend, NativeFrameRoute, NativeFrameState, NativePageMessagePortRoute,
-        NativeParkedFrame, NativeServiceWorkerPublicationTestHook, NativeSharedWorkerCreateRequest,
-        activate_parked_frame_for_navigation, dispatch_native_frame_tree_lifecycle,
-        iframe_sandboxed_modals, next_ready_native_browser_effect_source,
+        NativeEngineBackend, NativeFrameRoute, NativeFrameState, NativePageMessagePortCommand,
+        NativePageMessagePortDeliveryTestHook, NativePageMessagePortRoute, NativeParkedFrame,
+        NativeServiceWorkerPublicationTestHook, NativeSharedWorkerCreateRequest,
+        NativeSharedWorkerPageRoute, activate_parked_frame_for_navigation,
+        dispatch_native_frame_tree_lifecycle, iframe_sandboxed_modals, lock_native_engine_owner,
+        next_ready_native_browser_effect_source,
     };
     use crate::browser::native_engine::{
         NativeDialogControlPlane, NativeEngine, NativeEngineConfig, NativeMessagePortTransfer,
@@ -10449,6 +10509,145 @@ mod tests {
             .expect("route lookup must not return a transient busy error")
             .expect("live MessagePort route must remain registered");
         assert_eq!(route.context_id, context_id);
+        backend
+            .close_all()
+            .await
+            .expect("fixture backend must close cleanly");
+    }
+
+    #[tokio::test]
+    async fn parked_frame_message_port_close_waits_without_holding_target_registry() {
+        let root_url = "fixture://parked-message-port-lock.test/root";
+        let target_url = "fixture://parked-message-port-lock.test/target";
+        let frame_url = "fixture://parked-message-port-lock.test/frame";
+        let backend = initialized_fixture_backend(root_url, &[target_url, frame_url]).await;
+        let target = backend
+            .create_target(target_url)
+            .await
+            .expect("parked fixture target must initialize");
+        let target_owner = {
+            let targets = backend
+                .lock_targets(BackendOperation::Script)
+                .expect("target registry must be available");
+            Arc::clone(
+                &targets
+                    .parked
+                    .get(&target.id)
+                    .expect("created target must remain parked")
+                    .engine,
+            )
+        };
+        let target_config = lock_native_engine_owner(&target_owner)
+            .await
+            .config()
+            .clone();
+        let frame_id = format!("{}:frame-message-port", target.id);
+        let frame_engine = lifecycle_test_engine(target_config, frame_url, &frame_id).await;
+        let frame_owner = Arc::new(tokio::sync::Mutex::new(frame_engine));
+        let bridge_key = "parked-message-port-close".to_owned();
+        {
+            let mut targets = backend
+                .lock_targets(BackendOperation::Script)
+                .expect("target registry must be available");
+            let target_state = targets
+                .parked
+                .get_mut(&target.id)
+                .expect("created target must remain parked");
+            let parent_id = target_state.frames.active_frame_id.clone();
+            target_state.frames.parked.insert(
+                frame_id.clone(),
+                NativeParkedFrame {
+                    engine: Arc::clone(&frame_owner),
+                    parent_id: Some(parent_id),
+                    owner_node_index: None,
+                    sandboxed_modals: false,
+                },
+            );
+        }
+        backend
+            .page_message_port_routes
+            .lock()
+            .expect("page route map must be available")
+            .insert(
+                bridge_key.clone(),
+                NativePageMessagePortRoute {
+                    context_id: target.id.clone(),
+                    frame_id: frame_id.clone(),
+                },
+            );
+        backend
+            .shared_workers
+            .lock()
+            .expect("SharedWorker coordinator must be available")
+            .page_ports
+            .insert(
+                bridge_key.clone(),
+                NativeSharedWorkerPageRoute {
+                    context_id: target.id.clone(),
+                    frame_id: frame_id.clone(),
+                    document_generation: 1,
+                },
+            );
+
+        let hook = Arc::new(NativePageMessagePortDeliveryTestHook {
+            route_resolved: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+        });
+        *backend
+            .page_message_port_delivery_hook
+            .lock()
+            .expect("delivery test hook must be available") = Some(Arc::clone(&hook));
+        let route_resolved = hook.route_resolved.notified();
+        let command = NativePageMessagePortCommand {
+            bridge_key: bridge_key.clone(),
+            data: serde_json::Value::Null,
+            close: true,
+            transfer_ports: Vec::new(),
+            object_urls: Vec::new(),
+            source_context_id: target.id.clone(),
+            source_frame_id: frame_id,
+        };
+        let mut delivery = Box::pin(backend.deliver_page_message_port(command));
+        tokio::select! {
+            _ = route_resolved => {}
+            _ = &mut delivery => panic!("delivery must stop at the route-resolution test barrier"),
+        }
+
+        let frame_guard = frame_owner.clone().lock_owned().await;
+        hook.resume.notify_one();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(35), &mut delivery)
+                .await
+                .is_err(),
+            "delivery must remain pending while the parked-frame owner is busy"
+        );
+        assert!(
+            backend.targets.try_lock().is_ok(),
+            "parked-frame delivery must release the target registry before awaiting its owner"
+        );
+
+        drop(frame_guard);
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut delivery)
+            .await
+            .expect("parked-frame delivery must resume after owner release")
+            .expect("MessagePort close must dispatch successfully");
+        assert!(
+            !backend
+                .page_message_port_routes
+                .lock()
+                .expect("page route map must be available")
+                .contains_key(&bridge_key),
+            "close delivery must remove its page route"
+        );
+        assert!(
+            !backend
+                .shared_workers
+                .lock()
+                .expect("SharedWorker coordinator must be available")
+                .page_ports
+                .contains_key(&bridge_key),
+            "close delivery must remove its coordinator route"
+        );
         backend
             .close_all()
             .await

@@ -140,10 +140,33 @@ later updates in the browser-coordinated SharedWorker loader.
   path. Page MessagePort delivery now waits
   asynchronously for a busy owner instead of dropping the worker's first
   response; socket-free tests cover owner waiting and stale/invalid
-  registration preflight. This patch has not yet been compiled or tested, so
-  the previous blocked review remains open pending fresh verification and
-  re-review. Selected WPT and broader parent-only acceptance tests have not
-  been run.
+  registration preflight.
+- The first scoped check exposed a missing crate-visible re-export for
+  `NativeCookieProfileEntry`; commit `ebf7bfa2` added it. The fresh scoped
+  `cargo check -p glass-browser --features native-engine --lib --tests
+  --locked --quiet` then passed (98.334 seconds). The focused unit tests
+  `shared_worker_registration_preflight_failures_leave_no_routes` and
+  `shared_worker_message_route_waits_for_busy_owner_without_holding_targets`
+  passed (267.298 and 5.223 seconds).
+- The exact process regression did not pass. Its run lasted 830.316 seconds
+  and was interrupted after the test and content worker remained asleep on
+  futex waits without an assertion result. A bounded GDB run from launch
+  located the native async-effect pump blocked acquiring `NativeTargetState`
+  in `sync_target_name` while processing frame-script effects. The parked
+  MessagePort delivery arms held the target registry while awaiting an owner,
+  creating a target/owner lock-order inversion. The current patch snapshots the
+  exact parked owner under the target registry, releases the registry before
+  awaiting that owner, and validates the owner before dispatch. A socket-free
+  parked/parked close regression uses a barrier to prove the registry stays
+  available while the owner is busy, then verifies delivery resumes and both
+  route entries are removed. These latest code changes have not yet been
+  compiled or tested. GDB attach itself is restricted by host
+  `ptrace_scope`, so the trace was collected by launching the test under GDB.
+  The exact test/content-worker process tree was stopped; no other Glass
+  processes were touched.
+- The previous blocked review remains open pending a passing process-backed
+  regression and fresh independent review. Selected WPT and broader
+  parent-only acceptance tests have not been run.
 - `python3 scripts/check-documentation-coverage.py` reports one unrelated
   stale live measurement in `docs/mcp-schema-budget.md`: it omits the live
   row ``| Serialized `tools` array | 173,741 UTF-8 bytes |``.

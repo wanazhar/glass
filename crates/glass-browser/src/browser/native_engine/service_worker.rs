@@ -1315,6 +1315,23 @@ impl NativeServiceWorkerRegistry {
         &mut self,
         loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
+        self.run_due_timers_inner(loader, None).await
+    }
+
+    pub(crate) async fn run_due_timers_with_parent_fetch_broker(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+        parent_fetch_broker: &mut NativeContentFetchBroker<'_>,
+    ) -> Result<(), NativeEngineError> {
+        self.run_due_timers_inner(loader, Some(parent_fetch_broker))
+            .await
+    }
+
+    async fn run_due_timers_inner<'broker>(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'broker>>,
+    ) -> Result<(), NativeEngineError> {
         let mut workers = self
             .registrations
             .iter()
@@ -1376,26 +1393,28 @@ impl NativeServiceWorkerRegistry {
             let worker = self.waiting_workers.get_mut(&scope).ok_or_else(|| {
                 NativeEngineError::invalid("service worker timer", "worker vanished")
             })?;
-            settle_service_worker_cache_event(
+            settle_service_worker_cache_event_with_parent_fetch_broker(
                 worker,
                 evaluation,
                 loader,
                 &mut self.cache_state,
                 None,
                 &mut self.pending_open_windows,
+                parent_fetch_broker.as_deref_mut(),
             )
             .await?
         } else {
             let worker = self.registrations.get_mut(&scope).ok_or_else(|| {
                 NativeEngineError::invalid("service worker timer", "worker vanished")
             })?;
-            settle_service_worker_cache_event(
+            settle_service_worker_cache_event_with_parent_fetch_broker(
                 worker,
                 evaluation,
                 loader,
                 &mut self.cache_state,
                 None,
                 &mut self.pending_open_windows,
+                parent_fetch_broker.as_deref_mut(),
             )
             .await?
         };
@@ -2917,6 +2936,27 @@ async fn settle_service_worker_cache_event(
     _current_client_id: Option<&str>,
     pending_open_windows: &mut VecDeque<NativeServiceWorkerOpenWindowRequest>,
 ) -> Result<Vec<NativeServiceWorkerClientMessage>, NativeEngineError> {
+    settle_service_worker_cache_event_with_parent_fetch_broker(
+        worker,
+        evaluation,
+        loader,
+        cache_state,
+        _current_client_id,
+        pending_open_windows,
+        None,
+    )
+    .await
+}
+
+async fn settle_service_worker_cache_event_with_parent_fetch_broker<'broker>(
+    worker: &mut NativeServiceWorker,
+    evaluation: NativeScriptEvaluation,
+    loader: &mut NativeResourceLoader,
+    cache_state: &mut NativeServiceWorkerCacheState,
+    _current_client_id: Option<&str>,
+    pending_open_windows: &mut VecDeque<NativeServiceWorkerOpenWindowRequest>,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'broker>>,
+) -> Result<Vec<NativeServiceWorkerClientMessage>, NativeEngineError> {
     let mut pending = VecDeque::from(evaluation.commands);
     let mut value = evaluation.value;
     let mut awaiting = evaluation.top_level_await_pending;
@@ -2962,7 +3002,7 @@ async fn settle_service_worker_cache_event(
             &mut pending,
             &mut awaiting,
             &mut value,
-            None,
+            parent_fetch_broker.as_deref_mut(),
         )
         .await?
         {

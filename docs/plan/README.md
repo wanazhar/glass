@@ -10479,7 +10479,13 @@ The existing
 `native_content_process_service_worker_registration_uses_live_document_referrer_policy`
 regression passed (1 test; 26.09 seconds) after successful history sync began
 updating the parent's active owner URL, preserving live `history.pushState`
-referrers and owner validation. Service Worker timer/lifetime work,
+referrers and owner validation. In browser-coordinated mode, process-backed
+Service Worker timer callbacks now run on the exact page owner's script turn
+with its parent Fetch broker.
+The `browser_owned_service_worker_timer_fetch_uses_parent_cookie_authority`
+regression passed (1 test; 22.89 seconds), checking parent HttpOnly-cookie
+selection and rotation across two timer Fetches while `document.cookie` keeps
+both secrets hidden. Service Worker lifetime/background Fetches,
 FetchEvent-internal requests, and other internal network paths remain
 unbrokered. Slice 843 remains in progress: the content process still mirrors
 the full cookie profile and has other direct network paths. Exact scope and

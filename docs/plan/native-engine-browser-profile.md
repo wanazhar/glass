@@ -163,8 +163,8 @@ request cookies, and accepts response-cookie changes. The worker's current
   dynamic root, an HttpOnly response cookie on its CSS import and later Fetch,
   and script-visible filtering. Dynamic stylesheet requests outside an active
   parent-brokered turn, independently delivered SharedWorker events, worker
-  module destinations, and Service Worker timer/lifetime requests remain
-  outside the verified checkpoint. HTTP(S) Service Worker registration/update
+  module destinations, and Service Worker timer/lifetime requests were still
+  outside that earlier checkpoint. HTTP(S) Service Worker registration/update
   entry scripts, classic `importScripts()` dependencies, and static module
   dependencies now use the parent worker-script broker during parser-time
   registration and explicit page-script turns. The process-backed
@@ -178,9 +178,15 @@ request cookies, and accepts response-cookie changes. The worker's current
   matching-document initialization. The process-backed restart regression
   passed (1 test; 33.09 seconds): restored-entry and dependency cookies were
   parent-selected for the following navigation while `document.cookie` stayed
-  empty. Service Worker
-  timer/lifetime work, FetchEvent-internal requests, and other internal network
-  requests remain direct child paths.
+  empty. In browser-coordinated mode, process-backed Service Worker timer
+  callbacks now run on the exact page owner's script turn with its parent Fetch
+  broker. The
+  `browser_owned_service_worker_timer_fetch_uses_parent_cookie_authority`
+  regression passed (1 test; 22.89 seconds), verifying HttpOnly cookie
+  selection, response-cookie rotation, and script-visible filtering across
+  two timer Fetches. Service Worker lifetime/background Fetch tasks,
+  FetchEvent-internal requests, and other internal network requests remain
+  direct child paths.
   In browser-coordinated mode, due
   DedicatedWorker timer turns now wait for the exact context/frame owner pump
   and execute with that turn's parent Fetch broker; standalone `NativeEngine` keeps
@@ -190,9 +196,11 @@ request cookies, and accepts response-cookie changes. The worker's current
   a classic `importScripts()` dependency request, HttpOnly cookies set by both
   responses and sent on later requests, a parent-accepted HttpOnly response
   update, the parent cookie API, and the script-visible projection.
-  ServiceWorker timer and lifetime work remain outside this subset; parent
-  brokering of registration/update and restoration script loads does not cover
-  those turns.
+  Browser-coordinated Service Worker timer callbacks now use the parent broker
+  on their page-owner script turn; lifetime/background Fetches,
+  FetchEvent-internal requests, and other out-of-band work remain outside this
+  subset. Parent brokering of
+  registration/update and restoration script loads remains a distinct path.
   Explicit-turn page-originated stream
 uploads to a controlled Service Worker are separately verified: its handler
 still gets first opportunity to respond, while a declined network fallback

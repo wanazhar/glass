@@ -6466,6 +6466,15 @@ impl NativeEngine {
         &self,
         changes: &[NativeCookieChange],
     ) -> Result<(), NativeEngineError> {
+        save_web_storage_profile(
+            self.config.storage_path.as_deref(),
+            &self.web_storage,
+            &[],
+            &self.loader.cookie_profile(),
+            changes,
+            &self.indexed_db,
+            &[],
+        )?;
         append_storage_changes(
             self.config.storage_path.as_deref(),
             &self.storage_writer_id,

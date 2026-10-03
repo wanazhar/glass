@@ -93,20 +93,31 @@ projection and existing native Fetch behavior.
 
 ## Current Evidence
 
+- `cargo check -p glass-browser --features native-engine --lib --test native_engine --locked --quiet` passed with existing dead-code warnings only.
 - `NativeEngine::cookies_async` now reads the parent loader after synchronizing
   external profile events, overlaid with queued child cookie changes that the
   parent has already collected. The content-process cookie-list IPC command
   and its full-profile response decoder are removed. Its process-backed HTTP
   regression passes (1 passed; 35.38-second test runtime); an initial run
   exposed and fixed the missing parent overlay for response `Set-Cookie`.
-  Request matching, child profile loading/persistence, mutation, and network
-  brokering remain outstanding.
+  The parent process now applies child-reported cookie mutations to the
+  durable profile, and child content snapshots no longer apply their cookie
+  changes there. The child still receives the shared path and full profile and
+  can rewrite the combined snapshot, so child write capability is not removed
+  yet. Child profile loading/mirroring, mutation authority, and network
+  brokering remain outstanding. The restart persistence regression passed
+  (1 passed; 93.27-second runtime); its test name now describes the observed
+  process-restart behavior rather than attributing durable writes to the child.
+- `rustfmt --edition 2024 --check` passes for the modified Rust modules. The
+  workspace `cargo fmt --all -- --check` still reports formatting in unchanged
+  `native_engine/mod.rs:81`. Documentation coverage still reports only the
+  pre-existing missing MCP schema measurement in `docs/mcp-schema-budget.md`.
 - Slice 842 is complete: browser-coordinated SharedWorker creation derives
   cookies from the exact parent source owner. Its parent snapshot/override/
   deletion process regression passed (1 passed; 48.31-second test runtime),
   and the independent static review found no lock/order defect.
-- The broader content-process mirror, child-side profile persistence, and
-  general parent request broker are not implemented. An adjacent
+- The broader content-process mirror, child profile-path/read/write capability,
+  and general parent request broker remain outstanding. An adjacent
   content-process credentials/redirect regression timed out twice at
   `tests/native_engine.rs:33229`; Slice 843 must diagnose that failure while
   implementing the parent broker.

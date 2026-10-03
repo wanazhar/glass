@@ -71052,7 +71052,7 @@ async fn native_content_process_synchronizes_document_cookie_with_http_session()
 }
 
 #[tokio::test]
-async fn native_content_process_persists_cookie_profile_through_restart() {
+async fn native_cookie_profile_survives_native_process_restart() {
     let _guard = native_content_process_test_lock().lock().await;
     let profile_path = std::env::temp_dir().join(format!(
         "glass-native-web-storage-{}-cookie-restart.json",

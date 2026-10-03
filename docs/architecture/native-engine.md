@@ -497,20 +497,24 @@ cookie-bearing profile paths do not cross into or become writable by the
 content process. Broker failure is explicit and never triggers a direct child
 request.
 
-The current content-process implementation still receives and persists full
-cookie profiles, including HttpOnly state. That behavior is a known mismatch
-with the target contract, not an allowed mirror. Slice 842 removed the
+The current content-process implementation still receives and mirrors full
+cookie profiles, including HttpOnly state; shared-profile writes for other
+storage can also rewrite that combined cookie snapshot. That behavior is a
+known mismatch with the target contract, not an allowed mirror. Slice 842 removed the
 browser-coordinated SharedWorker create-message cookie profile and seeds its
 loader from the parent-owned engine resolved by the exact source frame while
 holding that owner's lock, then replays its existing cookie overrides. The
 first Slice 843 checkpoint also makes the public cookie-list API read from a
 parent-loader snapshot overlaid with the parent's pending content-cookie
 journal, and removes the content-process command that returned complete cookie
-profiles. This closes only those payload/read paths: the content
-process still mirrors cookie state for its own request and script handling,
-receives cookie-bearing profile storage, and can persist cookie state. Slice
-843 remains in progress to remove that child authority and move cookie-bearing
-requests and persistence to the parent. See the [Slice 842 task](../plan/tasks/native-engine-browser-842.md),
+profiles. The host now applies child-reported cookie changes to the durable
+profile, while the child-side content snapshot no longer applies its local
+cookie changes to that profile. The child still receives the shared storage
+path and complete profile and can rewrite the combined storage snapshot, so its
+write capability is not yet removed. The content process also still mirrors
+cookie state for request and script handling. Slice 843 remains in progress to
+remove those child authority paths and broker cookie-bearing requests through
+the parent. See the [Slice 842 task](../plan/tasks/native-engine-browser-842.md),
 the [Slice 843 task](../plan/tasks/native-engine-browser-843.md), and the
 versioned [Glass Core Web Profile](../plan/native-engine-browser-profile.md#parent-owned-cookie-authority)
 for the complete boundary and acceptance checks.

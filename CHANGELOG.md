@@ -60,11 +60,16 @@ and intends to use [Semantic Versioning](https://semver.org/).
   queued child cookie changes and same-turn, owner-tagged `document.cookie`
   writes before selecting request cookies or accepting response cookies. It
   returns only the visible `document.cookie` projection to the script realm.
-  Its bounded response is
-  currently buffered before resolving Fetch; initial page loading, streamed
-  uploads, worker realms, and Service Worker internal network requests remain
-  on the child path. The child still has a full cookie mirror and profile-path
-  access, so parent-only cookie authority is not complete.
+  Standard buffered Fetches emitted by a dedicated worker while handling an
+  explicit page `Worker.postMessage` also use the parent broker. The page
+  document remains the cookie owner while the worker script URL remains the
+  request base; same-turn page writes and response-cookie updates are applied
+  by the parent. The worker's existing response-stream interface is retained,
+  but the parent transport buffers the response. Initial page loading, worker
+  startup and other autonomous/shared-worker turns, streamed uploads,
+  module/font destinations, and Service Worker internal requests remain
+  outside this broker path. The child still has a full cookie mirror and
+  profile-path access, so parent-only cookie authority is not complete.
 - Native content-worker dialog IPC now uses one stdin reader to route dialog
   decisions separately from ordinary asynchronous requests.
 - Native event-pump shutdown now cancels an in-flight owner turn through a

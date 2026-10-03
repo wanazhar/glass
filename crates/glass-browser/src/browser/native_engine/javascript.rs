@@ -3284,8 +3284,23 @@ impl NativeWorkerRegistry {
         commands: Vec<NativeScriptCommand>,
         loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
-        self.apply_page_message_port_commands_inner(commands, loader, false)
+        self.apply_page_message_port_commands_inner(commands, loader, false, None)
             .await
+    }
+
+    pub(crate) async fn apply_page_message_port_commands_with_parent_fetch_broker(
+        &mut self,
+        commands: Vec<NativeScriptCommand>,
+        loader: &mut NativeResourceLoader,
+        parent_fetch_broker: &mut NativeContentFetchBroker<'_>,
+    ) -> Result<(), NativeEngineError> {
+        self.apply_page_message_port_commands_inner(
+            commands,
+            loader,
+            false,
+            Some(parent_fetch_broker),
+        )
+        .await
     }
 
     pub(crate) async fn apply_page_message_port_commands_with_external_shared_workers(
@@ -3293,15 +3308,31 @@ impl NativeWorkerRegistry {
         commands: Vec<NativeScriptCommand>,
         loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
-        self.apply_page_message_port_commands_inner(commands, loader, true)
+        self.apply_page_message_port_commands_inner(commands, loader, true, None)
             .await
     }
 
-    async fn apply_page_message_port_commands_inner(
+    pub(crate) async fn apply_page_message_port_commands_with_external_shared_workers_and_parent_fetch_broker(
+        &mut self,
+        commands: Vec<NativeScriptCommand>,
+        loader: &mut NativeResourceLoader,
+        parent_fetch_broker: &mut NativeContentFetchBroker<'_>,
+    ) -> Result<(), NativeEngineError> {
+        self.apply_page_message_port_commands_inner(
+            commands,
+            loader,
+            true,
+            Some(parent_fetch_broker),
+        )
+        .await
+    }
+
+    async fn apply_page_message_port_commands_inner<'broker>(
         &mut self,
         commands: Vec<NativeScriptCommand>,
         loader: &mut NativeResourceLoader,
         forward_unrouted_closes: bool,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'broker>>,
     ) -> Result<(), NativeEngineError> {
         if commands.len() > MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
@@ -3365,8 +3396,13 @@ impl NativeWorkerRegistry {
                         });
                     match evaluation {
                         Ok(evaluation) => {
-                            self.collect_worker_evaluation(worker_id, evaluation, loader)
-                                .await?;
+                            self.collect_worker_evaluation_with_parent_fetch_broker(
+                                worker_id,
+                                evaluation,
+                                loader,
+                                parent_fetch_broker.as_deref_mut(),
+                            )
+                            .await?;
                         }
                         Err(error) => {
                             let worker_url = self
@@ -3442,8 +3478,13 @@ impl NativeWorkerRegistry {
             });
             match evaluation {
                 Ok(evaluation) => {
-                    self.collect_worker_evaluation(worker_id, evaluation, loader)
-                        .await?;
+                    self.collect_worker_evaluation_with_parent_fetch_broker(
+                        worker_id,
+                        evaluation,
+                        loader,
+                        parent_fetch_broker.as_deref_mut(),
+                    )
+                    .await?;
                 }
                 Err(error) => {
                     let worker_url = self

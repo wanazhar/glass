@@ -524,11 +524,13 @@ in the same script turn. The script broker currently buffers bounded responses
 before resolving Fetch, so incremental network response streaming and
 backpressure are not implemented there yet. A process-backed regression now
 also verifies standard buffered Fetch during dedicated-worker initialization
-and while handling an explicit page `Worker.postMessage`: the parent validates
-the page owner separately from the worker request URL, applies same-turn page
-cookie writes, and owns response-cookie updates. The existing worker
-response-stream interface is preserved by re-exposing the buffered parent
-response through its stream adapter. Locally hosted SharedWorker creation and
+and while handling an explicit page `Worker.postMessage` or a transferred page
+`MessagePort` event: the parent validates the page owner separately from the
+worker request URL, applies same-turn page cookie writes, and owns
+response-cookie updates. The process-backed regression also verifies the
+MessagePort-triggered request sees an HttpOnly cookie set by an earlier parent
+response. The existing worker response-stream interface is preserved by
+re-exposing the buffered parent response through its stream adapter. Locally hosted SharedWorker creation and
 connect evaluations also receive the broker, but lack a focused process-backed
 regression. Worker-script/resource/module-graph loading, autonomous turns,
 independently delivered SharedWorker events, streamed uploads, and

@@ -94,11 +94,13 @@ and intends to use [Semantic Versioning](https://semver.org/).
   parent script broker during initial loading; the parent validates their
   captured load owner and returns only the visible projection. The extended
   process-backed `native_content_process_http_navigation_uses_parent_cookie_authority`
-  regression passed (1 test; 21.17 seconds), verifying parser-script request
-  cookies, response-cookie acceptance, HttpOnly invisibility, and parent cookie
-  API retention. It covers a classic parser script, not the initial module
-  graph. Stylesheets, images, fonts, media, and Service Worker-provided
-  navigation responses remain child-side paths.
+  regression now also covers initial stylesheets and their static CSS imports,
+  in addition to a classic parser script (1 test; 27.33 seconds). It verifies
+  ordered request-cookie selection, response-cookie acceptance, HttpOnly
+  invisibility, and parent cookie API retention. The initial module graph still
+  lacks a dedicated cookie regression. Initial images/fonts/media,
+  dynamically attached stylesheets, and Service Worker-provided navigation
+  responses remain child-side paths.
   The Service Worker `clients.openWindow`-resumed navigation regression also
   passed (1 test; 34.25 seconds).
   The existing nested dynamic classic-script regression passed (1 test; 19.89

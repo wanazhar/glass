@@ -16911,7 +16911,8 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             .unwrap();
         let request = read_http_request(&mut stream).await;
         let body = concat!(
-            "<!doctype html><html><body><script src='/initial.js'></script><script>",
+            "<!doctype html><html><head><link rel='stylesheet' href='/initial.css'></head>",
+            "<body><script src='/initial.js'></script><script>",
             "window.initialDocumentCookie = document.cookie;",
             "</script></body></html>"
         );
@@ -16931,6 +16932,48 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
         stream.write_all(response.as_bytes()).await.unwrap();
         let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
             .await
+            .expect("parent-brokered parser stylesheet should reach the local server")
+            .unwrap();
+        let stylesheet_request = read_http_request(&mut stream).await;
+        let stylesheet = "@import '/nested.css';";
+        let stylesheet_response = format!(
+            concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Set-Cookie: stylesheet_visible=present; Path=/; SameSite=Lax\r\n",
+                "Set-Cookie: stylesheet_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\n",
+                "Content-Type: text/css\r\n",
+                "Content-Length: {}\r\nConnection: close\r\n\r\n{}"
+            ),
+            stylesheet.len(),
+            stylesheet
+        );
+        stream
+            .write_all(stylesheet_response.as_bytes())
+            .await
+            .unwrap();
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("parent-brokered CSS import should reach the local server")
+            .unwrap();
+        let dependency_request = read_http_request(&mut stream).await;
+        let dependency = "body { color: black; }";
+        let dependency_response = format!(
+            concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Set-Cookie: dependency_visible=present; Path=/; SameSite=Lax\r\n",
+                "Set-Cookie: dependency_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\n",
+                "Content-Type: text/css\r\n",
+                "Content-Length: {}\r\nConnection: close\r\n\r\n{}"
+            ),
+            dependency.len(),
+            dependency
+        );
+        stream
+            .write_all(dependency_response.as_bytes())
+            .await
+            .unwrap();
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
             .expect("parent-brokered parser script should reach the local server")
             .unwrap();
         let script_request = read_http_request(&mut stream).await;
@@ -16947,7 +16990,12 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             script
         );
         stream.write_all(script_response.as_bytes()).await.unwrap();
-        (request, script_request)
+        (
+            request,
+            stylesheet_request,
+            dependency_request,
+            script_request,
+        )
     });
 
     let mut engine = NativeEngine::new(
@@ -16971,11 +17019,27 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             "{expression}: {cookies}"
         );
         assert!(
+            cookies.contains("stylesheet_visible=present"),
+            "{expression}: {cookies}"
+        );
+        assert!(
+            cookies.contains("dependency_visible=present"),
+            "{expression}: {cookies}"
+        );
+        assert!(
             !cookies.contains("navigation_secret"),
             "{expression}: {cookies}"
         );
         assert!(
             !cookies.contains("parser_secret"),
+            "{expression}: {cookies}"
+        );
+        assert!(
+            !cookies.contains("stylesheet_secret"),
+            "{expression}: {cookies}"
+        );
+        assert!(
+            !cookies.contains("dependency_secret"),
             "{expression}: {cookies}"
         );
     }
@@ -16992,12 +17056,32 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
     assert!(cookies.iter().any(|cookie| {
         cookie.name == "parser_secret" && cookie.value == "hidden" && cookie.http_only
     }));
+    for (name, value) in [
+        ("stylesheet_visible", "present"),
+        ("stylesheet_secret", "hidden"),
+        ("dependency_visible", "present"),
+        ("dependency_secret", "hidden"),
+    ] {
+        assert!(cookies.iter().any(|cookie| {
+            cookie.name == name
+                && cookie.value == value
+                && cookie.http_only == name.ends_with("secret")
+        }));
+    }
     engine.close_async().await.unwrap();
-    let (request, script_request) = server.await.unwrap();
+    let (request, stylesheet_request, dependency_request, script_request) = server.await.unwrap();
     assert!(request.starts_with("GET /page HTTP/1.1\r\n"));
+    assert!(stylesheet_request.starts_with("GET /initial.css HTTP/1.1\r\n"));
+    assert!(stylesheet_request.contains("navigation_visible=present"));
+    assert!(stylesheet_request.contains("navigation_secret=hidden"));
+    assert!(dependency_request.starts_with("GET /nested.css HTTP/1.1\r\n"));
+    assert!(dependency_request.contains("stylesheet_visible=present"));
+    assert!(dependency_request.contains("stylesheet_secret=hidden"));
     assert!(script_request.starts_with("GET /initial.js HTTP/1.1\r\n"));
     assert!(script_request.contains("navigation_visible=present"));
     assert!(script_request.contains("navigation_secret=hidden"));
+    assert!(script_request.contains("dependency_visible=present"));
+    assert!(script_request.contains("dependency_secret=hidden"));
 }
 
 #[tokio::test]

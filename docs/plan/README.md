@@ -293,9 +293,13 @@ needed the registry in `sync_target_name`. The latest patch snapshots the exact
 active engine and parked owner handles before releasing the registry, then
 applies cookie changes without holding it. Its scoped check passed in 2.17
 seconds and the new socket-free lock-liveness regression passed (1 test;
-10.39-second runtime). The parent process regression has not yet been rerun
-against this fix, and independent review remains pending, so Slice 842 stays
-open. Separately,
+10.39-second runtime). The exact parent process regression was rerun with a
+90-second bound: the integration binary started one test but produced no
+result before timeout exit 124 at 1m30.037s; the process tree was gone
+afterward. Independent review found no further static lock/order defect but
+recorded a blocking P2 for this missing process-backed pass. Slice 842 remains
+open until the parent snapshot/override/deletion behavior is exercised and
+passes. Separately,
 the local content-process
 credentials/redirect regression timed out twice at
 `crates/glass-browser/tests/native_engine.rs:33229`; that unresolved route is

@@ -310,7 +310,7 @@ Treat that adjacent child-network route as unresolved; it does not verify
 parent-brokered transport. See the
 [Slice 842 task](tasks/native-engine-browser-842.md) and
 [cookie authority
-contract](../architecture/native-engine.md#cookie-authority-and-process-boundary).
+contract](native-engine-browser-profile.md#parent-owned-cookie-authority).
 The remaining content-process cookie mirror/persistence and general request
 broker are isolated in the dependent [Slice 843 task](tasks/native-engine-browser-843.md);
 the parent-only cookie contract is not complete until both slices pass.

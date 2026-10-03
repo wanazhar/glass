@@ -18,7 +18,6 @@ projection and existing native Fetch behavior.
 ## Context
 
 - `docs/INDEX.md`
-- `docs/architecture/native-engine.md#cookie-authority-and-process-boundary`
 - `docs/plan/native-engine-browser-profile.md#parent-owned-cookie-authority`
 - `docs/plan/tasks/native-engine-browser-842.md`
 - [Issue #40](https://github.com/wanazhar/glass/issues/40)
@@ -139,8 +138,14 @@ projection and existing native Fetch behavior.
   selecting request cookies, then commits response-cookie changes before
   returning. It sends back only the matching URL's script-visible
   `document.cookie` projection; response `Set-Cookie` and HttpOnly values do
-  not cross to the child on this path. The parent projection is retained across
-  content turns rather than overwritten from the stale child mirror. The
+  not cross to the child on this path. Each explicit page-script turn now
+  starts with the parent-computed URL-scoped projection; bounded owner-tagged
+  setter writes are returned even when that turn makes no Fetch, then applied
+  by the parent. `cookies_async` reads that parent jar, and a process-backed
+  regression verifies a standalone setter is included on the next brokered
+  request (1 passed; 30.12-second test runtime). The parent projection is
+  retained across content turns rather than overwritten from the stale child
+  mirror. The
   process-backed regression passed (1 passed; 23.46 seconds) and checks a
   same-turn setter before Fetch, initial and updated HttpOnly request cookies,
   the visible projection, and the next request.
@@ -149,7 +154,8 @@ projection and existing native Fetch behavior.
   requests, which still use the child loader. The broker currently buffers the
   bounded response before resolving Fetch; incremental network response
   streaming/backpressure remains outstanding.
-- `rustfmt --edition 2024 --check` passes for the modified Rust modules. The
+- `cargo check -p glass-browser --features native-engine --lib --test native_engine --locked --quiet` passed after the setter journal integration, with existing dead-code warnings only. The focused `native_content_process_script_fetch_uses_parent_cookie_authority` process-backed regression passed (1 passed; 30.12 seconds), including the standalone setter and parent cookie API read.
+  `rustfmt --edition 2024 --check` passes for the modified Rust modules. The
   workspace `cargo fmt --all -- --check` still reports formatting in unchanged
   `native_engine/mod.rs:81`. Documentation coverage still reports only the
   pre-existing missing MCP schema measurement in `docs/mcp-schema-budget.md`.

@@ -4288,6 +4288,10 @@ impl NativeResourceLoader {
         std::mem::take(&mut self.cookie_changes)
     }
 
+    pub(crate) fn restore_cookie_changes(&mut self, changes: Vec<NativeCookieChange>) {
+        self.cookie_changes.extend(changes);
+    }
+
     pub(crate) fn apply_cookie_changes(
         &mut self,
         changes: &[NativeCookieChange],

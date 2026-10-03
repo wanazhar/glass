@@ -164,17 +164,17 @@ struct NativeContentFetchBroker<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct NativeContentCookieOwner {
-    context_id: String,
-    frame_id: String,
-    generation: u32,
-    document_url: String,
+pub(crate) struct NativeContentCookieOwner {
+    pub(crate) context_id: String,
+    pub(crate) frame_id: String,
+    pub(crate) generation: u32,
+    pub(crate) document_url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct NativeContentCookieWrite {
-    owner: NativeContentCookieOwner,
-    value: String,
+pub(crate) struct NativeContentCookieWrite {
+    pub(crate) owner: NativeContentCookieOwner,
+    pub(crate) value: String,
 }
 
 impl NativeContentFetchBroker<'_> {
@@ -1264,6 +1264,7 @@ pub(crate) struct NativeContentProcess {
     frame_id: Option<String>,
     dialog_control: NativeDialogControlPlane,
     pending_cookie_changes: Arc<Mutex<Vec<NativeCookieChange>>>,
+    pending_cookie_writes: Vec<NativeContentCookieWrite>,
     storage_path: Option<PathBuf>,
     storage_writer_id: String,
     #[cfg(windows)]
@@ -1633,6 +1634,7 @@ impl NativeContentProcess {
             frame_id: None,
             dialog_control,
             pending_cookie_changes,
+            pending_cookie_writes: Vec::new(),
             storage_path: storage_path.map(Path::to_path_buf),
             storage_writer_id: storage_writer_id.to_owned(),
             #[cfg(windows)]
@@ -2463,6 +2465,18 @@ impl NativeContentProcess {
                 )
             })?,
         };
+        let document_cookie = parent_loader
+            .as_deref()
+            .map(|loader| loader.document_cookie(&owner.document_url))
+            .transpose()?
+            .unwrap_or_default();
+        if document_cookie.len() > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+            return Err(NativeEngineError::limit(
+                "parent document.cookie projection",
+                MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                document_cookie.len(),
+            ));
+        }
         let id = self.next_id();
         let response = match self
             .exchange_with_parent_loader_timeout(
@@ -2473,6 +2487,7 @@ impl NativeContentProcess {
                 "source": source,
                 "page_events": page_events,
                 "owner": owner,
+                "document_cookie": document_cookie,
                 }),
                 "content process script",
                 CONTENT_PROCESS_SCRIPT_TIMEOUT,
@@ -3102,6 +3117,10 @@ impl NativeContentProcess {
                     self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
                     let _ = self.child.start_kill();
                     Err(error)
+                } else if let Err(error) = self.collect_cookie_writes(&response) {
+                    self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
+                    let _ = self.child.start_kill();
+                    Err(error)
                 } else {
                     Ok(response)
                 }
@@ -3247,6 +3266,85 @@ impl NativeContentProcess {
                     reason: "content process cookie change queue is poisoned".into(),
                 })?;
         merge_cookie_change_batch(&mut pending, changes, "content process cookie changes")
+    }
+
+    fn collect_cookie_writes(&mut self, response: &Value) -> Result<(), NativeEngineError> {
+        let Some(value) = response.get("cookie_writes") else {
+            return Ok(());
+        };
+        let writes: Vec<NativeContentCookieWrite> =
+            serde_json::from_value(value.clone()).map_err(|_| {
+                NativeEngineError::worker_failure(
+                    "decode content process cookie writes",
+                    NativeWorkerFailureKind::InvalidTransfer,
+                    "content process returned an invalid cookie-write journal",
+                )
+            })?;
+        if writes.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "content process cookie writes",
+                MAX_NATIVE_EFFECTS,
+                writes.len(),
+            ));
+        }
+        let pending_len = self
+            .pending_cookie_writes
+            .len()
+            .saturating_add(writes.len());
+        if pending_len > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "pending content process cookie writes",
+                MAX_NATIVE_EFFECTS,
+                pending_len,
+            ));
+        }
+        let mut total_bytes = self
+            .pending_cookie_writes
+            .iter()
+            .map(|write| write.value.len())
+            .sum::<usize>();
+        for write in &writes {
+            if write.value.len() > crate::browser_backend::MAX_TEXT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "content process cookie write",
+                    crate::browser_backend::MAX_TEXT_BYTES,
+                    write.value.len(),
+                ));
+            }
+            total_bytes = total_bytes.saturating_add(write.value.len());
+        }
+        if total_bytes > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+            return Err(NativeEngineError::limit(
+                "pending content process cookie writes",
+                MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                total_bytes,
+            ));
+        }
+        self.pending_cookie_writes.extend(writes);
+        Ok(())
+    }
+
+    pub(crate) fn take_pending_cookie_writes(
+        &mut self,
+    ) -> Result<Vec<NativeContentCookieWrite>, NativeEngineError> {
+        let writes = std::mem::take(&mut self.pending_cookie_writes);
+        for write in &writes {
+            let owner = &write.owner;
+            if self.context_id.as_deref() != Some(owner.context_id.as_str())
+                || self.frame_id.as_deref() != Some(owner.frame_id.as_str())
+                || self.current_document_generation != Some(owner.generation)
+                || self.current_document_url.as_deref().is_none_or(|current| {
+                    without_fragment(current) != without_fragment(&owner.document_url)
+                })
+            {
+                return Err(NativeEngineError::worker_failure(
+                    "apply content process cookie writes",
+                    NativeWorkerFailureKind::InvalidTransfer,
+                    "cookie write belongs to a stale or different document owner",
+                ));
+            }
+        }
+        Ok(writes)
     }
 
     async fn exchange_with_timeout(
@@ -7631,6 +7729,25 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     write_value_frame(&mut stdout, &response).await?;
                     continue;
                 }
+                let document_cookie = request
+                    .get("document_cookie")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "content process script cookie projection",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent omitted the visible cookie projection",
+                        )
+                    })?;
+                if document_cookie.len() > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "parent document.cookie projection",
+                        MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                        document_cookie.len(),
+                    ));
+                }
+                runtime.set_cookie_state(document_cookie.to_owned());
+                parent_document_cookie_projection = Some(document_cookie.to_owned());
                 let Some(document_origin) = document_origin.as_ref() else {
                     let response = content_error_response(
                         id,
@@ -8887,6 +9004,14 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     document_url.as_deref(),
                     document_origin.as_ref(),
                 )?;
+                let cookie_writes = take_content_cookie_writes(
+                    javascript_runtime.as_ref(),
+                    &mut resource_loader,
+                    &storage_context_id,
+                    &frame_id,
+                    document.as_ref().map(NativeDocument::generation),
+                    document_url.as_deref(),
+                )?;
                 let cookie_changes = persist_content_profile(
                     storage_profile_path.as_deref(),
                     &storage_state,
@@ -8902,6 +9027,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         "kind":"closed",
                         "id":id,
                         "cookie_changes":cookie_changes,
+                        "cookie_writes":cookie_writes,
                     }),
                 )
                 .await?;
@@ -8962,6 +9088,22 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             document_url.as_deref(),
             document_origin.as_ref(),
         )?;
+        let cookie_writes = take_content_cookie_writes(
+            javascript_runtime.as_ref(),
+            &mut resource_loader,
+            &storage_context_id,
+            &frame_id,
+            document.as_ref().map(NativeDocument::generation),
+            document_url.as_deref(),
+        )?;
+        if !cookie_writes.is_empty() {
+            parent_document_cookie_projection = None;
+        }
+        response["cookie_writes"] =
+            serde_json::to_value(cookie_writes).map_err(|_| NativeEngineError::Worker {
+                operation: "encode content process cookie writes".into(),
+                reason: "content process cookie writes could not be encoded".into(),
+            })?;
         let mut service_worker_open_windows = pending_service_worker_open_windows
             .drain(..)
             .collect::<Vec<_>>();
@@ -9269,11 +9411,6 @@ fn sync_content_runtime_state(
         } else {
             Vec::new()
         };
-    if let (Some(loader), Some(document_url)) = (resource_loader.as_mut(), document_url) {
-        for value in runtime.take_cookie_updates() {
-            loader.set_document_cookie(document_url, &value)?;
-        }
-    }
     Ok((
         runtime.take_storage_changes(),
         indexed_db_changes,
@@ -9284,6 +9421,96 @@ fn sync_content_runtime_state(
         runtime.take_window_navigation_events(),
         runtime.window_name(),
     ))
+}
+
+fn take_content_cookie_writes(
+    runtime: Option<&NativeJavaScriptRuntime>,
+    resource_loader: &mut Option<NativeResourceLoader>,
+    context_id: &str,
+    frame_id: &str,
+    generation: Option<u32>,
+    document_url: Option<&str>,
+) -> Result<Vec<NativeContentCookieWrite>, NativeEngineError> {
+    let Some(runtime) = runtime else {
+        return Ok(Vec::new());
+    };
+    let values = runtime.take_cookie_updates();
+    if values.is_empty() {
+        return Ok(Vec::new());
+    }
+    if values.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "content process document.cookie writes",
+            MAX_NATIVE_EFFECTS,
+            values.len(),
+        ));
+    }
+    let generation = generation
+        .filter(|generation| *generation != 0)
+        .ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "content process document.cookie writes",
+                NativeWorkerFailureKind::Protocol,
+                "cookie write has no active document generation",
+            )
+        })?;
+    let document_url = document_url.ok_or_else(|| {
+        NativeEngineError::worker_failure(
+            "content process document.cookie writes",
+            NativeWorkerFailureKind::Protocol,
+            "cookie write has no active document URL",
+        )
+    })?;
+    validate_context_id(context_id)?;
+    validate_context_id(frame_id)?;
+    validate_url_text("content process cookie write owner URL", document_url)?;
+    let owner = NativeContentCookieOwner {
+        context_id: context_id.to_owned(),
+        frame_id: frame_id.to_owned(),
+        generation,
+        document_url: document_url.to_owned(),
+    };
+    let mut total_bytes = 0usize;
+    for value in &values {
+        if value.len() > crate::browser_backend::MAX_TEXT_BYTES {
+            return Err(NativeEngineError::limit(
+                "content process document.cookie write",
+                crate::browser_backend::MAX_TEXT_BYTES,
+                value.len(),
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(value.len());
+        if total_bytes > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+            return Err(NativeEngineError::limit(
+                "content process document.cookie write journal",
+                MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                total_bytes,
+            ));
+        }
+    }
+    let Some(loader) = resource_loader.as_mut() else {
+        return Err(NativeEngineError::Worker {
+            operation: "content process document.cookie writes".into(),
+            reason: "content process has no resource loader for its cookie mirror".into(),
+        });
+    };
+    let pending_network_cookie_changes = loader.take_cookie_changes();
+    let mirror_result = values
+        .iter()
+        .try_for_each(|value| loader.set_document_cookie(document_url, value));
+    // Keep network response changes for parent reconciliation, but do not
+    // turn the script setter into a child-derived cookie mutation.
+    loader.take_cookie_changes();
+    loader.restore_cookie_changes(pending_network_cookie_changes);
+    mirror_result?;
+    let writes = values
+        .into_iter()
+        .map(|value| NativeContentCookieWrite {
+            owner: owner.clone(),
+            value,
+        })
+        .collect();
+    Ok(writes)
 }
 
 fn persist_content_profile(

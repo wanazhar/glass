@@ -33170,6 +33170,16 @@ async fn native_content_process_script_fetch_uses_parent_cookie_authority() {
             .as_str()
             .is_some_and(|value| value.contains("same_turn=present"))
     );
+    engine
+        .evaluate_async("document.cookie = 'standalone=owned; Path=/'")
+        .await
+        .unwrap();
+    let parent_cookies = engine.cookies_async().await.unwrap();
+    assert!(
+        parent_cookies
+            .iter()
+            .any(|cookie| cookie.name == "standalone" && cookie.value == "owned")
+    );
     let inspected = engine
         .evaluate_async("await fetch('/inspect').then(response => response.text())")
         .await
@@ -33196,6 +33206,7 @@ async fn native_content_process_script_fetch_uses_parent_cookie_authority() {
     assert!(inspect_cookie.contains("script_session=latest"));
     assert!(inspect_cookie.contains("script_secret=latest-secret"));
     assert!(inspect_cookie.contains("same_turn=present"));
+    assert!(inspect_cookie.contains("standalone=owned"));
 }
 
 #[tokio::test]

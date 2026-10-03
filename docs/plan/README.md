@@ -322,9 +322,10 @@ URL, same-turn page cookie writes reach the worker Fetches, a response
 `Set-Cookie` is visible on later worker requests, and a MessagePort-triggered
 Fetch receives the parent-updated HttpOnly cookie. Worker-script/resource/module-
 graph loading, autonomous turns, independently delivered SharedWorker events,
-dedicated-worker and Service Worker upload streams, module or font destinations,
-initial/resource loading, and Service Worker lifetime/background Fetches remain
-outside the verified path.
+module or font destinations, initial/resource loading, and Service Worker
+lifetime/background Fetches remain outside the verified path. Explicit-turn
+dedicated-worker upload streams are covered by the separate regression below;
+Service Worker upload streams remain outside the broker path.
 An awaited Fetch issued inside a controlled Service Worker during an explicit
 page Fetch now also uses the parent broker; its cross-origin credentials/CORS
 handoff regression passed (1 test; 33.30-second runtime). Other Service Worker
@@ -333,9 +334,16 @@ ordinary page Fetch `ReadableStream` upload path now buffers the request body
 under `MAX_NATIVE_FORM_BODY_BYTES` before using the parent broker; its
 process-backed pull/upload-cookie regression passed (1 test; 22.37-second
 runtime). HTTP therefore starts after the upload stream closes, so this path
-does not preserve socket-level upload streaming/backpressure. The
-parent-only cookie contract is not complete until Slice 843 removes the
-remaining child authority and the required broader checks pass.
+does not preserve socket-level upload streaming/backpressure. Dedicated-worker
+Fetch `ReadableStream` uploads during an explicit page-script turn now use the
+same bounded parent path; the process-backed regression
+`native_content_process_worker_stream_upload_uses_parent_cookie_authority`
+passed (1 test; 26.58-second runtime), proving parent-only page cookie writes
+reach the upload and its HttpOnly response cookie reaches the same-turn worker
+follow-up. The parent broker is retained while the worker consumes the buffered
+response stream. Service Worker upload streams and autonomous worker turns are
+still outside this path. The parent-only cookie contract is not complete until
+Slice 843 removes the remaining child authority and the required broader checks pass.
 Process-backed request/header/no-duplicate, cancellation, source-document
 referrer-policy/redirect, and worker-visible `Request.referrer` regressions
 remain unrun. Slice 842's parent-cookie regression did bind a local HTTP

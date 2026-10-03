@@ -33345,6 +33345,121 @@ async fn native_content_process_worker_message_fetch_uses_parent_cookie_authorit
 }
 
 #[tokio::test]
+async fn native_content_process_worker_stream_upload_uses_parent_cookie_authority() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for expected_path in [
+            "/page",
+            "/worker-stream.js",
+            "/worker-upload",
+            "/after-upload",
+        ] {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("parent-brokered Worker upload should reach the local server")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
+            if expected_path == "/worker-upload" {
+                assert!(request.starts_with("POST "));
+                assert!(request.ends_with("worker-pull-body"));
+                assert!(
+                    cookie
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("worker_seed=initial")
+                );
+            }
+            let (headers, content_type, body) = match expected_path {
+                "/page" => (
+                    "Set-Cookie: worker_seed=initial; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/html",
+                    "<p>page</p>",
+                ),
+                "/worker-stream.js" => (
+                    "",
+                    "text/javascript",
+                    r#"(async () => {
+  const stream = new ReadableStream({
+    pull(controller) {
+      controller.enqueue('worker-pull-body');
+      controller.close();
+    },
+  });
+  const uploaded = await fetch('/worker-upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: stream,
+  });
+  const uploadedText = await uploaded.text();
+  const followup = await fetch('/after-upload');
+  postMessage([uploadedText, await followup.text()]);
+})().catch(error => postMessage({ error: String(error) }));"#,
+                ),
+                "/worker-upload" => (
+                    "Set-Cookie: worker_parent=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/plain",
+                    "uploaded",
+                ),
+                "/after-upload" => ("", "text/plain", "after"),
+                _ => unreachable!(),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push((expected_path, cookie));
+        }
+        requests
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "document.cookie = 'worker_turn=sent; Path=/'; globalThis.workerMessages = []; globalThis.worker = new Worker('/worker-stream.js'); worker.onmessage = event => workerMessages.push(event.data); true",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!([["uploaded", "after"]])
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+    let upload_cookie = requests[2].1.as_deref().unwrap_or_default();
+    assert!(upload_cookie.contains("worker_seed=initial"));
+    assert!(
+        upload_cookie.contains("worker_turn=sent"),
+        "stream upload did not apply the explicit page turn's parent-owned cookie write: {upload_cookie}"
+    );
+    let after_upload_cookie = requests[3].1.as_deref().unwrap_or_default();
+    assert!(
+        after_upload_cookie.contains("worker_parent=accepted"),
+        "follow-up Worker Fetch did not see the parent Set-Cookie update: {after_upload_cookie}"
+    );
+    assert!(after_upload_cookie.contains("worker_turn=sent"));
+    assert!(
+        cookies
+            .iter()
+            .any(|cookie| cookie.name == "worker_parent" && cookie.value == "accepted")
+    );
+}
+
+#[tokio::test]
 async fn native_content_process_shared_worker_fetch_credentials_modes_follow_redirects() {
     let _guard = native_content_process_test_lock().lock().await;
     let primary_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

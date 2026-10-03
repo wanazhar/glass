@@ -69,16 +69,16 @@ use super::layout::NativePoint;
 use super::module_import_map::NativeModuleImportMap;
 use super::origin::NativeOrigin;
 use super::resource_loader::{
-    MAX_NATIVE_CSP_POLICIES, MAX_NATIVE_CSP_VIOLATIONS, MAX_NATIVE_RESPONSE_HEADER_BYTES,
-    MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES, MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
-    MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode, NativeCspViolation, NativeFetchCacheMode,
-    NativeFetchCredentialsMode, NativeFetchMethod, NativeFetchRedirectMode,
-    NativeFetchReferrerPolicy, NativeFetchRequest, NativeFetchResponse, NativeFetchResponseStream,
-    NativeModuleResourceType, NativeNavigationMethod, NativeNavigationPolicyKind,
-    NativeNavigationRequest, NativeObjectUrlResource, NativeRequestBody, NativeResource,
-    NativeResourceLoader, NativeScriptResource, NativeStylesheetResource, NativeWebSocketTarget,
-    resolve_subresource_url, schedule_native_csp_report_deliveries,
-    validate_target_navigation_payload,
+    MAX_NATIVE_CSP_POLICIES, MAX_NATIVE_CSP_VIOLATIONS, MAX_NATIVE_MEDIA_BYTES,
+    MAX_NATIVE_RESPONSE_HEADER_BYTES, MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES,
+    MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES, MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode,
+    NativeCspViolation, NativeFetchCacheMode, NativeFetchCredentialsMode, NativeFetchMethod,
+    NativeFetchRedirectMode, NativeFetchReferrerPolicy, NativeFetchRequest, NativeFetchResponse,
+    NativeFetchResponseStream, NativeMediaMetadata, NativeModuleResourceType,
+    NativeNavigationMethod, NativeNavigationPolicyKind, NativeNavigationRequest,
+    NativeObjectUrlResource, NativeRequestBody, NativeResource, NativeResourceLoader,
+    NativeScriptResource, NativeStylesheetResource, NativeWebSocketTarget, resolve_subresource_url,
+    schedule_native_csp_report_deliveries, validate_target_navigation_payload,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -122,7 +122,7 @@ const MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS: usize = MAX_CONTENT_PROCESS_OUTPUT
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
     MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 22;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 23;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -927,6 +927,130 @@ impl NativeContentFetchBroker<'_> {
                 "decode parent image response",
                 NativeWorkerFailureKind::Protocol,
                 "parent returned an unknown image response kind",
+            )),
+        }
+    }
+
+    async fn load_media(
+        &mut self,
+        document_url: &str,
+        href: &str,
+    ) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {
+        self.next_content_resource_fetch_id = self
+            .next_content_resource_fetch_id
+            .checked_add(1)
+            .ok_or_else(|| {
+                NativeEngineError::limit(
+                    "parent content resource request IDs",
+                    u32::MAX as usize,
+                    u32::MAX as usize,
+                )
+            })?;
+        let fetch_id = self.next_content_resource_fetch_id;
+        let cookie_writes = self.take_cookie_writes()?;
+        write_value_frame(
+            self.stdout,
+            &json!({
+                "kind": "parent_fetch_request",
+                "id": self.request_id,
+                "fetch_id": fetch_id,
+                "document_url": document_url,
+                "owner": self.owner,
+                "cookie_writes": cookie_writes,
+                "page_meta_csp": self.page_meta_content_security_policies,
+                "href": href,
+                "credentials": true,
+                "page_media_load": {},
+            }),
+        )
+        .await?;
+        let payload =
+            self.ipc_requests
+                .recv()
+                .await
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: "parent media broker".into(),
+                    reason: "parent closed the media response channel".into(),
+                })??;
+        let response: Value = serde_json::from_slice(&payload).map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent media response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned invalid media JSON",
+            )
+        })?;
+        if response.get("id").and_then(Value::as_u64) != Some(self.request_id)
+            || response.get("fetch_id").and_then(Value::as_u64) != Some(u64::from(fetch_id))
+        {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent media response",
+                NativeWorkerFailureKind::Protocol,
+                "media response belongs to a different request",
+            ));
+        }
+        let document_cookie = response
+            .get("document_cookie")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "decode parent media response",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent omitted the document cookie projection",
+                )
+            })?;
+        if document_cookie.len() > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+            return Err(NativeEngineError::limit(
+                "parent document cookie projection",
+                MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                document_cookie.len(),
+            ));
+        }
+        *self.document_cookie_projection = Some(document_cookie.to_owned());
+        self.update_runtime_cookie_projection(document_cookie);
+        match response.get("kind").and_then(Value::as_str) {
+            Some("page_media_unavailable") => Ok(None),
+            Some("page_media_loaded") => {
+                let metadata = serde_json::from_value::<NativeMediaMetadata>(
+                    response.get("metadata").cloned().ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "decode parent media response",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent omitted media metadata",
+                        )
+                    })?,
+                )
+                .map_err(|_| {
+                    NativeEngineError::worker_failure(
+                        "decode parent media response",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent returned malformed media metadata",
+                    )
+                })?;
+                if metadata.content_type.is_empty()
+                    || metadata.content_type.len() > MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES
+                    || metadata.byte_length == 0
+                    || metadata.byte_length > MAX_NATIVE_MEDIA_BYTES
+                {
+                    return Err(NativeEngineError::worker_failure(
+                        "decode parent media response",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent returned out-of-range media metadata",
+                    ));
+                }
+                Ok(Some(metadata))
+            }
+            Some("error") => Err(NativeEngineError::Network {
+                operation: "parent-brokered media load".into(),
+                reason: response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("parent rejected the media request")
+                    .to_owned(),
+            }),
+            _ => Err(NativeEngineError::worker_failure(
+                "decode parent media response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned an unknown media response kind",
             )),
         }
     }
@@ -4182,6 +4306,7 @@ impl NativeContentProcess {
                     let is_resource_load = response.get("page_script_load").is_some()
                         || response.get("page_stylesheet_load").is_some()
                         || response.get("page_image_load").is_some()
+                        || response.get("page_media_load").is_some()
                         || response.get("worker_script_load").is_some();
                     if expected_owner
                         .as_ref()
@@ -4202,7 +4327,8 @@ impl NativeContentProcess {
                     }
                     let is_page_resource_load = response.get("page_script_load").is_some()
                         || response.get("page_stylesheet_load").is_some()
-                        || response.get("page_image_load").is_some();
+                        || response.get("page_image_load").is_some()
+                        || response.get("page_media_load").is_some();
                     let page_meta_csp = response
                         .get("page_meta_csp")
                         .filter(|value| !value.is_null());
@@ -4319,6 +4445,7 @@ impl NativeContentProcess {
                         || response.get("page_script_load").is_some()
                         || response.get("page_stylesheet_load").is_some()
                         || response.get("page_image_load").is_some()
+                        || response.get("page_media_load").is_some()
                     {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent Fetch broker",
@@ -4448,6 +4575,7 @@ impl NativeContentProcess {
                         || response.get("worker_script_load").is_some()
                         || response.get("page_stylesheet_load").is_some()
                         || response.get("page_image_load").is_some()
+                        || response.get("page_media_load").is_some()
                     {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent page script broker",
@@ -4568,6 +4696,7 @@ impl NativeContentProcess {
                         || response.get("worker_script_load").is_some()
                         || response.get("page_script_load").is_some()
                         || response.get("page_image_load").is_some()
+                        || response.get("page_media_load").is_some()
                     {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent stylesheet broker",
@@ -4634,6 +4763,7 @@ impl NativeContentProcess {
                         || response.get("worker_script_load").is_some()
                         || response.get("page_script_load").is_some()
                         || response.get("page_stylesheet_load").is_some()
+                        || response.get("page_media_load").is_some()
                     {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent image broker",
@@ -4679,6 +4809,69 @@ impl NativeContentProcess {
                             "encode parent image response",
                             NativeWorkerFailureKind::Protocol,
                             "image response could not be encoded",
+                        )
+                    })?;
+                    write_frame(&mut self.stdin, &payload).await?;
+                    continue;
+                }
+                if let Some(page_media_load) = response.get("page_media_load") {
+                    let Some(fetch_id) = fetch_id else {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent media broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "media request omitted its owner-bound request ID",
+                        ));
+                    };
+                    if response.get("fetch_request").is_some()
+                        || response.get("worker_script_load").is_some()
+                        || response.get("page_script_load").is_some()
+                        || response.get("page_stylesheet_load").is_some()
+                        || response.get("page_image_load").is_some()
+                    {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent media broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "media request also carried another load type",
+                        ));
+                    }
+                    let owner = decode_content_cookie_owner(
+                        response.get("owner").ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "content process parent media broker",
+                                NativeWorkerFailureKind::Protocol,
+                                "media request omitted its owner",
+                            )
+                        })?,
+                        "content process parent media owner",
+                    )?;
+                    if !parent_broker_owner_matches_operation(
+                        self,
+                        &request,
+                        &owner,
+                        parent_navigation_document_url.as_deref(),
+                    ) || without_fragment(document_url) != without_fragment(&owner.document_url)
+                    {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent media broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "media owner does not match the active document or captured load",
+                        ));
+                    }
+                    for write in &cookie_writes {
+                        loader.set_document_cookie(&write.owner.document_url, &write.value)?;
+                    }
+                    let media =
+                        load_parent_page_media_async(loader, document_url, href, page_media_load)
+                            .await;
+                    let mut broker_response =
+                        parent_media_response_payload(request_id, fetch_id, media);
+                    broker_response["document_cookie"] =
+                        Value::String(loader.document_cookie(&owner.document_url)?);
+                    let payload = serde_json::to_vec(&broker_response).map_err(|_| {
+                        NativeEngineError::worker_failure(
+                            "encode parent media response",
+                            NativeWorkerFailureKind::Protocol,
+                            "media response could not be encoded",
                         )
                     })?;
                     write_frame(&mut self.stdin, &payload).await?;
@@ -6867,6 +7060,54 @@ async fn load_parent_page_image_async(
     Ok(image)
 }
 
+async fn load_parent_page_media_async(
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    href: &str,
+    value: &Value,
+) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {
+    let object = value.as_object().ok_or_else(|| {
+        NativeEngineError::worker_failure(
+            "decode parent media request",
+            NativeWorkerFailureKind::Protocol,
+            "media metadata must be an object",
+        )
+    })?;
+    if !object.is_empty() {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent media request",
+            NativeWorkerFailureKind::Protocol,
+            "media metadata contains an unknown field",
+        ));
+    }
+    validate_url_text("parent media document URL", document_url)?;
+    validate_url_text("parent media target URL", href)?;
+    let document = Url::parse(without_fragment(document_url)).map_err(|_| {
+        NativeEngineError::worker_failure(
+            "decode parent media request",
+            NativeWorkerFailureKind::Protocol,
+            "media document URL is invalid",
+        )
+    })?;
+    let target = Url::parse(href)
+        .or_else(|_| document.join(href))
+        .map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent media request",
+                NativeWorkerFailureKind::Protocol,
+                "media target URL is invalid",
+            )
+        })?;
+    if !is_network_url(target.as_str()) {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent media request",
+            NativeWorkerFailureKind::Protocol,
+            "parent media broker accepts only HTTP(S) targets",
+        ));
+    }
+    loader.load_media_async(document_url, href).await
+}
+
 async fn load_parent_page_script_async(
     loader: &mut NativeResourceLoader,
     document_url: &str,
@@ -7184,6 +7425,32 @@ fn parent_image_response_payload(
         }
         Ok(None) => json!({
             "kind": "page_image_unavailable",
+            "id": id,
+            "fetch_id": fetch_id,
+        }),
+        Err(error) => json!({
+            "kind": "error",
+            "id": id,
+            "fetch_id": fetch_id,
+            "reason": error.to_string(),
+        }),
+    }
+}
+
+fn parent_media_response_payload(
+    id: u64,
+    fetch_id: u32,
+    result: Result<Option<NativeMediaMetadata>, NativeEngineError>,
+) -> Value {
+    match result {
+        Ok(Some(metadata)) => json!({
+            "kind": "page_media_loaded",
+            "id": id,
+            "fetch_id": fetch_id,
+            "metadata": metadata,
+        }),
+        Ok(None) => json!({
+            "kind": "page_media_unavailable",
             "id": id,
             "fetch_id": fetch_id,
         }),
@@ -12714,7 +12981,16 @@ async fn load_content_resource(
         )
         .await?,
     );
-    resource_events.extend(load_external_media(&mut document, None, loader, &resource.url).await?);
+    resource_events.extend(
+        load_external_media(
+            &mut document,
+            None,
+            loader,
+            &resource.url,
+            Some(&mut parent_fetch_broker),
+        )
+        .await?,
+    );
     let (script_sources, script_resource_events) = load_page_script_sources(
         &document,
         loader,
@@ -13050,6 +13326,7 @@ async fn load_external_media(
     runtime: Option<&NativeJavaScriptRuntime>,
     loader: &mut NativeResourceLoader,
     document_url: &str,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
     let mut media_events = Vec::new();
     for (node_index, source) in document
@@ -13065,12 +13342,21 @@ async fn load_external_media(
             continue;
         }
         document.mark_media_load(node_index, source.clone())?;
-        let metadata = match (is_blob, runtime) {
-            (true, Some(runtime)) => {
-                let object_url = runtime.object_url_resource(&source)?;
-                loader.load_local_blob_media(document_url, &source, object_url.as_ref())?
+        let metadata = if !is_blob && is_network_page_script_target(document_url, &source) {
+            if let Some(broker) = parent_fetch_broker.as_deref_mut() {
+                refresh_parent_broker_meta_csp(loader, Some(broker))?;
+                broker.load_media(document_url, &source).await?
+            } else {
+                loader.load_media_async(document_url, &source).await?
             }
-            _ => loader.load_media_async(document_url, &source).await?,
+        } else {
+            match (is_blob, runtime) {
+                (true, Some(runtime)) => {
+                    let object_url = runtime.object_url_resource(&source)?;
+                    loader.load_local_blob_media(document_url, &source, object_url.as_ref())?
+                }
+                _ => loader.load_media_async(document_url, &source).await?,
+            }
         };
         let event_kind = match metadata {
             Some(metadata) => {
@@ -16383,7 +16669,14 @@ async fn mutate_script_document(
     }
     next.refresh_image_loads(viewport);
     let media_events = if let Some(loader) = loader.as_deref_mut() {
-        load_external_media(&mut next, Some(runtime), loader, &document_url).await?
+        load_external_media(
+            &mut next,
+            Some(runtime),
+            loader,
+            &document_url,
+            parent_fetch_broker.as_deref_mut(),
+        )
+        .await?
     } else {
         Vec::new()
     };

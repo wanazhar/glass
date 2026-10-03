@@ -330,6 +330,7 @@ struct NativePendingUploadFetch {
 
 struct NativePendingControlledUpload {
     task: tokio::task::JoinHandle<Result<Vec<u8>, NativeEngineError>>,
+    parent_brokered: bool,
     document_url: String,
     href: String,
     method: NativeFetchMethod,
@@ -15865,6 +15866,52 @@ async fn resolve_script_fetches(
                         request_id,
                         NativePendingControlledUpload {
                             task,
+                            parent_brokered: false,
+                            document_url: current_url.clone(),
+                            href,
+                            method,
+                            headers,
+                            content_type,
+                            cors_mode,
+                            redirect_mode,
+                            cache_mode,
+                            timeout,
+                            credentials,
+                            credentials_mode,
+                            referrer,
+                            referrer_url,
+                            referrer_policy,
+                        },
+                    );
+                    continue;
+                }
+                if is_network_url(&current_url) && parent_fetch_broker.is_some() {
+                    let pending_upload_count = pending_upload_fetches
+                        .len()
+                        .saturating_add(pending_controlled_uploads.len());
+                    if pending_upload_count >= MAX_NATIVE_EFFECTS {
+                        return Err(NativeEngineError::limit(
+                            "native pending fetch uploads",
+                            MAX_NATIVE_EFFECTS,
+                            pending_upload_count.saturating_add(1),
+                        ));
+                    }
+                    let (upload_connection, upload_source) = spawn_native_fetch_upload_source();
+                    fetch_upload_connections.insert(upload_stream_id, upload_connection);
+                    let task = tokio::spawn(async move {
+                        upload_source
+                            .collect(MAX_NATIVE_FORM_BODY_BYTES)
+                            .await
+                            .map_err(|reason| NativeEngineError::Network {
+                                operation: "parent-brokered fetch request upload".into(),
+                                reason,
+                            })
+                    });
+                    pending_controlled_uploads.insert(
+                        request_id,
+                        NativePendingControlledUpload {
+                            task,
+                            parent_brokered: true,
                             document_url: current_url.clone(),
                             href,
                             method,
@@ -16046,68 +16093,102 @@ async fn resolve_script_fetches(
             let payload = match body_result {
                 Ok(body) => {
                     let request_body = NativeRequestBody::Bytes(body);
-                    let intercepted = service_workers
-                        .intercept_fetch(
-                            loader,
-                            &pending_fetch.document_url,
-                            &pending_fetch.href,
-                            pending_fetch.method.as_str(),
-                            pending_fetch.headers.clone(),
-                            Some(request_body.clone()),
-                            pending_fetch.content_type.clone(),
-                            pending_fetch.cors_mode,
-                            pending_fetch.redirect_mode,
-                            pending_fetch.timeout,
-                            pending_fetch.credentials,
-                            pending_fetch.credentials_mode,
-                            pending_fetch.referrer.as_deref(),
-                            pending_fetch.referrer_url.as_deref(),
-                            pending_fetch.referrer_policy.as_deref(),
-                            "fetch",
-                            None,
-                            None,
-                            parent_fetch_broker.as_mut(),
-                        )
-                        .await;
-                    match intercepted {
-                        Ok(NativeServiceWorkerFetchOutcome::Handled(response)) => {
-                            fetch_response_payload(Ok(response))
-                        }
-                        Ok(NativeServiceWorkerFetchOutcome::NotHandled) => {
-                            let opened = loader
-                                .open_fetch_response_stream_async(NativeFetchRequest {
-                                    document_url: &pending_fetch.document_url,
-                                    href: &pending_fetch.href,
-                                    method: pending_fetch.method,
-                                    body: Some(request_body),
-                                    content_type: pending_fetch.content_type,
-                                    request_headers: pending_fetch.headers,
-                                    credentials: pending_fetch.credentials,
-                                    credentials_mode: pending_fetch.credentials_mode,
-                                    referrer_url: pending_fetch.referrer_url,
-                                    referrer_policy: pending_fetch.referrer_policy,
-                                    cors_mode: pending_fetch.cors_mode,
-                                    redirect_mode: pending_fetch.redirect_mode,
-                                    cache_mode: pending_fetch.cache_mode,
-                                    timeout: pending_fetch.timeout,
-                                    max_response_bytes: None,
-                                })
-                                .await;
-                            fetch_opened_response_payload(
-                                opened,
-                                request_id,
-                                fetch_stream_connections,
+                    if pending_fetch.parent_brokered {
+                        let parent_fetch_broker =
+                            parent_fetch_broker.as_mut().ok_or_else(|| {
+                                NativeEngineError::Worker {
+                                    operation: "parent-brokered fetch upload".into(),
+                                    reason: "content process parent Fetch broker is unavailable"
+                                        .into(),
+                                }
+                            })?;
+                        let fetch_request = NativeFetchRequest {
+                            document_url: &pending_fetch.document_url,
+                            href: &pending_fetch.href,
+                            method: pending_fetch.method,
+                            body: Some(request_body),
+                            content_type: pending_fetch.content_type,
+                            request_headers: pending_fetch.headers,
+                            credentials: pending_fetch.credentials,
+                            credentials_mode: pending_fetch.credentials_mode,
+                            referrer_url: pending_fetch.referrer_url,
+                            referrer_policy: pending_fetch.referrer_policy,
+                            cors_mode: pending_fetch.cors_mode,
+                            redirect_mode: pending_fetch.redirect_mode,
+                            cache_mode: pending_fetch.cache_mode,
+                            timeout: pending_fetch.timeout,
+                            max_response_bytes: None,
+                        };
+                        let (fetch, document_cookie) = parent_fetch_broker
+                            .fetch(request_id, &fetch_request)
+                            .await?;
+                        runtime.set_cookie_state(document_cookie);
+                        fetch_response_payload(fetch)
+                    } else {
+                        let intercepted = service_workers
+                            .intercept_fetch(
+                                loader,
+                                &pending_fetch.document_url,
+                                &pending_fetch.href,
+                                pending_fetch.method.as_str(),
+                                pending_fetch.headers.clone(),
+                                Some(request_body.clone()),
+                                pending_fetch.content_type.clone(),
+                                pending_fetch.cors_mode,
+                                pending_fetch.redirect_mode,
+                                pending_fetch.timeout,
+                                pending_fetch.credentials,
+                                pending_fetch.credentials_mode,
+                                pending_fetch.referrer.as_deref(),
+                                pending_fetch.referrer_url.as_deref(),
+                                pending_fetch.referrer_policy.as_deref(),
+                                "fetch",
+                                None,
+                                None,
+                                parent_fetch_broker.as_mut(),
                             )
-                            .await
+                            .await;
+                        match intercepted {
+                            Ok(NativeServiceWorkerFetchOutcome::Handled(response)) => {
+                                fetch_response_payload(Ok(response))
+                            }
+                            Ok(NativeServiceWorkerFetchOutcome::NotHandled) => {
+                                let opened = loader
+                                    .open_fetch_response_stream_async(NativeFetchRequest {
+                                        document_url: &pending_fetch.document_url,
+                                        href: &pending_fetch.href,
+                                        method: pending_fetch.method,
+                                        body: Some(request_body),
+                                        content_type: pending_fetch.content_type,
+                                        request_headers: pending_fetch.headers,
+                                        credentials: pending_fetch.credentials,
+                                        credentials_mode: pending_fetch.credentials_mode,
+                                        referrer_url: pending_fetch.referrer_url,
+                                        referrer_policy: pending_fetch.referrer_policy,
+                                        cors_mode: pending_fetch.cors_mode,
+                                        redirect_mode: pending_fetch.redirect_mode,
+                                        cache_mode: pending_fetch.cache_mode,
+                                        timeout: pending_fetch.timeout,
+                                        max_response_bytes: None,
+                                    })
+                                    .await;
+                                fetch_opened_response_payload(
+                                    opened,
+                                    request_id,
+                                    fetch_stream_connections,
+                                )
+                                .await
+                            }
+                            Ok(NativeServiceWorkerFetchOutcome::Suspended) => {
+                                fetch_response_payload(Err(NativeEngineError::Worker {
+                                    operation: "content process script fetch".into(),
+                                    reason:
+                                        "Service Worker fetch is awaiting a browser WindowClient"
+                                            .into(),
+                                }))
+                            }
+                            Err(error) => fetch_response_payload(Err(error)),
                         }
-                        Ok(NativeServiceWorkerFetchOutcome::Suspended) => {
-                            fetch_response_payload(Err(NativeEngineError::Worker {
-                                operation: "content process script fetch".into(),
-                                reason: "Service Worker fetch is awaiting a browser WindowClient"
-                                    .into(),
-                            }))
-                        }
-                        Err(error) => fetch_response_payload(Err(error)),
                     }
                 }
                 Err(error) => fetch_response_payload(Err(error)),

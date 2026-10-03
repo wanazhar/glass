@@ -33007,6 +33007,94 @@ async fn native_content_process_shared_worker_fetch_api_uses_live_cookies() {
 }
 
 #[tokio::test]
+async fn native_engine_parent_fetch_owns_cookie_matching_and_response_updates() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for _ in 0..3 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("parent Fetch request should reach the local server")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("request includes a path")
+                .to_owned();
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
+            let (headers, content_type, body) = match path.as_str() {
+                "/page" => (
+                    concat!(
+                        "Set-Cookie: parent_session=initial; Path=/; SameSite=Lax\r\n",
+                        "Set-Cookie: parent_secret=initial-secret; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    ),
+                    "text/html",
+                    "<p>page</p>",
+                ),
+                "/set" => (
+                    concat!(
+                        "Set-Cookie: parent_session=latest; Path=/; SameSite=Lax\r\n",
+                        "Set-Cookie: parent_secret=latest-secret; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    ),
+                    "text/plain",
+                    "updated",
+                ),
+                "/inspect" => ("", "text/plain", "inspected"),
+                other => panic!("unexpected parent Fetch path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push((path, cookie));
+        }
+        requests
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let update = engine
+        .fetch_async(format!("http://{address}/set"), true)
+        .await
+        .unwrap();
+    assert_eq!(update.body, b"updated");
+    let document_cookie = engine.evaluate_async("document.cookie").await.unwrap();
+    assert_eq!(document_cookie, "parent_session=latest");
+    let inspected = engine
+        .fetch_async(format!("http://{address}/inspect"), true)
+        .await
+        .unwrap();
+    assert_eq!(inspected.body, b"inspected");
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(
+        requests
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect::<Vec<_>>(),
+        ["/page", "/set", "/inspect"]
+    );
+    let update_cookie = requests[1].1.as_deref().unwrap_or_default();
+    assert!(update_cookie.contains("parent_session=initial"));
+    assert!(update_cookie.contains("parent_secret=initial-secret"));
+    let inspect_cookie = requests[2].1.as_deref().unwrap_or_default();
+    assert!(inspect_cookie.contains("parent_session=latest"));
+    assert!(inspect_cookie.contains("parent_secret=latest-secret"));
+}
+
+#[tokio::test]
 async fn native_content_process_shared_worker_fetch_credentials_modes_follow_redirects() {
     let _guard = native_content_process_test_lock().lock().await;
     let primary_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -69730,7 +69818,7 @@ fn native_css_diagnostics_replace_atomically_with_navigation() {
 }
 
 #[tokio::test]
-async fn native_content_process_fetches_cors_authorized_cross_origin_get() {
+async fn native_engine_parent_fetches_cors_authorized_cross_origin_get() {
     let _guard = native_content_process_test_lock().lock().await;
     let document_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let document_address = document_listener.local_addr().unwrap();

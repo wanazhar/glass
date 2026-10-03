@@ -52,6 +52,10 @@ and intends to use [Semantic Versioning](https://semver.org/).
   returns a complete profile in response to API enumeration. Child-side cookie
   mirroring, shared profile write access, and network ownership remain in
   progress.
+- The unhandled-network fallback for the bounded native host Fetch command now
+  runs through a parent broker. The parent selects request cookies and handles
+  response-cookie updates before refreshing the child projection; page/worker
+  Fetch and Service Worker-internal network requests remain on the child path.
 - Native content-worker dialog IPC now uses one stdin reader to route dialog
   decisions separately from ordinary asynchronous requests.
 - Native event-pump shutdown now cancels an in-flight owner turn through a

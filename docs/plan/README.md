@@ -303,10 +303,11 @@ cookie contract remains incomplete until dependent Slice 843 removes the
 content-process mirror and adds the general parent request broker. Separately,
 the content-process SharedWorker credentials/redirect regression
 `native_content_process_shared_worker_fetch_credentials_modes_follow_redirects`
-passed against the latest built integration binary (1 passed; 24.64-second
-runtime). It covers credentials/CORS/redirect and invalid-mode behavior, but
-does not verify parent-brokered network transport: the content process still
-performs direct network requests. See the
+passed in an earlier run (1 passed; 24.64-second runtime), but two no-build
+reruns against the current binary timed out while awaiting a script turn at
+`tests/native_engine.rs:33317` (51.04 and 29.74 seconds), before assertions.
+Treat that adjacent child-network route as unresolved; it does not verify
+parent-brokered transport. See the
 [Slice 842 task](tasks/native-engine-browser-842.md) and
 [cookie authority
 contract](../architecture/native-engine.md#cookie-authority-and-process-boundary).

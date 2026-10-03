@@ -113,6 +113,22 @@ projection and existing native Fetch behavior.
   content process only refreshes its mirror and discards local change records.
   Clear reconciles pending child changes before emitting parent deletion
   records, so the next API read cannot restore cookies from the old queue.
+- The unhandled-network fallback for the public host
+  `NativeEngine::fetch_async` command now sends requests through a parent broker,
+  persists response-cookie updates in the parent, and then refreshes the active
+  child's runtime projection. Content-side Service Worker interception remains
+  in place. Its process-backed HTTP test
+  verifies initial and updated HttpOnly cookies are sent only on the requests
+  selected by the parent, while `document.cookie` sees the updated non-HttpOnly
+  projection (1 passed; 27.17-second test runtime). The parent-brokered
+  cross-origin CORS case passed (1 passed; 24.30 seconds), and the separate
+  SharedWorker live-cookie case passed (1 passed; 43.44 seconds). The adjacent
+  child-network credentials/redirect test had passed previously (1 passed;
+  24.64 seconds), but two no-build reruns against this binary timed out during
+  `evaluate_async("sharedFetchMessages")` at `tests/native_engine.rs:33317`
+  (51.04 and 29.74 seconds), before assertions. Page/worker Fetch and other
+  child-originated network paths remain direct and are still outstanding for
+  the parent broker.
 - `rustfmt --edition 2024 --check` passes for the modified Rust modules. The
   workspace `cargo fmt --all -- --check` still reports formatting in unchanged
   `native_engine/mod.rs:81`. Documentation coverage still reports only the

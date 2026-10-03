@@ -149,10 +149,11 @@ projection and existing native Fetch behavior.
   process-backed regression passed (1 passed; 23.46 seconds) and checks a
   same-turn setter before Fetch, initial and updated HttpOnly request cookies,
   the visible projection, and the next request.
-  This does not cover Fetch during initial document loading, streamed uploads,
-  module/font destinations, worker-script/resource/module-graph loading,
-  autonomous worker events, independently delivered SharedWorker messages, or
-  Service Worker internal network requests, which still use the child loader.
+  This does not cover Fetch during initial document loading,
+  dedicated-worker/Service Worker upload streams, module/font destinations,
+  worker-script/resource/module-graph loading, autonomous worker events,
+  independently delivered SharedWorker messages, or Service Worker internal
+  network requests, which still use the child loader.
   The broker currently buffers the bounded response before resolving Fetch;
   incremental network response streaming/backpressure remains outstanding.
 - The latest scoped `cargo check -p glass-browser --features native-engine
@@ -177,7 +178,7 @@ projection and existing native Fetch behavior.
   page setter on the startup Fetch, the parent Set-Cookie update on the later
   message Fetch, response delivery, and distinct page/worker URLs. Worker
   script/resource/module-graph loading, autonomous turns, independently
-  delivered SharedWorker events, streamed uploads, module/font destinations,
+  delivered SharedWorker events, dedicated-worker streamed uploads, module/font destinations,
   initial/resource loading, and Service Worker internal requests remain
   outside the verified broker path.
 - Page-to-dedicated-worker events delivered through a transferred `MessagePort`
@@ -193,8 +194,18 @@ projection and existing native Fetch behavior.
   `native_content_process_page_fetch_credentials_survive_service_worker_handoff`
   process-backed regression passed (1 passed; 33.30-second runtime), covering
   cross-origin credentials/CORS behavior and response-cookie visibility on a
-  later request. Service Worker lifetime/background Fetches, streamed uploads,
-  and out-of-band Service Worker events remain outside this broker path.
+  later request. Service Worker lifetime/background Fetches, Service Worker
+  upload streams, and out-of-band Service Worker events remain outside this
+  broker path.
+- Ordinary explicit page Fetches with a `ReadableStream` request body now
+  collect the bounded body (up to `MAX_NATIVE_FORM_BODY_BYTES`) before using
+  the parent broker. `native_content_process_commits_page_work_from_stream_upload_pull`
+  passed (1 passed; 22.37-second runtime), verifying the body, pull-callback
+  effects, and an HttpOnly cookie set by the upload response on a same-turn
+  follow-up Fetch. This preserves bounded memory and parent cookie authority,
+  but gives up socket-level upload streaming/backpressure for this path; the
+  network request begins after the source closes. Dedicated-worker and Service
+  Worker upload streams are not covered by this change.
 - Slice 842 is complete: browser-coordinated SharedWorker creation derives
   cookies from the exact parent source owner. Its parent snapshot/override/
   deletion process regression passed (1 passed; 48.31-second test runtime),

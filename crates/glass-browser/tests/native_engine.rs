@@ -74182,33 +74182,59 @@ async fn native_content_process_commits_page_work_from_stream_upload_pull() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for expected_path in ["/page", "/upload"] {
+        let mut requests = Vec::new();
+        for expected_path in ["/page", "/upload", "/after-upload"] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
             assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
             if expected_path == "/upload" {
                 let body = request
                     .split_once("\r\n\r\n")
                     .map(|(_, body)| body)
                     .unwrap_or_default();
                 assert_eq!(body, "pull-body");
+                assert!(
+                    cookie
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("stream_seed=initial")
+                );
+            } else if expected_path == "/after-upload" {
+                assert!(
+                    cookie
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("stream_parent=accepted"),
+                    "same-turn follow-up did not see the parent Set-Cookie update: {cookie:?}"
+                );
             }
-            let content_type = if expected_path == "/page" {
-                "text/html"
-            } else {
-                "text/plain"
-            };
-            let body = if expected_path == "/page" {
-                "<title>Initial</title><body>Upload pull</body>"
-            } else {
-                "ok"
+            let (content_type, set_cookie, body) = match expected_path {
+                "/page" => (
+                    "text/html",
+                    "Set-Cookie: stream_seed=initial; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "<title>Initial</title><body>Upload pull</body>",
+                ),
+                "/upload" => (
+                    "text/plain",
+                    "Set-Cookie: stream_parent=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "ok",
+                ),
+                "/after-upload" => ("text/plain", "", "after"),
+                _ => unreachable!(),
             };
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{set_cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push((expected_path, cookie));
         }
+        requests
     });
 
     let mut engine = NativeEngine::new(
@@ -74229,15 +74255,39 @@ async fn native_content_process_commits_page_work_from_stream_upload_pull() {
                         },
                     });
                     const response = await fetch('/upload', { method: 'POST', body: stream });
-                    return [await response.text(), document.title];
+                    const responseText = await response.text();
+                    const followup = await fetch('/after-upload');
+                    return [responseText, await followup.text(), document.title];
                 })()"#,
             )
             .await
             .unwrap(),
-        serde_json::json!(["ok", "Pulled"])
+        serde_json::json!(["ok", "after", "Pulled"])
+    );
+    assert!(
+        engine
+            .cookies_async()
+            .await
+            .unwrap()
+            .iter()
+            .any(|cookie| cookie.name == "stream_parent" && cookie.value == "accepted")
     );
     engine.close_async().await.unwrap();
-    server.await.unwrap();
+    let requests = server.await.unwrap();
+    assert!(
+        requests[1]
+            .1
+            .as_deref()
+            .unwrap_or_default()
+            .contains("stream_seed=initial")
+    );
+    assert!(
+        requests[2]
+            .1
+            .as_deref()
+            .unwrap_or_default()
+            .contains("stream_parent=accepted")
+    );
 }
 
 #[tokio::test]

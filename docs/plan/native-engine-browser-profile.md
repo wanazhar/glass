@@ -137,11 +137,15 @@ request cookies, and accepts response-cookie changes. The worker's current
   cookie-specific regression. Parser-discovered HTTP(S) page scripts now use
   the parent broker during initial loading; a process-backed classic-script
   regression verifies request cookies, response-cookie acceptance, and
-  HttpOnly invisibility. The initial module graph lacks a dedicated cookie
-  regression. Other initial/navigation resources, page
-  stylesheets/images/fonts/media,
-  independently delivered SharedWorker events, module/font Fetch destinations,
-  and Service Worker internal requests remain outside the verified checkpoint.
+  HttpOnly invisibility. Initial HTTP(S) stylesheets and their static CSS
+  imports now use the same parent authority; the expanded process-backed
+  regression verifies ordered cookie updates, HttpOnly retention, and the
+  URL-scoped script-visible projection across navigation, stylesheet, CSS
+  import, and classic parser script requests. The initial module graph still
+  lacks a dedicated cookie regression. Initial images/fonts/media, dynamically
+  attached stylesheets, independently delivered SharedWorker events,
+  module/font Fetch destinations, and Service Worker internal requests remain
+  outside the verified checkpoint.
   In
   browser-coordinated mode, due
   DedicatedWorker timer turns now wait for the exact context/frame owner pump

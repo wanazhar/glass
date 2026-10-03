@@ -297,10 +297,12 @@ projection and existing native Fetch behavior.
   not yet have a cookie-specific regression. The existing
   `native_content_process_runs_nested_dynamic_external_scripts` regression
   passed (1 passed; 19.89 seconds), covering the dynamically attached classic
-  child script branch. Parser-discovered scripts during initial page loading,
-  page stylesheets/images/fonts/media, and other unbrokered requests still use
-  the child loader; the
-  complete content-process cookie profile and persistence paths also remain.
+  child script branch. At that checkpoint, parser-discovered scripts during
+  initial page loading, page stylesheets/images/fonts/media, and other
+  unbrokered requests still used the child loader; the complete content-process
+  cookie profile and persistence paths also remained. The later navigation and
+  stylesheet checkpoints below supersede the parser-script and initial
+  stylesheet portions of that status.
 - Unhandled HTTP(S) top-level navigation now requests its document from the
   parent loader after content-side Service Worker interception declines it.
   The parent validates the load ID, document generation, context, frame, and
@@ -324,9 +326,14 @@ projection and existing native Fetch behavior.
   response it returns only the URL-scoped visible cookie projection; the
   process-backed regression was extended and passed (1 passed; 21.17 seconds),
   checking request-cookie selection, response-cookie acceptance, and HttpOnly
-  invisibility during parser execution. The regression directly covers a
-  classic parser script, not the initial module graph. Stylesheets, images,
-  fonts, media, Service Worker-handled navigation responses, and the full child
+  invisibility during parser execution. Protocol version 21 adds the same
+  parent path for initial HTTP(S) stylesheet links and static CSS imports,
+  retaining the parent's stylesheet loader and a 512 KiB response bound. The
+  expanded regression passed (1 test; 27.33 seconds), covering ordered cookie
+  updates across navigation, stylesheet, CSS import, and classic parser-script
+  requests. The initial module graph still lacks a dedicated cookie regression.
+  Initial images/fonts/media, dynamically attached stylesheets,
+  Service-Worker-handled navigation responses, and the full child
   profile/read/write path remain outstanding.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this

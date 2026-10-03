@@ -362,9 +362,11 @@ regression passed (1 test; 23.24 seconds), proving page cookies and a same-turn
 setter on the dynamic module request, HttpOnly delivery to its dependency, and
 HttpOnly exclusion from `document.cookie`. The dynamic import-map/module
 regression passed (1 test; 20.92 seconds). Runtime `import()` has no
-cookie-specific process regression yet. Parser-discovered initial page scripts,
-stylesheets, images, fonts, media, and other unbrokered requests remain
-child-side paths.
+cookie-specific process regression yet. Parser-discovered HTTP(S) page scripts,
+initial page stylesheets, and their static CSS imports now use the parent
+broker. A process-backed regression covers a classic parser script and a
+stylesheet import, including ordered cookie updates and HttpOnly invisibility.
+Images, fonts, media, and other unbrokered requests remain child-side paths.
 A new Slice 843 checkpoint moves unhandled HTTP(S) top-level document
 navigation to the parent loader after content-side Service Worker
 interception declines it. The request is bound to the active load ID,
@@ -375,9 +377,10 @@ back to the child. The process-backed navigation-cookie regression passed
 (1 test; 20.40 seconds), verifying script visibility and the parent cookie
 API, including HttpOnly retention. The Service Worker openWindow-resume
 regression also passed (1 test; 34.25 seconds) on a 4 MiB test thread.
-Parser-discovered scripts, other initial resources, Service Worker-provided
-navigation responses, and the full child cookie profile remain outside this
-checkpoint.
+Initial parser scripts and stylesheets/imports are now parent-brokered after
+the unhandled-navigation response; initial images/fonts/media,
+Service Worker-provided navigation responses, and the full child cookie
+profile remain outside this checkpoint.
 Process-backed request/header/no-duplicate, cancellation, source-document
 referrer-policy/redirect, and worker-visible `Request.referrer` regressions
 remain unrun. Slice 842's parent-cookie regression did bind a local HTTP

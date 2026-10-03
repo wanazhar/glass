@@ -191,9 +191,8 @@ later updates in the browser-coordinated SharedWorker loader.
   --exact --nocapture`. It passed (1 passed, 0 failed; 48.31-second test
   runtime, 48.37 seconds total), verifying parent cookie snapshot, override
   replay, and deletion. The independent static review found no code defect;
-  its initial timeout finding was resolved by this successful run. See
-  [review 02](../reviews/native-engine-browser-842-02.md). Selected WPT and
-  broader parent-only acceptance tests have not been run.
+  its initial timeout finding was resolved by this successful run. Selected
+  WPT and broader parent-only acceptance tests have not been run.
 - `python3 scripts/check-documentation-coverage.py` reports one unrelated
   stale live measurement in `docs/mcp-schema-budget.md`: it omits the live
   row ``| Serialized `tools` array | 173,741 UTF-8 bytes |``.

@@ -74,12 +74,19 @@ and intends to use [Semantic Versioning](https://semver.org/).
   pump and execute with that turn's parent broker; standalone `NativeEngine`
   retains local timer execution. The process-backed
   `browser_owned_worker_timer_fetch_uses_parent_cookie_authority` regression
-  passed (1 passed; 21.59 seconds). Service Worker timer/lifetime work,
-  worker-script/resource/module-graph loading, independently delivered
-  SharedWorker events, module/font destinations, and other autonomous worker
-  network turns remain outside this broker path. The child still has a full
-  cookie mirror and profile-path access, so parent-only cookie authority is
-  not complete.
+  passed (1 passed; 22.87 seconds). HTTP(S) DedicatedWorker and SharedWorker
+  entry scripts, classic `importScripts()` dependencies, and worker static and
+  dynamic module dependencies now use the parent's specialized script loader.
+  Cookie writes are applied before loading; the child receives only bounded
+  source, final URL, response Referrer-Policy, and the script-visible cookie
+  projection. The process regression verifies the entry-script request, a
+  classic `importScripts()` dependency, and HttpOnly cookies set by both
+  responses; module-graph variants still need dedicated process-backed
+  coverage. ServiceWorker timer/lifetime work, page subresources,
+  independently delivered SharedWorker events,
+  module/font destinations, and other autonomous worker network turns remain
+  outside this broker path. The child still has a full cookie mirror and
+  profile-path access, so parent-only cookie authority is not complete.
 - Native content-worker dialog IPC now uses one stdin reader to route dialog
   decisions separately from ordinary asynchronous requests.
 - Native event-pump shutdown now cancels an in-flight owner turn through a

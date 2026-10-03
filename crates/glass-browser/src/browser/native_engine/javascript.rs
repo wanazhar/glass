@@ -1726,6 +1726,78 @@ enum NativeWorkerClassicDynamicImportMode {
     RejectPerScript,
 }
 
+async fn load_worker_script_resource(
+    loader: &mut NativeResourceLoader,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+    request_id: u32,
+    document_url: &str,
+    href: &str,
+    referrer_url: Option<&str>,
+    max_source_bytes: usize,
+    module_type: Option<NativeModuleResourceType>,
+    credentials_mode: Option<&str>,
+    referrer_policy: Option<NativeFetchReferrerPolicy>,
+    shared_worker_module_entry: bool,
+) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+    let request_base = referrer_url.unwrap_or(document_url);
+    let network_target = Url::parse(href)
+        .or_else(|_| Url::parse(without_fragment(request_base)).and_then(|base| base.join(href)))
+        .is_ok_and(|target| is_network_url(target.as_str()));
+    if network_target && let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
+        return parent_fetch_broker
+            .load_worker_script(
+                request_id,
+                document_url,
+                href,
+                referrer_url,
+                max_source_bytes,
+                module_type,
+                credentials_mode,
+                referrer_policy,
+                shared_worker_module_entry,
+            )
+            .await
+            .map(|(resource, _)| resource);
+    }
+    if shared_worker_module_entry {
+        return loader
+            .load_shared_worker_module_async(
+                document_url,
+                href,
+                max_source_bytes,
+                credentials_mode.ok_or_else(|| {
+                    NativeEngineError::invalid(
+                        "SharedWorker module credentials",
+                        "must be provided for a module entry",
+                    )
+                })?,
+                referrer_policy,
+            )
+            .await;
+    }
+    if let Some(referrer_url) = referrer_url {
+        return loader
+            .load_worker_script_dependency_async_with_referrer_source(
+                document_url,
+                referrer_url,
+                href,
+                max_source_bytes,
+                module_type,
+                credentials_mode,
+                referrer_policy,
+            )
+            .await;
+    }
+    loader
+        .load_worker_async_with_referrer_policy(
+            document_url,
+            href,
+            max_source_bytes,
+            referrer_policy,
+        )
+        .await
+}
+
 #[derive(Debug, Clone)]
 struct NativeMessagePortRoute {
     worker_id: u32,
@@ -2496,7 +2568,7 @@ impl NativeWorkerRegistry {
         referrer_policy: Option<NativeFetchReferrerPolicy>,
         loader: &mut NativeResourceLoader,
         owner_url: &str,
-        parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<(), NativeEngineError> {
         if worker_id == 0 {
             return Err(NativeEngineError::invalid(
@@ -2536,20 +2608,20 @@ impl NativeWorkerRegistry {
             String::new()
         };
 
-        let resource_result = if is_module {
-            loader
-                .load_worker_async_with_referrer_policy(
-                    owner_url,
-                    &href,
-                    MAX_NATIVE_SCRIPT_BYTES,
-                    referrer_policy,
-                )
-                .await
-        } else {
-            loader
-                .load_worker_async(owner_url, &href, MAX_NATIVE_SCRIPT_BYTES)
-                .await
-        };
+        let resource_result = load_worker_script_resource(
+            loader,
+            parent_fetch_broker.as_deref_mut(),
+            worker_id,
+            owner_url,
+            &href,
+            None,
+            MAX_NATIVE_SCRIPT_BYTES,
+            None,
+            None,
+            referrer_policy,
+            false,
+        )
+        .await;
         let resource = match resource_result {
             Ok(Some(resource)) => resource,
             Ok(None) => {
@@ -2583,10 +2655,12 @@ impl NativeWorkerRegistry {
                     module_request_url,
                     resource.clone(),
                     None,
+                    worker_id,
                     Some(
                         referrer_policy
                             .unwrap_or(NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin),
                     ),
+                    parent_fetch_broker.as_deref_mut(),
                 )
                 .await
             {
@@ -2613,6 +2687,8 @@ impl NativeWorkerRegistry {
                     resource.clone(),
                     NativeWorkerClassicDynamicImportMode::RewritePerScript,
                     worker_referrer_policy,
+                    worker_id,
+                    parent_fetch_broker.as_deref_mut(),
                 )
                 .await
             {
@@ -2796,21 +2872,20 @@ impl NativeWorkerRegistry {
                 "must be unique within the page realm",
             ));
         }
-        let resource_result = if is_module {
-            loader
-                .load_shared_worker_module_async(
-                    owner_url,
-                    &href,
-                    MAX_NATIVE_SCRIPT_BYTES,
-                    &credentials,
-                    referrer_policy,
-                )
-                .await
-        } else {
-            loader
-                .load_worker_async(owner_url, &href, MAX_NATIVE_SCRIPT_BYTES)
-                .await
-        };
+        let resource_result = load_worker_script_resource(
+            loader,
+            parent_fetch_broker.as_deref_mut(),
+            connection_id,
+            owner_url,
+            &href,
+            None,
+            MAX_NATIVE_SCRIPT_BYTES,
+            None,
+            is_module.then_some(credentials.as_str()),
+            referrer_policy,
+            is_module,
+        )
+        .await;
         let resource = match resource_result {
             Ok(Some(resource)) => resource,
             Ok(None) => {
@@ -2848,10 +2923,12 @@ impl NativeWorkerRegistry {
                     module_request_url,
                     resource.clone(),
                     Some(&credentials),
+                    connection_id,
                     Some(
                         referrer_policy
                             .unwrap_or(NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin),
                     ),
+                    parent_fetch_broker.as_deref_mut(),
                 )
                 .await
             {
@@ -2878,6 +2955,8 @@ impl NativeWorkerRegistry {
                     resource.clone(),
                     NativeWorkerClassicDynamicImportMode::RewritePerScript,
                     worker_referrer_policy,
+                    connection_id,
+                    parent_fetch_broker.as_deref_mut(),
                 )
                 .await
             {
@@ -4742,6 +4821,7 @@ impl NativeWorkerRegistry {
                     module_type,
                     module_referrer_policy,
                     loader,
+                    parent_fetch_broker.as_deref_mut(),
                 )
                 .await
             {
@@ -4859,6 +4939,7 @@ impl NativeWorkerRegistry {
         module_type: Option<NativeModuleResourceType>,
         referrer_policy: Option<NativeFetchReferrerPolicy>,
         loader: &mut NativeResourceLoader,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<String, NativeEngineError> {
         let target = resolve_worker_module_specifier(module_referrer, specifier)?;
         let module_type = module_type.unwrap_or(NativeModuleResourceType::JavaScript);
@@ -4901,21 +4982,24 @@ impl NativeWorkerRegistry {
 
         let referrer_policy =
             referrer_policy.unwrap_or(NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin);
-        let resource = loader
-            .load_worker_script_dependency_async_with_referrer_source(
-                worker_url,
-                module_referrer,
-                &target,
-                MAX_NATIVE_SCRIPT_BYTES,
-                Some(module_type),
-                worker_credentials_mode.as_deref(),
-                Some(referrer_policy),
-            )
-            .await?
-            .ok_or_else(|| NativeEngineError::Network {
-                operation: "native Worker dynamic module import".into(),
-                reason: "dynamic Worker module was blocked or unavailable".into(),
-            })?;
+        let resource = load_worker_script_resource(
+            loader,
+            parent_fetch_broker.as_deref_mut(),
+            request_id,
+            worker_url,
+            &target,
+            Some(module_referrer),
+            MAX_NATIVE_SCRIPT_BYTES,
+            Some(module_type),
+            worker_credentials_mode.as_deref(),
+            Some(referrer_policy),
+            false,
+        )
+        .await?
+        .ok_or_else(|| NativeEngineError::Network {
+            operation: "native Worker dynamic module import".into(),
+            reason: "dynamic Worker module was blocked or unavailable".into(),
+        })?;
         let graph = self
             .load_worker_module_graph(
                 loader,
@@ -4923,7 +5007,9 @@ impl NativeWorkerRegistry {
                 module_name.clone(),
                 resource,
                 worker_credentials_mode.as_deref(),
+                request_id,
                 Some(referrer_policy),
+                parent_fetch_broker.as_deref_mut(),
             )
             .await?;
         let new_sources = graph
@@ -5037,6 +5123,8 @@ impl NativeWorkerRegistry {
         root: NativeScriptResource,
         dynamic_import_mode: NativeWorkerClassicDynamicImportMode,
         worker_referrer_policy: NativeFetchReferrerPolicy,
+        request_id: u32,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<NativeWorkerClassicScriptGraph, NativeEngineError> {
         struct PendingWorkerScript {
             resource: NativeScriptResource,
@@ -5086,23 +5174,26 @@ impl NativeWorkerRegistry {
                         import_edges,
                     ));
                 }
-                let imported = loader
-                    .load_worker_script_dependency_async_with_referrer_source(
-                        &worker_url,
-                        &worker_url,
-                        &specifier,
-                        MAX_NATIVE_SCRIPT_BYTES,
-                        None,
-                        None,
-                        Some(worker_referrer_policy),
-                    )
-                    .await?
-                    .ok_or_else(|| NativeEngineError::Network {
-                        operation: "worker importScripts".into(),
-                        reason: format!(
-                            "worker importScripts dependency {specifier:?} was blocked or unavailable"
-                        ),
-                    })?;
+                let imported = load_worker_script_resource(
+                    loader,
+                    parent_fetch_broker.as_deref_mut(),
+                    request_id,
+                    &worker_url,
+                    &specifier,
+                    Some(&worker_url),
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    None,
+                    None,
+                    Some(worker_referrer_policy),
+                    false,
+                )
+                .await?
+                .ok_or_else(|| NativeEngineError::Network {
+                    operation: "worker importScripts".into(),
+                    reason: format!(
+                        "worker importScripts dependency {specifier:?} was blocked or unavailable"
+                    ),
+                })?;
                 if stack.iter().any(|entry| entry.resource.url == imported.url) {
                     return Err(NativeEngineError::Network {
                         operation: "worker importScripts".into(),
@@ -5199,7 +5290,9 @@ impl NativeWorkerRegistry {
         root_request_url: String,
         root: NativeScriptResource,
         credentials_mode: Option<&str>,
+        request_id: u32,
         inherited_referrer_policy: Option<NativeFetchReferrerPolicy>,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<NativeWorkerModuleGraph, NativeEngineError> {
         if root.body.is_empty() {
             return Err(NativeEngineError::invalid(
@@ -5262,29 +5355,20 @@ impl NativeWorkerRegistry {
                         sources.len().saturating_add(1),
                     ));
                 }
-                let resource = if let Some(referrer_policy) = module_referrer_policy {
-                    loader
-                        .load_worker_script_dependency_async_with_referrer_source(
-                            owner_url,
-                            &module_base_url,
-                            &target,
-                            MAX_NATIVE_SCRIPT_BYTES,
-                            Some(request.module_type),
-                            credentials_mode,
-                            Some(referrer_policy),
-                        )
-                        .await?
-                } else {
-                    loader
-                        .load_worker_script_dependency_async_with_credentials(
-                            owner_url,
-                            &target,
-                            MAX_NATIVE_SCRIPT_BYTES,
-                            Some(request.module_type),
-                            credentials_mode,
-                        )
-                        .await?
-                }
+                let resource = load_worker_script_resource(
+                    loader,
+                    parent_fetch_broker.as_deref_mut(),
+                    request_id,
+                    owner_url,
+                    &target,
+                    Some(&module_base_url),
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    Some(request.module_type),
+                    credentials_mode,
+                    module_referrer_policy,
+                    false,
+                )
+                .await?
                 .ok_or_else(|| NativeEngineError::Network {
                     operation: "native Worker module dependency".into(),
                     reason: format!(
@@ -5360,7 +5444,9 @@ pub(crate) async fn load_service_worker_source(
                 root_request_url,
                 resource.clone(),
                 None,
+                1,
                 Some(worker_referrer_policy),
+                None,
             )
             .await?;
         Ok((
@@ -5376,6 +5462,8 @@ pub(crate) async fn load_service_worker_source(
                 resource,
                 NativeWorkerClassicDynamicImportMode::RejectPerScript,
                 worker_referrer_policy,
+                1,
+                None,
             )
             .await?;
         Ok((

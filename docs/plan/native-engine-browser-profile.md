@@ -123,20 +123,26 @@ dedicated-worker initialization and while handling an explicit page
 `Worker.postMessage`. The parent validates the captured page owner separately
 from the worker request URL, applies same-turn page cookie writes, selects
 request cookies, and accepts response-cookie changes. The worker's current
-response-stream interface is preserved over a buffered parent response.
-Locally hosted SharedWorker creation/connect evaluations also receive the
-broker but lack a focused process-backed regression. Worker-script/resource/
-module-graph loading, independently delivered SharedWorker events, module
-destinations, initial/resource loads, and Service Worker internal requests
-remain outside the verified checkpoint. In browser-coordinated mode, due
-DedicatedWorker timer turns now wait for the exact context/frame owner pump and
-execute with that turn's parent Fetch broker; standalone `NativeEngine` keeps
-its local timer path. The process-backed
-`browser_owned_worker_timer_fetch_uses_parent_cookie_authority` regression
-passed (1 passed; 21.59 seconds), checking the initial HttpOnly request cookie,
-a parent-accepted HttpOnly response update on the next worker request, the
-parent cookie API, and the script-visible projection. ServiceWorker timer and
-lifetime work remain outside this subset. Explicit-turn page-originated stream
+  response-stream interface is preserved over a buffered parent response.
+  Locally hosted SharedWorker creation/connect evaluations also receive the
+  broker but lack a focused process-backed regression. HTTP(S) worker entry
+  scripts, classic `importScripts()` dependencies, and static/dynamic module
+  dependencies now use the parent's specialized loader. Process-backed
+  coverage verifies worker entry and classic `importScripts()` loading;
+  module-graph variants still need focused tests. Page resource loads,
+  independently delivered SharedWorker events, module destinations, and Service Worker
+  internal requests remain outside the verified checkpoint. In
+  browser-coordinated mode, due
+  DedicatedWorker timer turns now wait for the exact context/frame owner pump
+  and execute with that turn's parent Fetch broker; standalone `NativeEngine` keeps
+  its local timer path. The process-backed
+  `browser_owned_worker_timer_fetch_uses_parent_cookie_authority` regression
+  passed (1 passed; 22.87 seconds), checking the worker entry request cookies,
+  a classic `importScripts()` dependency request, HttpOnly cookies set by both
+  responses and sent on later requests, a parent-accepted HttpOnly response
+  update, the parent cookie API, and the script-visible projection.
+  ServiceWorker timer and lifetime work remain outside this subset.
+  Explicit-turn page-originated stream
 uploads to a controlled Service Worker are separately verified: its handler
 still gets first opportunity to respond, while a declined network fallback
 uses the parent broker. Service Worker-originated upload streams remain outside
@@ -428,23 +434,25 @@ cross-platform validation remain completion gates for Slice 839.
 Before Slice 839, the FetchEvent shim resolved `preloadResponse` to `undefined`
 for every request. Slice 838 implements the manager and durable registration
 settings; its scoped compile and socket-free unit tests pass, but its
-process-backed persistence regression cannot run in this sandbox because TCP
-listener binding is denied. Slice 839 now starts eligible GET preloads through
+process-backed persistence regression did not run at the Slice 838 checkpoint
+because local TCP listener binding was denied. Slice 839 now starts eligible GET preloads through
 the native loader alongside FetchEvent dispatch, exposes navigation request
 mode, delivers the bounded response through `preloadResponse`, and reuses it
 for an unhandled navigation. An already-settled independent ServiceWorker
 response now returns without waiting for a still-pending preload body; a
-process-backed gated-response regression compiles, but running it stops at
-`TcpListener::bind("127.0.0.1:0")` with `PermissionDenied` before engine
-startup. The current scoped native-engine check and new socket-free runtime
+process-backed gated-response regression compiles, but at that checkpoint it
+stopped at `TcpListener::bind("127.0.0.1:0")` with `PermissionDenied` before
+engine startup. The scoped native-engine check and new socket-free runtime
 test pass as part of six socket-free navigation-preload tests. The separate
 navigation referrer-policy unit had passed before this change; the preload
 tests cover response cloning, immutable headers, the no-preload result,
 eligibility, and network errors. Existing process-backed
 HTTP/header/no-duplicate, cancellation, source-policy/redirect, and
 worker-visible `Request.referrer` regression sources previously compiled with
-`--tests`, but have not run here because local TCP listener binding is denied;
-actual network, overlap, and cancellation behavior remain unverified.
+`--tests`, but were not run at that checkpoint because local TCP listener
+binding was denied; this later checkout has run other process-backed HTTP
+regressions, while those specific network, overlap, and cancellation behaviors
+remain unverified.
 Navigation Preload is still incomplete until those integrations and remaining
 CI/WPT/platform evidence pass.
 

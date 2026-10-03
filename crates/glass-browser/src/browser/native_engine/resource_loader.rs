@@ -7744,6 +7744,32 @@ impl NativeResourceLoader {
         .await
     }
 
+    pub(crate) async fn load_worker_async_with_referrer_source(
+        &mut self,
+        document_url: &str,
+        referrer_url: &str,
+        href: &str,
+        max_source_bytes: usize,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        self.load_script_like_async_with_referrer_source(
+            document_url,
+            href,
+            max_source_bytes,
+            NativeSubresourceKind::Worker,
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            referrer_policy,
+            Some(referrer_url),
+        )
+        .await
+    }
+
     pub(crate) async fn load_shared_worker_module_async(
         &mut self,
         document_url: &str,

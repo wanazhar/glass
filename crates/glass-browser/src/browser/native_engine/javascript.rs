@@ -1755,6 +1755,7 @@ async fn load_worker_script_resource(
                 credentials_mode,
                 referrer_policy,
                 shared_worker_module_entry,
+                None,
             )
             .await
             .map(|(resource, _)| resource);
@@ -5415,12 +5416,52 @@ impl NativeWorkerRegistry {
     }
 }
 
+pub(crate) async fn load_service_worker_entry(
+    loader: &mut NativeResourceLoader,
+    owner_url: &str,
+    referrer_url: &str,
+    script_url: &str,
+    request_id: u32,
+    referrer_policy: Option<NativeFetchReferrerPolicy>,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+    if is_network_url(without_fragment(script_url))
+        && let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut()
+    {
+        return parent_fetch_broker
+            .load_worker_script(
+                request_id,
+                owner_url,
+                script_url,
+                None,
+                MAX_NATIVE_SCRIPT_BYTES,
+                None,
+                None,
+                referrer_policy,
+                false,
+                Some(referrer_url),
+            )
+            .await
+            .map(|(resource, _)| resource);
+    }
+    loader
+        .load_worker_async_with_referrer_policy(
+            referrer_url,
+            script_url,
+            MAX_NATIVE_SCRIPT_BYTES,
+            referrer_policy,
+        )
+        .await
+}
+
 pub(crate) async fn load_service_worker_source(
     loader: &mut NativeResourceLoader,
     owner_url: &str,
     root_request_url: String,
     resource: NativeScriptResource,
     is_module: bool,
+    request_id: u32,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<
     (
         String,
@@ -5444,9 +5485,9 @@ pub(crate) async fn load_service_worker_source(
                 root_request_url,
                 resource.clone(),
                 None,
-                1,
+                request_id,
                 Some(worker_referrer_policy),
-                None,
+                parent_fetch_broker.as_deref_mut(),
             )
             .await?;
         Ok((
@@ -5462,8 +5503,8 @@ pub(crate) async fn load_service_worker_source(
                 resource,
                 NativeWorkerClassicDynamicImportMode::RejectPerScript,
                 worker_referrer_policy,
-                1,
-                None,
+                request_id,
+                parent_fetch_broker.as_deref_mut(),
             )
             .await?;
         Ok((

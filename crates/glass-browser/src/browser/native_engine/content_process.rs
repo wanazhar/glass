@@ -343,6 +343,7 @@ impl NativeContentFetchBroker<'_> {
         credentials_mode: Option<&str>,
         referrer_policy: Option<NativeFetchReferrerPolicy>,
         shared_worker_module_entry: bool,
+        entry_referrer_url: Option<&str>,
     ) -> Result<(Option<NativeScriptResource>, String), NativeEngineError> {
         if request_id == 0 {
             return Err(NativeEngineError::invalid(
@@ -374,6 +375,7 @@ impl NativeContentFetchBroker<'_> {
                     "credentials_mode": credentials_mode,
                     "referrer_policy": referrer_policy.map(NativeFetchReferrerPolicy::as_str),
                     "shared_worker_module_entry": shared_worker_module_entry,
+                    "entry_referrer_url": entry_referrer_url,
                 },
             }),
         )
@@ -3644,6 +3646,8 @@ impl NativeContentProcess {
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
             let _ = self.child.start_kill();
+        } else {
+            self.current_document_url = Some(url.to_owned());
         }
         result
     }
@@ -6913,6 +6917,7 @@ async fn load_parent_worker_script_async(
                 | "credentials_mode"
                 | "referrer_policy"
                 | "shared_worker_module_entry"
+                | "entry_referrer_url"
         )
     }) {
         return Err(NativeEngineError::worker_failure(
@@ -6934,6 +6939,7 @@ async fn load_parent_worker_script_async(
         }
     };
     let referrer_url = optional_text("referrer_url")?;
+    let entry_referrer_url = optional_text("entry_referrer_url")?;
     let credentials_mode = optional_text("credentials_mode")?;
     let referrer_policy = optional_text("referrer_policy")?
         .as_deref()
@@ -6973,6 +6979,18 @@ async fn load_parent_worker_script_async(
                 "worker script metadata omitted its request type",
             )
         })?;
+    if entry_referrer_url.is_some()
+        && (referrer_url.is_some()
+            || module_type.is_some()
+            || credentials_mode.is_some()
+            || shared_worker_module_entry)
+    {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent worker script request",
+            NativeWorkerFailureKind::Protocol,
+            "worker entry referrer metadata is inconsistent",
+        ));
+    }
     if credentials_mode
         .as_deref()
         .is_some_and(|mode| !matches!(mode, "omit" | "same-origin" | "include"))
@@ -7017,6 +7035,33 @@ async fn load_parent_worker_script_async(
         ));
     }
 
+    if let Some(entry_referrer_url) = entry_referrer_url.as_deref() {
+        validate_url_text("worker entry referrer URL", entry_referrer_url)?;
+        let entry_referrer =
+            url::Url::parse(without_fragment(entry_referrer_url)).map_err(|_| {
+                NativeEngineError::worker_failure(
+                    "decode parent worker script request",
+                    NativeWorkerFailureKind::Protocol,
+                    "worker entry referrer URL is invalid",
+                )
+            })?;
+        let owner_url = url::Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent worker script request",
+                NativeWorkerFailureKind::Protocol,
+                "worker entry owner URL is invalid",
+            )
+        })?;
+        if !is_network_url(entry_referrer.as_str()) || entry_referrer.origin() != owner_url.origin()
+        {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent worker script request",
+                NativeWorkerFailureKind::Protocol,
+                "worker entry referrer must be same-origin with its owner",
+            ));
+        }
+    }
+
     if shared_worker_module_entry {
         if referrer_url.is_some() || module_type.is_some() || credentials_mode.is_none() {
             return Err(NativeEngineError::worker_failure(
@@ -7050,6 +7095,16 @@ async fn load_parent_worker_script_async(
                 max_source_bytes,
                 module_type,
                 credentials_mode.as_deref(),
+                referrer_policy,
+            )
+            .await
+    } else if let Some(entry_referrer_url) = entry_referrer_url.as_deref() {
+        loader
+            .load_worker_async_with_referrer_source(
+                document_url,
+                entry_referrer_url,
+                href,
+                max_source_bytes,
                 referrer_policy,
             )
             .await
@@ -9818,6 +9873,32 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             resource_loader.as_mut(),
                                         ) {
                                             (Some(runtime), Some(loader)) => {
+                                                let mut parent_fetch_broker =
+                                                    NativeContentFetchBroker {
+                                                        request_id: id.as_u64().ok_or_else(|| {
+                                                            NativeEngineError::invalid(
+                                                                "content-process load request ID",
+                                                                "must be an unsigned integer",
+                                                            )
+                                                        })?,
+                                                        owner: NativeContentCookieOwner {
+                                                            context_id:
+                                                                storage_context_id.clone(),
+                                                            frame_id: frame_id.clone(),
+                                                            generation: parsed.generation(),
+                                                            document_url: resource.url.clone(),
+                                                        },
+                                                        runtime: Some(runtime),
+                                                        stdout: &mut stdout,
+                                                        ipc_requests: &mut ipc_request_rx,
+                                                        document_cookie_projection:
+                                                            &mut parent_document_cookie_projection,
+                                                        next_content_resource_fetch_id: 0,
+                                                        page_meta_content_security_policies: loader
+                                                            .document_meta_content_security_policies(
+                                                                &resource.url,
+                                                            )?,
+                                                    };
                                                 resolve_service_worker_commands(
                                                     service_worker_commands,
                                                     &mut service_workers,
@@ -9827,6 +9908,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                                     &resource.url,
                                                     &resource.origin,
                                                     loaded_viewport,
+                                                    Some(&mut parent_fetch_broker),
                                                 )
                                                 .await?
                                             }
@@ -10408,6 +10490,22 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         reason: "content process resource loader is unavailable".into(),
                     });
                 };
+                let mut parent_fetch_broker = NativeContentFetchBroker {
+                    request_id: id.as_u64().ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process script request ID",
+                            "must be an unsigned integer",
+                        )
+                    })?,
+                    owner: owner.clone(),
+                    runtime: Some(runtime),
+                    stdout: &mut stdout,
+                    ipc_requests: &mut ipc_request_rx,
+                    document_cookie_projection: &mut parent_document_cookie_projection,
+                    next_content_resource_fetch_id: 0,
+                    page_meta_content_security_policies: loader
+                        .document_meta_content_security_policies(&committed_url)?,
+                };
                 let service_worker_commands = runtime.take_service_worker_commands();
                 let resolved_service_worker_commands =
                     if evaluation.is_ok() && !service_worker_commands.is_empty() {
@@ -10421,6 +10519,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             &committed_url,
                             document_origin,
                             viewport,
+                            Some(&mut parent_fetch_broker),
                         )
                         .await?
                     } else {
@@ -10438,22 +10537,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     current.generation(),
                     &mut pending_shared_worker_commands,
                 )?;
-                let mut parent_fetch_broker = NativeContentFetchBroker {
-                    request_id: id.as_u64().ok_or_else(|| {
-                        NativeEngineError::invalid(
-                            "content-process script request ID",
-                            "must be an unsigned integer",
-                        )
-                    })?,
-                    owner: owner.clone(),
-                    runtime: Some(runtime),
-                    stdout: &mut stdout,
-                    ipc_requests: &mut ipc_request_rx,
-                    document_cookie_projection: &mut parent_document_cookie_projection,
-                    next_content_resource_fetch_id: 0,
-                    page_meta_content_security_policies: loader
-                        .document_meta_content_security_policies(&committed_url)?,
-                };
                 workers
                     .apply_commands_with_parent_fetch_broker(
                         worker_commands,
@@ -12244,6 +12327,7 @@ async fn resolve_service_worker_commands(
     document_url: &str,
     document_origin: &NativeOrigin,
     viewport: Viewport,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
     let mut pending = VecDeque::from(commands);
     let mut document_commands = Vec::new();
@@ -12277,6 +12361,8 @@ async fn resolve_service_worker_commands(
                                 &referrer_url,
                                 referrer_policy,
                                 loader,
+                                request_id,
+                                parent_fetch_broker.as_deref_mut(),
                             )
                             .await
                     }
@@ -12342,7 +12428,15 @@ async fn resolve_service_worker_commands(
                 let result = match NativeFetchReferrerPolicy::parse(&referrer_policy) {
                     Ok(referrer_policy) => {
                         registry
-                            .update(&scope, document_url, &referrer_url, referrer_policy, loader)
+                            .update(
+                                &scope,
+                                document_url,
+                                &referrer_url,
+                                referrer_policy,
+                                loader,
+                                request_id,
+                                parent_fetch_broker.as_deref_mut(),
+                            )
                             .await
                     }
                     Err(error) => Err(error),

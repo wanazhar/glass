@@ -152,7 +152,7 @@ projection and existing native Fetch behavior.
   This does not cover Fetch during initial document loading,
   explicit-turn page/dedicated-worker upload streams (covered by later
   checkpoints below), Service Worker-originated upload streams,
-  module/font destinations, worker module-graph process coverage, autonomous worker events,
+  module/font destinations, Dedicated/SharedWorker module-graph process coverage, autonomous worker events,
   independently delivered SharedWorker messages, or Service Worker internal
   network requests, which still use the child loader. A later checkpoint below
   now routes worker entry and classic imported scripts through the parent;
@@ -170,10 +170,10 @@ projection and existing native Fetch behavior.
   truth, documentation depth, and TUI shortcut inventory checks pass. The
   latest static doc reports cover 1,471 Markdown files with zero current-claim
   failures, 93 current guides and 19 contracts, and 15 implementation shortcut
-  keys/63 documentation markers. The link/inventory coverage check was not
-  rerun because its prior attempt reported the live MCP schema size as 173,741
-  bytes while `docs/mcp-schema-budget.md` records 173,237; the `glass` debug
-  binary has not been rebuilt in this checkout.
+  keys/63 documentation markers. After rebuilding the stale `glass` debug
+  binary, the MCP schema scoreboard measured 346 tools and 173,741 UTF-8 bytes
+  (43,436 estimated tokens); `docs/mcp-schema-budget.md` now records that live
+  measurement, and the documentation coverage check passes.
 - Standard buffered Fetch emitted during dedicated-worker initialization and
   while handling an explicit page `Worker.postMessage` now uses the parent
   broker. The protocol validates the captured page owner separately from the
@@ -367,6 +367,24 @@ projection and existing native Fetch behavior.
   only because this engine serializes the `bold` keyword as `"bold"`, not
   `"700"`; the test-only correction rebuilt in 1m08 and the focused rerun
   passed.
+- HTTP(S) Service Worker registration and `update()` entry scripts now use
+  the parent worker-script broker during parser-time registration and explicit
+  page-script turns. Their classic `importScripts()` dependencies and static
+  module graph dependencies use that same parent loader; cookie writes are
+  applied before each request and response cookies remain in the parent. The
+  process-backed
+  `native_content_process_service_worker_module_registration_uses_parent_cookie_authority`
+  regression passed (1 passed; 24.85 seconds), verifying HttpOnly cookies from
+  the page, Service Worker module entry, and imported module reach registration
+  and update requests, while the page's `document.cookie` projection stays
+  empty. The existing
+  `native_content_process_service_worker_registration_uses_live_document_referrer_policy`
+  regression passed (1 passed; 26.09 seconds) after `history_sync` began
+  advancing the parent's active owner URL only after successful synchronization;
+  this preserves live `history.pushState` referrers and prevents a subsequent
+  script turn from being rejected against a stale parent URL. Service Worker
+  restoration, timer/lifetime work, FetchEvent-internal requests, and other
+  Service Worker network paths remain outside this brokered script-load slice.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.

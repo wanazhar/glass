@@ -60,13 +60,14 @@ and intends to use [Semantic Versioning](https://semver.org/).
   queued child cookie changes and same-turn, owner-tagged `document.cookie`
   writes before selecting request cookies or accepting response cookies. It
   returns only the visible `document.cookie` projection to the script realm.
-  Standard buffered Fetches emitted by a dedicated worker while handling an
-  explicit page `Worker.postMessage` also use the parent broker. The page
-  document remains the cookie owner while the worker script URL remains the
-  request base; same-turn page writes and response-cookie updates are applied
-  by the parent. The worker's existing response-stream interface is retained,
-  but the parent transport buffers the response. Initial page loading, worker
-  startup and other autonomous/shared-worker turns, streamed uploads,
+  Standard buffered Fetches emitted during dedicated-worker initialization in
+  an explicit page script and while handling that page's `Worker.postMessage`
+  now also use the parent broker. The page document remains the cookie owner
+  while the worker script URL remains the request base; same-turn page writes
+  and response-cookie updates are applied by the parent. The worker's existing
+  response-stream interface is retained, but the parent transport buffers the
+  response. Worker-script/resource/module-graph loading, autonomous worker
+  turns, independently delivered SharedWorker events, streamed uploads,
   module/font destinations, and Service Worker internal requests remain
   outside this broker path. The child still has a full cookie mirror and
   profile-path access, so parent-only cookie authority is not complete.

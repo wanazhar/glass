@@ -150,11 +150,11 @@ projection and existing native Fetch behavior.
   same-turn setter before Fetch, initial and updated HttpOnly request cookies,
   the visible projection, and the next request.
   This does not cover Fetch during initial document loading, streamed uploads,
-  module/font destinations, worker startup or autonomous events, SharedWorker
-  message dispatch, or Service Worker internal network requests, which still
-  use the child loader. The broker currently buffers the bounded response
-  before resolving Fetch; incremental network response streaming/backpressure
-  remains outstanding.
+  module/font destinations, worker-script/resource/module-graph loading,
+  autonomous worker events, independently delivered SharedWorker messages, or
+  Service Worker internal network requests, which still use the child loader.
+  The broker currently buffers the bounded response before resolving Fetch;
+  incremental network response streaming/backpressure remains outstanding.
 - The latest scoped `cargo check -p glass-browser --features native-engine
   --lib --test native_engine --locked --quiet` passed with existing dead-code
   warnings only; the focused worker regression is recorded below.
@@ -163,19 +163,23 @@ projection and existing native Fetch behavior.
   Documentation coverage remains blocked only by the existing missing live
   MCP schema measurement ``| Serialized `tools` array | 173,741 UTF-8 bytes |``
   in `docs/mcp-schema-budget.md`.
-- Standard buffered Fetch emitted by a dedicated worker while handling an
-  explicit page `Worker.postMessage` now uses the parent broker. The protocol
-  validates the captured page owner separately from the worker request URL,
-  applies pending page cookie writes before selecting request cookies, commits
-  response-cookie changes in the parent, and returns the page owner's visible
-  cookie projection. The existing worker response-stream interface is
-  preserved over the buffered parent response. The process-backed
+- Standard buffered Fetch emitted during dedicated-worker initialization and
+  while handling an explicit page `Worker.postMessage` now uses the parent
+  broker. The protocol validates the captured page owner separately from the
+  worker request URL, applies pending page cookie writes before selecting
+  request cookies, commits response-cookie changes in the parent, and returns
+  the page owner's visible cookie projection. The existing worker
+  response-stream interface is preserved over the buffered parent response.
+  Locally hosted SharedWorker creation/connect evaluations also receive the
+  broker, but lack a focused process-backed regression. The process-backed
   `native_content_process_worker_message_fetch_uses_parent_cookie_authority`
-  regression passed (1 passed; 25.63-second test runtime), checking same-turn
-  setter visibility, parent jar update, and distinct page/worker URLs.
-  Worker startup/autonomous turns, SharedWorker message dispatch, streamed
-  uploads, module/font destinations, initial/resource loading, and Service
-  Worker internal requests remain outside this broker path.
+  regression passed (1 passed; 24.15-second test runtime), checking a same-turn
+  page setter on the startup Fetch, the parent Set-Cookie update on the later
+  message Fetch, response delivery, and distinct page/worker URLs. Worker
+  script/resource/module-graph loading, autonomous turns, independently
+  delivered SharedWorker events, streamed uploads, module/font destinations,
+  initial/resource loading, and Service Worker internal requests remain
+  outside the verified broker path.
 - Slice 842 is complete: browser-coordinated SharedWorker creation derives
   cookies from the exact parent source owner. Its parent snapshot/override/
   deletion process regression passed (1 passed; 48.31-second test runtime),

@@ -8084,9 +8084,7 @@ pub(crate) fn save_web_storage_profile(
         .as_ref()
         .map(|profile| profile.cookies.clone())
         .unwrap_or_else(|| cookie_state.to_vec());
-    if current.is_some() {
-        merge_cookie_changes(&mut cookies, cookie_changes)?;
-    }
+    merge_cookie_changes(&mut cookies, cookie_changes)?;
     let mut merged_indexed_db = current
         .as_ref()
         .map(|profile| profile.indexed_db.clone())

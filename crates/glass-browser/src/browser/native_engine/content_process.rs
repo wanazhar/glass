@@ -3001,6 +3001,15 @@ impl NativeContentProcess {
                 reason: "content process returned an invalid cookie change journal".into(),
             })?;
         if !changes.is_empty() {
+            save_web_storage_profile(
+                self.storage_path.as_deref(),
+                &NativeWebStorageState::default(),
+                &[],
+                &[],
+                &changes,
+                &NativeIndexedDbState::default(),
+                &[],
+            )?;
             append_storage_changes(
                 self.storage_path.as_deref(),
                 &self.storage_writer_id,
@@ -8549,10 +8558,6 @@ fn persist_content_profile(
     service_workers: &mut NativeServiceWorkerRegistry,
     resource_loader: &mut Option<NativeResourceLoader>,
 ) -> Result<Vec<NativeCookieChange>, NativeEngineError> {
-    let cookie_state = resource_loader
-        .as_ref()
-        .map(NativeResourceLoader::cookie_profile)
-        .unwrap_or_default();
     let cookie_changes = resource_loader
         .as_mut()
         .map(NativeResourceLoader::take_cookie_changes)
@@ -8562,8 +8567,8 @@ fn persist_content_profile(
         storage_path,
         storage_state,
         storage_events,
-        &cookie_state,
-        &cookie_changes,
+        &[],
+        &[],
         indexed_db_state,
         indexed_db_changes,
     )?;

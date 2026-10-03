@@ -89,12 +89,16 @@ and intends to use [Semantic Versioning](https://semver.org/).
   parent loader after content-side Service Worker interception declines it.
   The parent owns navigation cookie matching and response-cookie acceptance;
   only the bounded decoded document, response policy headers, and URL-scoped
-  visible cookie projection cross back to the child. Parser-loaded page
-  scripts, stylesheets, images, fonts, media, and Service Worker-provided
-  navigation responses remain child-side paths. The process-backed
-  `native_content_process_http_navigation_uses_parent_cookie_authority`
-  regression passed (1 test; 20.40 seconds), checking the script-visible
-  projection and parent cookie API, including an HttpOnly response cookie.
+  visible cookie projection cross back to the child. Parser-discovered HTTP(S)
+  classic and module scripts, including static module dependencies, now use the
+  parent script broker during initial loading; the parent validates their
+  captured load owner and returns only the visible projection. The extended
+  process-backed `native_content_process_http_navigation_uses_parent_cookie_authority`
+  regression passed (1 test; 21.17 seconds), verifying parser-script request
+  cookies, response-cookie acceptance, HttpOnly invisibility, and parent cookie
+  API retention. It covers a classic parser script, not the initial module
+  graph. Stylesheets, images, fonts, media, and Service Worker-provided
+  navigation responses remain child-side paths.
   The Service Worker `clients.openWindow`-resumed navigation regression also
   passed (1 test; 34.25 seconds).
   The existing nested dynamic classic-script regression passed (1 test; 19.89

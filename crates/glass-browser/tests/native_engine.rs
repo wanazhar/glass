@@ -16911,7 +16911,7 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             .unwrap();
         let request = read_http_request(&mut stream).await;
         let body = concat!(
-            "<!doctype html><html><body><script>",
+            "<!doctype html><html><body><script src='/initial.js'></script><script>",
             "window.initialDocumentCookie = document.cookie;",
             "</script></body></html>"
         );
@@ -16921,7 +16921,7 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
                 "Set-Cookie: navigation_visible=present; Path=/; SameSite=Lax\r\n",
                 "Set-Cookie: navigation_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\n",
                 "Content-Type: text/html; charset=utf-8\r\n",
-                "Content-Security-Policy: default-src 'self'; script-src 'unsafe-inline'\r\n",
+                "Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'\r\n",
                 "Referrer-Policy: strict-origin\r\n",
                 "Content-Length: {}\r\nConnection: close\r\n\r\n{}"
             ),
@@ -16929,7 +16929,25 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             body
         );
         stream.write_all(response.as_bytes()).await.unwrap();
-        request
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("parent-brokered parser script should reach the local server")
+            .unwrap();
+        let script_request = read_http_request(&mut stream).await;
+        let script = "window.parserScriptCookie = document.cookie;";
+        let script_response = format!(
+            concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Set-Cookie: parser_visible=present; Path=/; SameSite=Lax\r\n",
+                "Set-Cookie: parser_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\n",
+                "Content-Type: application/javascript\r\n",
+                "Content-Length: {}\r\nConnection: close\r\n\r\n{}"
+            ),
+            script.len(),
+            script
+        );
+        stream.write_all(script_response.as_bytes()).await.unwrap();
+        (request, script_request)
     });
 
     let mut engine = NativeEngine::new(
@@ -16937,17 +16955,30 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
     )
     .unwrap();
     engine.initialize_async().await.unwrap();
-    assert_eq!(
-        engine
-            .evaluate_async("window.initialDocumentCookie")
-            .await
-            .unwrap(),
-        serde_json::json!("navigation_visible=present")
-    );
-    assert_eq!(
-        engine.evaluate_async("document.cookie").await.unwrap(),
-        serde_json::json!("navigation_visible=present")
-    );
+    for expression in [
+        "window.parserScriptCookie",
+        "window.initialDocumentCookie",
+        "document.cookie",
+    ] {
+        let cookies = engine.evaluate_async(expression).await.unwrap();
+        let cookies = cookies.as_str().unwrap_or_default();
+        assert!(
+            cookies.contains("navigation_visible=present"),
+            "{expression}: {cookies}"
+        );
+        assert!(
+            cookies.contains("parser_visible=present"),
+            "{expression}: {cookies}"
+        );
+        assert!(
+            !cookies.contains("navigation_secret"),
+            "{expression}: {cookies}"
+        );
+        assert!(
+            !cookies.contains("parser_secret"),
+            "{expression}: {cookies}"
+        );
+    }
     let cookies = engine.cookies_async().await.unwrap();
     assert!(cookies.iter().any(|cookie| {
         cookie.name == "navigation_visible" && cookie.value == "present" && !cookie.http_only
@@ -16955,9 +16986,18 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
     assert!(cookies.iter().any(|cookie| {
         cookie.name == "navigation_secret" && cookie.value == "hidden" && cookie.http_only
     }));
+    assert!(cookies.iter().any(|cookie| {
+        cookie.name == "parser_visible" && cookie.value == "present" && !cookie.http_only
+    }));
+    assert!(cookies.iter().any(|cookie| {
+        cookie.name == "parser_secret" && cookie.value == "hidden" && cookie.http_only
+    }));
     engine.close_async().await.unwrap();
-    let request = server.await.unwrap();
+    let (request, script_request) = server.await.unwrap();
     assert!(request.starts_with("GET /page HTTP/1.1\r\n"));
+    assert!(script_request.starts_with("GET /initial.js HTTP/1.1\r\n"));
+    assert!(script_request.contains("navigation_visible=present"));
+    assert!(script_request.contains("navigation_secret=hidden"));
 }
 
 #[tokio::test]

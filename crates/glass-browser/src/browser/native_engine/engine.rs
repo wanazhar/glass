@@ -3049,11 +3049,17 @@ impl NativeEngine {
         self.require_running("cookies")?;
         self.sync_external_storage_events()?;
         self.deliver_pending_external_storage_events().await?;
-        let profiles = if let Some(process) = self.content_process.as_mut() {
-            process.cookies(&self.url).await?
-        } else {
-            self.loader.cookies_for_document(&self.url)?
-        };
+        let pending_changes = self
+            .pending_content_cookie_changes
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "read parent cookie authority".into(),
+                reason: "content process cookie change queue is poisoned".into(),
+            })?
+            .clone();
+        let mut parent_loader = self.loader.clone();
+        parent_loader.apply_cookie_changes(&pending_changes)?;
+        let profiles = parent_loader.cookies_for_document(&self.url)?;
         profiles
             .into_iter()
             .map(public_cookie_from_profile)

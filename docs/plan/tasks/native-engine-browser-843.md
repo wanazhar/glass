@@ -93,6 +93,14 @@ projection and existing native Fetch behavior.
 
 ## Current Evidence
 
+- `NativeEngine::cookies_async` now reads the parent loader after synchronizing
+  external profile events, overlaid with queued child cookie changes that the
+  parent has already collected. The content-process cookie-list IPC command
+  and its full-profile response decoder are removed. Its process-backed HTTP
+  regression passes (1 passed; 35.38-second test runtime); an initial run
+  exposed and fixed the missing parent overlay for response `Set-Cookie`.
+  Request matching, child profile loading/persistence, mutation, and network
+  brokering remain outstanding.
 - Slice 842 is complete: browser-coordinated SharedWorker creation derives
   cookies from the exact parent source owner. Its parent snapshot/override/
   deletion process regression passed (1 passed; 48.31-second test runtime),

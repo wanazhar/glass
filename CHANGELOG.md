@@ -46,6 +46,10 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Native cookie enumeration now reads from the parent loader plus its pending
+  process-cookie journal; the content process no longer returns a complete
+  cookie profile in response to the API query. Child-side cookie mirroring,
+  network ownership, and profile persistence remain in progress.
 - Native content-worker dialog IPC now uses one stdin reader to route dialog
   decisions separately from ordinary asynchronous requests.
 - Native event-pump shutdown now cancels an in-flight owner turn through a

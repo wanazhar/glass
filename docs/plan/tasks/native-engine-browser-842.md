@@ -84,26 +84,53 @@ later updates in the browser-coordinated SharedWorker loader.
   persists cookie state for other routes. This slice removes the full profile
   from externally routed SharedWorker creation. The parent resolves the exact
   source frame, checks context and document generation under that owner's
-  lock, seeds its SharedWorker loader from the parent engine's profile, and
-  replays the coordinator's cookie overrides.
+  awaited lock, seeds its SharedWorker loader from the parent engine's profile,
+  and replays the coordinator's cookie overrides.
 - Slices 820-823 provide process-backed evidence for profile journals,
   import/clear, and SharedWorker Fetch credential behavior. Those results are
   baseline behavior to preserve, not evidence that the parent-only boundary is
   implemented.
-- `cargo check -p glass-browser --features native-engine --lib --tests --locked --quiet`
+- Before the owner-lock fix, the scoped
+  `cargo check -p glass-browser --features native-engine --lib --tests --locked --quiet`
   passed (exit 0; existing superseded HTML-parser dead-code warnings).
 - `shared_worker_create_serialization_has_no_cookie_profile` passed (1 passed,
   1,682 filtered). `native_content_process_shared_worker_fetch_api_uses_live_cookies`
   passed (1 passed, 891 filtered).
 - `native_content_process_shared_worker_fetch_credentials_modes_follow_redirects`
   failed twice (exit 101), timing out while waiting for the worker's Fetch
-  sequence to settle at `tests/native_engine.rs:33229`. The cause is
-  undiagnosed; credential/redirect behavior is not verified by this
-  checkpoint.
-- Formatting, `git diff --check`, the exact-owner stale-create regression,
-  selected WPT, and broader parent-only acceptance tests have not been run.
-- The documentation coverage check currently reports an unrelated stale live
-  measurement in `docs/mcp-schema-budget.md` (`Serialized tools` array); the
-  new Slice 842 documents themselves are inventoried. Do not fold that separate
+  sequence to settle at `crates/glass-browser/tests/native_engine.rs:33229`.
+  This local content-process route remains undiagnosed and is tracked separately
+  by Slice 843; credential/redirect behavior is not verified here.
+- On commit `940a2afb`,
+  `native_runtime_shared_worker_cookie_changes_survive_stale_create_snapshots`
+  failed at `crates/glass-browser/tests/native_engine.rs:34669` after 83.45s.
+  The first `session.script("connectCookieWorker('/writer.js', 'cookie-writer'); true")`
+  returned `Lifecycle { operation: "script", state: "busy", reason: "frame owner is processing asynchronous work; retry the synchronous operation" }`;
+  the outer test thread then panicked at line 17347. The create route had
+  synchronous `try_lock` probes both before reading the profile and in the
+  generic MessagePort route registration. Removing only the preflight probes
+  still produced the same busy failure, confirming the transfer-route check
+  also raced the async owner pump.
+- The final change validates context and document generation under the
+  awaited lock on the exact source owner, reads that parent's cookie profile,
+  re-resolves the frame and rejects an owner-identity change, then inserts the
+  already-validated transfer route without reacquiring the owner. Other
+  MessagePort callers keep their existing generic validation path. No test-side
+  retry was added. A broader experiment making generic registration await
+  owners was reverted after the process-backed regression hung for over five
+  minutes; it is not part of the final change.
+- Final `cargo check -p glass-browser --features native-engine --lib --test
+  native_engine --locked --quiet` passed (exit 0; existing superseded HTML
+  parser dead-code warnings). `rustfmt --edition 2024 --check` on the two Rust
+  files and `git diff --check` passed.
+- The final exact `cargo test` attempt was capped at 240 seconds and timed out
+  while `rustc` was linking the `native_engine` integration target; the test
+  executable did not start. Thus the final parent stale-snapshot behavior is
+  still unverified, and this task remains open. Selected WPT and broader
+  parent-only acceptance tests have not been run.
+- `python3 scripts/check-documentation-coverage.py` reports one unrelated
+  stale live measurement in `docs/mcp-schema-budget.md`: it omits the live
+  row ``| Serialized `tools` array | 173,741 UTF-8 bytes |``.
+  No Slice 842 link or inventory error was reported. Do not fold that separate
   MCP measurement repair into this cookie task.
 - Issue #40 remains open.

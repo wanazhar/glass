@@ -4828,6 +4828,21 @@ impl NativeEngineBackend {
             });
         }
         self.prune_page_message_port_routes()?;
+        self.insert_page_message_port_routes(source_context_id, source_frame_id, transfers)
+    }
+
+    fn insert_page_message_port_routes(
+        &self,
+        source_context_id: &str,
+        source_frame_id: &str,
+        transfers: &[super::native_engine::NativeMessagePortTransfer],
+    ) -> Result<(), BrowserBackendError> {
+        if transfers.is_empty() {
+            return Ok(());
+        }
+        validate_native_topology_id(source_context_id)?;
+        validate_native_topology_id(source_frame_id)?;
+        validate_message_port_transfers(transfers).map_err(native_error)?;
         let mut routes = self
             .page_message_port_routes
             .lock()
@@ -5533,22 +5548,6 @@ impl NativeEngineBackend {
                 reason: "must be positive".into(),
             });
         }
-        let current_context = self.frame_owner_context_id(&request.source_frame_id)?;
-        let current_generation = self.frame_owner_document_generation(&request.source_frame_id)?;
-        if current_context.as_deref() != Some(request.source_context_id.as_str())
-            || current_generation != Some(request.document_generation)
-        {
-            return Err(BrowserBackendError::SelectionFailed {
-                reason: format!(
-                    "native SharedWorker create came from stale Document owner {}:{} generation {}; current owner is {:?} generation {:?}",
-                    request.source_context_id,
-                    request.source_frame_id,
-                    request.document_generation,
-                    current_context,
-                    current_generation
-                ),
-            });
-        }
         let source_owner = self
             .engine_owner_for_frame(&request.source_frame_id, BackendOperation::Script)?
             .ok_or_else(|| BrowserBackendError::SelectionFailed {
@@ -5573,9 +5572,25 @@ impl NativeEngineBackend {
             }
             source_engine.clone_resource_loader().cookie_profile()
         };
+        let current_source_owner = self
+            .engine_owner_for_frame(&request.source_frame_id, BackendOperation::Script)?
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: format!(
+                    "native SharedWorker source frame {} no longer has a live owner",
+                    request.source_frame_id
+                ),
+            })?;
+        if !Arc::ptr_eq(&source_owner, &current_source_owner) {
+            return Err(BrowserBackendError::SelectionFailed {
+                reason: format!(
+                    "native SharedWorker source frame {} changed owners before cookie state was used",
+                    request.source_frame_id
+                ),
+            });
+        }
         validate_message_port_transfers(std::slice::from_ref(&request.transfer_port))
             .map_err(native_error)?;
-        self.register_page_message_port_routes(
+        self.insert_page_message_port_routes(
             &request.source_context_id,
             &request.source_frame_id,
             std::slice::from_ref(&request.transfer_port),

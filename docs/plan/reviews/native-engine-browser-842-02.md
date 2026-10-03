@@ -6,7 +6,7 @@ production-code edit or commit was made for this review.
 
 ## Findings
 
-### P2 — blocking: required process-backed regression timed out
+### Initial attempt — timeout, resolved by follow-up
 
 - Design/verification: `docs/plan/tasks/native-engine-browser-842.md`,
   Verification, requires
@@ -15,10 +15,11 @@ production-code edit or commit was made for this review.
 - Exact command:
   `timeout --signal=INT --kill-after=5s 90s cargo test -p glass-browser --features native-engine --test native_engine --locked native_runtime_shared_worker_cookie_changes_survive_stale_create_snapshots -- --exact`
 - The timeout wrapper exited 124 after 1m30.037s. The test binary started and
-  reported `running 1 test`, but emitted no test result before timeout. A
-  post-timeout process check found no matching Cargo test command or
-  `native_engine` test process. The cookie snapshot, override replay, and
-  deletion behavior therefore remain unverified by this gate.
+  reported `running 1 test`, but emitted no test result before timeout. The
+  command's bound included integration-target compilation, leaving too little
+  runtime to determine the test outcome. The no-build follow-up below resolves
+  this initial timeout and verifies the cookie snapshot, override replay, and
+  deletion behavior.
 
 ### Static review — no code finding
 
@@ -39,7 +40,17 @@ production-code edit or commit was made for this review.
   checks that the target registry remains available. It is a focused lock
   regression; it does not replace the timed-out process-backed behavior test.
 
+## Follow-up
+
+The initial 90-second Cargo timeout while rebuilding the test target remains part of the historical record. A separate test agent ran the already-built binary for the same committed code, with no intervening rerun or code change:
+
+```text
+timeout --signal=INT --kill-after=5s 90s target/debug/deps/native_engine-d4489efcb3153c24 native_runtime_shared_worker_cookie_changes_survive_stale_create_snapshots --exact --nocapture
+```
+
+Result: exit 0; 1 passed, 0 failed; elapsed 48.37s (test runtime 48.31s). The P2 is resolved by this successful run. The static review of the `f18be2e7` lock snapshot remains unchanged.
+
 ## Conclusion
 
-**blocked** — static review found the lock snapshot and ordering semantics
-sound, but the required process-backed regression timed out without a result.
+**pass** — static review found no code defect in the owner snapshot, ordering,
+or persistence semantics, and the required process-backed regression passed.

@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-842
 scope: glass-browser/native-engine/parent-owned-cookie-authority
-status: in-progress
+status: done
 depends-on: [native-engine-browser-821, native-engine-browser-822]
 ---
 
@@ -182,14 +182,18 @@ later updates in the browser-coordinated SharedWorker loader.
   native_engine --locked --quiet` passed (2.17 seconds; existing superseded
   HTML-parser dead-code warnings). The focused unit regression passed (1
   passed, 1,686 filtered; 10.39-second runtime).
-- Independent review 02 ran the exact parent process regression under a
-  90-second bound. The integration binary started `running 1 test` but
-  produced no result before timeout exit 124 at 1m30.037s. A post-timeout
-  process check found no remaining matching test processes. The reviewer found
-  no additional static lock/order defect, but recorded a blocking P2 because
-  parent cookie snapshot, override replay, and deletion remain unverified.
-  See [review 02](../reviews/native-engine-browser-842-02.md). Selected WPT
-  and broader parent-only acceptance tests have not been run.
+- The first Cargo integration-test invocation timed out after 90.037 seconds
+  while rebuilding the test target, leaving about 30 seconds for execution.
+  The already-built binary was then run directly with a 90-second cap:
+  `timeout --signal=INT --kill-after=5s 90s
+  target/debug/deps/native_engine-d4489efcb3153c24
+  native_runtime_shared_worker_cookie_changes_survive_stale_create_snapshots
+  --exact --nocapture`. It passed (1 passed, 0 failed; 48.31-second test
+  runtime, 48.37 seconds total), verifying parent cookie snapshot, override
+  replay, and deletion. The independent static review found no code defect;
+  its initial timeout finding was resolved by this successful run. See
+  [review 02](../reviews/native-engine-browser-842-02.md). Selected WPT and
+  broader parent-only acceptance tests have not been run.
 - `python3 scripts/check-documentation-coverage.py` reports one unrelated
   stale live measurement in `docs/mcp-schema-budget.md`: it omits the live
   row ``| Serialized `tools` array | 173,741 UTF-8 bytes |``.

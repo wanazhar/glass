@@ -5972,6 +5972,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     });
                 };
                 loader.set_cookie_profiles(&cookies)?;
+                loader.take_cookie_changes();
                 refresh_content_runtime_cookie(
                     javascript_runtime.as_ref(),
                     resource_loader.as_ref(),
@@ -6006,9 +6007,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     });
                 };
                 loader.apply_cookie_changes(&changes)?;
-                if !persist_profile {
-                    loader.take_cookie_changes();
-                }
+                loader.take_cookie_changes();
                 refresh_content_runtime_cookie(
                     javascript_runtime.as_ref(),
                     resource_loader.as_ref(),
@@ -6028,6 +6027,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     });
                 };
                 loader.clear_cookies();
+                loader.take_cookie_changes();
                 refresh_content_runtime_cookie(
                     javascript_runtime.as_ref(),
                     resource_loader.as_ref(),

@@ -512,9 +512,11 @@ profile, while the child-side content snapshot no longer applies its local
 cookie changes to that profile. The child still receives the shared storage
 path and complete profile and can rewrite the combined storage snapshot, so its
 write capability is not yet removed. The content process also still mirrors
-cookie state for request and script handling. Slice 843 remains in progress to
-remove those child authority paths and broker cookie-bearing requests through
-the parent. See the [Slice 842 task](../plan/tasks/native-engine-browser-842.md),
+cookie state for request and script handling. Cookie import and clear now
+commit through the parent loader; the child only refreshes its runtime mirror
+and discards local change records. Slice 843 remains in progress to remove
+those child authority paths and broker cookie-bearing requests through the
+parent. See the [Slice 842 task](../plan/tasks/native-engine-browser-842.md),
 the [Slice 843 task](../plan/tasks/native-engine-browser-843.md), and the
 versioned [Glass Core Web Profile](../plan/native-engine-browser-profile.md#parent-owned-cookie-authority)
 for the complete boundary and acceptance checks.

@@ -16,8 +16,9 @@ use super::css::{
 };
 use super::dialog::{NativeDialogControlPlane, NativeDialogResolution, NativeDialogWait};
 use super::dom::{
-    NativeCheckableKind, NativeDocument, NativeDocumentWire, NativeNodeId,
-    NativePageImportMapSource, NativePageScriptSource, NativePageScriptTiming,
+    NativeCheckableKind, NativeDocument, NativeDocumentWire, NativeImageFrameWire,
+    NativeImageResourceWire, NativeNodeId, NativePageImportMapSource, NativePageScriptSource,
+    NativePageScriptTiming, image_from_wire,
 };
 use super::environment::NativeEnvironmentOverrides;
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
@@ -28,6 +29,7 @@ use super::fetch_stream::{
     spawn_native_fetch_upload_source, spawn_native_fetch_upload_stream,
 };
 use super::font::{MAX_NATIVE_FONT_FACES, NativeFontBook, NativeFontFaceResource};
+use super::image::{MAX_NATIVE_IMAGE_TRANSFER_BYTES, NativeImage};
 use super::interaction::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_FORM_BODY_BYTES, NativeEventKind, NativeFile,
     validate_native_edit_key, validate_native_key,
@@ -67,7 +69,7 @@ use super::layout::NativePoint;
 use super::module_import_map::NativeModuleImportMap;
 use super::origin::NativeOrigin;
 use super::resource_loader::{
-    MAX_NATIVE_CSP_VIOLATIONS, MAX_NATIVE_RESPONSE_HEADER_BYTES,
+    MAX_NATIVE_CSP_POLICIES, MAX_NATIVE_CSP_VIOLATIONS, MAX_NATIVE_RESPONSE_HEADER_BYTES,
     MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES, MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
     MAX_NATIVE_RESPONSE_HEADERS, NativeCorsMode, NativeCspViolation, NativeFetchCacheMode,
     NativeFetchCredentialsMode, NativeFetchMethod, NativeFetchRedirectMode,
@@ -120,7 +122,7 @@ const MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS: usize = MAX_CONTENT_PROCESS_OUTPUT
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
     MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 21;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 22;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -164,6 +166,7 @@ pub(crate) struct NativeContentFetchBroker<'a> {
     ipc_requests: &'a mut mpsc::Receiver<Result<Vec<u8>, NativeEngineError>>,
     document_cookie_projection: &'a mut Option<String>,
     next_content_resource_fetch_id: u32,
+    page_meta_content_security_policies: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -214,6 +217,9 @@ impl NativeContentFetchBroker<'_> {
         request: &NativeFetchRequest<'_>,
     ) -> Result<(Result<NativeFetchResponse, NativeEngineError>, String), NativeEngineError> {
         let cookie_writes = self.take_cookie_writes()?;
+        let page_meta_csp = (without_fragment(request.document_url)
+            == without_fragment(&self.owner.document_url))
+        .then_some(&self.page_meta_content_security_policies);
         let body = request
             .body
             .as_ref()
@@ -232,6 +238,7 @@ impl NativeContentFetchBroker<'_> {
                 "document_url": request.document_url,
                 "owner": self.owner,
                 "cookie_writes": cookie_writes,
+                "page_meta_csp": page_meta_csp,
                 "href": request.href,
                 "credentials": request.credentials,
                 "fetch_request": {
@@ -530,6 +537,7 @@ impl NativeContentFetchBroker<'_> {
                 "document_url": document_url,
                 "owner": self.owner,
                 "cookie_writes": cookie_writes,
+                "page_meta_csp": self.page_meta_content_security_policies,
                 "href": href,
                 "credentials": true,
                 "page_script_load": {
@@ -686,6 +694,7 @@ impl NativeContentFetchBroker<'_> {
                 "document_url": document_url,
                 "owner": self.owner,
                 "cookie_writes": cookie_writes,
+                "page_meta_csp": self.page_meta_content_security_policies,
                 "href": href,
                 "credentials": true,
                 "page_stylesheet_load": {
@@ -792,6 +801,132 @@ impl NativeContentFetchBroker<'_> {
                 "decode parent stylesheet response",
                 NativeWorkerFailureKind::Protocol,
                 "parent returned an unknown stylesheet response kind",
+            )),
+        }
+    }
+
+    async fn load_image(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        referrer_policy: NativeFetchReferrerPolicy,
+    ) -> Result<Option<NativeImage>, NativeEngineError> {
+        self.next_content_resource_fetch_id = self
+            .next_content_resource_fetch_id
+            .checked_add(1)
+            .ok_or_else(|| {
+                NativeEngineError::limit(
+                    "parent content resource request IDs",
+                    u32::MAX as usize,
+                    u32::MAX as usize,
+                )
+            })?;
+        let fetch_id = self.next_content_resource_fetch_id;
+        let cookie_writes = self.take_cookie_writes()?;
+        write_value_frame(
+            self.stdout,
+            &json!({
+                "kind": "parent_fetch_request",
+                "id": self.request_id,
+                "fetch_id": fetch_id,
+                "document_url": document_url,
+                "owner": self.owner,
+                "cookie_writes": cookie_writes,
+                "page_meta_csp": self.page_meta_content_security_policies,
+                "href": href,
+                "credentials": true,
+                "page_image_load": {
+                    "referrer_policy": referrer_policy.as_str(),
+                },
+            }),
+        )
+        .await?;
+        let payload =
+            self.ipc_requests
+                .recv()
+                .await
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: "parent image broker".into(),
+                    reason: "parent closed the image response channel".into(),
+                })??;
+        let response: Value = serde_json::from_slice(&payload).map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent image response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned invalid image JSON",
+            )
+        })?;
+        if response.get("id").and_then(Value::as_u64) != Some(self.request_id)
+            || response.get("fetch_id").and_then(Value::as_u64) != Some(u64::from(fetch_id))
+        {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent image response",
+                NativeWorkerFailureKind::Protocol,
+                "image response belongs to a different request",
+            ));
+        }
+        let document_cookie = response
+            .get("document_cookie")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "decode parent image response",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent omitted the document cookie projection",
+                )
+            })?;
+        if document_cookie.len() > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+            return Err(NativeEngineError::limit(
+                "parent document cookie projection",
+                MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                document_cookie.len(),
+            ));
+        }
+        *self.document_cookie_projection = Some(document_cookie.to_owned());
+        self.update_runtime_cookie_projection(document_cookie);
+        match response.get("kind").and_then(Value::as_str) {
+            Some("page_image_unavailable") => Ok(None),
+            Some("page_image_loaded") => {
+                let value = response.get("image").cloned().ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "decode parent image response",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent omitted the image resource",
+                    )
+                })?;
+                let resource: NativeImageResourceWire =
+                    serde_json::from_value(value).map_err(|_| {
+                        NativeEngineError::worker_failure(
+                            "decode parent image response",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent returned malformed image metadata",
+                        )
+                    })?;
+                if resource.node_index != 0 || resource.source != href {
+                    return Err(NativeEngineError::worker_failure(
+                        "decode parent image response",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent returned an image for a different resource",
+                    ));
+                }
+                let max_encoded_bytes = MAX_NATIVE_IMAGE_TRANSFER_BYTES
+                    .saturating_add(2)
+                    .saturating_div(3)
+                    .saturating_mul(4);
+                image_from_wire(&resource, max_encoded_bytes).map(Some)
+            }
+            Some("error") => Err(NativeEngineError::Network {
+                operation: "parent-brokered image load".into(),
+                reason: response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("parent rejected the image request")
+                    .to_owned(),
+            }),
+            _ => Err(NativeEngineError::worker_failure(
+                "decode parent image response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned an unknown image response kind",
             )),
         }
     }
@@ -1754,6 +1889,8 @@ pub(crate) struct NativeContentProcess {
     pending_navigation_request: Option<Value>,
     parent_brokered_script_owner: Option<NativeContentCookieOwner>,
     parent_brokered_script_urls: BTreeSet<String>,
+    parent_brokered_policy_owner: Option<NativeContentCookieOwner>,
+    parent_brokered_meta_policies: BTreeSet<String>,
     context_id: Option<String>,
     frame_id: Option<String>,
     dialog_control: NativeDialogControlPlane,
@@ -2127,6 +2264,8 @@ impl NativeContentProcess {
             pending_navigation_request: None,
             parent_brokered_script_owner: None,
             parent_brokered_script_urls: BTreeSet::new(),
+            parent_brokered_policy_owner: None,
+            parent_brokered_meta_policies: BTreeSet::new(),
             context_id: None,
             frame_id: None,
             dialog_control,
@@ -4042,6 +4181,7 @@ impl NativeContentProcess {
                         .transpose()?;
                     let is_resource_load = response.get("page_script_load").is_some()
                         || response.get("page_stylesheet_load").is_some()
+                        || response.get("page_image_load").is_some()
                         || response.get("worker_script_load").is_some();
                     if expected_owner
                         .as_ref()
@@ -4059,6 +4199,35 @@ impl NativeContentProcess {
                             NativeWorkerFailureKind::Protocol,
                             "script request owner does not match the active document or captured load",
                         ));
+                    }
+                    let is_page_resource_load = response.get("page_script_load").is_some()
+                        || response.get("page_stylesheet_load").is_some()
+                        || response.get("page_image_load").is_some();
+                    let page_meta_csp = response
+                        .get("page_meta_csp")
+                        .filter(|value| !value.is_null());
+                    if is_page_resource_load || page_meta_csp.is_some() {
+                        if !is_page_resource_load
+                            && without_fragment(document_url)
+                                != without_fragment(&owner.document_url)
+                        {
+                            return Err(NativeEngineError::worker_failure(
+                                "content process parent Fetch broker",
+                                NativeWorkerFailureKind::Protocol,
+                                "page CSP metadata belongs to a different Fetch owner",
+                            ));
+                        }
+                        let policies = match page_meta_csp {
+                            Some(value) => decode_parent_page_meta_csp(value)?,
+                            None => {
+                                return Err(NativeEngineError::worker_failure(
+                                    "content process parent Fetch broker",
+                                    NativeWorkerFailureKind::Protocol,
+                                    "page resource load omitted its CSP metadata",
+                                ));
+                            }
+                        };
+                        self.apply_parent_page_meta_csp(loader, &owner, &policies)?;
                     }
                     let raw_writes = response.get("cookie_writes").ok_or_else(|| {
                         NativeEngineError::worker_failure(
@@ -4126,6 +4295,16 @@ impl NativeContentProcess {
                             "non-script Fetch carried script cookie ownership data",
                         ));
                     }
+                    if response
+                        .get("page_meta_csp")
+                        .is_some_and(|value| !value.is_null())
+                    {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent Fetch broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "unowned Fetch carried page CSP metadata",
+                        ));
+                    }
                     Vec::new()
                 };
                 if let Some(worker_script_load) = response.get("worker_script_load") {
@@ -4136,11 +4315,15 @@ impl NativeContentProcess {
                             "worker script request omitted its owner-bound request ID",
                         ));
                     };
-                    if response.get("fetch_request").is_some() {
+                    if response.get("fetch_request").is_some()
+                        || response.get("page_script_load").is_some()
+                        || response.get("page_stylesheet_load").is_some()
+                        || response.get("page_image_load").is_some()
+                    {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent Fetch broker",
                             NativeWorkerFailureKind::Protocol,
-                            "worker script request also carried Fetch metadata",
+                            "worker script request also carried another load type",
                         ));
                     }
                     let owner = decode_content_cookie_owner(
@@ -4263,6 +4446,8 @@ impl NativeContentProcess {
                     };
                     if response.get("fetch_request").is_some()
                         || response.get("worker_script_load").is_some()
+                        || response.get("page_stylesheet_load").is_some()
+                        || response.get("page_image_load").is_some()
                     {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent page script broker",
@@ -4382,6 +4567,7 @@ impl NativeContentProcess {
                     if response.get("fetch_request").is_some()
                         || response.get("worker_script_load").is_some()
                         || response.get("page_script_load").is_some()
+                        || response.get("page_image_load").is_some()
                     {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent stylesheet broker",
@@ -4431,6 +4617,68 @@ impl NativeContentProcess {
                             "encode parent stylesheet response",
                             NativeWorkerFailureKind::Protocol,
                             "stylesheet response could not be encoded",
+                        )
+                    })?;
+                    write_frame(&mut self.stdin, &payload).await?;
+                    continue;
+                }
+                if let Some(page_image_load) = response.get("page_image_load") {
+                    let Some(fetch_id) = fetch_id else {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent image broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "image request omitted its owner-bound request ID",
+                        ));
+                    };
+                    if response.get("fetch_request").is_some()
+                        || response.get("worker_script_load").is_some()
+                        || response.get("page_script_load").is_some()
+                        || response.get("page_stylesheet_load").is_some()
+                    {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent image broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "image request also carried another load type",
+                        ));
+                    }
+                    let owner = decode_content_cookie_owner(
+                        response.get("owner").ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "content process parent image broker",
+                                NativeWorkerFailureKind::Protocol,
+                                "image request omitted its owner",
+                            )
+                        })?,
+                        "content process parent image owner",
+                    )?;
+                    if !parent_broker_owner_matches_operation(
+                        self,
+                        &request,
+                        &owner,
+                        parent_navigation_document_url.as_deref(),
+                    ) || without_fragment(document_url) != without_fragment(&owner.document_url)
+                    {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent image broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "image owner does not match the active document or captured load",
+                        ));
+                    }
+                    for write in &cookie_writes {
+                        loader.set_document_cookie(&write.owner.document_url, &write.value)?;
+                    }
+                    let image =
+                        load_parent_page_image_async(loader, document_url, href, page_image_load)
+                            .await;
+                    let mut broker_response =
+                        parent_image_response_payload(request_id, fetch_id, href, image);
+                    broker_response["document_cookie"] =
+                        Value::String(loader.document_cookie(&owner.document_url)?);
+                    let payload = serde_json::to_vec(&broker_response).map_err(|_| {
+                        NativeEngineError::worker_failure(
+                            "encode parent image response",
+                            NativeWorkerFailureKind::Protocol,
+                            "image response could not be encoded",
                         )
                     })?;
                     write_frame(&mut self.stdin, &payload).await?;
@@ -4624,6 +4872,28 @@ impl NativeContentProcess {
         })?;
         write_frame(&mut self.stdin, &payload).await?;
         Ok(document_url)
+    }
+
+    fn apply_parent_page_meta_csp(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+        owner: &NativeContentCookieOwner,
+        policies: &[String],
+    ) -> Result<(), NativeEngineError> {
+        let owner_changed = self.parent_brokered_policy_owner.as_ref() != Some(owner);
+        let new_policies = policies
+            .iter()
+            .filter(|policy| owner_changed || !self.parent_brokered_meta_policies.contains(*policy))
+            .cloned()
+            .collect::<Vec<_>>();
+        loader.append_meta_content_security_policies(&owner.document_url, &new_policies)?;
+        if owner_changed {
+            self.parent_brokered_policy_owner = Some(owner.clone());
+            self.parent_brokered_meta_policies.clear();
+        }
+        self.parent_brokered_meta_policies
+            .extend(policies.iter().cloned());
+        Ok(())
     }
 
     fn next_id(&mut self) -> u64 {
@@ -6163,6 +6433,42 @@ fn decode_content_cookie_owner(
     Ok(owner)
 }
 
+fn decode_parent_page_meta_csp(value: &Value) -> Result<Vec<String>, NativeEngineError> {
+    let policies = serde_json::from_value::<Vec<String>>(value.clone()).map_err(|_| {
+        NativeEngineError::worker_failure(
+            "decode parent page CSP metadata",
+            NativeWorkerFailureKind::Protocol,
+            "page resource request carries malformed CSP metadata",
+        )
+    })?;
+    if policies.len() > MAX_NATIVE_CSP_POLICIES {
+        return Err(NativeEngineError::limit(
+            "parent page CSP metadata",
+            MAX_NATIVE_CSP_POLICIES,
+            policies.len(),
+        ));
+    }
+    let mut total_bytes = 0usize;
+    for policy in &policies {
+        if policy.len() > MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES {
+            return Err(NativeEngineError::limit(
+                "parent page CSP policy",
+                MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
+                policy.len(),
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(policy.len());
+    }
+    if total_bytes > MAX_CONTENT_DOCUMENT_WIRE_BYTES {
+        return Err(NativeEngineError::limit(
+            "parent page CSP metadata",
+            MAX_CONTENT_DOCUMENT_WIRE_BYTES,
+            total_bytes,
+        ));
+    }
+    Ok(policies)
+}
+
 fn parent_fetch_response_payload(
     id: u64,
     result: Result<NativeFetchResponse, NativeEngineError>,
@@ -6480,6 +6786,87 @@ async fn load_parent_page_stylesheet_async(
     Ok(stylesheet)
 }
 
+async fn load_parent_page_image_async(
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    href: &str,
+    value: &Value,
+) -> Result<Option<NativeImage>, NativeEngineError> {
+    let object = value.as_object().ok_or_else(|| {
+        NativeEngineError::worker_failure(
+            "decode parent image request",
+            NativeWorkerFailureKind::Protocol,
+            "image metadata must be an object",
+        )
+    })?;
+    if object.keys().any(|key| key != "referrer_policy") {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent image request",
+            NativeWorkerFailureKind::Protocol,
+            "image metadata contains an unknown field",
+        ));
+    }
+    let referrer_policy = object
+        .get("referrer_policy")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "decode parent image request",
+                NativeWorkerFailureKind::Protocol,
+                "image metadata omitted its Referrer-Policy",
+            )
+        })
+        .and_then(NativeFetchReferrerPolicy::parse)?;
+    validate_url_text("parent image document URL", document_url)?;
+    validate_url_text("parent image target URL", href)?;
+    let document = Url::parse(without_fragment(document_url)).map_err(|_| {
+        NativeEngineError::worker_failure(
+            "decode parent image request",
+            NativeWorkerFailureKind::Protocol,
+            "image document URL is invalid",
+        )
+    })?;
+    let target = Url::parse(href)
+        .or_else(|_| document.join(href))
+        .map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent image request",
+                NativeWorkerFailureKind::Protocol,
+                "image target URL is invalid",
+            )
+        })?;
+    if !is_network_url(target.as_str()) {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent image request",
+            NativeWorkerFailureKind::Protocol,
+            "parent image broker accepts only HTTP(S) targets",
+        ));
+    }
+    let image = loader
+        .load_image_async_with_object_url_and_referrer_policy(
+            document_url,
+            href,
+            None,
+            referrer_policy,
+        )
+        .await?;
+    if image.as_ref().is_some_and(|image| {
+        image
+            .decoded_bytes()
+            .is_none_or(|bytes| bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES)
+    }) {
+        return Err(NativeEngineError::limit(
+            "parent image response",
+            MAX_NATIVE_IMAGE_TRANSFER_BYTES,
+            image
+                .as_ref()
+                .and_then(NativeImage::decoded_bytes)
+                .unwrap_or(usize::MAX),
+        ));
+    }
+    Ok(image)
+}
+
 async fn load_parent_page_script_async(
     loader: &mut NativeResourceLoader,
     document_url: &str,
@@ -6751,6 +7138,52 @@ fn parent_stylesheet_response_payload(
         }),
         Ok(None) => json!({
             "kind": "page_stylesheet_unavailable",
+            "id": id,
+            "fetch_id": fetch_id,
+        }),
+        Err(error) => json!({
+            "kind": "error",
+            "id": id,
+            "fetch_id": fetch_id,
+            "reason": error.to_string(),
+        }),
+    }
+}
+
+fn parent_image_response_payload(
+    id: u64,
+    fetch_id: u32,
+    source: &str,
+    result: Result<Option<NativeImage>, NativeEngineError>,
+) -> Value {
+    match result {
+        Ok(Some(image)) => {
+            let image_resource = NativeImageResourceWire {
+                node_index: 0,
+                source: source.to_owned(),
+                width: image.width,
+                height: image.height,
+                pixels_base64: base64::engine::general_purpose::STANDARD.encode(&image.pixels),
+                frames: image
+                    .frames
+                    .iter()
+                    .map(|frame| NativeImageFrameWire {
+                        delay_ms: frame.delay_ms,
+                        pixels_base64: base64::engine::general_purpose::STANDARD
+                            .encode(&frame.pixels),
+                    })
+                    .collect(),
+                loop_count: image.loop_count,
+            };
+            json!({
+                "kind": "page_image_loaded",
+                "id": id,
+                "fetch_id": fetch_id,
+                "image": image_resource,
+            })
+        }
+        Ok(None) => json!({
+            "kind": "page_image_unavailable",
             "id": id,
             "fetch_id": fetch_id,
         }),
@@ -9335,6 +9768,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         ipc_requests: &mut ipc_request_rx,
                         document_cookie_projection: &mut parent_document_cookie_projection,
                         next_content_resource_fetch_id: 0,
+                        page_meta_content_security_policies: loader
+                            .document_meta_content_security_policies(&committed_url)?,
                     };
                     workers
                         .run_due_timers_with_parent_fetch_broker(loader, &mut parent_fetch_broker)
@@ -9439,6 +9874,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     ipc_requests: &mut ipc_request_rx,
                     document_cookie_projection: &mut parent_document_cookie_projection,
                     next_content_resource_fetch_id: 0,
+                    page_meta_content_security_policies: loader
+                        .document_meta_content_security_policies(&committed_url)?,
                 };
                 workers
                     .apply_commands_with_parent_fetch_broker(
@@ -9538,6 +9975,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         });
                         let has_open_background_transport = !websocket_connections.is_empty()
                             || !event_source_connections.is_empty();
+                        let page_meta_content_security_policies = resource_loader
+                            .as_ref()
+                            .map(|loader| {
+                                loader.document_meta_content_security_policies(&committed_url)
+                            })
+                            .transpose()?
+                            .unwrap_or_default();
                         let result = resolve_script_fetches(
                             current,
                             runtime,
@@ -9555,6 +9999,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 ipc_requests: &mut ipc_request_rx,
                                 document_cookie_projection: &mut parent_document_cookie_projection,
                                 next_content_resource_fetch_id: 0,
+                                page_meta_content_security_policies:
+                                    page_meta_content_security_policies.clone(),
                             }),
                             &mut service_workers,
                             &mut websocket_connections,
@@ -9619,6 +10065,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     document_cookie_projection:
                                         &mut parent_document_cookie_projection,
                                     next_content_resource_fetch_id: 0,
+                                    page_meta_content_security_policies: loader
+                                        .document_meta_content_security_policies(&committed_url)?,
                                 };
                                 workers
                                     .apply_commands_with_parent_fetch_broker(
@@ -12145,6 +12593,7 @@ async fn load_content_resource(
         ipc_requests,
         document_cookie_projection: parent_document_cookie_projection,
         next_content_resource_fetch_id: 0,
+        page_meta_content_security_policies: Vec::new(),
     };
     let mut discovery = NativeDocument::parse_with_generation_and_referrer_policy(
         &resource.body,
@@ -12156,6 +12605,8 @@ async fn load_content_resource(
         &resource.url,
         &discovery.content_security_policy_meta(),
     )?;
+    parent_fetch_broker.page_meta_content_security_policies =
+        loader.document_meta_content_security_policies(&resource.url)?;
     let frame_sources = loader.frame_sources_for_document(&resource.url)?;
     let navigate_to_sources = loader
         .navigation_sources_for_document(&resource.url, NativeNavigationPolicyKind::NavigateTo)?;
@@ -12252,8 +12703,17 @@ async fn load_content_resource(
     document.mark_inline_style_reports_seen();
     document.mark_content_security_policy_meta_processed();
     load_font_faces(&mut document, None, loader, &resource.url).await?;
-    resource_events
-        .extend(load_external_images(&mut document, None, loader, &resource.url, viewport).await?);
+    resource_events.extend(
+        load_external_images(
+            &mut document,
+            None,
+            loader,
+            &resource.url,
+            viewport,
+            Some(&mut parent_fetch_broker),
+        )
+        .await?,
+    );
     resource_events.extend(load_external_media(&mut document, None, loader, &resource.url).await?);
     let (script_sources, script_resource_events) = load_page_script_sources(
         &document,
@@ -12469,6 +12929,7 @@ async fn load_external_images(
     loader: &mut NativeResourceLoader,
     document_url: &str,
     viewport: Viewport,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
     let mut image_events = Vec::new();
     for (node_index, source) in document
@@ -12486,14 +12947,33 @@ async fn load_external_images(
             .transpose()?
             .flatten();
         let referrer_policy = document.image_referrer_policy_for_node(node_id);
-        let image = loader
-            .load_image_async_with_object_url_and_referrer_policy(
-                document_url,
-                &source,
-                object_url.as_ref(),
-                referrer_policy,
-            )
-            .await;
+        let image = if is_network_page_script_target(document_url, &source) {
+            if let Some(broker) = parent_fetch_broker.as_deref_mut() {
+                broker.page_meta_content_security_policies =
+                    loader.document_meta_content_security_policies(document_url)?;
+                broker
+                    .load_image(document_url, &source, referrer_policy)
+                    .await
+            } else {
+                loader
+                    .load_image_async_with_object_url_and_referrer_policy(
+                        document_url,
+                        &source,
+                        object_url.as_ref(),
+                        referrer_policy,
+                    )
+                    .await
+            }
+        } else {
+            loader
+                .load_image_async_with_object_url_and_referrer_policy(
+                    document_url,
+                    &source,
+                    object_url.as_ref(),
+                    referrer_policy,
+                )
+                .await
+        };
         let event_kind = match image {
             Ok(Some(image)) => {
                 document.set_image_resource(node_index, source, image)?;
@@ -12519,12 +12999,43 @@ async fn load_external_images(
             .map(|runtime| runtime.object_url_resource(&source))
             .transpose()?
             .flatten();
-        let image = match runtime {
-            None => loader.load_image_async(document_url, &source).await,
-            Some(_) => {
-                loader
-                    .load_image_async_with_object_url(document_url, &source, object_url.as_ref())
+        let image = if is_network_page_script_target(document_url, &source) {
+            if let Some(broker) = parent_fetch_broker.as_deref_mut() {
+                broker.page_meta_content_security_policies =
+                    loader.document_meta_content_security_policies(document_url)?;
+                broker
+                    .load_image(
+                        document_url,
+                        &source,
+                        NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
+                    )
                     .await
+            } else {
+                match runtime {
+                    None => loader.load_image_async(document_url, &source).await,
+                    Some(_) => {
+                        loader
+                            .load_image_async_with_object_url(
+                                document_url,
+                                &source,
+                                object_url.as_ref(),
+                            )
+                            .await
+                    }
+                }
+            }
+        } else {
+            match runtime {
+                None => loader.load_image_async(document_url, &source).await,
+                Some(_) => {
+                    loader
+                        .load_image_async_with_object_url(
+                            document_url,
+                            &source,
+                            object_url.as_ref(),
+                        )
+                        .await
+                }
             }
         };
         if let Ok(Some(image)) = image {
@@ -13242,6 +13753,19 @@ fn register_page_import_map_source(
     Ok(())
 }
 
+fn refresh_parent_broker_meta_csp(
+    loader: &NativeResourceLoader,
+    broker: Option<&mut NativeContentFetchBroker<'_>>,
+) -> Result<(), NativeEngineError> {
+    let Some(broker) = broker else {
+        return Ok(());
+    };
+    let owner_document_url = broker.owner.document_url.clone();
+    broker.page_meta_content_security_policies =
+        loader.document_meta_content_security_policies(&owner_document_url)?;
+    Ok(())
+}
+
 /// Load and execute dynamic external/module sources discovered by a dynamic
 /// script. Inline descendants are handled synchronously by the shared
 /// scheduler; only sources that require the content-process loader are
@@ -13296,6 +13820,8 @@ async fn execute_dynamic_page_scripts_with_loader(
             &resource_events,
             &csp_violations,
         )?;
+        apply_pending_meta_content_security_policies(document, loader, document_url)?;
+        refresh_parent_broker_meta_csp(loader, parent_fetch_broker.as_deref_mut())?;
         let next_sources = std::mem::take(&mut result.pending_script_sources);
         merge_dynamic_page_script_result(&mut aggregate, result)?;
         if next_sources.is_empty() {
@@ -15615,6 +16141,7 @@ async fn mutate_script_document(
     if let Some(loader) = loader.as_deref_mut() {
         apply_pending_meta_content_security_policies(&mut next, loader, &document_url)?;
         refresh_inline_style_policy(&mut next, loader, &document_url)?;
+        refresh_parent_broker_meta_csp(loader, parent_fetch_broker.as_deref_mut())?;
         dispatch_pending_csp_violations(
             &mut next,
             runtime,
@@ -15694,6 +16221,7 @@ async fn mutate_script_document(
         if let Some(loader) = loader.as_deref_mut() {
             apply_pending_meta_content_security_policies(&mut next, loader, &document_url)?;
             refresh_inline_style_policy(&mut next, loader, &document_url)?;
+            refresh_parent_broker_meta_csp(loader, parent_fetch_broker.as_deref_mut())?;
             dispatch_pending_csp_violations(
                 &mut next,
                 runtime,
@@ -15801,7 +16329,15 @@ async fn mutate_script_document(
         );
     }
     let image_events = if let Some(loader) = loader.as_deref_mut() {
-        load_external_images(&mut next, Some(runtime), loader, &document_url, viewport).await?
+        load_external_images(
+            &mut next,
+            Some(runtime),
+            loader,
+            &document_url,
+            viewport,
+            parent_fetch_broker.as_deref_mut(),
+        )
+        .await?
     } else {
         Vec::new()
     };
@@ -15895,6 +16431,7 @@ async fn mutate_script_document(
     if let Some(loader) = loader.as_deref_mut() {
         apply_pending_meta_content_security_policies(&mut next, loader, &document_url)?;
         refresh_inline_style_policy(&mut next, loader, &document_url)?;
+        refresh_parent_broker_meta_csp(loader, parent_fetch_broker.as_deref_mut())?;
         dispatch_pending_csp_violations(
             &mut next,
             runtime,
@@ -17629,6 +18166,9 @@ async fn resolve_script_fetches(
         parent_fetch_broker.as_mut(),
     )
     .await?;
+    if let (Some(loader), Some(broker)) = (loader.as_deref(), parent_fetch_broker.as_mut()) {
+        refresh_parent_broker_meta_csp(loader, Some(broker))?;
+    }
     if !mutation.history.is_empty() {
         current_url =
             resolve_content_history_document_url(&mutation.history, &current_url, document_origin)?;

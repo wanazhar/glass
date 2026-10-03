@@ -1393,6 +1393,7 @@ struct NativeCspDeclaration {
 struct NativeCspPolicy {
     policies: Vec<NativeCspDirectives>,
     header_policy_count: usize,
+    meta_policy_sources: Vec<String>,
     rooted_file_self_root: Option<PathBuf>,
     report_only_policies: Vec<NativeCspDeclaration>,
     reporting_endpoints: BTreeMap<String, Vec<String>>,
@@ -2006,6 +2007,7 @@ impl NativeCspPolicy {
         self.policies.truncate(self.header_policy_count);
         self.policies
             .extend(values.iter().map(|value| parse_csp_directives(value)));
+        self.meta_policy_sources = values.to_vec();
         Ok(())
     }
 
@@ -2027,6 +2029,7 @@ impl NativeCspPolicy {
         }
         self.policies
             .extend(values.iter().map(|value| parse_csp_directives(value)));
+        self.meta_policy_sources.extend(values.iter().cloned());
         Ok(())
     }
 }
@@ -3984,6 +3987,23 @@ impl NativeResourceLoader {
         let policy = self.network.document_policies.entry(key).or_default();
         policy.rooted_file_self_root = file_root;
         policy.append_meta_policies(policies)
+    }
+
+    pub(crate) fn document_meta_content_security_policies(
+        &self,
+        document_url: &str,
+    ) -> Result<Vec<String>, NativeEngineError> {
+        let Some((document_url, _)) =
+            self.csp_document_owner(document_url, "CSP meta policy owner URL")?
+        else {
+            return Ok(Vec::new());
+        };
+        Ok(self
+            .network
+            .document_policies
+            .get(&cache_key(&document_url))
+            .map(|policy| policy.meta_policy_sources.clone())
+            .unwrap_or_default())
     }
 
     pub(crate) fn set_document_content_security_policy_from_pairs(

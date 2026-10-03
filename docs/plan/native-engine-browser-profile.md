@@ -141,11 +141,14 @@ request cookies, and accepts response-cookie changes. The worker's current
   imports now use the same parent authority; the expanded process-backed
   regression verifies ordered cookie updates, HttpOnly retention, and the
   URL-scoped script-visible projection across navigation, stylesheet, CSS
-  import, and classic parser script requests. The initial module graph still
-  lacks a dedicated cookie regression. Initial images/fonts/media, dynamically
-  attached stylesheets, independently delivered SharedWorker events,
-  module/font Fetch destinations, and Service Worker internal requests remain
-  outside the verified checkpoint.
+  import, classic parser script, and initial image requests. The same
+  regression (1 test; 24.90 seconds) verifies parent meta-CSP handoff by
+  confirming `img-src 'self'` blocks a cross-origin image before the server
+  sees a request. The initial
+  module graph still lacks a dedicated cookie regression. Fonts/media,
+  dynamically attached stylesheets, independently delivered SharedWorker
+  events, module/font Fetch destinations, and Service Worker internal requests
+  remain outside the verified checkpoint.
   In
   browser-coordinated mode, due
   DedicatedWorker timer turns now wait for the exact context/frame owner pump

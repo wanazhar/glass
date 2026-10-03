@@ -79,11 +79,14 @@ same-turn setter propagation, and HttpOnly response-cookie delivery while
 keeping those values out of `document.cookie`; a dynamic import-map/module
 regression also passes. Runtime `import()` does not yet have cookie-specific
 process coverage. Parser-discovered HTTP(S) page scripts, initial stylesheets,
-and static CSS imports now use the parent broker during initial loading. The
-process-backed cookie regression verifies request selection and response-cookie
-acceptance across navigation, a stylesheet, a CSS import, and a classic parser
-script, while keeping HttpOnly values out of `document.cookie`. The initial
-module graph lacks a dedicated cookie regression. Page images/fonts/media and
+static CSS imports, and page images now use the parent broker during document
+loading and brokered script turns. The process-backed cookie regression
+verifies ordered request selection and response-cookie acceptance across
+navigation, a stylesheet, a CSS import, an image, and a classic parser script
+(1 test; 24.90 seconds), while keeping HttpOnly values out of `document.cookie`.
+Before parent page loads, the child transfers its applied meta-CSP policy
+sources; the regression also verifies `img-src 'self'` prevents a cross-origin image request. The
+initial module graph lacks a dedicated cookie regression. Fonts, media, and
 other network classes are not all brokered. Unhandled HTTP(S) top-level
 navigation is now parent-brokered after
 Service Worker interception declines it. Its extended process-backed cookie
@@ -619,11 +622,12 @@ HttpOnly response cookie. Service Worker-originated upload streams and worker
 streams from autonomous turns remain outside this broker path. Content-side
 Service Worker interception remains in place; unhandled HTTP(S) top-level
 navigation is parent-brokered after that interception declines it. HTTP(S)
-parser-discovered page scripts, initial stylesheets, and static CSS imports now
-use the parent broker; the child still loads images, fonts, media, module/font
-Fetch destinations, dynamically attached stylesheets, Service Worker-provided
-navigation responses, and other Service Worker internal requests directly. The
-child still receives the shared storage path and
+parser-discovered page scripts, initial stylesheets, static CSS imports, and
+page images now use the parent broker. The child still loads fonts, media,
+module/font Fetch destinations, and Service Worker-provided navigation
+responses and other Service Worker internal requests directly; dynamically
+attached stylesheets also remain child-side. The child still receives the
+shared storage path and
 complete profile and can rewrite the combined storage snapshot, so its write
 capability is not yet removed. The
 content process still loads complete cookie profiles and mirrors cookies for

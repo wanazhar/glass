@@ -1004,7 +1004,7 @@ fn default_true() -> bool {
     true
 }
 
-fn image_from_wire(
+pub(crate) fn image_from_wire(
     resource: &NativeImageResourceWire,
     max_encoded_bytes: usize,
 ) -> Result<NativeImage, NativeEngineError> {

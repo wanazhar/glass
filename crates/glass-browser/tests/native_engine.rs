@@ -16910,11 +16910,9 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             .expect("parent-brokered document navigation should reach the local server")
             .unwrap();
         let request = read_http_request(&mut stream).await;
-        let body = concat!(
-            "<!doctype html><html><head><link rel='stylesheet' href='/initial.css'></head>",
-            "<body><script src='/initial.js'></script><script>",
-            "window.initialDocumentCookie = document.cookie;",
-            "</script></body></html>"
+        let body = format!(
+            "<!doctype html><html><head><meta http-equiv='Content-Security-Policy' content=\"img-src 'self'\"><link rel='stylesheet' href='/initial.css'></head><body><img src='/image.png'><img src='http://localhost:{}/blocked.png'><script src='/initial.js'></script><script>window.initialDocumentCookie = document.cookie;</script></body></html>",
+            address.port()
         );
         let response = format!(
             concat!(
@@ -16974,9 +16972,28 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             .unwrap();
         let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
             .await
+            .expect("parent-brokered page image should reach the local server")
+            .unwrap();
+        let image_request = read_http_request(&mut stream).await;
+        let image = native_test_png_bytes();
+        let image_response = format!(
+            concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Set-Cookie: image_visible=present; Path=/; SameSite=Lax\r\n",
+                "Set-Cookie: image_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\n",
+                "Content-Type: image/png\r\n",
+                "Content-Length: {}\r\nConnection: close\r\n\r\n"
+            ),
+            image.len()
+        );
+        stream.write_all(image_response.as_bytes()).await.unwrap();
+        stream.write_all(&image).await.unwrap();
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
             .expect("parent-brokered parser script should reach the local server")
             .unwrap();
         let script_request = read_http_request(&mut stream).await;
+        assert!(script_request.starts_with("GET /initial.js HTTP/1.1\r\n"));
         let script = "window.parserScriptCookie = document.cookie;";
         let script_response = format!(
             concat!(
@@ -16994,6 +17011,7 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             request,
             stylesheet_request,
             dependency_request,
+            image_request,
             script_request,
         )
     });
@@ -17027,6 +17045,10 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             "{expression}: {cookies}"
         );
         assert!(
+            cookies.contains("image_visible=present"),
+            "{expression}: {cookies}"
+        );
+        assert!(
             !cookies.contains("navigation_secret"),
             "{expression}: {cookies}"
         );
@@ -17042,6 +17064,7 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             !cookies.contains("dependency_secret"),
             "{expression}: {cookies}"
         );
+        assert!(!cookies.contains("image_secret"), "{expression}: {cookies}");
     }
     let cookies = engine.cookies_async().await.unwrap();
     assert!(cookies.iter().any(|cookie| {
@@ -17068,8 +17091,24 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
                 && cookie.http_only == name.ends_with("secret")
         }));
     }
+    assert!(cookies.iter().any(|cookie| {
+        cookie.name == "image_visible" && cookie.value == "present" && !cookie.http_only
+    }));
+    assert!(cookies.iter().any(|cookie| {
+        cookie.name == "image_secret" && cookie.value == "hidden" && cookie.http_only
+    }));
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.querySelector('img'); return [image.complete, image.naturalWidth, image.naturalHeight]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 2, 2])
+    );
     engine.close_async().await.unwrap();
-    let (request, stylesheet_request, dependency_request, script_request) = server.await.unwrap();
+    let (request, stylesheet_request, dependency_request, image_request, script_request) =
+        server.await.unwrap();
     assert!(request.starts_with("GET /page HTTP/1.1\r\n"));
     assert!(stylesheet_request.starts_with("GET /initial.css HTTP/1.1\r\n"));
     assert!(stylesheet_request.contains("navigation_visible=present"));
@@ -17077,11 +17116,16 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
     assert!(dependency_request.starts_with("GET /nested.css HTTP/1.1\r\n"));
     assert!(dependency_request.contains("stylesheet_visible=present"));
     assert!(dependency_request.contains("stylesheet_secret=hidden"));
+    assert!(image_request.starts_with("GET /image.png HTTP/1.1\r\n"));
+    assert!(image_request.contains("dependency_visible=present"));
+    assert!(image_request.contains("dependency_secret=hidden"));
     assert!(script_request.starts_with("GET /initial.js HTTP/1.1\r\n"));
     assert!(script_request.contains("navigation_visible=present"));
     assert!(script_request.contains("navigation_secret=hidden"));
     assert!(script_request.contains("dependency_visible=present"));
     assert!(script_request.contains("dependency_secret=hidden"));
+    assert!(script_request.contains("image_visible=present"));
+    assert!(script_request.contains("image_secret=hidden"));
 }
 
 #[tokio::test]

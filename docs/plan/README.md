@@ -10470,12 +10470,17 @@ static module graph dependencies use the same parent loader. The process-backed
 `native_content_process_service_worker_module_registration_uses_parent_cookie_authority`
 regression passed (1 test; 24.85 seconds), verifying HttpOnly cookies set by
 the page, entry script, and imported module reach both registration and update
-requests while `document.cookie` remains empty. The existing
+requests while `document.cookie` remains empty. Persisted Service Worker entry
+and static module dependency loads during matching-document restoration now use
+the same parent broker. The new restart regression proves the parent-accepted
+HttpOnly cookie updates are used on the subsequent page navigation, while the
+script-visible projection remains empty; it passed (1 test; 33.09 seconds).
+The existing
 `native_content_process_service_worker_registration_uses_live_document_referrer_policy`
 regression passed (1 test; 26.09 seconds) after successful history sync began
 updating the parent's active owner URL, preserving live `history.pushState`
-referrers and owner validation. Service Worker restoration, timer/lifetime
-work, FetchEvent-internal requests, and other internal network paths remain
+referrers and owner validation. Service Worker timer/lifetime work,
+FetchEvent-internal requests, and other internal network paths remain
 unbrokered. Slice 843 remains in progress: the content process still mirrors
 the full cookie profile and has other direct network paths. Exact scope and
 verification are in the [Slice 843 task](tasks/native-engine-browser-843.md).

@@ -383,8 +383,17 @@ projection and existing native Fetch behavior.
   advancing the parent's active owner URL only after successful synchronization;
   this preserves live `history.pushState` referrers and prevents a subsequent
   script turn from being rejected against a stale parent URL. Service Worker
-  restoration, timer/lifetime work, FetchEvent-internal requests, and other
-  Service Worker network paths remain outside this brokered script-load slice.
+  restoration now uses that broker for persisted entry and static dependency
+  loads during matching-document initialization. The new process-backed
+  `native_content_process_service_worker_restoration_uses_parent_cookie_authority`
+  regression passed (1 passed; 33.09 seconds), verifying that restoration
+  entry and dependency response cookies are available to the following
+  parent-owned navigation while all remain HttpOnly to the page. The scoped
+  `cargo check -p glass-browser --features native-engine --lib --test
+  native_engine --locked --quiet` also passed with existing dead-code warnings.
+  Service Worker
+  timer/lifetime work, FetchEvent-internal requests, and other Service Worker
+  network paths remain outside this brokered script-load slice.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.

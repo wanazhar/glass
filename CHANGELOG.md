@@ -130,16 +130,20 @@ and intends to use [Semantic Versioning](https://semver.org/).
   worker module/font destinations, and other autonomous worker network turns
   remain outside this broker path. The child still has a full cookie mirror and
   profile-path access, so parent-only cookie authority is not complete.
-  HTTP(S) Service Worker registration/update entry scripts and their classic
-  `importScripts()` or static module dependencies now use the parent broker
-  during parser-time registration and explicit page-script turns. The new
+  HTTP(S) Service Worker registration/update and persisted-restoration entry
+  scripts and their classic `importScripts()` or static module dependencies
+  now use the parent broker during parser-time registration, explicit
+  page-script turns, and matching-document initialization. The new
   process-backed module-registration regression passed (1 test; 24.85 seconds),
   checking parent HttpOnly cookies across the page, script entry, module
   dependency, and update requests while keeping `document.cookie` empty. The
+  restart regression passed (1 test; 33.09 seconds), verifying restored worker
+  entry/dependency cookies are applied by the parent before the next
+  navigation. The
   live-document referrer-policy regression passed (1 test; 26.09 seconds) after
   successful history synchronization began updating the parent's active owner
-  URL. Restoration, Service Worker timers/lifetime, FetchEvent-internal
-  requests, and other internal network paths remain child-side.
+  URL. Service Worker timers/lifetime, FetchEvent-internal requests, and other
+  internal network paths remain child-side.
 - Native content-worker dialog IPC now uses one stdin reader to route dialog
   decisions separately from ordinary asynchronous requests.
 - Native event-pump shutdown now cancels an in-flight owner turn through a

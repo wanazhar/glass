@@ -326,13 +326,17 @@ projection and existing native Fetch behavior.
   response it returns only the URL-scoped visible cookie projection; the
   process-backed regression was extended and passed (1 passed; 21.17 seconds),
   checking request-cookie selection, response-cookie acceptance, and HttpOnly
-  invisibility during parser execution. Protocol version 21 adds the same
-  parent path for initial HTTP(S) stylesheet links and static CSS imports,
-  retaining the parent's stylesheet loader and a 512 KiB response bound. The
-  expanded regression passed (1 test; 27.33 seconds), covering ordered cookie
-  updates across navigation, stylesheet, CSS import, and classic parser-script
-  requests. The initial module graph still lacks a dedicated cookie regression.
-  Initial images/fonts/media, dynamically attached stylesheets,
+  invisibility during parser execution. Protocol version 21 added the parent
+  path for initial HTTP(S) stylesheet links and static CSS imports, retaining
+  the parent's stylesheet loader and a 512 KiB response bound. Protocol
+  version 22 adds parent-brokered page images and transfers the child's applied
+  meta-CSP source list to the parent before page-owned resource loads and
+  Fetches. The process regression passed (1 test; 24.90 seconds), covering
+  ordered cookie updates across navigation, stylesheet, CSS import, image, and
+  classic parser-script requests, and proving `img-src 'self'` blocks the
+  cross-origin image before network access. The initial module graph still
+  lacks a dedicated cookie regression. Fonts/media, dynamically attached
+  stylesheets,
   Service-Worker-handled navigation responses, and the full child
   profile/read/write path remain outstanding.
 - The Slice 842 HTTP regression successfully bound a local listener. The

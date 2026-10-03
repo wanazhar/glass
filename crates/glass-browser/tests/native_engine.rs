@@ -30827,6 +30827,9 @@ async fn native_content_process_applies_stylesheet_link_referrer_policy() {
             "/import.css",
             "/cache.css",
             "/cache.css",
+            "/dynamic.css",
+            "/dynamic-import.css",
+            "/dynamic-cookie-check",
         ] {
             let (mut stream, _) =
                 tokio::time::timeout(Duration::from_secs(20), page_listener.accept())
@@ -30859,7 +30862,7 @@ async fn native_content_process_applies_stylesheet_link_referrer_policy() {
                          <div id='target'>Stylesheet link policy</div>"
                     );
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nReferrer-Policy: unsafe-url\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: page_visible=present; Path=/; SameSite=Lax\r\nSet-Cookie: page_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: text/html\r\nReferrer-Policy: unsafe-url\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     );
                     stream.write_all(response.as_bytes()).await.unwrap();
@@ -30908,6 +30911,44 @@ async fn native_content_process_applies_stylesheet_link_referrer_policy() {
                     stream
                         .write_all(
                             b"HTTP/1.1 304 Not Modified\r\nCache-Control: no-cache\r\nETag: \"style-v1\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                }
+                "/dynamic.css" => {
+                    assert!(request.contains("page_visible=present"));
+                    assert!(request.contains("page_secret=hidden"));
+                    let body = "@import url('/dynamic-import.css'); #target { color: blue; }";
+                    stream
+                        .write_all(
+                            css_response(
+                                body,
+                                concat!(
+                                    "Set-Cookie: dynamic_style_visible=present; Path=/; SameSite=Lax\r\n",
+                                    "Set-Cookie: dynamic_style_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                    "Cache-Control: no-store\r\n"
+                                ),
+                            )
+                            .as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                }
+                "/dynamic-import.css" => {
+                    assert!(request.contains("dynamic_style_visible=present"));
+                    assert!(request.contains("dynamic_style_secret=hidden"));
+                    let body = "#target { font-weight: bold; }";
+                    stream
+                        .write_all(css_response(body, "Cache-Control: no-store\r\n").as_bytes())
+                        .await
+                        .unwrap();
+                }
+                "/dynamic-cookie-check" => {
+                    assert!(request.contains("dynamic_style_visible=present"));
+                    assert!(request.contains("dynamic_style_secret=hidden"));
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                         )
                         .await
                         .unwrap();
@@ -30982,7 +31023,7 @@ async fn native_content_process_applies_stylesheet_link_referrer_policy() {
         tokio::time::timeout(
             Duration::from_secs(45),
             engine.evaluate_async(&format!(
-                "(() => {{ const meta = document.createElement('meta'); meta.name = 'referrer'; meta.content = 'no-referrer'; document.head.appendChild(meta); const cached = document.createElement('link'); cached.rel = 'stylesheet'; cached.href = '/cache.css'; cached.referrerPolicy = 'no-referrer'; document.head.appendChild(cached); const origin = document.createElement('link'); origin.rel = 'stylesheet'; origin.href = 'http://{stylesheet_address}/dynamic-origin.css'; origin.referrerPolicy = 'ORIGIN'; document.head.appendChild(origin); const fallback = document.createElement('link'); fallback.rel = 'stylesheet'; fallback.href = 'http://{stylesheet_address}/dynamic-default.css'; document.head.appendChild(fallback); return [meta.content, meta.getAttribute('content'), cached.referrerPolicy, origin.referrerPolicy, origin.getAttribute('referrerpolicy'), fallback.referrerPolicy]; }})()"
+                "(() => {{ const meta = document.createElement('meta'); meta.name = 'referrer'; meta.content = 'no-referrer'; document.head.appendChild(meta); const cached = document.createElement('link'); cached.rel = 'stylesheet'; cached.href = '/cache.css'; cached.referrerPolicy = 'no-referrer'; document.head.appendChild(cached); const origin = document.createElement('link'); origin.rel = 'stylesheet'; origin.href = 'http://{stylesheet_address}/dynamic-origin.css'; origin.referrerPolicy = 'ORIGIN'; document.head.appendChild(origin); const fallback = document.createElement('link'); fallback.rel = 'stylesheet'; fallback.href = 'http://{stylesheet_address}/dynamic-default.css'; document.head.appendChild(fallback); const dynamic = document.createElement('link'); dynamic.rel = 'stylesheet'; dynamic.href = '/dynamic.css'; document.head.appendChild(dynamic); return [meta.content, meta.getAttribute('content'), cached.referrerPolicy, origin.referrerPolicy, origin.getAttribute('referrerpolicy'), fallback.referrerPolicy]; }})()"
             ))
         )
         .await
@@ -30997,14 +31038,40 @@ async fn native_content_process_applies_stylesheet_link_referrer_policy() {
             ""
         ])
     );
+    let visible_cookies = engine.evaluate_async("document.cookie").await.unwrap();
+    let visible_cookies = visible_cookies.as_str().unwrap_or_default();
+    assert!(visible_cookies.contains("page_visible=present"));
+    assert!(visible_cookies.contains("dynamic_style_visible=present"));
+    assert!(!visible_cookies.contains("page_secret"));
+    assert!(!visible_cookies.contains("dynamic_style_secret"));
     assert_eq!(
         engine
             .evaluate_async(
-                "({ color: getComputedStyle(document.getElementById('target')).color, fontStyle: getComputedStyle(document.getElementById('target')).fontStyle })",
+                "await fetch('/dynamic-cookie-check').then(response => response.status)",
             )
             .await
             .unwrap(),
-        serde_json::json!({ "color": "rgb(255, 0, 0)", "fontStyle": "italic" })
+        serde_json::json!(204)
+    );
+    let parent_cookies = engine.cookies_async().await.unwrap();
+    for (name, value, http_only) in [
+        ("page_visible", "present", false),
+        ("page_secret", "hidden", true),
+        ("dynamic_style_visible", "present", false),
+        ("dynamic_style_secret", "hidden", true),
+    ] {
+        assert!(parent_cookies.iter().any(|cookie| {
+            cookie.name == name && cookie.value == value && cookie.http_only == http_only
+        }));
+    }
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "({ color: getComputedStyle(document.getElementById('target')).color, fontStyle: getComputedStyle(document.getElementById('target')).fontStyle, fontWeight: getComputedStyle(document.getElementById('target')).fontWeight })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({ "color": "rgb(0, 0, 255)", "fontStyle": "italic", "fontWeight": "bold" })
     );
 
     engine.close_async().await.unwrap();

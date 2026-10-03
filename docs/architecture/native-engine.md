@@ -97,8 +97,14 @@ extended process regression passed (1 test; 32.16 seconds): CSS font response
 cookies are sent on the later
 image request, `FontFace.load()` receives only the visible cookie projection,
 and a subsequent Fetch carries both cookies set by that font response.
-Font requests outside an active parent-brokered turn, dynamically attached
-stylesheet network loads, and other network classes are not all brokered.
+Dynamic HTTP(S) stylesheet links and their static CSS imports created during an
+explicit parent-brokered page-script turn now reuse the parent stylesheet
+loader. The process-backed referrer-policy regression passed (1 test; 29.43
+seconds), verifying the parent-selected HttpOnly page cookie on the dynamic
+stylesheet request, its response cookie on the CSS import and later Fetch,
+script-visible filtering, and unchanged cascade/referrer behavior. Font and
+stylesheet requests outside an active parent-brokered turn, and other network
+classes are not all brokered.
 Unhandled HTTP(S) top-level navigation is now parent-brokered after
 Service Worker interception declines it. Its extended process-backed cookie
 regression passes (1 test; 21.17 seconds), verifying parser-script request
@@ -636,10 +642,10 @@ navigation is parent-brokered after that interception declines it. HTTP(S)
 parser-discovered page scripts, initial stylesheets, static CSS imports, page
 images, initial/dynamically attached media elements, CSS `@font-face` resources,
 and explicit page `FontFace` destination requests now use the parent broker.
-Font requests without an active parent broker and Service-Worker-provided
-navigation responses and other Service Worker internal requests remain direct
-child paths; dynamically attached stylesheet network loads also remain
-child-side. The child still receives the shared storage path and
+Font requests without an active parent broker and dynamic stylesheet requests
+without an active parent-brokered page-script turn, plus Service-Worker-provided
+navigation responses and other Service Worker internal requests, remain direct
+child paths. The child still receives the shared storage path and
 complete profile and can rewrite the combined storage snapshot, so its write
 capability is not yet removed. The
 content process still loads complete cookie profiles and mirrors cookies for

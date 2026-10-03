@@ -274,6 +274,9 @@ request test pass. The credentials/redirect process regression timed out twice
 and awaits diagnosis; this batch does not close Slice 842. See the [Slice 842
 task](tasks/native-engine-browser-842.md) and [cookie authority
 contract](../architecture/native-engine.md#cookie-authority-and-process-boundary).
+The remaining content-process cookie mirror/persistence and general request
+broker are isolated in the dependent [Slice 843 task](tasks/native-engine-browser-843.md);
+the parent-only cookie contract is not complete until both slices pass.
 Process-backed request/header/no-duplicate, cancellation, source-document
 referrer-policy/redirect, and worker-visible `Request.referrer` regression
 sources previously compiled with `--tests` but have not run here because local

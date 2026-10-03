@@ -9,11 +9,10 @@ depends-on: [native-engine-browser-821, native-engine-browser-822]
 
 ## Objective
 
-Make the native browser parent the sole authority for cookie state and
-cookie-bearing network requests across process-backed pages and workers. Remove
-the complete cookie jar from the content-process boundary while preserving
-script-visible `document.cookie`, Fetch credential modes, response-cookie
-behavior, profile persistence, and shared-profile synchronization.
+Remove the complete cookie profile from the content-to-browser SharedWorker
+creation message. The browser parent must derive the SharedWorker's cookie
+state from the exact live page/frame owner, then preserve that state and its
+later updates in the browser-coordinated SharedWorker loader.
 
 ## Context
 
@@ -28,37 +27,25 @@ behavior, profile persistence, and shared-profile synchronization.
 
 ## Contract
 
-- The parent native browser backend owns the complete per-context cookie jar.
-  Cookie matching, `Set-Cookie` acceptance/rejection, expiration/deletion,
-  profile persistence, and shared-profile journal publication happen only in
-  the parent. The content process and its page/worker realms are not cookie
-  authorities or durable writers.
-- Do not serialize a full cookie profile, an HttpOnly value, a raw
-  `Cookie`/`Set-Cookie` header, or a cookie-bearing profile path to the content
-  process. Remove child-side cookie-profile load/save and persistence paths.
-- The content realm receives only the current document URL's script-visible,
-  non-HttpOnly `document.cookie` projection. A setter returns a bounded typed
-  write carrying the exact context, frame, document generation, and source
-  URL. The parent validates and applies it, then refreshes the projection;
-  synchronous same-turn setter preview must not grant authority to the child.
-- All content-originated page and worker network requests that can send or
-  accept cookies run through a bounded parent broker and the parent's existing
-  network policy. Preserve `include`, `same-origin`, and `omit` behavior at
-  every redirect hop, current redirect/referrer/CORS behavior, response body
-  streaming, cancellation, and response-cookie update/deletion. No direct
-  child-loader retry is permitted if the parent broker fails.
-- Cookie-bearing responses and changes are committed once in the parent
-  before later owner requests can observe them. `Set-Cookie` is never exposed
-  as a script-readable response header. Profile import/clear, restart, and
-  same-profile live-session journal behavior continue to use the same parent
-  authority; separate profiles remain isolated.
-- Every child request/write is checked against its captured context/frame and
-  document generation. Stale owners fail explicitly and cannot redirect to a
-  currently selected target. IPC messages and queues stay bounded; overflow,
-  process exit, cancellation, or protocol failure surfaces a typed error.
-- Preserve the cookie attributes and matching behavior already supported by
-  the native profile. Do not claim full Cookie/Web IDL or Web Platform Test
-  conformance beyond selected passing cases.
+- `SharedWorkerCreate` and `NativeSharedWorkerCreateRequest` do not carry a
+  cookie profile or any other cookie value from the content process to the
+  browser parent. The content-side producer must not serialize its
+  `NativeResourceLoader` profile for this route.
+- After validating the captured context, frame, and document generation, the
+  browser parent resolves that exact source frame owner and reads the
+  parent-owned engine loader's cookie profile under the owner lock. Do not use
+  the currently selected target. A stale or changed owner fails explicitly.
+- Seed the browser-coordinated SharedWorker loader from that parent profile,
+  then replay the coordinator's bounded cookie overrides so previously
+  accepted page/worker updates and deletions survive creation of later workers.
+- Preserve supported credential modes, redirects, profile import/clear,
+  response-cookie update/deletion, and separate-profile isolation on this
+  browser-coordinated route.
+- This task does not remove the content process's general cookie mirror or
+  cookie-profile persistence and does not add the general parent network
+  broker. Those are the separate [Slice 843](native-engine-browser-843.md)
+  objective. The overall parent-only end state remains normative in the
+  [versioned profile](../native-engine-browser-profile.md).
 
 ## Path
 
@@ -77,34 +64,28 @@ behavior, profile persistence, and shared-profile synchronization.
 ## Verification
 
 - Add a process-protocol regression proving that no full cookie profile,
-  HttpOnly value, raw cookie header, or cookie-bearing storage path crosses
-  into the content process, and that child cookie writes are owner-tagged.
-- Process-backed HTTP tests verify script-visible projection versus HttpOnly
-  invisibility; `document.cookie` set/read and subsequent requests; worker
-  `include`/`same-origin`/`omit`; redirects; response updates/deletion; and
-  request behavior after import, clear, and same-profile synchronization.
-  Include separate-profile isolation and stale-owner rejection.
-- Verify the parent still owns cookie state after child shutdown/restart and
-  that child-side code cannot write cookie-bearing profile data.
-- Run selected Fetch/Cookie/SharedWorker WPT cases and record exact selections
-  and deviations; do not substitute mocked-loader checks for network tests.
+  crosses in the `SharedWorkerCreate` message.
+- Run the parent/backend process-backed regression for
+  `native_runtime_shared_worker_cookie_changes_survive_stale_create_snapshots`
+  and preserve its profile update/deletion behavior.
+- Retain the live-cookie and credentials-mode SharedWorker process regressions
+  as adjacent behavior guards; diagnose any failure and distinguish the local
+  content-process route from browser-coordinated routing.
 - `cargo check -p glass-browser --features native-engine --lib --tests --locked --quiet`
-- Run the focused native-engine cookie process-backed test(s) after the check;
-  keep unrelated package/workspace suites for the final issue #40 gate.
+- Run only the focused socket-free and process-backed regressions after the
+  check; keep unrelated package/workspace suites for the final issue #40 gate.
 - `cargo fmt --all -- --check`
 - `git diff --check`
 - Run relevant documentation inventory/coverage checks.
 
 ## Current Evidence
 
-- The current content-process protocol accepts complete cookie profiles and
-  cookie changes; the child still owns a `NativeResourceLoader` and persists
-  cookie state. This checkpoint removes the full profile from externally
-  routed SharedWorker creation. The parent resolves the exact source frame,
-  checks context and document generation under that owner's lock, seeds its
-  SharedWorker loader from the parent engine's profile, and replays the
-  coordinator's cookie overrides. It does not remove the child's general
-  profile mirror/persistence or implement the general parent network broker.
+- The current content process still owns a `NativeResourceLoader` and
+  persists cookie state for other routes. This slice removes the full profile
+  from externally routed SharedWorker creation. The parent resolves the exact
+  source frame, checks context and document generation under that owner's
+  lock, seeds its SharedWorker loader from the parent engine's profile, and
+  replays the coordinator's cookie overrides.
 - Slices 820-823 provide process-backed evidence for profile journals,
   import/clear, and SharedWorker Fetch credential behavior. Those results are
   baseline behavior to preserve, not evidence that the parent-only boundary is

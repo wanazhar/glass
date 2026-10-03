@@ -115,8 +115,11 @@ that is a known gap, not compliant behavior. Slice 842 has removed the child
 cookie-profile field from browser-coordinated SharedWorker creation and now
 seeds the shared coordinator from the parent engine resolved by the exact
 source frame, replaying coordinator cookie overrides afterward. This fixes
-only that SharedWorker creation path: full content-process profile mirroring,
-child-side persistence, and the general parent network broker remain open.
+only that SharedWorker creation path. Slice 843 tracks the remaining
+content-process profile mirroring, child-side persistence, and general parent
+network broker; the profile is not parent-only until that work also passes.
+See the [Slice 842 task](tasks/native-engine-browser-842.md) and [Slice 843
+task](tasks/native-engine-browser-843.md).
 
 ### Shared-profile cookie synchronization
 

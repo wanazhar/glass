@@ -27,17 +27,19 @@ version claims.
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`.
-Slices 830 and 831 have recorded passing wire regressions. The current agent
-sandbox denies loopback `TcpListener::bind` with `PermissionDenied`, so HTTP
-regressions cannot be rerun from this session; Slice 832's corrected
-two-origin test awaits a runner that permits local listeners. Slice 833's
+Slices 830 and 831 have recorded passing wire regressions. An earlier session
+reported that its sandbox denied loopback `TcpListener::bind`, but later
+process-backed HTTP regressions in Slices 842 and 843 bound successfully.
+Slice 832's corrected two-origin test remains unverified, not blocked on that
+earlier listener denial. Slice 833's
 process-backed DedicatedWorker and
 SharedWorker module graphs now pass, including top-level `await import()` and
 the actual referrer-header assertions; it remains in progress pending Slice
 832. The process-backed cases for Slices 834-836 pass, but remain in progress
 because their declared dependency chain includes Slice 832/833. The
-latest remote CI run, `36616367412` on `ee67f930`, failed; it predates the
-current local edits. WPT conformance, remote CI for these edits, and
+A previously recorded remote CI run, `36616367412` on `ee67f930`, failed; it
+predates the local edits recorded below and is not evidence about them. WPT
+conformance, remote CI for these edits, and
 cross-platform certification remain open. Slice 818
 returns ordinary page-response cookie
 journals after profile merge and synchronizes same-backend target/frame and
@@ -320,8 +322,8 @@ process-backed regression passed (1 test; 35.17-second test runtime). It
 verifies that the page owner is validated separately from the worker request
 URL, same-turn page cookie writes reach the worker Fetches, a response
 `Set-Cookie` is visible on later worker requests, and a MessagePort-triggered
-Fetch receives the parent-updated HttpOnly cookie. Worker-script/resource/module-
-graph loading, autonomous turns, independently delivered SharedWorker events,
+Fetch receives the parent-updated HttpOnly cookie. Worker module-graph process
+coverage, autonomous turns, independently delivered SharedWorker events,
 module or font destinations, initial/resource loading, and Service Worker
 lifetime/background Fetches remain outside the verified path. Explicit-turn
 dedicated-worker upload streams are covered by the separate regression below.
@@ -352,6 +354,17 @@ response stream. The Service Worker upload-stream fallback is separately
 covered below; autonomous worker turns remain outside these explicit-turn
 paths. The parent-only cookie contract is not complete until Slice 843 removes
 the remaining child authority and the required broader checks pass.
+HTTP(S) dynamic page classic/module scripts and their static dependencies,
+discovered during explicit parent-brokered page script turns, now use the
+parent loader; runtime `import()` requests follow that route as well. The
+process-backed `native_content_process_dynamic_page_module_uses_parent_cookie_authority`
+regression passed (1 test; 23.24 seconds), proving page cookies and a same-turn
+setter on the dynamic module request, HttpOnly delivery to its dependency, and
+HttpOnly exclusion from `document.cookie`. The dynamic import-map/module
+regression passed (1 test; 20.92 seconds). Runtime `import()` has no
+cookie-specific process regression yet. Parser-discovered initial page scripts,
+initial/navigation resources, stylesheets, images, fonts, media, and other
+unbrokered requests remain child-side paths.
 Process-backed request/header/no-duplicate, cancellation, source-document
 referrer-policy/redirect, and worker-visible `Request.referrer` regressions
 remain unrun. Slice 842's parent-cookie regression did bind a local HTTP

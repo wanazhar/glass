@@ -112,7 +112,7 @@ use url::Url;
 // document snapshot channel. Keep the channel finite while leaving room for
 // the base64 envelope and the rest of the document state.
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
-const MAX_CONTENT_BROKERED_WORKER_SCRIPT_URLS: usize = 4096;
+const MAX_CONTENT_BROKERED_SCRIPT_URLS: usize = 4096;
 // One in-flight frame is enough for an event notification or a request reply;
 // limiting this to one avoids buffering many maximum-sized IPC responses.
 const MAX_CONTENT_PROCESS_OUTPUT_FRAMES: usize = 1;
@@ -120,7 +120,7 @@ const MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS: usize = MAX_CONTENT_PROCESS_OUTPUT
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
     MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 18;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 19;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -163,6 +163,7 @@ pub(crate) struct NativeContentFetchBroker<'a> {
     stdout: &'a mut tokio::io::Stdout,
     ipc_requests: &'a mut mpsc::Receiver<Result<Vec<u8>, NativeEngineError>>,
     document_cookie_projection: &'a mut Option<String>,
+    next_page_script_fetch_id: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -489,6 +490,186 @@ impl NativeContentFetchBroker<'_> {
             }
         };
         Ok((resource, document_cookie))
+    }
+
+    async fn load_page_script(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        referrer_url: Option<&str>,
+        max_source_bytes: usize,
+        parser_inserted: bool,
+        nonce: Option<&str>,
+        integrity: Option<&str>,
+        crossorigin: Option<&str>,
+        module_type: Option<NativeModuleResourceType>,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
+    ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+        self.next_page_script_fetch_id =
+            self.next_page_script_fetch_id
+                .checked_add(1)
+                .ok_or_else(|| {
+                    NativeEngineError::limit(
+                        "parent page script request IDs",
+                        u32::MAX as usize,
+                        u32::MAX as usize,
+                    )
+                })?;
+        let fetch_id = self.next_page_script_fetch_id;
+        let cookie_updates = self.runtime.take_cookie_updates();
+        if cookie_updates.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "parent-owned document.cookie writes",
+                MAX_NATIVE_EFFECTS,
+                cookie_updates.len(),
+            ));
+        }
+        let cookie_writes = cookie_updates
+            .into_iter()
+            .map(|value| NativeContentCookieWrite {
+                owner: self.owner.clone(),
+                value,
+            })
+            .collect::<Vec<_>>();
+        let module_type = module_type.map(|module_type| match module_type {
+            NativeModuleResourceType::JavaScript => "javascript",
+            NativeModuleResourceType::Json => "json",
+            NativeModuleResourceType::Unsupported => "unsupported",
+        });
+        write_value_frame(
+            self.stdout,
+            &json!({
+                "kind": "parent_fetch_request",
+                "id": self.request_id,
+                "fetch_id": fetch_id,
+                "document_url": document_url,
+                "owner": self.owner,
+                "cookie_writes": cookie_writes,
+                "href": href,
+                "credentials": true,
+                "page_script_load": {
+                    "request_kind": match (module_type.is_some(), parser_inserted) {
+                        (false, _) => "element",
+                        (true, true) => "module_dependency",
+                        (true, false) => "dynamic_import",
+                    },
+                    "referrer_url": referrer_url,
+                    "max_source_bytes": max_source_bytes,
+                    "parser_inserted": parser_inserted,
+                    "nonce": nonce,
+                    "integrity": integrity,
+                    "crossorigin": crossorigin,
+                    "module_type": module_type,
+                    "referrer_policy": referrer_policy.map(NativeFetchReferrerPolicy::as_str),
+                },
+            }),
+        )
+        .await?;
+        let payload =
+            self.ipc_requests
+                .recv()
+                .await
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: "parent page script broker".into(),
+                    reason: "parent closed the page script response channel".into(),
+                })??;
+        let response: Value = serde_json::from_slice(&payload).map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent page script response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned invalid page script JSON",
+            )
+        })?;
+        if response.get("id").and_then(Value::as_u64) != Some(self.request_id)
+            || response.get("fetch_id").and_then(Value::as_u64) != Some(u64::from(fetch_id))
+        {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent page script response",
+                NativeWorkerFailureKind::Protocol,
+                "page script response belongs to a different request",
+            ));
+        }
+        let document_cookie = response
+            .get("document_cookie")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "decode parent page script response",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent omitted the document cookie projection",
+                )
+            })?;
+        if document_cookie.len() > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+            return Err(NativeEngineError::limit(
+                "parent document cookie projection",
+                MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                document_cookie.len(),
+            ));
+        }
+        *self.document_cookie_projection = Some(document_cookie.to_owned());
+        self.runtime.set_cookie_state(document_cookie.to_owned());
+        match response.get("kind").and_then(Value::as_str) {
+            Some("page_script_unavailable") => Ok(None),
+            Some("page_script_loaded") => {
+                let url = response.get("url").and_then(Value::as_str).ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "decode parent page script response",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent omitted the page script URL",
+                    )
+                })?;
+                validate_url_text("parent page script response URL", url)?;
+                if !is_network_url(without_fragment(url)) {
+                    return Err(NativeEngineError::worker_failure(
+                        "decode parent page script response",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent returned a non-HTTP(S) page script URL",
+                    ));
+                }
+                let body = response
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "decode parent page script response",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent omitted the page script body",
+                        )
+                    })?;
+                if body.len() > max_source_bytes {
+                    return Err(NativeEngineError::limit(
+                        "parent page script response",
+                        max_source_bytes,
+                        body.len(),
+                    ));
+                }
+                let response_referrer_policy = match response
+                    .get("response_referrer_policy")
+                    .and_then(Value::as_str)
+                {
+                    Some(policy) => Some(NativeFetchReferrerPolicy::parse(policy)?),
+                    None => None,
+                };
+                Ok(Some(NativeScriptResource {
+                    url: url.to_owned(),
+                    body: body.to_owned(),
+                    response_referrer_policy,
+                }))
+            }
+            Some("error") => Err(NativeEngineError::Network {
+                operation: "parent-brokered page script load".into(),
+                reason: response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("parent rejected the page script request")
+                    .to_owned(),
+            }),
+            _ => Err(NativeEngineError::worker_failure(
+                "decode parent page script response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned an unknown page script response kind",
+            )),
+        }
     }
 }
 
@@ -1446,8 +1627,8 @@ pub(crate) struct NativeContentProcess {
     nested_scroll_offsets: BTreeMap<u32, NativePoint>,
     current_document_url: Option<String>,
     current_document_generation: Option<u32>,
-    parent_worker_script_owner: Option<NativeContentCookieOwner>,
-    parent_worker_script_urls: BTreeSet<String>,
+    parent_brokered_script_owner: Option<NativeContentCookieOwner>,
+    parent_brokered_script_urls: BTreeSet<String>,
     context_id: Option<String>,
     frame_id: Option<String>,
     dialog_control: NativeDialogControlPlane,
@@ -1818,8 +1999,8 @@ impl NativeContentProcess {
             nested_scroll_offsets: BTreeMap::new(),
             current_document_url: None,
             current_document_generation: None,
-            parent_worker_script_owner: None,
-            parent_worker_script_urls: BTreeSet::new(),
+            parent_brokered_script_owner: None,
+            parent_brokered_script_urls: BTreeSet::new(),
             context_id: None,
             frame_id: None,
             dialog_control,
@@ -3807,15 +3988,15 @@ impl NativeContentProcess {
                         })?,
                         "content process parent worker script owner",
                     )?;
-                    if self.parent_worker_script_owner.as_ref() != Some(&owner) {
-                        self.parent_worker_script_owner = Some(owner.clone());
-                        self.parent_worker_script_urls.clear();
+                    if self.parent_brokered_script_owner.as_ref() != Some(&owner) {
+                        self.parent_brokered_script_owner = Some(owner.clone());
+                        self.parent_brokered_script_urls.clear();
                     }
                     let owner_document_url = without_fragment(&owner.document_url);
                     let requested_document_url = without_fragment(document_url);
                     if requested_document_url != owner_document_url
                         && !self
-                            .parent_worker_script_urls
+                            .parent_brokered_script_urls
                             .contains(requested_document_url)
                     {
                         return Err(NativeEngineError::worker_failure(
@@ -3838,7 +4019,7 @@ impl NativeContentProcess {
                         validate_url_text("worker script request referrer URL", referrer_url)?;
                         let referrer_url = without_fragment(referrer_url);
                         if referrer_url != owner_document_url
-                            && !self.parent_worker_script_urls.contains(referrer_url)
+                            && !self.parent_brokered_script_urls.contains(referrer_url)
                         {
                             return Err(NativeEngineError::worker_failure(
                                 "content process parent worker script broker",
@@ -3863,17 +4044,17 @@ impl NativeContentProcess {
                         .and_then(Option::as_ref)
                         .map(|loaded| without_fragment(&loaded.url).to_owned());
                     if let Some(loaded_url) = loaded_url {
-                        if !self.parent_worker_script_urls.contains(&loaded_url)
-                            && self.parent_worker_script_urls.len()
-                                >= MAX_CONTENT_BROKERED_WORKER_SCRIPT_URLS
+                        if !self.parent_brokered_script_urls.contains(&loaded_url)
+                            && self.parent_brokered_script_urls.len()
+                                >= MAX_CONTENT_BROKERED_SCRIPT_URLS
                         {
                             resource = Err(NativeEngineError::limit(
                                 "parent-brokered worker script URLs",
-                                MAX_CONTENT_BROKERED_WORKER_SCRIPT_URLS,
-                                self.parent_worker_script_urls.len().saturating_add(1),
+                                MAX_CONTENT_BROKERED_SCRIPT_URLS,
+                                self.parent_brokered_script_urls.len().saturating_add(1),
                             ));
                         } else {
-                            self.parent_worker_script_urls.insert(loaded_url);
+                            self.parent_brokered_script_urls.insert(loaded_url);
                         }
                     }
                     let cookie_owner_url = response
@@ -3890,6 +4071,112 @@ impl NativeContentProcess {
                             "encode parent worker script response",
                             NativeWorkerFailureKind::Protocol,
                             "worker script response could not be encoded",
+                        )
+                    })?;
+                    write_frame(&mut self.stdin, &payload).await?;
+                    continue;
+                }
+                if let Some(page_script_load) = response.get("page_script_load") {
+                    let Some(fetch_id) = fetch_id else {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent page script broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "page script request omitted its owner-bound request ID",
+                        ));
+                    };
+                    if response.get("fetch_request").is_some()
+                        || response.get("worker_script_load").is_some()
+                    {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent page script broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "page script request also carried another load type",
+                        ));
+                    }
+                    let owner = decode_content_cookie_owner(
+                        response.get("owner").ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "content process parent page script broker",
+                                NativeWorkerFailureKind::Protocol,
+                                "page script request omitted its owner",
+                            )
+                        })?,
+                        "content process parent page script owner",
+                    )?;
+                    if self.parent_brokered_script_owner.as_ref() != Some(&owner) {
+                        self.parent_brokered_script_owner = Some(owner.clone());
+                        self.parent_brokered_script_urls.clear();
+                    }
+                    let owner_document_url = without_fragment(&owner.document_url);
+                    let requested_document_url = without_fragment(document_url);
+                    if requested_document_url != owner_document_url
+                        && !self
+                            .parent_brokered_script_urls
+                            .contains(requested_document_url)
+                    {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent page script broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "page script request document is not owned by the active page",
+                        ));
+                    }
+                    let referrer_url = match page_script_load.get("referrer_url") {
+                        None | Some(Value::Null) => None,
+                        Some(value) => Some(value.as_str().ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "content process parent page script broker",
+                                NativeWorkerFailureKind::Protocol,
+                                "page script request has an invalid referrer URL",
+                            )
+                        })?),
+                    };
+                    if let Some(referrer_url) = referrer_url {
+                        validate_url_text("page script request referrer URL", referrer_url)?;
+                        let referrer_url = without_fragment(referrer_url);
+                        if referrer_url != owner_document_url
+                            && !self.parent_brokered_script_urls.contains(referrer_url)
+                        {
+                            return Err(NativeEngineError::worker_failure(
+                                "content process parent page script broker",
+                                NativeWorkerFailureKind::Protocol,
+                                "page script referrer is not owned by the active page",
+                            ));
+                        }
+                    }
+                    for write in &cookie_writes {
+                        loader.set_document_cookie(&write.owner.document_url, &write.value)?;
+                    }
+                    let mut resource =
+                        load_parent_page_script_async(loader, document_url, href, page_script_load)
+                            .await;
+                    let loaded_url = resource
+                        .as_ref()
+                        .ok()
+                        .and_then(Option::as_ref)
+                        .map(|loaded| without_fragment(&loaded.url).to_owned());
+                    if let Some(loaded_url) = loaded_url {
+                        if !self.parent_brokered_script_urls.contains(&loaded_url)
+                            && self.parent_brokered_script_urls.len()
+                                >= MAX_CONTENT_BROKERED_SCRIPT_URLS
+                        {
+                            resource = Err(NativeEngineError::limit(
+                                "parent-brokered page script URLs",
+                                MAX_CONTENT_BROKERED_SCRIPT_URLS,
+                                self.parent_brokered_script_urls.len().saturating_add(1),
+                            ));
+                        } else {
+                            self.parent_brokered_script_urls.insert(loaded_url);
+                        }
+                    }
+                    let mut broker_response =
+                        parent_page_script_response_payload(request_id, fetch_id, resource);
+                    broker_response["document_cookie"] =
+                        Value::String(loader.document_cookie(&owner.document_url)?);
+                    let payload = serde_json::to_vec(&broker_response).map_err(|_| {
+                        NativeEngineError::worker_failure(
+                            "encode parent page script response",
+                            NativeWorkerFailureKind::Protocol,
+                            "page script response could not be encoded",
                         )
                     })?;
                     write_frame(&mut self.stdin, &payload).await?;
@@ -5752,6 +6039,202 @@ async fn load_parent_worker_script_async(
     }
 }
 
+async fn load_parent_page_script_async(
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    href: &str,
+    value: &Value,
+) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+    let object = value.as_object().ok_or_else(|| {
+        NativeEngineError::worker_failure(
+            "decode parent page script request",
+            NativeWorkerFailureKind::Protocol,
+            "page script metadata must be an object",
+        )
+    })?;
+    if object.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "request_kind"
+                | "referrer_url"
+                | "max_source_bytes"
+                | "parser_inserted"
+                | "nonce"
+                | "integrity"
+                | "crossorigin"
+                | "module_type"
+                | "referrer_policy"
+        )
+    }) {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent page script request",
+            NativeWorkerFailureKind::Protocol,
+            "page script metadata contains an unknown field",
+        ));
+    }
+    let optional_text = |name: &str| -> Result<Option<String>, NativeEngineError> {
+        match object.get(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(value) => value.as_str().map(str::to_owned).map(Some).ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "decode parent page script request",
+                    NativeWorkerFailureKind::Protocol,
+                    format!("page script metadata has an invalid {name}"),
+                )
+            }),
+        }
+    };
+    let request_kind = object
+        .get("request_kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "decode parent page script request",
+                NativeWorkerFailureKind::Protocol,
+                "page script metadata omitted its request kind",
+            )
+        })?;
+    let referrer_url = optional_text("referrer_url")?;
+    let nonce = optional_text("nonce")?;
+    let integrity = optional_text("integrity")?;
+    let crossorigin = optional_text("crossorigin")?;
+    let module_type = optional_text("module_type")?
+        .map(|module_type| match module_type.as_str() {
+            "javascript" => Ok(NativeModuleResourceType::JavaScript),
+            "json" => Ok(NativeModuleResourceType::Json),
+            "unsupported" => Ok(NativeModuleResourceType::Unsupported),
+            _ => Err(NativeEngineError::worker_failure(
+                "decode parent page script request",
+                NativeWorkerFailureKind::Protocol,
+                "page script metadata has an unsupported module type",
+            )),
+        })
+        .transpose()?;
+    let referrer_policy = optional_text("referrer_policy")?
+        .as_deref()
+        .map(NativeFetchReferrerPolicy::parse)
+        .transpose()?;
+    let max_source_bytes = object
+        .get("max_source_bytes")
+        .and_then(Value::as_u64)
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .filter(|bytes| *bytes > 0 && *bytes <= MAX_NATIVE_SCRIPT_BYTES)
+        .ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "decode parent page script request",
+                NativeWorkerFailureKind::Protocol,
+                "page script source limit is invalid",
+            )
+        })?;
+    let parser_inserted = object
+        .get("parser_inserted")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "decode parent page script request",
+                NativeWorkerFailureKind::Protocol,
+                "page script metadata omitted its parser-inserted flag",
+            )
+        })?;
+    let request_base = referrer_url.as_deref().unwrap_or(document_url);
+    validate_url_text("page script request referrer URL", request_base)?;
+    let request_base = Url::parse(without_fragment(request_base)).map_err(|_| {
+        NativeEngineError::worker_failure(
+            "decode parent page script request",
+            NativeWorkerFailureKind::Protocol,
+            "page script request referrer URL is invalid",
+        )
+    })?;
+    validate_url_text("parent page script target URL", href)?;
+    let target = Url::parse(href)
+        .or_else(|_| request_base.join(href))
+        .map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent page script request",
+                NativeWorkerFailureKind::Protocol,
+                "page script target URL is invalid",
+            )
+        })?;
+    if !is_network_url(target.as_str()) {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent page script request",
+            NativeWorkerFailureKind::Protocol,
+            "parent page script broker accepts only HTTP(S) targets",
+        ));
+    }
+
+    match request_kind {
+        "element" if referrer_url.is_none() && module_type.is_none() => {
+            loader
+                .load_script_async_with_metadata_and_object_url(
+                    document_url,
+                    href,
+                    max_source_bytes,
+                    parser_inserted,
+                    nonce.as_deref(),
+                    integrity.as_deref(),
+                    crossorigin.as_deref(),
+                    None,
+                    referrer_policy,
+                )
+                .await
+        }
+        "module_dependency"
+            if referrer_url.is_some()
+                && parser_inserted
+                && nonce.is_none()
+                && module_type
+                    .is_some_and(|kind| kind != NativeModuleResourceType::Unsupported) =>
+        {
+            loader
+                .load_module_dependency_with_referrer_async(
+                    document_url,
+                    referrer_url
+                        .as_deref()
+                        .expect("guard requires referrer URL"),
+                    href,
+                    max_source_bytes,
+                    true,
+                    integrity.as_deref(),
+                    Some(crossorigin.as_deref().unwrap_or("anonymous")),
+                    None,
+                    module_type.expect("guard requires module type"),
+                    referrer_policy,
+                )
+                .await
+        }
+        "dynamic_import"
+            if referrer_url.is_some()
+                && !parser_inserted
+                && nonce.is_none()
+                && module_type
+                    .is_some_and(|kind| kind != NativeModuleResourceType::Unsupported) =>
+        {
+            loader
+                .load_module_dependency_with_referrer_async(
+                    document_url,
+                    referrer_url
+                        .as_deref()
+                        .expect("guard requires referrer URL"),
+                    href,
+                    max_source_bytes,
+                    false,
+                    integrity.as_deref(),
+                    Some(crossorigin.as_deref().unwrap_or("anonymous")),
+                    None,
+                    module_type.expect("guard requires module type"),
+                    referrer_policy,
+                )
+                .await
+        }
+        _ => Err(NativeEngineError::worker_failure(
+            "decode parent page script request",
+            NativeWorkerFailureKind::Protocol,
+            "page script metadata is inconsistent with its request kind",
+        )),
+    }
+}
+
 fn parent_worker_script_response_payload(
     id: u64,
     fetch_id: u32,
@@ -5770,6 +6253,36 @@ fn parent_worker_script_response_payload(
         }),
         Ok(None) => json!({
             "kind": "worker_script_unavailable",
+            "id": id,
+            "fetch_id": fetch_id,
+        }),
+        Err(error) => json!({
+            "kind": "error",
+            "id": id,
+            "fetch_id": fetch_id,
+            "reason": error.to_string(),
+        }),
+    }
+}
+
+fn parent_page_script_response_payload(
+    id: u64,
+    fetch_id: u32,
+    result: Result<Option<NativeScriptResource>, NativeEngineError>,
+) -> Value {
+    match result {
+        Ok(Some(resource)) => json!({
+            "kind": "page_script_loaded",
+            "id": id,
+            "fetch_id": fetch_id,
+            "url": resource.url,
+            "body": resource.body,
+            "response_referrer_policy": resource
+                .response_referrer_policy
+                .map(NativeFetchReferrerPolicy::as_str),
+        }),
+        Ok(None) => json!({
+            "kind": "page_script_unavailable",
             "id": id,
             "fetch_id": fetch_id,
         }),
@@ -7709,6 +8222,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                                 &resource.url,
                                                 &resource.origin,
                                                 loaded_viewport,
+                                                None,
                                             )
                                             .await
                                         }
@@ -8342,6 +8856,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         stdout: &mut stdout,
                         ipc_requests: &mut ipc_request_rx,
                         document_cookie_projection: &mut parent_document_cookie_projection,
+                        next_page_script_fetch_id: 0,
                     };
                     workers
                         .run_due_timers_with_parent_fetch_broker(loader, &mut parent_fetch_broker)
@@ -8445,6 +8960,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     stdout: &mut stdout,
                     ipc_requests: &mut ipc_request_rx,
                     document_cookie_projection: &mut parent_document_cookie_projection,
+                    next_page_script_fetch_id: 0,
                 };
                 workers
                     .apply_commands_with_parent_fetch_broker(
@@ -8560,6 +9076,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 stdout: &mut stdout,
                                 ipc_requests: &mut ipc_request_rx,
                                 document_cookie_projection: &mut parent_document_cookie_projection,
+                                next_page_script_fetch_id: 0,
                             }),
                             &mut service_workers,
                             &mut websocket_connections,
@@ -8623,6 +9140,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     ipc_requests: &mut ipc_request_rx,
                                     document_cookie_projection:
                                         &mut parent_document_cookie_projection,
+                                    next_page_script_fetch_id: 0,
                                 };
                                 workers
                                     .apply_commands_with_parent_fetch_broker(
@@ -11396,6 +11914,7 @@ async fn load_page_script_sources(
         document_url,
         "glass-inline-module",
         None,
+        None,
     )
     .await
 }
@@ -11405,6 +11924,7 @@ async fn load_dynamic_page_script_sources(
     loader: &mut NativeResourceLoader,
     document_url: &str,
     runtime: &NativeJavaScriptRuntime,
+    parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<(Vec<NativePageScript>, Vec<(u32, NativeEventKind)>), NativeEngineError> {
     load_page_script_source_list(
         sources,
@@ -11413,8 +11933,17 @@ async fn load_dynamic_page_script_sources(
         document_url,
         "glass-dynamic-module",
         Some(runtime),
+        parent_fetch_broker,
     )
     .await
+}
+
+fn is_network_page_script_target(document_url: &str, href: &str) -> bool {
+    let Ok(base_url) = Url::parse(document_url) else {
+        return false;
+    };
+    let target = Url::parse(href).or_else(|_| base_url.join(href));
+    target.is_ok_and(|target| is_network_url(target.as_str()))
 }
 
 async fn load_page_script_source_list(
@@ -11424,6 +11953,7 @@ async fn load_page_script_source_list(
     document_url: &str,
     module_name_prefix: &str,
     runtime: Option<&NativeJavaScriptRuntime>,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<(Vec<NativePageScript>, Vec<(u32, NativeEventKind)>), NativeEngineError> {
     let mut sources = Vec::new();
     let mut resource_events = Vec::new();
@@ -11532,6 +12062,7 @@ async fn load_page_script_source_list(
                     &mut sources,
                     &mut seen,
                     &mut total_bytes,
+                    parent_fetch_broker.as_deref_mut(),
                 )
                 .await;
                 if dependency_result.is_err() {
@@ -11556,20 +12087,40 @@ async fn load_page_script_source_list(
                     .map(|runtime| runtime.object_url_resource(&href))
                     .transpose()?
                     .flatten();
-                match loader
-                    .load_script_async_with_metadata_and_object_url(
-                        document_url,
-                        &href,
-                        MAX_NATIVE_SCRIPT_BYTES,
-                        parser_inserted,
-                        nonce.as_deref(),
-                        integrity.as_deref(),
-                        crossorigin.as_deref(),
-                        object_url.as_ref(),
-                        Some(referrer_policy),
-                    )
-                    .await
+                let load_result = if object_url.is_none()
+                    && is_network_page_script_target(document_url, &href)
+                    && let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut()
                 {
+                    parent_fetch_broker
+                        .load_page_script(
+                            document_url,
+                            &href,
+                            None,
+                            MAX_NATIVE_SCRIPT_BYTES,
+                            parser_inserted,
+                            nonce.as_deref(),
+                            integrity.as_deref(),
+                            crossorigin.as_deref(),
+                            None,
+                            Some(referrer_policy),
+                        )
+                        .await
+                } else {
+                    loader
+                        .load_script_async_with_metadata_and_object_url(
+                            document_url,
+                            &href,
+                            MAX_NATIVE_SCRIPT_BYTES,
+                            parser_inserted,
+                            nonce.as_deref(),
+                            integrity.as_deref(),
+                            crossorigin.as_deref(),
+                            object_url.as_ref(),
+                            Some(referrer_policy),
+                        )
+                        .await
+                };
+                match load_result {
                     Ok(resource) => match resource {
                         Some(resource) => {
                             resource_events.push((node_index, NativeEventKind::Load));
@@ -11609,20 +12160,40 @@ async fn load_page_script_source_list(
                     .transpose()?
                     .flatten();
                 let crossorigin = crossorigin.as_deref().or(Some("anonymous"));
-                match loader
-                    .load_script_async_with_metadata_and_object_url(
-                        document_url,
-                        &href,
-                        MAX_NATIVE_SCRIPT_BYTES,
-                        parser_inserted,
-                        nonce.as_deref(),
-                        integrity.as_deref(),
-                        crossorigin.as_deref(),
-                        object_url.as_ref(),
-                        Some(referrer_policy),
-                    )
-                    .await
+                let load_result = if object_url.is_none()
+                    && is_network_page_script_target(document_url, &href)
+                    && let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut()
                 {
+                    parent_fetch_broker
+                        .load_page_script(
+                            document_url,
+                            &href,
+                            None,
+                            MAX_NATIVE_SCRIPT_BYTES,
+                            parser_inserted,
+                            nonce.as_deref(),
+                            integrity.as_deref(),
+                            crossorigin.as_deref(),
+                            None,
+                            Some(referrer_policy),
+                        )
+                        .await
+                } else {
+                    loader
+                        .load_script_async_with_metadata_and_object_url(
+                            document_url,
+                            &href,
+                            MAX_NATIVE_SCRIPT_BYTES,
+                            parser_inserted,
+                            nonce.as_deref(),
+                            integrity.as_deref(),
+                            crossorigin.as_deref(),
+                            object_url.as_ref(),
+                            Some(referrer_policy),
+                        )
+                        .await
+                };
+                match load_result {
                     Ok(resource) => match resource {
                         Some(resource) => {
                             let script_start = sources.len();
@@ -11657,6 +12228,7 @@ async fn load_page_script_source_list(
                                 &mut sources,
                                 &mut seen,
                                 &mut total_bytes,
+                                parent_fetch_broker.as_deref_mut(),
                             )
                             .await;
                             if dependency_result.is_ok() {
@@ -11739,6 +12311,7 @@ async fn execute_dynamic_page_scripts_with_loader(
     document_url: &str,
     document_origin: &NativeOrigin,
     viewport: Viewport,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<NativePageScriptResult, NativeEngineError> {
     let mut aggregate = NativePageScriptResult {
         pending_fetches: Vec::new(),
@@ -11761,8 +12334,14 @@ async fn execute_dynamic_page_scripts_with_loader(
                 batches,
             ));
         }
-        let (scripts, resource_events) =
-            load_dynamic_page_script_sources(sources, loader, document_url, runtime).await?;
+        let (scripts, resource_events) = load_dynamic_page_script_sources(
+            sources,
+            loader,
+            document_url,
+            runtime,
+            parent_fetch_broker.as_deref_mut(),
+        )
+        .await?;
         let csp_violations = loader.take_csp_violations();
         let mut result = execute_dynamic_page_scripts(
             document,
@@ -11907,6 +12486,7 @@ async fn load_module_dependencies(
     scripts: &mut Vec<(NativePageScriptTiming, NativePageScript)>,
     seen: &mut BTreeSet<String>,
     total_bytes: &mut usize,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<(), NativeEngineError> {
     let mut pending = vec![(
         module_identity.to_owned(),
@@ -11949,20 +12529,40 @@ async fn load_module_dependencies(
                 .transpose()?
                 .flatten();
             let integrity = import_map.integrity_for_url(&target);
-            let resource = loader
-                .load_module_dependency_with_referrer_async(
-                    owner_url,
-                    &current_base_url,
-                    &target,
-                    MAX_NATIVE_SCRIPT_BYTES,
-                    true,
-                    integrity,
-                    Some("anonymous"),
-                    object_url.as_ref(),
-                    request.module_type,
-                    current_policy,
-                )
-                .await?;
+            let resource = if object_url.is_none()
+                && is_network_page_script_target(owner_url, &target)
+                && let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut()
+            {
+                parent_fetch_broker
+                    .load_page_script(
+                        owner_url,
+                        &target,
+                        Some(&current_base_url),
+                        MAX_NATIVE_SCRIPT_BYTES,
+                        true,
+                        None,
+                        integrity,
+                        Some("anonymous"),
+                        Some(request.module_type),
+                        current_policy,
+                    )
+                    .await?
+            } else {
+                loader
+                    .load_module_dependency_with_referrer_async(
+                        owner_url,
+                        &current_base_url,
+                        &target,
+                        MAX_NATIVE_SCRIPT_BYTES,
+                        true,
+                        integrity,
+                        Some("anonymous"),
+                        object_url.as_ref(),
+                        request.module_type,
+                        current_policy,
+                    )
+                    .await?
+            };
             let Some(resource) = resource else {
                 return Err(NativeEngineError::Network {
                     operation: "module dependency".into(),
@@ -14039,6 +14639,7 @@ async fn mutate_script_document(
     viewport: Viewport,
     commands: &[NativeScriptCommand],
     mut loader: Option<&mut NativeResourceLoader>,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<
     (
         NativeDocument,
@@ -14101,6 +14702,7 @@ async fn mutate_script_document(
                 &document_url,
                 document_origin,
                 viewport,
+                parent_fetch_broker.as_deref_mut(),
             )
             .await?
         } else {
@@ -15787,6 +16389,7 @@ async fn process_page_fetch_resolution(
     resolved_value: &mut Option<Value>,
     pump_background_events: &mut bool,
     pending: &mut VecDeque<NativeScriptFetch>,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<(), NativeEngineError> {
     let page_events = NativePageEventBatch {
         service_worker_client_messages: service_workers.take_client_messages(),
@@ -15840,6 +16443,7 @@ async fn process_page_fetch_resolution(
         viewport,
         &resolved_commands,
         Some(loader),
+        parent_fetch_broker.as_deref_mut(),
     )
     .await?;
     *next = resolved_next;
@@ -15886,6 +16490,7 @@ async fn load_dynamic_page_module(
     module_type: Option<NativeModuleResourceType>,
     runtime: &NativeJavaScriptRuntime,
     loader: &mut NativeResourceLoader,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<String, NativeEngineError> {
     if !runtime.is_dynamic_import_referrer_allowed(module_referrer)? {
         return Err(NativeEngineError::UnsupportedUrl {
@@ -15922,24 +16527,44 @@ async fn load_dynamic_page_module(
 
     let object_url = runtime.object_url_resource(&target)?;
     let integrity = import_map.integrity_for_url(&target);
-    let resource = loader
-        .load_module_dependency_with_referrer_async(
-            document_url,
-            module_referrer,
-            &target,
-            MAX_NATIVE_SCRIPT_BYTES,
-            false,
-            integrity,
-            Some("anonymous"),
-            object_url.as_ref(),
-            module_type,
-            referrer_policy,
-        )
-        .await?
-        .ok_or_else(|| NativeEngineError::Network {
-            operation: "dynamic module import".into(),
-            reason: "dynamic module resource could not be loaded".into(),
-        })?;
+    let resource = if object_url.is_none()
+        && is_network_page_script_target(document_url, &target)
+        && let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut()
+    {
+        parent_fetch_broker
+            .load_page_script(
+                document_url,
+                &target,
+                Some(module_referrer),
+                MAX_NATIVE_SCRIPT_BYTES,
+                false,
+                None,
+                integrity,
+                Some("anonymous"),
+                Some(module_type),
+                referrer_policy,
+            )
+            .await?
+    } else {
+        loader
+            .load_module_dependency_with_referrer_async(
+                document_url,
+                module_referrer,
+                &target,
+                MAX_NATIVE_SCRIPT_BYTES,
+                false,
+                integrity,
+                Some("anonymous"),
+                object_url.as_ref(),
+                module_type,
+                referrer_policy,
+            )
+            .await?
+    }
+    .ok_or_else(|| NativeEngineError::Network {
+        operation: "dynamic module import".into(),
+        reason: "dynamic module resource could not be loaded".into(),
+    })?;
 
     let base_url = resource.url;
     let source = resource.body;
@@ -15982,6 +16607,7 @@ async fn load_dynamic_page_module(
         &mut graph,
         &mut seen,
         &mut total_bytes,
+        parent_fetch_broker.as_deref_mut(),
     )
     .await?;
 
@@ -16057,6 +16683,7 @@ async fn resolve_script_fetches(
         viewport,
         &initial_commands,
         loader.as_deref_mut(),
+        parent_fetch_broker.as_mut(),
     )
     .await?;
     if !mutation.history.is_empty() {
@@ -16233,6 +16860,7 @@ async fn resolve_script_fetches(
                         module_type,
                         runtime,
                         loader,
+                        parent_fetch_broker.as_mut(),
                     )
                     .await
                 } else {
@@ -16269,6 +16897,7 @@ async fn resolve_script_fetches(
                     &mut resolved_value,
                     &mut pump_background_events,
                     &mut pending,
+                    parent_fetch_broker.as_mut(),
                 )
                 .await;
                 if let Some(module_alias) = module_alias {
@@ -16358,6 +16987,7 @@ async fn resolve_script_fetches(
                     &mut resolved_value,
                     &mut pump_background_events,
                     &mut pending,
+                    parent_fetch_broker.as_mut(),
                 )
                 .await?;
                 continue;
@@ -16602,6 +17232,7 @@ async fn resolve_script_fetches(
                 &mut resolved_value,
                 &mut pump_background_events,
                 &mut pending,
+                parent_fetch_broker.as_mut(),
             )
             .await?;
             continue;
@@ -16774,6 +17405,7 @@ async fn resolve_script_fetches(
                 &mut resolved_value,
                 &mut pump_background_events,
                 &mut pending,
+                parent_fetch_broker.as_mut(),
             )
             .await?;
             continue;
@@ -16825,6 +17457,7 @@ async fn resolve_script_fetches(
                 &mut resolved_value,
                 &mut pump_background_events,
                 &mut pending,
+                parent_fetch_broker.as_mut(),
             )
             .await?;
             continue;
@@ -16883,6 +17516,7 @@ async fn resolve_script_fetches(
                 viewport,
                 &event_commands,
                 loader.as_deref_mut(),
+                parent_fetch_broker.as_mut(),
             )
             .await?;
             next = event_next;
@@ -16972,6 +17606,7 @@ async fn resolve_script_fetches(
                 viewport,
                 &event_commands,
                 loader.as_deref_mut(),
+                parent_fetch_broker.as_mut(),
             )
             .await?;
             next = event_next;
@@ -17071,6 +17706,7 @@ async fn resolve_script_fetches(
                 viewport,
                 &event_commands,
                 loader.as_deref_mut(),
+                parent_fetch_broker.as_mut(),
             )
             .await?;
             next = event_next;
@@ -17194,6 +17830,7 @@ async fn resolve_script_fetches(
                 viewport,
                 &event_commands,
                 loader.as_deref_mut(),
+                parent_fetch_broker.as_mut(),
             )
             .await?;
             next = event_next;
@@ -17309,6 +17946,7 @@ async fn resolve_script_fetches(
             viewport,
             &timer_commands,
             loader.as_deref_mut(),
+            parent_fetch_broker.as_mut(),
         )
         .await?;
         next = timer_next;

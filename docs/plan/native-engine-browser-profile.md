@@ -127,11 +127,18 @@ request cookies, and accepts response-cookie changes. The worker's current
   Locally hosted SharedWorker creation/connect evaluations also receive the
   broker but lack a focused process-backed regression. HTTP(S) worker entry
   scripts, classic `importScripts()` dependencies, and static/dynamic module
-  dependencies now use the parent's specialized loader. Process-backed
-  coverage verifies worker entry and classic `importScripts()` loading;
-  module-graph variants still need focused tests. Page resource loads,
-  independently delivered SharedWorker events, module destinations, and Service Worker
-  internal requests remain outside the verified checkpoint. In
+  dependencies now use the parent's specialized loader. HTTP(S) dynamic page
+  classic/module script elements and their static module dependencies discovered
+  during explicit parent-brokered page turns use that authority too; runtime
+  `import()` requests follow the same broker path. Process-backed coverage
+  verifies worker entry plus classic `importScripts()`, and a dynamically
+  attached page module plus its static dependency, including HttpOnly
+  response-cookie propagation. Runtime `import()` does not yet have a
+  cookie-specific regression. Parser-discovered initial page scripts,
+  initial/navigation resources, page stylesheets/images/fonts/media,
+  independently delivered SharedWorker events, module/font Fetch destinations,
+  and Service Worker internal requests remain outside the verified checkpoint.
+  In
   browser-coordinated mode, due
   DedicatedWorker timer turns now wait for the exact context/frame owner pump
   and execute with that turn's parent Fetch broker; standalone `NativeEngine` keeps

@@ -35833,7 +35833,7 @@ const NATIVE_SERVICE_WORKER_BOOTSTRAP: &str = r###"
       () => { serviceWorkerFetchLifetimes.delete(lifetimePromise); },
     );
     settleLifetime();
-    if (!responded) return { handled: false };
+    if (!responded) return serviceWorkerPromiseResolve({ handled: false });
     return responsePromise.then(response => serviceWorkerFetchResponse(response))
       .then(response => ({ handled: true, response }));
   };

@@ -269,10 +269,22 @@ and allows child-side persistence, so this is an explicit open gap. The first
 code checkpoint removes the content child's full profile from the
 browser-coordinated SharedWorker-create message; the parent now reads the
 profile from the exact source frame owner and replays coordinator overrides.
-The scoped check, no-profile serialization test, and existing live-cookie
-request test pass. The credentials/redirect process regression timed out twice
-and awaits diagnosis; this batch does not close Slice 842. See the [Slice 842
-task](tasks/native-engine-browser-842.md) and [cookie authority
+No-profile serialization and the existing live-cookie request regression
+pass. The exact parent/backend stale-snapshot regression then exposed a
+`Lifecycle { operation: "script", state: "busy" }` failure while the async
+owner pump held the source frame. The create route no longer synchronously
+probes that busy owner: it validates the captured context and document
+generation under the awaited owner guard used for the parent cookie snapshot,
+then confirms the frame still maps to that same owner. Its transfer route is
+inserted without reacquiring the busy owner. The focused check and formatting
+pass, but the final process-backed regression attempt timed out while Cargo
+was linking the integration target, before the test started; Slice 842 remains
+open pending behavioral verification. Separately, the local content-process
+credentials/redirect regression timed out twice at
+`crates/glass-browser/tests/native_engine.rs:33229`; that unresolved route is
+tracked by Slice 843 and is not evidence about this parent failure. See the
+[Slice 842 task](tasks/native-engine-browser-842.md) and
+[cookie authority
 contract](../architecture/native-engine.md#cookie-authority-and-process-boundary).
 The remaining content-process cookie mirror/persistence and general request
 broker are isolated in the dependent [Slice 843 task](tasks/native-engine-browser-843.md);

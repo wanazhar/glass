@@ -180,6 +180,14 @@ projection and existing native Fetch behavior.
   delivered SharedWorker events, streamed uploads, module/font destinations,
   initial/resource loading, and Service Worker internal requests remain
   outside the verified broker path.
+- Page-to-dedicated-worker events delivered through a transferred `MessagePort`
+  now retain the parent Fetch broker through worker callback evaluation. The
+  expanded `native_content_process_worker_message_fetch_uses_parent_cookie_authority`
+  regression passed (1 passed; 35.17-second test runtime): its MessagePort
+  callback Fetch receives the prior parent `Set-Cookie` update, the HttpOnly
+  cookie, and a same-turn page cookie write. Other independently delivered
+  worker events, autonomous turns, and SharedWorker MessagePort callbacks are
+  not thereby verified as parent-brokered.
 - Slice 842 is complete: browser-coordinated SharedWorker creation derives
   cookies from the exact parent source owner. Its parent snapshot/override/
   deletion process regression passed (1 passed; 48.31-second test runtime),

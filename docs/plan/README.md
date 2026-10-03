@@ -315,11 +315,12 @@ The remaining content-process cookie mirror/persistence and unbrokered network
 paths are tracked in the dependent [Slice 843 task](tasks/native-engine-browser-843.md).
 A Slice 843 checkpoint now brokers standard buffered Fetch emitted during
 dedicated-worker initialization and while handling an explicit page
-`Worker.postMessage`; its process-backed regression passed (1 test;
-24.15-second test runtime). It verifies that the page owner is validated
-separately from the worker request URL, a same-turn page cookie write reaches
-the startup Fetch, a response `Set-Cookie` is visible on the next worker
-request, and the parent cookie API reflects it. Worker-script/resource/module-
+`Worker.postMessage` or a transferred page `MessagePort` event; its expanded
+process-backed regression passed (1 test; 35.17-second test runtime). It
+verifies that the page owner is validated separately from the worker request
+URL, same-turn page cookie writes reach the worker Fetches, a response
+`Set-Cookie` is visible on later worker requests, and a MessagePort-triggered
+Fetch receives the parent-updated HttpOnly cookie. Worker-script/resource/module-
 graph loading, autonomous turns, independently delivered SharedWorker events,
 streamed uploads, module or font destinations, initial/resource loading, and
 Service Worker internal requests remain outside the verified path. The

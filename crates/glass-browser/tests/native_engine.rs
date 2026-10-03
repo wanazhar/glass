@@ -33216,7 +33216,7 @@ async fn native_content_process_worker_message_fetch_uses_parent_cookie_authorit
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         let mut requests = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..5 {
             let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
                 .await
                 .expect("worker parent Fetch should reach the local server")
@@ -33244,7 +33244,7 @@ async fn native_content_process_worker_message_fetch_uses_parent_cookie_authorit
                 "/worker.js" => (
                     "",
                     "text/javascript",
-                    "self.onmessage = async () => { const response = await fetch('/worker-data'); postMessage({ kind: 'message', text: await response.text() }); }; fetch('/worker-start-data').then(async response => postMessage({ kind: 'started', text: await response.text() }));",
+                    "self.onmessage = async event => { if (event.ports.length) { const port = event.ports[0]; port.onmessage = async () => { const response = await fetch('/port-data'); port.postMessage(await response.text()); }; port.start(); return; } const response = await fetch('/worker-data'); postMessage({ kind: 'message', text: await response.text() }); }; fetch('/worker-start-data').then(async response => postMessage({ kind: 'started', text: await response.text() }));",
                 ),
                 "/worker-start-data" => (
                     "Set-Cookie: worker_parent=updated; HttpOnly; Path=/; SameSite=Lax\r\n",
@@ -33252,6 +33252,7 @@ async fn native_content_process_worker_message_fetch_uses_parent_cookie_authorit
                     "startup response",
                 ),
                 "/worker-data" => ("", "text/plain", "worker response"),
+                "/port-data" => ("", "text/plain", "port response"),
                 other => panic!("unexpected parent-owned worker Fetch path: {other}"),
             };
             let response = format!(
@@ -33281,12 +33282,28 @@ async fn native_content_process_worker_message_fetch_uses_parent_cookie_authorit
         )
         .await
         .unwrap();
+    engine
+        .evaluate_async(
+            "globalThis.portMessages = []; globalThis.channel = new MessageChannel(); channel.port2.onmessage = event => portMessages.push(event.data); channel.port2.start(); worker.postMessage('connect', [channel.port1]); true",
+        )
+        .await
+        .unwrap();
+    engine
+        .evaluate_async(
+            "document.cookie = 'port_turn=present; Path=/'; channel.port2.postMessage('fetch'); true",
+        )
+        .await
+        .unwrap();
     assert_eq!(
         engine.evaluate_async("workerMessages").await.unwrap(),
         serde_json::json!([
             {"kind": "started", "text": "startup response"},
             {"kind": "message", "text": "worker response"}
         ])
+    );
+    assert_eq!(
+        engine.evaluate_async("portMessages").await.unwrap(),
+        serde_json::json!(["port response"])
     );
     let cookies = engine.cookies_async().await.unwrap();
     assert!(
@@ -33302,7 +33319,13 @@ async fn native_content_process_worker_message_fetch_uses_parent_cookie_authorit
             .iter()
             .map(|(path, _)| path.as_str())
             .collect::<Vec<_>>(),
-        ["/page", "/worker.js", "/worker-start-data", "/worker-data"]
+        [
+            "/page",
+            "/worker.js",
+            "/worker-start-data",
+            "/worker-data",
+            "/port-data"
+        ]
     );
     let startup_fetch_cookie = requests[2].1.as_deref().unwrap_or_default();
     assert!(startup_fetch_cookie.contains("parent_session=initial"));
@@ -33313,6 +33336,12 @@ async fn native_content_process_worker_message_fetch_uses_parent_cookie_authorit
     assert!(message_fetch_cookie.contains("parent_secret=initial-secret"));
     assert!(message_fetch_cookie.contains("worker_parent=updated"));
     assert!(message_fetch_cookie.contains("message_turn=present"));
+    let port_fetch_cookie = requests[4].1.as_deref().unwrap_or_default();
+    assert!(port_fetch_cookie.contains("parent_session=initial"));
+    assert!(port_fetch_cookie.contains("parent_secret=initial-secret"));
+    assert!(port_fetch_cookie.contains("worker_parent=updated"));
+    assert!(port_fetch_cookie.contains("message_turn=present"));
+    assert!(port_fetch_cookie.contains("port_turn=present"));
 }
 
 #[tokio::test]

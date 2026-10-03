@@ -4839,15 +4839,42 @@ async fn apply_worker_page_message_port_commands(
     commands: Vec<NativeScriptCommand>,
     loader: &mut NativeResourceLoader,
     external_shared_worker_routing: bool,
+    parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<(), NativeEngineError> {
     if external_shared_worker_routing {
-        workers
-            .apply_page_message_port_commands_with_external_shared_workers(commands, loader)
-            .await
+        match parent_fetch_broker {
+            Some(parent_fetch_broker) => {
+                workers
+                    .apply_page_message_port_commands_with_external_shared_workers_and_parent_fetch_broker(
+                        commands,
+                        loader,
+                        parent_fetch_broker,
+                    )
+                    .await
+            }
+            None => {
+                workers
+                    .apply_page_message_port_commands_with_external_shared_workers(commands, loader)
+                    .await
+            }
+        }
     } else {
-        workers
-            .apply_page_message_port_commands(commands, loader)
-            .await
+        match parent_fetch_broker {
+            Some(parent_fetch_broker) => {
+                workers
+                    .apply_page_message_port_commands_with_parent_fetch_broker(
+                        commands,
+                        loader,
+                        parent_fetch_broker,
+                    )
+                    .await
+            }
+            None => {
+                workers
+                    .apply_page_message_port_commands(commands, loader)
+                    .await
+            }
+        }
     }
 }
 
@@ -7397,6 +7424,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             message_port_commands,
                                             loader,
                                             external_shared_worker_routing,
+                                            None,
                                         )
                                         .await?;
                                         process_worker_websocket_commands(
@@ -7894,6 +7922,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     message_port_commands,
                     loader,
                     external_shared_worker_routing,
+                    Some(&mut parent_fetch_broker),
                 )
                 .await?;
                 process_worker_websocket_commands(
@@ -8070,6 +8099,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     dynamic_message_port_commands,
                                     loader,
                                     external_shared_worker_routing,
+                                    Some(&mut parent_fetch_broker),
                                 )
                                 .await?;
                                 process_worker_websocket_commands(

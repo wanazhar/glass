@@ -49,15 +49,18 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Native cookie enumeration now reads from the parent loader plus its pending
   process-cookie journal. The host applies child-reported mutations to the
   durable profile and owns import/clear persistence; the process no longer
-  returns a complete profile in response to API enumeration. Child-side cookie
-  mirroring, shared profile write access, and network ownership remain in
-  progress.
+  returns a complete profile in response to API enumeration. Each explicit
+  page-script turn now receives a parent-computed, URL-scoped visible cookie
+  projection and returns bounded owner-tagged setter writes—even when the turn
+  makes no Fetch—for the parent to apply. Child-side full-profile mirroring,
+  shared profile access, and unbrokered network ownership remain in progress.
 - The unhandled-network fallback for the bounded native host Fetch command and
   eligible HTTP(S) Fetch requests from explicit page-script evaluation now run
-  through a parent broker. The parent reconciles queued child cookie changes
-  and applies bounded, owner-tagged `document.cookie` writes before selecting
-  request cookies or accepting response cookies. It returns only the visible
-  `document.cookie` projection to the script realm. Its bounded response is
+  through a parent broker. For eligible script Fetches, the parent reconciles
+  queued child cookie changes and same-turn, owner-tagged `document.cookie`
+  writes before selecting request cookies or accepting response cookies. It
+  returns only the visible `document.cookie` projection to the script realm.
+  Its bounded response is
   currently buffered before resolving Fetch; initial page loading, streamed
   uploads, worker realms, and Service Worker internal network requests remain
   on the child path. The child still has a full cookie mirror and profile-path

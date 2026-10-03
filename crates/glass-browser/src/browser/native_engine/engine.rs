@@ -2643,6 +2643,12 @@ impl NativeEngine {
         &mut self,
         operation: &'static str,
     ) -> Result<(), NativeEngineError> {
+        let cookie_writes = self
+            .content_process
+            .as_mut()
+            .map(NativeContentProcess::take_pending_cookie_writes)
+            .transpose()?
+            .unwrap_or_default();
         let mut pending_changes =
             self.pending_content_cookie_changes
                 .lock()
@@ -2650,9 +2656,33 @@ impl NativeEngine {
                     operation: operation.into(),
                     reason: "content process cookie change queue is poisoned".into(),
                 })?;
-        self.loader.apply_cookie_changes(&pending_changes)?;
+        // Applying the child's outstanding response-cookie journal must not
+        // consume changes produced by a parent-brokered request in this turn.
+        let existing_loader_changes = self.loader.take_cookie_changes();
+        if let Err(error) = self.loader.apply_cookie_changes(&pending_changes) {
+            self.loader.restore_cookie_changes(existing_loader_changes);
+            return Err(error);
+        }
         self.loader.take_cookie_changes();
+        self.loader.restore_cookie_changes(existing_loader_changes);
         pending_changes.clear();
+        drop(pending_changes);
+        for write in cookie_writes {
+            self.loader
+                .set_document_cookie(&write.owner.document_url, &write.value)?;
+        }
+        Ok(())
+    }
+
+    fn persist_pending_loader_cookie_changes(&mut self) -> Result<(), NativeEngineError> {
+        let changes = self.loader.take_cookie_changes();
+        if changes.is_empty() {
+            return Ok(());
+        }
+        if let Err(error) = self.publish_external_cookie_changes(&changes) {
+            self.loader.restore_cookie_changes(changes);
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -2720,11 +2750,17 @@ impl NativeEngine {
                 self.request_ledger.finish();
                 result
             };
+            self.reconcile_pending_content_cookie_changes(
+                "page-script parent document.cookie writes",
+            )?;
             let cookie_changes = self.loader.take_cookie_changes();
             let cookie_persist_result = if cookie_changes.is_empty() {
                 Ok(())
+            } else if let Err(error) = self.publish_external_cookie_changes(&cookie_changes) {
+                self.loader.restore_cookie_changes(cookie_changes);
+                Err(error)
             } else {
-                self.publish_external_cookie_changes(&cookie_changes)
+                Ok(())
             };
             let script_result = match (process_result, cookie_persist_result) {
                 (Ok(result), Ok(())) => result,
@@ -3104,17 +3140,9 @@ impl NativeEngine {
         self.require_running("cookies")?;
         self.sync_external_storage_events()?;
         self.deliver_pending_external_storage_events().await?;
-        let pending_changes = self
-            .pending_content_cookie_changes
-            .lock()
-            .map_err(|_| NativeEngineError::Worker {
-                operation: "read parent cookie authority".into(),
-                reason: "content process cookie change queue is poisoned".into(),
-            })?
-            .clone();
-        let mut parent_loader = self.loader.clone();
-        parent_loader.apply_cookie_changes(&pending_changes)?;
-        let profiles = parent_loader.cookies_for_document(&self.url)?;
+        self.reconcile_pending_content_cookie_changes("read parent cookie authority")?;
+        self.persist_pending_loader_cookie_changes()?;
+        let profiles = self.loader.cookies_for_document(&self.url)?;
         profiles
             .into_iter()
             .map(public_cookie_from_profile)
@@ -3139,6 +3167,8 @@ impl NativeEngine {
             .collect::<Result<Vec<_>, _>>()?;
         self.sync_external_storage_events()?;
         self.deliver_pending_external_storage_events().await?;
+        self.reconcile_pending_content_cookie_changes("set parent cookie authority")?;
+        self.persist_pending_loader_cookie_changes()?;
         if let Some(process) = self.content_process.as_mut() {
             process.set_cookies(&profiles).await?;
         }
@@ -3194,16 +3224,8 @@ impl NativeEngine {
         self.require_running("clear cookies")?;
         self.sync_external_storage_events()?;
         self.deliver_pending_external_storage_events().await?;
-        let pending_changes = self
-            .pending_content_cookie_changes
-            .lock()
-            .map_err(|_| NativeEngineError::Worker {
-                operation: "clear parent cookie authority".into(),
-                reason: "content process cookie change queue is poisoned".into(),
-            })?
-            .clone();
-        self.loader.apply_cookie_changes(&pending_changes)?;
-        self.loader.take_cookie_changes();
+        self.reconcile_pending_content_cookie_changes("clear parent cookie authority")?;
+        self.persist_pending_loader_cookie_changes()?;
         if let Some(process) = self.content_process.as_mut() {
             process.clear_cookies().await?;
         }

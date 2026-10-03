@@ -17,7 +17,6 @@ later updates in the browser-coordinated SharedWorker loader.
 ## Context
 
 - `docs/INDEX.md`
-- `docs/architecture/native-engine.md#cookie-authority-and-process-boundary`
 - `docs/plan/native-engine-browser-profile.md#parent-owned-cookie-authority`
 - `docs/plan/tasks/native-engine-browser-821.md`
 - `docs/plan/tasks/native-engine-browser-822.md`

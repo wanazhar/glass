@@ -89,6 +89,31 @@ It is never an implicit fallback for a native request.
 | `accessibility` | semantic and assistive surface | roles, states, properties, name/description computation, focus, actions, and incremental updates for the declared DOM/layout surface | accessibility-tree differential fixtures and action/focus tests |
 | `glass-integration` | public Glass contract | stable backend capability profile, navigation, targets, DOM/AX/evidence, actions, key input, script/evaluate, waits/events, screenshots, contexts, storage, downloads/uploads, prompts, CLI, MCP, and TUI parity | all normal operations pass in native-only mode with no hidden CDP process/socket |
 
+### Parent-owned cookie authority
+
+The native browser backend in the parent process is the sole authority for
+each context's complete cookie jar. It owns cookie matching for every request,
+acceptance or rejection of every `Set-Cookie`, expiry/deletion, profile
+persistence, and shared-profile journal publication. A content process or
+worker realm is never a cookie store or durable writer.
+
+The parent must not send a cookie profile, an HttpOnly value, or raw
+`Cookie`/`Set-Cookie` headers to a content process. It gives a document only a
+URL-scoped `document.cookie` projection containing cookies visible to script;
+the child returns a bounded, owner-tagged setter line to the parent, which
+validates and applies it before refreshing that projection. Child-initiated
+network requests use a bounded parent request broker so the authoritative jar
+applies the request's credentials mode and each redirect hop. If the parent
+broker is unavailable, the request fails explicitly; the child must not retry
+directly with a local jar. Cookie profiles and cookie-bearing storage files
+remain parent-only.
+
+This contract preserves script-visible cookie behavior without exposing
+HttpOnly state to the child. The current implementation still mirrors complete
+profiles into the content process and permits child-side cookie persistence;
+that is a known gap, not compliant behavior. Slice 842 tracks eliminating the
+mirror and moving the request/persistence boundary to the parent.
+
 ### Shared-profile cookie synchronization
 
 When separately created native sessions use the same explicit profile path,
@@ -96,9 +121,11 @@ accepted cookie changes are merged into the durable profile under its existing
 profile lock and then published through the bounded profile event journal.
 Another live session reads its leased journal cursor at browser operation
 boundaries, ignores its own records, coalesces external changes by cookie key,
-and applies them to its request loader and live content process before the next
-request. Applying a journal record is runtime-only: the receiving session does
-not write the same change back to the profile or republish it. Slices 820-821
+and applies them to its parent-owned request jar before the next request. The
+parent refreshes only the affected document's script-visible projection;
+complete cookie state is not sent to the content process. Applying a journal
+record is runtime-only: the receiving session does not write the same change
+back to the profile or republish it. Slices 820-821
 verify HTTP response `Set-Cookie` updates and explicit native cookie
 import/clear API calls across live sessions, including response-driven
 deletion. Slice 821 verifies that API changes are persisted before journal
@@ -116,9 +143,12 @@ The local content-process route supplies each SharedWorker create command with
 the constructor storage key derived from the owning document's origin,
 context, frame, and generation. Browser-coordinated SharedWorker creation
 continues to receive this key from the browser owner. A connected module
-SharedWorker can issue bounded direct Fetch API requests through its existing
-worker registry and loader, consume response bodies, and apply accepted
-response-cookie changes before its next request. Slice 822 verifies
+SharedWorker can issue bounded direct Fetch API requests and consume response
+bodies. In the required ownership model, the browser parent executes those
+requests using its authoritative jar and returns response data without
+transferring cookie profiles or raw cookie headers to the child. The existing
+Slice 822 implementation instead executes these requests in the content
+process; its process-backed regression verifies
 `credentials: include` and `credentials: omit`, ordinary and HttpOnly request
 cookies, response updates and deletion, and the subsequent request. For direct
 worker Fetch, `Request.credentials` defaults to `same-origin`. For each URL in

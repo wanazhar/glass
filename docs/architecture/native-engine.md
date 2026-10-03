@@ -478,6 +478,32 @@ dynamic sandbox-token behavior; this does not certify other platforms or
 complete iframe sandbox security. See
 [slice 743](../plan/tasks/native-engine-browser-743.md).
 
+## Cookie authority and process boundary
+
+The parent native browser backend owns the authoritative cookie jar for each
+browser context and is the only component that performs cookie matching,
+accepts or rejects `Set-Cookie`, mutates durable cookie profiles, or publishes
+shared-profile cookie changes. The sandboxed content process and its page and
+worker realms are not cookie authorities or durable writers.
+
+The parent exposes only a document-URL-scoped, non-HttpOnly
+`document.cookie` projection to script. Cookie setter lines return to the
+parent with their context, frame, document generation, and source URL so the
+parent can validate the write and refresh the projection. Network requests
+created by page or worker code go through a bounded parent broker; cookie
+credentials are selected for each request and redirect hop by the parent.
+Cookie profiles, HttpOnly values, raw `Cookie`/`Set-Cookie` headers, and
+cookie-bearing profile paths do not cross into or become writable by the
+content process. Broker failure is explicit and never triggers a direct child
+request.
+
+The current content-process implementation still receives and persists full
+cookie profiles, including HttpOnly state. That behavior is a known mismatch
+with the target contract, not an allowed mirror. [Slice
+842](../plan/tasks/native-engine-browser-842.md) tracks the migration; the
+versioned details and acceptance checks are in the [Glass Core Web
+Profile](../plan/native-engine-browser-profile.md#parent-owned-cookie-authority).
+
 ## HTML parser ownership
 
 Navigation documents and HTML XHR response documents use `html5ever` and a

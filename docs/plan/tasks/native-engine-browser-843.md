@@ -122,13 +122,14 @@ projection and existing native Fetch behavior.
   deletion process regression passed (1 passed; 48.31-second test runtime),
   and the independent static review found no lock/order defect.
 - The broader content-process mirror, child profile-path/read/write capability,
-  and general parent request broker remain outstanding. An adjacent
-  content-process credentials/redirect regression timed out twice at
-  `tests/native_engine.rs:33229`; Slice 843 must diagnose that failure while
-  implementing the parent broker.
+  and general parent request broker remain outstanding. The process-backed
+  regression `native_content_process_shared_worker_fetch_credentials_modes_follow_redirects`
+  passed against the latest built integration binary (1 passed; 24.64-second
+  runtime). It covers credentials/CORS/redirect and invalid-mode behavior, but
+  does not verify parent-brokered network transport; the content process still
+  performs direct network requests.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
-  checkout; the separate credentials/redirect test remains unverified and
-  must not be inferred from Slice 842.
+  checkout; that result does not prove parent-brokered network transport.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

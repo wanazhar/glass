@@ -152,10 +152,11 @@ projection and existing native Fetch behavior.
   This does not cover Fetch during initial document loading,
   explicit-turn page/dedicated-worker upload streams (covered by later
   checkpoints below), Service Worker-originated upload streams,
-  module/font destinations,
-  worker-script/resource/module-graph loading, autonomous worker events,
+  module/font destinations, worker module-graph process coverage, autonomous worker events,
   independently delivered SharedWorker messages, or Service Worker internal
-  network requests, which still use the child loader.
+  network requests, which still use the child loader. A later checkpoint below
+  now routes worker entry and classic imported scripts through the parent;
+  module-graph coverage remains outstanding.
   The broker currently buffers the bounded response before resolving Fetch;
   incremental network response streaming/backpressure remains outstanding.
 - The latest scoped `cargo check -p glass-browser --features native-engine
@@ -255,12 +256,24 @@ projection and existing native Fetch behavior.
   the timer on its next script turn with the parent Fetch broker; standalone
   `NativeEngine` retains local timer dispatch. The process-backed unit
   regression `browser_owned_worker_timer_fetch_uses_parent_cookie_authority`
-  passed (1 passed; 21.59 seconds), verifying the initial HttpOnly request
-  cookie, a parent-accepted HttpOnly response update on the next worker request,
-  the parent cookie API, and the script-visible projection. The fixture's
-  initial 20-second accept timeout proved too tight; the final 45-second bound
-  passed. ServiceWorker timer/lifetime requests and the other unbrokered
-  network classes remain open.
+  passed (1 passed; 22.87 seconds), verifying cookies on the worker entry
+  request, a classic `importScripts()` dependency request, HttpOnly cookies set
+  by both script responses and sent on later requests, a parent-accepted
+  HttpOnly response update on the next worker request, the parent cookie API,
+  and the script-visible projection. The fixture's initial 20-second accept
+  timeout proved too tight; the final
+  45-second bound passed. HTTP(S) worker entry scripts, classic
+  `importScripts()` dependencies, and static/dynamic worker module dependencies
+  now use the parent loader with exact captured page-owner validation and a
+  bounded set of parent-observed worker script/referrer URLs. The child receives
+  source, final URL, response Referrer-Policy, and the script-visible projection
+  only; raw cookie headers and the complete jar are not part of this broker
+  response. Non-network worker sources remain local. The new process test
+  directly covers the entry script, one classic imported script, and later
+  timer Fetch, not module-graph variants. Full child-profile removal,
+  page-resource broker coverage, ServiceWorker timer/lifetime requests, and
+  other unbrokered network
+  classes remain open.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.

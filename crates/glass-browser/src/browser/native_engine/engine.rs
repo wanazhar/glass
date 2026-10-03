@@ -11479,7 +11479,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let mut requests = Vec::new();
-            for _ in 0..4 {
+            for _ in 0..5 {
                 let accepted =
                     tokio::time::timeout(std::time::Duration::from_secs(45), listener.accept())
                         .await
@@ -11527,7 +11527,12 @@ mod tests {
                         "<main>worker timer cookie broker</main>",
                     ),
                     "/timer-worker.js" => (
-                        "",
+                        "Set-Cookie: timer_script=loaded; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "application/javascript",
+                        "importScripts('/timer-dependency.js');",
+                    ),
+                    "/timer-dependency.js" => (
+                        "Set-Cookie: timer_dependency=loaded; HttpOnly; Path=/; SameSite=Lax\r\n",
                         "application/javascript",
                         "setTimeout(async () => { try { const first = await fetch('/timer-first'); const firstBody = await first.text(); const second = await fetch('/timer-second'); postMessage({ kind: 'complete', firstBody, secondBody: await second.text() }); } catch (error) { postMessage({ kind: 'error', message: String(error) }); } }, 0);",
                     ),
@@ -11593,7 +11598,13 @@ mod tests {
                 .iter()
                 .map(|(path, _)| path.as_str())
                 .collect::<Vec<_>>(),
-            ["/page", "/timer-worker.js", "/timer-first", "/timer-second"]
+            [
+                "/page",
+                "/timer-worker.js",
+                "/timer-dependency.js",
+                "/timer-first",
+                "/timer-second"
+            ]
         );
         let cookie_for = |path: &str| {
             requests
@@ -11602,6 +11613,11 @@ mod tests {
                 .and_then(|(_, cookie)| cookie.as_deref())
                 .unwrap_or_default()
         };
+        assert!(cookie_for("/timer-worker.js").contains("timer_session=visible"));
+        assert!(cookie_for("/timer-worker.js").contains("timer_secret=before"));
+        assert!(cookie_for("/timer-dependency.js").contains("timer_script=loaded"));
+        assert!(cookie_for("/timer-first").contains("timer_script=loaded"));
+        assert!(cookie_for("/timer-first").contains("timer_dependency=loaded"));
         assert!(cookie_for("/timer-first").contains("timer_secret=before"));
         assert!(cookie_for("/timer-second").contains("timer_secret=after"));
         assert!(
@@ -11615,9 +11631,19 @@ mod tests {
                 .is_some_and(|value| value.contains("timer_secret="))
         );
         assert!(
+            !visible_cookies
+                .as_str()
+                .is_some_and(|value| value.contains("timer_script="))
+        );
+        assert!(
             cookies
                 .iter()
                 .any(|cookie| cookie.name == "timer_secret" && cookie.value == "after")
+        );
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == "timer_script" && cookie.value == "loaded")
         );
     }
 

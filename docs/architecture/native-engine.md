@@ -1,25 +1,28 @@
 # Native browser engine
 
-Status: issue #40 remains open. This session's sandbox denies local TCP
-listener binding with `PermissionDenied`, so process-backed HTTP regressions
-cannot execute here. Slices 830 and 831, and 833-836, retain previously
-recorded passing wire results, but the corrected Slice 832 regression has not
+Status: issue #40 remains open. An earlier sandbox denied local TCP listener
+binding, but the current checkout has since run process-backed HTTP
+regressions successfully; see the current Slice 843 evidence below. Slices 830
+and 831, and 833-836, retain previously recorded passing wire results, but the
+corrected Slice 832 regression has not
 been rerun and its inline import settlement remains unverified. The new Slice
-837 socket-free command-capture test passes, but its HTTP regression stops at
-`TcpListener::bind` before engine initialization. Slice 833 remains in progress
+837 socket-free command-capture test passes; at that checkpoint its HTTP
+regression stopped at `TcpListener::bind` before engine initialization. Slice
+833 remains in progress
 pending Slice 832; Slices 834-837 remain in progress behind that dependency
 chain. Slice 838 implements the page-facing NavigationPreloadManager and
 durable registration settings; its scoped native-engine check and two
-socket-free unit tests pass. The extended process-backed restart regression
-compiles but cannot execute here because local TCP listener binding is denied,
+socket-free unit tests pass. At that checkpoint, the extended process-backed
+restart regression compiled but could not execute because local TCP listener
+binding was denied,
 so end-to-end persistence remains unverified and Slice 838 stays in progress.
 Slice 839 now starts eligible GET preloads through the native loader alongside
 FetchEvent dispatch, resolves `preloadResponse`, and reuses the result when
 the handler does not call `respondWith`. An already-settled ServiceWorker
 response no longer waits for a still-pending, unused preload body; a
-process-backed gated-response regression was added and compiled. Running that
-test stops at `TcpListener::bind("127.0.0.1:0")` with `PermissionDenied`
-before engine startup. The scoped native-engine check and the new socket-free
+process-backed gated-response regression was added and compiled. At that
+checkpoint, the test stopped at `TcpListener::bind("127.0.0.1:0")` with
+`PermissionDenied` before engine startup. The scoped native-engine check and the new socket-free
 runtime regression pass as part of six socket-free navigation-preload tests.
 The separate navigation referrer-policy unit had passed before this change;
 the preload tests cover readable cloned responses, immutable headers, absent
@@ -56,6 +59,22 @@ regression passes. Dropping the runtime's backend handle requests stop even
 while the pump temporarily owns a strong internal reference; a lifecycle test
 joins that task. Runtime-level blocked-owner shutdown remains unverified.
 These changes do not invoke Chromium or CDP.
+
+Slice 843 now routes HTTP(S) DedicatedWorker and SharedWorker entry scripts,
+classic `importScripts()` dependencies, and static/dynamic worker module
+dependencies through the browser parent's specialized resource loader. The
+parent applies owner-tagged script cookie writes before loading and retains
+cookie selection, response-cookie acceptance, redirects, and script policy;
+the child receives only bounded source, final URL, response Referrer-Policy,
+and the visible cookie projection. The process-backed
+`browser_owned_worker_timer_fetch_uses_parent_cookie_authority` regression
+passes with the entry-script request and its HttpOnly response cookie covered.
+The same regression covers a classic `importScripts()` dependency and an
+HttpOnly cookie set by that dependency; module-graph variants still need
+dedicated process-backed coverage. The full cookie profile remains mirrored
+into the content process, and page subresources plus other network classes
+are not all brokered; issue
+#40 is still open.
 
 CI runs the full native-engine feature suite on Linux and the socket-free
 `asynchronous_effect`, `async_effect`, and `dropping_runtime_backend` test
@@ -108,12 +127,14 @@ certified.
 The source document's Referrer-Policy now crosses the content-process boundary
 separately from its URL; the raw URL remains internal while the worker-visible
 `FetchEvent.request.referrer` is policy-filtered. The policy is applied to the
-initial request and redirect targets. Process-backed request, header,
-no-duplicate-request, cancellation, source-policy/redirect, and worker-visible
-`Request.referrer` regression sources previously compiled with `--tests` but
-have not run here because local TCP listener binding is denied. The gated-
-response test also cannot run past the denied listener. Actual network, overlap,
-cancellation, WPT, remote-CI, and cross-platform proof remain open.
+initial request and redirect targets. At that earlier checkpoint,
+process-backed request, header, no-duplicate-request, cancellation,
+source-policy/redirect, and worker-visible `Request.referrer` regression
+sources had compiled with `--tests` but had not run because local TCP listener
+binding was denied; the gated-response test also stopped at the denied
+listener. This later checkout has run other process-backed HTTP regressions,
+but those specific network, overlap, cancellation, WPT, remote-CI, and
+cross-platform proofs remain open.
 The last recorded remote CI run, `36616367412` on `ee67f930`, failed and does
 not contain these local edits. See the
 [Slice 830 task](../plan/tasks/native-engine-browser-830.md),
@@ -538,11 +559,14 @@ In browser-coordinated mode, due DedicatedWorker timer turns now wait for the
 exact context/frame owner pump and execute with that turn's parent Fetch broker;
 standalone `NativeEngine` retains its local timer path. The process-backed
 `browser_owned_worker_timer_fetch_uses_parent_cookie_authority` regression
-passed (1 passed; 21.59 seconds), checking the initial HttpOnly request cookie,
-a parent-accepted HttpOnly response update on the next worker request, and the
-script-visible projection. Worker-script/resource/module-graph loading,
-ServiceWorker timer and lifetime work, independently delivered SharedWorker
-events, and module-destination Fetch remain outside the verified broker path.
+passed (1 passed; 21.59 seconds) at that earlier checkpoint, checking the
+initial HttpOnly request cookie, a parent-accepted HttpOnly response update on
+the next worker request, and the script-visible projection. At that checkpoint
+worker-script loading was outside the verified broker path; Slice 843 now
+verifies the entry script and classic `importScripts()` dependency, while
+module-graph process coverage is still outstanding. ServiceWorker timer and
+lifetime work, independently delivered SharedWorker events, and
+module-destination Fetch remain outside the verified broker path.
 An awaited ordinary Fetch issued by a controlled Service Worker while handling
 an explicit page Fetch now also uses that operation's parent broker. The
 process-backed regression
@@ -10867,7 +10891,7 @@ behaviors beyond bounded Document import-map registration.
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
 | script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs and invocation-driven dynamic imports with JSON options/type identity across page, dedicated/shared Worker, classic importScripts dependencies, and rooted-file owners, bounded due-time `setTimeout`/`setInterval` turns, policy-owned bounded GET, same-origin string-body POST, and bounded cross-origin simple/preflighted POST `fetch()` promises with independent text/json/blob/UTF-8 arrayBuffer/bytes response reads and bounded demand-driven transport-backed incremental `ReadableStream` response bodies split into 8 KiB chunks with one-part reader demand, reader lock/release/cancel, transport cancellation, and bounded per-branch clone queues, bounded response bodyUsed and clone ownership, bounded Request bodyUsed, clone ownership, static ReadableStream bodies, and text/json/blob/arrayBuffer/bytes/formData consumers for bounded URL-encoded and multipart bodies, and bounded underlying-source ReadableStream start/pull/cancel controllers with queue backpressure, bounded byte-source strategies and BYOB readers/controllers with partial-buffer delivery through Fetch and tee owners, a bounded read-only response Headers view with validated response names, duplicate-name combination, deterministic sorted iteration, same-origin/CORS-exposed filtering, and script-unreadable `Set-Cookie`, plus canonical HTTP `statusText` propagation, and raw bounded byte-preserving response payloads for response body variants and binary Blob slicing, bounded Blob/File construction from ArrayBuffer and typed-array parts, bounded raw-byte-backed Blob/File request bodies for Fetch and synchronous/asynchronous XHR, bounded mutable Fetch Headers records with live owner-backed iterators plus plain-object custom request headers with JavaScript/Rust validation, forbidden/internal-header protection, same-origin transfer, and sorted multi-header CORS preflight authorization with bounded positive-`Access-Control-Max-Age` caching, bounded Fetch `cors`/`no-cors`/`same-origin` mode policy with fail-closed same-origin and no-cors request checks plus opaque cross-origin no-cors response projection, bounded Fetch `follow`/`error`/`manual` redirect policy with `redirected` and filtered `opaqueredirect` response projection, direct text-backed Blob/File request bodies with normalized MIME propagation and bounded observable fetch AbortController/AbortSignal cancellation with static abort/timeout/any composition, bounded text-only `FormData(form)` construction, text-backed and raw-byte-backed Blob/File parts, and multipart bodies with Rust-owned form association plus bounded live owner-backed `entries()`/`keys()`/`values()`/`[Symbol.iterator]()` iterators, and bounded URLSearchParams construction from strings, records, pair arrays, and pair iterables, mutation, sorting, live entries/keys/values iteration, and URL-encoded bodies, plus bounded GET/POST `XMLHttpRequest` with string, text-backed, and raw-byte-backed Blob/File request bodies, bounded `arraybuffer`/`blob`/`json` response types, page XML MIME `responseXML`/`document` responses, and page and worker buffered upload `ProgressEvent` lifecycle, canonical case-insensitive response-type selection with state-gated mutation, bounded non-zero timeout with zero disabling the extra deadline, request-local abort/reset state, bounded `readystatechange`/`abort`/`timeout` callbacks, response-header validation/filtering/sorting, and stale-continuation suppression, bounded synchronous XHR for fixture and HTTP(S) page/worker owners with the existing loader policy and terminal lifecycle, bounded persistent WebSocket text/binary/Ping-Pong transport and EventSource/SSE stream transport with serialized open/message/error/close delivery, bounded classic/module service-worker registration, install/activate lifecycle, longest-scope navigation/Fetch interception, validated worker-generated responses, and page registration/controller state, from explicit evaluations and initial page scripts, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded common constraint validation for required/email/URL/length/numeric/date/month/time/datetime-local/pattern controls, bounded `validity`/`validationMessage`/`willValidate` snapshots with `checkValidity()`/`reportValidity()` and custom validity, submitter event metadata and successful-control serialization, bounded external form ownership, bounded multipart/text/plain form encodings and validated `formaction`/`formmethod`/`formenctype` overrides, bounded `readyState`/`readystatechange`/DOMContentLoaded/load phase ordering, form `novalidate`/`formnovalidate` bypass, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, complete child-frame lifecycle/resource parity, beforeinput/composition, full JavaScript RegExp `v`-flag/Unicode-set and file constraint validation or picker/UI parity, full live `ValidityState` identity, private-network access, streaming FormData body parity, complete XHR/Streams Web IDL semantics, complete Fetch Streams/Web IDL semantics, invalid raw response-header bytes, response trailers, full WebSocket/EventSource Web IDL identity, bounded requestAnimationFrame/cancelAnimationFrame and requestIdleCallback/cancelIdleCallback delivery with scheduled-callback error isolation, autonomous rendering opportunities, task-source fairness, background page scheduling, module types other than JavaScript/JSON, complete module scheduling, dynamic registration beyond bounded Document import maps, or browser-wide complete page-loading parity |
 | capture | available | bounded PNG, JPEG, WebP, or PDF of the current logical page surface with viewport, clip, scale, full-page, and semantic element options; screenshot-containing evidence remains a separate image-bearing capture surface |
-| storage | partial | parent-owned cookie API and brokered host/page plus eligible dedicated-worker initialization/message-triggered Fetch subset with bounded URL-scoped document.cookie projections, owner-tagged explicit page-script setter writes, and parent-selected worker request cookies/response Set-Cookie; worker responses cross the broker buffered and are re-exposed through the existing response-stream interface; explicit-turn page and dedicated-worker Fetch ReadableStream uploads collect within the body limit before parent brokering, without socket-level upload backpressure; page-originated stream uploads to a controlled Service Worker are offered to its handler first, with declined network fallbacks brokered by the parent; the content process still mirrors full profiles and handles initial/resource loads, subresources, worker-script/resource/module-graph loading, autonomous worker turns, independently dispatched SharedWorker events, Service Worker-originated upload streams/lifetime work, module/font destinations, and other Service Worker internal requests; bounded document cache, origin-keyed page local/session storage with opt-in revisioned localStorage/cookie/IndexedDB profiles, stale-snapshot key-level merge for Web Storage and cookies, profile-journal local/session events across live local and process-backed documents, bounded reader-lease retention, acknowledged-prefix compaction, profile-snapshot recovery, a bounded StorageManager estimate against the fixed 4 MiB profile quota, and a bounded tagged JSON/structured-clone IndexedDB subset with text-backed Blob/File values plus byte-vector ArrayBuffer/typed-array/DataView values, bounded Blob/File `arrayBuffer()`/`bytes()` reads, version upgrades, same-realm version-change/deletion coordination, serialized atomic ordinary transactions, object stores, indexes, key ranges, cursors, and CRUD; no full cookie policy or IndexedDB parity |
+| storage | partial | parent-owned cookie API and brokered host/page plus eligible dedicated-worker initialization/message-triggered Fetch subset with bounded URL-scoped document.cookie projections, owner-tagged explicit page-script setter writes, and parent-selected worker request cookies/response Set-Cookie; HTTP(S) worker entry, classic imported-script, and module-dependency requests now use the parent loader, with entry/importScripts process evidence recorded in Slice 843; worker responses cross the broker buffered and are re-exposed through the existing response-stream interface; explicit-turn page and dedicated-worker Fetch ReadableStream uploads collect within the body limit before parent brokering, without socket-level upload backpressure; page-originated stream uploads to a controlled Service Worker are offered to its handler first, with declined network fallbacks brokered by the parent; the content process still mirrors full profiles and handles initial/resource loads, subresources, ServiceWorker script/resource/module-graph paths, autonomous worker turns, independently dispatched SharedWorker events, Service Worker-originated upload streams/lifetime work, module/font destinations, and other unbrokered internal requests; bounded document cache, origin-keyed page local/session storage with opt-in revisioned localStorage/cookie/IndexedDB profiles, stale-snapshot key-level merge for Web Storage and cookies, profile-journal local/session events across live local and process-backed documents, bounded reader-lease retention, acknowledged-prefix compaction, profile-snapshot recovery, a bounded StorageManager estimate against the fixed 4 MiB profile quota, and a bounded tagged JSON/structured-clone IndexedDB subset with text-backed Blob/File values plus byte-vector ArrayBuffer/typed-array/DataView values, bounded Blob/File `arrayBuffer()`/`bytes()` reads, version upgrades, same-realm version-change/deletion coordination, serialized atomic ordinary transactions, object stores, indexes, key ranges, cursors, and CRUD; no full cookie policy or IndexedDB parity |
 | prompts | partial | bounded alert/confirm/prompt metadata, FIFO pending state, `dialogOpen`, process-backed exact-ID modal continuation through opt-in Rust/resident-service controllers, terminal CLI/TUI, and standalone/persistent MCP, plus sticky-activation-gated top-level and bounded descendant-frame `beforeunload` handling with inherited sandboxed-modals checks and generic browser copy; in-process JavaScript modal realms and cross-platform certification remain open |
 | downloads | available | bounded HTTP(S) anchor `download` attributes queue a parent-owned transfer; runtime, CLI, and MCP complete the oldest queued download for the selected target into an existing directory with sanitized collision-free file creation, SHA-256 evidence, stable completion IDs, and bounded cancellation/listing; chooser UI, programmatic/object-URL downloads, streaming/progress, service-worker interception, and cross-target/frame parity remain open |
 

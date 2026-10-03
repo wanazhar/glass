@@ -74,8 +74,9 @@ use super::resource_loader::{
     NativeFetchReferrerPolicy, NativeFetchRequest, NativeFetchResponse, NativeFetchResponseStream,
     NativeModuleResourceType, NativeNavigationMethod, NativeNavigationPolicyKind,
     NativeNavigationRequest, NativeObjectUrlResource, NativeRequestBody, NativeResource,
-    NativeResourceLoader, NativeStylesheetResource, NativeWebSocketTarget, resolve_subresource_url,
-    schedule_native_csp_report_deliveries, validate_target_navigation_payload,
+    NativeResourceLoader, NativeScriptResource, NativeStylesheetResource, NativeWebSocketTarget,
+    resolve_subresource_url, schedule_native_csp_report_deliveries,
+    validate_target_navigation_payload,
 };
 #[cfg(windows)]
 use super::sandbox::NativeContentSandbox;
@@ -111,6 +112,7 @@ use url::Url;
 // document snapshot channel. Keep the channel finite while leaving room for
 // the base64 envelope and the rest of the document state.
 const MAX_CONTENT_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CONTENT_BROKERED_WORKER_SCRIPT_URLS: usize = 4096;
 // One in-flight frame is enough for an event notification or a request reply;
 // limiting this to one avoids buffering many maximum-sized IPC responses.
 const MAX_CONTENT_PROCESS_OUTPUT_FRAMES: usize = 1;
@@ -305,6 +307,188 @@ impl NativeContentFetchBroker<'_> {
             decode_fetch_response(&response, self.request_id)
         };
         Ok((fetch, document_cookie))
+    }
+
+    pub(crate) async fn load_worker_script(
+        &mut self,
+        request_id: u32,
+        document_url: &str,
+        href: &str,
+        referrer_url: Option<&str>,
+        max_source_bytes: usize,
+        module_type: Option<NativeModuleResourceType>,
+        credentials_mode: Option<&str>,
+        referrer_policy: Option<NativeFetchReferrerPolicy>,
+        shared_worker_module_entry: bool,
+    ) -> Result<(Option<NativeScriptResource>, String), NativeEngineError> {
+        if request_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "parent worker script request ID",
+                "must be positive",
+            ));
+        }
+        let cookie_updates = self.runtime.take_cookie_updates();
+        if cookie_updates.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "parent-owned document.cookie writes",
+                MAX_NATIVE_EFFECTS,
+                cookie_updates.len(),
+            ));
+        }
+        let cookie_writes = cookie_updates
+            .into_iter()
+            .map(|value| NativeContentCookieWrite {
+                owner: self.owner.clone(),
+                value,
+            })
+            .collect::<Vec<_>>();
+        let module_type = module_type.map(|module_type| match module_type {
+            NativeModuleResourceType::JavaScript => "javascript",
+            NativeModuleResourceType::Json => "json",
+            NativeModuleResourceType::Unsupported => "unsupported",
+        });
+        write_value_frame(
+            self.stdout,
+            &json!({
+                "kind": "parent_fetch_request",
+                "id": self.request_id,
+                "fetch_id": request_id,
+                "document_url": document_url,
+                "owner": self.owner,
+                "cookie_writes": cookie_writes,
+                "href": href,
+                "credentials": true,
+                "worker_script_load": {
+                    "referrer_url": referrer_url,
+                    "max_source_bytes": max_source_bytes,
+                    "module_type": module_type,
+                    "credentials_mode": credentials_mode,
+                    "referrer_policy": referrer_policy.map(NativeFetchReferrerPolicy::as_str),
+                    "shared_worker_module_entry": shared_worker_module_entry,
+                },
+            }),
+        )
+        .await?;
+        let payload =
+            self.ipc_requests
+                .recv()
+                .await
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: "parent worker script broker".into(),
+                    reason: "parent closed the worker script response channel".into(),
+                })??;
+        let response: Value = serde_json::from_slice(&payload).map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent worker script response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned invalid worker script JSON",
+            )
+        })?;
+        if response.get("id").and_then(Value::as_u64) != Some(self.request_id)
+            || response.get("fetch_id").and_then(Value::as_u64) != Some(u64::from(request_id))
+        {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent worker script response",
+                NativeWorkerFailureKind::Protocol,
+                "worker script response belongs to a different request",
+            ));
+        }
+        let document_cookie = response
+            .get("document_cookie")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "decode parent worker script response",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent omitted the document cookie projection",
+                )
+            })?;
+        if document_cookie.len() > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+            return Err(NativeEngineError::limit(
+                "parent document cookie projection",
+                MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                document_cookie.len(),
+            ));
+        }
+        let document_cookie = document_cookie.to_owned();
+        *self.document_cookie_projection = Some(document_cookie.clone());
+        self.runtime.set_cookie_state(document_cookie.clone());
+        let resource = match response.get("kind").and_then(Value::as_str) {
+            Some("worker_script_unavailable") => None,
+            Some("worker_script_loaded") => {
+                let url = response.get("url").and_then(Value::as_str).ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "decode parent worker script response",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent omitted the worker script URL",
+                    )
+                })?;
+                validate_url_text("parent worker script response URL", url)?;
+                if !is_network_url(without_fragment(url)) {
+                    return Err(NativeEngineError::worker_failure(
+                        "decode parent worker script response",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent returned a non-HTTP(S) worker script URL",
+                    ));
+                }
+                let body = response
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "decode parent worker script response",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent omitted the worker script body",
+                        )
+                    })?;
+                if body.len() > max_source_bytes {
+                    return Err(NativeEngineError::limit(
+                        "parent worker script response",
+                        max_source_bytes,
+                        body.len(),
+                    ));
+                }
+                let response_referrer_policy = response
+                    .get("response_referrer_policy")
+                    .filter(|value| !value.is_null())
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .ok_or_else(|| {
+                                NativeEngineError::worker_failure(
+                                    "decode parent worker script response",
+                                    NativeWorkerFailureKind::Protocol,
+                                    "parent returned an invalid response Referrer-Policy",
+                                )
+                            })
+                            .and_then(NativeFetchReferrerPolicy::parse)
+                    })
+                    .transpose()?;
+                Some(NativeScriptResource {
+                    url: url.to_owned(),
+                    body: body.to_owned(),
+                    response_referrer_policy,
+                })
+            }
+            Some("error") => {
+                return Err(NativeEngineError::Network {
+                    operation: "parent-brokered worker script request".into(),
+                    reason: response
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("parent rejected the worker script request")
+                        .to_owned(),
+                });
+            }
+            _ => {
+                return Err(NativeEngineError::worker_failure(
+                    "decode parent worker script response",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent returned an unknown worker script response kind",
+                ));
+            }
+        };
+        Ok((resource, document_cookie))
     }
 }
 
@@ -1262,6 +1446,8 @@ pub(crate) struct NativeContentProcess {
     nested_scroll_offsets: BTreeMap<u32, NativePoint>,
     current_document_url: Option<String>,
     current_document_generation: Option<u32>,
+    parent_worker_script_owner: Option<NativeContentCookieOwner>,
+    parent_worker_script_urls: BTreeSet<String>,
     context_id: Option<String>,
     frame_id: Option<String>,
     dialog_control: NativeDialogControlPlane,
@@ -1632,6 +1818,8 @@ impl NativeContentProcess {
             nested_scroll_offsets: BTreeMap::new(),
             current_document_url: None,
             current_document_generation: None,
+            parent_worker_script_owner: None,
+            parent_worker_script_urls: BTreeSet::new(),
             context_id: None,
             frame_id: None,
             dialog_control,
@@ -3594,6 +3782,119 @@ impl NativeContentProcess {
                     }
                     Vec::new()
                 };
+                if let Some(worker_script_load) = response.get("worker_script_load") {
+                    let Some(fetch_id) = fetch_id else {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent Fetch broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "worker script request omitted its owner-bound request ID",
+                        ));
+                    };
+                    if response.get("fetch_request").is_some() {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent Fetch broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "worker script request also carried Fetch metadata",
+                        ));
+                    }
+                    let owner = decode_content_cookie_owner(
+                        response.get("owner").ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "content process parent worker script broker",
+                                NativeWorkerFailureKind::Protocol,
+                                "worker script request omitted its owner",
+                            )
+                        })?,
+                        "content process parent worker script owner",
+                    )?;
+                    if self.parent_worker_script_owner.as_ref() != Some(&owner) {
+                        self.parent_worker_script_owner = Some(owner.clone());
+                        self.parent_worker_script_urls.clear();
+                    }
+                    let owner_document_url = without_fragment(&owner.document_url);
+                    let requested_document_url = without_fragment(document_url);
+                    if requested_document_url != owner_document_url
+                        && !self
+                            .parent_worker_script_urls
+                            .contains(requested_document_url)
+                    {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent worker script broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "worker script request document is not owned by the active page",
+                        ));
+                    }
+                    let referrer_url = match worker_script_load.get("referrer_url") {
+                        None | Some(Value::Null) => None,
+                        Some(value) => Some(value.as_str().ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "content process parent worker script broker",
+                                NativeWorkerFailureKind::Protocol,
+                                "worker script request has an invalid referrer URL",
+                            )
+                        })?),
+                    };
+                    if let Some(referrer_url) = referrer_url {
+                        validate_url_text("worker script request referrer URL", referrer_url)?;
+                        let referrer_url = without_fragment(referrer_url);
+                        if referrer_url != owner_document_url
+                            && !self.parent_worker_script_urls.contains(referrer_url)
+                        {
+                            return Err(NativeEngineError::worker_failure(
+                                "content process parent worker script broker",
+                                NativeWorkerFailureKind::Protocol,
+                                "worker script referrer is not owned by the active page",
+                            ));
+                        }
+                    }
+                    for write in &cookie_writes {
+                        loader.set_document_cookie(&write.owner.document_url, &write.value)?;
+                    }
+                    let mut resource = load_parent_worker_script_async(
+                        loader,
+                        document_url,
+                        href,
+                        worker_script_load,
+                    )
+                    .await;
+                    let loaded_url = resource
+                        .as_ref()
+                        .ok()
+                        .and_then(Option::as_ref)
+                        .map(|loaded| without_fragment(&loaded.url).to_owned());
+                    if let Some(loaded_url) = loaded_url {
+                        if !self.parent_worker_script_urls.contains(&loaded_url)
+                            && self.parent_worker_script_urls.len()
+                                >= MAX_CONTENT_BROKERED_WORKER_SCRIPT_URLS
+                        {
+                            resource = Err(NativeEngineError::limit(
+                                "parent-brokered worker script URLs",
+                                MAX_CONTENT_BROKERED_WORKER_SCRIPT_URLS,
+                                self.parent_worker_script_urls.len().saturating_add(1),
+                            ));
+                        } else {
+                            self.parent_worker_script_urls.insert(loaded_url);
+                        }
+                    }
+                    let cookie_owner_url = response
+                        .get("owner")
+                        .and_then(|owner| owner.get("document_url"))
+                        .and_then(Value::as_str)
+                        .unwrap_or(document_url);
+                    let mut broker_response =
+                        parent_worker_script_response_payload(request_id, fetch_id, resource);
+                    broker_response["document_cookie"] =
+                        Value::String(loader.document_cookie(cookie_owner_url)?);
+                    let payload = serde_json::to_vec(&broker_response).map_err(|_| {
+                        NativeEngineError::worker_failure(
+                            "encode parent worker script response",
+                            NativeWorkerFailureKind::Protocol,
+                            "worker script response could not be encoded",
+                        )
+                    })?;
+                    write_frame(&mut self.stdin, &payload).await?;
+                    continue;
+                }
                 let fetch = if let Some(fetch_request) = response.get("fetch_request") {
                     let request = decode_parent_fetch_request(
                         document_url,
@@ -5267,6 +5568,217 @@ fn parent_fetch_response_payload(
             "body_base64": base64::engine::general_purpose::STANDARD.encode(response.body),
         }),
         Err(error) => content_error_response(Value::from(id), error),
+    }
+}
+
+async fn load_parent_worker_script_async(
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    href: &str,
+    value: &Value,
+) -> Result<Option<NativeScriptResource>, NativeEngineError> {
+    let object = value.as_object().ok_or_else(|| {
+        NativeEngineError::worker_failure(
+            "decode parent worker script request",
+            NativeWorkerFailureKind::Protocol,
+            "worker script metadata must be an object",
+        )
+    })?;
+    if object.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "referrer_url"
+                | "max_source_bytes"
+                | "module_type"
+                | "credentials_mode"
+                | "referrer_policy"
+                | "shared_worker_module_entry"
+        )
+    }) {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent worker script request",
+            NativeWorkerFailureKind::Protocol,
+            "worker script metadata contains an unknown field",
+        ));
+    }
+    let optional_text = |name: &str| -> Result<Option<String>, NativeEngineError> {
+        match object.get(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(value) => value.as_str().map(str::to_owned).map(Some).ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "decode parent worker script request",
+                    NativeWorkerFailureKind::Protocol,
+                    format!("worker script metadata has an invalid {name}"),
+                )
+            }),
+        }
+    };
+    let referrer_url = optional_text("referrer_url")?;
+    let credentials_mode = optional_text("credentials_mode")?;
+    let referrer_policy = optional_text("referrer_policy")?
+        .as_deref()
+        .map(NativeFetchReferrerPolicy::parse)
+        .transpose()?;
+    let module_type = optional_text("module_type")?
+        .map(|module_type| match module_type.as_str() {
+            "javascript" => Ok(NativeModuleResourceType::JavaScript),
+            "json" => Ok(NativeModuleResourceType::Json),
+            "unsupported" => Ok(NativeModuleResourceType::Unsupported),
+            _ => Err(NativeEngineError::worker_failure(
+                "decode parent worker script request",
+                NativeWorkerFailureKind::Protocol,
+                "worker script metadata has an unsupported module type",
+            )),
+        })
+        .transpose()?;
+    let max_source_bytes = object
+        .get("max_source_bytes")
+        .and_then(Value::as_u64)
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .filter(|bytes| *bytes > 0 && *bytes <= MAX_NATIVE_SCRIPT_BYTES)
+        .ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "decode parent worker script request",
+                NativeWorkerFailureKind::Protocol,
+                "worker script source limit is invalid",
+            )
+        })?;
+    let shared_worker_module_entry = object
+        .get("shared_worker_module_entry")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "decode parent worker script request",
+                NativeWorkerFailureKind::Protocol,
+                "worker script metadata omitted its request type",
+            )
+        })?;
+    if credentials_mode
+        .as_deref()
+        .is_some_and(|mode| !matches!(mode, "omit" | "same-origin" | "include"))
+    {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent worker script request",
+            NativeWorkerFailureKind::Protocol,
+            "worker script credentials mode is invalid",
+        ));
+    }
+    if module_type == Some(NativeModuleResourceType::Unsupported) {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent worker script request",
+            NativeWorkerFailureKind::Protocol,
+            "worker script request has an unsupported module type",
+        ));
+    }
+    let request_base = referrer_url.as_deref().unwrap_or(document_url);
+    validate_url_text("worker script request referrer URL", request_base)?;
+    let request_base = url::Url::parse(without_fragment(request_base)).map_err(|_| {
+        NativeEngineError::worker_failure(
+            "decode parent worker script request",
+            NativeWorkerFailureKind::Protocol,
+            "worker script request referrer URL is invalid",
+        )
+    })?;
+    validate_url_text("parent worker script target URL", href)?;
+    let target = url::Url::parse(href)
+        .or_else(|_| request_base.join(href))
+        .map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent worker script request",
+                NativeWorkerFailureKind::Protocol,
+                "worker script target URL is invalid",
+            )
+        })?;
+    if !is_network_url(target.as_str()) {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent worker script request",
+            NativeWorkerFailureKind::Protocol,
+            "parent worker script broker accepts only HTTP(S) targets",
+        ));
+    }
+
+    if shared_worker_module_entry {
+        if referrer_url.is_some() || module_type.is_some() || credentials_mode.is_none() {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent worker script request",
+                NativeWorkerFailureKind::Protocol,
+                "SharedWorker module entry metadata is inconsistent",
+            ));
+        }
+        let Some(credentials_mode) = credentials_mode.as_deref() else {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent worker script request",
+                NativeWorkerFailureKind::Protocol,
+                "SharedWorker module entry omitted its credentials mode",
+            ));
+        };
+        loader
+            .load_shared_worker_module_async(
+                document_url,
+                href,
+                max_source_bytes,
+                credentials_mode,
+                referrer_policy,
+            )
+            .await
+    } else if let Some(referrer_url) = referrer_url.as_deref() {
+        loader
+            .load_worker_script_dependency_async_with_referrer_source(
+                document_url,
+                referrer_url,
+                href,
+                max_source_bytes,
+                module_type,
+                credentials_mode.as_deref(),
+                referrer_policy,
+            )
+            .await
+    } else {
+        if module_type.is_some() || credentials_mode.is_some() {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent worker script request",
+                NativeWorkerFailureKind::Protocol,
+                "Worker entry metadata is inconsistent",
+            ));
+        }
+        loader
+            .load_worker_async_with_referrer_policy(
+                document_url,
+                href,
+                max_source_bytes,
+                referrer_policy,
+            )
+            .await
+    }
+}
+
+fn parent_worker_script_response_payload(
+    id: u64,
+    fetch_id: u32,
+    result: Result<Option<NativeScriptResource>, NativeEngineError>,
+) -> Value {
+    match result {
+        Ok(Some(resource)) => json!({
+            "kind": "worker_script_loaded",
+            "id": id,
+            "fetch_id": fetch_id,
+            "url": resource.url,
+            "body": resource.body,
+            "response_referrer_policy": resource
+                .response_referrer_policy
+                .map(NativeFetchReferrerPolicy::as_str),
+        }),
+        Ok(None) => json!({
+            "kind": "worker_script_unavailable",
+            "id": id,
+            "fetch_id": fetch_id,
+        }),
+        Err(error) => json!({
+            "kind": "error",
+            "id": id,
+            "fetch_id": fetch_id,
+            "reason": error.to_string(),
+        }),
     }
 }
 

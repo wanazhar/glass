@@ -499,17 +499,20 @@ request.
 
 The current content-process implementation still receives and persists full
 cookie profiles, including HttpOnly state. That behavior is a known mismatch
-with the target contract, not an allowed mirror. Slice 842 is in progress: the
-browser-coordinated SharedWorker create message no longer carries a cookie
-profile, and the coordinator now seeds its loader from the parent-owned engine
-resolved by the exact source frame while holding that owner's lock, then
-replays its existing cookie overrides. This closes only that creation-payload
-authority path; the content process still mirrors complete profiles and can
-persist cookie state. Slice 843 is queued to remove that child authority and
-move the remaining cookie-bearing requests and persistence to the parent. See
-the [Slice 842 task](../plan/tasks/native-engine-browser-842.md), the [Slice
-843 task](../plan/tasks/native-engine-browser-843.md), and the versioned [Glass
-Core Web Profile](../plan/native-engine-browser-profile.md#parent-owned-cookie-authority)
+with the target contract, not an allowed mirror. Slice 842 removed the
+browser-coordinated SharedWorker create-message cookie profile and seeds its
+loader from the parent-owned engine resolved by the exact source frame while
+holding that owner's lock, then replays its existing cookie overrides. The
+first Slice 843 checkpoint also makes the public cookie-list API read from a
+parent-loader snapshot overlaid with the parent's pending content-cookie
+journal, and removes the content-process command that returned complete cookie
+profiles. This closes only those payload/read paths: the content
+process still mirrors cookie state for its own request and script handling,
+receives cookie-bearing profile storage, and can persist cookie state. Slice
+843 remains in progress to remove that child authority and move cookie-bearing
+requests and persistence to the parent. See the [Slice 842 task](../plan/tasks/native-engine-browser-842.md),
+the [Slice 843 task](../plan/tasks/native-engine-browser-843.md), and the
+versioned [Glass Core Web Profile](../plan/native-engine-browser-profile.md#parent-owned-cookie-authority)
 for the complete boundary and acceptance checks.
 
 ## HTML parser ownership

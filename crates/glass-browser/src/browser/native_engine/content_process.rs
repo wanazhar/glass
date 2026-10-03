@@ -2685,26 +2685,6 @@ impl NativeContentProcess {
         result
     }
 
-    pub(crate) async fn cookies(
-        &mut self,
-        document_url: &str,
-    ) -> Result<Vec<NativeCookieProfileEntry>, NativeEngineError> {
-        let id = self.next_id();
-        let response = self
-            .exchange_with_timeout(
-                json!({
-                "kind": "cookies",
-                "id": id,
-                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
-                "document_url": document_url,
-                }),
-                "content process cookies",
-                CONTENT_PROCESS_SCRIPT_TIMEOUT,
-            )
-            .await?;
-        decode_cookie_profiles(&response, id, "content process cookies")
-    }
-
     pub(crate) async fn set_cookies(
         &mut self,
         cookies: &[NativeCookieProfileEntry],
@@ -3779,33 +3759,6 @@ fn validate_frame_script_window(
         }
     }
     Ok(())
-}
-
-fn decode_cookie_profiles(
-    response: &Value,
-    id: u64,
-    operation: &str,
-) -> Result<Vec<NativeCookieProfileEntry>, NativeEngineError> {
-    require_response_kind(response, "cookies", id, operation)?;
-    let value = response
-        .get("cookies")
-        .ok_or_else(|| NativeEngineError::Worker {
-            operation: operation.into(),
-            reason: "content process omitted cookie profiles".into(),
-        })?;
-    let cookies: Vec<NativeCookieProfileEntry> =
-        serde_json::from_value(value.clone()).map_err(|_| NativeEngineError::Worker {
-            operation: operation.into(),
-            reason: "content process returned invalid cookie profiles".into(),
-        })?;
-    if cookies.len() > super::javascript::MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
-        return Err(NativeEngineError::limit(
-            "content-process cookie profiles",
-            super::javascript::MAX_NATIVE_COOKIE_PROFILE_ENTRIES,
-            cookies.len(),
-        ));
-    }
-    Ok(cookies)
 }
 
 fn decode_mutated_response(
@@ -5991,22 +5944,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     runtime.set_history_length(length);
                 }
                 json!({"kind":"history_synced","id":id})
-            }
-            "cookies" if protocol_matches(&request) && running => {
-                let requested_url = request
-                    .get("document_url")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        NativeEngineError::invalid("content-process cookie URL", "must be text")
-                    })?;
-                let cookies = match resource_loader.as_ref() {
-                    Some(loader) => loader.cookies_for_document(requested_url),
-                    None => Err(NativeEngineError::Worker {
-                        operation: "content process cookies".into(),
-                        reason: "content process has no resource loader".into(),
-                    }),
-                }?;
-                json!({"kind":"cookies","id":id,"cookies":cookies})
             }
             "set_cookies" if protocol_matches(&request) && running => {
                 let values = request.get("cookies").ok_or_else(|| {

@@ -16,20 +16,20 @@ use super::native_engine::NativeResourceLoader;
 use super::native_engine::{
     MAX_NATIVE_COOKIE_PROFILE_ENTRIES, MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION,
     NativeAction, NativeAsyncEffectTurn, NativeContentAsyncEffectNotification, NativeCookieChange,
-    NativeDialogControlPlane, NativeDialogController, NativeEffect, NativeEngine,
-    NativeEngineConfig, NativeEngineError, NativeEventKind, NativeFile, NativeFrameScriptBinding,
-    NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
-    NativeHistoryDirection, NativeInspectionSnapshot, NativeLayoutSnapshot,
-    NativeNavigationCancellation, NativeNavigationMethod, NativeNavigationRequest,
-    NativeNodeSubtreeTransfer, NativeOrigin, NativePageMessagePortCommand, NativePendingDialog,
-    NativePoint, NativePopupRequest, NativePostMessageRequest, NativePreflightAction,
-    NativeRequestBody, NativeScriptCommand, NativeServiceWorkerClientMessage,
-    NativeServiceWorkerOpenWindowRequest, NativeSharedWorkerCreateRequest,
-    NativeSharedWorkerStorageKey, NativeSurface, NativeTargetPreflight, NativeWindowCloseRequest,
-    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerMessage,
-    NativeWorkerRegistry, Viewport, parse_point_target, synchronize_service_worker_client_leases,
-    validate_message_port_transfers, validate_page_message_port_command,
-    validate_target_navigation_payload,
+    NativeCookieProfileEntry, NativeDialogControlPlane, NativeDialogController, NativeEffect,
+    NativeEngine, NativeEngineConfig, NativeEngineError, NativeEventKind, NativeFile,
+    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
+    NativeFrameScriptWindow, NativeHistoryDirection, NativeInspectionSnapshot,
+    NativeLayoutSnapshot, NativeNavigationCancellation, NativeNavigationMethod,
+    NativeNavigationRequest, NativeNodeSubtreeTransfer, NativeOrigin, NativePageMessagePortCommand,
+    NativePendingDialog, NativePoint, NativePopupRequest, NativePostMessageRequest,
+    NativePreflightAction, NativeRequestBody, NativeScriptCommand,
+    NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
+    NativeSharedWorkerCreateRequest, NativeSharedWorkerStorageKey, NativeSurface,
+    NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, NativeWorkerMessage, NativeWorkerRegistry, Viewport,
+    parse_point_target, synchronize_service_worker_client_leases, validate_message_port_transfers,
+    validate_page_message_port_command, validate_target_navigation_payload,
 };
 use crate::browser::session::{
     FrameInfo, GeoLocation, NavigationControlOutcome, NetworkConditions, PageTargetInfo,
@@ -198,6 +198,30 @@ impl NativeSharedWorkerCoordinator {
         }
         Ok(())
     }
+}
+
+fn preflight_shared_worker_connection_id(
+    coordinator: &NativeSharedWorkerCoordinator,
+    bridge_key: &str,
+) -> Result<(u32, u64), BrowserBackendError> {
+    if coordinator.page_ports.contains_key(bridge_key) {
+        return Err(BrowserBackendError::InvalidConfiguration {
+            field: "native SharedWorker port".into(),
+            reason: "MessagePort bridge was already attached to a SharedWorker".into(),
+        });
+    }
+    let connection_id = u32::try_from(coordinator.next_connection_id).map_err(|_| {
+        BrowserBackendError::SelectionFailed {
+            reason: "native SharedWorker connection identity space is exhausted".into(),
+        }
+    })?;
+    let next_connection_id = coordinator
+        .next_connection_id
+        .checked_add(1)
+        .ok_or_else(|| BrowserBackendError::SelectionFailed {
+            reason: "native SharedWorker connection identity space is exhausted".into(),
+        })?;
+    Ok((connection_id, next_connection_id))
 }
 
 async fn apply_native_cookie_changes_to_live_engine(
@@ -4875,30 +4899,100 @@ impl NativeEngineBackend {
         Ok(())
     }
 
-    fn page_message_port_route(
+    /// Commit SharedWorker route state while the exact source engine owner's
+    /// async mutex is held. This synchronous section is the creation
+    /// linearization point: navigation cannot replace the document between
+    /// generation validation, the parent-cookie snapshot, and route
+    /// registration. Do not add an await while any of these shared locks are
+    /// held.
+    fn register_shared_worker_connection_with_owner_locked(
+        &self,
+        source_engine: &tokio::sync::OwnedMutexGuard<NativeEngine>,
+        request: &NativeSharedWorkerCreateRequest,
+    ) -> Result<
+        (
+            u32,
+            NativeSharedWorkerPageRoute,
+            Vec<NativeCookieProfileEntry>,
+        ),
+        BrowserBackendError,
+    > {
+        let source_context = source_engine.config().context_id.as_str();
+        let source_generation = source_engine.document_generation().map_err(native_error)?;
+        if source_context != request.source_context_id
+            || source_generation != request.document_generation
+        {
+            return Err(BrowserBackendError::SelectionFailed {
+                reason: format!(
+                    "native SharedWorker source owner {}:{} changed before cookie state was read",
+                    request.source_context_id, request.source_frame_id
+                ),
+            });
+        }
+        validate_message_port_transfers(std::slice::from_ref(&request.transfer_port))
+            .map_err(native_error)?;
+
+        let parent_cookie_profile = source_engine.clone_resource_loader().cookie_profile();
+        let mut coordinator = self.shared_workers.lock().map_err(|_| {
+            poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator")
+        })?;
+        let (connection_id, next_connection_id) =
+            preflight_shared_worker_connection_id(&coordinator, &request.transfer_port.bridge_key)?;
+        let page_route = NativeSharedWorkerPageRoute {
+            context_id: request.source_context_id.clone(),
+            frame_id: request.source_frame_id.clone(),
+            document_generation: request.document_generation,
+        };
+
+        // Route insertion validates capacity and bridge uniqueness before it
+        // mutates the map. All fallible coordinator preflight is complete, so
+        // successful insertion is followed only by infallible state updates.
+        self.insert_page_message_port_routes(
+            &request.source_context_id,
+            &request.source_frame_id,
+            std::slice::from_ref(&request.transfer_port),
+        )?;
+        coordinator.next_connection_id = next_connection_id;
+        coordinator
+            .page_ports
+            .insert(request.transfer_port.bridge_key.clone(), page_route.clone());
+
+        Ok((connection_id, page_route, parent_cookie_profile))
+    }
+
+    async fn page_message_port_route(
         &self,
         bridge_key: &str,
     ) -> Result<Option<NativePageMessagePortRoute>, BrowserBackendError> {
+        let bridge_key = bridge_key.to_owned();
         let route = self
             .page_message_port_routes
             .lock()
             .map_err(|_| poisoned_lock_error(BackendOperation::Script, "page MessagePort route"))?
-            .get(bridge_key)
+            .get(&bridge_key)
             .cloned();
         let Some(route) = route else {
             return Ok(None);
         };
-        if self.frame_route(&route.frame_id)?.is_some() {
-            if self.frame_owner_context_id(&route.frame_id)?.as_deref()
-                == Some(route.context_id.as_str())
-            {
-                return Ok(Some(route));
-            }
+        let owner = self.engine_owner_for_frame(&route.frame_id, BackendOperation::Script)?;
+        let Some(owner) = owner else {
+            self.remove_page_message_port_route(&bridge_key)?;
+            return Ok(None);
+        };
+        let owner_context_id = lock_native_engine_owner(&owner)
+            .await
+            .config()
+            .context_id
+            .clone();
+        // The target-registry lookup happens only after the async owner guard
+        // is released, preserving the established targets -> owner lock order.
+        if owner_context_id == route.context_id && self.frame_route(&route.frame_id)?.is_some() {
+            return Ok(Some(route));
         }
         self.page_message_port_routes
             .lock()
             .map_err(|_| poisoned_lock_error(BackendOperation::Script, "page MessagePort route"))?
-            .remove(bridge_key);
+            .remove(&bridge_key);
         Ok(None)
     }
 
@@ -4908,6 +5002,18 @@ impl NativeEngineBackend {
             .map_err(|_| poisoned_lock_error(BackendOperation::Script, "page MessagePort route"))?
             .remove(bridge_key);
         Ok(())
+    }
+
+    fn rollback_shared_worker_route_registration(&self, bridge_key: &str) {
+        self.page_message_port_routes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(bridge_key);
+        self.shared_workers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .page_ports
+            .remove(bridge_key);
     }
 
     fn clear_page_message_port_routes_for_frame(
@@ -5556,22 +5662,6 @@ impl NativeEngineBackend {
                     request.source_frame_id
                 ),
             })?;
-        let parent_cookie_profile = {
-            let source_engine = lock_native_engine_owner(&source_owner).await;
-            let source_context = source_engine.config().context_id.as_str();
-            let source_generation = source_engine.document_generation().map_err(native_error)?;
-            if source_context != request.source_context_id
-                || source_generation != request.document_generation
-            {
-                return Err(BrowserBackendError::SelectionFailed {
-                    reason: format!(
-                        "native SharedWorker source owner {}:{} changed before cookie state was read",
-                        request.source_context_id, request.source_frame_id
-                    ),
-                });
-            }
-            source_engine.clone_resource_loader().cookie_profile()
-        };
         let current_source_owner = self
             .engine_owner_for_frame(&request.source_frame_id, BackendOperation::Script)?
             .ok_or_else(|| BrowserBackendError::SelectionFailed {
@@ -5583,51 +5673,16 @@ impl NativeEngineBackend {
         if !Arc::ptr_eq(&source_owner, &current_source_owner) {
             return Err(BrowserBackendError::SelectionFailed {
                 reason: format!(
-                    "native SharedWorker source frame {} changed owners before cookie state was used",
+                    "native SharedWorker source frame {} changed owners before creation was accepted",
                     request.source_frame_id
                 ),
             });
         }
-        validate_message_port_transfers(std::slice::from_ref(&request.transfer_port))
-            .map_err(native_error)?;
-        self.insert_page_message_port_routes(
-            &request.source_context_id,
-            &request.source_frame_id,
-            std::slice::from_ref(&request.transfer_port),
-        )?;
-        let mut coordinator = self.shared_workers.lock().map_err(|_| {
-            poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator")
-        })?;
-        let connection_id = u32::try_from(coordinator.next_connection_id).map_err(|_| {
-            BrowserBackendError::SelectionFailed {
-                reason: "native SharedWorker connection identity space is exhausted".into(),
-            }
-        })?;
-        coordinator.next_connection_id =
-            coordinator
-                .next_connection_id
-                .checked_add(1)
-                .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                    reason: "native SharedWorker connection identity space is exhausted".into(),
-                })?;
-        if coordinator
-            .page_ports
-            .contains_key(&request.transfer_port.bridge_key)
-        {
-            self.remove_page_message_port_route(&request.transfer_port.bridge_key)?;
-            return Err(BrowserBackendError::InvalidConfiguration {
-                field: "native SharedWorker port".into(),
-                reason: "MessagePort bridge was already attached to a SharedWorker".into(),
-            });
-        }
-        let page_route = NativeSharedWorkerPageRoute {
-            context_id: request.source_context_id.clone(),
-            frame_id: request.source_frame_id.clone(),
-            document_generation: request.document_generation,
+        let (connection_id, page_route, parent_cookie_profile) = {
+            let source_engine = lock_native_engine_owner(&source_owner).await;
+            self.register_shared_worker_connection_with_owner_locked(&source_engine, &request)?
         };
-        coordinator
-            .page_ports
-            .insert(request.transfer_port.bridge_key.clone(), page_route.clone());
+        let bridge_key = request.transfer_port.bridge_key.clone();
         let command = NativeScriptCommand::SharedWorkerCreate {
             connection_id,
             href: request.href,
@@ -5643,6 +5698,15 @@ impl NativeEngineBackend {
                 request.document_generation,
             )),
             transfer_port: request.transfer_port.clone(),
+        };
+        let mut coordinator = match self.shared_workers.lock() {
+            Ok(coordinator) => coordinator,
+            Err(_) => {
+                let error =
+                    poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator");
+                self.rollback_shared_worker_route_registration(&bridge_key);
+                return Err(error);
+            }
         };
         let result = match coordinator
             .loader
@@ -5675,14 +5739,11 @@ impl NativeEngineBackend {
             (Ok(()), Err(error)) => Err(error),
         };
         if let Err(error) = result {
-            coordinator
-                .page_ports
-                .remove(&request.transfer_port.bridge_key);
             drop(coordinator);
-            self.remove_page_message_port_route(&request.transfer_port.bridge_key)?;
+            self.close_shared_worker_bridges(vec![request.transfer_port.bridge_key.clone()])
+                .await?;
             return Err(native_error(error));
         }
-        let bridge_key = request.transfer_port.bridge_key.clone();
         let worker_messages = coordinator.registry.take_messages_for_worker(connection_id);
         let mut queued = NativeQueuedBrowserEffects::default();
         if !cookie_changes.is_empty() {
@@ -5702,29 +5763,84 @@ impl NativeEngineBackend {
                         message,
                     }
                 }));
-            coordinator.page_ports.remove(&bridge_key);
             drop(coordinator);
-            self.remove_page_message_port_route(&bridge_key)?;
+            self.close_shared_worker_bridges(vec![bridge_key]).await?;
             return Ok(queued);
         }
         let Some(worker_id) = coordinator.registry.shared_worker_id_for_port(&bridge_key) else {
-            coordinator.page_ports.remove(&bridge_key);
             drop(coordinator);
-            self.remove_page_message_port_route(&bridge_key)?;
+            self.close_shared_worker_bridges(vec![bridge_key]).await?;
             return Ok(queued);
         };
-        if let Err(error) = coordinator.registry.add_shared_worker_owner(
-            worker_id,
-            request.source_context_id,
-            request.source_frame_id,
-            request.document_generation,
-        ) {
-            coordinator.page_ports.remove(&bridge_key);
+
+        drop(coordinator);
+        let current_source_owner =
+            match self.engine_owner_for_frame(&request.source_frame_id, BackendOperation::Script) {
+                Ok(Some(owner)) if Arc::ptr_eq(&source_owner, &owner) => true,
+                Ok(_) => false,
+                Err(error) => {
+                    self.close_shared_worker_bridges(vec![bridge_key.clone()])
+                        .await?;
+                    return Err(error);
+                }
+            };
+        if !current_source_owner {
+            self.close_shared_worker_bridges(vec![bridge_key.clone()])
+                .await?;
+            return Err(BrowserBackendError::SelectionFailed {
+                reason: format!(
+                    "native SharedWorker source frame {} changed owners before connection commit",
+                    request.source_frame_id
+                ),
+            });
+        }
+        // Revalidate and publish the worker owner while holding the same source
+        // owner lock. A navigation is therefore either before this commit and
+        // rejected, or after it and handled by normal document teardown.
+        let source_engine = lock_native_engine_owner(&source_owner).await;
+        let source_generation = source_engine.document_generation().map_err(native_error);
+        let source_context_matches = source_engine.config().context_id == request.source_context_id;
+        let mut coordinator = match self.shared_workers.lock() {
+            Ok(coordinator) => coordinator,
+            Err(_) => {
+                let error =
+                    poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator");
+                drop(source_engine);
+                self.rollback_shared_worker_route_registration(&bridge_key);
+                return Err(error);
+            }
+        };
+        let result: Result<(), BrowserBackendError> = match source_generation {
+            Ok(generation)
+                if source_context_matches && generation == request.document_generation =>
+            {
+                coordinator
+                    .registry
+                    .add_shared_worker_owner(
+                        worker_id,
+                        request.source_context_id.clone(),
+                        request.source_frame_id.clone(),
+                        request.document_generation,
+                    )
+                    .map_err(native_error)
+            }
+            Ok(_) => Err(BrowserBackendError::SelectionFailed {
+                reason: format!(
+                    "native SharedWorker source owner {}:{} changed before connection commit",
+                    request.source_context_id, request.source_frame_id
+                ),
+            }),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
             drop(coordinator);
-            self.remove_page_message_port_route(&bridge_key)?;
-            return Err(native_error(error));
+            drop(source_engine);
+            self.close_shared_worker_bridges(vec![bridge_key]).await?;
+            return Err(error);
         }
         let effects = take_shared_worker_page_messages(&mut coordinator);
+        drop(coordinator);
+        drop(source_engine);
         queued.6.extend(effects);
         Ok(queued)
     }
@@ -6002,16 +6118,9 @@ impl NativeEngineBackend {
         validate_page_message_port_command(&command).map_err(native_error)?;
         validate_native_topology_id(&command.source_context_id)?;
         validate_native_topology_id(&command.source_frame_id)?;
-        let Some(route_info) = self.page_message_port_route(&command.bridge_key)? else {
+        let Some(route_info) = self.page_message_port_route(&command.bridge_key).await? else {
             return Ok(NativeQueuedBrowserEffects::default());
         };
-        if route_info.context_id
-            != self
-                .frame_owner_context_id(&route_info.frame_id)?
-                .unwrap_or_default()
-        {
-            return Ok(NativeQueuedBrowserEffects::default());
-        }
         let Some(route) = self.frame_route(&route_info.frame_id)? else {
             return Ok(NativeQueuedBrowserEffects::default());
         };
@@ -10127,13 +10236,14 @@ where
 mod tests {
     use super::{
         BackendOperation, NativeBrowserEffectSource, NativeContentAsyncEffectNotification,
-        NativeEngineBackend, NativeFrameRoute, NativeFrameState, NativeParkedFrame,
-        NativeServiceWorkerPublicationTestHook, activate_parked_frame_for_navigation,
-        dispatch_native_frame_tree_lifecycle, iframe_sandboxed_modals,
-        next_ready_native_browser_effect_source,
+        NativeEngineBackend, NativeFrameRoute, NativeFrameState, NativePageMessagePortRoute,
+        NativeParkedFrame, NativeServiceWorkerPublicationTestHook, NativeSharedWorkerCreateRequest,
+        activate_parked_frame_for_navigation, dispatch_native_frame_tree_lifecycle,
+        iframe_sandboxed_modals, next_ready_native_browser_effect_source,
     };
     use crate::browser::native_engine::{
-        NativeDialogControlPlane, NativeEngine, NativeEngineConfig, NativeNodeSubtreeTransfer,
+        NativeDialogControlPlane, NativeEngine, NativeEngineConfig, NativeMessagePortTransfer,
+        NativeNodeSubtreeTransfer, NativeOrigin,
     };
     use std::sync::Arc;
 
@@ -10163,6 +10273,186 @@ mod tests {
             .await
             .expect("fixture owner must initialize");
         backend
+    }
+
+    fn shared_worker_request(
+        context_id: String,
+        frame_id: String,
+        document_generation: u32,
+        bridge_key: &str,
+    ) -> NativeSharedWorkerCreateRequest {
+        NativeSharedWorkerCreateRequest {
+            page_worker_id: 1,
+            source_context_id: context_id,
+            source_frame_id: frame_id,
+            document_generation,
+            constructor_origin: NativeOrigin::Opaque,
+            owner_url: "fixture://shared-worker-route.test/page".into(),
+            href: "fixture://shared-worker-route.test/worker.js".into(),
+            name: "route-test".into(),
+            worker_type: "module".into(),
+            credentials: "include".into(),
+            extended_lifetime: false,
+            referrer_policy: None,
+            transfer_port: NativeMessagePortTransfer {
+                bridge_key: bridge_key.into(),
+                port_id: 1,
+                peer_id: 2,
+                hidden: false,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_worker_registration_preflight_failures_leave_no_routes() {
+        let backend =
+            initialized_fixture_backend("fixture://shared-worker-route.test/page", &[]).await;
+        let owner = backend
+            .engine
+            .lock()
+            .expect("active owner slot must be available")
+            .clone();
+        let source_engine = owner.lock_owned().await;
+        let context_id = source_engine.config().context_id.clone();
+        let frame_id = backend
+            .active_frame_id()
+            .expect("fixture main frame must be available");
+        let generation = source_engine
+            .document_generation()
+            .expect("fixture document generation must be available");
+
+        backend
+            .shared_workers
+            .lock()
+            .expect("SharedWorker coordinator must be available")
+            .next_connection_id = u64::from(u32::MAX) + 1;
+        let exhausted_request = shared_worker_request(
+            context_id.clone(),
+            frame_id.clone(),
+            generation,
+            "exhausted",
+        );
+        assert!(matches!(
+            backend.register_shared_worker_connection_with_owner_locked(
+                &source_engine,
+                &exhausted_request
+            ),
+            Err(crate::browser_backend::BrowserBackendError::SelectionFailed { .. })
+        ));
+        assert!(
+            backend
+                .page_message_port_routes
+                .lock()
+                .expect("page route map must be available")
+                .is_empty()
+        );
+        assert!(
+            backend
+                .shared_workers
+                .lock()
+                .expect("SharedWorker coordinator must be available")
+                .page_ports
+                .is_empty()
+        );
+
+        backend
+            .shared_workers
+            .lock()
+            .expect("SharedWorker coordinator must be available")
+            .next_connection_id = 1;
+        let stale_request = shared_worker_request(
+            context_id,
+            frame_id,
+            generation.checked_add(1).expect("test generation must fit"),
+            "stale-generation",
+        );
+        assert!(matches!(
+            backend.register_shared_worker_connection_with_owner_locked(
+                &source_engine,
+                &stale_request
+            ),
+            Err(crate::browser_backend::BrowserBackendError::SelectionFailed { .. })
+        ));
+        assert!(
+            backend
+                .page_message_port_routes
+                .lock()
+                .expect("page route map must be available")
+                .is_empty()
+        );
+        assert!(
+            backend
+                .shared_workers
+                .lock()
+                .expect("SharedWorker coordinator must be available")
+                .page_ports
+                .is_empty()
+        );
+
+        drop(source_engine);
+        backend
+            .close_all()
+            .await
+            .expect("fixture backend must close cleanly");
+    }
+
+    #[tokio::test]
+    async fn shared_worker_message_route_waits_for_busy_owner_without_holding_targets() {
+        let backend =
+            initialized_fixture_backend("fixture://message-port-route.test/page", &[]).await;
+        let owner = backend
+            .engine
+            .lock()
+            .expect("active owner slot must be available")
+            .clone();
+        let context_id = owner.clone().lock_owned().await.config().context_id.clone();
+        let frame_id = backend
+            .active_frame_id()
+            .expect("fixture main frame must be available");
+        backend
+            .page_message_port_routes
+            .lock()
+            .expect("page route map must be available")
+            .insert(
+                "worker-response".into(),
+                NativePageMessagePortRoute {
+                    context_id: context_id.clone(),
+                    frame_id,
+                },
+            );
+
+        let owner_guard = owner.lock_owned().await;
+        let route_backend = NativeEngineBackend {
+            inner: Arc::clone(&backend.inner),
+            pump_handle: true,
+        };
+        let mut lookup = tokio::spawn(async move {
+            route_backend
+                .page_message_port_route("worker-response")
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !lookup.is_finished(),
+            "route delivery must await, not fail on, the temporarily busy owner"
+        );
+        assert!(
+            backend.targets.try_lock().is_ok(),
+            "route delivery must release the target registry before awaiting the owner"
+        );
+
+        drop(owner_guard);
+        let route = tokio::time::timeout(std::time::Duration::from_secs(1), &mut lookup)
+            .await
+            .expect("route lookup must resume when the owner becomes available")
+            .expect("route lookup task must complete")
+            .expect("route lookup must not return a transient busy error")
+            .expect("live MessagePort route must remain registered");
+        assert_eq!(route.context_id, context_id);
+        backend
+            .close_all()
+            .await
+            .expect("fixture backend must close cleanly");
     }
 
     #[tokio::test]

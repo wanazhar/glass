@@ -123,11 +123,27 @@ later updates in the browser-coordinated SharedWorker loader.
   native_engine --locked --quiet` passed (exit 0; existing superseded HTML
   parser dead-code warnings). `rustfmt --edition 2024 --check` on the two Rust
   files and `git diff --check` passed.
-- The final exact `cargo test` attempt was capped at 240 seconds and timed out
-  while `rustc` was linking the `native_engine` integration target; the test
-  executable did not start. Thus the final parent stale-snapshot behavior is
-  still unverified, and this task remains open. Selected WPT and broader
-  parent-only acceptance tests have not been run.
+- The exact process-backed regression was subsequently run from the freshly
+  linked integration-test binary under GDB. `connect_native` and
+  `native_create_target` completed, and the page's
+  `connectCookieWorker('/writer.js', 'cookie-writer')` script returned, but
+  the first `cookieWorkerMessages` poll reached its 25-second deadline without
+  receiving `writer-ready`. The parent snapshot/override/deletion behavior is
+  therefore still unverified. An independent review also found that generation
+  validation and route insertion were not one synchronized operation, and
+  that early coordinator errors could leave a bounded orphan route.
+- The current implementation patch validates the captured context and
+  generation, snapshots the parent cookie profile, and registers both route
+  tables during one synchronous section under the exact source owner's lock.
+  It preflights connection identity before insertion and clears route state if
+  coordinator reacquisition fails; worker-creation errors use the bridge-close
+  path. Page MessagePort delivery now waits
+  asynchronously for a busy owner instead of dropping the worker's first
+  response; socket-free tests cover owner waiting and stale/invalid
+  registration preflight. This patch has not yet been compiled or tested, so
+  the previous blocked review remains open pending fresh verification and
+  re-review. Selected WPT and broader parent-only acceptance tests have not
+  been run.
 - `python3 scripts/check-documentation-coverage.py` reports one unrelated
   stale live measurement in `docs/mcp-schema-budget.md`: it omits the live
   row ``| Serialized `tools` array | 173,741 UTF-8 bytes |``.

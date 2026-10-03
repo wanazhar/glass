@@ -312,10 +312,11 @@ The remaining content-process cookie mirror/persistence and general request
 broker are isolated in the dependent [Slice 843 task](tasks/native-engine-browser-843.md);
 the parent-only cookie contract is not complete until both slices pass.
 Process-backed request/header/no-duplicate, cancellation, source-document
-referrer-policy/redirect, and worker-visible `Request.referrer` regression
-sources previously compiled with `--tests` but have not run here because local
-TCP listener binding is denied, so actual network, overlap, and cancellation
-behavior remain unverified. Navigation Preload
+referrer-policy/redirect, and worker-visible `Request.referrer` regressions
+remain unrun. Slice 842's parent-cookie regression did bind a local HTTP
+listener successfully, so the earlier blanket claim that this checkout denies
+local TCP binding is stale; that result does not verify these separate
+behaviors. Navigation Preload
 remains incomplete until those integrations run and pass. See the
 [slice 838
 task](tasks/native-engine-browser-838.md) and [slice 839

@@ -535,9 +535,16 @@ connect evaluations also receive the broker, but lack a focused process-backed
 regression. Worker-script/resource/module-graph loading, autonomous turns,
 independently delivered SharedWorker events, streamed uploads, and
 module-destination Fetch remain outside the verified broker path.
-Content-side Service Worker interception remains in place; initial
-document/resource loading, module/font destinations, and Service Worker
-internal network requests are not yet parent-brokered. The child still
+An awaited ordinary Fetch issued by a controlled Service Worker while handling
+an explicit page Fetch now also uses that operation's parent broker. The
+process-backed regression
+`native_content_process_page_fetch_credentials_survive_service_worker_handoff`
+passed (1 passed; 33.30-second runtime), covering credentials/CORS and
+response-cookie visibility. Service Worker lifetime/background Fetch tasks and
+streamed uploads remain child-network paths. Content-side Service Worker
+interception remains in place; initial document/resource loading, module/font
+destinations, and other Service Worker internal network requests are not yet
+parent-brokered. The child still
 receives the shared storage path and complete profile and can rewrite the
 combined storage snapshot, so its write capability is not yet removed. The
 content process still loads complete cookie profiles and mirrors cookies for

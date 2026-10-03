@@ -3794,6 +3794,15 @@ impl NativeWorkerRegistry {
         &mut self,
         loader: &mut NativeResourceLoader,
     ) -> Result<bool, NativeEngineError> {
+        self.pump_fetch_stream_event_with_parent_fetch_broker(loader, None)
+            .await
+    }
+
+    async fn pump_fetch_stream_event_with_parent_fetch_broker<'broker>(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'broker>>,
+    ) -> Result<bool, NativeEngineError> {
         let stream_keys = self
             .worker_fetch_stream_connections
             .keys()
@@ -3836,8 +3845,13 @@ impl NativeWorkerRegistry {
             };
             match evaluation {
                 Some(Ok(evaluation)) => {
-                    self.collect_worker_evaluation(worker_id, evaluation, loader)
-                        .await?;
+                    self.collect_worker_evaluation_with_parent_fetch_broker(
+                        worker_id,
+                        evaluation,
+                        loader,
+                        parent_fetch_broker.as_deref_mut(),
+                    )
+                    .await?;
                 }
                 Some(Err(error)) => {
                     let worker_url = self
@@ -3875,9 +3889,43 @@ impl NativeWorkerRegistry {
         &mut self,
         loader: &mut NativeResourceLoader,
     ) -> Result<usize, NativeEngineError> {
+        self.pump_fetch_stream_events_with_broker(loader, None)
+            .await
+    }
+
+    pub(crate) async fn pump_fetch_stream_events_with_parent_fetch_broker(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+        parent_fetch_broker: &mut NativeContentFetchBroker<'_>,
+    ) -> Result<usize, NativeEngineError> {
+        self.pump_fetch_stream_events_with_broker(loader, Some(parent_fetch_broker))
+            .await
+    }
+
+    async fn pump_fetch_stream_events_with_broker<'broker>(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'broker>>,
+    ) -> Result<usize, NativeEngineError> {
         let mut pumped = 0usize;
         for _ in 0..MAX_NATIVE_WORKER_MESSAGES {
-            if !self.pump_fetch_stream_event(loader).await? {
+            if parent_fetch_broker.is_some() {
+                tokio::task::yield_now().await;
+            }
+            let read_pending = self
+                .worker_fetch_stream_connections
+                .values()
+                .any(|connection| connection.read_pending);
+            if !self
+                .pump_fetch_stream_event_with_parent_fetch_broker(
+                    loader,
+                    parent_fetch_broker.as_deref_mut(),
+                )
+                .await?
+            {
+                if parent_fetch_broker.is_some() && read_pending {
+                    continue;
+                }
                 break;
             }
             pumped = pumped.saturating_add(1);
@@ -4163,6 +4211,7 @@ impl NativeWorkerRegistry {
         task: tokio::task::JoinHandle<T>,
         loader: &mut NativeResourceLoader,
         task_operation: &str,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<T, NativeEngineError>
     where
         T: Send + 'static,
@@ -4233,8 +4282,13 @@ impl NativeWorkerRegistry {
                 match evaluation {
                     Ok(evaluation) => {
                         if let Err(error) =
-                            Box::pin(self.collect_worker_evaluation(worker_id, evaluation, loader))
-                                .await
+                            Box::pin(self.collect_worker_evaluation_with_parent_fetch_broker(
+                                worker_id,
+                                evaluation,
+                                loader,
+                                parent_fetch_broker.as_deref_mut(),
+                            ))
+                            .await
                         {
                             task.abort();
                             self.cancel_worker_fetch_upload_connection((worker_id, request_id));
@@ -4271,6 +4325,7 @@ impl NativeWorkerRegistry {
         cache_mode: NativeFetchCacheMode,
         timeout: Option<Duration>,
         loader: &mut NativeResourceLoader,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<Result<NativeFetchResponseStream, NativeEngineError>, NativeEngineError> {
         let upload_key = (worker_id, request_id);
         if self
@@ -4292,6 +4347,62 @@ impl NativeWorkerRegistry {
         let (upload_connection, upload_source) = spawn_native_fetch_upload_source();
         self.worker_fetch_upload_connections
             .insert(upload_key, upload_connection);
+        if parent_fetch_broker.is_some() {
+            let task = tokio::spawn(async move {
+                upload_source
+                    .collect(MAX_NATIVE_FORM_BODY_BYTES)
+                    .await
+                    .map_err(|reason| NativeEngineError::Network {
+                        operation: "parent-brokered Worker fetch request upload".into(),
+                        reason,
+                    })
+            });
+            let body = self
+                .drive_worker_fetch_upload_task(
+                    worker_id,
+                    request_id,
+                    task,
+                    loader,
+                    "parent-brokered Worker fetch request upload task",
+                    parent_fetch_broker.as_deref_mut(),
+                )
+                .await;
+            self.cancel_worker_fetch_upload_connection(upload_key);
+            let body = body??;
+            let request = NativeFetchRequest {
+                document_url: &worker_url,
+                href: &href,
+                method,
+                body: Some(NativeRequestBody::Bytes(body)),
+                content_type,
+                request_headers: headers,
+                credentials,
+                credentials_mode: Some(credentials_mode),
+                referrer_url,
+                referrer_policy,
+                cors_mode,
+                redirect_mode,
+                cache_mode,
+                timeout,
+                max_response_bytes: None,
+            };
+            let response = parent_fetch_broker
+                .as_deref_mut()
+                .expect("parent Worker Fetch broker was checked above")
+                .fetch(request_id, &request)
+                .await?
+                .0;
+            let opened = response.map(|mut response| {
+                let cached_body = Some(std::mem::take(&mut response.body));
+                NativeFetchResponseStream {
+                    response,
+                    body: None,
+                    cached_body,
+                    max_response_bytes: MAX_NATIVE_FETCH_STREAM_BODY_BYTES,
+                }
+            });
+            return Ok(opened);
+        }
         if is_network_url(&worker_url) {
             let request_body = upload_source.into_body();
             let task_loader = loader.clone();
@@ -4328,6 +4439,7 @@ impl NativeWorkerRegistry {
                     task,
                     loader,
                     "Worker fetch request upload task",
+                    None,
                 )
                 .await?;
             self.cancel_worker_fetch_upload_connection(upload_key);
@@ -4351,6 +4463,7 @@ impl NativeWorkerRegistry {
                 task,
                 loader,
                 "fixture Worker fetch request upload task",
+                parent_fetch_broker.as_deref_mut(),
             )
             .await??;
         self.cancel_worker_fetch_upload_connection(upload_key);
@@ -4641,6 +4754,7 @@ impl NativeWorkerRegistry {
                         cache_mode,
                         timeout_ms.map(|value| Duration::from_millis(u64::from(value))),
                         loader,
+                        parent_fetch_broker.as_deref_mut(),
                     )
                     .await?;
                 match opened {

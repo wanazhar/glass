@@ -7938,7 +7938,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     &mut worker_event_source_connections,
                     Some(&*loader),
                 )?;
-                workers.pump_fetch_stream_events(loader).await?;
+                workers
+                    .pump_fetch_stream_events_with_parent_fetch_broker(
+                        loader,
+                        &mut parent_fetch_broker,
+                    )
+                    .await?;
                 pending_worker_messages.extend(workers.take_messages());
                 pending_message_port_messages.extend(workers.take_message_port_messages());
                 pending_page_message_port_commands

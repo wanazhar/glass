@@ -5549,6 +5549,30 @@ impl NativeEngineBackend {
                 ),
             });
         }
+        let source_owner = self
+            .engine_owner_for_frame(&request.source_frame_id, BackendOperation::Script)?
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: format!(
+                    "native SharedWorker source frame {} has no live owner",
+                    request.source_frame_id
+                ),
+            })?;
+        let parent_cookie_profile = {
+            let source_engine = lock_native_engine_owner(&source_owner).await;
+            let source_context = source_engine.config().context_id.as_str();
+            let source_generation = source_engine.document_generation().map_err(native_error)?;
+            if source_context != request.source_context_id
+                || source_generation != request.document_generation
+            {
+                return Err(BrowserBackendError::SelectionFailed {
+                    reason: format!(
+                        "native SharedWorker source owner {}:{} changed before cookie state was read",
+                        request.source_context_id, request.source_frame_id
+                    ),
+                });
+            }
+            source_engine.clone_resource_loader().cookie_profile()
+        };
         validate_message_port_transfers(std::slice::from_ref(&request.transfer_port))
             .map_err(native_error)?;
         self.register_page_message_port_routes(
@@ -5597,7 +5621,6 @@ impl NativeEngineBackend {
             credentials: request.credentials,
             extended_lifetime: request.extended_lifetime,
             referrer_policy: request.referrer_policy,
-            cookie_profile: Vec::new(),
             constructor_storage_key: Some(NativeSharedWorkerStorageKey::for_document(
                 &request.constructor_origin,
                 &request.source_context_id,
@@ -5608,7 +5631,7 @@ impl NativeEngineBackend {
         };
         let result = match coordinator
             .loader
-            .replace_cookie_profiles(&request.cookie_profile)
+            .replace_cookie_profiles(&parent_cookie_profile)
         {
             Ok(()) => match coordinator.replay_cookie_overrides() {
                 Ok(()) => {

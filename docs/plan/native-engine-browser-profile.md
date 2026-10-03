@@ -111,8 +111,12 @@ remain parent-only.
 This contract preserves script-visible cookie behavior without exposing
 HttpOnly state to the child. The current implementation still mirrors complete
 profiles into the content process and permits child-side cookie persistence;
-that is a known gap, not compliant behavior. Slice 842 tracks eliminating the
-mirror and moving the request/persistence boundary to the parent.
+that is a known gap, not compliant behavior. Slice 842 has removed the child
+cookie-profile field from browser-coordinated SharedWorker creation and now
+seeds the shared coordinator from the parent engine resolved by the exact
+source frame, replaying coordinator cookie overrides afterward. This fixes
+only that SharedWorker creation path: full content-process profile mirroring,
+child-side persistence, and the general parent network broker remain open.
 
 ### Shared-profile cookie synchronization
 

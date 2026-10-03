@@ -3517,7 +3517,6 @@ impl NativeEngine {
                 credentials,
                 extended_lifetime,
                 referrer_policy,
-                cookie_profile,
                 constructor_storage_key: _,
                 transfer_port,
             } = command
@@ -3556,7 +3555,6 @@ impl NativeEngine {
                     credentials,
                     extended_lifetime,
                     referrer_policy,
-                    cookie_profile,
                     transfer_port,
                 });
         }

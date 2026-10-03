@@ -11385,8 +11385,28 @@ self.addEventListener('fetch', event => {
     server.await.unwrap();
 }
 
-#[tokio::test]
-async fn native_runtime_service_worker_fetch_open_window_resumes_navigation() {
+#[test]
+fn native_runtime_service_worker_fetch_open_window_resumes_navigation() {
+    std::thread::Builder::new()
+        .name("glass-sw-navigation-resume-test".into())
+        // The process-backed browser navigation future crosses several engine
+        // and IPC layers; avoid depending on the test harness's 2 MiB stack.
+        .stack_size(4 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("service worker resume test runtime should build");
+            runtime.block_on(
+                native_runtime_service_worker_fetch_open_window_resumes_navigation_inner(),
+            );
+        })
+        .expect("service worker resume test thread should start")
+        .join()
+        .expect("service worker resume test thread should complete");
+}
+
+async fn native_runtime_service_worker_fetch_open_window_resumes_navigation_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -11468,7 +11488,7 @@ self.addEventListener('fetch', event => {
         serde_json::json!({
             "href": format!("http://{address}/suspended"),
             "body": format!("http://{address}/opened"),
-            "html": format!("<html><body><main id=\"resumed\">http://{address}/opened</main></body></html>"),
+            "html": format!("<html><head></head><body><main id=\"resumed\">http://{address}/opened</main></body></html>"),
         })
     );
     let targets = session.native_list_targets().await.unwrap();
@@ -16877,6 +16897,67 @@ async fn native_content_process_runs_nested_dynamic_external_scripts() {
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("parent-brokered document navigation should reach the local server")
+            .unwrap();
+        let request = read_http_request(&mut stream).await;
+        let body = concat!(
+            "<!doctype html><html><body><script>",
+            "window.initialDocumentCookie = document.cookie;",
+            "</script></body></html>"
+        );
+        let response = format!(
+            concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Set-Cookie: navigation_visible=present; Path=/; SameSite=Lax\r\n",
+                "Set-Cookie: navigation_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\n",
+                "Content-Type: text/html; charset=utf-8\r\n",
+                "Content-Security-Policy: default-src 'self'; script-src 'unsafe-inline'\r\n",
+                "Referrer-Policy: strict-origin\r\n",
+                "Content-Length: {}\r\nConnection: close\r\n\r\n{}"
+            ),
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        request
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("window.initialDocumentCookie")
+            .await
+            .unwrap(),
+        serde_json::json!("navigation_visible=present")
+    );
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("navigation_visible=present")
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    assert!(cookies.iter().any(|cookie| {
+        cookie.name == "navigation_visible" && cookie.value == "present" && !cookie.http_only
+    }));
+    assert!(cookies.iter().any(|cookie| {
+        cookie.name == "navigation_secret" && cookie.value == "hidden" && cookie.http_only
+    }));
+    engine.close_async().await.unwrap();
+    let request = server.await.unwrap();
+    assert!(request.starts_with("GET /page HTTP/1.1\r\n"));
 }
 
 #[tokio::test]

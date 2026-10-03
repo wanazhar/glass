@@ -292,10 +292,28 @@ projection and existing native Fetch behavior.
   not yet have a cookie-specific regression. The existing
   `native_content_process_runs_nested_dynamic_external_scripts` regression
   passed (1 passed; 19.89 seconds), covering the dynamically attached classic
-  child script branch. Parser-discovered scripts during
-  initial document loading, page stylesheets/images/fonts/media, other initial
-  resources, and other unbrokered requests still use the child loader; the
+  child script branch. Parser-discovered scripts during initial page loading,
+  page stylesheets/images/fonts/media, and other unbrokered requests still use
+  the child loader; the
   complete content-process cookie profile and persistence paths also remain.
+- Unhandled HTTP(S) top-level navigation now requests its document from the
+  parent loader after content-side Service Worker interception declines it.
+  The parent validates the load ID, document generation, context, frame, and
+  requested URL before selecting navigation cookies and accepting response
+  cookies. The child receives only a bounded decoded document, the selected
+  response policy headers, and that final URL's script-visible
+  `document.cookie` projection; neither `Cookie`/`Set-Cookie` headers nor
+  HttpOnly values are part of the response. The worker protocol is version 20.
+  The added process-backed `native_content_process_http_navigation_uses_parent_cookie_authority`
+  regression passed (1 passed; 20.40 seconds), verifying that the initial
+  page script and `document.cookie` see only the non-HttpOnly cookie while the
+  parent cookie API retains both response cookies. The existing
+  `native_runtime_service_worker_fetch_open_window_resumes_navigation`
+  regression also passed (1 passed; 34.25 seconds) on an explicit 4 MiB test
+  thread; the harness's default 2 MiB stack overflows on this nested navigation
+  path. Parser-discovered initial scripts and stylesheets/images/fonts/media
+  remain child-loader requests. Service Worker-handled navigation responses
+  and the full child profile/read/write path also remain outstanding.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.

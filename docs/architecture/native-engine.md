@@ -78,11 +78,16 @@ regression verifies a dynamically attached page module and static dependency,
 same-turn setter propagation, and HttpOnly response-cookie delivery while
 keeping those values out of `document.cookie`; a dynamic import-map/module
 regression also passes. Runtime `import()` does not yet have cookie-specific
-process coverage. Parser-discovered initial page scripts, initial/navigation
-resources, page stylesheets/images/fonts/media, and other network classes are
-not all brokered. The full cookie profile remains mirrored into the content
-process; issue
-#40 is still open.
+process coverage. Parser-discovered initial page scripts, page
+stylesheets/images/fonts/media, and other network classes are not all
+brokered. Unhandled HTTP(S) top-level navigation is now parent-brokered after
+Service Worker interception declines it. Its process-backed cookie regression
+passes (1 test; 20.40 seconds), verifying the initial script-visible
+projection and parent API retention of an HttpOnly response cookie. The
+`clients.openWindow`-resumed navigation regression also passes (1 test; 34.25
+seconds). Service Worker-provided navigation responses and other initial
+resource loads remain child-side. The full cookie profile remains mirrored
+into the content process; issue #40 is still open.
 
 CI runs the full native-engine feature suite on Linux and the socket-free
 `asynchronous_effect`, `async_effect`, and `dropping_runtime_backend` test
@@ -607,10 +612,11 @@ explicit page-script turn use the same bounded buffering path. The process-backe
 regression verifies the request cookie and a same-turn follow-up after an
 HttpOnly response cookie. Service Worker-originated upload streams and worker
 streams from autonomous turns remain outside this broker path. Content-side
-Service Worker interception remains in place; parser-discovered initial page
-scripts, initial document/resource loading, stylesheets, images, fonts, media,
-module/font Fetch destinations, and other Service Worker internal network
-requests are not yet parent-brokered. The child still
+Service Worker interception remains in place; unhandled HTTP(S) top-level
+navigation is parent-brokered after that interception declines it. The child
+still loads parser-discovered initial page scripts, stylesheets, images, fonts,
+media, module/font Fetch destinations, Service Worker-provided navigation
+responses, and other Service Worker internal requests directly. The child still
 receives the shared storage path and complete profile and can rewrite the
 combined storage snapshot, so its write capability is not yet removed. The
 content process still loads complete cookie profiles and mirrors cookies for

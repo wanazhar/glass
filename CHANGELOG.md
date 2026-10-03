@@ -85,11 +85,21 @@ and intends to use [Semantic Versioning](https://semver.org/).
   blob/file sources remain local. The process regression verifies a dynamic
   module root and its static dependency, including same-turn setter writes,
   HttpOnly response-cookie propagation, and the script-visible projection.
+  Unhandled HTTP(S) top-level navigation now requests its document from the
+  parent loader after content-side Service Worker interception declines it.
+  The parent owns navigation cookie matching and response-cookie acceptance;
+  only the bounded decoded document, response policy headers, and URL-scoped
+  visible cookie projection cross back to the child. Parser-loaded page
+  scripts, stylesheets, images, fonts, media, and Service Worker-provided
+  navigation responses remain child-side paths. The process-backed
+  `native_content_process_http_navigation_uses_parent_cookie_authority`
+  regression passed (1 test; 20.40 seconds), checking the script-visible
+  projection and parent cookie API, including an HttpOnly response cookie.
+  The Service Worker `clients.openWindow`-resumed navigation regression also
+  passed (1 test; 34.25 seconds).
   The existing nested dynamic classic-script regression passed (1 test; 19.89
-  seconds); runtime `import()` still needs cookie-specific process coverage. Parser-loaded
-  page scripts, initial navigation resources, and other page subresources are
-  not covered by this checkpoint. ServiceWorker timer/lifetime work, other page
-  subresources,
+  seconds); runtime `import()` still needs cookie-specific process coverage.
+  Other page subresources, Service Worker timer/lifetime work,
   independently delivered SharedWorker events,
   module/font destinations, and other autonomous worker network turns remain
   outside this broker path. The child still has a full cookie mirror and

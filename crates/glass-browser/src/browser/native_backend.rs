@@ -4279,9 +4279,8 @@ impl NativeEngineBackend {
                         "visibilityState": client.visibility_state,
                         "focused": client.focused,
                     });
-                    let resolved = self
-                        .resolve_service_worker_open_window(&request, window)
-                        .await?;
+                    let resolved =
+                        Box::pin(self.resolve_service_worker_open_window(&request, window)).await?;
                     created.push(target);
                     pending_popups.extend(nested);
                     pending_messages.extend(nested_messages);
@@ -4384,14 +4383,13 @@ impl NativeEngineBackend {
             NativeFrameRoute::ActiveSelected => {
                 let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
                 require_context_id(&request.source_context_id, &engine.config().context_id)?;
-                engine
-                    .resolve_service_worker_open_window_async(
-                        request.worker_id,
-                        request.request_id,
-                        window.clone(),
-                    )
-                    .await
-                    .map_err(native_error)?;
+                Box::pin(engine.resolve_service_worker_open_window_async(
+                    request.worker_id,
+                    request.request_id,
+                    window.clone(),
+                ))
+                .await
+                .map_err(native_error)?;
                 let owner_id = engine.config().context_id.clone();
                 let (effects, window_name) = take_native_browser_effects(&mut engine)?;
                 (effects, owner_id, window_name)
@@ -4412,14 +4410,13 @@ impl NativeEngineBackend {
                         reason: "service worker openWindow source frame disappeared".into(),
                     })?;
                 let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
-                frame_engine
-                    .resolve_service_worker_open_window_async(
-                        request.worker_id,
-                        request.request_id,
-                        window.clone(),
-                    )
-                    .await
-                    .map_err(native_error)?;
+                Box::pin(frame_engine.resolve_service_worker_open_window_async(
+                    request.worker_id,
+                    request.request_id,
+                    window.clone(),
+                ))
+                .await
+                .map_err(native_error)?;
                 let (effects, window_name) = take_native_browser_effects(&mut frame_engine)?;
                 (effects, owner_id, window_name)
             }
@@ -4432,14 +4429,13 @@ impl NativeEngineBackend {
                     }
                 })?;
                 let mut target_engine = lock_native_engine_owner(&target.engine).await;
-                target_engine
-                    .resolve_service_worker_open_window_async(
-                        request.worker_id,
-                        request.request_id,
-                        window.clone(),
-                    )
-                    .await
-                    .map_err(native_error)?;
+                Box::pin(target_engine.resolve_service_worker_open_window_async(
+                    request.worker_id,
+                    request.request_id,
+                    window.clone(),
+                ))
+                .await
+                .map_err(native_error)?;
                 let (effects, window_name) = take_native_browser_effects(&mut target_engine)?;
                 (effects, target_id, window_name)
             }
@@ -4459,14 +4455,13 @@ impl NativeEngineBackend {
                         reason: "service worker openWindow source frame disappeared".into(),
                     })?;
                 let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
-                frame_engine
-                    .resolve_service_worker_open_window_async(
-                        request.worker_id,
-                        request.request_id,
-                        window,
-                    )
-                    .await
-                    .map_err(native_error)?;
+                Box::pin(frame_engine.resolve_service_worker_open_window_async(
+                    request.worker_id,
+                    request.request_id,
+                    window,
+                ))
+                .await
+                .map_err(native_error)?;
                 let (effects, window_name) = take_native_browser_effects(&mut frame_engine)?;
                 (effects, target_id, window_name)
             }
@@ -6376,10 +6371,13 @@ impl NativeEngineBackend {
                     .navigation
                     .clone()
                     .unwrap_or_else(|| NativeNavigationRequest::get(url));
-                engine
-                    .navigate_request_async_after_lifecycle(navigation, 0, cancellation)
-                    .await
-                    .map_err(native_error)?;
+                Box::pin(engine.navigate_request_async_after_lifecycle(
+                    navigation,
+                    0,
+                    cancellation,
+                ))
+                .await
+                .map_err(native_error)?;
                 runtime = take_native_frame_runtime_effects(&mut engine, previous_revision)?;
                 document_replaced =
                     engine.document_generation().map_err(native_error)? != initial_generation;

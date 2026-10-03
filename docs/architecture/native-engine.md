@@ -480,11 +480,12 @@ complete iframe sandbox security. See
 
 ## Cookie authority and process boundary
 
-The parent native browser backend owns the authoritative cookie jar for each
-browser context and is the only component that performs cookie matching,
-accepts or rejects `Set-Cookie`, mutates durable cookie profiles, or publishes
-shared-profile cookie changes. The sandboxed content process and its page and
-worker realms are not cookie authorities or durable writers.
+The target contract is for the parent native browser backend to own the
+authoritative cookie jar for each browser context and be the only component
+that performs cookie matching, accepts or rejects `Set-Cookie`, mutates durable
+cookie profiles, or publishes shared-profile cookie changes. The sandboxed
+content process and its page and worker realms are not cookie authorities or
+durable writers.
 
 The parent exposes only a document-URL-scoped, non-HttpOnly
 `document.cookie` projection to script. Cookie setter lines return to the
@@ -509,14 +510,20 @@ parent-loader snapshot overlaid with the parent's pending content-cookie
 journal, and removes the content-process command that returned complete cookie
 profiles. The host now applies child-reported cookie changes to the durable
 profile, while the child-side content snapshot no longer applies its local
-cookie changes to that profile. The child still receives the shared storage
-path and complete profile and can rewrite the combined storage snapshot, so its
-write capability is not yet removed. The content process also still mirrors
-cookie state for request and script handling. Cookie import and clear now
-commit through the parent loader; the child only refreshes its runtime mirror
-and discards local change records. Slice 843 remains in progress to remove
-those child authority paths and broker cookie-bearing requests through the
-parent. See the [Slice 842 task](../plan/tasks/native-engine-browser-842.md),
+cookie changes to that profile. The unhandled-network fallback for the public
+host `NativeEngine::fetch_async` command now crosses a parent broker: the
+parent loader matches cookies and processes response cookies, persists changes,
+then refreshes the active child projection. A process-backed regression covers
+HttpOnly handling and the next request. Content-side Service Worker
+interception remains in place; page/worker Fetch and Service Worker-internal
+network requests are not yet parent-brokered. The child still
+receives the shared storage path and complete profile and can rewrite the
+combined storage snapshot, so its write capability is not yet removed. The
+content process still mirrors cookies for page/worker request and script
+handling. Cookie import and clear now commit through the parent loader; the
+child only refreshes its runtime mirror and discards local change records.
+Slice 843 remains in progress to remove those child authority paths and broker
+cookie-bearing requests through the parent. See the [Slice 842 task](../plan/tasks/native-engine-browser-842.md),
 the [Slice 843 task](../plan/tasks/native-engine-browser-843.md), and the
 versioned [Glass Core Web Profile](../plan/native-engine-browser-profile.md#parent-owned-cookie-authority)
 for the complete boundary and acceptance checks.

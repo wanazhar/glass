@@ -2575,9 +2575,9 @@ impl NativeEngine {
     }
 
     /// Execute one bounded native GET/fetch request from the current external
-    /// document. This is the first executable consumer of the shared
-    /// connect/CSP/CORS policy; it is deliberately narrower than the eventual
-    /// JavaScript Fetch/Web IDL surface and accepts no custom headers or body.
+    /// document through the parent-owned resource loader. This is deliberately
+    /// narrower than the JavaScript Fetch/Web IDL surface and accepts no custom
+    /// headers or body.
     pub async fn fetch_async(
         &mut self,
         href: impl Into<String>,
@@ -2593,13 +2593,47 @@ impl NativeEngine {
         self.deliver_pending_external_storage_events().await?;
         let href = href.into();
         self.ensure_content_process().await?;
+        let mut pending_content_cookie_changes = self
+            .pending_content_cookie_changes
+            .lock()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "parent Fetch cookie snapshot".into(),
+                reason: "content process cookie change queue is poisoned".into(),
+            })?;
+        let pending_cookie_changes = pending_content_cookie_changes.clone();
+        self.loader.apply_cookie_changes(&pending_cookie_changes)?;
+        self.loader.take_cookie_changes();
+        pending_content_cookie_changes.clear();
+        drop(pending_content_cookie_changes);
         self.request_ledger.begin()?;
         let result = match self.content_process.as_mut() {
-            Some(process) => process.fetch(&self.url, &href, credentials).await,
+            Some(process) => {
+                process
+                    .fetch(&self.url, &href, credentials, &mut self.loader)
+                    .await
+            }
             None => Err(NativeEngineError::Worker {
                 operation: "content process fetch".into(),
                 reason: "native content process is not running".into(),
             }),
+        };
+        let cookie_changes = self.loader.take_cookie_changes();
+        let result = if cookie_changes.is_empty() {
+            result
+        } else {
+            let sync_result = async {
+                self.publish_external_cookie_changes(&cookie_changes)?;
+                if let Some(process) = self.content_process.as_mut() {
+                    process.apply_cookie_changes(&cookie_changes, false).await?;
+                }
+                Ok(())
+            }
+            .await;
+            match (result, sync_result) {
+                (Ok(response), Ok(())) => Ok(response),
+                (Err(error), Ok(())) => Err(error),
+                (_, Err(error)) => Err(error),
+            }
         };
         self.request_ledger.finish();
         result

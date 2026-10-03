@@ -2203,18 +2203,22 @@ impl NativeContentProcess {
         document_url: &str,
         href: &str,
         credentials: bool,
+        parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeFetchResponse, NativeEngineError> {
         let id = self.next_id();
         let response = match timeout(
             CONTENT_PROCESS_LOAD_TIMEOUT,
-            self.exchange(json!({
-                "kind": "fetch",
-                "id": id,
-                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
-                "document_url": document_url,
-                "href": href,
-                "credentials": credentials,
-            })),
+            self.exchange_with_parent_loader(
+                json!({
+                    "kind": "fetch",
+                    "id": id,
+                    "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                    "document_url": document_url,
+                    "href": href,
+                    "credentials": credentials,
+                }),
+                Some(parent_loader),
+            ),
         )
         .await
         {
@@ -2874,7 +2878,15 @@ impl NativeContentProcess {
     }
 
     async fn exchange(&mut self, request: Value) -> Result<Value, NativeEngineError> {
-        let result = self.exchange_inner(request).await;
+        self.exchange_with_parent_loader(request, None).await
+    }
+
+    async fn exchange_with_parent_loader(
+        &mut self,
+        request: Value,
+        parent_loader: Option<&mut NativeResourceLoader>,
+    ) -> Result<Value, NativeEngineError> {
+        let result = self.exchange_inner(request, parent_loader).await;
         match result {
             Ok(response) => {
                 if let Err(error) = self.collect_cookie_changes(&response) {
@@ -3079,7 +3091,11 @@ impl NativeContentProcess {
         self.failure_kind = Some(kind);
     }
 
-    async fn exchange_inner(&mut self, request: Value) -> Result<Value, NativeEngineError> {
+    async fn exchange_inner(
+        &mut self,
+        request: Value,
+        mut parent_loader: Option<&mut NativeResourceLoader>,
+    ) -> Result<Value, NativeEngineError> {
         let request_id = request.get("id").and_then(Value::as_u64).ok_or_else(|| {
             NativeEngineError::invalid("content IPC request ID", "must be an unsigned integer")
         })?;
@@ -3091,6 +3107,72 @@ impl NativeContentProcess {
         let mut resumed_dialog: Option<NativeDialogWait> = None;
         loop {
             let response = self.read_response_value().await?;
+            if response.get("kind").and_then(Value::as_str) == Some("parent_fetch_request") {
+                let loader = parent_loader.as_deref_mut().ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "content process parent Fetch broker",
+                        NativeWorkerFailureKind::Protocol,
+                        "content process requested parent network access without a broker",
+                    )
+                })?;
+                if response.get("id").and_then(Value::as_u64) != Some(request_id) {
+                    return Err(NativeEngineError::worker_failure(
+                        "content process parent Fetch broker",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent Fetch request belongs to a different content operation",
+                    ));
+                }
+                let document_url = response
+                    .get("document_url")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "content process parent Fetch broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent Fetch request omitted its document URL",
+                        )
+                    })?;
+                if self.current_document_url.as_deref().is_none_or(|current| {
+                    without_fragment(current) != without_fragment(document_url)
+                }) {
+                    return Err(NativeEngineError::worker_failure(
+                        "content process parent Fetch broker",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent Fetch request does not match the committed document",
+                    ));
+                }
+                let href = response
+                    .get("href")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "content process parent Fetch broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent Fetch request omitted its target URL",
+                        )
+                    })?;
+                let credentials = response
+                    .get("credentials")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "content process parent Fetch broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent Fetch request omitted its credentials mode",
+                        )
+                    })?;
+                let fetch = loader.fetch_async(document_url, href, credentials).await;
+                let broker_response = parent_fetch_response_payload(request_id, fetch);
+                let payload = serde_json::to_vec(&broker_response).map_err(|_| {
+                    NativeEngineError::worker_failure(
+                        "encode parent Fetch response",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent Fetch response could not be encoded",
+                    )
+                })?;
+                write_frame(&mut self.stdin, &payload).await?;
+                continue;
+            }
             if response.get("kind").and_then(Value::as_str) != Some("dialog_open") {
                 if let Some(dialog) = resumed_dialog.take() {
                     dialog.finish();
@@ -4460,105 +4542,46 @@ fn decode_content_navigation(
     })
 }
 
-fn decode_fetch_headers(response: &Value) -> Result<Vec<(String, String)>, NativeEngineError> {
-    let Some(raw_headers) = response.get("headers") else {
-        return Ok(Vec::new());
-    };
-    let Some(raw_headers) = raw_headers.as_array() else {
-        return Err(NativeEngineError::Worker {
-            operation: "decode content process fetch".into(),
-            reason: "content process returned invalid response headers".into(),
-        });
-    };
-    if raw_headers.len() > MAX_NATIVE_RESPONSE_HEADERS {
-        return Err(NativeEngineError::limit(
-            "content-process response headers",
-            MAX_NATIVE_RESPONSE_HEADERS,
-            raw_headers.len(),
-        ));
+fn parent_fetch_response_payload(
+    id: u64,
+    result: Result<NativeFetchResponse, NativeEngineError>,
+) -> Value {
+    match result {
+        Ok(response) => json!({
+            "kind": "fetched",
+            "id": id,
+            "url": response.url,
+            "status": response.status,
+            "status_text": response.status_text,
+            "content_type": response.content_type,
+            "headers": response.headers,
+            "redirected": response.redirected,
+            "opaque": response.opaque,
+            "opaque_redirect": response.opaque_redirect,
+            "body_base64": base64::engine::general_purpose::STANDARD.encode(response.body),
+        }),
+        Err(error) => content_error_response(Value::from(id), error),
     }
-    let mut headers = Vec::with_capacity(raw_headers.len());
-    let mut total_bytes = 0usize;
-    for raw_header in raw_headers {
-        let Some(raw_header) = raw_header.as_array() else {
-            return Err(NativeEngineError::Worker {
-                operation: "decode content process fetch".into(),
-                reason: "content process returned an invalid response header entry".into(),
-            });
-        };
-        if raw_header.len() != 2 {
-            return Err(NativeEngineError::Worker {
-                operation: "decode content process fetch".into(),
-                reason: "content process returned an invalid response header pair".into(),
-            });
-        }
-        let name = raw_header[0]
-            .as_str()
-            .ok_or_else(|| NativeEngineError::Worker {
-                operation: "decode content process fetch".into(),
-                reason: "content process returned a non-text response header name".into(),
-            })?;
-        let value = raw_header[1]
-            .as_str()
-            .ok_or_else(|| NativeEngineError::Worker {
-                operation: "decode content process fetch".into(),
-                reason: "content process returned a non-text response header value".into(),
-            })?;
-        let normalized_name = name.to_ascii_lowercase();
-        if normalized_name.len() > MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES {
-            return Err(NativeEngineError::limit(
-                "content-process response header name",
-                MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES,
-                normalized_name.len(),
-            ));
-        }
-        reqwest::header::HeaderName::from_bytes(normalized_name.as_bytes()).map_err(|_| {
-            NativeEngineError::Worker {
-                operation: "decode content process fetch".into(),
-                reason: "content process returned an invalid response header name".into(),
-            }
-        })?;
-        if value.len() > MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES {
-            return Err(NativeEngineError::limit(
-                "content-process response header value",
-                MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
-                value.len(),
-            ));
-        }
-        let next_bytes = total_bytes
-            .saturating_add(normalized_name.len())
-            .saturating_add(value.len());
-        if next_bytes > MAX_NATIVE_RESPONSE_HEADER_BYTES {
-            return Err(NativeEngineError::limit(
-                "content-process response headers",
-                MAX_NATIVE_RESPONSE_HEADER_BYTES,
-                next_bytes,
-            ));
-        }
-        total_bytes = next_bytes;
-        headers.push((normalized_name, value.to_owned()));
-    }
-    Ok(headers)
 }
 
 fn decode_fetch_response(
     response: &Value,
     id: u64,
 ) -> Result<NativeFetchResponse, NativeEngineError> {
-    require_response_kind(response, "fetched", id, "content process fetch")?;
+    require_response_kind(response, "fetched", id, "parent-brokered content fetch")?;
     let url =
         response
             .get("url")
             .and_then(Value::as_str)
             .ok_or_else(|| NativeEngineError::Worker {
-                operation: "decode content process fetch".into(),
-                reason: "content process omitted the fetch URL".into(),
+                operation: "decode parent Fetch response".into(),
+                reason: "parent omitted the fetch URL".into(),
             })?;
-    validate_url_text("content process fetch URL", url)?;
+    validate_url_text("parent Fetch response URL", url)?;
     if !is_network_url(without_fragment(url)) {
         return Err(NativeEngineError::Worker {
-            operation: "decode content process fetch".into(),
-            reason: "content process returned a non-HTTP(S) fetch URL".into(),
+            operation: "decode parent Fetch response".into(),
+            reason: "parent returned a non-HTTP(S) fetch URL".into(),
         });
     }
     let status = response
@@ -4566,8 +4589,8 @@ fn decode_fetch_response(
         .and_then(Value::as_u64)
         .and_then(|value| u16::try_from(value).ok())
         .ok_or_else(|| NativeEngineError::Worker {
-            operation: "decode content process fetch".into(),
-            reason: "content process returned an invalid HTTP status".into(),
+            operation: "decode parent Fetch response".into(),
+            reason: "parent returned an invalid HTTP status".into(),
         })?;
     let status_text = response
         .get("status_text")
@@ -4582,40 +4605,101 @@ fn decode_fetch_response(
                 .as_str()
                 .map(str::to_owned)
                 .ok_or_else(|| NativeEngineError::Worker {
-                    operation: "decode content process fetch".into(),
-                    reason: "content process returned an invalid content type".into(),
+                    operation: "decode parent Fetch response".into(),
+                    reason: "parent returned an invalid content type".into(),
                 })
         })
         .transpose()?;
-    let opaque = response
-        .get("opaque")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let redirected = response
-        .get("redirected")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let opaque_redirect = response
-        .get("opaque_redirect")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let headers = decode_fetch_headers(response)?;
+    let raw_headers = response
+        .get("headers")
+        .and_then(Value::as_array)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "decode parent Fetch response".into(),
+            reason: "parent returned invalid response headers".into(),
+        })?;
+    if raw_headers.len() > MAX_NATIVE_RESPONSE_HEADERS {
+        return Err(NativeEngineError::limit(
+            "parent Fetch response headers",
+            MAX_NATIVE_RESPONSE_HEADERS,
+            raw_headers.len(),
+        ));
+    }
+    let mut headers = Vec::with_capacity(raw_headers.len());
+    let mut total_header_bytes = 0usize;
+    for header in raw_headers {
+        let pair = header
+            .as_array()
+            .filter(|pair| pair.len() == 2)
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "decode parent Fetch response".into(),
+                reason: "parent returned an invalid response header pair".into(),
+            })?;
+        let name = pair[0]
+            .as_str()
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "decode parent Fetch response".into(),
+                reason: "parent returned a non-text response header name".into(),
+            })?
+            .to_ascii_lowercase();
+        let value = pair[1].as_str().ok_or_else(|| NativeEngineError::Worker {
+            operation: "decode parent Fetch response".into(),
+            reason: "parent returned a non-text response header value".into(),
+        })?;
+        if name == "set-cookie" || name == "set-cookie2" {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent Fetch response",
+                NativeWorkerFailureKind::Protocol,
+                "parent exposed a forbidden cookie response header to the child",
+            ));
+        }
+        if name.len() > MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES {
+            return Err(NativeEngineError::limit(
+                "parent Fetch response header name",
+                MAX_NATIVE_RESPONSE_HEADER_NAME_BYTES,
+                name.len(),
+            ));
+        }
+        reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+            NativeEngineError::Worker {
+                operation: "decode parent Fetch response".into(),
+                reason: "parent returned an invalid response header name".into(),
+            }
+        })?;
+        if value.len() > MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES {
+            return Err(NativeEngineError::limit(
+                "parent Fetch response header value",
+                MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
+                value.len(),
+            ));
+        }
+        total_header_bytes = total_header_bytes
+            .saturating_add(name.len())
+            .saturating_add(value.len());
+        if total_header_bytes > MAX_NATIVE_RESPONSE_HEADER_BYTES {
+            return Err(NativeEngineError::limit(
+                "parent Fetch response headers",
+                MAX_NATIVE_RESPONSE_HEADER_BYTES,
+                total_header_bytes,
+            ));
+        }
+        headers.push((name, value.to_owned()));
+    }
     let encoded_body = response
         .get("body_base64")
         .and_then(Value::as_str)
         .ok_or_else(|| NativeEngineError::Worker {
-            operation: "decode content process fetch".into(),
-            reason: "content process omitted the fetch body".into(),
+            operation: "decode parent Fetch response".into(),
+            reason: "parent omitted the fetch body".into(),
         })?;
     let body = base64::engine::general_purpose::STANDARD
         .decode(encoded_body)
         .map_err(|_| NativeEngineError::Worker {
-            operation: "decode content process fetch".into(),
-            reason: "content process returned an invalid fetch body".into(),
+            operation: "decode parent Fetch response".into(),
+            reason: "parent returned an invalid fetch body".into(),
         })?;
     if body.len() > MAX_CONTENT_DOCUMENT_WIRE_BYTES {
         return Err(NativeEngineError::limit(
-            "content-process fetch response",
+            "parent-brokered fetch response",
             MAX_CONTENT_DOCUMENT_WIRE_BYTES,
             body.len(),
         ));
@@ -4627,9 +4711,18 @@ fn decode_fetch_response(
         content_type,
         headers,
         body,
-        redirected,
-        opaque,
-        opaque_redirect,
+        redirected: response
+            .get("redirected")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        opaque: response
+            .get("opaque")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        opaque_redirect: response
+            .get("opaque_redirect")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
@@ -6673,17 +6766,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
             }
             "fetch" if protocol_matches(&request) && running => {
-                let Some(_current) = document.as_ref() else {
-                    let response = content_error_response(
-                        id,
-                        NativeEngineError::Worker {
-                            operation: "content process fetch".into(),
-                            reason: "content process has no committed document".into(),
-                        },
-                    );
-                    write_value_frame(&mut stdout, &response).await?;
-                    continue;
-                };
                 let document_url = request
                     .get("document_url")
                     .and_then(Value::as_str)
@@ -6700,17 +6782,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     .get("credentials")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                let Some(loader) = resource_loader.as_mut() else {
-                    let response = content_error_response(
-                        id,
-                        NativeEngineError::Worker {
-                            operation: "content process fetch".into(),
-                            reason: "content process has no resource loader".into(),
-                        },
-                    );
-                    write_value_frame(&mut stdout, &response).await?;
-                    continue;
-                };
+                let loader = resource_loader
+                    .as_mut()
+                    .ok_or_else(|| NativeEngineError::Worker {
+                        operation: "content process fetch".into(),
+                        reason: "content process has no resource loader".into(),
+                    })?;
                 let intercepted = service_workers
                     .intercept_fetch(
                         loader,
@@ -6739,7 +6816,42 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 let fetch = match intercepted {
                     Ok(NativeServiceWorkerFetchOutcome::Handled(response)) => Ok(response),
                     Ok(NativeServiceWorkerFetchOutcome::NotHandled) => {
-                        loader.fetch_async(document_url, href, credentials).await
+                        write_value_frame(
+                            &mut stdout,
+                            &json!({
+                                "kind": "parent_fetch_request",
+                                "id": request_id,
+                                "document_url": document_url,
+                                "href": href,
+                                "credentials": credentials,
+                            }),
+                        )
+                        .await?;
+                        let payload = ipc_request_rx.recv().await.ok_or_else(|| {
+                            NativeEngineError::Worker {
+                                operation: "parent Fetch broker".into(),
+                                reason: "parent closed the broker response channel".into(),
+                            }
+                        })??;
+                        let broker_response: Value =
+                            serde_json::from_slice(&payload).map_err(|_| {
+                                NativeEngineError::Worker {
+                                    operation: "decode parent Fetch response".into(),
+                                    reason: "parent returned invalid broker JSON".into(),
+                                }
+                            })?;
+                        if broker_response.get("kind").and_then(Value::as_str) == Some("error") {
+                            Err(NativeEngineError::Network {
+                                operation: "parent-brokered fetch".into(),
+                                reason: broker_response
+                                    .get("reason")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("parent rejected the network request")
+                                    .to_owned(),
+                            })
+                        } else {
+                            decode_fetch_response(&broker_response, request_id)
+                        }
                     }
                     Ok(NativeServiceWorkerFetchOutcome::Suspended) => {
                         Err(NativeEngineError::Worker {
@@ -6751,22 +6863,20 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     Err(error) => Err(error),
                 };
                 match fetch {
-                    Ok(fetch) => {
-                        json!({
-                            "kind": "fetched",
-                            "id": id,
-                            "url": fetch.url,
-                            "status": fetch.status,
-                            "status_text": fetch.status_text,
-                            "content_type": fetch.content_type,
-                            "headers": fetch.headers,
-                            "redirected": fetch.redirected,
-                            "opaque": fetch.opaque,
-                            "opaque_redirect": fetch.opaque_redirect,
-                            "body_base64": base64::engine::general_purpose::STANDARD
-                                .encode(fetch.body),
-                        })
-                    }
+                    Ok(fetch) => json!({
+                        "kind": "fetched",
+                        "id": id,
+                        "url": fetch.url,
+                        "status": fetch.status,
+                        "status_text": fetch.status_text,
+                        "content_type": fetch.content_type,
+                        "headers": fetch.headers,
+                        "redirected": fetch.redirected,
+                        "opaque": fetch.opaque,
+                        "opaque_redirect": fetch.opaque_redirect,
+                        "body_base64": base64::engine::general_purpose::STANDARD
+                            .encode(fetch.body),
+                    }),
                     Err(error) => content_error_response(id, error),
                 }
             }

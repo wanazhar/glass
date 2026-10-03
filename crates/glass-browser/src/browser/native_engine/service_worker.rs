@@ -577,6 +577,8 @@ impl NativeServiceWorkerRegistry {
         &mut self,
         document_url: &str,
         loader: &mut NativeResourceLoader,
+        request_id: u32,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<(), NativeEngineError> {
         let document = parse_network_url("service worker restoration document URL", document_url)?;
         let document_origin = NativeOrigin::from_url(&document)?;
@@ -593,9 +595,12 @@ impl NativeServiceWorkerRegistry {
                 let loaded = self
                     .restore_worker(
                         loader,
+                        document_url,
                         &profile.script_url,
                         &profile.scope,
                         &profile.worker_type,
+                        request_id,
+                        parent_fetch_broker.as_deref_mut(),
                     )
                     .await;
                 if let Ok(worker) = loaded {
@@ -614,9 +619,12 @@ impl NativeServiceWorkerRegistry {
             let loaded = self
                 .restore_worker(
                     loader,
+                    document_url,
                     &waiting.script_url,
                     &profile.scope,
                     &waiting.worker_type,
+                    request_id,
+                    parent_fetch_broker.as_deref_mut(),
                 )
                 .await;
             if let Ok(worker) = loaded {
@@ -792,28 +800,49 @@ impl NativeServiceWorkerRegistry {
     async fn restore_worker(
         &mut self,
         loader: &mut NativeResourceLoader,
+        owner_url: &str,
         script_url: &str,
         scope: &str,
         worker_type: &str,
+        request_id: u32,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<NativeServiceWorker, NativeEngineError> {
-        let resource = loader
-            .load_worker_async(script_url, script_url, MAX_NATIVE_SCRIPT_BYTES)
+        let resource = if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
+            load_service_worker_entry(
+                loader,
+                owner_url,
+                script_url,
+                script_url,
+                request_id,
+                None,
+                Some(parent_fetch_broker),
+            )
             .await?
-            .ok_or_else(|| NativeEngineError::Network {
-                operation: "service worker restoration".into(),
-                reason: "persisted service worker script was blocked or unavailable".into(),
-            })?;
+        } else {
+            loader
+                .load_worker_async(script_url, script_url, MAX_NATIVE_SCRIPT_BYTES)
+                .await?
+        }
+        .ok_or_else(|| NativeEngineError::Network {
+            operation: "service worker restoration".into(),
+            reason: "persisted service worker script was blocked or unavailable".into(),
+        })?;
         let is_module = worker_type.eq_ignore_ascii_case("module");
         let root_request_url = resolve_module_request_url(script_url, script_url)?;
+        let source_owner_url = if parent_fetch_broker.is_some() {
+            owner_url
+        } else {
+            script_url
+        };
         let (source, import_script_counts, module_graph, worker_referrer_policy) =
             load_service_worker_source(
                 loader,
-                script_url,
+                source_owner_url,
                 root_request_url,
                 resource.clone(),
                 is_module,
-                1,
-                None,
+                request_id,
+                parent_fetch_broker.as_deref_mut(),
             )
             .await?;
         self.instantiate_worker(

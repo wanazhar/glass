@@ -13214,7 +13214,35 @@ async fn load_content_resource(
         }
     } else {
         service_workers.begin_document(url, client_id)?;
-        service_workers.restore_for_document(url, loader).await?;
+        if is_network_url(without_fragment(url)) {
+            let mut restore_parent_fetch_broker = NativeContentFetchBroker {
+                request_id,
+                owner: NativeContentCookieOwner {
+                    context_id: context_id.to_owned(),
+                    frame_id: frame_id.to_owned(),
+                    generation,
+                    document_url: url.to_owned(),
+                },
+                runtime: None,
+                stdout,
+                ipc_requests,
+                document_cookie_projection: parent_document_cookie_projection,
+                next_content_resource_fetch_id: 0,
+                page_meta_content_security_policies: Vec::new(),
+            };
+            service_workers
+                .restore_for_document(
+                    url,
+                    loader,
+                    generation,
+                    Some(&mut restore_parent_fetch_broker),
+                )
+                .await?;
+        } else {
+            service_workers
+                .restore_for_document(url, loader, generation, None)
+                .await?;
+        }
         match service_workers
             .intercept_navigation(loader, &navigation, referrer, referrer_policy)
             .await?

@@ -174,8 +174,13 @@ request cookies, and accepts response-cookie changes. The worker's current
   `document.cookie` remains empty. The existing live-document referrer-policy
   regression passed (1 test; 26.09 seconds) after successful history sync now
   advances the parent's active owner URL. Service Worker restoration,
-  FetchEvent-internal requests, and other internal network requests remain
-  direct child paths.
+  including entry and static module loads, now uses the parent broker during
+  matching-document initialization. The process-backed restart regression
+  passed (1 test; 33.09 seconds): restored-entry and dependency cookies were
+  parent-selected for the following navigation while `document.cookie` stayed
+  empty. Service Worker
+  timer/lifetime work, FetchEvent-internal requests, and other internal network
+  requests remain direct child paths.
   In browser-coordinated mode, due
   DedicatedWorker timer turns now wait for the exact context/frame owner pump
   and execute with that turn's parent Fetch broker; standalone `NativeEngine` keeps
@@ -186,7 +191,8 @@ request cookies, and accepts response-cookie changes. The worker's current
   responses and sent on later requests, a parent-accepted HttpOnly response
   update, the parent cookie API, and the script-visible projection.
   ServiceWorker timer and lifetime work remain outside this subset; parent
-  brokering of registration/update script loads does not cover those turns.
+  brokering of registration/update and restoration script loads does not cover
+  those turns.
   Explicit-turn page-originated stream
 uploads to a controlled Service Worker are separately verified: its handler
 still gets first opportunity to respond, while a declined network fallback

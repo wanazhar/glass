@@ -16994,6 +16994,141 @@ async fn native_content_process_service_worker_module_registration_uses_parent_c
 }
 
 #[tokio::test]
+async fn native_content_process_service_worker_restoration_uses_parent_cookie_authority() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-service-worker-restoration-cookies-{}.json",
+        std::process::id()
+    ));
+    let lock_path = profile_path.with_extension("lock");
+    let events_path = profile_path.with_extension("events");
+    let readers_path = profile_path.with_extension("readers");
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+
+    let server = tokio::spawn(async move {
+        let worker_script = "import { dependency } from './sw-dep.js'; self.addEventListener('install', event => event.waitUntil(self.skipWaiting())); self.addEventListener('fetch', event => {});";
+        let responses = [
+            (
+                "/register",
+                None,
+                "text/html",
+                "Set-Cookie: a_page=seed; HttpOnly; Path=/\r\n",
+                "<!doctype html><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/', type: 'module' });</script><main>registration</main>",
+            ),
+            (
+                "/sw.js",
+                Some("a_page=seed"),
+                "application/javascript",
+                "Set-Cookie: b_entry=loaded; HttpOnly; Path=/\r\n",
+                worker_script,
+            ),
+            (
+                "/sw-dep.js",
+                Some("a_page=seed; b_entry=loaded"),
+                "application/javascript",
+                "Set-Cookie: c_dependency=loaded; HttpOnly; Path=/\r\n",
+                "export const dependency = 'loaded';",
+            ),
+            (
+                "/sw.js",
+                Some("a_page=seed; b_entry=loaded; c_dependency=loaded"),
+                "application/javascript",
+                "Set-Cookie: d_restore_entry=loaded; HttpOnly; Path=/\r\n",
+                worker_script,
+            ),
+            (
+                "/sw-dep.js",
+                Some("a_page=seed; b_entry=loaded; c_dependency=loaded; d_restore_entry=loaded"),
+                "application/javascript",
+                "Set-Cookie: e_restore_dependency=loaded; HttpOnly; Path=/\r\n",
+                "export const dependency = 'restored';",
+            ),
+            (
+                "/reopen",
+                Some(
+                    "a_page=seed; b_entry=loaded; c_dependency=loaded; d_restore_entry=loaded; e_restore_dependency=loaded",
+                ),
+                "text/html",
+                "",
+                "<!doctype html><main>restored</main>",
+            ),
+        ];
+        for (expected_path, expected_cookie, content_type, set_cookie, body) in responses {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(45), listener.accept())
+                .await
+                .expect("persisted Service Worker resources should reach the parent")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let cookie = request.lines().find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("cookie").then_some(value.trim())
+                })
+            });
+            assert_eq!(cookie, expected_cookie, "cookie on {expected_path}");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{set_cookie}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/register"))
+            .with_storage_path(profile_path.clone()),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await registrationPromise.then(() => 'registered')")
+            .await
+            .unwrap(),
+        serde_json::json!("registered")
+    );
+    engine.close_async().await.unwrap();
+
+    let mut reopened = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/reopen"))
+            .with_storage_path(profile_path.clone()),
+    )
+    .unwrap();
+    reopened.initialize_async().await.unwrap();
+    assert_eq!(
+        reopened.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("")
+    );
+    let cookies = reopened.cookies_async().await.unwrap();
+    for name in [
+        "a_page",
+        "b_entry",
+        "c_dependency",
+        "d_restore_entry",
+        "e_restore_dependency",
+    ] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == name && cookie.http_only),
+            "parent cookie jar should contain {name}"
+        );
+    }
+    reopened.close_async().await.unwrap();
+    server.await.unwrap();
+
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
 async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

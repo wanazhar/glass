@@ -126,9 +126,29 @@ projection and existing native Fetch behavior.
   child-network credentials/redirect test had passed previously (1 passed;
   24.64 seconds), but two no-build reruns against this binary timed out during
   `evaluate_async("sharedFetchMessages")` at `tests/native_engine.rs:33317`
-  (51.04 and 29.74 seconds), before assertions. Page/worker Fetch and other
-  child-originated network paths remain direct and are still outstanding for
-  the parent broker.
+  (51.04 and 29.74 seconds), before assertions. Other page/worker Fetch paths
+  and child-originated network operations remain outstanding for the parent
+  broker.
+- An eligible HTTP(S) Fetch created during an explicit page script evaluation
+  now uses the parent broker after content-side Service Worker interception
+  declines it. The parent validates the committed owner and applies the
+  request method, body, headers, credentials mode, CORS/redirect/cache modes,
+  timeout, and referrer policy. Its owner identity includes the active context,
+  frame, content-document generation, and document URL. Bounded cookie setter
+  records carry that same owner; the parent validates and applies them before
+  selecting request cookies, then commits response-cookie changes before
+  returning. It sends back only the matching URL's script-visible
+  `document.cookie` projection; response `Set-Cookie` and HttpOnly values do
+  not cross to the child on this path. The parent projection is retained across
+  content turns rather than overwritten from the stale child mirror. The
+  process-backed regression passed (1 passed; 23.46 seconds) and checks a
+  same-turn setter before Fetch, initial and updated HttpOnly request cookies,
+  the visible projection, and the next request.
+  This does not cover Fetch during initial document loading, streamed uploads,
+  module/font destinations, worker realms, or Service Worker internal network
+  requests, which still use the child loader. The broker currently buffers the
+  bounded response before resolving Fetch; incremental network response
+  streaming/backpressure remains outstanding.
 - `rustfmt --edition 2024 --check` passes for the modified Rust modules. The
   workspace `cargo fmt --all -- --check` still reports formatting in unchanged
   `native_engine/mod.rs:81`. Documentation coverage still reports only the

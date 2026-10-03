@@ -511,12 +511,21 @@ journal, and removes the content-process command that returned complete cookie
 profiles. The host now applies child-reported cookie changes to the durable
 profile, while the child-side content snapshot no longer applies its local
 cookie changes to that profile. The unhandled-network fallback for the public
-host `NativeEngine::fetch_async` command now crosses a parent broker: the
-parent loader matches cookies and processes response cookies, persists changes,
-then refreshes the active child projection. A process-backed regression covers
-HttpOnly handling and the next request. Content-side Service Worker
-interception remains in place; page/worker Fetch and Service Worker-internal
-network requests are not yet parent-brokered. The child still
+host `NativeEngine::fetch_async` command and eligible HTTP(S) Fetch requests
+from explicit page-script evaluation now cross a parent broker. The parent
+loader first reconciles queued content cookie changes and applies bounded,
+document-generation-tagged `document.cookie` writes from the current script
+turn, then matches cookies and processes response cookies. The script path
+returns only the current document's visible `document.cookie` projection,
+never response `Set-Cookie` or HttpOnly values. That parent projection is
+retained across content turns instead of being overwritten from the stale
+child mirror. A process-backed regression verifies a setter followed by Fetch
+in the same script turn. The script broker currently buffers bounded responses
+before resolving Fetch, so incremental network response streaming and
+backpressure are not implemented there yet. Content-side Service Worker
+interception remains in place; initial document/resource loading,
+streamed uploads, module/font destinations, worker realms, and Service Worker
+internal network requests are not yet parent-brokered. The child still
 receives the shared storage path and complete profile and can rewrite the
 combined storage snapshot, so its write capability is not yet removed. The
 content process still mirrors cookies for page/worker request and script

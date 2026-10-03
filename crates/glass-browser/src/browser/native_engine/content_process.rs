@@ -33,6 +33,7 @@ use super::interaction::{
     validate_native_edit_key, validate_native_key,
 };
 use super::javascript::{
+    MAX_NATIVE_COOKIE_PROFILE_BYTES, MAX_NATIVE_COOKIE_PROFILE_ENTRIES,
     MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_DIALOGS, MAX_NATIVE_EVENTSOURCE_FIELD_BYTES,
     MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES, MAX_NATIVE_HISTORY_STATE_BYTES,
     MAX_NATIVE_INDEXED_DB_CHANGES, MAX_NATIVE_MODULE_IMPORTS, MAX_NATIVE_POST_MESSAGE_BYTES,
@@ -115,7 +116,9 @@ const MAX_CONTENT_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_PROCESS_OUTPUT_FRAMES: usize = 1;
 const MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS: usize = MAX_CONTENT_PROCESS_OUTPUT_FRAMES;
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 17;
+const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
+    MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 18;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -149,6 +152,159 @@ enum NativeContentProcessInput {
     Request(Result<Vec<u8>, NativeEngineError>),
     ServiceWorkerLifetimeFetch(Option<NativeServiceWorkerFetchTaskResult>),
     WorkerTimer,
+}
+
+struct NativeContentFetchBroker<'a> {
+    request_id: u64,
+    owner: NativeContentCookieOwner,
+    runtime: &'a NativeJavaScriptRuntime,
+    stdout: &'a mut tokio::io::Stdout,
+    ipc_requests: &'a mut mpsc::Receiver<Result<Vec<u8>, NativeEngineError>>,
+    document_cookie_projection: &'a mut Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct NativeContentCookieOwner {
+    context_id: String,
+    frame_id: String,
+    generation: u32,
+    document_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct NativeContentCookieWrite {
+    owner: NativeContentCookieOwner,
+    value: String,
+}
+
+impl NativeContentFetchBroker<'_> {
+    async fn fetch(
+        &mut self,
+        fetch_id: u32,
+        request: &NativeFetchRequest<'_>,
+    ) -> Result<(Result<NativeFetchResponse, NativeEngineError>, String), NativeEngineError> {
+        let cookie_updates = self.runtime.take_cookie_updates();
+        if cookie_updates.len() > MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "parent-owned document.cookie writes",
+                MAX_NATIVE_EFFECTS,
+                cookie_updates.len(),
+            ));
+        }
+        let cookie_writes = cookie_updates
+            .into_iter()
+            .map(|value| NativeContentCookieWrite {
+                owner: self.owner.clone(),
+                value,
+            })
+            .collect::<Vec<_>>();
+        let body = request
+            .body
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "encode parent Fetch request".into(),
+                reason: "request body could not be encoded".into(),
+            })?;
+        write_value_frame(
+            self.stdout,
+            &json!({
+                "kind": "parent_fetch_request",
+                "id": self.request_id,
+                "fetch_id": fetch_id,
+                "document_url": request.document_url,
+                "owner": self.owner,
+                "cookie_writes": cookie_writes,
+                "href": request.href,
+                "credentials": request.credentials,
+                "fetch_request": {
+                    "method": request.method.as_str(),
+                    "body": body,
+                    "content_type": request.content_type,
+                    "request_headers": request.request_headers,
+                    "cors_mode": match request.cors_mode {
+                        NativeCorsMode::Cors => "cors",
+                        NativeCorsMode::NoCors => "no-cors",
+                        NativeCorsMode::SameOrigin => "same-origin",
+                        NativeCorsMode::Navigation => "navigation",
+                    },
+                    "redirect_mode": match request.redirect_mode {
+                        NativeFetchRedirectMode::Follow => "follow",
+                        NativeFetchRedirectMode::Error => "error",
+                        NativeFetchRedirectMode::Manual => "manual",
+                    },
+                    "cache_mode": match request.cache_mode {
+                        NativeFetchCacheMode::Default => "default",
+                        NativeFetchCacheMode::NoStore => "no-store",
+                        NativeFetchCacheMode::Reload => "reload",
+                        NativeFetchCacheMode::NoCache => "no-cache",
+                        NativeFetchCacheMode::ForceCache => "force-cache",
+                        NativeFetchCacheMode::OnlyIfCached => "only-if-cached",
+                    },
+                    "timeout_ms": request.timeout.map(|timeout| timeout.as_millis()),
+                    "credentials_mode": request.credentials_mode.map(|mode| mode.as_str()),
+                    "referrer_url": request.referrer_url,
+                    "referrer_policy": request.referrer_policy,
+                },
+            }),
+        )
+        .await?;
+        let payload =
+            self.ipc_requests
+                .recv()
+                .await
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: "parent Fetch broker".into(),
+                    reason: "parent closed the broker response channel".into(),
+                })??;
+        let response: Value =
+            serde_json::from_slice(&payload).map_err(|_| NativeEngineError::Worker {
+                operation: "decode parent Fetch response".into(),
+                reason: "parent returned invalid broker JSON".into(),
+            })?;
+        if response.get("id").and_then(Value::as_u64) != Some(self.request_id)
+            || response.get("fetch_id").and_then(Value::as_u64) != Some(u64::from(fetch_id))
+        {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent Fetch response",
+                NativeWorkerFailureKind::Protocol,
+                "parent Fetch response belongs to a different request",
+            ));
+        }
+        let document_cookie = response
+            .get("document_cookie")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "decode parent Fetch response",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent omitted the document cookie projection",
+                )
+            })?;
+        if document_cookie.len() > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+            return Err(NativeEngineError::limit(
+                "parent document cookie projection",
+                MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                document_cookie.len(),
+            ));
+        }
+        let document_cookie = document_cookie.to_owned();
+        *self.document_cookie_projection = Some(document_cookie.clone());
+        let fetch = if response.get("kind").and_then(Value::as_str) == Some("error") {
+            Err(NativeEngineError::Network {
+                operation: "parent-brokered script fetch".into(),
+                reason: response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("parent rejected the network request")
+                    .to_owned(),
+            })
+        } else {
+            decode_fetch_response(&response, self.request_id)
+        };
+        Ok((fetch, document_cookie))
+    }
 }
 
 impl NativeContentTaskSource {
@@ -214,6 +370,7 @@ type NativeScriptFetch = (
 
 pub(crate) struct NativeContentLoad {
     pub(crate) url: String,
+    pub(crate) generation: u32,
     pub(crate) origin: NativeOrigin,
     pub(crate) document: NativeDocumentWire,
     pub(crate) frame_sources: Option<Vec<Vec<String>>>,
@@ -1102,6 +1259,7 @@ pub(crate) struct NativeContentProcess {
     scroll_offset: NativePoint,
     nested_scroll_offsets: BTreeMap<u32, NativePoint>,
     current_document_url: Option<String>,
+    current_document_generation: Option<u32>,
     context_id: Option<String>,
     frame_id: Option<String>,
     dialog_control: NativeDialogControlPlane,
@@ -1470,6 +1628,7 @@ impl NativeContentProcess {
             scroll_offset: NativePoint { x: 0, y: 0 },
             nested_scroll_offsets: BTreeMap::new(),
             current_document_url: None,
+            current_document_generation: None,
             context_id: None,
             frame_id: None,
             dialog_control,
@@ -1702,6 +1861,9 @@ impl NativeContentProcess {
             self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
             let _ = self.child.start_kill();
         }
+        if result.is_ok() {
+            self.current_document_generation = Some(generation);
+        }
         result
     }
 
@@ -1877,11 +2039,23 @@ impl NativeContentProcess {
         cancellation: Option<&NativeNavigationCancellation>,
         deadline: Duration,
     ) -> Result<NativeContentLoadResult, NativeEngineError> {
+        let generation = self
+            .current_document_generation
+            .unwrap_or_default()
+            .checked_add(1)
+            .ok_or_else(|| {
+                NativeEngineError::limit(
+                    "content document generations",
+                    u32::MAX as usize,
+                    usize::MAX,
+                )
+            })?;
         let id = self.next_id();
         let request = json!({
             "kind": "load",
             "id": id,
             "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+            "generation": generation,
             "url": navigation.url,
             "method": navigation.method.as_str(),
             "body": navigation.body.as_ref().and_then(|body| match body {
@@ -1955,6 +2129,7 @@ impl NativeContentProcess {
         }
         if let Ok(NativeContentLoadResult::Loaded(content)) = &result {
             self.current_document_url = Some(content.url.clone());
+            self.current_document_generation = Some(content.generation);
         }
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
@@ -2002,6 +2177,7 @@ impl NativeContentProcess {
         let result = decode_load_response(&response, id);
         if let Ok(NativeContentLoadResult::Loaded(content)) = &result {
             self.current_document_url = Some(content.url.clone());
+            self.current_document_generation = Some(content.generation);
         }
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
@@ -2255,19 +2431,52 @@ impl NativeContentProcess {
         &mut self,
         source: &str,
         page_events: &NativePageEventBatch,
+        parent_loader: Option<&mut NativeResourceLoader>,
     ) -> Result<NativeContentScriptResult, NativeEngineError> {
+        let owner = NativeContentCookieOwner {
+            context_id: self.context_id.clone().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process script owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no browser context identity",
+                )
+            })?,
+            frame_id: self.frame_id.clone().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process script owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no frame identity",
+                )
+            })?,
+            generation: self.current_document_generation.ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process script owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no committed document generation",
+                )
+            })?,
+            document_url: self.current_document_url.clone().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process script owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no committed document URL",
+                )
+            })?,
+        };
         let id = self.next_id();
         let response = match self
-            .exchange_with_timeout(
+            .exchange_with_parent_loader_timeout(
                 json!({
                 "kind": "script",
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
                 "source": source,
                 "page_events": page_events,
+                "owner": owner,
                 }),
                 "content process script",
                 CONTENT_PROCESS_SCRIPT_TIMEOUT,
+                parent_loader,
             )
             .await
         {
@@ -3046,10 +3255,21 @@ impl NativeContentProcess {
         operation: &str,
         deadline: Duration,
     ) -> Result<Value, NativeEngineError> {
+        self.exchange_with_parent_loader_timeout(request, operation, deadline, None)
+            .await
+    }
+
+    async fn exchange_with_parent_loader_timeout(
+        &mut self,
+        request: Value,
+        operation: &str,
+        deadline: Duration,
+        parent_loader: Option<&mut NativeResourceLoader>,
+    ) -> Result<Value, NativeEngineError> {
         let dialog_control = self.dialog_control.clone();
         let context_id = self.context_id.clone();
         let frame_id = self.frame_id.clone();
-        let mut exchange = Box::pin(self.exchange(request));
+        let mut exchange = Box::pin(self.exchange_with_parent_loader(request, parent_loader));
         let mut timer = Box::pin(sleep(deadline));
         loop {
             tokio::select! {
@@ -3161,8 +3381,144 @@ impl NativeContentProcess {
                             "parent Fetch request omitted its credentials mode",
                         )
                     })?;
-                let fetch = loader.fetch_async(document_url, href, credentials).await;
-                let broker_response = parent_fetch_response_payload(request_id, fetch);
+                let fetch_id = response
+                    .get("fetch_id")
+                    .map(|value| {
+                        value
+                            .as_u64()
+                            .and_then(|value| u32::try_from(value).ok())
+                            .filter(|value| *value != 0)
+                            .ok_or_else(|| {
+                                NativeEngineError::worker_failure(
+                                    "content process parent Fetch broker",
+                                    NativeWorkerFailureKind::Protocol,
+                                    "parent Fetch request has an invalid script request ID",
+                                )
+                            })
+                    })
+                    .transpose()?;
+                let cookie_writes = if fetch_id.is_some() {
+                    let owner_value = response.get("owner").ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "content process parent Fetch broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "script Fetch omitted its captured owner",
+                        )
+                    })?;
+                    let owner = decode_content_cookie_owner(
+                        owner_value,
+                        "content process parent Fetch broker owner",
+                    )?;
+                    let expected_owner = request
+                        .get("owner")
+                        .ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "content process parent Fetch broker",
+                                NativeWorkerFailureKind::Protocol,
+                                "parent script request omitted its captured owner",
+                            )
+                        })
+                        .and_then(|value| {
+                            decode_content_cookie_owner(value, "parent script request owner")
+                        })?;
+                    if owner != expected_owner
+                        || self.context_id.as_deref() != Some(owner.context_id.as_str())
+                        || self.frame_id.as_deref() != Some(owner.frame_id.as_str())
+                        || self.current_document_generation != Some(owner.generation)
+                        || without_fragment(&owner.document_url) != without_fragment(document_url)
+                    {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent Fetch broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "script Fetch owner does not match the active document",
+                        ));
+                    }
+                    let raw_writes = response.get("cookie_writes").ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "content process parent Fetch broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "script Fetch omitted its cookie-write journal",
+                        )
+                    })?;
+                    let writes =
+                        serde_json::from_value::<Vec<NativeContentCookieWrite>>(raw_writes.clone())
+                            .map_err(|_| {
+                                NativeEngineError::worker_failure(
+                                    "content process parent Fetch broker",
+                                    NativeWorkerFailureKind::Protocol,
+                                    "script Fetch cookie-write journal is malformed",
+                                )
+                            })?;
+                    if writes.len() > MAX_NATIVE_EFFECTS {
+                        return Err(NativeEngineError::limit(
+                            "parent-owned document.cookie writes",
+                            MAX_NATIVE_EFFECTS,
+                            writes.len(),
+                        ));
+                    }
+                    let mut total_write_bytes = 0usize;
+                    for write in &writes {
+                        if write.owner != owner {
+                            return Err(NativeEngineError::worker_failure(
+                                "content process parent Fetch broker",
+                                NativeWorkerFailureKind::Protocol,
+                                "cookie write belongs to a different document owner",
+                            ));
+                        }
+                        if write.value.len() > crate::browser_backend::MAX_TEXT_BYTES {
+                            return Err(NativeEngineError::limit(
+                                "parent-owned document.cookie write",
+                                crate::browser_backend::MAX_TEXT_BYTES,
+                                write.value.len(),
+                            ));
+                        }
+                        total_write_bytes = total_write_bytes.saturating_add(write.value.len());
+                    }
+                    if total_write_bytes > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "parent-owned document.cookie write journal",
+                            MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                            total_write_bytes,
+                        ));
+                    }
+                    writes
+                } else {
+                    if response.get("owner").is_some() || response.get("cookie_writes").is_some() {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent Fetch broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "non-script Fetch carried script cookie ownership data",
+                        ));
+                    }
+                    Vec::new()
+                };
+                let fetch = if let Some(fetch_request) = response.get("fetch_request") {
+                    let request = decode_parent_fetch_request(
+                        document_url,
+                        href,
+                        credentials,
+                        fetch_request,
+                    )?;
+                    for write in &cookie_writes {
+                        loader.set_document_cookie(&write.owner.document_url, &write.value)?;
+                    }
+                    loader.fetch_request_with_headers_async(request).await
+                } else {
+                    if !cookie_writes.is_empty() {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent Fetch broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "cookie writes were returned without a script Fetch request",
+                        ));
+                    }
+                    loader.fetch_async(document_url, href, credentials).await
+                };
+                let document_cookie = loader.document_cookie(document_url)?;
+                let mut broker_response = parent_fetch_response_payload(request_id, fetch);
+                if let Some(fetch_id) = fetch_id {
+                    broker_response["fetch_id"] = Value::from(fetch_id);
+                }
+                broker_response["document_cookie"] = Value::String(document_cookie);
                 let payload = serde_json::to_vec(&broker_response).map_err(|_| {
                     NativeEngineError::worker_failure(
                         "encode parent Fetch response",
@@ -3489,6 +3845,15 @@ fn decode_load_response(
                 reason: "content process omitted the final URL".into(),
             })?;
     validate_url_text("content process final URL", url)?;
+    let generation = response
+        .get("generation")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|generation| *generation != 0)
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "decode content process load".into(),
+            reason: "content process omitted a valid document generation".into(),
+        })?;
     let is_blob_url = without_fragment(url).starts_with("blob:");
     if !is_network_url(without_fragment(url)) && !is_blob_url {
         return Err(NativeEngineError::Worker {
@@ -3559,6 +3924,7 @@ fn decode_load_response(
     let navigate_to_sources = decode_navigation_sources(response, "decode content process load")?;
     Ok(NativeContentLoadResult::Loaded(NativeContentLoad {
         url: url.into(),
+        generation,
         origin,
         document,
         frame_sources,
@@ -4542,6 +4908,212 @@ fn decode_content_navigation(
     })
 }
 
+fn decode_parent_fetch_request<'a>(
+    document_url: &'a str,
+    href: &'a str,
+    credentials: bool,
+    value: &Value,
+) -> Result<NativeFetchRequest<'a>, NativeEngineError> {
+    let object = value.as_object().ok_or_else(|| {
+        NativeEngineError::worker_failure(
+            "decode parent Fetch request",
+            NativeWorkerFailureKind::Protocol,
+            "Fetch request metadata must be an object",
+        )
+    })?;
+    let required_text = |name: &str| {
+        object
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "decode parent Fetch request",
+                    NativeWorkerFailureKind::Protocol,
+                    format!("Fetch request omitted {name}"),
+                )
+            })
+    };
+    let optional_text = |name: &str| -> Result<Option<String>, NativeEngineError> {
+        match object.get(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(value) => value
+                .as_str()
+                .map(|value| Some(value.to_owned()))
+                .ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "decode parent Fetch request",
+                        NativeWorkerFailureKind::Protocol,
+                        format!("Fetch request returned invalid {name}"),
+                    )
+                }),
+        }
+    };
+
+    let method = NativeFetchMethod::from_fetch_method(&required_text("method")?)?;
+    let body = object
+        .get("body")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            serde_json::from_value::<NativeRequestBody>(value.clone()).map_err(|_| {
+                NativeEngineError::worker_failure(
+                    "decode parent Fetch request",
+                    NativeWorkerFailureKind::Protocol,
+                    "Fetch request body is malformed",
+                )
+            })
+        })
+        .transpose()?;
+    let content_type = optional_text("content_type")?;
+    let request_headers = object
+        .get("request_headers")
+        .map(|value| serde_json::from_value::<BTreeMap<String, String>>(value.clone()))
+        .transpose()
+        .map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent Fetch request",
+                NativeWorkerFailureKind::Protocol,
+                "Fetch request headers are malformed",
+            )
+        })?
+        .unwrap_or_default();
+    if request_headers
+        .keys()
+        .any(|name| matches!(name.to_ascii_lowercase().as_str(), "cookie" | "cookie2"))
+    {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent Fetch request",
+            NativeWorkerFailureKind::Protocol,
+            "child Fetch request must not carry cookie headers",
+        ));
+    }
+    let cors_mode = match required_text("cors_mode")?.as_str() {
+        "cors" => NativeCorsMode::Cors,
+        "no-cors" => NativeCorsMode::NoCors,
+        "same-origin" => NativeCorsMode::SameOrigin,
+        _ => {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent Fetch request",
+                NativeWorkerFailureKind::Protocol,
+                "Fetch request has an unsupported CORS mode",
+            ));
+        }
+    };
+    let redirect_mode = match required_text("redirect_mode")?.as_str() {
+        "follow" => NativeFetchRedirectMode::Follow,
+        "error" => NativeFetchRedirectMode::Error,
+        "manual" => NativeFetchRedirectMode::Manual,
+        _ => {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent Fetch request",
+                NativeWorkerFailureKind::Protocol,
+                "Fetch request has an unsupported redirect mode",
+            ));
+        }
+    };
+    let cache_mode = NativeFetchCacheMode::from_option(Some(&required_text("cache_mode")?))?;
+    let credentials_mode = optional_text("credentials_mode")?
+        .as_deref()
+        .map(NativeFetchCredentialsMode::parse)
+        .transpose()?;
+    if credentials_mode.is_some_and(|mode| match mode {
+        NativeFetchCredentialsMode::Omit => credentials,
+        NativeFetchCredentialsMode::SameOrigin => false,
+        NativeFetchCredentialsMode::Include => !credentials,
+    }) {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent Fetch request",
+            NativeWorkerFailureKind::Protocol,
+            "Fetch credentials flag disagrees with its credentials mode",
+        ));
+    }
+    let timeout = match object.get("timeout_ms") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let timeout_ms = value.as_u64().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "decode parent Fetch request",
+                    NativeWorkerFailureKind::Protocol,
+                    "Fetch timeout is malformed",
+                )
+            })?;
+            if timeout_ms > u64::from(MAX_NATIVE_XHR_TIMEOUT_MS) {
+                return Err(NativeEngineError::limit(
+                    "parent Fetch timeout",
+                    usize::try_from(MAX_NATIVE_XHR_TIMEOUT_MS).unwrap_or(usize::MAX),
+                    usize::try_from(timeout_ms).unwrap_or(usize::MAX),
+                ));
+            }
+            Some(Duration::from_millis(timeout_ms))
+        }
+    };
+    let referrer_url = optional_text("referrer_url")?;
+    let referrer_policy = optional_text("referrer_policy")?;
+    if let Some(policy) = referrer_policy.as_deref() {
+        NativeFetchReferrerPolicy::parse(policy)?;
+    }
+
+    Ok(NativeFetchRequest {
+        document_url,
+        href,
+        referrer_url,
+        referrer_policy,
+        method,
+        body,
+        content_type,
+        request_headers,
+        credentials,
+        credentials_mode,
+        cors_mode,
+        redirect_mode,
+        cache_mode,
+        timeout,
+        max_response_bytes: Some(MAX_CONTENT_DOCUMENT_WIRE_BYTES),
+    })
+}
+
+fn decode_content_cookie_owner(
+    value: &Value,
+    operation: &'static str,
+) -> Result<NativeContentCookieOwner, NativeEngineError> {
+    let owner: NativeContentCookieOwner = serde_json::from_value(value.clone()).map_err(|_| {
+        NativeEngineError::worker_failure(
+            operation,
+            NativeWorkerFailureKind::Protocol,
+            "cookie owner identity is malformed",
+        )
+    })?;
+    validate_context_id(&owner.context_id).map_err(|_| {
+        NativeEngineError::worker_failure(
+            operation,
+            NativeWorkerFailureKind::Protocol,
+            "cookie owner context identity is invalid",
+        )
+    })?;
+    validate_context_id(&owner.frame_id).map_err(|_| {
+        NativeEngineError::worker_failure(
+            operation,
+            NativeWorkerFailureKind::Protocol,
+            "cookie owner frame identity is invalid",
+        )
+    })?;
+    if owner.generation == 0 {
+        return Err(NativeEngineError::worker_failure(
+            operation,
+            NativeWorkerFailureKind::Protocol,
+            "cookie owner generation must be positive",
+        ));
+    }
+    validate_url_text("cookie owner document URL", &owner.document_url).map_err(|_| {
+        NativeEngineError::worker_failure(
+            operation,
+            NativeWorkerFailureKind::Protocol,
+            "cookie owner document URL is invalid",
+        )
+    })?;
+    Ok(owner)
+}
+
 fn parent_fetch_response_payload(
     id: u64,
     result: Result<NativeFetchResponse, NativeEngineError>,
@@ -5383,6 +5955,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut storage_state = NativeWebStorageState::default();
     let mut indexed_db_state = NativeIndexedDbState::default();
     let mut pending_lifetime_cookie_changes = Vec::new();
+    let mut parent_document_cookie_projection: Option<String> = None;
     let mut storage_profile_path: Option<PathBuf> = None;
     let mut allowed_file_roots: Vec<PathBuf> = Vec::new();
     let mut storage_context_id = NATIVE_CONTEXT_ID.to_owned();
@@ -5602,11 +6175,18 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
         {
             runtime.set_sync_xhr_loader(loader);
         }
-        refresh_content_runtime_cookie(
+        if let (Some(runtime), Some(projection)) = (
             javascript_runtime.as_ref(),
-            resource_loader.as_ref(),
-            document_url.as_deref(),
-        )?;
+            parent_document_cookie_projection.as_ref(),
+        ) {
+            runtime.set_cookie_state(projection.clone());
+        } else {
+            refresh_content_runtime_cookie(
+                javascript_runtime.as_ref(),
+                resource_loader.as_ref(),
+                document_url.as_deref(),
+            )?;
+        }
         if let (Some(runtime), Some(document_url), Some(document_origin)) = (
             javascript_runtime.as_ref(),
             document_url.as_deref(),
@@ -6066,6 +6646,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 };
                 loader.set_cookie_profiles(&cookies)?;
                 loader.take_cookie_changes();
+                parent_document_cookie_projection = None;
                 refresh_content_runtime_cookie(
                     javascript_runtime.as_ref(),
                     resource_loader.as_ref(),
@@ -6101,6 +6682,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 };
                 loader.apply_cookie_changes(&changes)?;
                 loader.take_cookie_changes();
+                parent_document_cookie_projection = None;
                 refresh_content_runtime_cookie(
                     javascript_runtime.as_ref(),
                     resource_loader.as_ref(),
@@ -6121,6 +6703,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 };
                 loader.clear_cookies();
                 loader.take_cookie_changes();
+                parent_document_cookie_projection = None;
                 refresh_content_runtime_cookie(
                     javascript_runtime.as_ref(),
                     resource_loader.as_ref(),
@@ -6611,6 +7194,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                                 &parsed,
                                                 runtime,
                                                 Some(loader),
+                                                None,
                                                 &mut service_workers,
                                                 &mut websocket_connections,
                                                 &mut fetch_stream_connections,
@@ -6726,6 +7310,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         pending_page_message_port_commands
                                             .extend(workers.take_page_message_port_commands());
                                     }
+                                    let generation = parsed.generation();
                                     let document_wire = parsed.to_content_wire();
                                     document = Some(parsed);
                                     document_url = Some(resource.url.clone());
@@ -6735,6 +7320,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     json!({
                                         "kind": "loaded",
                                         "id": id,
+                                        "generation": generation,
                                         "url": resource.url,
                                         "navigation": navigation.as_ref().map(content_navigation_json),
                                         "dialogs": dialogs,
@@ -7020,6 +7606,31 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     write_value_frame(&mut stdout, &response).await?;
                     continue;
                 };
+                let owner_value = request.get("owner").ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "content process script owner",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent omitted the captured script owner",
+                    )
+                })?;
+                let owner =
+                    decode_content_cookie_owner(owner_value, "content process script owner")?;
+                if owner.context_id != storage_context_id
+                    || owner.frame_id != frame_id
+                    || owner.generation != current.generation()
+                    || without_fragment(&owner.document_url) != without_fragment(&committed_url)
+                {
+                    let response = content_error_response(
+                        id,
+                        NativeEngineError::worker_failure(
+                            "content process script owner",
+                            NativeWorkerFailureKind::Protocol,
+                            "script owner does not match the active document",
+                        ),
+                    );
+                    write_value_frame(&mut stdout, &response).await?;
+                    continue;
+                }
                 let Some(document_origin) = document_origin.as_ref() else {
                     let response = content_error_response(
                         id,
@@ -7220,6 +7831,19 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             current,
                             runtime,
                             resource_loader.as_mut(),
+                            Some(NativeContentFetchBroker {
+                                request_id: id.as_u64().ok_or_else(|| {
+                                    NativeEngineError::invalid(
+                                        "content-process script request ID",
+                                        "must be an unsigned integer",
+                                    )
+                                })?,
+                                owner: owner.clone(),
+                                runtime,
+                                stdout: &mut stdout,
+                                ipc_requests: &mut ipc_request_rx,
+                                document_cookie_projection: &mut parent_document_cookie_projection,
+                            }),
                             &mut service_workers,
                             &mut websocket_connections,
                             &mut fetch_stream_connections,
@@ -8390,6 +9014,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 &mut resource_loader,
             )?
         };
+        if !cookie_changes.is_empty() {
+            parent_document_cookie_projection = None;
+        }
         merge_cookie_change_batch(
             &mut pending_lifetime_cookie_changes,
             cookie_changes,
@@ -8967,6 +9594,17 @@ async fn load_content_resource(
         .and_then(Value::as_str)
         .ok_or_else(|| NativeEngineError::invalid("content-process URL", "must be text"))?;
     validate_url_text("content-process URL", url)?;
+    let generation = request
+        .get("generation")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|generation| *generation != 0)
+        .ok_or_else(|| {
+            NativeEngineError::invalid(
+                "content-process document generation",
+                "must be a positive integer",
+            )
+        })?;
     let object_url = match request.get("object_url") {
         None | Some(Value::Null) => None,
         Some(value) => Some(
@@ -9238,7 +9876,7 @@ async fn load_content_resource(
     let mut discovery = NativeDocument::parse_with_generation_and_referrer_policy(
         &resource.body,
         &limits,
-        1,
+        generation,
         loader.document_referrer_policy(&resource.url)?,
     )?;
     loader.apply_meta_content_security_policies(
@@ -9318,7 +9956,7 @@ async fn load_content_resource(
         &resource.body,
         &limits,
         &external_stylesheets,
-        1,
+        generation,
         Some(&allowed_inline_style_nodes),
         loader.document_referrer_policy(&resource.url)?,
     )?;
@@ -9340,6 +9978,7 @@ async fn load_content_resource(
     Ok(Some((
         NativeContentLoad {
             url: resource.url,
+            generation,
             origin: resource.origin,
             document: wire,
             frame_sources,
@@ -14531,6 +15170,7 @@ async fn resolve_script_fetches(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
     mut loader: Option<&mut NativeResourceLoader>,
+    mut parent_fetch_broker: Option<NativeContentFetchBroker<'_>>,
     service_workers: &mut NativeServiceWorkerRegistry,
     websocket_connections: &mut BTreeMap<u32, NativeWebSocketConnection>,
     fetch_stream_connections: &mut BTreeMap<u32, NativeFetchStreamConnection>,
@@ -15014,27 +15654,35 @@ async fn resolve_script_fetches(
                     fetch_response_payload(Ok(response))
                 }
                 Ok(NativeServiceWorkerFetchOutcome::NotHandled) => {
-                    let opened = loader
-                        .open_fetch_response_stream_async(NativeFetchRequest {
-                            document_url: &current_url,
-                            href: &href,
-                            method,
-                            body,
-                            content_type,
-                            request_headers: headers,
-                            cors_mode,
-                            redirect_mode,
-                            cache_mode,
-                            timeout,
-                            credentials,
-                            credentials_mode,
-                            referrer_url,
-                            referrer_policy,
-                            max_response_bytes: None,
-                        })
-                        .await;
-                    fetch_opened_response_payload(opened, request_id, fetch_stream_connections)
-                        .await
+                    let fetch_request = NativeFetchRequest {
+                        document_url: &current_url,
+                        href: &href,
+                        method,
+                        body,
+                        content_type,
+                        request_headers: headers,
+                        cors_mode,
+                        redirect_mode,
+                        cache_mode,
+                        timeout,
+                        credentials,
+                        credentials_mode,
+                        referrer_url,
+                        referrer_policy,
+                        max_response_bytes: None,
+                    };
+                    if is_network_url(&current_url)
+                        && let Some(broker) = parent_fetch_broker.as_mut()
+                    {
+                        let (fetch, document_cookie) =
+                            broker.fetch(request_id, &fetch_request).await?;
+                        runtime.set_cookie_state(document_cookie);
+                        fetch_response_payload(fetch)
+                    } else {
+                        let opened = loader.open_fetch_response_stream_async(fetch_request).await;
+                        fetch_opened_response_payload(opened, request_id, fetch_stream_connections)
+                            .await
+                    }
                 }
                 Ok(NativeServiceWorkerFetchOutcome::Suspended) => {
                     fetch_response_payload(Err(NativeEngineError::Worker {
@@ -16764,6 +17412,7 @@ mod tests {
             &document,
             &runtime,
             Some(&mut loader),
+            None,
             &mut service_workers,
             &mut websocket_connections,
             &mut fetch_stream_connections,

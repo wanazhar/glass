@@ -6197,6 +6197,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             }
             NativeContentProcessInput::ServiceWorkerLifetimeFetch(None) => continue,
             NativeContentProcessInput::WorkerTimer => {
+                // Browser-coordinated owners must run worker timers inside an
+                // owner turn so worker Fetch can use the parent's cookie broker.
+                let defer_worker_timer = external_shared_worker_routing
+                    && workers
+                        .next_timer_delay_ms()?
+                        .is_some_and(|delay| delay == 0);
                 {
                     let Some(loader) = resource_loader.as_mut() else {
                         return Err(NativeEngineError::Worker {
@@ -6205,7 +6211,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         });
                     };
                     service_workers.run_due_timers(loader).await?;
-                    workers.run_due_timers(loader).await?;
+                    if !defer_worker_timer {
+                        workers.run_due_timers(loader).await?;
+                    }
                     process_worker_websocket_commands(
                         workers.take_websocket_commands(),
                         &mut worker_websocket_connections,
@@ -6259,16 +6267,17 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     cookie_changes,
                     "worker timer cookie changes",
                 )?;
-                let has_pending_effects = content_worker_effects_pending(
-                    &pending_worker_messages,
-                    &pending_message_port_messages,
-                    &pending_page_message_port_commands,
-                    &pending_shared_worker_commands,
-                    &pending_service_worker_client_messages,
-                    &pending_external_service_worker_client_messages,
-                    &pending_service_worker_open_windows,
-                    &pending_lifetime_cookie_changes,
-                )?;
+                let has_pending_effects = defer_worker_timer
+                    || content_worker_effects_pending(
+                        &pending_worker_messages,
+                        &pending_message_port_messages,
+                        &pending_page_message_port_commands,
+                        &pending_shared_worker_commands,
+                        &pending_service_worker_client_messages,
+                        &pending_external_service_worker_client_messages,
+                        &pending_service_worker_open_windows,
+                        &pending_lifetime_cookie_changes,
+                    )?;
                 write_async_effects_ready(
                     &mut stdout,
                     has_pending_effects,
@@ -7808,7 +7817,24 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 };
                 runtime.set_inline_script_policy(loader.inline_script_policy(&committed_url)?);
                 service_workers.run_due_timers(loader).await?;
-                workers.run_due_timers(loader).await?;
+                {
+                    let mut parent_fetch_broker = NativeContentFetchBroker {
+                        request_id: id.as_u64().ok_or_else(|| {
+                            NativeEngineError::invalid(
+                                "content-process script request ID",
+                                "must be an unsigned integer",
+                            )
+                        })?,
+                        owner: owner.clone(),
+                        runtime,
+                        stdout: &mut stdout,
+                        ipc_requests: &mut ipc_request_rx,
+                        document_cookie_projection: &mut parent_document_cookie_projection,
+                    };
+                    workers
+                        .run_due_timers_with_parent_fetch_broker(loader, &mut parent_fetch_broker)
+                        .await?;
+                }
                 process_worker_websocket_commands(
                     workers.take_websocket_commands(),
                     &mut worker_websocket_connections,
@@ -17655,7 +17681,7 @@ mod tests {
         let page_events = NativePageEventBatch::default();
         let mut pending_evaluation = tokio::spawn(async move {
             let result = process
-                .evaluate_with_page_events("confirm('explicit evaluation')", &page_events)
+                .evaluate_with_page_events("confirm('explicit evaluation')", &page_events, None)
                 .await;
             (process, result)
         });

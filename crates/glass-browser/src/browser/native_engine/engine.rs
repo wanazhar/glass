@@ -11380,7 +11380,9 @@ pub(crate) fn parse_point_target(target: &str) -> Result<Option<(i64, i64)>, Nat
 
 #[cfg(test)]
 mod tests {
-    use super::super::dialog::{NativeDialogController, NativeDialogResolution};
+    use super::super::dialog::{
+        NativeDialogControlPlane, NativeDialogController, NativeDialogResolution,
+    };
     use super::*;
 
     fn initialized_engine() -> NativeEngine {
@@ -11464,6 +11466,159 @@ mod tests {
         assert_eq!(turn.context_id, context_id);
         assert_eq!(turn.frame_id, frame_id);
         engine.close_async().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn browser_owned_worker_timer_fetch_uses_parent_cookie_authority() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..4 {
+                let accepted =
+                    tokio::time::timeout(std::time::Duration::from_secs(45), listener.accept())
+                        .await
+                        .unwrap_or_else(|_| {
+                            panic!(
+                                "worker timer requests timed out after paths {:?}",
+                                requests
+                                    .iter()
+                                    .map(|(path, _): &(String, Option<String>)| path)
+                                    .collect::<Vec<_>>()
+                            )
+                        })
+                        .unwrap();
+                let (mut stream, _) = accepted;
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 2048];
+                loop {
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&request).into_owned();
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("worker timer HTTP request includes a path")
+                    .to_owned();
+                let cookie = request
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim().to_owned());
+                let (headers, content_type, body) = match path.as_str() {
+                    "/page" => (
+                        concat!(
+                            "Set-Cookie: timer_session=visible; Path=/; SameSite=Lax\r\n",
+                            "Set-Cookie: timer_secret=before; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        ),
+                        "text/html",
+                        "<main>worker timer cookie broker</main>",
+                    ),
+                    "/timer-worker.js" => (
+                        "",
+                        "application/javascript",
+                        "setTimeout(async () => { try { const first = await fetch('/timer-first'); const firstBody = await first.text(); const second = await fetch('/timer-second'); postMessage({ kind: 'complete', firstBody, secondBody: await second.text() }); } catch (error) { postMessage({ kind: 'error', message: String(error) }); } }, 0);",
+                    ),
+                    "/timer-first" => (
+                        "Set-Cookie: timer_secret=after; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "text/plain",
+                        "first",
+                    ),
+                    "/timer-second" => ("", "text/plain", "second"),
+                    other => panic!("unexpected worker timer request: {other}"),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push((path, cookie));
+            }
+            requests
+        });
+
+        let config =
+            NativeEngineConfig::default().with_initial_url(format!("http://{address}/page"));
+        let mut engine = NativeEngine::new_with_browser_shared_workers(
+            config,
+            NativeDialogControlPlane::default(),
+        )
+        .unwrap();
+        engine.initialize_async().await.unwrap();
+        engine
+            .evaluate_async(
+                "globalThis.timerMessages = []; globalThis.timerWorker = new Worker('/timer-worker.js'); timerWorker.onmessage = event => timerMessages.push(event.data)",
+            )
+            .await
+            .unwrap();
+
+        let notification = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(notification) = engine
+                    .take_async_effect_notifications()
+                    .unwrap()
+                    .into_iter()
+                    .next()
+                {
+                    break notification;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the browser owner should be notified when the worker timer is due");
+        engine
+            .dispatch_async_effect_notification(&notification)
+            .await
+            .unwrap();
+        let visible_cookies = engine.evaluate_async("document.cookie").await.unwrap();
+        let cookies = engine.cookies_async().await.unwrap();
+        engine.close_async().await.unwrap();
+        let requests = server.await.unwrap();
+
+        assert_eq!(
+            requests
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            ["/page", "/timer-worker.js", "/timer-first", "/timer-second"]
+        );
+        let cookie_for = |path: &str| {
+            requests
+                .iter()
+                .find(|(request_path, _)| request_path == path)
+                .and_then(|(_, cookie)| cookie.as_deref())
+                .unwrap_or_default()
+        };
+        assert!(cookie_for("/timer-first").contains("timer_secret=before"));
+        assert!(cookie_for("/timer-second").contains("timer_secret=after"));
+        assert!(
+            visible_cookies
+                .as_str()
+                .is_some_and(|value| value.contains("timer_session=visible"))
+        );
+        assert!(
+            !visible_cookies
+                .as_str()
+                .is_some_and(|value| value.contains("timer_secret="))
+        );
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == "timer_secret" && cookie.value == "after")
+        );
     }
 
     #[tokio::test]

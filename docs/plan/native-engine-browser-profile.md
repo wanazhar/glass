@@ -134,8 +134,12 @@ request cookies, and accepts response-cookie changes. The worker's current
   verifies worker entry plus classic `importScripts()`, and a dynamically
   attached page module plus its static dependency, including HttpOnly
   response-cookie propagation. Runtime `import()` does not yet have a
-  cookie-specific regression. Parser-discovered initial page scripts,
-  initial/navigation resources, page stylesheets/images/fonts/media,
+  cookie-specific regression. Parser-discovered HTTP(S) page scripts now use
+  the parent broker during initial loading; a process-backed classic-script
+  regression verifies request cookies, response-cookie acceptance, and
+  HttpOnly invisibility. The initial module graph lacks a dedicated cookie
+  regression. Other initial/navigation resources, page
+  stylesheets/images/fonts/media,
   independently delivered SharedWorker events, module/font Fetch destinations,
   and Service Worker internal requests remain outside the verified checkpoint.
   In

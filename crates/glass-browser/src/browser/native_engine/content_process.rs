@@ -159,7 +159,7 @@ enum NativeContentProcessInput {
 pub(crate) struct NativeContentFetchBroker<'a> {
     request_id: u64,
     owner: NativeContentCookieOwner,
-    runtime: &'a NativeJavaScriptRuntime,
+    runtime: Option<&'a NativeJavaScriptRuntime>,
     stdout: &'a mut tokio::io::Stdout,
     ipc_requests: &'a mut mpsc::Receiver<Result<Vec<u8>, NativeEngineError>>,
     document_cookie_projection: &'a mut Option<String>,
@@ -181,12 +181,11 @@ pub(crate) struct NativeContentCookieWrite {
 }
 
 impl NativeContentFetchBroker<'_> {
-    pub(crate) async fn fetch(
-        &mut self,
-        fetch_id: u32,
-        request: &NativeFetchRequest<'_>,
-    ) -> Result<(Result<NativeFetchResponse, NativeEngineError>, String), NativeEngineError> {
-        let cookie_updates = self.runtime.take_cookie_updates();
+    fn take_cookie_writes(&self) -> Result<Vec<NativeContentCookieWrite>, NativeEngineError> {
+        let cookie_updates = self
+            .runtime
+            .map(NativeJavaScriptRuntime::take_cookie_updates)
+            .unwrap_or_default();
         if cookie_updates.len() > MAX_NATIVE_EFFECTS {
             return Err(NativeEngineError::limit(
                 "parent-owned document.cookie writes",
@@ -194,13 +193,27 @@ impl NativeContentFetchBroker<'_> {
                 cookie_updates.len(),
             ));
         }
-        let cookie_writes = cookie_updates
+        Ok(cookie_updates
             .into_iter()
             .map(|value| NativeContentCookieWrite {
                 owner: self.owner.clone(),
                 value,
             })
-            .collect::<Vec<_>>();
+            .collect())
+    }
+
+    fn update_runtime_cookie_projection(&self, document_cookie: &str) {
+        if let Some(runtime) = self.runtime {
+            runtime.set_cookie_state(document_cookie.to_owned());
+        }
+    }
+
+    pub(crate) async fn fetch(
+        &mut self,
+        fetch_id: u32,
+        request: &NativeFetchRequest<'_>,
+    ) -> Result<(Result<NativeFetchResponse, NativeEngineError>, String), NativeEngineError> {
+        let cookie_writes = self.take_cookie_writes()?;
         let body = request
             .body
             .as_ref()
@@ -294,7 +307,7 @@ impl NativeContentFetchBroker<'_> {
         }
         let document_cookie = document_cookie.to_owned();
         *self.document_cookie_projection = Some(document_cookie.clone());
-        self.runtime.set_cookie_state(document_cookie.clone());
+        self.update_runtime_cookie_projection(&document_cookie);
         let fetch = if response.get("kind").and_then(Value::as_str) == Some("error") {
             Err(NativeEngineError::Network {
                 operation: "parent-brokered script fetch".into(),
@@ -328,21 +341,7 @@ impl NativeContentFetchBroker<'_> {
                 "must be positive",
             ));
         }
-        let cookie_updates = self.runtime.take_cookie_updates();
-        if cookie_updates.len() > MAX_NATIVE_EFFECTS {
-            return Err(NativeEngineError::limit(
-                "parent-owned document.cookie writes",
-                MAX_NATIVE_EFFECTS,
-                cookie_updates.len(),
-            ));
-        }
-        let cookie_writes = cookie_updates
-            .into_iter()
-            .map(|value| NativeContentCookieWrite {
-                owner: self.owner.clone(),
-                value,
-            })
-            .collect::<Vec<_>>();
+        let cookie_writes = self.take_cookie_writes()?;
         let module_type = module_type.map(|module_type| match module_type {
             NativeModuleResourceType::JavaScript => "javascript",
             NativeModuleResourceType::Json => "json",
@@ -413,7 +412,7 @@ impl NativeContentFetchBroker<'_> {
         }
         let document_cookie = document_cookie.to_owned();
         *self.document_cookie_projection = Some(document_cookie.clone());
-        self.runtime.set_cookie_state(document_cookie.clone());
+        self.update_runtime_cookie_projection(&document_cookie);
         let resource = match response.get("kind").and_then(Value::as_str) {
             Some("worker_script_unavailable") => None,
             Some("worker_script_loaded") => {
@@ -516,21 +515,7 @@ impl NativeContentFetchBroker<'_> {
                     )
                 })?;
         let fetch_id = self.next_page_script_fetch_id;
-        let cookie_updates = self.runtime.take_cookie_updates();
-        if cookie_updates.len() > MAX_NATIVE_EFFECTS {
-            return Err(NativeEngineError::limit(
-                "parent-owned document.cookie writes",
-                MAX_NATIVE_EFFECTS,
-                cookie_updates.len(),
-            ));
-        }
-        let cookie_writes = cookie_updates
-            .into_iter()
-            .map(|value| NativeContentCookieWrite {
-                owner: self.owner.clone(),
-                value,
-            })
-            .collect::<Vec<_>>();
+        let cookie_writes = self.take_cookie_writes()?;
         let module_type = module_type.map(|module_type| match module_type {
             NativeModuleResourceType::JavaScript => "javascript",
             NativeModuleResourceType::Json => "json",
@@ -607,7 +592,7 @@ impl NativeContentFetchBroker<'_> {
             ));
         }
         *self.document_cookie_projection = Some(document_cookie.to_owned());
-        self.runtime.set_cookie_state(document_cookie.to_owned());
+        self.update_runtime_cookie_projection(document_cookie);
         match response.get("kind").and_then(Value::as_str) {
             Some("page_script_unavailable") => Ok(None),
             Some("page_script_loaded") => {
@@ -3821,16 +3806,20 @@ impl NativeContentProcess {
         })?;
         write_frame(&mut self.stdin, &payload).await?;
         let mut resumed_dialog: Option<NativeDialogWait> = None;
+        let mut parent_navigation_document_url: Option<String> = None;
         loop {
             let response = self.read_response_value().await?;
             if response.get("kind").and_then(Value::as_str) == Some("parent_navigation_request") {
-                Box::pin(self.handle_parent_navigation_request(
+                if let Some(document_url) = Box::pin(self.handle_parent_navigation_request(
                     request_id,
                     &request,
                     &response,
                     parent_loader.as_deref_mut(),
                 ))
-                .await?;
+                .await?
+                {
+                    parent_navigation_document_url = Some(document_url);
+                }
                 continue;
             }
             if response.get("kind").and_then(Value::as_str) == Some("parent_fetch_request") {
@@ -3908,28 +3897,27 @@ impl NativeContentProcess {
                     )?;
                     let expected_owner = request
                         .get("owner")
-                        .ok_or_else(|| {
-                            NativeEngineError::worker_failure(
-                                "content process parent Fetch broker",
-                                NativeWorkerFailureKind::Protocol,
-                                "parent script request omitted its captured owner",
-                            )
-                        })
-                        .and_then(|value| {
+                        .map(|value| {
                             decode_content_cookie_owner(value, "parent script request owner")
-                        })?;
-                    if owner != expected_owner
-                        || self.context_id.as_deref() != Some(owner.context_id.as_str())
-                        || self.frame_id.as_deref() != Some(owner.frame_id.as_str())
-                        || self.current_document_generation != Some(owner.generation)
-                        || self.current_document_url.as_deref().is_none_or(|current| {
-                            without_fragment(current) != without_fragment(&owner.document_url)
                         })
+                        .transpose()?;
+                    let is_resource_load = response.get("page_script_load").is_some()
+                        || response.get("worker_script_load").is_some();
+                    if expected_owner
+                        .as_ref()
+                        .is_some_and(|expected_owner| expected_owner != &owner)
+                        || (expected_owner.is_none() && !is_resource_load)
+                        || !parent_script_owner_matches_operation(
+                            self,
+                            &request,
+                            &owner,
+                            parent_navigation_document_url.as_deref(),
+                        )
                     {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent Fetch broker",
                             NativeWorkerFailureKind::Protocol,
-                            "script Fetch owner does not match the active document",
+                            "script request owner does not match the active document or captured load",
                         ));
                     }
                     let raw_writes = response.get("cookie_writes").ok_or_else(|| {
@@ -4025,6 +4013,18 @@ impl NativeContentProcess {
                         })?,
                         "content process parent worker script owner",
                     )?;
+                    if !parent_script_owner_matches_operation(
+                        self,
+                        &request,
+                        &owner,
+                        parent_navigation_document_url.as_deref(),
+                    ) {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent worker script broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "worker script owner does not match the active document or captured load",
+                        ));
+                    }
                     if self.parent_brokered_script_owner.as_ref() != Some(&owner) {
                         self.parent_brokered_script_owner = Some(owner.clone());
                         self.parent_brokered_script_urls.clear();
@@ -4140,6 +4140,18 @@ impl NativeContentProcess {
                         })?,
                         "content process parent page script owner",
                     )?;
+                    if !parent_script_owner_matches_operation(
+                        self,
+                        &request,
+                        &owner,
+                        parent_navigation_document_url.as_deref(),
+                    ) {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent page script broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "page script owner does not match the active document or captured load",
+                        ));
+                    }
                     if self.parent_brokered_script_owner.as_ref() != Some(&owner) {
                         self.parent_brokered_script_owner = Some(owner.clone());
                         self.parent_brokered_script_urls.clear();
@@ -4373,7 +4385,7 @@ impl NativeContentProcess {
         load_request: &Value,
         broker_request: &Value,
         parent_loader: Option<&mut NativeResourceLoader>,
-    ) -> Result<(), NativeEngineError> {
+    ) -> Result<Option<String>, NativeEngineError> {
         let loader = parent_loader.ok_or_else(|| {
             NativeEngineError::worker_failure(
                 "content process parent navigation broker",
@@ -4390,6 +4402,14 @@ impl NativeContentProcess {
             loader,
         ))
         .await?;
+        let document_url = broker_response
+            .get("url")
+            .and_then(Value::as_str)
+            .filter(|_| {
+                broker_response.get("kind").and_then(Value::as_str)
+                    == Some("parent_navigation_response")
+            })
+            .map(str::to_owned);
         let payload = serde_json::to_vec(&broker_response).map_err(|_| {
             NativeEngineError::worker_failure(
                 "encode parent navigation response",
@@ -4397,7 +4417,8 @@ impl NativeContentProcess {
                 "parent navigation response could not be encoded",
             )
         })?;
-        write_frame(&mut self.stdin, &payload).await
+        write_frame(&mut self.stdin, &payload).await?;
+        Ok(document_url)
     }
 
     fn next_id(&mut self) -> u64 {
@@ -4412,6 +4433,37 @@ impl Drop for NativeContentProcess {
         let _ = self.child.start_kill();
         self.stdout_reader.abort();
     }
+}
+
+fn parent_script_owner_matches_operation(
+    process: &NativeContentProcess,
+    request: &Value,
+    owner: &NativeContentCookieOwner,
+    parent_navigation_document_url: Option<&str>,
+) -> bool {
+    let owner_url = without_fragment(&owner.document_url);
+    let is_current_document = process.context_id.as_deref() == Some(owner.context_id.as_str())
+        && process.frame_id.as_deref() == Some(owner.frame_id.as_str())
+        && process.current_document_generation == Some(owner.generation)
+        && process
+            .current_document_url
+            .as_deref()
+            .is_some_and(|current| without_fragment(current) == owner_url);
+    if is_current_document {
+        return true;
+    }
+
+    let captured_generation = request
+        .get("generation")
+        .and_then(Value::as_u64)
+        .and_then(|generation| u32::try_from(generation).ok());
+    let captured_url = request.get("url").and_then(Value::as_str);
+    request.get("kind").and_then(Value::as_str) == Some("load")
+        && process.context_id.as_deref() == Some(owner.context_id.as_str())
+        && process.frame_id.as_deref() == Some(owner.frame_id.as_str())
+        && captured_generation == Some(owner.generation)
+        && (captured_url.is_some_and(|url| without_fragment(url) == owner_url)
+            || parent_navigation_document_url.is_some_and(|url| without_fragment(url) == owner_url))
 }
 
 async fn write_frame(
@@ -8932,7 +8984,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             )
                         })?,
                         owner: owner.clone(),
-                        runtime,
+                        runtime: Some(runtime),
                         stdout: &mut stdout,
                         ipc_requests: &mut ipc_request_rx,
                         document_cookie_projection: &mut parent_document_cookie_projection,
@@ -9036,7 +9088,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         )
                     })?,
                     owner: owner.clone(),
-                    runtime,
+                    runtime: Some(runtime),
                     stdout: &mut stdout,
                     ipc_requests: &mut ipc_request_rx,
                     document_cookie_projection: &mut parent_document_cookie_projection,
@@ -9152,7 +9204,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     )
                                 })?,
                                 owner: owner.clone(),
-                                runtime,
+                                runtime: Some(runtime),
                                 stdout: &mut stdout,
                                 ipc_requests: &mut ipc_request_rx,
                                 document_cookie_projection: &mut parent_document_cookie_projection,
@@ -9215,7 +9267,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         )
                                     })?,
                                     owner: owner.clone(),
-                                    runtime,
+                                    runtime: Some(runtime),
                                     stdout: &mut stdout,
                                     ipc_requests: &mut ipc_request_rx,
                                     document_cookie_projection:
@@ -11398,7 +11450,7 @@ async fn load_content_resource(
     resumed_fetch: Option<NativeServiceWorkerFetchCompletion>,
     context_id: &str,
     frame_id: &str,
-    stdout: &mut (impl AsyncWrite + Unpin),
+    stdout: &mut tokio::io::Stdout,
     ipc_requests: &mut mpsc::Receiver<Result<Vec<u8>, NativeEngineError>>,
     parent_document_cookie_projection: &mut Option<String>,
 ) -> Result<
@@ -11829,8 +11881,28 @@ async fn load_content_resource(
     resource_events
         .extend(load_external_images(&mut document, None, loader, &resource.url, viewport).await?);
     resource_events.extend(load_external_media(&mut document, None, loader, &resource.url).await?);
-    let (script_sources, script_resource_events) =
-        load_page_script_sources(&document, loader, &resource.url).await?;
+    let owner = NativeContentCookieOwner {
+        context_id: context_id.to_owned(),
+        frame_id: frame_id.to_owned(),
+        generation,
+        document_url: resource.url.clone(),
+    };
+    let mut parent_fetch_broker = NativeContentFetchBroker {
+        request_id,
+        owner,
+        runtime: None,
+        stdout,
+        ipc_requests,
+        document_cookie_projection: parent_document_cookie_projection,
+        next_page_script_fetch_id: 0,
+    };
+    let (script_sources, script_resource_events) = load_page_script_sources(
+        &document,
+        loader,
+        &resource.url,
+        Some(&mut parent_fetch_broker),
+    )
+    .await?;
     resource_events.extend(script_resource_events);
     resource_events.sort_unstable_by_key(|(node_index, _)| *node_index);
     resource_events.dedup();
@@ -12399,6 +12471,7 @@ async fn load_page_script_sources(
     document: &NativeDocument,
     loader: &mut NativeResourceLoader,
     document_url: &str,
+    parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<(Vec<NativePageScript>, Vec<(u32, NativeEventKind)>), NativeEngineError> {
     load_page_script_source_list(
         document.page_script_sources(
@@ -12413,7 +12486,7 @@ async fn load_page_script_sources(
         document_url,
         "glass-inline-module",
         None,
-        None,
+        parent_fetch_broker,
     )
     .await
 }

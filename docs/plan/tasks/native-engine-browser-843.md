@@ -161,12 +161,17 @@ projection and existing native Fetch behavior.
   incremental network response streaming/backpressure remains outstanding.
 - The latest scoped `cargo check -p glass-browser --features native-engine
   --lib --test native_engine --locked --quiet` passed with existing dead-code
-  warnings only; the focused worker regression is recorded below.
+  warnings only. The extended process-backed
+  `native_content_process_http_navigation_uses_parent_cookie_authority` test
+  also passed (1 passed; 21.17 seconds); it is recorded below.
 - `cargo fmt --all -- --check`, `git diff --check`, release-documentation
-  truth, documentation depth, and TUI shortcut inventory checks pass.
-  Documentation coverage remains blocked only by the existing missing live
-  MCP schema measurement ``| Serialized `tools` array | 173,741 UTF-8 bytes |``
-  in `docs/mcp-schema-budget.md`.
+  truth, documentation depth, and TUI shortcut inventory checks pass. The
+  latest static doc reports cover 1,471 Markdown files with zero current-claim
+  failures, 93 current guides and 19 contracts, and 15 implementation shortcut
+  keys/63 documentation markers. The link/inventory coverage check was not
+  rerun because its prior attempt reported the live MCP schema size as 173,741
+  bytes while `docs/mcp-schema-budget.md` records 173,237; the `glass` debug
+  binary has not been rebuilt in this checkout.
 - Standard buffered Fetch emitted during dedicated-worker initialization and
   while handling an explicit page `Worker.postMessage` now uses the parent
   broker. The protocol validates the captured page owner separately from the
@@ -311,9 +316,18 @@ projection and existing native Fetch behavior.
   `native_runtime_service_worker_fetch_open_window_resumes_navigation`
   regression also passed (1 passed; 34.25 seconds) on an explicit 4 MiB test
   thread; the harness's default 2 MiB stack overflows on this nested navigation
-  path. Parser-discovered initial scripts and stylesheets/images/fonts/media
-  remain child-loader requests. Service Worker-handled navigation responses
-  and the full child profile/read/write path also remain outstanding.
+  path. Parser-discovered HTTP(S) classic and module scripts, including static
+  module dependencies, now use the parent page-script broker during initial
+  loading as well as explicit script turns. The parent binds these requests to
+  the active owner or captured load generation/context/frame and, for a
+  parent-loaded navigation, its observed final document URL. After each script
+  response it returns only the URL-scoped visible cookie projection; the
+  process-backed regression was extended and passed (1 passed; 21.17 seconds),
+  checking request-cookie selection, response-cookie acceptance, and HttpOnly
+  invisibility during parser execution. The regression directly covers a
+  classic parser script, not the initial module graph. Stylesheets, images,
+  fonts, media, Service Worker-handled navigation responses, and the full child
+  profile/read/write path remain outstanding.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.

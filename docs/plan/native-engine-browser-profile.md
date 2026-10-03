@@ -355,12 +355,13 @@ loader/cache state, queues cookie changes for the next parent response, and
 aborts tasks when their worker routes are removed. The child also selects the
 earliest due DedicatedWorker, SharedWorker, or ServiceWorker timer while idle
 on IPC, runs a bounded timer turn through the existing host-command queues,
-and persists its loader/cache and cookie effects. Page-facing worker messages
-remain queued until a parent response can carry them. Streaming upload
-commands and fetch commands encountered while the `respondWith()` response is
-still pending can still delay settlement. Browser-facing effects from later
-lifetime callbacks remain queued in the child rather than delivered
-out-of-band to the parent.
+and persists its loader/cache and cookie effects. The native runtime now has a
+bounded effect-ready notification and owner-pump path that routes later
+browser-facing lifetime effects to their exact target and frame without waiting
+for a user request; process-backed delivery is not yet verified. Other
+page-facing worker messages remain queued until a parent response can carry
+them. Streaming upload commands and fetch commands encountered while the
+`respondWith()` response is still pending can still delay settlement.
 Process-backed HTTP evidence, those remaining command paths, WPT, CI, and
 cross-platform validation remain completion gates for Slice 839.
 

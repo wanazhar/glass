@@ -46,6 +46,7 @@ pub use config::{
     MAX_NATIVE_SCHEDULER_TASKS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeEngineConfig,
     NativeEngineLimits, NativeFixture, Viewport,
 };
+pub(crate) use content_process::NativeContentAsyncEffectNotification;
 #[doc(hidden)]
 pub use content_process::run_native_content_worker;
 pub use css::NativeColor;
@@ -64,6 +65,7 @@ pub use dialog::{
 };
 pub(crate) use dom::NativeNodeSubtreeTransfer;
 pub use dom::{NativeDocument, NativeNode, NativeNodeId, NativeNodeKind, NativeSemanticNode};
+pub(crate) use engine::NativeAsyncEffectTurn;
 pub(crate) use engine::parse_point_target;
 pub use engine::{
     NativeActionResult, NativeActionabilityReason, NativeDiagnosticsSnapshot,

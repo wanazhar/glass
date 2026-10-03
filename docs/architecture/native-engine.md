@@ -31,25 +31,73 @@ after the independent response is ready, then resolves its promise callback in
 the same worker realm. The content child multiplexes owned fetch-task
 completions and the earliest due DedicatedWorker, SharedWorker, and
 ServiceWorker timer with incoming IPC. Timer turns run through the existing
-bounded worker queues; resulting loader/cache state is persisted and cookie
-changes are queued for the next parent response. Worker-route removal aborts
-outstanding fetch tasks.
+bounded worker queues; resulting loader/cache state is persisted. Slice 841's
+owner pump now requests the corresponding page turn so queued browser-facing
+effects and cookie changes can cross back into the backend cascade. The
+process-backed end-to-end delivery path is still unverified. Worker-route
+removal aborts outstanding fetch tasks.
 Content-worker stdin has one blocking reader: framed dialog decisions are
 routed to the synchronous dialog host, while ordinary requests go to the
 asynchronous worker loop. This prevents competing stdin readers; a socket-free
 regression verifies the two routes, but does not claim process-backed dialog
 or out-of-band browser-effect delivery.
-Worker timer and lifetime effects are still delivered at an operation
-boundary: effects produced while the content child is idle remain queued until
-the next parent request. Slice 840 provides bounded asynchronous event
-notifications over a single bounded stdout reader; Slice 841 covers the
-owner-side event pump and exact target/frame routing required to remove that
-gap. Until Slice 841 is complete, the notifications do not automatically run
-page callbacks.
+Slice 840 adds bounded asynchronous effect-ready notifications over the single
+bounded stdout reader. The native runtime now starts a wake task, drains
+notifications from live owners, validates the exact context/frame route,
+advances that page's script turn, and passes resulting events, frame scripts,
+and browser effects through the existing bounded cascade. Its pending queue is
+bounded by the maximum live target/frame owner count; pump failures are
+retained and surfaced by later backend operations. Shutdown uses a dedicated
+cancellation signal, separate from ordinary content-event wakeups, to drop an
+in-flight owner-turn future before joining the pump and closing engines. A
+focused future-drop regression verifies that the pending operation's owner
+test lock is released, and the existing cancelled-dialog identity cleanup
+regression passes. Dropping the runtime's backend handle requests stop even
+while the pump temporarily owns a strong internal reference; a lifecycle test
+joins that task. Runtime-level blocked-owner shutdown remains unverified.
+These changes do not invoke Chromium or CDP.
+
+CI runs the full native-engine feature suite on Linux and the socket-free
+`asynchronous_effect`, `async_effect`, and `dropping_runtime_backend` test
+filters on macOS and Windows. This adds cross-platform compile/runtime coverage
+for owner routing without claiming process-backed delivery on those runners;
+green exact-source CI evidence is still required.
+
+Slice 841 remains in progress. The pump now snapshots stable target/frame owner
+handles under the target registry, then releases that registry before waiting
+on an individual owner; dispatch likewise validates and snapshots the exact
+owner before its script turn. Parent-frame event projection and frame-script
+routing now snapshot frame topology and owner handles before awaiting frame
+owners. Socket-free pump and parent-frame regressions hold an owner during each
+wait and verify that the target registry remains available, then verify the
+operation settles after release. The frame-event test exercises the validated
+route phase directly because local `fixture://` documents have opaque origins;
+it proves lock liveness, not successful event projection. This does not yet
+prove independent effect delivery: owner draining remains sequential.
+ServiceWorker-client synchronization now has a dedicated async gate, snapshots
+active/parked target and frame state, reconciles frame trees without the shared
+target registry, and validates target/owner identity before committing; after
+three topology conflicts it returns an explicit selection error. Registration
+and owner waits happen after releasing the registry. A second topology check
+precedes synchronous client-lease persistence,
+which still runs while the registry is held, and client replacement remains
+sequential. The gate prevents overlapping sync runs, but a blocked owner can
+still delay this synchronization cascade. The exact target/frame snapshot is
+checked again after asynchronous per-owner client replacement; detected drift
+releases the gate and retries the full sync against a fresh snapshot, with an
+explicit selection error after three conflicts. This prevents a successful
+return with a detected stale snapshot, but earlier owners can temporarily see
+the prior list before the retry finishes, so atomic publication across owners
+is not guaranteed. Socket-free regressions cover both drift while waiting for a
+parked owner and drift after the first owner has received its replacement list;
+the latter confirms the sync retries and preserves the changed topology.
+Process-backed timer/lifetime delivery, independent owner ordering, stale-owner
+teardown, queue overflow, relevant WPT cases, and remote cross-platform CI
+remain open.
 Streaming upload fetches and fetch commands encountered while the
-`respondWith()` response is still pending can still delay settlement.
-Browser-facing effects produced by later lifetime callbacks are queued in the
-child and are not delivered out-of-band to the parent yet. The first
+`respondWith()` response is still pending can still delay settlement. Browser-
+facing effects from later lifetime callbacks now have an owner-pump delivery
+path, but its process-backed timer/lifetime behavior remains unverified. The first
 `respondWith()` now suppresses later registered FetchEvent listeners, with a
 socket-free regression. `onfetch` now participates in that same ordered
 sequence: replacement preserves its registration position, while

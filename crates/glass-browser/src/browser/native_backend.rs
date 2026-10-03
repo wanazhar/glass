@@ -4,29 +4,32 @@
 //! lifecycle state, while this module translates only the stable
 //! `browser_backend` contract.
 //!
-//! The synchronous guards intentionally span content-worker awaits. The
-//! backend's operation boundary keeps the active target, frame registry, and
-//! engine transactionally aligned; splitting these guards would permit a
-//! second request to observe or mutate a half-reconciled frame topology.
+//! Some backend operations still hold the target registry across
+//! content-worker awaits to keep frame topology transactional. The async effect
+//! pump and parent-frame/script owner routes snapshot state before waiting.
+//! Removing the remaining waits requires reconciling a topology snapshot and
+//! validating target/frame identities before commit; simply dropping the guard
+//! could expose or restore a half-reconciled frame tree.
 #![allow(clippy::await_holding_lock)]
 
 use super::native_engine::NativeResourceLoader;
 use super::native_engine::{
     MAX_NATIVE_COOKIE_PROFILE_ENTRIES, MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION,
-    NativeAction, NativeCookieChange, NativeDialogControlPlane, NativeDialogController,
-    NativeEffect, NativeEngine, NativeEngineConfig, NativeEngineError, NativeEventKind, NativeFile,
-    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
-    NativeFrameScriptWindow, NativeHistoryDirection, NativeInspectionSnapshot,
-    NativeLayoutSnapshot, NativeNavigationCancellation, NativeNavigationMethod,
-    NativeNavigationRequest, NativeNodeSubtreeTransfer, NativeOrigin, NativePageMessagePortCommand,
-    NativePendingDialog, NativePoint, NativePopupRequest, NativePostMessageRequest,
-    NativePreflightAction, NativeRequestBody, NativeScriptCommand,
-    NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
-    NativeSharedWorkerCreateRequest, NativeSharedWorkerStorageKey, NativeSurface,
-    NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerMessage, NativeWorkerRegistry, Viewport,
-    parse_point_target, synchronize_service_worker_client_leases, validate_message_port_transfers,
-    validate_page_message_port_command, validate_target_navigation_payload,
+    NativeAction, NativeAsyncEffectTurn, NativeContentAsyncEffectNotification, NativeCookieChange,
+    NativeDialogControlPlane, NativeDialogController, NativeEffect, NativeEngine,
+    NativeEngineConfig, NativeEngineError, NativeEventKind, NativeFile, NativeFrameScriptBinding,
+    NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
+    NativeHistoryDirection, NativeInspectionSnapshot, NativeLayoutSnapshot,
+    NativeNavigationCancellation, NativeNavigationMethod, NativeNavigationRequest,
+    NativeNodeSubtreeTransfer, NativeOrigin, NativePageMessagePortCommand, NativePendingDialog,
+    NativePoint, NativePopupRequest, NativePostMessageRequest, NativePreflightAction,
+    NativeRequestBody, NativeScriptCommand, NativeServiceWorkerClientMessage,
+    NativeServiceWorkerOpenWindowRequest, NativeSharedWorkerCreateRequest,
+    NativeSharedWorkerStorageKey, NativeSurface, NativeTargetPreflight, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerMessage,
+    NativeWorkerRegistry, Viewport, parse_point_target, synchronize_service_worker_client_leases,
+    validate_message_port_transfers, validate_page_message_port_command,
+    validate_target_navigation_payload,
 };
 use crate::browser::session::{
     FrameInfo, GeoLocation, NavigationControlOutcome, NetworkConditions, PageTargetInfo,
@@ -44,6 +47,9 @@ use crate::browser_backend::{
 };
 use base64::Engine as _;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::future::Future;
+use std::ops::Deref;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Stable backend ID for the Glass-owned native engine.
@@ -55,6 +61,9 @@ const NATIVE_MAX_TARGETS: usize = crate::browser::session::TOPOLOGY_MAX_TARGETS;
 const NATIVE_MAX_FRAMES: usize = crate::browser::session::TOPOLOGY_MAX_FRAMES;
 const NATIVE_MAX_CLOSED_TARGETS: usize = NATIVE_MAX_TARGETS * 4;
 const NATIVE_MAX_MESSAGE_PORT_ROUTES: usize = NATIVE_MAX_TARGETS * MAX_NATIVE_EFFECTS;
+const MAX_NATIVE_ASYNC_EFFECT_OWNERS: usize = NATIVE_MAX_TARGETS * (NATIVE_MAX_FRAMES + 1);
+const MAX_NATIVE_SERVICE_WORKER_TOPOLOGY_CONFLICTS: usize = 3;
+type NativeEngineOwner = Arc<tokio::sync::Mutex<NativeEngine>>;
 
 /// Native visual capture is encoded by the software renderer. The option
 /// shape intentionally matches the shared visual contract so the CLI and
@@ -62,8 +71,9 @@ const NATIVE_MAX_MESSAGE_PORT_ROUTES: usize = NATIVE_MAX_TARGETS * MAX_NATIVE_EF
 const NATIVE_CAPTURE_MAX_AXIS: u32 = 16_384;
 const NATIVE_CAPTURE_MAX_PIXELS: usize = 4 * 1024 * 1024;
 
+#[derive(Clone)]
 struct NativeParkedFrame {
-    engine: NativeEngine,
+    engine: NativeEngineOwner,
     parent_id: Option<String>,
     owner_node_index: Option<u32>,
     sandboxed_modals: bool,
@@ -75,9 +85,10 @@ struct NativeFrameDiscoveryStamp {
     document_revision: u64,
 }
 
+#[derive(Clone)]
 struct NativeRetiredFrame {
     frame_id: String,
-    engine: NativeEngine,
+    engine: NativeEngineOwner,
 }
 
 #[derive(Clone)]
@@ -270,6 +281,7 @@ fn next_ready_native_browser_effect_source(
     None
 }
 
+#[derive(Clone)]
 struct NativeFrameState {
     active_frame_id: String,
     active_parent_id: Option<String>,
@@ -373,8 +385,43 @@ impl NativeFrameState {
     }
 }
 
+fn native_frame_state_matches_snapshot(
+    current: &NativeFrameState,
+    snapshot: &NativeFrameState,
+) -> bool {
+    current.active_frame_id == snapshot.active_frame_id
+        && current.active_parent_id == snapshot.active_parent_id
+        && current.active_owner_node_index == snapshot.active_owner_node_index
+        && current.active_sandboxed_modals == snapshot.active_sandboxed_modals
+        && current.focused_frame_id == snapshot.focused_frame_id
+        && current.next_frame_number == snapshot.next_frame_number
+        && current.discovered_generation == snapshot.discovered_generation
+        && current.discovered_documents == snapshot.discovered_documents
+        && current.observed_frame_owner_removal_sequences
+            == snapshot.observed_frame_owner_removal_sequences
+        && current.parked.len() == snapshot.parked.len()
+        && current.parked.iter().all(|(frame_id, frame)| {
+            snapshot.parked.get(frame_id).is_some_and(|expected| {
+                Arc::ptr_eq(&frame.engine, &expected.engine)
+                    && frame.parent_id == expected.parent_id
+                    && frame.owner_node_index == expected.owner_node_index
+                    && frame.sandboxed_modals == expected.sandboxed_modals
+            })
+        })
+        && current.pending_retired.len() == snapshot.pending_retired.len()
+        && current
+            .pending_retired
+            .iter()
+            .zip(&snapshot.pending_retired)
+            .all(|(retired, expected)| {
+                retired.frame_id == expected.frame_id
+                    && Arc::ptr_eq(&retired.engine, &expected.engine)
+            })
+}
+
+#[derive(Clone)]
 struct NativeParkedTarget {
-    engine: NativeEngine,
+    engine: NativeEngineOwner,
     opener_id: Option<String>,
     frames: NativeFrameState,
     name: Option<String>,
@@ -395,6 +442,64 @@ struct NativeTargetState {
     closed: BTreeMap<String, NativeClosedTarget>,
     window_handles: BTreeMap<(String, String), String>,
     next_target_number: u64,
+}
+
+struct NativeServiceWorkerTargetSnapshot {
+    target_id: String,
+    engine: NativeEngineOwner,
+    original_frames: NativeFrameState,
+    reconciled_frames: NativeFrameState,
+    active: bool,
+}
+
+fn native_service_worker_topology_matches_snapshot(
+    targets: &NativeTargetState,
+    active_engine: &NativeEngineOwner,
+    snapshots: &[NativeServiceWorkerTargetSnapshot],
+    committed_frames: bool,
+) -> bool {
+    let Some(active_snapshot) = snapshots.first() else {
+        return false;
+    };
+    if !active_snapshot.active || snapshots.iter().skip(1).any(|snapshot| snapshot.active) {
+        return false;
+    }
+    let active_frames = if committed_frames {
+        &active_snapshot.reconciled_frames
+    } else {
+        &active_snapshot.original_frames
+    };
+    targets.active_target_id.as_deref() == Some(active_snapshot.target_id.as_str())
+        && Arc::ptr_eq(active_engine, &active_snapshot.engine)
+        && native_frame_state_matches_snapshot(&targets.active_frames, active_frames)
+        && targets.parked.len() == snapshots.len().saturating_sub(1)
+        && snapshots.iter().skip(1).all(|snapshot| {
+            let expected_frames = if committed_frames {
+                &snapshot.reconciled_frames
+            } else {
+                &snapshot.original_frames
+            };
+            targets
+                .parked
+                .get(&snapshot.target_id)
+                .is_some_and(|target| {
+                    Arc::ptr_eq(&target.engine, &snapshot.engine)
+                        && native_frame_state_matches_snapshot(&target.frames, expected_frames)
+                })
+        })
+}
+
+struct NativeServiceWorkerSyncOwner {
+    engine: NativeEngineOwner,
+    frame_type: &'static str,
+    focused: bool,
+    active: bool,
+}
+
+#[cfg(test)]
+struct NativeServiceWorkerPublicationTestHook {
+    reached: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
 }
 
 fn native_frame_route_in_state(
@@ -546,17 +651,64 @@ impl NativeTargetState {
     }
 }
 
-/// Semantic adapter around the native browser's target-owned engine pool.
-pub struct NativeEngineBackend {
+/// Shared state for the semantic adapter and its runtime-owned event pump.
+#[doc(hidden)]
+pub struct NativeEngineBackendInner {
     profile: BackendProfile,
-    engine: Mutex<NativeEngine>,
+    engine: Mutex<NativeEngineOwner>,
     content_process_event_notify: Arc<tokio::sync::Notify>,
+    async_effect_pump_stop_notify: Arc<tokio::sync::Notify>,
+    async_effect_pump_stopped: Arc<AtomicBool>,
+    async_effect_pump_started: AtomicBool,
+    async_effect_pump_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    async_effect_pump_error: Mutex<Option<BrowserBackendError>>,
+    pending_async_effect_notifications: Mutex<VecDeque<NativeContentAsyncEffectNotification>>,
     dialog_control: NativeDialogControlPlane,
     targets: Mutex<NativeTargetState>,
     shared_workers: Mutex<NativeSharedWorkerCoordinator>,
     browser_effect_cursor: Mutex<NativeBrowserEffectSource>,
     page_message_port_routes: Mutex<BTreeMap<String, NativePageMessagePortRoute>>,
     navigation_control: Mutex<NativeNavigationControlState>,
+    service_worker_client_sync: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    service_worker_client_publication_hook:
+        Mutex<Option<Arc<NativeServiceWorkerPublicationTestHook>>>,
+}
+
+/// Semantic adapter around the native browser's target-owned engine pool.
+pub struct NativeEngineBackend {
+    inner: Arc<NativeEngineBackendInner>,
+    pump_handle: bool,
+}
+
+impl Deref for NativeEngineBackend {
+    type Target = NativeEngineBackendInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl Drop for NativeEngineBackendInner {
+    fn drop(&mut self) {
+        request_async_effect_pump_shutdown(self);
+    }
+}
+
+impl Drop for NativeEngineBackend {
+    fn drop(&mut self) {
+        if !self.pump_handle {
+            request_async_effect_pump_shutdown(&self.inner);
+        }
+    }
+}
+
+fn request_async_effect_pump_shutdown(inner: &NativeEngineBackendInner) {
+    inner
+        .async_effect_pump_stopped
+        .store(true, Ordering::Release);
+    inner.async_effect_pump_stop_notify.notify_one();
+    inner.content_process_event_notify.notify_one();
 }
 
 /// One atomic semantic/layout snapshot together with the frame that owns it.
@@ -588,23 +740,353 @@ impl NativeEngineBackend {
         let shared_workers = NativeSharedWorkerCoordinator::new(engine.clone_resource_loader());
         let active_name = native_window_name(&engine.config().window_name);
         Ok(Self {
-            profile,
-            engine: Mutex::new(engine),
-            content_process_event_notify,
-            dialog_control,
-            targets: Mutex::new(NativeTargetState::new(active_target_id, active_name)),
-            shared_workers: Mutex::new(shared_workers),
-            browser_effect_cursor: Mutex::new(NativeBrowserEffectSource::Popup),
-            page_message_port_routes: Mutex::new(BTreeMap::new()),
-            navigation_control: Mutex::new(NativeNavigationControlState {
-                next_id: 1,
-                active: None,
+            inner: Arc::new(NativeEngineBackendInner {
+                profile,
+                engine: Mutex::new(Arc::new(tokio::sync::Mutex::new(engine))),
+                content_process_event_notify,
+                async_effect_pump_stop_notify: Arc::new(tokio::sync::Notify::new()),
+                async_effect_pump_stopped: Arc::new(AtomicBool::new(false)),
+                async_effect_pump_started: AtomicBool::new(false),
+                async_effect_pump_task: Mutex::new(None),
+                async_effect_pump_error: Mutex::new(None),
+                pending_async_effect_notifications: Mutex::new(VecDeque::new()),
+                dialog_control,
+                targets: Mutex::new(NativeTargetState::new(active_target_id, active_name)),
+                shared_workers: Mutex::new(shared_workers),
+                browser_effect_cursor: Mutex::new(NativeBrowserEffectSource::Popup),
+                page_message_port_routes: Mutex::new(BTreeMap::new()),
+                navigation_control: Mutex::new(NativeNavigationControlState {
+                    next_id: 1,
+                    active: None,
+                }),
+                service_worker_client_sync: tokio::sync::Mutex::new(()),
+                #[cfg(test)]
+                service_worker_client_publication_hook: Mutex::new(None),
             }),
+            pump_handle: false,
         })
     }
 
+    pub(crate) fn start_async_effect_pump(&self) -> Result<(), BrowserBackendError> {
+        if self
+            .async_effect_pump_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(BrowserBackendError::Lifecycle {
+                operation: "start native asynchronous effect pump".into(),
+                state: "already-started".into(),
+                reason: "the native runtime event pump can only be started once".into(),
+            });
+        }
+
+        let handle = tokio::runtime::Handle::try_current().map_err(|error| {
+            self.async_effect_pump_started
+                .store(false, Ordering::Release);
+            BrowserBackendError::Lifecycle {
+                operation: "start native asynchronous effect pump".into(),
+                state: "runtime-unavailable".into(),
+                reason: error.to_string(),
+            }
+        })?;
+        let inner = Arc::downgrade(&self.inner);
+        let notify = Arc::clone(&self.content_process_event_notify);
+        let stop_notify = Arc::clone(&self.async_effect_pump_stop_notify);
+        let stopped = Arc::clone(&self.async_effect_pump_stopped);
+        let task_notify = Arc::clone(&notify);
+        let task_stop_notify = Arc::clone(&stop_notify);
+        let task_stopped = Arc::clone(&stopped);
+        let task = tokio::spawn(async move {
+            loop {
+                if task_stopped.load(Ordering::Acquire) {
+                    return;
+                }
+                let notified = task_notify.notified();
+                if task_stopped.load(Ordering::Acquire) {
+                    return;
+                }
+                notified.await;
+                if task_stopped.load(Ordering::Acquire) {
+                    return;
+                }
+
+                let weak_inner = inner.clone();
+                let blocking_handle = handle.clone();
+                let pump_cancel_notify = Arc::clone(&task_stop_notify);
+                let pump_result = tokio::task::spawn_blocking(move || {
+                    let Some(inner) = weak_inner.upgrade() else {
+                        return None;
+                    };
+                    let backend = NativeEngineBackend {
+                        inner,
+                        pump_handle: true,
+                    };
+                    blocking_handle.block_on(run_native_async_effect_pump_operation(
+                        &pump_cancel_notify,
+                        backend.pump_pending_async_effect_notifications(),
+                    ))
+                })
+                .await;
+
+                let failure = match pump_result {
+                    Ok(None) => return,
+                    Ok(Some(Ok(()))) => continue,
+                    Ok(Some(Err(_))) if task_stopped.load(Ordering::Acquire) => return,
+                    Ok(Some(Err(error))) => error,
+                    Err(error) => BrowserBackendError::Lifecycle {
+                        operation: "native asynchronous effect pump".into(),
+                        state: "task-failed".into(),
+                        reason: error.to_string(),
+                    },
+                };
+                if let Some(inner) = inner.upgrade() {
+                    if let Ok(mut slot) = inner.async_effect_pump_error.lock()
+                        && slot.is_none()
+                    {
+                        *slot = Some(failure);
+                    }
+                }
+                stopped.store(true, Ordering::Release);
+                notify.notify_one();
+                return;
+            }
+        });
+
+        let mut task_slot = self
+            .async_effect_pump_task
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Initialize, "native event pump"))?;
+        *task_slot = Some(task);
+        Ok(())
+    }
+
+    async fn stop_async_effect_pump(&self) -> Result<(), BrowserBackendError> {
+        request_async_effect_pump_shutdown(&self.inner);
+        let task = self
+            .async_effect_pump_task
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Close, "native event pump"))?
+            .take();
+        if let Some(task) = task {
+            task.await.map_err(|error| BrowserBackendError::Lifecycle {
+                operation: "stop native asynchronous effect pump".into(),
+                state: "task-failed".into(),
+                reason: error.to_string(),
+            })?;
+        }
+        Ok(())
+    }
+
+    fn check_async_effect_pump_error(&self) -> Result<(), BrowserBackendError> {
+        let error = self
+            .async_effect_pump_error
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Effects, "native event pump"))?
+            .clone();
+        error.map_or(Ok(()), Err)
+    }
+
+    async fn pump_pending_async_effect_notifications(&self) -> Result<(), BrowserBackendError> {
+        let notifications = self.take_live_async_effect_notifications().await?;
+        {
+            let mut pending = self
+                .pending_async_effect_notifications
+                .lock()
+                .map_err(|_| poisoned_lock_error(BackendOperation::Effects, "async effects"))?;
+            if pending.len().saturating_add(notifications.len()) > MAX_NATIVE_ASYNC_EFFECT_OWNERS {
+                return Err(BrowserBackendError::SelectionFailed {
+                    reason: "native asynchronous effect queue exceeded its live-owner bound".into(),
+                });
+            }
+            pending.extend(notifications);
+        }
+
+        loop {
+            let notification = self
+                .pending_async_effect_notifications
+                .lock()
+                .map_err(|_| poisoned_lock_error(BackendOperation::Effects, "async effects"))?
+                .front()
+                .cloned();
+            let Some(notification) = notification else {
+                return Ok(());
+            };
+
+            self.dispatch_async_effect_notification(&notification)
+                .await?;
+
+            let mut pending = self
+                .pending_async_effect_notifications
+                .lock()
+                .map_err(|_| poisoned_lock_error(BackendOperation::Effects, "async effects"))?;
+            let Some(accepted) = pending.pop_front() else {
+                return Err(BrowserBackendError::Lifecycle {
+                    operation: "native asynchronous effect pump".into(),
+                    state: "queue-corrupt".into(),
+                    reason: "accepted notification disappeared before acknowledgement".into(),
+                });
+            };
+            if accepted != notification {
+                return Err(BrowserBackendError::Lifecycle {
+                    operation: "native asynchronous effect pump".into(),
+                    state: "queue-corrupt".into(),
+                    reason: "notification order changed before acknowledgement".into(),
+                });
+            }
+        }
+    }
+
+    async fn take_live_async_effect_notifications(
+        &self,
+    ) -> Result<Vec<NativeContentAsyncEffectNotification>, BrowserBackendError> {
+        // Snapshot stable owner handles while the topology is locked, then
+        // release the global registry before waiting on any page owner.
+        let owners = {
+            let targets = self.lock_targets(BackendOperation::Effects)?;
+            let mut owners = Vec::new();
+            if targets.active_target_id.is_some() {
+                owners.push(
+                    self.engine
+                        .lock()
+                        .map_err(|_| poisoned_lock_error(BackendOperation::Effects, "engine"))?
+                        .clone(),
+                );
+            }
+            owners.extend(
+                targets
+                    .active_frames
+                    .parked
+                    .values()
+                    .map(|frame| Arc::clone(&frame.engine)),
+            );
+            for target in targets.parked.values() {
+                owners.push(Arc::clone(&target.engine));
+                owners.extend(
+                    target
+                        .frames
+                        .parked
+                        .values()
+                        .map(|frame| Arc::clone(&frame.engine)),
+                );
+            }
+            owners
+        };
+        let mut notifications = Vec::new();
+        for owner in owners {
+            let mut engine = owner.lock_owned().await;
+            notifications.extend(
+                engine
+                    .take_async_effect_notifications()
+                    .map_err(native_error)?,
+            );
+        }
+
+        if notifications.len() > MAX_NATIVE_ASYNC_EFFECT_OWNERS {
+            return Err(BrowserBackendError::SelectionFailed {
+                reason: "native content owners exceeded the asynchronous notification bound".into(),
+            });
+        }
+        Ok(notifications)
+    }
+
+    async fn dispatch_async_effect_notification(
+        &self,
+        notification: &NativeContentAsyncEffectNotification,
+    ) -> Result<(), BrowserBackendError> {
+        let owner =
+            {
+                let targets = self.lock_targets(BackendOperation::Effects)?;
+                let route = native_frame_route_in_state(&targets, &notification.frame_id)
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                        reason: format!(
+                            "native asynchronous effect owner {} / {} is no longer live",
+                            notification.context_id, notification.frame_id
+                        ),
+                    })?;
+                if native_frame_route_owner_id(&targets, &route)
+                    != Some(notification.context_id.as_str())
+                {
+                    return Err(BrowserBackendError::SelectionFailed {
+                        reason: format!(
+                            "native asynchronous effect frame {} does not belong to context {}",
+                            notification.frame_id, notification.context_id
+                        ),
+                    });
+                }
+
+                match route {
+                    NativeFrameRoute::ActiveSelected => self
+                        .engine
+                        .lock()
+                        .map_err(|_| poisoned_lock_error(BackendOperation::Effects, "engine"))?
+                        .clone(),
+                    NativeFrameRoute::ActiveParked => {
+                        let frame = targets
+                            .active_frames
+                            .parked
+                            .get(&notification.frame_id)
+                            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                                reason: "native asynchronous effect frame disappeared".into(),
+                            })?;
+                        Arc::clone(&frame.engine)
+                    }
+                    NativeFrameRoute::ParkedSelected { target_id } => {
+                        let target = targets.parked.get(&target_id).ok_or_else(|| {
+                            BrowserBackendError::SelectionFailed {
+                                reason: "native asynchronous effect target disappeared".into(),
+                            }
+                        })?;
+                        Arc::clone(&target.engine)
+                    }
+                    NativeFrameRoute::ParkedParked { target_id } => {
+                        let target = targets.parked.get(&target_id).ok_or_else(|| {
+                            BrowserBackendError::SelectionFailed {
+                                reason: "native asynchronous effect target disappeared".into(),
+                            }
+                        })?;
+                        let frame = target
+                            .frames
+                            .parked
+                            .get(&notification.frame_id)
+                            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                                reason: "native asynchronous effect frame disappeared".into(),
+                            })?;
+                        Arc::clone(&frame.engine)
+                    }
+                }
+            };
+        let runtime = {
+            let mut engine = owner.lock_owned().await;
+            run_native_async_effect_turn(&mut engine, notification).await?
+        };
+
+        tracing::debug!(
+            context_id = %notification.context_id,
+            frame_id = %notification.frame_id,
+            sequence = notification.sequence,
+            "dispatching asynchronous native content effects"
+        );
+        self.sync_target_name(&notification.context_id, &runtime.window_name)?;
+        self.process_selected_frame_events(&notification.frame_id, runtime.events)
+            .await?;
+        self.process_pending_frame_scripts(runtime.frame_scripts)
+            .await?;
+        self.process_pending_browser_effects(
+            runtime.browser.0,
+            runtime.browser.1,
+            runtime.browser.2,
+            runtime.browser.3,
+            runtime.browser.4,
+            runtime.browser.5,
+            runtime.browser.6,
+        )
+        .await?;
+        self.synchronize_native_service_worker_clients().await?;
+        Ok(())
+    }
+
     pub(crate) fn current_revision(&self) -> Result<u64, BrowserBackendError> {
-        Ok(self.lock_engine(BackendOperation::Evidence)?.revision())
+        Ok(self.try_lock_engine(BackendOperation::Evidence)?.revision())
     }
 
     pub(crate) fn pending_dialog_control(
@@ -724,7 +1206,7 @@ impl NativeEngineBackend {
     pub fn semantic_nodes(
         &self,
     ) -> Result<Vec<super::native_engine::NativeSemanticNode>, BrowserBackendError> {
-        self.lock_engine(BackendOperation::Evidence)?
+        self.try_lock_engine(BackendOperation::Evidence)?
             .semantic_nodes()
             .map_err(native_error)
     }
@@ -732,7 +1214,7 @@ impl NativeEngineBackend {
     /// Capture the current logical native surface as PNG bytes.
     pub fn capture_png(&self) -> Result<Vec<u8>, BrowserBackendError> {
         let targets = self.lock_targets(BackendOperation::Capture)?;
-        let engine = self.lock_engine_raw(BackendOperation::Capture)?;
+        let engine = self.try_lock_engine_raw(BackendOperation::Capture)?;
         let frame_id = targets.active_frames.active_frame_id.clone();
         capture_native_frame_surface(&engine, &targets.active_frames, &frame_id)
             .and_then(|surface| surface.to_png().map_err(native_error))
@@ -770,7 +1252,7 @@ impl NativeEngineBackend {
         })?;
         self.synchronize_native_service_worker_clients().await?;
         let mut targets = self.lock_targets(BackendOperation::Capture)?;
-        let mut engine = self.lock_engine_raw(BackendOperation::Capture)?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Capture).await?;
         let target_id =
             targets
                 .active_target_id
@@ -882,7 +1364,7 @@ impl NativeEngineBackend {
                     }
                 })?;
                 require_context_id(context_id, &active_context_id)?;
-                let mut engine = self.lock_engine_raw(BackendOperation::Action)?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Action).await?;
                 let root_frame_id = targets.active_frames.active_frame_id.clone();
                 reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
                 find_native_point_frame(&targets.active_frames, &root_frame_id, &engine, x, y, 0)?
@@ -902,7 +1384,7 @@ impl NativeEngineBackend {
         } else {
             NativeAction::ClickWithModifiers { target, modifiers }
         };
-        let proxy_updates = self.window_proxy_updates(&frame_id)?;
+        let proxy_updates = self.window_proxy_updates(&frame_id).await?;
         let (revision, accepted, runtime_effects, owner_id) = self
             .apply_action_to_native_frame(route, &frame_id, action, &proxy_updates)
             .await?;
@@ -1023,7 +1505,7 @@ impl NativeEngineBackend {
                         reason: "select an available native page target before acting".into(),
                     })?;
             require_context_id(context_id, &active_context_id)?;
-            let mut engine = self.lock_engine_raw(BackendOperation::Action)?;
+            let mut engine = self.lock_engine_raw(BackendOperation::Action).await?;
             let root_frame_id = targets.active_frames.active_frame_id.clone();
             reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
             let candidate_frame_ids = std::iter::once(root_frame_id.clone())
@@ -1037,16 +1519,14 @@ impl NativeEngineBackend {
                         .iter()
                         .try_for_each(|target| engine.resolve_target(target).map(|_| ()))
                 } else {
-                    targets
-                        .active_frames
-                        .parked
-                        .get(&candidate_id)
-                        .ok_or(NativeEngineError::DetachedTarget)
-                        .and_then(|frame| {
-                            locator_targets.iter().try_for_each(|target| {
-                                frame.engine.resolve_target(target).map(|_| ())
-                            })
-                        })
+                    let Some(frame) = targets.active_frames.parked.get(&candidate_id) else {
+                        first_error.get_or_insert(NativeEngineError::DetachedTarget);
+                        continue;
+                    };
+                    let frame_engine = lock_native_engine_owner(&frame.engine).await;
+                    locator_targets
+                        .iter()
+                        .try_for_each(|target| frame_engine.resolve_target(target).map(|_| ()))
                 };
                 match result {
                     Ok(_) => matches.push(candidate_id),
@@ -1082,7 +1562,7 @@ impl NativeEngineBackend {
                 .ok_or_else(|| BrowserBackendError::SelectionFailed {
                     reason: "native locator target frame disappeared before action dispatch".into(),
                 })?;
-        let proxy_updates = self.window_proxy_updates(&frame_id)?;
+        let proxy_updates = self.window_proxy_updates(&frame_id).await?;
         let (revision, accepted, runtime_effects, owner_id) = self
             .apply_action_to_native_frame(route, &frame_id, native_action, &proxy_updates)
             .await?;
@@ -1163,7 +1643,7 @@ impl NativeEngineBackend {
                     })?;
             require_context_id(context_id, &active_context_id)?;
             validate_native_topology_id(frame_id)?;
-            let mut engine = self.lock_engine_raw(BackendOperation::Action)?;
+            let mut engine = self.lock_engine_raw(BackendOperation::Action).await?;
             let root_frame_id = targets.active_frames.active_frame_id.clone();
             reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
             if frame_id != root_frame_id && !targets.active_frames.parked.contains_key(frame_id) {
@@ -1177,7 +1657,7 @@ impl NativeEngineBackend {
                 .ok_or_else(|| BrowserBackendError::SelectionFailed {
                     reason: "native semantic frame disappeared before action dispatch".into(),
                 })?;
-        let proxy_updates = self.window_proxy_updates(frame_id)?;
+        let proxy_updates = self.window_proxy_updates(frame_id).await?;
         let (revision, accepted, runtime_effects, owner_id) = self
             .apply_action_to_native_frame(route, frame_id, native_action, &proxy_updates)
             .await?;
@@ -1230,7 +1710,7 @@ impl NativeEngineBackend {
                     })?;
             require_context_id(context_id, &active_context_id)?;
             validate_native_topology_id(frame_id)?;
-            let mut engine = self.lock_engine_raw(BackendOperation::Action)?;
+            let mut engine = self.lock_engine_raw(BackendOperation::Action).await?;
             let root_frame_id = targets.active_frames.active_frame_id.clone();
             reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
             if frame_id != root_frame_id && !targets.active_frames.parked.contains_key(frame_id) {
@@ -1244,7 +1724,7 @@ impl NativeEngineBackend {
                 .ok_or_else(|| BrowserBackendError::SelectionFailed {
                     reason: "native upload frame disappeared before action dispatch".into(),
                 })?;
-        let proxy_updates = self.window_proxy_updates(frame_id)?;
+        let proxy_updates = self.window_proxy_updates(frame_id).await?;
         let (revision, accepted, runtime_effects, owner_id) = self
             .apply_action_to_native_frame(
                 route,
@@ -1296,7 +1776,7 @@ impl NativeEngineBackend {
         };
         match route {
             NativeFrameRoute::ActiveSelected => {
-                let mut engine = self.lock_engine_raw(BackendOperation::Action)?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Action).await?;
                 engine.set_frame_script_context(frame_script_context);
                 engine
                     .sync_window_proxies(proxy_updates)
@@ -1324,20 +1804,19 @@ impl NativeEngineBackend {
                         reason: "native point target frame disappeared during action dispatch"
                             .into(),
                     })?;
-                frame.engine.set_frame_script_context(frame_script_context);
-                frame
-                    .engine
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
+                frame_engine.set_frame_script_context(frame_script_context);
+                frame_engine
                     .sync_window_proxies(proxy_updates)
                     .await
                     .map_err(native_error)?;
-                let previous_revision = frame.engine.revision();
-                let outcome = frame
-                    .engine
+                let previous_revision = frame_engine.revision();
+                let outcome = frame_engine
                     .action_async(action)
                     .await
                     .map_err(native_error)?;
                 let runtime =
-                    take_native_frame_runtime_effects(&mut frame.engine, previous_revision)?;
+                    take_native_frame_runtime_effects(&mut frame_engine, previous_revision)?;
                 Ok((outcome.revision, outcome.accepted, runtime, owner_id))
             }
             NativeFrameRoute::ParkedSelected { target_id } => {
@@ -1348,19 +1827,18 @@ impl NativeEngineBackend {
                             .into(),
                     }
                 })?;
-                target
-                    .engine
+                let mut target_engine = lock_native_engine_owner(&target.engine).await;
+                target_engine
                     .sync_window_proxies(proxy_updates)
                     .await
                     .map_err(native_error)?;
-                let previous_revision = target.engine.revision();
-                let outcome = target
-                    .engine
+                let previous_revision = target_engine.revision();
+                let outcome = target_engine
                     .action_async(action)
                     .await
                     .map_err(native_error)?;
                 let runtime =
-                    take_native_frame_runtime_effects(&mut target.engine, previous_revision)?;
+                    take_native_frame_runtime_effects(&mut target_engine, previous_revision)?;
                 Ok((outcome.revision, outcome.accepted, runtime, target_id))
             }
             NativeFrameRoute::ParkedParked { target_id } => {
@@ -1377,19 +1855,18 @@ impl NativeEngineBackend {
                             .into(),
                     }
                 })?;
-                frame
-                    .engine
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
+                frame_engine
                     .sync_window_proxies(proxy_updates)
                     .await
                     .map_err(native_error)?;
-                let previous_revision = frame.engine.revision();
-                let outcome = frame
-                    .engine
+                let previous_revision = frame_engine.revision();
+                let outcome = frame_engine
                     .action_async(action)
                     .await
                     .map_err(native_error)?;
                 let runtime =
-                    take_native_frame_runtime_effects(&mut frame.engine, previous_revision)?;
+                    take_native_frame_runtime_effects(&mut frame_engine, previous_revision)?;
                 Ok((outcome.revision, outcome.accepted, runtime, target_id))
             }
         }
@@ -1411,7 +1888,7 @@ impl NativeEngineBackend {
                     }
                 })?;
                 require_context_id(context_id, &active_context_id)?;
-                let mut engine = self.lock_engine_raw(BackendOperation::Action)?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Action).await?;
                 let root_frame_id = targets.active_frames.active_frame_id.clone();
                 reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
                 let Some(focused_frame_id) = targets.active_frames.focused_frame_id.clone() else {
@@ -1429,7 +1906,7 @@ impl NativeEngineBackend {
                 .ok_or_else(|| BrowserBackendError::SelectionFailed {
                     reason: "native focused frame disappeared before key dispatch".into(),
                 })?;
-        let proxy_updates = self.window_proxy_updates(&frame_id)?;
+        let proxy_updates = self.window_proxy_updates(&frame_id).await?;
         let (revision, accepted, runtime_effects, owner_id) = self
             .apply_action_to_native_frame(route, &frame_id, action, &proxy_updates)
             .await?;
@@ -1486,7 +1963,7 @@ impl NativeEngineBackend {
                 reason: "select an available native page target before target preflight".into(),
             });
         }
-        let mut engine = self.lock_engine_raw(BackendOperation::Evidence)?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Evidence).await?;
         let root_frame_id = targets.active_frames.active_frame_id.clone();
         reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
         let frame_ids = std::iter::once(root_frame_id.clone())
@@ -1505,8 +1982,8 @@ impl NativeEngineBackend {
                         reason: "native frame disappeared during target preflight".into(),
                     }
                 })?;
-                frame
-                    .engine
+                let frame_engine = lock_native_engine_owner(&frame.engine).await;
+                frame_engine
                     .preflight_target(target, action)
                     .map_err(native_error)?
             };
@@ -1558,7 +2035,7 @@ impl NativeEngineBackend {
 
     /// Return one atomic page/semantic/layout snapshot for agent discovery.
     pub fn inspection_snapshot(&self) -> Result<NativeInspectionSnapshot, BrowserBackendError> {
-        self.lock_engine(BackendOperation::Evidence)?
+        self.try_lock_engine(BackendOperation::Evidence)?
             .inspection_snapshot()
             .map_err(native_error)
     }
@@ -1568,7 +2045,7 @@ impl NativeEngineBackend {
     pub fn diagnostics(
         &self,
     ) -> Result<super::native_engine::NativeDiagnosticsSnapshot, BrowserBackendError> {
-        self.lock_engine(BackendOperation::Evidence)?
+        self.try_lock_engine(BackendOperation::Evidence)?
             .diagnostics()
             .map_err(native_error)
     }
@@ -1588,7 +2065,7 @@ impl NativeEngineBackend {
                 reason: "select an available native page target before semantic inspection".into(),
             });
         }
-        let mut engine = self.lock_engine_raw(BackendOperation::Evidence)?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Evidence).await?;
         let root_frame_id = targets.active_frames.active_frame_id.clone();
         reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
         let frame_ids = std::iter::once(root_frame_id.clone())
@@ -1612,7 +2089,10 @@ impl NativeEngineBackend {
             snapshots.push(NativeFrameInspectionSnapshot {
                 frame_id,
                 parent_id: frame.parent_id.clone(),
-                inspection: frame.engine.inspection_snapshot().map_err(native_error)?,
+                inspection: lock_native_engine_owner(&frame.engine)
+                    .await
+                    .inspection_snapshot()
+                    .map_err(native_error)?,
             });
         }
         Ok(snapshots)
@@ -1621,7 +2101,8 @@ impl NativeEngineBackend {
     pub async fn cookies(
         &self,
     ) -> Result<Vec<crate::browser::session::Cookie>, BrowserBackendError> {
-        self.lock_engine(BackendOperation::Storage)?
+        self.lock_engine(BackendOperation::Storage)
+            .await?
             .cookies_async()
             .await
             .map_err(native_error)
@@ -1631,14 +2112,16 @@ impl NativeEngineBackend {
         &self,
         cookies: &[crate::browser::session::Cookie],
     ) -> Result<(), BrowserBackendError> {
-        self.lock_engine(BackendOperation::Storage)?
+        self.lock_engine(BackendOperation::Storage)
+            .await?
             .set_cookies_async(cookies)
             .await
             .map_err(native_error)
     }
 
     pub async fn clear_cookies(&self) -> Result<(), BrowserBackendError> {
-        self.lock_engine(BackendOperation::Storage)?
+        self.lock_engine(BackendOperation::Storage)
+            .await?
             .clear_cookies_async()
             .await
             .map_err(native_error)
@@ -1648,14 +2131,16 @@ impl NativeEngineBackend {
         &self,
         conditions: Option<&NetworkConditions>,
     ) -> Result<(), BrowserBackendError> {
-        self.lock_engine(BackendOperation::Navigate)?
+        self.lock_engine(BackendOperation::Navigate)
+            .await?
             .set_network_conditions_async(conditions)
             .await
             .map_err(native_error)
     }
 
     pub async fn set_cpu_throttling(&self, rate: Option<f64>) -> Result<(), BrowserBackendError> {
-        self.lock_engine(BackendOperation::Script)?
+        self.lock_engine(BackendOperation::Script)
+            .await?
             .set_cpu_throttling_async(rate)
             .await
             .map_err(native_error)
@@ -1667,7 +2152,8 @@ impl NativeEngineBackend {
         accept_language: Option<&str>,
         platform: Option<&str>,
     ) -> Result<(), BrowserBackendError> {
-        self.lock_engine(BackendOperation::Script)?
+        self.lock_engine(BackendOperation::Script)
+            .await?
             .set_user_agent_async(user_agent, accept_language, platform)
             .await
             .map_err(native_error)
@@ -1677,21 +2163,24 @@ impl NativeEngineBackend {
         &self,
         location: Option<&GeoLocation>,
     ) -> Result<(), BrowserBackendError> {
-        self.lock_engine(BackendOperation::Script)?
+        self.lock_engine(BackendOperation::Script)
+            .await?
             .set_geolocation_async(location)
             .await
             .map_err(native_error)
     }
 
     pub async fn set_timezone(&self, timezone_id: Option<&str>) -> Result<(), BrowserBackendError> {
-        self.lock_engine(BackendOperation::Script)?
+        self.lock_engine(BackendOperation::Script)
+            .await?
             .set_timezone_async(timezone_id)
             .await
             .map_err(native_error)
     }
 
     pub async fn set_viewport(&self, viewport: Viewport) -> Result<(), BrowserBackendError> {
-        self.lock_engine(BackendOperation::Script)?
+        self.lock_engine(BackendOperation::Script)
+            .await?
             .set_viewport_async(viewport)
             .await
             .map_err(native_error)
@@ -1700,7 +2189,8 @@ impl NativeEngineBackend {
     pub async fn pending_dialog(
         &self,
     ) -> Result<Option<crate::browser::session::PendingDialog>, BrowserBackendError> {
-        self.lock_engine(BackendOperation::Prompt)?
+        self.lock_engine(BackendOperation::Prompt)
+            .await?
             .pending_dialog()
             .map_err(native_error)
     }
@@ -1709,7 +2199,7 @@ impl NativeEngineBackend {
         &self,
         duration: std::time::Duration,
     ) -> Result<(bool, String), BrowserBackendError> {
-        self.lock_engine(BackendOperation::Effects)?
+        self.try_lock_engine(BackendOperation::Effects)?
             .network_quiet(duration)
             .map_err(native_error)
     }
@@ -1719,26 +2209,27 @@ impl NativeEngineBackend {
         destination: &std::path::Path,
         deadline: std::time::Duration,
     ) -> Result<crate::browser::session::DownloadOutcome, BrowserBackendError> {
-        self.lock_engine(BackendOperation::Download)?
+        self.lock_engine(BackendOperation::Download)
+            .await?
             .wait_for_download_async(destination, deadline)
             .await
             .map_err(native_error)
     }
 
     pub fn download_ids(&self) -> Result<Vec<String>, BrowserBackendError> {
-        self.lock_engine(BackendOperation::Download)?
+        self.try_lock_engine(BackendOperation::Download)?
             .download_ids()
             .map_err(native_error)
     }
 
     pub fn cancel_download(&self, download_id: &str) -> Result<bool, BrowserBackendError> {
-        self.lock_engine(BackendOperation::Download)?
+        self.try_lock_engine(BackendOperation::Download)?
             .cancel_download(download_id)
             .map_err(native_error)
     }
 
     pub fn completed_download_count(&self) -> Result<u64, BrowserBackendError> {
-        self.lock_engine(BackendOperation::Download)?
+        self.try_lock_engine(BackendOperation::Download)?
             .completed_download_count()
             .map_err(native_error)
     }
@@ -1747,7 +2238,8 @@ impl NativeEngineBackend {
         &self,
         decision: PromptDecision,
     ) -> Result<PromptResult, BrowserBackendError> {
-        self.lock_engine(BackendOperation::Prompt)?
+        self.lock_engine(BackendOperation::Prompt)
+            .await?
             .resolve_dialog(decision)
             .map_err(native_error)
     }
@@ -1757,9 +2249,9 @@ impl NativeEngineBackend {
     /// alive; selecting it only changes which owner receives subsequent work.
     pub fn list_targets(&self) -> Result<Vec<PageTargetInfo>, BrowserBackendError> {
         let targets = self.lock_targets(BackendOperation::Contexts)?;
-        let engine = self.lock_engine_raw(BackendOperation::Contexts)?;
         let mut projected = Vec::with_capacity(targets.target_count());
         if let Some(active_target_id) = targets.active_target_id.as_deref() {
+            let engine = self.try_lock_engine_raw(BackendOperation::Contexts)?;
             projected.push(project_native_target(
                 &engine,
                 active_target_id,
@@ -1768,8 +2260,13 @@ impl NativeEngineBackend {
             )?);
         }
         for (target_id, parked) in &targets.parked {
-            projected.push(project_native_target(
+            let engine = try_lock_native_engine_owner(
                 &parked.engine,
+                BackendOperation::Contexts,
+                "parked native target",
+            )?;
+            projected.push(project_native_target(
+                &engine,
                 target_id,
                 parked.opener_id.clone(),
                 false,
@@ -1791,7 +2288,7 @@ impl NativeEngineBackend {
                 reason: "select an available native page target before frame discovery".into(),
             });
         }
-        let mut engine = self.lock_engine_raw(BackendOperation::Contexts)?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Contexts).await?;
         reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
         let active_frame = project_native_frame(
             &engine,
@@ -1801,8 +2298,9 @@ impl NativeEngineBackend {
         )?;
         let mut frames = vec![active_frame];
         for (frame_id, frame) in &targets.active_frames.parked {
+            let frame_engine = lock_native_engine_owner(&frame.engine).await;
             frames.push(project_native_frame(
-                &frame.engine,
+                &frame_engine,
                 frame_id,
                 frame.parent_id.clone(),
                 false,
@@ -1818,7 +2316,7 @@ impl NativeEngineBackend {
         if targets.active_target_id.is_none() {
             return Ok(Vec::new());
         }
-        let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
         reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
         let active_frame_id = targets.active_frames.active_frame_id.clone();
         let parent_snapshot = engine.snapshot().map_err(native_error)?;
@@ -1828,6 +2326,7 @@ impl NativeEngineBackend {
             &active_frame_id,
             &parent_snapshot.origin,
         )
+        .await
     }
 
     async fn frame_script_context(
@@ -1837,13 +2336,14 @@ impl NativeEngineBackend {
         let Some(target_id) = targets.active_target_id.clone() else {
             return Ok(None);
         };
-        let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
         reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
         let Some(parent_id) = targets.active_frames.active_parent_id.clone() else {
             return Ok(None);
         };
         let current_snapshot = engine.snapshot().map_err(native_error)?;
         let parent_engine = native_frame_engine(&targets.active_frames, &engine, &parent_id)
+            .await
             .ok_or_else(|| BrowserBackendError::SelectionFailed {
                 reason: "native frame parent disappeared during script context projection".into(),
             })?;
@@ -1854,15 +2354,15 @@ impl NativeEngineBackend {
             &targets.active_frames,
             &engine,
             &parent_id,
-            parent_engine,
+            &parent_engine,
             parent_same_origin,
-        )?;
+        )
+        .await?;
         let top_id = native_main_frame_id(&target_id);
-        let top_engine =
-            native_frame_engine(&targets.active_frames, &engine, &top_id).ok_or_else(|| {
-                BrowserBackendError::SelectionFailed {
-                    reason: "native top frame disappeared during script context projection".into(),
-                }
+        let top_engine = native_frame_engine(&targets.active_frames, &engine, &top_id)
+            .await
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: "native top frame disappeared during script context projection".into(),
             })?;
         let top_snapshot = top_engine.snapshot().map_err(native_error)?;
         let top_same_origin = current_snapshot.origin != NativeOrigin::Opaque
@@ -1871,9 +2371,10 @@ impl NativeEngineBackend {
             &targets.active_frames,
             &engine,
             &top_id,
-            top_engine,
+            &top_engine,
             top_same_origin,
-        )?;
+        )
+        .await?;
         let frame_element = targets
             .active_frames
             .active_owner_node_index
@@ -1904,7 +2405,7 @@ impl NativeEngineBackend {
         let Some(target_id) = targets.active_target_id.clone() else {
             return Ok(None);
         };
-        let mut engine = self.lock_engine_raw(BackendOperation::Action)?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Action).await?;
         reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
         let (parent_id, owner_node_index) = if targets.active_frames.active_frame_id == frame_id {
             (
@@ -1920,11 +2421,13 @@ impl NativeEngineBackend {
             return Ok(None);
         };
         let current_engine = native_frame_engine(&targets.active_frames, &engine, frame_id)
+            .await
             .ok_or_else(|| BrowserBackendError::SelectionFailed {
                 reason: "native frame disappeared during action context projection".into(),
             })?;
         let current_snapshot = current_engine.snapshot().map_err(native_error)?;
         let parent_engine = native_frame_engine(&targets.active_frames, &engine, &parent_id)
+            .await
             .ok_or_else(|| BrowserBackendError::SelectionFailed {
                 reason: "native frame parent disappeared during action context projection".into(),
             })?;
@@ -1935,15 +2438,15 @@ impl NativeEngineBackend {
             &targets.active_frames,
             &engine,
             &parent_id,
-            parent_engine,
+            &parent_engine,
             parent_same_origin,
-        )?;
+        )
+        .await?;
         let top_id = native_main_frame_id(&target_id);
-        let top_engine =
-            native_frame_engine(&targets.active_frames, &engine, &top_id).ok_or_else(|| {
-                BrowserBackendError::SelectionFailed {
-                    reason: "native top frame disappeared during action context projection".into(),
-                }
+        let top_engine = native_frame_engine(&targets.active_frames, &engine, &top_id)
+            .await
+            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                reason: "native top frame disappeared during action context projection".into(),
             })?;
         let top_snapshot = top_engine.snapshot().map_err(native_error)?;
         let top_same_origin = current_snapshot.origin != NativeOrigin::Opaque
@@ -1952,9 +2455,10 @@ impl NativeEngineBackend {
             &targets.active_frames,
             &engine,
             &top_id,
-            top_engine,
+            &top_engine,
             top_same_origin,
-        )?;
+        )
+        .await?;
         let frame_element = owner_node_index.and_then(|node_index| {
             parent_engine
                 .script_document_snapshot()
@@ -1998,7 +2502,49 @@ impl NativeEngineBackend {
         Ok(None)
     }
 
-    fn service_worker_client_route(
+    fn engine_owner_for_frame(
+        &self,
+        frame_id: &str,
+        operation: BackendOperation,
+    ) -> Result<Option<NativeEngineOwner>, BrowserBackendError> {
+        let targets = self.lock_targets(operation)?;
+        let Some(route) = native_frame_route_in_state(&targets, frame_id) else {
+            return Ok(None);
+        };
+        let owner = match route {
+            NativeFrameRoute::ActiveSelected => self
+                .engine
+                .lock()
+                .map_err(|_| poisoned_lock_error(operation, "engine"))?
+                .clone(),
+            NativeFrameRoute::ActiveParked => targets
+                .active_frames
+                .parked
+                .get(frame_id)
+                .map(|frame| Arc::clone(&frame.engine))
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native frame disappeared while resolving its owner".into(),
+                })?,
+            NativeFrameRoute::ParkedSelected { target_id } => targets
+                .parked
+                .get(&target_id)
+                .map(|target| Arc::clone(&target.engine))
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native target disappeared while resolving its owner".into(),
+                })?,
+            NativeFrameRoute::ParkedParked { target_id } => targets
+                .parked
+                .get(&target_id)
+                .and_then(|target| target.frames.parked.get(frame_id))
+                .map(|frame| Arc::clone(&frame.engine))
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native frame disappeared while resolving its owner".into(),
+                })?,
+        };
+        Ok(Some(owner))
+    }
+
+    async fn service_worker_client_route(
         &self,
         client_id: &str,
     ) -> Result<Option<(NativeFrameRoute, String)>, BrowserBackendError> {
@@ -2016,39 +2562,61 @@ impl NativeEngineBackend {
                 ),
             });
         }
-        let targets = self.lock_targets(BackendOperation::Script)?;
-        let engine = self.lock_engine_raw(BackendOperation::Script)?;
-        if targets.active_target_id.is_some() {
-            if engine.service_worker_client_id() == client_id {
-                return Ok(Some((
+        let owners = {
+            let targets = self.lock_targets(BackendOperation::Script)?;
+            let mut owners = Vec::new();
+            if targets.active_target_id.is_some() {
+                let active_owner = self
+                    .engine
+                    .lock()
+                    .map_err(|_| poisoned_lock_error(BackendOperation::Script, "engine"))?
+                    .clone();
+                owners.push((
                     NativeFrameRoute::ActiveSelected,
                     targets.active_frames.active_frame_id.clone(),
-                )));
+                    active_owner,
+                ));
+                owners.extend(
+                    targets
+                        .active_frames
+                        .parked
+                        .iter()
+                        .map(|(frame_id, frame)| {
+                            (
+                                NativeFrameRoute::ActiveParked,
+                                frame_id.clone(),
+                                Arc::clone(&frame.engine),
+                            )
+                        }),
+                );
             }
-            for (frame_id, frame) in &targets.active_frames.parked {
-                if frame.engine.service_worker_client_id() == client_id {
-                    return Ok(Some((NativeFrameRoute::ActiveParked, frame_id.clone())));
-                }
-            }
-        }
-        for (target_id, target) in &targets.parked {
-            if target.engine.service_worker_client_id() == client_id {
-                return Ok(Some((
+            for (target_id, target) in &targets.parked {
+                owners.push((
                     NativeFrameRoute::ParkedSelected {
                         target_id: target_id.clone(),
                     },
                     target.frames.active_frame_id.clone(),
-                )));
-            }
-            for (frame_id, frame) in &target.frames.parked {
-                if frame.engine.service_worker_client_id() == client_id {
-                    return Ok(Some((
+                    Arc::clone(&target.engine),
+                ));
+                owners.extend(target.frames.parked.iter().map(|(frame_id, frame)| {
+                    (
                         NativeFrameRoute::ParkedParked {
                             target_id: target_id.clone(),
                         },
                         frame_id.clone(),
-                    )));
-                }
+                        Arc::clone(&frame.engine),
+                    )
+                }));
+            }
+            owners
+        };
+        for (route, frame_id, owner) in owners {
+            if lock_native_engine_owner(&owner)
+                .await
+                .service_worker_client_id()
+                == client_id
+            {
+                return Ok(Some((route, frame_id)));
             }
         }
         Ok(None)
@@ -2096,28 +2664,21 @@ impl NativeEngineBackend {
         })
     }
 
-    fn frame_origin(&self, frame_id: &str) -> Result<Option<NativeOrigin>, BrowserBackendError> {
+    async fn frame_origin(
+        &self,
+        frame_id: &str,
+    ) -> Result<Option<NativeOrigin>, BrowserBackendError> {
         validate_native_topology_id(frame_id)?;
-        let targets = self.lock_targets(BackendOperation::Script)?;
-        let engine = self.lock_engine_raw(BackendOperation::Script)?;
-        if targets.active_target_id.is_none() {
+        let Some(owner) = self.engine_owner_for_frame(frame_id, BackendOperation::Script)? else {
             return Ok(None);
-        }
-        if targets.active_frames.active_frame_id == frame_id {
-            return Ok(Some(engine.snapshot().map_err(native_error)?.origin));
-        }
-        if let Some(frame) = targets.active_frames.parked.get(frame_id) {
-            return Ok(Some(frame.engine.snapshot().map_err(native_error)?.origin));
-        }
-        for target in targets.parked.values() {
-            if target.frames.active_frame_id == frame_id {
-                return Ok(Some(target.engine.snapshot().map_err(native_error)?.origin));
-            }
-            if let Some(frame) = target.frames.parked.get(frame_id) {
-                return Ok(Some(frame.engine.snapshot().map_err(native_error)?.origin));
-            }
-        }
-        Ok(None)
+        };
+        Ok(Some(
+            lock_native_engine_owner(&owner)
+                .await
+                .snapshot()
+                .map_err(native_error)?
+                .origin,
+        ))
     }
 
     async fn process_pending_frame_scripts(
@@ -2203,20 +2764,22 @@ impl NativeEngineBackend {
         }
 
         let caller_origin = self
-            .frame_origin(&request.source_frame_id)?
+            .frame_origin(&request.source_frame_id)
+            .await?
             .ok_or_else(|| BrowserBackendError::SelectionFailed {
                 reason: "native node transfer caller disappeared before routing".into(),
             })?;
-        let source_origin = self.frame_origin(&source_frame_id)?.ok_or_else(|| {
+        let source_origin = self.frame_origin(&source_frame_id).await?.ok_or_else(|| {
             BrowserBackendError::SelectionFailed {
                 reason: "native node transfer source disappeared before routing".into(),
             }
         })?;
-        let destination_origin = self.frame_origin(&destination_frame_id)?.ok_or_else(|| {
-            BrowserBackendError::SelectionFailed {
-                reason: "native node transfer destination disappeared before routing".into(),
-            }
-        })?;
+        let destination_origin =
+            self.frame_origin(&destination_frame_id)
+                .await?
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native node transfer destination disappeared before routing".into(),
+                })?;
         if caller_origin == NativeOrigin::Opaque
             || source_origin == NativeOrigin::Opaque
             || destination_origin == NativeOrigin::Opaque
@@ -2275,15 +2838,17 @@ impl NativeEngineBackend {
             });
         }
         let caller_origin = self
-            .frame_origin(&request.source_frame_id)?
+            .frame_origin(&request.source_frame_id)
+            .await?
             .ok_or_else(|| BrowserBackendError::SelectionFailed {
                 reason: "adopted native node caller disappeared before routing".into(),
             })?;
-        let destination_origin = self.frame_origin(&destination_frame_id)?.ok_or_else(|| {
-            BrowserBackendError::SelectionFailed {
-                reason: "adopted native node owner disappeared before routing".into(),
-            }
-        })?;
+        let destination_origin =
+            self.frame_origin(&destination_frame_id)
+                .await?
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "adopted native node owner disappeared before routing".into(),
+                })?;
         if caller_origin == NativeOrigin::Opaque || caller_origin != destination_origin {
             return Err(BrowserBackendError::UnsupportedOperation {
                 operation: "adopted native node mutation".into(),
@@ -2383,18 +2948,19 @@ impl NativeEngineBackend {
                 } else {
                     source_frame_id
                 };
-                let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
-                let mut frame = targets
+                let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
+                let frame = targets
                     .active_frames
                     .parked
                     .remove(parked_frame_id)
                     .ok_or_else(|| BrowserBackendError::SelectionFailed {
                         reason: "native transfer frame disappeared while locking its owner".into(),
                     })?;
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
                 let result = if source_is_root {
                     coordinate_native_document_adoption(
                         &mut engine,
-                        &mut frame.engine,
+                        &mut frame_engine,
                         source_frame_id,
                         destination_frame_id,
                         source_generation,
@@ -2404,7 +2970,7 @@ impl NativeEngineBackend {
                     .await
                 } else {
                     coordinate_native_document_adoption(
-                        &mut frame.engine,
+                        &mut frame_engine,
                         &mut engine,
                         source_frame_id,
                         destination_frame_id,
@@ -2421,7 +2987,7 @@ impl NativeEngineBackend {
                 result
             }
             (NativeFrameRoute::ActiveParked, NativeFrameRoute::ActiveParked) => {
-                let mut source_frame = targets
+                let source_frame = targets
                     .active_frames
                     .parked
                     .remove(source_frame_id)
@@ -2429,7 +2995,7 @@ impl NativeEngineBackend {
                         reason: "native transfer source frame disappeared while locking its owner"
                             .into(),
                     })?;
-                let Some(mut destination_frame) =
+                let Some(destination_frame) =
                     targets.active_frames.parked.remove(destination_frame_id)
                 else {
                     targets
@@ -2442,9 +3008,13 @@ impl NativeEngineBackend {
                                 .into(),
                     });
                 };
+                let (mut source_engine, mut destination_engine) = tokio::join!(
+                    lock_native_engine_owner(&source_frame.engine),
+                    lock_native_engine_owner(&destination_frame.engine),
+                );
                 let result = coordinate_native_document_adoption(
-                    &mut source_frame.engine,
-                    &mut destination_frame.engine,
+                    &mut source_engine,
+                    &mut destination_engine,
                     source_frame_id,
                     destination_frame_id,
                     source_generation,
@@ -2475,7 +3045,7 @@ impl NativeEngineBackend {
                         reason: "native transfer top-level target disappeared".into(),
                     }
                 })?;
-                let mut frame = target
+                let frame = target
                     .frames
                     .parked
                     .remove(destination_frame_id)
@@ -2483,9 +3053,11 @@ impl NativeEngineBackend {
                         reason: "native transfer child frame disappeared while locking its owner"
                             .into(),
                     })?;
+                let mut target_engine = lock_native_engine_owner(&target.engine).await;
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
                 let result = coordinate_native_document_adoption(
-                    &mut target.engine,
-                    &mut frame.engine,
+                    &mut target_engine,
+                    &mut frame_engine,
                     source_frame_id,
                     destination_frame_id,
                     source_generation,
@@ -2512,7 +3084,7 @@ impl NativeEngineBackend {
                         reason: "native transfer top-level target disappeared".into(),
                     }
                 })?;
-                let mut frame = target
+                let frame = target
                     .frames
                     .parked
                     .remove(source_frame_id)
@@ -2520,9 +3092,11 @@ impl NativeEngineBackend {
                         reason: "native transfer source frame disappeared while locking its owner"
                             .into(),
                     })?;
+                let mut target_engine = lock_native_engine_owner(&target.engine).await;
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
                 let result = coordinate_native_document_adoption(
-                    &mut frame.engine,
-                    &mut target.engine,
+                    &mut frame_engine,
+                    &mut target_engine,
                     source_frame_id,
                     destination_frame_id,
                     source_generation,
@@ -2549,7 +3123,7 @@ impl NativeEngineBackend {
                         reason: "native transfer top-level target disappeared".into(),
                     }
                 })?;
-                let mut source_frame =
+                let source_frame =
                     target
                         .frames
                         .parked
@@ -2559,7 +3133,7 @@ impl NativeEngineBackend {
                                 "native transfer source frame disappeared while locking its owner"
                                     .into(),
                         })?;
-                let Some(mut destination_frame) = target.frames.parked.remove(destination_frame_id)
+                let Some(destination_frame) = target.frames.parked.remove(destination_frame_id)
                 else {
                     target
                         .frames
@@ -2571,9 +3145,13 @@ impl NativeEngineBackend {
                                 .into(),
                     });
                 };
+                let (mut source_engine, mut destination_engine) = tokio::join!(
+                    lock_native_engine_owner(&source_frame.engine),
+                    lock_native_engine_owner(&destination_frame.engine),
+                );
                 let result = coordinate_native_document_adoption(
-                    &mut source_frame.engine,
-                    &mut destination_frame.engine,
+                    &mut source_engine,
+                    &mut destination_engine,
                     source_frame_id,
                     destination_frame_id,
                     source_generation,
@@ -2614,11 +3192,12 @@ impl NativeEngineBackend {
         BrowserBackendError,
     > {
         let source_origin = self
-            .frame_origin(&request.source_frame_id)?
+            .frame_origin(&request.source_frame_id)
+            .await?
             .ok_or_else(|| BrowserBackendError::SelectionFailed {
                 reason: "native frame script source disappeared before routing".into(),
             })?;
-        let target_origin = self.frame_origin(&request.frame_id)?.ok_or_else(|| {
+        let target_origin = self.frame_origin(&request.frame_id).await?.ok_or_else(|| {
             BrowserBackendError::SelectionFailed {
                 reason: "native frame script target disappeared before routing".into(),
             }
@@ -2635,7 +3214,7 @@ impl NativeEngineBackend {
         let suppress_parent_events = parent_projected_event_kinds(&command);
         let (nested, effects, event_effects, owner_id, window_name) = match route {
             NativeFrameRoute::ActiveSelected => {
-                let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
                 let event_effects = engine
                     .apply_frame_script_command_with_effects_async(*command)
                     .await
@@ -2646,76 +3225,78 @@ impl NativeEngineBackend {
                 (nested, effects, event_effects, owner_id, window_name)
             }
             NativeFrameRoute::ActiveParked => {
-                let mut targets = self.lock_targets(BackendOperation::Script)?;
-                let mut frame = targets
-                    .active_frames
-                    .parked
-                    .remove(&target_frame_id)
-                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                        reason: "native frame disappeared before same-origin script routing".into(),
+                let (frame_owner, owner_id) = {
+                    let targets = self.lock_targets(BackendOperation::Script)?;
+                    let frame = targets
+                        .active_frames
+                        .parked
+                        .get(&target_frame_id)
+                        .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                            reason: "native frame disappeared before same-origin script routing"
+                                .into(),
+                        })?;
+                    let owner_id = targets.active_target_id.clone().ok_or_else(|| {
+                        BrowserBackendError::SelectionFailed {
+                            reason: "native frame owner target disappeared during script routing"
+                                .into(),
+                        }
                     })?;
-                let result = frame
-                    .engine
+                    (Arc::clone(&frame.engine), owner_id)
+                };
+                let mut frame_engine = lock_native_engine_owner(&frame_owner).await;
+                let result = frame_engine
                     .apply_frame_script_command_with_effects_async(*command)
                     .await
                     .map_err(native_error);
-                let nested = frame.engine.take_pending_frame_scripts();
-                let event_effects = match result {
-                    Ok(event_effects) => event_effects,
-                    Err(error) => {
-                        targets.active_frames.parked.insert(target_frame_id, frame);
-                        return Err(error);
-                    }
-                };
-                let (effects, window_name) = take_native_browser_effects(&mut frame.engine)?;
-                let owner_id = targets.active_target_id.clone().ok_or_else(|| {
-                    BrowserBackendError::SelectionFailed {
-                        reason: "native frame owner target disappeared during script routing"
-                            .into(),
-                    }
-                })?;
-                targets.active_frames.parked.insert(target_frame_id, frame);
+                let nested = frame_engine.take_pending_frame_scripts();
+                let event_effects = result?;
+                let (effects, window_name) = take_native_browser_effects(&mut frame_engine)?;
                 (nested, effects, event_effects, owner_id, window_name)
             }
             NativeFrameRoute::ParkedSelected { target_id } => {
-                let mut targets = self.lock_targets(BackendOperation::Script)?;
-                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
-                    BrowserBackendError::SelectionFailed {
-                        reason: "native frame owner target disappeared during script routing"
-                            .into(),
-                    }
-                })?;
-                let event_effects = target
-                    .engine
+                let target_owner = {
+                    let targets = self.lock_targets(BackendOperation::Script)?;
+                    let target = targets.parked.get(&target_id).ok_or_else(|| {
+                        BrowserBackendError::SelectionFailed {
+                            reason: "native frame owner target disappeared during script routing"
+                                .into(),
+                        }
+                    })?;
+                    Arc::clone(&target.engine)
+                };
+                let mut target_engine = lock_native_engine_owner(&target_owner).await;
+                let event_effects = target_engine
                     .apply_frame_script_command_with_effects_async(*command)
                     .await
                     .map_err(native_error)?;
-                let nested = target.engine.take_pending_frame_scripts();
-                let (effects, window_name) = take_native_browser_effects(&mut target.engine)?;
+                let nested = target_engine.take_pending_frame_scripts();
+                let (effects, window_name) = take_native_browser_effects(&mut target_engine)?;
                 (nested, effects, event_effects, target_id, window_name)
             }
             NativeFrameRoute::ParkedParked { target_id } => {
-                let mut targets = self.lock_targets(BackendOperation::Script)?;
-                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
-                    BrowserBackendError::SelectionFailed {
-                        reason: "native frame owner target disappeared during script routing"
-                            .into(),
-                    }
-                })?;
-                let frame = target
-                    .frames
-                    .parked
-                    .get_mut(&target_frame_id)
-                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                        reason: "native frame disappeared before same-origin script routing".into(),
+                let frame_owner = {
+                    let targets = self.lock_targets(BackendOperation::Script)?;
+                    let target = targets.parked.get(&target_id).ok_or_else(|| {
+                        BrowserBackendError::SelectionFailed {
+                            reason: "native frame owner target disappeared during script routing"
+                                .into(),
+                        }
                     })?;
-                let event_effects = frame
-                    .engine
+                    let frame = target.frames.parked.get(&target_frame_id).ok_or_else(|| {
+                        BrowserBackendError::SelectionFailed {
+                            reason: "native frame disappeared before same-origin script routing"
+                                .into(),
+                        }
+                    })?;
+                    Arc::clone(&frame.engine)
+                };
+                let mut frame_engine = lock_native_engine_owner(&frame_owner).await;
+                let event_effects = frame_engine
                     .apply_frame_script_command_with_effects_async(*command)
                     .await
                     .map_err(native_error)?;
-                let nested = frame.engine.take_pending_frame_scripts();
-                let (effects, window_name) = take_native_browser_effects(&mut frame.engine)?;
+                let nested = frame_engine.take_pending_frame_scripts();
+                let (effects, window_name) = take_native_browser_effects(&mut frame_engine)?;
                 (nested, effects, event_effects, target_id, window_name)
             }
         };
@@ -2744,10 +3325,10 @@ impl NativeEngineBackend {
         if effects.is_empty() || !self.frame_is_ancestor(parent_id, child_id)? {
             return Ok((Vec::new(), empty(), Vec::new()));
         }
-        let Some(source_origin) = self.frame_origin(child_id)? else {
+        let Some(source_origin) = self.frame_origin(child_id).await? else {
             return Ok((Vec::new(), empty(), Vec::new()));
         };
-        let Some(parent_origin) = self.frame_origin(parent_id)? else {
+        let Some(parent_origin) = self.frame_origin(parent_id).await? else {
             return Ok((Vec::new(), empty(), Vec::new()));
         };
         if source_origin == NativeOrigin::Opaque || source_origin != parent_origin {
@@ -2758,137 +3339,165 @@ impl NativeEngineBackend {
                 .ok_or_else(|| BrowserBackendError::SelectionFailed {
                     reason: "native frame parent disappeared before event projection".into(),
                 })?;
+        self.dispatch_frame_events_to_parent_route(route, parent_id, child_id, effects)
+            .await
+    }
+
+    async fn dispatch_frame_events_to_parent_route(
+        &self,
+        route: NativeFrameRoute,
+        parent_id: &str,
+        child_id: &str,
+        effects: &[NativeEffect],
+    ) -> Result<
+        (
+            Vec<NativeFrameScriptRequest>,
+            NativeQueuedBrowserEffects,
+            Vec<NativeEffect>,
+        ),
+        BrowserBackendError,
+    > {
         let child_frame_id = child_id.to_owned();
         let (nested, queued, propagated, owner_id, window_name) = match route {
             NativeFrameRoute::ActiveSelected => {
-                let targets = self.lock_targets(BackendOperation::Script)?;
-                let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+                let (frames, owner_id) = {
+                    let targets = self.lock_targets(BackendOperation::Script)?;
+                    let owner_id = targets.active_target_id.clone().ok_or_else(|| {
+                        BrowserBackendError::SelectionFailed {
+                            reason: "native frame owner target disappeared during event projection"
+                                .into(),
+                        }
+                    })?;
+                    (targets.active_frames.clone(), owner_id)
+                };
+                let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
                 let parent_origin = engine.snapshot().map_err(native_error)?.origin;
-                let bindings = native_frame_script_children(
-                    &targets.active_frames,
-                    &engine,
-                    parent_id,
-                    &parent_origin,
-                )?;
+                let bindings =
+                    native_frame_script_children(&frames, &engine, parent_id, &parent_origin)
+                        .await?;
                 engine.set_frame_script_bindings(bindings);
                 let (nested, queued, propagated) =
                     dispatch_frame_events_to_parent_engine(&mut engine, &child_frame_id, effects)
                         .await?;
                 let window_name = engine.config().window_name.clone();
-                let owner_id = targets.active_target_id.clone().ok_or_else(|| {
-                    BrowserBackendError::SelectionFailed {
-                        reason: "native frame owner target disappeared during event projection"
-                            .into(),
-                    }
-                })?;
                 (nested, queued, propagated, owner_id, window_name)
             }
             NativeFrameRoute::ActiveParked => {
-                let mut targets = self.lock_targets(BackendOperation::Script)?;
-                let active_engine = self.lock_engine_raw(BackendOperation::Script)?;
-                let parent_origin = targets
-                    .active_frames
-                    .parked
-                    .get(parent_id)
-                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                        reason: "native frame parent disappeared before event projection".into(),
-                    })?
-                    .engine
-                    .snapshot()
-                    .map_err(native_error)?
-                    .origin;
+                let (frames, parent_owner, owner_id) = {
+                    let targets = self.lock_targets(BackendOperation::Script)?;
+                    let parent_owner = Arc::clone(
+                        &targets
+                            .active_frames
+                            .parked
+                            .get(parent_id)
+                            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                                reason: "native frame parent disappeared before event projection"
+                                    .into(),
+                            })?
+                            .engine,
+                    );
+                    let owner_id = targets.active_target_id.clone().ok_or_else(|| {
+                        BrowserBackendError::SelectionFailed {
+                            reason: "native frame owner target disappeared during event projection"
+                                .into(),
+                        }
+                    })?;
+                    (targets.active_frames.clone(), parent_owner, owner_id)
+                };
+                let active_engine = self.lock_engine_raw(BackendOperation::Script).await?;
+                let mut parent_engine = lock_native_engine_owner(&parent_owner).await;
+                let parent_origin = parent_engine.snapshot().map_err(native_error)?.origin;
                 let bindings = native_frame_script_children(
-                    &targets.active_frames,
+                    &frames,
                     &active_engine,
                     parent_id,
                     &parent_origin,
-                )?;
-                let parent = targets
-                    .active_frames
-                    .parked
-                    .get_mut(parent_id)
-                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                        reason: "native frame parent disappeared before event projection".into(),
-                    })?;
-                parent.engine.set_frame_script_bindings(bindings);
+                )
+                .await?;
+                parent_engine.set_frame_script_bindings(bindings);
                 let (nested, queued, propagated) = dispatch_frame_events_to_parent_engine(
-                    &mut parent.engine,
+                    &mut parent_engine,
                     &child_frame_id,
                     effects,
                 )
                 .await?;
-                let window_name = parent.engine.config().window_name.clone();
-                let owner_id = targets.active_target_id.clone().ok_or_else(|| {
-                    BrowserBackendError::SelectionFailed {
-                        reason: "native frame owner target disappeared during event projection"
-                            .into(),
-                    }
-                })?;
+                let window_name = parent_engine.config().window_name.clone();
                 (nested, queued, propagated, owner_id, window_name)
             }
             NativeFrameRoute::ParkedSelected { target_id } => {
-                let mut targets = self.lock_targets(BackendOperation::Script)?;
-                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
-                    BrowserBackendError::SelectionFailed {
-                        reason: "native frame owner target disappeared during event projection"
-                            .into(),
-                    }
-                })?;
-                let parent_origin = target.engine.snapshot().map_err(native_error)?.origin;
+                let (frames, target_owner) = {
+                    let targets = self.lock_targets(BackendOperation::Script)?;
+                    let target = targets.parked.get(&target_id).ok_or_else(|| {
+                        BrowserBackendError::SelectionFailed {
+                            reason: "native frame owner target disappeared during event projection"
+                                .into(),
+                        }
+                    })?;
+                    (target.frames.clone(), Arc::clone(&target.engine))
+                };
+                let mut target_engine = lock_native_engine_owner(&target_owner).await;
+                let parent_origin = target_engine.snapshot().map_err(native_error)?.origin;
                 let bindings = native_frame_script_children(
-                    &target.frames,
-                    &target.engine,
+                    &frames,
+                    &target_engine,
                     parent_id,
                     &parent_origin,
-                )?;
-                target.engine.set_frame_script_bindings(bindings);
+                )
+                .await?;
+                target_engine.set_frame_script_bindings(bindings);
                 let (nested, queued, propagated) = dispatch_frame_events_to_parent_engine(
-                    &mut target.engine,
+                    &mut target_engine,
                     &child_frame_id,
                     effects,
                 )
                 .await?;
-                let window_name = target.engine.config().window_name.clone();
+                let window_name = target_engine.config().window_name.clone();
                 (nested, queued, propagated, target_id, window_name)
             }
             NativeFrameRoute::ParkedParked { target_id } => {
-                let mut targets = self.lock_targets(BackendOperation::Script)?;
-                let target = targets.parked.get_mut(&target_id).ok_or_else(|| {
-                    BrowserBackendError::SelectionFailed {
-                        reason: "native frame owner target disappeared during event projection"
-                            .into(),
-                    }
-                })?;
-                let parent_origin = target
-                    .frames
-                    .parked
-                    .get(parent_id)
-                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                        reason: "native frame parent disappeared before event projection".into(),
-                    })?
-                    .engine
-                    .snapshot()
-                    .map_err(native_error)?
-                    .origin;
+                let (frames, active_owner, parent_owner) = {
+                    let targets = self.lock_targets(BackendOperation::Script)?;
+                    let target = targets.parked.get(&target_id).ok_or_else(|| {
+                        BrowserBackendError::SelectionFailed {
+                            reason: "native frame owner target disappeared during event projection"
+                                .into(),
+                        }
+                    })?;
+                    let parent_owner = Arc::clone(
+                        &target
+                            .frames
+                            .parked
+                            .get(parent_id)
+                            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                                reason: "native frame parent disappeared before event projection"
+                                    .into(),
+                            })?
+                            .engine,
+                    );
+                    (
+                        target.frames.clone(),
+                        Arc::clone(&target.engine),
+                        parent_owner,
+                    )
+                };
+                let target_engine = lock_native_engine_owner(&active_owner).await;
+                let mut parent_engine = lock_native_engine_owner(&parent_owner).await;
+                let parent_origin = parent_engine.snapshot().map_err(native_error)?.origin;
                 let bindings = native_frame_script_children(
-                    &target.frames,
-                    &target.engine,
+                    &frames,
+                    &target_engine,
                     parent_id,
                     &parent_origin,
-                )?;
-                let parent = target.frames.parked.get_mut(parent_id).ok_or_else(|| {
-                    BrowserBackendError::SelectionFailed {
-                        reason: "native frame parent disappeared during event projection".into(),
-                    }
-                })?;
-                parent.engine.set_frame_script_bindings(bindings);
+                )
+                .await?;
+                parent_engine.set_frame_script_bindings(bindings);
                 let (nested, queued, propagated) = dispatch_frame_events_to_parent_engine(
-                    &mut parent.engine,
+                    &mut parent_engine,
                     &child_frame_id,
                     effects,
                 )
                 .await?;
-                let window_name = parent.engine.config().window_name.clone();
+                let window_name = parent_engine.config().window_name.clone();
                 (nested, queued, propagated, target_id, window_name)
             }
         };
@@ -2986,11 +3595,14 @@ impl NativeEngineBackend {
         Ok(targets.active_frames.active_frame_id.clone())
     }
 
-    pub fn select_target(&self, target_id: &str) -> Result<PageTargetInfo, BrowserBackendError> {
+    pub async fn select_target(
+        &self,
+        target_id: &str,
+    ) -> Result<PageTargetInfo, BrowserBackendError> {
         validate_native_topology_id(target_id)?;
         let mut targets = self.lock_targets(BackendOperation::Contexts)?;
         if targets.active_target_id.as_deref() == Some(target_id) {
-            let engine = self.lock_engine_raw(BackendOperation::Contexts)?;
+            let engine = self.lock_engine_raw(BackendOperation::Contexts).await?;
             return project_native_target(
                 &engine,
                 target_id,
@@ -3005,18 +3617,26 @@ impl NativeEngineBackend {
                     .into(),
             });
         };
-        if let Err(error) = parked.engine.context() {
+        let parked_engine = parked.engine.clone();
+        let parked_engine_guard = lock_native_engine_owner(&parked_engine).await;
+        if let Err(error) = parked_engine_guard.context() {
             targets.parked.insert(target_id.to_owned(), parked);
             return Err(native_error(error));
         }
+        drop(parked_engine_guard);
         let NativeParkedTarget {
             engine: parked_engine,
             opener_id,
             frames: parked_frames,
             name,
         } = parked;
-        let mut active_engine = self.lock_engine_raw(BackendOperation::Contexts)?;
-        let old_engine = std::mem::replace(&mut *active_engine, parked_engine);
+        let old_engine = {
+            let mut active_engine = self
+                .engine
+                .lock()
+                .map_err(|_| poisoned_lock_error(BackendOperation::Contexts, "engine"))?;
+            std::mem::replace(&mut *active_engine, parked_engine)
+        };
         let old_frames = std::mem::replace(&mut targets.active_frames, parked_frames);
         let old_target_id = targets.active_target_id.replace(target_id.to_owned());
         let old_opener_id = std::mem::replace(&mut targets.active_opener_id, opener_id);
@@ -3032,6 +3652,7 @@ impl NativeEngineBackend {
                 },
             );
         }
+        let active_engine = self.lock_engine_raw(BackendOperation::Contexts).await?;
         project_native_target(
             &active_engine,
             target_id,
@@ -3088,15 +3709,19 @@ impl NativeEngineBackend {
         if let Some(name) = name.as_deref() {
             validate_native_popup_name(name)?;
         }
+        let active_owner = self
+            .engine
+            .lock()
+            .map_err(|_| poisoned_lock_error(BackendOperation::Contexts, "engine"))?
+            .clone();
         let (base_config, active_url) = {
-            let engine = self
-                .engine
-                .lock()
-                .map_err(|_| poisoned_lock_error(BackendOperation::Contexts, "engine"))?;
-            let active_url = engine.context().map_err(native_error)?.url;
-            (engine.config().clone(), active_url)
+            let engine = lock_native_engine_owner(&active_owner).await;
+            (
+                engine.config().clone(),
+                engine.context().map_err(native_error)?.url,
+            )
         };
-        let (target_id, opener_id, opener_window_name, opener_url) = {
+        let (target_id, opener_id, opener_window_name, opener_is_active, opener_owner) = {
             let mut targets = self.lock_targets(BackendOperation::Contexts)?;
             if targets.target_count() >= NATIVE_MAX_TARGETS {
                 return Err(BrowserBackendError::SelectionFailed {
@@ -3118,18 +3743,33 @@ impl NativeEngineBackend {
                     }
                 })
                 .unwrap_or_default();
-            let opener_url = if let Some(opener_id) = opener_id.as_deref() {
-                if targets.active_target_id.as_deref() == Some(opener_id) {
-                    active_url.clone()
-                } else if let Some(target) = targets.parked.get(opener_id) {
-                    target.engine.context().map_err(native_error)?.url
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            };
-            (target_id, opener_id, opener_window_name, opener_url)
+            let opener_is_active = opener_id
+                .as_deref()
+                .is_some_and(|id| targets.active_target_id.as_deref() == Some(id));
+            let opener_owner = opener_id.as_deref().and_then(|id| {
+                targets
+                    .parked
+                    .get(id)
+                    .map(|target| Arc::clone(&target.engine))
+            });
+            (
+                target_id,
+                opener_id,
+                opener_window_name,
+                opener_is_active,
+                opener_owner,
+            )
+        };
+        let opener_url = if opener_is_active {
+            active_url
+        } else if let Some(owner) = opener_owner {
+            lock_native_engine_owner(&owner)
+                .await
+                .context()
+                .map_err(native_error)?
+                .url
+        } else {
+            String::new()
         };
         let initial_window_name = name.clone().unwrap_or_default();
         let initial_url = if navigation.method == NativeNavigationMethod::Post
@@ -3233,7 +3873,7 @@ impl NativeEngineBackend {
         targets.parked.insert(
             target_id.clone(),
             NativeParkedTarget {
-                engine,
+                engine: Arc::new(tokio::sync::Mutex::new(engine)),
                 opener_id,
                 frames: NativeFrameState::new(&target_id),
                 name: target_name,
@@ -3283,7 +3923,7 @@ impl NativeEngineBackend {
                 .ok_or_else(|| BrowserBackendError::SelectionFailed {
                     reason: "native popup click frame disappeared before dispatch".into(),
                 })?;
-        let proxy_updates = self.window_proxy_updates(frame_id)?;
+        let proxy_updates = self.window_proxy_updates(frame_id).await?;
         let (revision, accepted, runtime_effects, owner_id) = self
             .apply_action_to_native_frame(
                 route,
@@ -3576,25 +4216,26 @@ impl NativeEngineBackend {
                         )
                         .await?;
                     self.synchronize_native_service_worker_clients().await?;
-                    let window = {
+                    let client_owner = {
                         let targets = self.lock_targets(BackendOperation::Contexts)?;
                         let parked = targets.parked.get(&target.id).ok_or_else(|| {
                             BrowserBackendError::SelectionFailed {
                                 reason: "native service worker openWindow target disappeared before resolution".into(),
                             }
                         })?;
-                        let client = parked
-                            .engine
-                            .service_worker_client_state("top-level", false);
-                        serde_json::json!({
-                            "clientId": client.id,
-                            "clientUrl": client.url,
-                            "clientType": client.client_type,
-                            "frameType": client.frame_type,
-                            "visibilityState": client.visibility_state,
-                            "focused": client.focused,
-                        })
+                        Arc::clone(&parked.engine)
                     };
+                    let client = lock_native_engine_owner(&client_owner)
+                        .await
+                        .service_worker_client_state("top-level", false);
+                    let window = serde_json::json!({
+                        "clientId": client.id,
+                        "clientUrl": client.url,
+                        "clientType": client.client_type,
+                        "frameType": client.frame_type,
+                        "visibilityState": client.visibility_state,
+                        "focused": client.focused,
+                    });
                     let resolved = self
                         .resolve_service_worker_open_window(&request, window)
                         .await?;
@@ -3698,7 +4339,7 @@ impl NativeEngineBackend {
         })?;
         let (effects, owner_id, window_name) = match route {
             NativeFrameRoute::ActiveSelected => {
-                let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
                 require_context_id(&request.source_context_id, &engine.config().context_id)?;
                 engine
                     .resolve_service_worker_open_window_async(
@@ -3727,8 +4368,8 @@ impl NativeEngineBackend {
                     .ok_or_else(|| BrowserBackendError::SelectionFailed {
                         reason: "service worker openWindow source frame disappeared".into(),
                     })?;
-                frame
-                    .engine
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
+                frame_engine
                     .resolve_service_worker_open_window_async(
                         request.worker_id,
                         request.request_id,
@@ -3736,7 +4377,7 @@ impl NativeEngineBackend {
                     )
                     .await
                     .map_err(native_error)?;
-                let (effects, window_name) = take_native_browser_effects(&mut frame.engine)?;
+                let (effects, window_name) = take_native_browser_effects(&mut frame_engine)?;
                 (effects, owner_id, window_name)
             }
             NativeFrameRoute::ParkedSelected { target_id } => {
@@ -3747,8 +4388,8 @@ impl NativeEngineBackend {
                         reason: "service worker openWindow owner target disappeared".into(),
                     }
                 })?;
-                target
-                    .engine
+                let mut target_engine = lock_native_engine_owner(&target.engine).await;
+                target_engine
                     .resolve_service_worker_open_window_async(
                         request.worker_id,
                         request.request_id,
@@ -3756,7 +4397,7 @@ impl NativeEngineBackend {
                     )
                     .await
                     .map_err(native_error)?;
-                let (effects, window_name) = take_native_browser_effects(&mut target.engine)?;
+                let (effects, window_name) = take_native_browser_effects(&mut target_engine)?;
                 (effects, target_id, window_name)
             }
             NativeFrameRoute::ParkedParked { target_id } => {
@@ -3774,8 +4415,8 @@ impl NativeEngineBackend {
                     .ok_or_else(|| BrowserBackendError::SelectionFailed {
                         reason: "service worker openWindow source frame disappeared".into(),
                     })?;
-                frame
-                    .engine
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
+                frame_engine
                     .resolve_service_worker_open_window_async(
                         request.worker_id,
                         request.request_id,
@@ -3783,7 +4424,7 @@ impl NativeEngineBackend {
                     )
                     .await
                     .map_err(native_error)?;
-                let (effects, window_name) = take_native_browser_effects(&mut frame.engine)?;
+                let (effects, window_name) = take_native_browser_effects(&mut frame_engine)?;
                 (effects, target_id, window_name)
             }
         };
@@ -3801,14 +4442,15 @@ impl NativeEngineBackend {
                 reason: "worker and client identifiers must be present".into(),
             });
         }
-        let Some((route, frame_id)) = self.service_worker_client_route(&message.client_id)? else {
+        let Some((route, frame_id)) = self.service_worker_client_route(&message.client_id).await?
+        else {
             return Err(BrowserBackendError::SelectionFailed {
                 reason: "service worker client disappeared before message delivery".into(),
             });
         };
         let (effects, owner_id, window_name) = match route {
             NativeFrameRoute::ActiveSelected => {
-                let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
                 engine
                     .dispatch_service_worker_client_message_async(message)
                     .await
@@ -3831,12 +4473,12 @@ impl NativeEngineBackend {
                     .ok_or_else(|| BrowserBackendError::SelectionFailed {
                         reason: "service worker client frame disappeared".into(),
                     })?;
-                frame
-                    .engine
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
+                frame_engine
                     .dispatch_service_worker_client_message_async(message)
                     .await
                     .map_err(native_error)?;
-                let (effects, window_name) = take_native_browser_effects(&mut frame.engine)?;
+                let (effects, window_name) = take_native_browser_effects(&mut frame_engine)?;
                 (effects, owner_id, window_name)
             }
             NativeFrameRoute::ParkedSelected { target_id } => {
@@ -3846,12 +4488,12 @@ impl NativeEngineBackend {
                         reason: "service worker client owner target disappeared".into(),
                     }
                 })?;
-                target
-                    .engine
+                let mut target_engine = lock_native_engine_owner(&target.engine).await;
+                target_engine
                     .dispatch_service_worker_client_message_async(message)
                     .await
                     .map_err(native_error)?;
-                let (effects, window_name) = take_native_browser_effects(&mut target.engine)?;
+                let (effects, window_name) = take_native_browser_effects(&mut target_engine)?;
                 (effects, target_id, window_name)
             }
             NativeFrameRoute::ParkedParked { target_id } => {
@@ -3866,12 +4508,12 @@ impl NativeEngineBackend {
                         reason: "service worker client frame disappeared".into(),
                     }
                 })?;
-                frame
-                    .engine
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
+                frame_engine
                     .dispatch_service_worker_client_message_async(message)
                     .await
                     .map_err(native_error)?;
-                let (effects, window_name) = take_native_browser_effects(&mut frame.engine)?;
+                let (effects, window_name) = take_native_browser_effects(&mut frame_engine)?;
                 (effects, target_id, window_name)
             }
         };
@@ -3900,40 +4542,68 @@ impl NativeEngineBackend {
         Ok(())
     }
 
-    fn window_proxy_updates(
+    async fn window_proxy_updates(
         &self,
         source_id: &str,
     ) -> Result<Vec<NativeWindowProxyUpdate>, BrowserBackendError> {
-        let targets = self.lock_targets(BackendOperation::Script)?;
-        let Some(active_target_id) = targets.active_target_id.as_deref() else {
-            return Ok(Vec::new());
+        let (active_target_id, active_name, active_owner, parked_targets, closed_targets, handles) = {
+            let targets = self.lock_targets(BackendOperation::Script)?;
+            let Some(active_target_id) = targets.active_target_id.clone() else {
+                return Ok(Vec::new());
+            };
+            let active_owner = self
+                .engine
+                .lock()
+                .map_err(|_| poisoned_lock_error(BackendOperation::Script, "engine"))?
+                .clone();
+            let parked_targets = targets
+                .parked
+                .iter()
+                .map(|(target_id, target)| {
+                    (
+                        target_id.clone(),
+                        target.name.clone().unwrap_or_default(),
+                        Arc::clone(&target.engine),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let closed_targets = targets
+                .closed
+                .iter()
+                .map(|(target_id, target)| {
+                    (target_id.clone(), target.url.clone(), target.name.clone())
+                })
+                .collect::<Vec<_>>();
+            let handles = targets
+                .window_handles
+                .iter()
+                .map(|(key, target_id)| (key.clone(), target_id.clone()))
+                .collect::<Vec<_>>();
+            (
+                active_target_id,
+                targets.active_name.clone().unwrap_or_default(),
+                active_owner,
+                parked_targets,
+                closed_targets,
+                handles,
+            )
         };
-        let active_engine = self.lock_engine_raw(BackendOperation::Script)?;
+        let active_engine = lock_native_engine_owner(&active_owner).await;
         let active_url = active_engine.context().map_err(native_error)?.url;
         let mut snapshots = BTreeMap::new();
-        snapshots.insert(
-            active_target_id.to_owned(),
-            (
-                active_url,
-                targets.active_name.clone().unwrap_or_default(),
-                false,
-            ),
-        );
-        for (target_id, target) in &targets.parked {
-            let context = target.engine.context().map_err(native_error)?;
-            snapshots.insert(
-                target_id.clone(),
-                (context.url, target.name.clone().unwrap_or_default(), false),
-            );
+        snapshots.insert(active_target_id.clone(), (active_url, active_name, false));
+        for (target_id, name, owner) in parked_targets {
+            let context = lock_native_engine_owner(&owner)
+                .await
+                .context()
+                .map_err(native_error)?;
+            snapshots.insert(target_id, (context.url, name, false));
         }
-        for (target_id, target) in &targets.closed {
-            snapshots.insert(
-                target_id.clone(),
-                (target.url.clone(), target.name.clone(), true),
-            );
+        for (target_id, url, name) in closed_targets {
+            snapshots.insert(target_id, (url, name, true));
         }
 
-        let mut updates = Vec::with_capacity(snapshots.len() + targets.window_handles.len());
+        let mut updates = Vec::with_capacity(snapshots.len() + handles.len());
         for (target_id, (url, name, closed)) in &snapshots {
             updates.push(NativeWindowProxyUpdate {
                 cache_key: format!("{target_id}\\u0000"),
@@ -3943,7 +4613,7 @@ impl NativeEngineBackend {
                 closed: *closed,
             });
         }
-        for ((handle_source_id, handle), target_id) in &targets.window_handles {
+        for ((handle_source_id, handle), target_id) in &handles {
             if handle_source_id != source_id {
                 continue;
             }
@@ -3969,14 +4639,17 @@ impl NativeEngineBackend {
         Ok(updates)
     }
 
-    fn active_window_proxy_updates(
+    async fn active_window_proxy_updates(
         &self,
     ) -> Result<Vec<NativeWindowProxyUpdate>, BrowserBackendError> {
         let source_id = self
             .lock_targets(BackendOperation::Script)?
             .active_target_id
             .clone();
-        source_id.map_or_else(|| Ok(Vec::new()), |id| self.window_proxy_updates(&id))
+        match source_id {
+            Some(id) => self.window_proxy_updates(&id).await,
+            None => Ok(Vec::new()),
+        }
     }
 
     fn target_named(&self, name: &str) -> Result<Option<(String, bool)>, BrowserBackendError> {
@@ -4109,63 +4782,28 @@ impl NativeEngineBackend {
         &self,
         frame_id: &str,
     ) -> Result<Option<String>, BrowserBackendError> {
-        let Some(route) = self.frame_route(frame_id)? else {
+        let Some(owner) = self.engine_owner_for_frame(frame_id, BackendOperation::Script)? else {
             return Ok(None);
         };
-        match route {
-            NativeFrameRoute::ActiveSelected => Ok(self
-                .lock_engine_raw(BackendOperation::Script)?
+        Ok(Some(
+            try_lock_native_engine_owner(&owner, BackendOperation::Script, "frame owner")?
                 .config()
                 .context_id
-                .clone()
-                .into()),
-            NativeFrameRoute::ActiveParked => Ok(self
-                .lock_targets(BackendOperation::Script)?
-                .active_target_id
-                .clone()),
-            NativeFrameRoute::ParkedSelected { target_id }
-            | NativeFrameRoute::ParkedParked { target_id } => Ok(Some(target_id)),
-        }
+                .clone(),
+        ))
     }
 
     fn frame_owner_document_generation(
         &self,
         frame_id: &str,
     ) -> Result<Option<u32>, BrowserBackendError> {
-        let Some(route) = self.frame_route(frame_id)? else {
+        let Some(owner) = self.engine_owner_for_frame(frame_id, BackendOperation::Script)? else {
             return Ok(None);
         };
-        let generation = match route {
-            NativeFrameRoute::ActiveSelected => self
-                .lock_engine_raw(BackendOperation::Script)?
+        let generation =
+            try_lock_native_engine_owner(&owner, BackendOperation::Script, "frame owner")?
                 .document_generation()
-                .map_err(native_error)?,
-            NativeFrameRoute::ActiveParked => {
-                let targets = self.lock_targets(BackendOperation::Script)?;
-                let Some(target) = targets.active_frames.parked.get(frame_id) else {
-                    return Ok(None);
-                };
-                target.engine.document_generation().map_err(native_error)?
-            }
-            NativeFrameRoute::ParkedSelected { target_id } => {
-                let targets = self.lock_targets(BackendOperation::Script)?;
-                let Some(target) = targets.parked.get(&target_id) else {
-                    return Ok(None);
-                };
-                target.engine.document_generation().map_err(native_error)?
-            }
-            NativeFrameRoute::ParkedParked { target_id } => {
-                let targets = self.lock_targets(BackendOperation::Script)?;
-                let Some(frame) = targets
-                    .parked
-                    .get(&target_id)
-                    .and_then(|target| target.frames.parked.get(frame_id))
-                else {
-                    return Ok(None);
-                };
-                frame.engine.document_generation().map_err(native_error)?
-            }
-        };
+                .map_err(native_error)?;
         Ok(Some(generation))
     }
 
@@ -4641,12 +5279,12 @@ impl NativeEngineBackend {
         Ok(())
     }
 
-    fn page_post_message_target_allowed(
+    async fn page_post_message_target_allowed(
         &self,
         frame_id: &str,
         message: &NativePostMessageRequest,
     ) -> Result<bool, BrowserBackendError> {
-        let Some(origin) = self.frame_origin(frame_id)? else {
+        let Some(origin) = self.frame_origin(frame_id).await? else {
             return Ok(false);
         };
         native_message_target_origin_matches(
@@ -4670,9 +5308,9 @@ impl NativeEngineBackend {
         let Some((target_id, active)) = self.message_target(&message)? else {
             return Ok(NativeQueuedBrowserEffects::default());
         };
-        let proxy_updates = self.window_proxy_updates(&target_id)?;
+        let proxy_updates = self.window_proxy_updates(&target_id).await?;
         if active {
-            let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+            let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
             engine
                 .sync_window_proxies(&proxy_updates)
                 .await
@@ -4709,13 +5347,12 @@ impl NativeEngineBackend {
         let Some(parked) = targets.parked.get_mut(&target_id) else {
             return Ok(NativeQueuedBrowserEffects::default());
         };
-        parked
-            .engine
+        let mut parked_engine = lock_native_engine_owner(&parked.engine).await;
+        parked_engine
             .sync_window_proxies(&proxy_updates)
             .await
             .map_err(native_error)?;
-        let target_origin = parked
-            .engine
+        let target_origin = parked_engine
             .snapshot()
             .map_err(native_error)?
             .origin
@@ -4727,8 +5364,7 @@ impl NativeEngineBackend {
         )? {
             return Ok(NativeQueuedBrowserEffects::default());
         }
-        parked
-            .engine
+        parked_engine
             .dispatch_post_message(
                 &message.source_context_id,
                 &message.source_origin,
@@ -4738,7 +5374,8 @@ impl NativeEngineBackend {
             )
             .await
             .map_err(native_error)?;
-        let (effects, window_name) = take_native_browser_effects(&mut parked.engine)?;
+        let (effects, window_name) = take_native_browser_effects(&mut parked_engine)?;
+        drop(parked_engine);
         drop(targets);
         self.sync_target_name(&target_id, &window_name)?;
         self.register_page_message_port_routes(
@@ -4755,10 +5392,12 @@ impl NativeEngineBackend {
         frame_id: &str,
         message: NativePostMessageRequest,
     ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
-        let proxy_updates = self.window_proxy_updates(&message.source_context_id)?;
+        let proxy_updates = self
+            .window_proxy_updates(&message.source_context_id)
+            .await?;
         let (runtime_effects, owner_id) = match route {
             NativeFrameRoute::ActiveSelected => {
-                let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
                 let result =
                     dispatch_post_message_to_native_frame(&mut engine, &message, &proxy_updates)
                         .await?;
@@ -4780,8 +5419,9 @@ impl NativeEngineBackend {
                     .ok_or_else(|| BrowserBackendError::SelectionFailed {
                         reason: "native frame disappeared during message delivery".into(),
                     })?;
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
                 let result = dispatch_post_message_to_native_frame(
-                    &mut frame.engine,
+                    &mut frame_engine,
                     &message,
                     &proxy_updates,
                 )
@@ -4796,8 +5436,9 @@ impl NativeEngineBackend {
                             .into(),
                     }
                 })?;
+                let mut target_engine = lock_native_engine_owner(&target.engine).await;
                 let result = dispatch_post_message_to_native_frame(
-                    &mut target.engine,
+                    &mut target_engine,
                     &message,
                     &proxy_updates,
                 )
@@ -4817,8 +5458,9 @@ impl NativeEngineBackend {
                         reason: "native frame disappeared during message delivery".into(),
                     }
                 })?;
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
                 let result = dispatch_post_message_to_native_frame(
-                    &mut frame.engine,
+                    &mut frame_engine,
                     &message,
                     &proxy_updates,
                 )
@@ -4830,7 +5472,10 @@ impl NativeEngineBackend {
         self.process_frame_event_effects(frame_id, runtime_effects.events)
             .await?;
         Box::pin(self.process_pending_frame_scripts(runtime_effects.frame_scripts)).await?;
-        if self.page_post_message_target_allowed(frame_id, &message)? {
+        if self
+            .page_post_message_target_allowed(frame_id, &message)
+            .await?
+        {
             self.register_page_message_port_routes(
                 &message.source_context_id,
                 &message.source_frame_id,
@@ -5067,7 +5712,7 @@ impl NativeEngineBackend {
         };
         let (runtime_effects, owner_id) = match route {
             NativeFrameRoute::ActiveSelected => {
-                let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
                 let runtime_effects =
                     dispatch_worker_messages_to_native_frame(&mut engine, &[message]).await?;
                 let owner_id = engine.config().context_id.clone();
@@ -5087,8 +5732,9 @@ impl NativeEngineBackend {
                     .ok_or_else(|| BrowserBackendError::SelectionFailed {
                         reason: "native SharedWorker error owner frame disappeared".into(),
                     })?;
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
                 let runtime_effects =
-                    dispatch_worker_messages_to_native_frame(&mut frame.engine, &[message]).await?;
+                    dispatch_worker_messages_to_native_frame(&mut frame_engine, &[message]).await?;
                 (runtime_effects, owner_id)
             }
             NativeFrameRoute::ParkedSelected { target_id } => {
@@ -5098,8 +5744,9 @@ impl NativeEngineBackend {
                         reason: "native SharedWorker error owner target disappeared".into(),
                     }
                 })?;
+                let mut target_engine = lock_native_engine_owner(&target.engine).await;
                 let runtime_effects =
-                    dispatch_worker_messages_to_native_frame(&mut target.engine, &[message])
+                    dispatch_worker_messages_to_native_frame(&mut target_engine, &[message])
                         .await?;
                 (runtime_effects, target_id)
             }
@@ -5117,8 +5764,9 @@ impl NativeEngineBackend {
                     .ok_or_else(|| BrowserBackendError::SelectionFailed {
                         reason: "native SharedWorker error owner frame disappeared".into(),
                     })?;
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
                 let runtime_effects =
-                    dispatch_worker_messages_to_native_frame(&mut frame.engine, &[message]).await?;
+                    dispatch_worker_messages_to_native_frame(&mut frame_engine, &[message]).await?;
                 (runtime_effects, target_id)
             }
         };
@@ -5250,7 +5898,7 @@ impl NativeEngineBackend {
         operation: &'static str,
     ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
         let mut targets = self.lock_targets(BackendOperation::Script)?;
-        let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+        let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
         let mut profile_written = profile_already_written;
         let mut live_contexts = 0usize;
         if targets.active_target_id.is_some() {
@@ -5260,8 +5908,9 @@ impl NativeEngineBackend {
             live_contexts += 1;
         }
         for frame in targets.active_frames.parked.values_mut() {
+            let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
             apply_native_cookie_changes_to_live_engine(
-                &mut frame.engine,
+                &mut frame_engine,
                 &changes,
                 &mut profile_written,
             )
@@ -5270,8 +5919,9 @@ impl NativeEngineBackend {
             live_contexts += 1;
         }
         for target in targets.parked.values_mut() {
+            let mut target_engine = lock_native_engine_owner(&target.engine).await;
             apply_native_cookie_changes_to_live_engine(
-                &mut target.engine,
+                &mut target_engine,
                 &changes,
                 &mut profile_written,
             )
@@ -5279,8 +5929,9 @@ impl NativeEngineBackend {
             .map_err(native_error)?;
             live_contexts += 1;
             for frame in target.frames.parked.values_mut() {
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
                 apply_native_cookie_changes_to_live_engine(
-                    &mut frame.engine,
+                    &mut frame_engine,
                     &changes,
                     &mut profile_written,
                 )
@@ -5328,7 +5979,7 @@ impl NativeEngineBackend {
         };
         let (runtime_effects, owner_id) = match route {
             NativeFrameRoute::ActiveSelected => {
-                let mut engine = self.lock_engine_raw(BackendOperation::Script)?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
                 let result =
                     dispatch_page_message_port_to_native_frame(&mut engine, &command).await?;
                 let owner_id = engine.config().context_id.clone();
@@ -5349,8 +6000,9 @@ impl NativeEngineBackend {
                     .ok_or_else(|| BrowserBackendError::SelectionFailed {
                         reason: "native MessagePort owner frame disappeared during delivery".into(),
                     })?;
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
                 let result =
-                    dispatch_page_message_port_to_native_frame(&mut frame.engine, &command).await?;
+                    dispatch_page_message_port_to_native_frame(&mut frame_engine, &command).await?;
                 (result, owner_id)
             }
             NativeFrameRoute::ParkedSelected { target_id } => {
@@ -5361,8 +6013,9 @@ impl NativeEngineBackend {
                             .into(),
                     }
                 })?;
+                let mut target_engine = lock_native_engine_owner(&target.engine).await;
                 let result =
-                    dispatch_page_message_port_to_native_frame(&mut target.engine, &command)
+                    dispatch_page_message_port_to_native_frame(&mut target_engine, &command)
                         .await?;
                 (result, target_id)
             }
@@ -5381,8 +6034,9 @@ impl NativeEngineBackend {
                     .ok_or_else(|| BrowserBackendError::SelectionFailed {
                         reason: "native MessagePort owner frame disappeared during delivery".into(),
                     })?;
+                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
                 let result =
-                    dispatch_page_message_port_to_native_frame(&mut frame.engine, &command).await?;
+                    dispatch_page_message_port_to_native_frame(&mut frame_engine, &command).await?;
                 (result, target_id)
             }
         };
@@ -5425,7 +6079,7 @@ impl NativeEngineBackend {
             destroyed_descendant_frame_ids,
         ) = {
             let mut targets = self.lock_targets(BackendOperation::Navigate)?;
-            let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+            let mut engine = self.lock_engine_raw(BackendOperation::Navigate).await?;
             let owner_id =
                 targets
                     .active_target_id
@@ -5454,7 +6108,8 @@ impl NativeEngineBackend {
                     &targets.active_frames,
                     &engine,
                     &frame_id,
-                )?
+                )
+                .await?
             } else {
                 targets.active_frames.active_sandboxed_modals
             };
@@ -5551,7 +6206,8 @@ impl NativeEngineBackend {
             return Err(native_error(NativeEngineError::NavigationCancelled));
         }
         let snapshot = self
-            .lock_engine(BackendOperation::Navigate)?
+            .lock_engine(BackendOperation::Navigate)
+            .await?
             .snapshot()
             .map_err(native_error)?;
         Ok(BackendResponse::Navigation(NavigationResult {
@@ -5567,12 +6223,12 @@ impl NativeEngineBackend {
         source_context_id: &str,
         navigation: &NativeNavigationRequest,
     ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
-        let proxy_updates = self.window_proxy_updates(source_context_id)?;
+        let proxy_updates = self.window_proxy_updates(source_context_id).await?;
         let cleanup_route = route.clone();
         let (navigation_result, owner_id) = match route {
             NativeFrameRoute::ActiveSelected => {
                 let mut targets = self.lock_targets(BackendOperation::Navigate)?;
-                let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Navigate).await?;
                 let sandboxed_modals = targets.active_frames.active_sandboxed_modals;
                 let replacement_sandboxed_modals =
                     if engine.navigation_requires_document_lifecycle(&navigation.url) {
@@ -5580,7 +6236,8 @@ impl NativeEngineBackend {
                             &targets.active_frames,
                             &engine,
                             frame_id,
-                        )?
+                        )
+                        .await?
                     } else {
                         sandboxed_modals
                     };
@@ -5608,14 +6265,15 @@ impl NativeEngineBackend {
                         reason: "native frame owner target disappeared during navigation".into(),
                     }
                 })?;
-                let mut active_engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+                let mut active_engine = self.lock_engine_raw(BackendOperation::Navigate).await?;
                 let replacement_sandboxed_modals =
                     if active_engine.navigation_requires_document_lifecycle(&navigation.url) {
                         native_frame_sandboxed_modals_for_replacement(
                             &targets.active_frames,
                             &active_engine,
                             frame_id,
-                        )?
+                        )
+                        .await?
                     } else {
                         targets
                             .active_frames
@@ -5634,7 +6292,8 @@ impl NativeEngineBackend {
                         &mut targets.active_frames,
                         &mut active_engine,
                         frame_id,
-                    )?;
+                    )
+                    .await?;
                     let sandboxed_modals = targets.active_frames.active_sandboxed_modals;
                     let result = navigate_native_frame(
                         &mut active_engine,
@@ -5655,7 +6314,8 @@ impl NativeEngineBackend {
                             &mut targets.active_frames,
                             &mut active_engine,
                             previous_selection,
-                        )?;
+                        )
+                        .await?;
                     } else {
                         targets.active_frames.active_sandboxed_modals =
                             replacement_sandboxed_modals;
@@ -5670,8 +6330,9 @@ impl NativeEngineBackend {
                             .ok_or_else(|| BrowserBackendError::SelectionFailed {
                                 reason: "native frame disappeared during navigation".into(),
                             })?;
+                    let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
                     let result = navigate_native_frame(
-                        &mut frame.engine,
+                        &mut frame_engine,
                         navigation,
                         &proxy_updates,
                         &mut targets.active_frames,
@@ -5699,21 +6360,21 @@ impl NativeEngineBackend {
                         reason: "native frame owner target disappeared during navigation".into(),
                     }
                 })?;
+                let mut target_engine = lock_native_engine_owner(&target.engine).await;
                 let sandboxed_modals = target.frames.active_sandboxed_modals;
-                let replacement_sandboxed_modals = if target
-                    .engine
-                    .navigation_requires_document_lifecycle(&navigation.url)
-                {
-                    native_frame_sandboxed_modals_for_replacement(
-                        &target.frames,
-                        &target.engine,
-                        frame_id,
-                    )?
-                } else {
-                    sandboxed_modals
-                };
+                let replacement_sandboxed_modals =
+                    if target_engine.navigation_requires_document_lifecycle(&navigation.url) {
+                        native_frame_sandboxed_modals_for_replacement(
+                            &target.frames,
+                            &target_engine,
+                            frame_id,
+                        )
+                        .await?
+                    } else {
+                        sandboxed_modals
+                    };
                 let result = navigate_native_frame(
-                    &mut target.engine,
+                    &mut target_engine,
                     navigation,
                     &proxy_updates,
                     &mut target.frames,
@@ -5734,37 +6395,38 @@ impl NativeEngineBackend {
                         reason: "native frame owner target disappeared during navigation".into(),
                     }
                 })?;
-                let replacement_sandboxed_modals = if target
-                    .engine
-                    .navigation_requires_document_lifecycle(&navigation.url)
-                {
-                    native_frame_sandboxed_modals_for_replacement(
-                        &target.frames,
-                        &target.engine,
-                        frame_id,
-                    )?
-                } else {
-                    target
-                        .frames
-                        .parked
-                        .get(frame_id)
-                        .map(|frame| frame.sandboxed_modals)
-                        .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                            reason: "native frame disappeared during navigation".into(),
-                        })?
-                };
+                let mut target_engine = lock_native_engine_owner(&target.engine).await;
+                let replacement_sandboxed_modals =
+                    if target_engine.navigation_requires_document_lifecycle(&navigation.url) {
+                        native_frame_sandboxed_modals_for_replacement(
+                            &target.frames,
+                            &target_engine,
+                            frame_id,
+                        )
+                        .await?
+                    } else {
+                        target
+                            .frames
+                            .parked
+                            .get(frame_id)
+                            .map(|frame| frame.sandboxed_modals)
+                            .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                                reason: "native frame disappeared during navigation".into(),
+                            })?
+                    };
                 let result = if target
                     .frames
                     .is_descendant(&target.frames.active_frame_id, frame_id)
                 {
                     let previous_selection = activate_parked_frame_for_navigation(
                         &mut target.frames,
-                        &mut target.engine,
+                        &mut target_engine,
                         frame_id,
-                    )?;
+                    )
+                    .await?;
                     let sandboxed_modals = target.frames.active_sandboxed_modals;
                     let result = navigate_native_frame(
-                        &mut target.engine,
+                        &mut target_engine,
                         navigation,
                         &proxy_updates,
                         &mut target.frames,
@@ -5780,9 +6442,10 @@ impl NativeEngineBackend {
                     if restore_selection {
                         restore_previous_frame_selection(
                             &mut target.frames,
-                            &mut target.engine,
+                            &mut target_engine,
                             previous_selection,
-                        )?;
+                        )
+                        .await?;
                     } else {
                         target.frames.active_sandboxed_modals = replacement_sandboxed_modals;
                     }
@@ -5793,8 +6456,9 @@ impl NativeEngineBackend {
                             reason: "native frame disappeared during navigation".into(),
                         }
                     })?;
+                    let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
                     let result = navigate_native_frame(
-                        &mut frame.engine,
+                        &mut frame_engine,
                         navigation,
                         &proxy_updates,
                         &mut target.frames,
@@ -5848,7 +6512,7 @@ impl NativeEngineBackend {
                         .active_frames
                         .is_descendant(&targets.active_frames.active_frame_id, frame_id)
                     {
-                        let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+                        let mut engine = self.lock_engine_raw(BackendOperation::Navigate).await?;
                         activate_navigated_frame_if_ancestor(
                             &mut targets.active_frames,
                             &mut engine,
@@ -5881,9 +6545,10 @@ impl NativeEngineBackend {
                         .frames
                         .is_descendant(&target.frames.active_frame_id, frame_id)
                     {
+                        let mut target_engine = lock_native_engine_owner(&target.engine).await;
                         activate_navigated_frame_if_ancestor(
                             &mut target.frames,
-                            &mut target.engine,
+                            &mut target_engine,
                             frame_id,
                         )
                         .await?;
@@ -5919,12 +6584,12 @@ impl NativeEngineBackend {
         ),
         BrowserBackendError,
     > {
-        let proxy_updates = self.window_proxy_updates(target_id)?;
+        let proxy_updates = self.window_proxy_updates(target_id).await?;
         if active {
             let (target, owner_id, frame_id, navigation_result) = {
                 let mut targets = self.lock_targets(BackendOperation::Navigate)?;
                 let opener_id = targets.active_opener_id.clone();
-                let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Navigate).await?;
                 let frame_id = targets.active_frames.active_frame_id.clone();
                 let sandboxed_modals = targets.active_frames.active_sandboxed_modals;
                 let replacement_sandboxed_modals =
@@ -5933,7 +6598,8 @@ impl NativeEngineBackend {
                             &targets.active_frames,
                             &engine,
                             &frame_id,
-                        )?
+                        )
+                        .await?
                     } else {
                         sandboxed_modals
                     };
@@ -5996,16 +6662,18 @@ impl NativeEngineBackend {
                     }
                 })?;
                 let NativeParkedTarget {
-                    mut engine,
+                    engine: parked_engine,
                     opener_id,
                     name: _previous_name,
                     mut frames,
                 } = parked;
+                let mut engine = lock_native_engine_owner(&parked_engine).await;
                 let frame_id = frames.active_frame_id.clone();
                 let sandboxed_modals = frames.active_sandboxed_modals;
                 let replacement_sandboxed_modals =
                     if engine.navigation_requires_document_lifecycle(&navigation.url) {
-                        native_frame_sandboxed_modals_for_replacement(&frames, &engine, &frame_id)?
+                        native_frame_sandboxed_modals_for_replacement(&frames, &engine, &frame_id)
+                            .await?
                     } else {
                         sandboxed_modals
                     };
@@ -6026,7 +6694,7 @@ impl NativeEngineBackend {
                             target_id.to_owned(),
                             NativeParkedTarget {
                                 name: native_window_name(&engine.config().window_name),
-                                engine,
+                                engine: parked_engine,
                                 opener_id,
                                 frames,
                             },
@@ -6042,7 +6710,7 @@ impl NativeEngineBackend {
                 targets.parked.insert(
                     target_id.to_owned(),
                     NativeParkedTarget {
-                        engine,
+                        engine: parked_engine,
                         opener_id,
                         frames,
                         name: native_window_name(&window_name),
@@ -6100,7 +6768,7 @@ impl NativeEngineBackend {
         let mut frames = {
             let mut targets = self.lock_targets(BackendOperation::Close)?;
             if targets.active_target_id.as_deref() == Some(target_id) {
-                let mut engine = self.lock_engine_raw(BackendOperation::Close)?;
+                let mut engine = self.lock_engine_raw(BackendOperation::Close).await?;
                 let closed_url = engine.context().map_err(native_error)?.url;
                 let closed_name = targets.active_name.clone().unwrap_or_default();
                 engine.close_async().await.map_err(native_error)?;
@@ -6112,19 +6780,21 @@ impl NativeEngineBackend {
                 targets.remember_closed_target(target_id.to_owned(), closed_url, closed_name);
                 frames
             } else {
-                let Some(mut parked) = targets.parked.remove(target_id) else {
+                let Some(parked) = targets.parked.remove(target_id) else {
                     return Err(BrowserBackendError::SelectionFailed {
                         reason:
                             "native page target was not found; call listTargets to refresh topology"
                                 .into(),
                     });
                 };
-                let closed_url = parked.engine.context().map_err(native_error)?.url;
+                let mut parked_engine = lock_native_engine_owner(&parked.engine).await;
+                let closed_url = parked_engine.context().map_err(native_error)?.url;
                 let closed_name = parked.name.clone().unwrap_or_default();
-                if let Err(error) = parked.engine.close_async().await {
+                if let Err(error) = parked_engine.close_async().await {
                     targets.parked.insert(target_id.to_owned(), parked);
                     return Err(native_error(error));
                 }
+                drop(parked_engine);
                 targets.remember_closed_target(target_id.to_owned(), closed_url, closed_name);
                 parked.frames
             }
@@ -6138,7 +6808,7 @@ impl NativeEngineBackend {
     async fn close_all(&self) -> Result<(), BrowserBackendError> {
         let (active_error, active_frames, parked) = {
             let mut targets = self.lock_targets(BackendOperation::Close)?;
-            let mut active_engine = self.lock_engine_raw(BackendOperation::Close)?;
+            let mut active_engine = self.lock_engine_raw(BackendOperation::Close).await?;
             let active_error = if targets.active_target_id.is_some()
                 && active_engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
             {
@@ -6166,12 +6836,14 @@ impl NativeEngineBackend {
             first_error.get_or_insert(error);
         }
         for (_, mut parked) in parked {
-            if parked.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
-                && let Err(error) = parked.engine.close_async().await.map_err(native_error)
+            let mut parked_engine = lock_native_engine_owner(&parked.engine).await;
+            if parked_engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
+                && let Err(error) = parked_engine.close_async().await.map_err(native_error)
                 && first_error.is_none()
             {
                 first_error = Some(error);
             }
+            drop(parked_engine);
             if let Err(error) = close_parked_frames(&mut parked.frames).await
                 && first_error.is_none()
             {
@@ -6193,7 +6865,7 @@ impl NativeEngineBackend {
         let mut targets = self.lock_targets(BackendOperation::Contexts)?;
         if targets.active_frames.active_frame_id == frame_id {
             targets.active_frames.focused_frame_id = Some(frame_id.to_owned());
-            let engine = self.lock_engine_raw(BackendOperation::Contexts)?;
+            let engine = self.lock_engine_raw(BackendOperation::Contexts).await?;
             return project_native_frame(
                 &engine,
                 frame_id,
@@ -6212,8 +6884,14 @@ impl NativeEngineBackend {
             owner_node_index,
             sandboxed_modals,
         } = parked;
-        let mut active_engine = self.lock_engine_raw(BackendOperation::Contexts)?;
-        let old_engine = std::mem::replace(&mut *active_engine, parked_engine);
+        let old_engine = {
+            let mut active_engine = self
+                .engine
+                .lock()
+                .map_err(|_| poisoned_lock_error(BackendOperation::Contexts, "engine"))?;
+            std::mem::replace(&mut *active_engine, parked_engine)
+        };
+        let active_engine = self.lock_engine_raw(BackendOperation::Contexts).await?;
         let old_frame_id = std::mem::replace(
             &mut targets.active_frames.active_frame_id,
             frame_id.to_owned(),
@@ -6264,7 +6942,7 @@ impl NativeEngineBackend {
             snapshot,
         ) = {
             let mut targets = self.lock_targets(BackendOperation::Navigate)?;
-            let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+            let mut engine = self.lock_engine_raw(BackendOperation::Navigate).await?;
             let previous_revision = engine.revision();
             let initial_generation = engine.document_generation().map_err(native_error)?;
             let frame_id = targets.active_frames.active_frame_id.clone();
@@ -6275,7 +6953,8 @@ impl NativeEngineBackend {
                     &targets.active_frames,
                     &engine,
                     &frame_id,
-                )?
+                )
+                .await?
             } else {
                 targets.active_frames.active_sandboxed_modals
             };
@@ -6414,7 +7093,7 @@ impl NativeEngineBackend {
                         reason: "select an available native page target before reloading".into(),
                     }
                 })?;
-                let engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+                let engine = self.lock_engine_raw(BackendOperation::Navigate).await?;
                 let url = engine.context().map_err(native_error)?.url;
                 (target_id, url, engine.revision())
             };
@@ -6442,7 +7121,10 @@ impl NativeEngineBackend {
             page_message_port_commands,
         )
         .await?;
-        let current_revision = self.lock_engine(BackendOperation::Navigate)?.revision();
+        let current_revision = self
+            .lock_engine(BackendOperation::Navigate)
+            .await?
+            .revision();
         Ok(NavigationControlOutcome {
             action: "reload".into(),
             previous_revision,
@@ -6454,7 +7136,7 @@ impl NativeEngineBackend {
     /// The operation never changes backend or replays the failed mutation;
     /// it replaces the current history entry and returns the new revision.
     pub async fn recover(&self) -> Result<NavigationControlOutcome, BrowserBackendError> {
-        let proxy_updates = self.active_window_proxy_updates()?;
+        let proxy_updates = self.active_window_proxy_updates().await?;
         let (target_id, opener_id, previous_revision) =
             {
                 let targets = self.lock_targets(BackendOperation::Navigate)?;
@@ -6465,7 +7147,7 @@ impl NativeEngineBackend {
                         reason: "select an available native page target before recovery".into(),
                     }
                 })?;
-                let engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+                let engine = self.lock_engine_raw(BackendOperation::Navigate).await?;
                 (
                     target_id,
                     targets.active_opener_id.clone(),
@@ -6489,7 +7171,7 @@ impl NativeEngineBackend {
             let targets = self.lock_targets(BackendOperation::Navigate)?;
             let frame_id = targets.active_frames.active_frame_id.clone();
             let destroyed_descendant_frame_ids = targets.active_frames.descendant_ids(&frame_id);
-            let mut engine = self.lock_engine_raw(BackendOperation::Navigate)?;
+            let mut engine = self.lock_engine_raw(BackendOperation::Navigate).await?;
             let outgoing_document_generation =
                 engine.document_generation().map_err(native_error)?;
             engine
@@ -6554,7 +7236,7 @@ impl NativeEngineBackend {
 
     /// Return the logical viewport used by native point routing and capture.
     pub fn viewport_size(&self) -> Result<(f64, f64), BrowserBackendError> {
-        let engine = self.lock_engine(BackendOperation::Capture)?;
+        let engine = self.try_lock_engine(BackendOperation::Capture)?;
         Ok((
             f64::from(engine.config().viewport.width),
             f64::from(engine.config().viewport.height),
@@ -6669,24 +7351,48 @@ impl NativeEngineBackend {
         &self,
         operation: BackendOperation,
     ) -> Result<MutexGuard<'_, NativeTargetState>, BrowserBackendError> {
+        if operation != BackendOperation::Close {
+            self.check_async_effect_pump_error()?;
+        }
         self.targets
             .lock()
             .map_err(|_| poisoned_lock_error(operation, "target registry"))
     }
 
-    fn lock_engine_raw(
+    async fn lock_engine_raw(
         &self,
         operation: BackendOperation,
-    ) -> Result<MutexGuard<'_, NativeEngine>, BrowserBackendError> {
-        self.engine
+    ) -> Result<tokio::sync::OwnedMutexGuard<NativeEngine>, BrowserBackendError> {
+        if operation != BackendOperation::Close {
+            self.check_async_effect_pump_error()?;
+        }
+        let owner = self
+            .engine
             .lock()
-            .map_err(|_| poisoned_lock_error(operation, "engine"))
+            .map_err(|_| poisoned_lock_error(operation, "engine"))?
+            .clone();
+        Ok(owner.lock_owned().await)
     }
 
-    fn lock_engine(
+    fn try_lock_engine_raw(
         &self,
         operation: BackendOperation,
-    ) -> Result<MutexGuard<'_, NativeEngine>, BrowserBackendError> {
+    ) -> Result<tokio::sync::OwnedMutexGuard<NativeEngine>, BrowserBackendError> {
+        if operation != BackendOperation::Close {
+            self.check_async_effect_pump_error()?;
+        }
+        let owner = self
+            .engine
+            .lock()
+            .map_err(|_| poisoned_lock_error(operation, "engine"))?
+            .clone();
+        try_lock_native_engine_owner(&owner, operation, "active native engine")
+    }
+
+    async fn lock_engine(
+        &self,
+        operation: BackendOperation,
+    ) -> Result<tokio::sync::OwnedMutexGuard<NativeEngine>, BrowserBackendError> {
         let has_active_target = self.lock_targets(operation)?.active_target_id.is_some();
         if !has_active_target {
             return Err(BrowserBackendError::Lifecycle {
@@ -6695,157 +7401,285 @@ impl NativeEngineBackend {
                 reason: "select an available native page target before this operation".into(),
             });
         }
-        self.lock_engine_raw(operation)
+        self.lock_engine_raw(operation).await
+    }
+
+    fn try_lock_engine(
+        &self,
+        operation: BackendOperation,
+    ) -> Result<tokio::sync::OwnedMutexGuard<NativeEngine>, BrowserBackendError> {
+        let has_active_target = self.lock_targets(operation)?.active_target_id.is_some();
+        if !has_active_target {
+            return Err(BrowserBackendError::Lifecycle {
+                operation: operation_name(operation).into(),
+                state: "no-target-selected".into(),
+                reason: "select an available native page target before this operation".into(),
+            });
+        }
+        self.try_lock_engine_raw(operation)
     }
 }
 
 impl NativeEngineBackend {
     async fn synchronize_native_service_worker_clients(&self) -> Result<(), BrowserBackendError> {
-        let mut targets = self.lock_targets(BackendOperation::Contexts)?;
-        let mut engine = self.lock_engine_raw(BackendOperation::Contexts)?;
-        if targets.active_target_id.is_none()
-            || engine.lifecycle() != super::native_engine::NativeLifecycleState::Running
-        {
-            return Ok(());
-        }
-
-        reconcile_native_frame_tree(&mut targets.active_frames, &mut engine).await?;
-        let active_context_id = engine.config().context_id.clone();
-        let mut retired_frames = std::mem::take(&mut targets.active_frames.pending_retired)
-            .into_iter()
-            .map(|frame| (active_context_id.clone(), frame))
-            .collect::<Vec<_>>();
-        for target in targets.parked.values_mut() {
-            if target.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running {
-                reconcile_native_frame_tree(&mut target.frames, &mut target.engine).await?;
-            }
-            let target_id = target.engine.config().context_id.clone();
-            retired_frames.extend(
-                std::mem::take(&mut target.frames.pending_retired)
-                    .into_iter()
-                    .map(|frame| (target_id.clone(), frame)),
-            );
-        }
-
-        engine
-            .synchronize_service_worker_registrations()
+        self.synchronize_native_service_worker_clients_with_conflicts(0)
             .await
-            .map_err(native_error)?;
-        for target in targets.parked.values_mut() {
-            if target.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running {
-                target
+    }
+
+    async fn synchronize_native_service_worker_clients_with_conflicts(
+        &self,
+        mut topology_conflicts: usize,
+    ) -> Result<(), BrowserBackendError> {
+        let _sync_guard = self.service_worker_client_sync.lock().await;
+        let (sync_owners, retired_frames, committed_snapshot) = loop {
+            let mut targets_snapshot = {
+                let targets = self.lock_targets(BackendOperation::Contexts)?;
+                let Some(active_target_id) = targets.active_target_id.clone() else {
+                    return Ok(());
+                };
+                let active_engine = self
                     .engine
-                    .synchronize_service_worker_registrations()
-                    .await
-                    .map_err(native_error)?;
-            }
-            for frame in target.frames.parked.values_mut() {
-                if frame.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running {
-                    frame
-                        .engine
-                        .synchronize_service_worker_registrations()
-                        .await
-                        .map_err(native_error)?;
+                    .lock()
+                    .map_err(|_| poisoned_lock_error(BackendOperation::Contexts, "engine"))?
+                    .clone();
+                let mut snapshots = Vec::with_capacity(targets.parked.len() + 1);
+                snapshots.push(NativeServiceWorkerTargetSnapshot {
+                    target_id: active_target_id,
+                    engine: active_engine,
+                    original_frames: targets.active_frames.clone(),
+                    reconciled_frames: targets.active_frames.clone(),
+                    active: true,
+                });
+                snapshots.extend(targets.parked.iter().map(|(target_id, target)| {
+                    NativeServiceWorkerTargetSnapshot {
+                        target_id: target_id.clone(),
+                        engine: Arc::clone(&target.engine),
+                        original_frames: target.frames.clone(),
+                        reconciled_frames: target.frames.clone(),
+                        active: false,
+                    }
+                }));
+                snapshots
+            };
+
+            for snapshot in &mut targets_snapshot {
+                let mut engine = lock_native_engine_owner(&snapshot.engine).await;
+                if snapshot.active
+                    && engine.lifecycle() != super::native_engine::NativeLifecycleState::Running
+                {
+                    return Ok(());
+                }
+                if engine.lifecycle() == super::native_engine::NativeLifecycleState::Running {
+                    reconcile_native_frame_tree(&mut snapshot.reconciled_frames, &mut engine)
+                        .await?;
                 }
             }
-        }
-        for frame in targets.active_frames.parked.values_mut() {
-            if frame.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running {
-                frame
-                    .engine
-                    .synchronize_service_worker_registrations()
-                    .await
-                    .map_err(native_error)?;
-            }
-        }
 
-        let active_frame_id = targets.active_frames.active_frame_id.clone();
-        let focused_frame_id = targets
-            .active_frames
-            .focused_frame_id
-            .clone()
-            .unwrap_or_else(|| active_frame_id.clone());
-        let active_frame_type = if targets.active_frames.active_parent_id.is_some() {
-            "nested"
-        } else {
-            "top-level"
-        };
-        let mut local_leases = Vec::new();
-        let active_focused = focused_frame_id == active_frame_id;
-        local_leases.push(engine.service_worker_client_lease(active_frame_type, active_focused));
-        for (frame_id, frame) in &targets.active_frames.parked {
-            if frame.engine.lifecycle() != super::native_engine::NativeLifecycleState::Running {
+            let mut targets = self.lock_targets(BackendOperation::Contexts)?;
+            let current_active_engine = self
+                .engine
+                .lock()
+                .map_err(|_| poisoned_lock_error(BackendOperation::Contexts, "engine"))?
+                .clone();
+            let topology_matches = native_service_worker_topology_matches_snapshot(
+                &targets,
+                &current_active_engine,
+                &targets_snapshot,
+                false,
+            );
+            if !topology_matches {
+                drop(targets);
+                topology_conflicts = topology_conflicts.saturating_add(1);
+                if topology_conflicts >= MAX_NATIVE_SERVICE_WORKER_TOPOLOGY_CONFLICTS {
+                    return Err(BrowserBackendError::SelectionFailed {
+                        reason: "native target/frame topology changed repeatedly during ServiceWorker synchronization".into(),
+                    });
+                }
                 continue;
             }
-            let frame_type = if frame.parent_id.is_some() {
+
+            targets.active_frames = targets_snapshot[0].reconciled_frames.clone();
+            for snapshot in targets_snapshot.iter().skip(1) {
+                targets
+                    .parked
+                    .get_mut(&snapshot.target_id)
+                    .expect("parked target remains present after topology validation")
+                    .frames = snapshot.reconciled_frames.clone();
+            }
+
+            let mut retired_frames = std::mem::take(&mut targets.active_frames.pending_retired)
+                .into_iter()
+                .map(|frame| (targets_snapshot[0].target_id.clone(), frame))
+                .collect::<Vec<_>>();
+            for (target_id, target) in &mut targets.parked {
+                retired_frames.extend(
+                    std::mem::take(&mut target.frames.pending_retired)
+                        .into_iter()
+                        .map(|frame| (target_id.clone(), frame)),
+                );
+            }
+            for snapshot in &mut targets_snapshot {
+                snapshot.reconciled_frames.pending_retired.clear();
+            }
+
+            let active_frame_id = targets.active_frames.active_frame_id.clone();
+            let focused_frame_id = targets
+                .active_frames
+                .focused_frame_id
+                .clone()
+                .unwrap_or_else(|| active_frame_id.clone());
+            let active_frame_type = if targets.active_frames.active_parent_id.is_some() {
                 "nested"
             } else {
                 "top-level"
             };
-            let focused = focused_frame_id == *frame_id;
-            local_leases.push(
-                frame
-                    .engine
-                    .service_worker_client_lease(frame_type, focused),
+            let mut sync_owners = vec![NativeServiceWorkerSyncOwner {
+                engine: Arc::clone(&targets_snapshot[0].engine),
+                frame_type: active_frame_type,
+                focused: focused_frame_id == active_frame_id,
+                active: true,
+            }];
+            sync_owners.extend(
+                targets
+                    .active_frames
+                    .parked
+                    .iter()
+                    .map(|(frame_id, frame)| NativeServiceWorkerSyncOwner {
+                        engine: Arc::clone(&frame.engine),
+                        frame_type: if frame.parent_id.is_some() {
+                            "nested"
+                        } else {
+                            "top-level"
+                        },
+                        focused: focused_frame_id == *frame_id,
+                        active: false,
+                    }),
             );
-        }
-        for target in targets.parked.values() {
-            if target.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running {
-                let frame_type = if target.frames.active_parent_id.is_some() {
-                    "nested"
-                } else {
-                    "top-level"
-                };
-                local_leases.push(target.engine.service_worker_client_lease(frame_type, false));
+            for target in targets.parked.values() {
+                sync_owners.push(NativeServiceWorkerSyncOwner {
+                    engine: Arc::clone(&target.engine),
+                    frame_type: if target.frames.active_parent_id.is_some() {
+                        "nested"
+                    } else {
+                        "top-level"
+                    },
+                    focused: false,
+                    active: false,
+                });
+                sync_owners.extend(target.frames.parked.values().map(|frame| {
+                    NativeServiceWorkerSyncOwner {
+                        engine: Arc::clone(&frame.engine),
+                        frame_type: if frame.parent_id.is_some() {
+                            "nested"
+                        } else {
+                            "top-level"
+                        },
+                        focused: false,
+                        active: false,
+                    }
+                }));
             }
-            for frame in target.frames.parked.values() {
-                if frame.engine.lifecycle() != super::native_engine::NativeLifecycleState::Running {
+            drop(targets);
+            break (sync_owners, retired_frames, targets_snapshot);
+        };
+
+        let service_worker_sync_result: Result<bool, BrowserBackendError> = async {
+            let mut local_leases = Vec::new();
+            let mut active_storage_path = None;
+            for owner in &sync_owners {
+                let mut engine = lock_native_engine_owner(&owner.engine).await;
+                if engine.lifecycle() != super::native_engine::NativeLifecycleState::Running {
+                    if owner.active {
+                        break;
+                    }
                     continue;
                 }
-                let frame_type = if frame.parent_id.is_some() {
-                    "nested"
-                } else {
-                    "top-level"
-                };
-                local_leases.push(frame.engine.service_worker_client_lease(frame_type, false));
-            }
-        }
-        let clients = synchronize_service_worker_client_leases(
-            engine.config().storage_path.as_deref(),
-            &local_leases,
-        )
-        .map_err(native_error)?;
-
-        engine
-            .replace_service_worker_clients(clients.clone())
-            .await
-            .map_err(native_error)?;
-        for target in targets.parked.values_mut() {
-            target
-                .engine
-                .replace_service_worker_clients(clients.clone())
-                .await
-                .map_err(native_error)?;
-            for frame in target.frames.parked.values_mut() {
-                frame
-                    .engine
-                    .replace_service_worker_clients(clients.clone())
+                engine
+                    .synchronize_service_worker_registrations()
                     .await
                     .map_err(native_error)?;
+                if owner.active {
+                    active_storage_path = Some(engine.config().storage_path.clone());
+                }
+                local_leases
+                    .push(engine.service_worker_client_lease(owner.frame_type, owner.focused));
             }
-        }
-        for frame in targets.active_frames.parked.values_mut() {
-            frame
-                .engine
-                .replace_service_worker_clients(clients.clone())
-                .await
-                .map_err(native_error)?;
-        }
-        drop(engine);
-        drop(targets);
 
+            let Some(storage_path) = active_storage_path else {
+                return Ok(true);
+            };
+            let clients = {
+                let targets = self.lock_targets(BackendOperation::Contexts)?;
+                let current_active_engine = self
+                    .engine
+                    .lock()
+                    .map_err(|_| poisoned_lock_error(BackendOperation::Contexts, "engine"))?
+                    .clone();
+                let topology_matches = native_service_worker_topology_matches_snapshot(
+                    &targets,
+                    &current_active_engine,
+                    &committed_snapshot,
+                    true,
+                );
+                if !topology_matches {
+                    return Ok(false);
+                }
+                let clients = synchronize_service_worker_client_leases(
+                    storage_path.as_deref(),
+                    &local_leases,
+                )
+                .map_err(native_error)?;
+                drop(targets);
+                clients
+            };
+            #[cfg(test)]
+            let mut first_owner_for_test_hook = true;
+            for owner in &sync_owners {
+                let mut engine = lock_native_engine_owner(&owner.engine).await;
+                if engine.lifecycle() == super::native_engine::NativeLifecycleState::Running {
+                    engine
+                        .replace_service_worker_clients(clients.clone())
+                        .await
+                        .map_err(native_error)?;
+                }
+                #[cfg(test)]
+                if first_owner_for_test_hook {
+                    first_owner_for_test_hook = false;
+                    let hook = self
+                        .service_worker_client_publication_hook
+                        .lock()
+                        .map_err(|_| {
+                            poisoned_lock_error(
+                                BackendOperation::Contexts,
+                                "ServiceWorker publication test hook",
+                            )
+                        })?
+                        .take();
+                    if let Some(hook) = hook {
+                        hook.reached.notify_one();
+                        hook.resume.notified().await;
+                    }
+                }
+            }
+            let targets = self.lock_targets(BackendOperation::Contexts)?;
+            let current_active_engine = self
+                .engine
+                .lock()
+                .map_err(|_| poisoned_lock_error(BackendOperation::Contexts, "engine"))?
+                .clone();
+            let topology_matches = native_service_worker_topology_matches_snapshot(
+                &targets,
+                &current_active_engine,
+                &committed_snapshot,
+                true,
+            );
+            Ok(topology_matches)
+        }
+        .await;
+
+        drop(_sync_guard);
         let mut first_error = None;
-        for (context_id, mut retired) in retired_frames {
+        for (context_id, retired) in retired_frames {
             if let Err(error) = self
                 .close_shared_worker_owners_for_frame(&context_id, &retired.frame_id)
                 .await
@@ -6855,13 +7689,63 @@ impl NativeEngineBackend {
             if let Err(error) = self.clear_page_message_port_routes_for_frame(&retired.frame_id) {
                 first_error.get_or_insert(error);
             }
-            if retired.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
-                && let Err(error) = retired.engine.close_async().await.map_err(native_error)
+            let mut retired_engine = lock_native_engine_owner(&retired.engine).await;
+            if retired_engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
+                && let Err(error) = retired_engine.close_async().await.map_err(native_error)
             {
                 first_error.get_or_insert(error);
             }
         }
-        first_error.map_or(Ok(()), Err)
+        match service_worker_sync_result {
+            Ok(true) => first_error.map_or(Ok(()), Err),
+            Ok(false) => {
+                if let Some(error) = first_error {
+                    return Err(error);
+                }
+                topology_conflicts = topology_conflicts.saturating_add(1);
+                if topology_conflicts >= MAX_NATIVE_SERVICE_WORKER_TOPOLOGY_CONFLICTS {
+                    return Err(BrowserBackendError::SelectionFailed {
+                        reason: "native target/frame topology changed repeatedly during ServiceWorker client publication".into(),
+                    });
+                }
+                Box::pin(
+                    self.synchronize_native_service_worker_clients_with_conflicts(
+                        topology_conflicts,
+                    ),
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn initialize_backend(&self) -> Result<BackendResponse, BrowserBackendError> {
+        let mut engine = self.lock_engine(BackendOperation::Initialize).await?;
+        engine.initialize_async().await.map_err(native_error)?;
+        let active_context_id = engine.config().context_id.clone();
+        let popup_requests = engine.take_pending_popups();
+        let post_messages = engine.take_pending_post_messages();
+        let window_closes = engine.take_pending_window_closes();
+        let window_navigations = engine.take_pending_window_navigations();
+        let service_worker_open_windows = engine.take_pending_service_worker_open_windows();
+        let service_worker_client_messages = engine.take_pending_service_worker_client_messages();
+        let page_message_port_commands =
+            take_native_worker_coordinator_effects(&mut engine).map_err(native_error)?;
+        let window_name = engine.config().window_name.clone();
+        drop(engine);
+        self.sync_target_name(&active_context_id, &window_name)?;
+        self.process_pending_browser_effects(
+            popup_requests,
+            post_messages,
+            window_closes,
+            window_navigations,
+            service_worker_open_windows,
+            service_worker_client_messages,
+            page_message_port_commands,
+        )
+        .await?;
+        self.synchronize_native_service_worker_clients().await?;
+        Ok(BackendResponse::Unit)
     }
 }
 
@@ -6875,6 +7759,19 @@ impl BrowserBackend for NativeEngineBackend {
         operation: BackendOperation,
         request: BackendRequest,
     ) -> BackendFuture<'a, BackendResponse> {
+        if matches!(
+            (&operation, &request),
+            (BackendOperation::Initialize, BackendRequest::Initialize)
+        ) {
+            return Box::pin(async move {
+                request.validate()?;
+                self.profile
+                    .require_operation(operation, SupportLevel::Available)?;
+                self.check_async_effect_pump_error()?;
+                self.initialize_backend().await
+            });
+        }
+
         Box::pin(async move {
             request.validate()?;
             self.profile
@@ -6883,9 +7780,13 @@ impl BrowserBackend for NativeEngineBackend {
                 (&operation, &request),
                 (BackendOperation::Close, BackendRequest::Close)
             ) {
-                self.close_all().await?;
+                let pump_result = self.stop_async_effect_pump().await;
+                let close_result = self.close_all().await;
+                close_result?;
+                pump_result?;
                 return Ok(BackendResponse::Unit);
             }
+            self.check_async_effect_pump_error()?;
             if !matches!(operation, BackendOperation::Initialize) {
                 self.synchronize_native_service_worker_clients().await?;
             }
@@ -6897,7 +7798,7 @@ impl BrowserBackend for NativeEngineBackend {
                     | BackendOperation::Script
                     | BackendOperation::Prompt
             ) {
-                Some(self.active_window_proxy_updates()?)
+                Some(self.active_window_proxy_updates().await?)
             } else {
                 None
             };
@@ -6985,7 +7886,7 @@ impl BrowserBackend for NativeEngineBackend {
                     )
                     .await;
             }
-            let mut engine = self.lock_engine(operation)?;
+            let mut engine = self.lock_engine(operation).await?;
             if let Some(proxy_updates) = proxy_updates.as_deref() {
                 engine
                     .sync_window_proxies(proxy_updates)
@@ -7472,8 +8373,13 @@ fn capture_native_frame_surface_at_depth(
         let Some(child) = frames.parked.get(&child_id) else {
             continue;
         };
-        let child_surface = capture_native_frame_surface_at_depth(
+        let child_engine = try_lock_native_engine_owner(
             &child.engine,
+            BackendOperation::Capture,
+            "native child frame",
+        )?;
+        let child_surface = capture_native_frame_surface_at_depth(
+            &child_engine,
             frames,
             &child_id,
             depth.saturating_add(1),
@@ -7569,10 +8475,15 @@ fn find_native_point_frame(
                 .ok_or_else(|| BrowserBackendError::SelectionFailed {
                     reason: "native point target child disappeared during hit testing".into(),
                 })?;
+        let child_engine = try_lock_native_engine_owner(
+            &child.engine,
+            BackendOperation::Action,
+            "native point target frame",
+        )?;
         if let Some(target) = find_native_point_frame(
             frames,
             &child_id,
-            &child.engine,
+            &child_engine,
             local_x,
             local_y,
             depth.saturating_add(1),
@@ -7755,15 +8666,16 @@ async fn close_native_frame_descendants(
     let descendants = frames.descendant_ids(frame_id);
     let mut first_error = None;
     for descendant in descendants {
-        let Some(mut frame) = frames.parked.remove(&descendant) else {
+        let Some(frame) = frames.parked.remove(&descendant) else {
             continue;
         };
         frames.discovered_documents.remove(&descendant);
         frames
             .observed_frame_owner_removal_sequences
             .retain(|(observed_frame_id, _, _), _| observed_frame_id != &descendant);
-        if frame.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
-            && let Err(error) = frame.engine.close_async().await.map_err(native_error)
+        let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
+        if frame_engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
+            && let Err(error) = frame_engine.close_async().await.map_err(native_error)
         {
             first_error.get_or_insert(error);
         }
@@ -7791,24 +8703,17 @@ async fn activate_navigated_frame_if_ancestor(
             .ok_or_else(|| BrowserBackendError::SelectionFailed {
                 reason: "native navigated ancestor frame disappeared before activation".into(),
             })?;
-    let NativeParkedFrame {
-        engine: navigated_engine,
-        parent_id,
-        owner_node_index,
-        sandboxed_modals,
-    } = parked;
-    let mut old_active_engine = std::mem::replace(active_engine, navigated_engine);
-    let mut first_error = old_active_engine
-        .close_async()
-        .await
-        .err()
-        .map(native_error);
+    let mut navigated_engine = lock_native_engine_owner(&parked.engine).await;
+    std::mem::swap(active_engine, &mut navigated_engine);
+    let mut first_error = navigated_engine.close_async().await.err().map(native_error);
     for descendant in descendants {
-        if let Some(mut frame) = frames.parked.remove(&descendant)
-            && frame.engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
-            && let Err(error) = frame.engine.close_async().await.map_err(native_error)
-        {
-            first_error.get_or_insert(error);
+        if let Some(frame) = frames.parked.remove(&descendant) {
+            let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
+            if frame_engine.lifecycle() == super::native_engine::NativeLifecycleState::Running
+                && let Err(error) = frame_engine.close_async().await.map_err(native_error)
+            {
+                first_error.get_or_insert(error);
+            }
         }
         frames.discovered_documents.remove(&descendant);
         frames
@@ -7820,9 +8725,9 @@ async fn activate_navigated_frame_if_ancestor(
         .observed_frame_owner_removal_sequences
         .retain(|(observed_frame_id, _, _), _| observed_frame_id != frame_id);
     frames.active_frame_id = frame_id.to_owned();
-    frames.active_parent_id = parent_id;
-    frames.active_owner_node_index = owner_node_index;
-    frames.active_sandboxed_modals = sandboxed_modals;
+    frames.active_parent_id = parked.parent_id;
+    frames.active_owner_node_index = parked.owner_node_index;
+    frames.active_sandboxed_modals = parked.sandboxed_modals;
     frames.focused_frame_id = Some(frame_id.to_owned());
     frames.discovered_generation = None;
     first_error.map_or(Ok(()), Err)
@@ -7851,6 +8756,40 @@ fn take_native_browser_effects(
         ),
         window_name,
     ))
+}
+
+async fn run_native_async_effect_turn(
+    engine: &mut NativeEngine,
+    notification: &NativeContentAsyncEffectNotification,
+) -> Result<NativeFrameRuntimeEffects, BrowserBackendError> {
+    let NativeAsyncEffectTurn {
+        sequence,
+        context_id,
+        frame_id,
+        event_effects,
+        frame_scripts,
+    } = engine
+        .dispatch_async_effect_notification(notification)
+        .await
+        .map_err(native_error)?;
+    if sequence != notification.sequence
+        || context_id != notification.context_id
+        || frame_id != notification.frame_id
+    {
+        return Err(BrowserBackendError::Lifecycle {
+            operation: "native asynchronous effect dispatch".into(),
+            state: "owner-mismatch".into(),
+            reason: "the page turn returned effects for a different owner".into(),
+        });
+    }
+
+    let (browser, window_name) = take_native_browser_effects(engine)?;
+    Ok(NativeFrameRuntimeEffects {
+        browser,
+        frame_scripts,
+        events: event_effects,
+        window_name,
+    })
 }
 
 fn take_native_worker_coordinator_effects(
@@ -8068,7 +9007,7 @@ async fn navigate_native_frame(
     })
 }
 
-fn native_frame_sandboxed_modals_for_replacement(
+async fn native_frame_sandboxed_modals_for_replacement(
     frames: &NativeFrameState,
     active_engine: &NativeEngine,
     frame_id: &str,
@@ -8106,11 +9045,11 @@ fn native_frame_sandboxed_modals_for_replacement(
                 reason: "native frame parent disappeared while resolving sandbox flags".into(),
             })?
     };
-    let parent_engine = native_frame_engine(frames, active_engine, parent_id).ok_or_else(|| {
-        BrowserBackendError::SelectionFailed {
+    let parent_engine = native_frame_engine(frames, active_engine, parent_id)
+        .await
+        .ok_or_else(|| BrowserBackendError::SelectionFailed {
             reason: "native frame parent has no live document owner".into(),
-        }
-    })?;
+        })?;
     let sandbox = parent_engine
         .embedded_frame_sources()
         .map_err(native_error)?
@@ -8126,20 +9065,11 @@ fn native_frame_sandboxed_modals_for_replacement(
     ))
 }
 
-fn activate_parked_frame_for_navigation(
+async fn activate_parked_frame_for_navigation(
     frames: &mut NativeFrameState,
     active_engine: &mut NativeEngine,
     frame_id: &str,
 ) -> Result<NativeFrameSelectionState, BrowserBackendError> {
-    let target_generation = frames
-        .parked
-        .get(frame_id)
-        .ok_or_else(|| BrowserBackendError::SelectionFailed {
-            reason: "native ancestor frame disappeared before navigation".into(),
-        })?
-        .engine
-        .document_generation()
-        .map_err(native_error)?;
     let target =
         frames
             .parked
@@ -8147,6 +9077,8 @@ fn activate_parked_frame_for_navigation(
             .ok_or_else(|| BrowserBackendError::SelectionFailed {
                 reason: "native ancestor frame disappeared before navigation".into(),
             })?;
+    let mut target_engine = lock_native_engine_owner(&target.engine).await;
+    let target_generation = target_engine.document_generation().map_err(native_error)?;
     let previous = NativeFrameSelectionState {
         frame_id: frames.active_frame_id.clone(),
         parent_id: frames.active_parent_id.clone(),
@@ -8155,11 +9087,11 @@ fn activate_parked_frame_for_navigation(
         focused_frame_id: frames.focused_frame_id.clone(),
         discovered_generation: frames.discovered_generation,
     };
-    let old_active_engine = std::mem::replace(active_engine, target.engine);
+    std::mem::swap(active_engine, &mut target_engine);
     frames.parked.insert(
         previous.frame_id.clone(),
         NativeParkedFrame {
-            engine: old_active_engine,
+            engine: Arc::clone(&target.engine),
             parent_id: previous.parent_id.clone(),
             owner_node_index: previous.owner_node_index,
             sandboxed_modals: previous.sandboxed_modals,
@@ -8174,7 +9106,7 @@ fn activate_parked_frame_for_navigation(
     Ok(previous)
 }
 
-fn restore_previous_frame_selection(
+async fn restore_previous_frame_selection(
     frames: &mut NativeFrameState,
     active_engine: &mut NativeEngine,
     previous: NativeFrameSelectionState,
@@ -8185,11 +9117,12 @@ fn restore_previous_frame_selection(
             reason: "previously selected native frame disappeared during navigation".into(),
         }
     })?;
-    let current_engine = std::mem::replace(active_engine, previous_active.engine);
+    let mut previous_engine = lock_native_engine_owner(&previous_active.engine).await;
+    std::mem::swap(active_engine, &mut previous_engine);
     frames.parked.insert(
         current_frame_id,
         NativeParkedFrame {
-            engine: current_engine,
+            engine: Arc::clone(&previous_active.engine),
             parent_id: frames.active_parent_id.clone(),
             owner_node_index: frames.active_owner_node_index,
             sandboxed_modals: frames.active_sandboxed_modals,
@@ -8271,13 +9204,15 @@ async fn dispatch_native_frame_tree_lifecycle(
         let previous_revision = if frame_id == root_frame_id {
             root_engine.revision()
         } else {
-            frames
+            let owner = frames
                 .parked
                 .get(&frame_id)
-                .map(|frame| frame.engine.revision())
                 .ok_or_else(|| BrowserBackendError::SelectionFailed {
                     reason: "native descendant frame disappeared during beforeunload".into(),
                 })?
+                .engine
+                .clone();
+            lock_native_engine_owner(&owner).await.revision()
         };
         let (canceled, sticky_activation, next_navigation) = if frame_id == root_frame_id {
             root_engine
@@ -8285,13 +9220,16 @@ async fn dispatch_native_frame_tree_lifecycle(
                 .await
                 .map_err(native_error)?
         } else {
-            frames
+            let owner = frames
                 .parked
-                .get_mut(&frame_id)
+                .get(&frame_id)
                 .ok_or_else(|| BrowserBackendError::SelectionFailed {
                     reason: "native descendant frame disappeared during beforeunload".into(),
                 })?
                 .engine
+                .clone();
+            lock_native_engine_owner(&owner)
+                .await
                 .dispatch_before_unload_for_navigation()
                 .await
                 .map_err(native_error)?
@@ -8299,12 +9237,18 @@ async fn dispatch_native_frame_tree_lifecycle(
         let runtime = if frame_id == root_frame_id {
             take_native_frame_runtime_effects(root_engine, previous_revision)?
         } else {
-            let frame = frames.parked.get_mut(&frame_id).ok_or_else(|| {
-                BrowserBackendError::SelectionFailed {
+            let owner = frames
+                .parked
+                .get(&frame_id)
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
                     reason: "native descendant frame disappeared after beforeunload".into(),
-                }
-            })?;
-            take_native_frame_runtime_effects(&mut frame.engine, previous_revision)?
+                })?
+                .engine
+                .clone();
+            take_native_frame_runtime_effects(
+                &mut *lock_native_engine_owner(&owner).await,
+                previous_revision,
+            )?
         };
         effects.push(NativeFrameLifecycleEffects {
             frame_id: frame_id.clone(),
@@ -8323,12 +9267,16 @@ async fn dispatch_native_frame_tree_lifecycle(
             let confirmation = if frame_id == root_frame_id {
                 wait_for_native_frame_beforeunload(root_engine, cancellation).await
             } else {
-                let frame = frames.parked.get(&frame_id).ok_or_else(|| {
-                    BrowserBackendError::SelectionFailed {
+                let owner = frames
+                    .parked
+                    .get(&frame_id)
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
                         reason: "native descendant frame disappeared before its prompt".into(),
-                    }
-                })?;
-                wait_for_native_frame_beforeunload(&frame.engine, cancellation).await
+                    })?
+                    .engine
+                    .clone();
+                let engine = lock_native_engine_owner(&owner).await;
+                wait_for_native_frame_beforeunload(&engine, cancellation).await
             };
             match confirmation {
                 Ok(true) => {}
@@ -8350,13 +9298,15 @@ async fn dispatch_native_frame_tree_lifecycle(
             let previous_revision = if frame_id == root_frame_id {
                 root_engine.revision()
             } else {
-                frames
+                let owner = frames
                     .parked
                     .get(&frame_id)
-                    .map(|frame| frame.engine.revision())
                     .ok_or_else(|| BrowserBackendError::SelectionFailed {
                         reason: "native descendant frame disappeared during unload".into(),
                     })?
+                    .engine
+                    .clone();
+                lock_native_engine_owner(&owner).await.revision()
             };
             let next_navigation = if frame_id == root_frame_id {
                 root_engine
@@ -8364,13 +9314,16 @@ async fn dispatch_native_frame_tree_lifecycle(
                     .await
                     .map_err(native_error)?
             } else {
-                frames
+                let owner = frames
                     .parked
-                    .get_mut(&frame_id)
+                    .get(&frame_id)
                     .ok_or_else(|| BrowserBackendError::SelectionFailed {
                         reason: "native descendant frame disappeared during unload".into(),
                     })?
                     .engine
+                    .clone();
+                lock_native_engine_owner(&owner)
+                    .await
                     .dispatch_unload_for_navigation()
                     .await
                     .map_err(native_error)?
@@ -8378,12 +9331,18 @@ async fn dispatch_native_frame_tree_lifecycle(
             let runtime = if frame_id == root_frame_id {
                 take_native_frame_runtime_effects(root_engine, previous_revision)?
             } else {
-                let frame = frames.parked.get_mut(&frame_id).ok_or_else(|| {
-                    BrowserBackendError::SelectionFailed {
+                let owner = frames
+                    .parked
+                    .get(&frame_id)
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
                         reason: "native descendant frame disappeared after unload".into(),
-                    }
-                })?;
-                take_native_frame_runtime_effects(&mut frame.engine, previous_revision)?
+                    })?
+                    .engine
+                    .clone();
+                take_native_frame_runtime_effects(
+                    &mut *lock_native_engine_owner(&owner).await,
+                    previous_revision,
+                )?
             };
             effects.push(NativeFrameLifecycleEffects {
                 frame_id: frame_id.clone(),
@@ -8498,24 +9457,26 @@ fn project_native_frame(
     })
 }
 
-fn native_frame_script_binding(
+async fn native_frame_script_binding(
     frames: &NativeFrameState,
     active_engine: &NativeEngine,
     frame_id: &str,
     frame: &NativeParkedFrame,
     parent_origin: &NativeOrigin,
 ) -> Result<NativeFrameScriptBinding, BrowserBackendError> {
-    native_frame_script_binding_from_engine(
+    let frame_engine = lock_native_engine_owner(&frame.engine).await;
+    Box::pin(native_frame_script_binding_from_engine(
         frames,
         active_engine,
         frame_id,
-        &frame.engine,
+        &frame_engine,
         frame.owner_node_index,
         parent_origin,
-    )
+    ))
+    .await
 }
 
-fn native_frame_script_binding_from_engine(
+async fn native_frame_script_binding_from_engine(
     frames: &NativeFrameState,
     active_engine: &NativeEngine,
     frame_id: &str,
@@ -8527,8 +9488,13 @@ fn native_frame_script_binding_from_engine(
     let generation = frame_engine.document_generation().map_err(native_error)?;
     let same_origin =
         *parent_origin != NativeOrigin::Opaque && *parent_origin == child_snapshot.origin;
-    let children =
-        native_frame_script_children(frames, active_engine, frame_id, &child_snapshot.origin)?;
+    let children = Box::pin(native_frame_script_children(
+        frames,
+        active_engine,
+        frame_id,
+        &child_snapshot.origin,
+    ))
+    .await?;
     Ok(NativeFrameScriptBinding {
         node_index: owner_node_index.ok_or_else(|| BrowserBackendError::SelectionFailed {
             reason: "native frame owner node disappeared during script projection".into(),
@@ -8546,49 +9512,73 @@ fn native_frame_script_binding_from_engine(
     })
 }
 
-fn native_frame_script_children(
+async fn native_frame_script_children(
     frames: &NativeFrameState,
     active_engine: &NativeEngine,
     parent_id: &str,
     parent_origin: &NativeOrigin,
 ) -> Result<Vec<NativeFrameScriptBinding>, BrowserBackendError> {
-    let mut children = frames
-        .parked
-        .iter()
-        .filter(|(_, frame)| frame.parent_id.as_deref() == Some(parent_id))
-        .map(|(frame_id, frame)| {
-            native_frame_script_binding(frames, active_engine, frame_id, frame, parent_origin)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut children = Vec::new();
+    for (frame_id, frame) in &frames.parked {
+        if frame.parent_id.as_deref() == Some(parent_id) {
+            children.push(
+                native_frame_script_binding(frames, active_engine, frame_id, frame, parent_origin)
+                    .await?,
+            );
+        }
+    }
     if frames.active_parent_id.as_deref() == Some(parent_id)
         && !frames.parked.contains_key(&frames.active_frame_id)
     {
-        children.push(native_frame_script_binding_from_engine(
-            frames,
-            active_engine,
-            &frames.active_frame_id,
-            active_engine,
-            frames.active_owner_node_index,
-            parent_origin,
-        )?);
+        children.push(
+            native_frame_script_binding_from_engine(
+                frames,
+                active_engine,
+                &frames.active_frame_id,
+                active_engine,
+                frames.active_owner_node_index,
+                parent_origin,
+            )
+            .await?,
+        );
     }
     children.sort_by_key(|binding| binding.node_index);
     Ok(children)
 }
 
-fn native_frame_engine<'a>(
-    frames: &'a NativeFrameState,
-    active_engine: &'a NativeEngine,
-    frame_id: &str,
-) -> Option<&'a NativeEngine> {
-    if frames.active_frame_id == frame_id {
-        Some(active_engine)
-    } else {
-        frames.parked.get(frame_id).map(|frame| &frame.engine)
+enum NativeEngineReference<'a> {
+    Borrowed(&'a NativeEngine),
+    Owned(tokio::sync::OwnedMutexGuard<NativeEngine>),
+}
+
+impl std::ops::Deref for NativeEngineReference<'_> {
+    type Target = NativeEngine;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(engine) => engine,
+            Self::Owned(engine) => engine,
+        }
     }
 }
 
-fn native_frame_script_window(
+async fn native_frame_engine<'a>(
+    frames: &'a NativeFrameState,
+    active_engine: &'a NativeEngine,
+    frame_id: &str,
+) -> Option<NativeEngineReference<'a>> {
+    if frames.active_frame_id == frame_id {
+        Some(NativeEngineReference::Borrowed(active_engine))
+    } else {
+        let owner = frames
+            .parked
+            .get(frame_id)
+            .map(|frame| Arc::clone(&frame.engine))?;
+        Some(NativeEngineReference::Owned(owner.lock_owned().await))
+    }
+}
+
+async fn native_frame_script_window(
     frames: &NativeFrameState,
     active_engine: &NativeEngine,
     frame_id: &str,
@@ -8605,7 +9595,8 @@ fn native_frame_script_window(
         revision: snapshot.revision,
         same_origin,
         document: engine.script_document_snapshot().map_err(native_error)?,
-        children: native_frame_script_children(frames, active_engine, frame_id, &snapshot.origin)?,
+        children: native_frame_script_children(frames, active_engine, frame_id, &snapshot.origin)
+            .await?,
     })
 }
 
@@ -8770,7 +9761,7 @@ async fn reconcile_native_frames(
         frames.parked.insert(
             frame_id,
             NativeParkedFrame {
-                engine: child,
+                engine: Arc::new(tokio::sync::Mutex::new(child)),
                 parent_id: Some(active_frame_id.clone()),
                 owner_node_index: Some(node_index),
                 sandboxed_modals,
@@ -8833,7 +9824,7 @@ async fn reconcile_native_frame_tree(
             if !frames.parked.contains_key(&parent_frame_id) {
                 continue;
             }
-            activate_parked_frame_for_navigation(frames, active_engine, &parent_frame_id)?;
+            activate_parked_frame_for_navigation(frames, active_engine, &parent_frame_id).await?;
         }
         reconcile_native_frames(frames, active_engine).await?;
         let mut children = frames
@@ -8849,7 +9840,8 @@ async fn reconcile_native_frame_tree(
     if frames.active_frame_id != original_active_frame_id
         && frames.parked.contains_key(&original_active_frame_id)
     {
-        activate_parked_frame_for_navigation(frames, active_engine, &original_active_frame_id)?;
+        activate_parked_frame_for_navigation(frames, active_engine, &original_active_frame_id)
+            .await?;
     }
     frames.focused_frame_id = match original_focused_frame_id {
         Some(focused)
@@ -8902,11 +9894,12 @@ fn order_native_frames(frames: Vec<FrameInfo>) -> Vec<FrameInfo> {
 async fn close_parked_frames(frames: &mut NativeFrameState) -> Result<(), BrowserBackendError> {
     let parked = std::mem::take(&mut frames.parked);
     let mut first_error = None;
-    for (_, mut frame) in parked {
-        if frame.engine.lifecycle() != super::native_engine::NativeLifecycleState::Running {
+    for (_, frame) in parked {
+        let mut engine = lock_native_engine_owner(&frame.engine).await;
+        if engine.lifecycle() != super::native_engine::NativeLifecycleState::Running {
             continue;
         }
-        if let Err(error) = frame.engine.close_async().await.map_err(native_error)
+        if let Err(error) = engine.close_async().await.map_err(native_error)
             && first_error.is_none()
         {
             first_error = Some(error);
@@ -8921,6 +9914,29 @@ fn poisoned_lock_error(operation: BackendOperation, owner: &str) -> BrowserBacke
         state: "poisoned".into(),
         reason: format!("native {owner} lock is unavailable"),
     }
+}
+
+fn try_lock_native_engine_owner(
+    owner: &NativeEngineOwner,
+    operation: BackendOperation,
+    owner_name: &str,
+) -> Result<tokio::sync::OwnedMutexGuard<NativeEngine>, BrowserBackendError> {
+    owner
+        .clone()
+        .try_lock_owned()
+        .map_err(|_| BrowserBackendError::Lifecycle {
+            operation: operation_name(operation).into(),
+            state: "busy".into(),
+            reason: format!(
+                "{owner_name} is processing asynchronous work; retry the synchronous operation"
+            ),
+        })
+}
+
+async fn lock_native_engine_owner(
+    owner: &NativeEngineOwner,
+) -> tokio::sync::OwnedMutexGuard<NativeEngine> {
+    Arc::clone(owner).lock_owned().await
 }
 
 fn require_context_id(
@@ -9055,16 +10071,523 @@ fn operation_name(operation: BackendOperation) -> &'static str {
     }
 }
 
+async fn run_native_async_effect_pump_operation<F, T>(
+    stop_notify: &tokio::sync::Notify,
+    operation: F,
+) -> Option<T>
+where
+    F: Future<Output = T>,
+{
+    tokio::select! {
+        biased;
+        _ = stop_notify.notified() => None,
+        result = operation => Some(result),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        NativeBrowserEffectSource, NativeFrameState, NativeParkedFrame,
-        activate_parked_frame_for_navigation, dispatch_native_frame_tree_lifecycle,
-        iframe_sandboxed_modals, next_ready_native_browser_effect_source,
+        BackendOperation, NativeBrowserEffectSource, NativeContentAsyncEffectNotification,
+        NativeEngineBackend, NativeFrameRoute, NativeFrameState, NativeParkedFrame,
+        NativeServiceWorkerPublicationTestHook, activate_parked_frame_for_navigation,
+        dispatch_native_frame_tree_lifecycle, iframe_sandboxed_modals,
+        next_ready_native_browser_effect_source,
     };
     use crate::browser::native_engine::{
         NativeDialogControlPlane, NativeEngine, NativeEngineConfig, NativeNodeSubtreeTransfer,
     };
+    use std::sync::Arc;
+
+    async fn initialized_fixture_backend(
+        url: &str,
+        additional_fixture_urls: &[&str],
+    ) -> NativeEngineBackend {
+        let mut config = NativeEngineConfig::default()
+            .with_initial_url(url)
+            .with_fixture(url, "<main>async effect owner</main>")
+            .expect("async effect fixture must validate");
+        for fixture_url in additional_fixture_urls {
+            config = config
+                .with_fixture(*fixture_url, "<main>async effect owner</main>")
+                .expect("additional async effect fixture must validate");
+        }
+        let backend = NativeEngineBackend::new(config).expect("native backend must construct");
+        let owner = backend
+            .engine
+            .lock()
+            .expect("active engine lock must be available")
+            .clone();
+        owner
+            .lock_owned()
+            .await
+            .initialize_async()
+            .await
+            .expect("fixture owner must initialize");
+        backend
+    }
+
+    #[tokio::test]
+    async fn asynchronous_effect_pump_dispatches_to_parked_target_owner() {
+        let backend = initialized_fixture_backend(
+            "fixture://async-pump.test/root",
+            &["fixture://async-pump.test/parked"],
+        )
+        .await;
+        let target = backend
+            .create_target("fixture://async-pump.test/parked")
+            .await
+            .expect("parked fixture target must initialize");
+        let notification = NativeContentAsyncEffectNotification {
+            sequence: 3,
+            context_id: target.id.clone(),
+            frame_id: format!("{}:main", target.id),
+        };
+        backend
+            .pending_async_effect_notifications
+            .lock()
+            .expect("async effect queue lock must be available")
+            .push_back(notification);
+
+        backend
+            .pump_pending_async_effect_notifications()
+            .await
+            .expect("matching parked owner notification must dispatch");
+
+        assert!(
+            backend
+                .pending_async_effect_notifications
+                .lock()
+                .expect("async effect queue lock must be available")
+                .is_empty()
+        );
+        assert!(
+            backend
+                .lock_targets(BackendOperation::Contexts)
+                .expect("target registry lock must be available")
+                .parked
+                .contains_key(&target.id)
+        );
+        backend
+            .close_all()
+            .await
+            .expect("all fixture owners must close");
+    }
+
+    #[tokio::test]
+    async fn asynchronous_effect_pump_rejects_frame_routed_to_wrong_context() {
+        let backend =
+            initialized_fixture_backend("fixture://async-pump-owner.test/root", &[]).await;
+        let owner_id = backend
+            .lock_engine_raw(BackendOperation::Effects)
+            .await
+            .expect("active engine lock must be available")
+            .config()
+            .context_id
+            .clone();
+        let frame_id = backend
+            .active_frame_id()
+            .expect("active frame must be available");
+        backend
+            .pending_async_effect_notifications
+            .lock()
+            .expect("async effect queue lock must be available")
+            .push_back(NativeContentAsyncEffectNotification {
+                sequence: 4,
+                context_id: "different-context".into(),
+                frame_id,
+            });
+
+        let error = backend
+            .pump_pending_async_effect_notifications()
+            .await
+            .expect_err("a frame must not be redirected to a different context");
+        assert!(matches!(
+            error,
+            crate::browser_backend::BrowserBackendError::SelectionFailed { .. }
+        ));
+        assert_eq!(
+            backend
+                .pending_async_effect_notifications
+                .lock()
+                .expect("async effect queue lock must be available")
+                .len(),
+            1
+        );
+        assert_eq!(
+            backend
+                .lock_engine_raw(BackendOperation::Effects)
+                .await
+                .expect("active engine lock must be available")
+                .config()
+                .context_id,
+            owner_id
+        );
+        backend.close_all().await.expect("fixture owner must close");
+    }
+
+    #[tokio::test]
+    async fn async_effect_owner_wait_does_not_hold_target_registry() {
+        let backend = initialized_fixture_backend("fixture://async-pump-lock.test/root", &[]).await;
+        let active_owner = backend
+            .engine
+            .lock()
+            .expect("active engine owner slot must be available")
+            .clone();
+        let active_guard = active_owner.lock_owned().await;
+        let pump_backend = NativeEngineBackend {
+            inner: std::sync::Arc::clone(&backend.inner),
+            pump_handle: true,
+        };
+        let mut pump_task =
+            tokio::spawn(async move { pump_backend.take_live_async_effect_notifications().await });
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut pump_task)
+                .await
+                .is_err(),
+            "notification draining must wait for the locked active owner"
+        );
+        assert!(
+            backend.inner.targets.try_lock().is_ok(),
+            "notification draining must release the target registry before awaiting an owner"
+        );
+
+        drop(active_guard);
+        tokio::time::timeout(std::time::Duration::from_secs(1), &mut pump_task)
+            .await
+            .expect("notification draining must resume after the owner is released")
+            .expect("notification draining task must complete")
+            .expect("fixture owner notifications must be readable");
+        backend.close_all().await.expect("fixture owner must close");
+    }
+
+    #[tokio::test]
+    async fn parent_frame_event_wait_does_not_hold_target_registry() {
+        let root_url = "fixture://frame-event-lock.test/root";
+        let parent_url = "fixture://frame-event-lock.test/parent";
+        let blocked_url = "fixture://frame-event-lock.test/blocked";
+        let source_url = "fixture://frame-event-lock.test/source";
+        let backend =
+            initialized_fixture_backend(root_url, &[parent_url, blocked_url, source_url]).await;
+        let config = backend
+            .lock_engine_raw(BackendOperation::Script)
+            .await
+            .expect("active engine lock must be available")
+            .config()
+            .clone();
+        let root_frame_id = backend
+            .active_frame_id()
+            .expect("active root frame must exist");
+        let parent_id = format!("{root_frame_id}:frame-1-parent");
+        let blocked_id = format!("{root_frame_id}:frame-2-blocked");
+        let source_id = format!("{root_frame_id}:frame-3-source");
+        let parent = lifecycle_test_engine(config.clone(), parent_url, &parent_id).await;
+        let blocked = lifecycle_test_engine(config.clone(), blocked_url, &blocked_id).await;
+        let source = lifecycle_test_engine(config, source_url, &source_id).await;
+        let parent_owner = std::sync::Arc::new(tokio::sync::Mutex::new(parent));
+        let blocked_owner = std::sync::Arc::new(tokio::sync::Mutex::new(blocked));
+        let source_owner = std::sync::Arc::new(tokio::sync::Mutex::new(source));
+        let effects = std::sync::Arc::clone(&source_owner)
+            .lock_owned()
+            .await
+            .effects_since(0)
+            .expect("source effects must be readable")
+            .effects;
+        assert!(
+            !effects.is_empty(),
+            "initialized source frame must provide an event batch"
+        );
+
+        {
+            let mut targets = backend
+                .lock_targets(BackendOperation::Script)
+                .expect("target registry must be available");
+            targets.active_frames.parked.insert(
+                parent_id.clone(),
+                NativeParkedFrame {
+                    engine: parent_owner,
+                    parent_id: Some(root_frame_id),
+                    owner_node_index: Some(1),
+                    sandboxed_modals: false,
+                },
+            );
+            targets.active_frames.parked.insert(
+                blocked_id.clone(),
+                NativeParkedFrame {
+                    engine: blocked_owner.clone(),
+                    parent_id: Some(parent_id.clone()),
+                    owner_node_index: Some(1),
+                    sandboxed_modals: false,
+                },
+            );
+            targets.active_frames.parked.insert(
+                source_id.clone(),
+                NativeParkedFrame {
+                    engine: source_owner,
+                    parent_id: Some(parent_id.clone()),
+                    owner_node_index: Some(2),
+                    sandboxed_modals: false,
+                },
+            );
+        }
+
+        let blocked_guard = blocked_owner.lock_owned().await;
+        let event_backend = NativeEngineBackend {
+            inner: std::sync::Arc::clone(&backend.inner),
+            pump_handle: true,
+        };
+        let mut event_task = tokio::spawn(async move {
+            event_backend
+                .dispatch_frame_events_to_parent_route(
+                    NativeFrameRoute::ActiveParked,
+                    &parent_id,
+                    &source_id,
+                    &effects,
+                )
+                .await
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), &mut event_task)
+                .await
+                .is_err(),
+            "parent event projection must wait for the locked sibling frame owner"
+        );
+        assert!(
+            backend.inner.targets.try_lock().is_ok(),
+            "parent event projection must release target state before waiting on child owners"
+        );
+
+        drop(blocked_guard);
+        // These synthetic frames have no matching iframe elements in their
+        // parent document, so this regression asserts lock liveness only.
+        let _route_result =
+            tokio::time::timeout(std::time::Duration::from_secs(3), &mut event_task)
+                .await
+                .expect("parent event projection must resume after the child owner is released")
+                .expect("parent event task must complete");
+        backend
+            .close_all()
+            .await
+            .expect("fixture owners must close");
+    }
+
+    #[tokio::test]
+    async fn service_worker_sync_owner_wait_does_not_hold_target_registry() {
+        let backend = initialized_fixture_backend(
+            "fixture://service-worker-sync-lock.test/root",
+            &["fixture://service-worker-sync-lock.test/parked"],
+        )
+        .await;
+        let target = backend
+            .create_target("fixture://service-worker-sync-lock.test/parked")
+            .await
+            .expect("parked fixture target must initialize");
+        let parked_owner = {
+            let targets = backend
+                .lock_targets(BackendOperation::Contexts)
+                .expect("target registry must be available");
+            std::sync::Arc::clone(
+                &targets
+                    .parked
+                    .get(&target.id)
+                    .expect("created target must remain parked")
+                    .engine,
+            )
+        };
+        let parked_guard = parked_owner.lock_owned().await;
+        let sync_backend = NativeEngineBackend {
+            inner: std::sync::Arc::clone(&backend.inner),
+            pump_handle: true,
+        };
+        let mut sync_task = Box::pin(sync_backend.synchronize_native_service_worker_clients());
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), sync_task.as_mut(),)
+                .await
+                .is_err(),
+            "ServiceWorker synchronization must wait for the parked owner"
+        );
+        let expected_next_frame_number = {
+            let mut targets = backend.inner.targets.try_lock().expect(
+                "ServiceWorker synchronization must release the target registry before owner waits",
+            );
+            targets.active_frames.next_frame_number += 1;
+            targets.active_frames.next_frame_number
+        };
+
+        drop(parked_guard);
+        tokio::time::timeout(std::time::Duration::from_secs(3), sync_task.as_mut())
+            .await
+            .expect("ServiceWorker synchronization must resume after owner release")
+            .expect("fixture target client synchronization must succeed");
+        let targets = backend
+            .lock_targets(BackendOperation::Contexts)
+            .expect("target registry must remain available after synchronization");
+        assert_eq!(
+            targets.active_frames.next_frame_number, expected_next_frame_number,
+            "synchronization must discard the stale reconciliation snapshot and retry against current topology"
+        );
+        drop(targets);
+        backend
+            .close_all()
+            .await
+            .expect("fixture owners must close");
+    }
+
+    #[tokio::test]
+    async fn service_worker_sync_retries_topology_drift_during_publication() {
+        let backend = initialized_fixture_backend(
+            "fixture://service-worker-sync-publication.test/root",
+            &["fixture://service-worker-sync-publication.test/parked"],
+        )
+        .await;
+        backend
+            .create_target("fixture://service-worker-sync-publication.test/parked")
+            .await
+            .expect("parked fixture target must initialize");
+
+        let hook = Arc::new(NativeServiceWorkerPublicationTestHook {
+            reached: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+        });
+        *backend
+            .inner
+            .service_worker_client_publication_hook
+            .lock()
+            .expect("publication hook lock must be available") = Some(Arc::clone(&hook));
+        let sync_backend = NativeEngineBackend {
+            inner: Arc::clone(&backend.inner),
+            pump_handle: true,
+        };
+        let mut sync_future = Box::pin(sync_backend.synchronize_native_service_worker_clients());
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            tokio::select! {
+                result = sync_future.as_mut() => {
+                    panic!("synchronization ended before publication hook: {result:?}");
+                }
+                _ = hook.reached.notified() => {}
+            }
+        })
+        .await
+        .expect("publication must reach its first owner update");
+
+        let expected_next_frame_number = {
+            let mut targets = backend
+                .lock_targets(BackendOperation::Contexts)
+                .expect("target registry must remain available during publication");
+            targets.active_frames.next_frame_number += 1;
+            targets.active_frames.next_frame_number
+        };
+        hook.resume.notify_one();
+
+        tokio::time::timeout(std::time::Duration::from_secs(3), sync_future.as_mut())
+            .await
+            .expect("stale publication must retry against current topology")
+            .expect("ServiceWorker client synchronization must converge");
+        let targets = backend
+            .lock_targets(BackendOperation::Contexts)
+            .expect("target registry must remain available after retry");
+        assert_eq!(
+            targets.active_frames.next_frame_number, expected_next_frame_number,
+            "the retry must preserve topology changed during client publication"
+        );
+        drop(targets);
+        backend
+            .close_all()
+            .await
+            .expect("fixture owners must close");
+    }
+
+    #[tokio::test]
+    async fn shutdown_drops_the_in_flight_async_effect_operation() {
+        struct DropSignal(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+
+        let event_notify = std::sync::Arc::new(tokio::sync::Notify::new());
+        let task_event_notify = std::sync::Arc::clone(&event_notify);
+        let stop_notify = std::sync::Arc::new(tokio::sync::Notify::new());
+        let task_notify = std::sync::Arc::clone(&stop_notify);
+        let owner_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        let task_owner_lock = std::sync::Arc::clone(&owner_lock);
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_dropped = std::sync::Arc::clone(&dropped);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (event_seen_tx, event_seen_rx) = tokio::sync::oneshot::channel();
+        let operation = async move {
+            let _owner_guard = task_owner_lock.lock_owned().await;
+            let _drop_signal = DropSignal(task_dropped);
+            let _ = started_tx.send(());
+            task_event_notify.notified().await;
+            let _ = event_seen_tx.send(());
+            std::future::pending::<()>().await;
+        };
+        let task = tokio::spawn(async move {
+            super::run_native_async_effect_pump_operation(&task_notify, operation).await
+        });
+        started_rx
+            .await
+            .expect("in-flight operation must start before shutdown");
+        assert!(
+            owner_lock.try_lock().is_err(),
+            "the operation must retain its owner lock while suspended"
+        );
+
+        event_notify.notify_one();
+        event_seen_rx
+            .await
+            .expect("ordinary owner event must wake the in-flight operation");
+        assert!(
+            !task.is_finished(),
+            "ordinary owner events must not cancel an in-flight owner turn"
+        );
+        stop_notify.notify_one();
+        assert!(task.await.expect("pump operation task must join").is_none());
+        assert!(dropped.load(std::sync::atomic::Ordering::Acquire));
+        assert!(
+            owner_lock.try_lock().is_ok(),
+            "shutdown cancellation must release the owner lock"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_runtime_backend_stops_pump_while_internal_handle_is_alive() {
+        let backend = NativeEngineBackend::new(NativeEngineConfig::default())
+            .expect("native backend must construct");
+        backend
+            .start_async_effect_pump()
+            .expect("runtime-owned pump must start");
+        let inner = std::sync::Arc::clone(&backend.inner);
+        let internal_handle = NativeEngineBackend {
+            inner: std::sync::Arc::clone(&inner),
+            pump_handle: true,
+        };
+
+        drop(backend);
+        assert!(
+            inner
+                .async_effect_pump_stopped
+                .load(std::sync::atomic::Ordering::Acquire),
+            "dropping the runtime owner must signal stop before internal references disappear"
+        );
+        drop(internal_handle);
+
+        let task = inner
+            .async_effect_pump_task
+            .lock()
+            .expect("pump task slot must remain available")
+            .take()
+            .expect("started pump task must be retained");
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .expect("dropped runtime backend must stop the pump promptly")
+            .expect("pump task must join cleanly");
+    }
 
     async fn lifecycle_test_engine(
         config: NativeEngineConfig,
@@ -9205,7 +10728,7 @@ mod tests {
         frames.parked.insert(
             child_id.into(),
             NativeParkedFrame {
-                engine: child,
+                engine: std::sync::Arc::new(tokio::sync::Mutex::new(child)),
                 parent_id: Some(root_id.into()),
                 owner_node_index: Some(1),
                 sandboxed_modals: false,
@@ -9214,7 +10737,7 @@ mod tests {
         frames.parked.insert(
             grandchild_id.into(),
             NativeParkedFrame {
-                engine: grandchild,
+                engine: std::sync::Arc::new(tokio::sync::Mutex::new(grandchild)),
                 parent_id: Some(child_id.into()),
                 owner_node_index: Some(2),
                 sandboxed_modals: false,
@@ -9247,23 +10770,22 @@ mod tests {
             root.evaluate_async("trace").await.unwrap(),
             serde_json::json!(["before", "pagehide", "unload"])
         );
+        let child_owner = std::sync::Arc::clone(&frames.parked.get(child_id).unwrap().engine);
         assert_eq!(
-            frames
-                .parked
-                .get_mut(child_id)
-                .unwrap()
-                .engine
+            child_owner
+                .lock_owned()
+                .await
                 .evaluate_async("trace")
                 .await
                 .unwrap(),
             serde_json::json!(["before", "pagehide", "unload"])
         );
+        let grandchild_owner =
+            std::sync::Arc::clone(&frames.parked.get(grandchild_id).unwrap().engine);
         assert_eq!(
-            frames
-                .parked
-                .get_mut(grandchild_id)
-                .unwrap()
-                .engine
+            grandchild_owner
+                .lock_owned()
+                .await
                 .evaluate_async("trace")
                 .await
                 .unwrap(),
@@ -9271,8 +10793,8 @@ mod tests {
         );
 
         root.close_async().await.unwrap();
-        for (_, mut frame) in frames.parked {
-            frame.engine.close_async().await.unwrap();
+        for (_, frame) in frames.parked {
+            frame.engine.lock_owned().await.close_async().await.unwrap();
         }
     }
 
@@ -9304,7 +10826,7 @@ mod tests {
         frames.parked.insert(
             root_id.into(),
             NativeParkedFrame {
-                engine: root,
+                engine: std::sync::Arc::new(tokio::sync::Mutex::new(root)),
                 parent_id: None,
                 owner_node_index: None,
                 sandboxed_modals: false,
@@ -9314,7 +10836,9 @@ mod tests {
         frames.active_parent_id = Some(root_id.into());
         frames.active_owner_node_index = Some(1);
         let mut active_engine = child;
-        activate_parked_frame_for_navigation(&mut frames, &mut active_engine, root_id).unwrap();
+        activate_parked_frame_for_navigation(&mut frames, &mut active_engine, root_id)
+            .await
+            .unwrap();
 
         let root_sandboxed_modals = frames.active_sandboxed_modals;
         let result = dispatch_native_frame_tree_lifecycle(
@@ -9327,12 +10851,11 @@ mod tests {
         .await
         .unwrap();
         assert!(result.allowed);
+        let child_owner = std::sync::Arc::clone(&frames.parked.get(child_id).unwrap().engine);
         assert_eq!(
-            frames
-                .parked
-                .get_mut(child_id)
-                .unwrap()
-                .engine
+            child_owner
+                .lock_owned()
+                .await
                 .evaluate_async("trace")
                 .await
                 .unwrap(),
@@ -9340,8 +10863,14 @@ mod tests {
         );
         assert_eq!(frames.active_frame_id, root_id);
         assert!(frames.parked.contains_key(child_id));
-        let mut parked_child = frames.parked.remove(child_id).unwrap();
-        parked_child.engine.close_async().await.unwrap();
+        let parked_child = frames.parked.remove(child_id).unwrap();
+        parked_child
+            .engine
+            .lock_owned()
+            .await
+            .close_async()
+            .await
+            .unwrap();
         active_engine.close_async().await.unwrap();
     }
 

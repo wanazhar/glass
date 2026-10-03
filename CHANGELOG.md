@@ -7,6 +7,17 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Native content-worker timer and lifetime notifications now wake a bounded
+  owner pump that routes page turns by exact context/frame identity and sends
+  their effects through the native browser cascade. Parent-frame event and
+  frame-script routes snapshot owners before awaiting them. ServiceWorker-client
+  synchronization now reconciles a target/frame snapshot outside the shared
+  target registry and validates it before commit and client-lease persistence;
+  lease persistence itself remains synchronous under the registry. A dedicated
+  gate serializes sync invocations, and owner draining/replacement remains
+  sequential. Topology is checked again after publication and a changed
+  snapshot triggers a bounded retry; atomic visibility across every owner and
+  process-backed delivery remain under development.
 - Exposed structured native semantic observation, selectable observation
   levels, page inspection/bootstrap, and revision-checked region expansion through
   the canonical Rust `BrowserSession` API.
@@ -37,6 +48,10 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 - Native content-worker dialog IPC now uses one stdin reader to route dialog
   decisions separately from ordinary asynchronous requests.
+- Native event-pump shutdown now cancels an in-flight owner turn through a
+  dedicated signal, so normal content-event wakeups cannot accidentally stop
+  the pump; dropping the runtime owner also requests stop while an internal
+  pump reference is active.
 
 ### Changed
 

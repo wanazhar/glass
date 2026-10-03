@@ -164,6 +164,26 @@ later updates in the browser-coordinated SharedWorker loader.
   `ptrace_scope`, so the trace was collected by launching the test under GDB.
   The exact test/content-worker process tree was stopped; no other Glass
   processes were touched.
+- The MessagePort lock-release change did not resolve the process-backed
+  stall. A bounded follow-up trace again stopped at `sync_target_name` waiting
+  for `NativeTargetState`. Source inspection identified the remaining holder:
+  `deliver_cookie_changes` kept the target registry locked while awaiting the
+  active engine and parked target/frame owners. A busy owner could therefore
+  wait for the registry while cookie delivery waited for that same owner.
+  The latest patch snapshots the selected active-engine `Arc` and all parked
+  owner `Arc`s under the registry, releases it before any async owner lock, and
+  preserves recipient order and profile-write accounting. The new
+  `cookie_change_delivery_waits_without_holding_target_registry` socket-free
+  unit regression holds the active owner, proves the registry remains
+  available while cookie delivery waits, then releases the owner and verifies
+  delivery completes.
+- After that patch,
+  `cargo check -p glass-browser --features native-engine --lib --test
+  native_engine --locked --quiet` passed (2.17 seconds; existing superseded
+  HTML-parser dead-code warnings). The focused unit regression passed (1
+  passed, 1,686 filtered; 10.39-second runtime). The exact parent process
+  regression has not yet been rerun, so the cookie snapshot/override/deletion
+  path remains unverified. Fresh independent review is also pending.
 - The previous blocked review remains open pending a passing process-backed
   regression and fresh independent review. Selected WPT and broader
   parent-only acceptance tests have not been run.

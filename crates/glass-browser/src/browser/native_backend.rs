@@ -532,6 +532,11 @@ struct NativePageMessagePortDeliveryTestHook {
     resume: tokio::sync::Notify,
 }
 
+#[cfg(test)]
+struct NativeCookieChangesDeliveryTestHook {
+    owner_lock_pending: tokio::sync::Notify,
+}
+
 fn native_frame_route_in_state(
     targets: &NativeTargetState,
     frame_id: &str,
@@ -705,6 +710,8 @@ pub struct NativeEngineBackendInner {
         Mutex<Option<Arc<NativeServiceWorkerPublicationTestHook>>>,
     #[cfg(test)]
     page_message_port_delivery_hook: Mutex<Option<Arc<NativePageMessagePortDeliveryTestHook>>>,
+    #[cfg(test)]
+    cookie_changes_delivery_hook: Mutex<Option<Arc<NativeCookieChangesDeliveryTestHook>>>,
 }
 
 /// Semantic adapter around the native browser's target-owned engine pool.
@@ -796,6 +803,8 @@ impl NativeEngineBackend {
                 service_worker_client_publication_hook: Mutex::new(None),
                 #[cfg(test)]
                 page_message_port_delivery_hook: Mutex::new(None),
+                #[cfg(test)]
+                cookie_changes_delivery_hook: Mutex::new(None),
             }),
             pump_handle: false,
         })
@@ -6061,29 +6070,58 @@ impl NativeEngineBackend {
         profile_already_written: bool,
         operation: &'static str,
     ) -> Result<NativeQueuedBrowserEffects, BrowserBackendError> {
-        let mut targets = self.lock_targets(BackendOperation::Script)?;
-        let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
+        let engine_owners = {
+            let targets = self.lock_targets(BackendOperation::Script)?;
+            let mut owners = Vec::new();
+            if targets.active_target_id.is_some() {
+                let active_engine = self
+                    .engine
+                    .lock()
+                    .map_err(|_| poisoned_lock_error(BackendOperation::Script, "engine"))?;
+                owners.push(Arc::clone(&active_engine));
+            }
+            owners.extend(
+                targets
+                    .active_frames
+                    .parked
+                    .values()
+                    .map(|frame| Arc::clone(&frame.engine)),
+            );
+            for target in targets.parked.values() {
+                owners.push(Arc::clone(&target.engine));
+                owners.extend(
+                    target
+                        .frames
+                        .parked
+                        .values()
+                        .map(|frame| Arc::clone(&frame.engine)),
+                );
+            }
+            owners
+        };
+        #[cfg(test)]
+        let cookie_delivery_hook = self
+            .cookie_changes_delivery_hook
+            .lock()
+            .expect("cookie delivery test hook must be available")
+            .clone();
         let mut profile_written = profile_already_written;
         let mut live_contexts = 0usize;
-        if targets.active_target_id.is_some() {
-            apply_native_cookie_changes_to_live_engine(&mut engine, &changes, &mut profile_written)
-                .await
-                .map_err(native_error)?;
-            live_contexts += 1;
-        }
-        for frame in targets.active_frames.parked.values_mut() {
-            let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
-            apply_native_cookie_changes_to_live_engine(
-                &mut frame_engine,
-                &changes,
-                &mut profile_written,
-            )
-            .await
-            .map_err(native_error)?;
-            live_contexts += 1;
-        }
-        for target in targets.parked.values_mut() {
-            let mut target_engine = lock_native_engine_owner(&target.engine).await;
+        for owner in engine_owners {
+            let mut target_engine = {
+                #[cfg(test)]
+                {
+                    if let Some(hook) = cookie_delivery_hook.as_deref() {
+                        lock_native_engine_owner_for_cookie_delivery_test(&owner, hook).await
+                    } else {
+                        lock_native_engine_owner(&owner).await
+                    }
+                }
+                #[cfg(not(test))]
+                {
+                    lock_native_engine_owner(&owner).await
+                }
+            };
             apply_native_cookie_changes_to_live_engine(
                 &mut target_engine,
                 &changes,
@@ -6092,17 +6130,6 @@ impl NativeEngineBackend {
             .await
             .map_err(native_error)?;
             live_contexts += 1;
-            for frame in target.frames.parked.values_mut() {
-                let mut frame_engine = lock_native_engine_owner(&frame.engine).await;
-                apply_native_cookie_changes_to_live_engine(
-                    &mut frame_engine,
-                    &changes,
-                    &mut profile_written,
-                )
-                .await
-                .map_err(native_error)?;
-                live_contexts += 1;
-            }
         }
         if live_contexts == 0 {
             return Err(BrowserBackendError::Lifecycle {
@@ -10144,6 +10171,24 @@ async fn lock_native_engine_owner(
     Arc::clone(owner).lock_owned().await
 }
 
+#[cfg(test)]
+async fn lock_native_engine_owner_for_cookie_delivery_test(
+    owner: &NativeEngineOwner,
+    hook: &NativeCookieChangesDeliveryTestHook,
+) -> tokio::sync::OwnedMutexGuard<NativeEngine> {
+    let mut lock = Box::pin(Arc::clone(owner).lock_owned());
+    let mut pending_notified = false;
+    std::future::poll_fn(|context| {
+        let result = lock.as_mut().poll(context);
+        if result.is_pending() && !pending_notified {
+            hook.owner_lock_pending.notify_one();
+            pending_notified = true;
+        }
+        result
+    })
+    .await
+}
+
 fn require_context_id(
     context_id: &str,
     active_context_id: &str,
@@ -10294,6 +10339,7 @@ where
 mod tests {
     use super::{
         BackendOperation, NativeBrowserEffectSource, NativeContentAsyncEffectNotification,
+        NativeCookieChange, NativeCookieChangesDeliveryTestHook, NativeCookieProfileEntry,
         NativeEngineBackend, NativeFrameRoute, NativeFrameState, NativePageMessagePortCommand,
         NativePageMessagePortDeliveryTestHook, NativePageMessagePortRoute, NativeParkedFrame,
         NativeServiceWorkerPublicationTestHook, NativeSharedWorkerCreateRequest,
@@ -10509,6 +10555,71 @@ mod tests {
             .expect("route lookup must not return a transient busy error")
             .expect("live MessagePort route must remain registered");
         assert_eq!(route.context_id, context_id);
+        backend
+            .close_all()
+            .await
+            .expect("fixture backend must close cleanly");
+    }
+
+    #[tokio::test]
+    async fn cookie_change_delivery_waits_without_holding_target_registry() {
+        let url = "fixture://cookie-delivery-lock.test/root";
+        let backend = initialized_fixture_backend(url, &[]).await;
+        let active_owner = backend
+            .engine
+            .lock()
+            .expect("active engine owner must be available")
+            .clone();
+        let owner_guard = active_owner.clone().lock_owned().await;
+        let hook = Arc::new(NativeCookieChangesDeliveryTestHook {
+            owner_lock_pending: tokio::sync::Notify::new(),
+        });
+        *backend
+            .cookie_changes_delivery_hook
+            .lock()
+            .expect("cookie delivery test hook must be available") = Some(Arc::clone(&hook));
+
+        let owner_waiting = hook.owner_lock_pending.notified();
+        let mut delivery = Box::pin(backend.deliver_cookie_changes(
+            vec![NativeCookieChange {
+                name: "lock-test".into(),
+                domain: "cookie-delivery-lock.test".into(),
+                path: "/".into(),
+                cookie: Some(NativeCookieProfileEntry {
+                    name: "lock-test".into(),
+                    value: "applied".into(),
+                    domain: "cookie-delivery-lock.test".into(),
+                    path: "/".into(),
+                    host_only: true,
+                    secure: false,
+                    http_only: false,
+                    same_site: Some("Lax".into()),
+                    priority: None,
+                    expires_at_unix_seconds: None,
+                }),
+            }],
+            false,
+            "test native cookie delivery",
+        ));
+        tokio::select! {
+            _ = owner_waiting => {}
+            _ = &mut delivery => panic!("cookie delivery must wait for the locked active owner"),
+        }
+
+        assert!(
+            backend.targets.try_lock().is_ok(),
+            "cookie delivery must release the target registry before awaiting its owner"
+        );
+
+        drop(owner_guard);
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut delivery)
+            .await
+            .expect("cookie delivery must resume after owner release")
+            .expect("cookie changes must apply successfully");
+        *backend
+            .cookie_changes_delivery_hook
+            .lock()
+            .expect("cookie delivery test hook must be available") = None;
         backend
             .close_all()
             .await

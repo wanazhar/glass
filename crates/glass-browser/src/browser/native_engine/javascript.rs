@@ -2409,6 +2409,7 @@ impl NativeWorkerRegistry {
                         transfer_port,
                         loader,
                         owner_url,
+                        parent_fetch_broker.as_deref_mut(),
                     )
                     .await?;
                 }
@@ -2429,6 +2430,7 @@ impl NativeWorkerRegistry {
                         referrer_policy,
                         loader,
                         owner_url,
+                        parent_fetch_broker.as_deref_mut(),
                     )
                     .await?;
                 }
@@ -2472,6 +2474,7 @@ impl NativeWorkerRegistry {
         referrer_policy: Option<NativeFetchReferrerPolicy>,
         loader: &mut NativeResourceLoader,
         owner_url: &str,
+        parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<(), NativeEngineError> {
         if worker_id == 0 {
             return Err(NativeEngineError::invalid(
@@ -2645,8 +2648,13 @@ impl NativeWorkerRegistry {
         };
         match evaluation {
             Ok(evaluation) => {
-                self.collect_worker_evaluation(worker_id, evaluation, loader)
-                    .await
+                self.collect_worker_evaluation_with_parent_fetch_broker(
+                    worker_id,
+                    evaluation,
+                    loader,
+                    parent_fetch_broker,
+                )
+                .await
             }
             Err(error) => {
                 self.workers.remove(&worker_id);
@@ -2669,6 +2677,7 @@ impl NativeWorkerRegistry {
         transfer_port: NativeMessagePortTransfer,
         loader: &mut NativeResourceLoader,
         owner_url: &str,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<(), NativeEngineError> {
         if connection_id == 0 {
             return Err(NativeEngineError::invalid(
@@ -2729,7 +2738,12 @@ impl NativeWorkerRegistry {
                 match evaluation {
                     Ok(evaluation) => {
                         if let Err(error) = self
-                            .collect_worker_evaluation(worker_id, evaluation, loader)
+                            .collect_worker_evaluation_with_parent_fetch_broker(
+                                worker_id,
+                                evaluation,
+                                loader,
+                                parent_fetch_broker.as_deref_mut(),
+                            )
                             .await
                         {
                             self.remove_transfer_routes(std::slice::from_ref(&transfer_port));
@@ -2907,7 +2921,12 @@ impl NativeWorkerRegistry {
         match initial {
             Ok(evaluation) => {
                 if let Err(error) = self
-                    .collect_worker_evaluation(connection_id, evaluation, loader)
+                    .collect_worker_evaluation_with_parent_fetch_broker(
+                        connection_id,
+                        evaluation,
+                        loader,
+                        parent_fetch_broker.as_deref_mut(),
+                    )
                     .await
                 {
                     self.workers.remove(&connection_id);
@@ -2928,7 +2947,12 @@ impl NativeWorkerRegistry {
         match connect {
             Ok(evaluation) => {
                 if let Err(error) = self
-                    .collect_worker_evaluation(connection_id, evaluation, loader)
+                    .collect_worker_evaluation_with_parent_fetch_broker(
+                        connection_id,
+                        evaluation,
+                        loader,
+                        parent_fetch_broker.as_deref_mut(),
+                    )
                     .await
                 {
                     self.workers.remove(&connection_id);

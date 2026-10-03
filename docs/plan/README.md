@@ -313,16 +313,18 @@ parent-brokered transport. See the
 contract](native-engine-browser-profile.md#parent-owned-cookie-authority).
 The remaining content-process cookie mirror/persistence and unbrokered network
 paths are tracked in the dependent [Slice 843 task](tasks/native-engine-browser-843.md).
-A Slice 843 checkpoint now brokers standard buffered Fetch emitted by a
-dedicated worker while handling an explicit page `Worker.postMessage`; its
-process-backed regression passed (1 test; 25.63-second test runtime). It
-verifies that the page owner is validated separately from the worker request
-URL, a same-turn page cookie write reaches the request, and response
-`Set-Cookie` is visible in the parent cookie API. This does not cover worker
-startup/autonomous turns, SharedWorker dispatch, streamed uploads, module or
-font destinations, initial/resource loading, or Service Worker internal
-requests. The parent-only cookie contract is not complete until Slice 843
-removes the remaining child authority and the required broader checks pass.
+A Slice 843 checkpoint now brokers standard buffered Fetch emitted during
+dedicated-worker initialization and while handling an explicit page
+`Worker.postMessage`; its process-backed regression passed (1 test;
+24.15-second test runtime). It verifies that the page owner is validated
+separately from the worker request URL, a same-turn page cookie write reaches
+the startup Fetch, a response `Set-Cookie` is visible on the next worker
+request, and the parent cookie API reflects it. Worker-script/resource/module-
+graph loading, autonomous turns, independently delivered SharedWorker events,
+streamed uploads, module or font destinations, initial/resource loading, and
+Service Worker internal requests remain outside the verified path. The
+parent-only cookie contract is not complete until Slice 843 removes the
+remaining child authority and the required broader checks pass.
 Process-backed request/header/no-duplicate, cancellation, source-document
 referrer-policy/redirect, and worker-visible `Request.referrer` regressions
 remain unrun. Slice 842's parent-cookie regression did bind a local HTTP

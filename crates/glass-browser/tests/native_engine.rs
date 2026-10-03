@@ -33216,7 +33216,7 @@ async fn native_content_process_worker_message_fetch_uses_parent_cookie_authorit
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         let mut requests = Vec::new();
-        for _ in 0..3 {
+        for _ in 0..4 {
             let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
                 .await
                 .expect("worker parent Fetch should reach the local server")
@@ -33244,13 +33244,14 @@ async fn native_content_process_worker_message_fetch_uses_parent_cookie_authorit
                 "/worker.js" => (
                     "",
                     "text/javascript",
-                    "self.onmessage = async () => { const response = await fetch('/worker-data'); postMessage(await response.text()); };",
+                    "self.onmessage = async () => { const response = await fetch('/worker-data'); postMessage({ kind: 'message', text: await response.text() }); }; fetch('/worker-start-data').then(async response => postMessage({ kind: 'started', text: await response.text() }));",
                 ),
-                "/worker-data" => (
+                "/worker-start-data" => (
                     "Set-Cookie: worker_parent=updated; HttpOnly; Path=/; SameSite=Lax\r\n",
                     "text/plain",
-                    "worker response",
+                    "startup response",
                 ),
+                "/worker-data" => ("", "text/plain", "worker response"),
                 other => panic!("unexpected parent-owned worker Fetch path: {other}"),
             };
             let response = format!(
@@ -33270,19 +33271,22 @@ async fn native_content_process_worker_message_fetch_uses_parent_cookie_authorit
     engine.initialize_async().await.unwrap();
     engine
         .evaluate_async(
-            "globalThis.workerMessages = []; globalThis.worker = new Worker('/worker.js'); worker.onmessage = event => workerMessages.push(event.data); true",
+            "globalThis.workerMessages = []; document.cookie = 'same_turn=present; Path=/'; globalThis.worker = new Worker('/worker.js'); worker.onmessage = event => workerMessages.push(event.data); true",
         )
         .await
         .unwrap();
     engine
         .evaluate_async(
-            "document.cookie = 'same_turn=present; Path=/'; worker.postMessage('fetch'); true",
+            "document.cookie = 'message_turn=present; Path=/'; worker.postMessage('fetch'); true",
         )
         .await
         .unwrap();
     assert_eq!(
         engine.evaluate_async("workerMessages").await.unwrap(),
-        serde_json::json!(["worker response"])
+        serde_json::json!([
+            {"kind": "started", "text": "startup response"},
+            {"kind": "message", "text": "worker response"}
+        ])
     );
     let cookies = engine.cookies_async().await.unwrap();
     assert!(
@@ -33298,12 +33302,17 @@ async fn native_content_process_worker_message_fetch_uses_parent_cookie_authorit
             .iter()
             .map(|(path, _)| path.as_str())
             .collect::<Vec<_>>(),
-        ["/page", "/worker.js", "/worker-data"]
+        ["/page", "/worker.js", "/worker-start-data", "/worker-data"]
     );
-    let worker_fetch_cookie = requests[2].1.as_deref().unwrap_or_default();
-    assert!(worker_fetch_cookie.contains("parent_session=initial"));
-    assert!(worker_fetch_cookie.contains("parent_secret=initial-secret"));
-    assert!(worker_fetch_cookie.contains("same_turn=present"));
+    let startup_fetch_cookie = requests[2].1.as_deref().unwrap_or_default();
+    assert!(startup_fetch_cookie.contains("parent_session=initial"));
+    assert!(startup_fetch_cookie.contains("parent_secret=initial-secret"));
+    assert!(startup_fetch_cookie.contains("same_turn=present"));
+    let message_fetch_cookie = requests[3].1.as_deref().unwrap_or_default();
+    assert!(message_fetch_cookie.contains("parent_session=initial"));
+    assert!(message_fetch_cookie.contains("parent_secret=initial-secret"));
+    assert!(message_fetch_cookie.contains("worker_parent=updated"));
+    assert!(message_fetch_cookie.contains("message_turn=present"));
 }
 
 #[tokio::test]

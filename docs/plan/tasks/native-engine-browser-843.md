@@ -104,7 +104,7 @@ projection and existing native Fetch behavior.
   durable profile, and child content snapshots no longer apply their cookie
   changes there. The child still receives the shared path and full profile and
   can rewrite the combined snapshot, so child write capability is not removed
-  yet. Child profile loading/mirroring, mutation authority, and network
+  yet. Child profile loading/mirroring, mutation authority, and general network
   brokering remain outstanding. The restart persistence regression passed
   (1 passed; 93.27-second runtime); its test name now describes the observed
   process-restart behavior rather than attributing durable writes to the child.
@@ -123,11 +123,11 @@ projection and existing native Fetch behavior.
   cross-origin CORS case passed (1 passed; 24.30 seconds), and the separate
   SharedWorker live-cookie case passed (1 passed; 43.44 seconds). The adjacent
   child-network credentials/redirect test had passed previously (1 passed;
-  24.64 seconds), but two no-build reruns against this binary timed out during
-  `evaluate_async("sharedFetchMessages")` at `tests/native_engine.rs:33317`
-  (51.04 and 29.74 seconds), before assertions. Other page/worker Fetch paths
-  and child-originated network operations remain outstanding for the parent
-  broker.
+  24.64 seconds), but two no-build reruns against the current binary timed out
+  while awaiting a script turn at `tests/native_engine.rs:33317` (51.04 and
+  29.74 seconds), before assertions. Worker Fetch outside the
+  dedicated-worker message path described below and other child-originated
+  network operations remain outstanding for the parent broker.
 - An eligible HTTP(S) Fetch created during an explicit page script evaluation
   now uses the parent broker after content-side Service Worker interception
   declines it. The parent validates the committed owner and applies the
@@ -150,26 +150,44 @@ projection and existing native Fetch behavior.
   same-turn setter before Fetch, initial and updated HttpOnly request cookies,
   the visible projection, and the next request.
   This does not cover Fetch during initial document loading, streamed uploads,
-  module/font destinations, worker realms, or Service Worker internal network
-  requests, which still use the child loader. The broker currently buffers the
-  bounded response before resolving Fetch; incremental network response
-  streaming/backpressure remains outstanding.
-- `cargo check -p glass-browser --features native-engine --lib --test native_engine --locked --quiet` passed after the setter journal integration, with existing dead-code warnings only. The focused `native_content_process_script_fetch_uses_parent_cookie_authority` process-backed regression passed (1 passed; 30.12 seconds), including the standalone setter and parent cookie API read.
-  `rustfmt --edition 2024 --check` passes for the modified Rust modules. The
-  workspace `cargo fmt --all -- --check` still reports formatting in unchanged
-  `native_engine/mod.rs:81`. Documentation coverage still reports only the
-  pre-existing missing MCP schema measurement in `docs/mcp-schema-budget.md`.
+  module/font destinations, worker startup or autonomous events, SharedWorker
+  message dispatch, or Service Worker internal network requests, which still
+  use the child loader. The broker currently buffers the bounded response
+  before resolving Fetch; incremental network response streaming/backpressure
+  remains outstanding.
+- The latest scoped `cargo check -p glass-browser --features native-engine
+  --lib --test native_engine --locked --quiet` passed with existing dead-code
+  warnings only; the focused worker regression is recorded below.
+- `cargo fmt --all -- --check`, `git diff --check`, release-documentation
+  truth, documentation depth, and TUI shortcut inventory checks pass.
+  Documentation coverage remains blocked only by the existing missing live
+  MCP schema measurement ``| Serialized `tools` array | 173,741 UTF-8 bytes |``
+  in `docs/mcp-schema-budget.md`.
+- Standard buffered Fetch emitted by a dedicated worker while handling an
+  explicit page `Worker.postMessage` now uses the parent broker. The protocol
+  validates the captured page owner separately from the worker request URL,
+  applies pending page cookie writes before selecting request cookies, commits
+  response-cookie changes in the parent, and returns the page owner's visible
+  cookie projection. The existing worker response-stream interface is
+  preserved over the buffered parent response. The process-backed
+  `native_content_process_worker_message_fetch_uses_parent_cookie_authority`
+  regression passed (1 passed; 25.63-second test runtime), checking same-turn
+  setter visibility, parent jar update, and distinct page/worker URLs.
+  Worker startup/autonomous turns, SharedWorker message dispatch, streamed
+  uploads, module/font destinations, initial/resource loading, and Service
+  Worker internal requests remain outside this broker path.
 - Slice 842 is complete: browser-coordinated SharedWorker creation derives
   cookies from the exact parent source owner. Its parent snapshot/override/
   deletion process regression passed (1 passed; 48.31-second test runtime),
   and the independent static review found no lock/order defect.
 - The broader content-process mirror, child profile-path/read/write capability,
-  and general parent request broker remain outstanding. The process-backed
+  and complete parent brokering for every cookie-bearing request class remain
+  outstanding. The process-backed
   regression `native_content_process_shared_worker_fetch_credentials_modes_follow_redirects`
   passed against the latest built integration binary (1 passed; 24.64-second
   runtime). It covers credentials/CORS/redirect and invalid-mode behavior, but
-  does not verify parent-brokered network transport; the content process still
-  performs direct network requests.
+  does not verify the parent-brokered dedicated-worker route; this SharedWorker
+  Fetch path still performs its request directly in the content process.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.

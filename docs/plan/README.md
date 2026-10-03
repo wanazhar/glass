@@ -300,8 +300,8 @@ no-build run of the already-compiled binary then passed the exact regression
 found no static lock/order defect; its initial timeout finding is resolved by
 that process-backed pass. Slice 842 is complete. The overall parent-only
 cookie contract remains incomplete until dependent Slice 843 removes the
-content-process mirror and adds the general parent request broker. Separately,
-the content-process SharedWorker credentials/redirect regression
+content-process mirror and routes every cookie-bearing path through the parent.
+Separately, the content-process SharedWorker credentials/redirect regression
 `native_content_process_shared_worker_fetch_credentials_modes_follow_redirects`
 passed in an earlier run (1 passed; 24.64-second runtime), but two no-build
 reruns against the current binary timed out while awaiting a script turn at
@@ -311,9 +311,18 @@ parent-brokered transport. See the
 [Slice 842 task](tasks/native-engine-browser-842.md) and
 [cookie authority
 contract](native-engine-browser-profile.md#parent-owned-cookie-authority).
-The remaining content-process cookie mirror/persistence and general request
-broker are isolated in the dependent [Slice 843 task](tasks/native-engine-browser-843.md);
-the parent-only cookie contract is not complete until both slices pass.
+The remaining content-process cookie mirror/persistence and unbrokered network
+paths are tracked in the dependent [Slice 843 task](tasks/native-engine-browser-843.md).
+A Slice 843 checkpoint now brokers standard buffered Fetch emitted by a
+dedicated worker while handling an explicit page `Worker.postMessage`; its
+process-backed regression passed (1 test; 25.63-second test runtime). It
+verifies that the page owner is validated separately from the worker request
+URL, a same-turn page cookie write reaches the request, and response
+`Set-Cookie` is visible in the parent cookie API. This does not cover worker
+startup/autonomous turns, SharedWorker dispatch, streamed uploads, module or
+font destinations, initial/resource loading, or Service Worker internal
+requests. The parent-only cookie contract is not complete until Slice 843
+removes the remaining child authority and the required broader checks pass.
 Process-backed request/header/no-duplicate, cancellation, source-document
 referrer-policy/redirect, and worker-visible `Request.referrer` regressions
 remain unrun. Slice 842's parent-cookie regression did bind a local HTTP

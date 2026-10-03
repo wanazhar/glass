@@ -116,8 +116,16 @@ cookie-profile field from browser-coordinated SharedWorker creation and now
 seeds the shared coordinator from the parent engine resolved by the exact
 source frame, replaying coordinator cookie overrides afterward. This fixes
 only that SharedWorker creation path. Slice 843 tracks the remaining
-content-process profile mirroring, child-side persistence, and general parent
-network broker; the profile is not parent-only until that work also passes.
+content-process profile mirroring, child-side persistence, and unbrokered
+network paths; the profile is not parent-only until that work also passes. A
+process-backed checkpoint now brokers standard buffered Fetches emitted by a
+dedicated worker while handling an explicit page `Worker.postMessage`. The
+parent validates the captured page owner separately from the worker request
+URL, applies same-turn page cookie writes, selects request cookies, and accepts
+response-cookie changes. The worker's current response-stream interface is
+preserved over a buffered parent response. Worker startup/autonomous turns,
+SharedWorker dispatch, streamed uploads, module destinations, initial/resource
+loads, and Service Worker internal requests remain outside this checkpoint.
 See the [Slice 842 task](tasks/native-engine-browser-842.md) and [Slice 843
 task](tasks/native-engine-browser-843.md).
 

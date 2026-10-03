@@ -154,7 +154,7 @@ enum NativeContentProcessInput {
     WorkerTimer,
 }
 
-struct NativeContentFetchBroker<'a> {
+pub(crate) struct NativeContentFetchBroker<'a> {
     request_id: u64,
     owner: NativeContentCookieOwner,
     runtime: &'a NativeJavaScriptRuntime,
@@ -178,7 +178,7 @@ pub(crate) struct NativeContentCookieWrite {
 }
 
 impl NativeContentFetchBroker<'_> {
-    async fn fetch(
+    pub(crate) async fn fetch(
         &mut self,
         fetch_id: u32,
         request: &NativeFetchRequest<'_>,
@@ -3450,15 +3450,6 @@ impl NativeContentProcess {
                             "parent Fetch request omitted its document URL",
                         )
                     })?;
-                if self.current_document_url.as_deref().is_none_or(|current| {
-                    without_fragment(current) != without_fragment(document_url)
-                }) {
-                    return Err(NativeEngineError::worker_failure(
-                        "content process parent Fetch broker",
-                        NativeWorkerFailureKind::Protocol,
-                        "parent Fetch request does not match the committed document",
-                    ));
-                }
                 let href = response
                     .get("href")
                     .and_then(Value::as_str)
@@ -3523,7 +3514,9 @@ impl NativeContentProcess {
                         || self.context_id.as_deref() != Some(owner.context_id.as_str())
                         || self.frame_id.as_deref() != Some(owner.frame_id.as_str())
                         || self.current_document_generation != Some(owner.generation)
-                        || without_fragment(&owner.document_url) != without_fragment(document_url)
+                        || self.current_document_url.as_deref().is_none_or(|current| {
+                            without_fragment(current) != without_fragment(&owner.document_url)
+                        })
                     {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent Fetch broker",
@@ -3581,6 +3574,15 @@ impl NativeContentProcess {
                     }
                     writes
                 } else {
+                    if self.current_document_url.as_deref().is_none_or(|current| {
+                        without_fragment(current) != without_fragment(document_url)
+                    }) {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent Fetch broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent Fetch request does not match the committed document",
+                        ));
+                    }
                     if response.get("owner").is_some() || response.get("cookie_writes").is_some() {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent Fetch broker",
@@ -3611,7 +3613,12 @@ impl NativeContentProcess {
                     }
                     loader.fetch_async(document_url, href, credentials).await
                 };
-                let document_cookie = loader.document_cookie(document_url)?;
+                let cookie_owner_url = response
+                    .get("owner")
+                    .and_then(|owner| owner.get("document_url"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(document_url);
+                let document_cookie = loader.document_cookie(cookie_owner_url)?;
                 let mut broker_response = parent_fetch_response_payload(request_id, fetch);
                 if let Some(fetch_id) = fetch_id {
                     broker_response["fetch_id"] = Value::from(fetch_id);
@@ -7857,8 +7864,26 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     current.generation(),
                     &mut pending_shared_worker_commands,
                 )?;
+                let mut parent_fetch_broker = NativeContentFetchBroker {
+                    request_id: id.as_u64().ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process script request ID",
+                            "must be an unsigned integer",
+                        )
+                    })?,
+                    owner: owner.clone(),
+                    runtime,
+                    stdout: &mut stdout,
+                    ipc_requests: &mut ipc_request_rx,
+                    document_cookie_projection: &mut parent_document_cookie_projection,
+                };
                 workers
-                    .apply_commands(worker_commands, loader, &committed_url)
+                    .apply_commands_with_parent_fetch_broker(
+                        worker_commands,
+                        loader,
+                        &committed_url,
+                        &mut parent_fetch_broker,
+                    )
                     .await?;
                 let message_port_commands = runtime.take_message_port_commands();
                 service_workers
@@ -8010,11 +8035,26 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     current.generation(),
                                     &mut pending_shared_worker_commands,
                                 )?;
+                                let mut parent_fetch_broker = NativeContentFetchBroker {
+                                    request_id: id.as_u64().ok_or_else(|| {
+                                        NativeEngineError::invalid(
+                                            "content-process script request ID",
+                                            "must be an unsigned integer",
+                                        )
+                                    })?,
+                                    owner: owner.clone(),
+                                    runtime,
+                                    stdout: &mut stdout,
+                                    ipc_requests: &mut ipc_request_rx,
+                                    document_cookie_projection:
+                                        &mut parent_document_cookie_projection,
+                                };
                                 workers
-                                    .apply_commands(
+                                    .apply_commands_with_parent_fetch_broker(
                                         dynamic_worker_commands,
                                         loader,
                                         &document_url.clone().unwrap_or(committed_url.clone()),
+                                        &mut parent_fetch_broker,
                                     )
                                     .await?;
                                 let dynamic_message_port_commands =

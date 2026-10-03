@@ -8,6 +8,7 @@ use super::config::{
     MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES, MAX_NATIVE_WINDOW_NAME_BYTES, Viewport, is_file_url,
     is_network_url, validate_context_id, validate_url_text, validate_window_name, without_fragment,
 };
+use super::content_process::NativeContentFetchBroker;
 use super::css::{
     FontStyleValue, FontWeightValue, parse_font_stretch_range, parse_font_weight_range,
 };
@@ -2344,6 +2345,28 @@ impl NativeWorkerRegistry {
         loader: &mut NativeResourceLoader,
         owner_url: &str,
     ) -> Result<(), NativeEngineError> {
+        self.apply_commands_inner(commands, loader, owner_url, None)
+            .await
+    }
+
+    pub(crate) async fn apply_commands_with_parent_fetch_broker(
+        &mut self,
+        commands: Vec<NativeScriptCommand>,
+        loader: &mut NativeResourceLoader,
+        owner_url: &str,
+        parent_fetch_broker: &mut NativeContentFetchBroker<'_>,
+    ) -> Result<(), NativeEngineError> {
+        self.apply_commands_inner(commands, loader, owner_url, Some(parent_fetch_broker))
+            .await
+    }
+
+    async fn apply_commands_inner<'broker>(
+        &mut self,
+        commands: Vec<NativeScriptCommand>,
+        loader: &mut NativeResourceLoader,
+        owner_url: &str,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'broker>>,
+    ) -> Result<(), NativeEngineError> {
         if commands.len() > MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
                 "native Worker commands",
@@ -2415,8 +2438,15 @@ impl NativeWorkerRegistry {
                     transfer_ports,
                     object_urls,
                 } => {
-                    self.post_message(worker_id, data, transfer_ports, object_urls, loader)
-                        .await?;
+                    self.post_message(
+                        worker_id,
+                        data,
+                        transfer_ports,
+                        object_urls,
+                        loader,
+                        parent_fetch_broker.as_deref_mut(),
+                    )
+                    .await?;
                 }
                 NativeScriptCommand::WorkerTerminate { worker_id }
                 | NativeScriptCommand::WorkerClose { worker_id } => {
@@ -2923,6 +2953,7 @@ impl NativeWorkerRegistry {
         transfer_ports: Vec<NativeMessagePortTransfer>,
         object_urls: Vec<NativeObjectUrlTransfer>,
         loader: &mut NativeResourceLoader,
+        parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<(), NativeEngineError> {
         if !self.workers.contains_key(&worker_id) {
             return Ok(());
@@ -2950,8 +2981,13 @@ impl NativeWorkerRegistry {
         });
         match evaluation {
             Ok(evaluation) => {
-                self.collect_worker_evaluation(worker_id, evaluation, loader)
-                    .await
+                self.collect_worker_evaluation_with_parent_fetch_broker(
+                    worker_id,
+                    evaluation,
+                    loader,
+                    parent_fetch_broker,
+                )
+                .await
             }
             Err(error) => {
                 self.workers.remove(&worker_id);
@@ -2966,6 +3002,17 @@ impl NativeWorkerRegistry {
         worker_id: u32,
         evaluation: NativeScriptEvaluation,
         loader: &mut NativeResourceLoader,
+    ) -> Result<(), NativeEngineError> {
+        self.collect_worker_evaluation_with_parent_fetch_broker(worker_id, evaluation, loader, None)
+            .await
+    }
+
+    async fn collect_worker_evaluation_with_parent_fetch_broker<'broker>(
+        &mut self,
+        worker_id: u32,
+        evaluation: NativeScriptEvaluation,
+        loader: &mut NativeResourceLoader,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'broker>>,
     ) -> Result<(), NativeEngineError> {
         let mut evaluations = VecDeque::from([(worker_id, evaluation)]);
         let mut evaluation_count = 0usize;
@@ -3083,7 +3130,12 @@ impl NativeWorkerRegistry {
                         ..
                     } if command_worker_id == current_worker_id => {
                         let resolved = self
-                            .resolve_worker_fetch(current_worker_id, command, loader)
+                            .resolve_worker_fetch(
+                                current_worker_id,
+                                command,
+                                loader,
+                                parent_fetch_broker.as_deref_mut(),
+                            )
                             .await?;
                         evaluations.push_back((current_worker_id, resolved));
                     }
@@ -4321,6 +4373,7 @@ impl NativeWorkerRegistry {
         worker_id: u32,
         command: NativeScriptCommand,
         loader: &mut NativeResourceLoader,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<NativeScriptEvaluation, NativeEngineError> {
         let NativeScriptCommand::Fetch {
             request_id,
@@ -4550,7 +4603,29 @@ impl NativeWorkerRegistry {
                 timeout: timeout_ms.map(|value| Duration::from_millis(u64::from(value))),
                 max_response_bytes: None,
             };
-            if self.stream_worker_fetches {
+            if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
+                let response = parent_fetch_broker.fetch(request_id, &request).await?.0;
+                if self.stream_worker_fetches {
+                    match response {
+                        Ok(mut response) => {
+                            let cached_body = Some(std::mem::take(&mut response.body));
+                            self.worker_fetch_opened_payload(
+                                worker_id,
+                                request_id,
+                                Ok(NativeFetchResponseStream {
+                                    response,
+                                    body: None,
+                                    cached_body,
+                                    max_response_bytes: MAX_NATIVE_FETCH_STREAM_BODY_BYTES,
+                                }),
+                            )
+                        }
+                        Err(error) => worker_fetch_response_payload(Err(error)),
+                    }
+                } else {
+                    worker_fetch_response_payload(response)
+                }
+            } else if self.stream_worker_fetches {
                 self.worker_fetch_opened_payload(
                     worker_id,
                     request_id,

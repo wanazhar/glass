@@ -33210,6 +33210,103 @@ async fn native_content_process_script_fetch_uses_parent_cookie_authority() {
 }
 
 #[tokio::test]
+async fn native_content_process_worker_message_fetch_uses_parent_cookie_authority() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for _ in 0..3 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("worker parent Fetch should reach the local server")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("request includes a path")
+                .to_owned();
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
+            let (headers, content_type, body) = match path.as_str() {
+                "/page" => (
+                    concat!(
+                        "Set-Cookie: parent_session=initial; Path=/; SameSite=Lax\r\n",
+                        "Set-Cookie: parent_secret=initial-secret; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    ),
+                    "text/html",
+                    "<p>page</p>",
+                ),
+                "/worker.js" => (
+                    "",
+                    "text/javascript",
+                    "self.onmessage = async () => { const response = await fetch('/worker-data'); postMessage(await response.text()); };",
+                ),
+                "/worker-data" => (
+                    "Set-Cookie: worker_parent=updated; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/plain",
+                    "worker response",
+                ),
+                other => panic!("unexpected parent-owned worker Fetch path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push((path, cookie));
+        }
+        requests
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .evaluate_async(
+            "globalThis.workerMessages = []; globalThis.worker = new Worker('/worker.js'); worker.onmessage = event => workerMessages.push(event.data); true",
+        )
+        .await
+        .unwrap();
+    engine
+        .evaluate_async(
+            "document.cookie = 'same_turn=present; Path=/'; worker.postMessage('fetch'); true",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("workerMessages").await.unwrap(),
+        serde_json::json!(["worker response"])
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    assert!(
+        cookies
+            .iter()
+            .any(|cookie| cookie.name == "worker_parent" && cookie.value == "updated")
+    );
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(
+        requests
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect::<Vec<_>>(),
+        ["/page", "/worker.js", "/worker-data"]
+    );
+    let worker_fetch_cookie = requests[2].1.as_deref().unwrap_or_default();
+    assert!(worker_fetch_cookie.contains("parent_session=initial"));
+    assert!(worker_fetch_cookie.contains("parent_secret=initial-secret"));
+    assert!(worker_fetch_cookie.contains("same_turn=present"));
+}
+
+#[tokio::test]
 async fn native_content_process_shared_worker_fetch_credentials_modes_follow_redirects() {
     let _guard = native_content_process_test_lock().lock().await;
     let primary_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

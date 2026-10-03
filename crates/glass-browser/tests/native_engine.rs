@@ -16904,6 +16904,7 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let font_bytes = include_bytes!("fixtures/colr-v0.ttf").to_vec();
     let server = tokio::spawn(async move {
         let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
             .await
@@ -16954,7 +16955,7 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             .expect("parent-brokered CSS import should reach the local server")
             .unwrap();
         let dependency_request = read_http_request(&mut stream).await;
-        let dependency = "body { color: black; }";
+        let dependency = "@font-face { font-family: 'Parent Font'; src: url('/font.ttf'); } body { color: black; }";
         let dependency_response = format!(
             concat!(
                 "HTTP/1.1 200 OK\r\n",
@@ -16970,6 +16971,23 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             .write_all(dependency_response.as_bytes())
             .await
             .unwrap();
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("parent-brokered CSS font should reach the local server")
+            .unwrap();
+        let font_request = read_http_request(&mut stream).await;
+        let font_response = format!(
+            concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Set-Cookie: font_visible=present; Path=/; SameSite=Lax\r\n",
+                "Set-Cookie: font_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\n",
+                "Content-Type: font/ttf\r\n",
+                "Content-Length: {}\r\nConnection: close\r\n\r\n"
+            ),
+            font_bytes.len()
+        );
+        stream.write_all(font_response.as_bytes()).await.unwrap();
+        stream.write_all(&font_bytes).await.unwrap();
         let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
             .await
             .expect("parent-brokered page image should reach the local server")
@@ -17025,13 +17043,45 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             script
         );
         stream.write_all(script_response.as_bytes()).await.unwrap();
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("parent-brokered FontFace load should reach the local server")
+            .unwrap();
+        let runtime_font_request = read_http_request(&mut stream).await;
+        let runtime_font_response = format!(
+            concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Set-Cookie: runtime_font_visible=present; Path=/; SameSite=Lax\r\n",
+                "Set-Cookie: runtime_font_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\n",
+                "Content-Type: font/ttf\r\n",
+                "Content-Length: {}\r\nConnection: close\r\n\r\n"
+            ),
+            font_bytes.len()
+        );
+        stream
+            .write_all(runtime_font_response.as_bytes())
+            .await
+            .unwrap();
+        stream.write_all(&font_bytes).await.unwrap();
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("font cookie follow-up should reach the local server")
+            .unwrap();
+        let font_cookie_followup_request = read_http_request(&mut stream).await;
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
         (
             request,
             stylesheet_request,
             dependency_request,
+            font_request,
             image_request,
             media_request,
             script_request,
+            runtime_font_request,
+            font_cookie_followup_request,
         )
     });
 
@@ -17040,6 +17090,34 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
     )
     .unwrap();
     engine.initialize_async().await.unwrap();
+    let runtime_font = engine
+        .evaluate_async(
+            r#"await (async () => {
+                  const face = new FontFace("Runtime Parent Font", "url(/runtime-font.ttf)");
+                  document.fonts.add(face);
+                  await face.load();
+                  return [face.status, document.fonts.check('16px "Runtime Parent Font"'), document.cookie];
+                })()"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(runtime_font.get(0), Some(&serde_json::json!("loaded")));
+    assert_eq!(runtime_font.get(1), Some(&serde_json::json!(true)));
+    let runtime_cookie_projection = runtime_font
+        .get(2)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    assert!(runtime_cookie_projection.contains("runtime_font_visible=present"));
+    assert!(!runtime_cookie_projection.contains("runtime_font_secret"));
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await fetch('/font-cookie-followup').then(response => response.status)"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(204)
+    );
     for expression in [
         "window.parserScriptCookie",
         "window.initialDocumentCookie",
@@ -17072,6 +17150,10 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             "{expression}: {cookies}"
         );
         assert!(
+            cookies.contains("font_visible=present"),
+            "{expression}: {cookies}"
+        );
+        assert!(
             !cookies.contains("navigation_secret"),
             "{expression}: {cookies}"
         );
@@ -17089,6 +17171,7 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
         );
         assert!(!cookies.contains("image_secret"), "{expression}: {cookies}");
         assert!(!cookies.contains("media_secret"), "{expression}: {cookies}");
+        assert!(!cookies.contains("font_secret"), "{expression}: {cookies}");
     }
     let cookies = engine.cookies_async().await.unwrap();
     assert!(cookies.iter().any(|cookie| {
@@ -17127,6 +17210,18 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
     assert!(cookies.iter().any(|cookie| {
         cookie.name == "media_secret" && cookie.value == "hidden" && cookie.http_only
     }));
+    assert!(cookies.iter().any(|cookie| {
+        cookie.name == "font_visible" && cookie.value == "present" && !cookie.http_only
+    }));
+    assert!(cookies.iter().any(|cookie| {
+        cookie.name == "font_secret" && cookie.value == "hidden" && cookie.http_only
+    }));
+    assert!(cookies.iter().any(|cookie| {
+        cookie.name == "runtime_font_visible" && cookie.value == "present" && !cookie.http_only
+    }));
+    assert!(cookies.iter().any(|cookie| {
+        cookie.name == "runtime_font_secret" && cookie.value == "hidden" && cookie.http_only
+    }));
     assert_eq!(
         engine
             .evaluate_async(
@@ -17141,9 +17236,12 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
         request,
         stylesheet_request,
         dependency_request,
+        font_request,
         image_request,
         media_request,
         script_request,
+        runtime_font_request,
+        font_cookie_followup_request,
     ) = server.await.unwrap();
     assert!(request.starts_with("GET /page HTTP/1.1\r\n"));
     assert!(stylesheet_request.starts_with("GET /initial.css HTTP/1.1\r\n"));
@@ -17152,9 +17250,12 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
     assert!(dependency_request.starts_with("GET /nested.css HTTP/1.1\r\n"));
     assert!(dependency_request.contains("stylesheet_visible=present"));
     assert!(dependency_request.contains("stylesheet_secret=hidden"));
+    assert!(font_request.starts_with("GET /font.ttf HTTP/1.1\r\n"));
+    assert!(font_request.contains("dependency_visible=present"));
+    assert!(font_request.contains("dependency_secret=hidden"));
     assert!(image_request.starts_with("GET /image.png HTTP/1.1\r\n"));
-    assert!(image_request.contains("dependency_visible=present"));
-    assert!(image_request.contains("dependency_secret=hidden"));
+    assert!(image_request.contains("font_visible=present"));
+    assert!(image_request.contains("font_secret=hidden"));
     assert!(media_request.starts_with("GET /media.wav HTTP/1.1\r\n"));
     assert!(media_request.contains("image_visible=present"));
     assert!(media_request.contains("image_secret=hidden"));
@@ -17167,6 +17268,13 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
     assert!(script_request.contains("image_secret=hidden"));
     assert!(script_request.contains("media_visible=present"));
     assert!(script_request.contains("media_secret=hidden"));
+    assert!(script_request.contains("font_visible=present"));
+    assert!(script_request.contains("font_secret=hidden"));
+    assert!(runtime_font_request.starts_with("GET /runtime-font.ttf HTTP/1.1\r\n"));
+    assert!(runtime_font_request.contains("font_secret=hidden"));
+    assert!(font_cookie_followup_request.starts_with("GET /font-cookie-followup HTTP/1.1\r\n"));
+    assert!(font_cookie_followup_request.contains("runtime_font_visible=present"));
+    assert!(font_cookie_followup_request.contains("runtime_font_secret=hidden"));
 }
 
 #[tokio::test]

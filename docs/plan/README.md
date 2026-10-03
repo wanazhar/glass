@@ -324,8 +324,8 @@ URL, same-turn page cookie writes reach the worker Fetches, a response
 `Set-Cookie` is visible on later worker requests, and a MessagePort-triggered
 Fetch receives the parent-updated HttpOnly cookie. Worker module-graph process
 coverage, autonomous turns, independently delivered SharedWorker events,
-module or font destinations, initial/resource loading, and Service Worker
-lifetime/background Fetches remain outside the verified path. Explicit-turn
+worker module or font destinations, initial/resource loading, and Service
+Worker lifetime/background Fetches remain outside the verified path. Explicit-turn
 dedicated-worker upload streams are covered by the separate regression below.
 Page-originated upload streams sent to a controlled Service Worker are offered
 to the worker first; when it declines the request, the network fallback uses
@@ -373,8 +373,15 @@ applied meta-CSP policy list before these loads; the regression verifies
 server. Its follow-up process run passed (1 test; 25.76 seconds) with `/media.wav`
 also parent-brokered: its visible and HttpOnly response cookies are retained by
 the parent, sent on the next parser-script request, and filtered correctly from
-the script-visible projection. Fonts, dynamically attached stylesheets, and
-other unbrokered requests remain child-side paths.
+the script-visible projection. Protocol version 24 now routes initial and
+dynamically recascaded CSS `@font-face` and explicit page `FontFace` destination
+requests through the parent font loader. The extended process regression passed
+(1 test; 32.16
+seconds): a CSS font's cookies reach a later image request, the FontFace path
+updates only the visible script projection, and a later Fetch carries both
+cookies set by that response. Font requests outside an active parent-brokered
+turn, dynamically attached stylesheet network loads, and other unbrokered
+requests remain child-side paths.
 A new Slice 843 checkpoint moves unhandled HTTP(S) top-level document
 navigation to the parent loader after content-side Service Worker
 interception declines it. The request is bound to the active load ID,

@@ -28,7 +28,9 @@ use super::fetch_stream::{
     NativeFetchUploadEvent, spawn_native_fetch_bytes_stream, spawn_native_fetch_stream,
     spawn_native_fetch_upload_source, spawn_native_fetch_upload_stream,
 };
-use super::font::{MAX_NATIVE_FONT_FACES, NativeFontBook, NativeFontFaceResource};
+use super::font::{
+    MAX_NATIVE_FONT_BYTES, MAX_NATIVE_FONT_FACES, NativeFontBook, NativeFontFaceResource,
+};
 use super::image::{MAX_NATIVE_IMAGE_TRANSFER_BYTES, NativeImage};
 use super::interaction::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_FORM_BODY_BYTES, NativeEventKind, NativeFile,
@@ -122,7 +124,7 @@ const MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS: usize = MAX_CONTENT_PROCESS_OUTPUT
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
     MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 23;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 24;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1051,6 +1053,136 @@ impl NativeContentFetchBroker<'_> {
                 "decode parent media response",
                 NativeWorkerFailureKind::Protocol,
                 "parent returned an unknown media response kind",
+            )),
+        }
+    }
+
+    async fn load_font_response(
+        &mut self,
+        document_url: &str,
+        href: &str,
+    ) -> Result<Option<NativeFetchResponse>, NativeEngineError> {
+        self.next_content_resource_fetch_id = self
+            .next_content_resource_fetch_id
+            .checked_add(1)
+            .ok_or_else(|| {
+                NativeEngineError::limit(
+                    "parent content resource request IDs",
+                    u32::MAX as usize,
+                    u32::MAX as usize,
+                )
+            })?;
+        let fetch_id = self.next_content_resource_fetch_id;
+        let cookie_writes = self.take_cookie_writes()?;
+        write_value_frame(
+            self.stdout,
+            &json!({
+                "kind": "parent_fetch_request",
+                "id": self.request_id,
+                "fetch_id": fetch_id,
+                "document_url": document_url,
+                "owner": self.owner,
+                "cookie_writes": cookie_writes,
+                "page_meta_csp": self.page_meta_content_security_policies,
+                "href": href,
+                "credentials": true,
+                "page_font_load": {},
+            }),
+        )
+        .await?;
+        let payload =
+            self.ipc_requests
+                .recv()
+                .await
+                .ok_or_else(|| NativeEngineError::Worker {
+                    operation: "parent font broker".into(),
+                    reason: "parent closed the font response channel".into(),
+                })??;
+        let response: Value = serde_json::from_slice(&payload).map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent font response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned invalid font JSON",
+            )
+        })?;
+        if response.get("id").and_then(Value::as_u64) != Some(self.request_id)
+            || response.get("fetch_id").and_then(Value::as_u64) != Some(u64::from(fetch_id))
+        {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent font response",
+                NativeWorkerFailureKind::Protocol,
+                "font response belongs to a different request",
+            ));
+        }
+        let document_cookie = response
+            .get("document_cookie")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "decode parent font response",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent omitted the document cookie projection",
+                )
+            })?;
+        if document_cookie.len() > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+            return Err(NativeEngineError::limit(
+                "parent document cookie projection",
+                MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                document_cookie.len(),
+            ));
+        }
+        *self.document_cookie_projection = Some(document_cookie.to_owned());
+        self.update_runtime_cookie_projection(document_cookie);
+        match response.get("kind").and_then(Value::as_str) {
+            Some("page_font_unavailable") => Ok(None),
+            Some("page_font_loaded") => {
+                let max_encoded_body_bytes = MAX_NATIVE_FONT_BYTES
+                    .saturating_add(2)
+                    .saturating_div(3)
+                    .saturating_mul(4);
+                let encoded_body_bytes = response
+                    .get("body_base64")
+                    .and_then(Value::as_str)
+                    .map(str::len)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "decode parent font response",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent omitted the font body",
+                        )
+                    })?;
+                if encoded_body_bytes > max_encoded_body_bytes {
+                    return Err(NativeEngineError::limit(
+                        "parent font response",
+                        max_encoded_body_bytes,
+                        encoded_body_bytes,
+                    ));
+                }
+                let mut fetch_response = response.clone();
+                fetch_response["kind"] = Value::String("fetched".into());
+                let fetch_response = decode_fetch_response(&fetch_response, self.request_id)?;
+                if fetch_response.body.len() > MAX_NATIVE_FONT_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "parent font response",
+                        MAX_NATIVE_FONT_BYTES,
+                        fetch_response.body.len(),
+                    ));
+                }
+                Ok(Some(fetch_response))
+            }
+            Some("error") => Err(NativeEngineError::Network {
+                operation: "parent-brokered font load".into(),
+                reason: response
+                    .get("reason")
+                    .or_else(|| response.get("error"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("parent rejected the font request")
+                    .to_owned(),
+            }),
+            _ => Err(NativeEngineError::worker_failure(
+                "decode parent font response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned an unknown font response kind",
             )),
         }
     }
@@ -4307,6 +4439,7 @@ impl NativeContentProcess {
                         || response.get("page_stylesheet_load").is_some()
                         || response.get("page_image_load").is_some()
                         || response.get("page_media_load").is_some()
+                        || response.get("page_font_load").is_some()
                         || response.get("worker_script_load").is_some();
                     if expected_owner
                         .as_ref()
@@ -4328,7 +4461,8 @@ impl NativeContentProcess {
                     let is_page_resource_load = response.get("page_script_load").is_some()
                         || response.get("page_stylesheet_load").is_some()
                         || response.get("page_image_load").is_some()
-                        || response.get("page_media_load").is_some();
+                        || response.get("page_media_load").is_some()
+                        || response.get("page_font_load").is_some();
                     let page_meta_csp = response
                         .get("page_meta_csp")
                         .filter(|value| !value.is_null());
@@ -4446,6 +4580,7 @@ impl NativeContentProcess {
                         || response.get("page_stylesheet_load").is_some()
                         || response.get("page_image_load").is_some()
                         || response.get("page_media_load").is_some()
+                        || response.get("page_font_load").is_some()
                     {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent Fetch broker",
@@ -4576,6 +4711,7 @@ impl NativeContentProcess {
                         || response.get("page_stylesheet_load").is_some()
                         || response.get("page_image_load").is_some()
                         || response.get("page_media_load").is_some()
+                        || response.get("page_font_load").is_some()
                     {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent page script broker",
@@ -4697,6 +4833,7 @@ impl NativeContentProcess {
                         || response.get("page_script_load").is_some()
                         || response.get("page_image_load").is_some()
                         || response.get("page_media_load").is_some()
+                        || response.get("page_font_load").is_some()
                     {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent stylesheet broker",
@@ -4764,6 +4901,7 @@ impl NativeContentProcess {
                         || response.get("page_script_load").is_some()
                         || response.get("page_stylesheet_load").is_some()
                         || response.get("page_media_load").is_some()
+                        || response.get("page_font_load").is_some()
                     {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent image broker",
@@ -4814,6 +4952,74 @@ impl NativeContentProcess {
                     write_frame(&mut self.stdin, &payload).await?;
                     continue;
                 }
+                if let Some(page_font_load) = response.get("page_font_load") {
+                    let Some(fetch_id) = fetch_id else {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent font broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "font request omitted its owner-bound request ID",
+                        ));
+                    };
+                    if response.get("fetch_request").is_some()
+                        || response.get("worker_script_load").is_some()
+                        || response.get("page_script_load").is_some()
+                        || response.get("page_stylesheet_load").is_some()
+                        || response.get("page_image_load").is_some()
+                        || response.get("page_media_load").is_some()
+                    {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent font broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "font request also carried another load type",
+                        ));
+                    }
+                    let owner = decode_content_cookie_owner(
+                        response.get("owner").ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "content process parent font broker",
+                                NativeWorkerFailureKind::Protocol,
+                                "font request omitted its owner",
+                            )
+                        })?,
+                        "content process parent font owner",
+                    )?;
+                    if !parent_broker_owner_matches_operation(
+                        self,
+                        &request,
+                        &owner,
+                        parent_navigation_document_url.as_deref(),
+                    ) || without_fragment(document_url) != without_fragment(&owner.document_url)
+                    {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent font broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "font owner does not match the active document or captured load",
+                        ));
+                    }
+                    for write in &cookie_writes {
+                        loader.set_document_cookie(&write.owner.document_url, &write.value)?;
+                    }
+                    let font = load_parent_page_font_response_async(
+                        loader,
+                        document_url,
+                        href,
+                        page_font_load,
+                    )
+                    .await;
+                    let mut broker_response =
+                        parent_font_response_payload(request_id, fetch_id, font);
+                    broker_response["document_cookie"] =
+                        Value::String(loader.document_cookie(&owner.document_url)?);
+                    let payload = serde_json::to_vec(&broker_response).map_err(|_| {
+                        NativeEngineError::worker_failure(
+                            "encode parent font response",
+                            NativeWorkerFailureKind::Protocol,
+                            "font response could not be encoded",
+                        )
+                    })?;
+                    write_frame(&mut self.stdin, &payload).await?;
+                    continue;
+                }
                 if let Some(page_media_load) = response.get("page_media_load") {
                     let Some(fetch_id) = fetch_id else {
                         return Err(NativeEngineError::worker_failure(
@@ -4827,6 +5033,7 @@ impl NativeContentProcess {
                         || response.get("page_script_load").is_some()
                         || response.get("page_stylesheet_load").is_some()
                         || response.get("page_image_load").is_some()
+                        || response.get("page_font_load").is_some()
                     {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent media broker",
@@ -7108,6 +7315,69 @@ async fn load_parent_page_media_async(
     loader.load_media_async(document_url, href).await
 }
 
+async fn load_parent_page_font_response_async(
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    href: &str,
+    value: &Value,
+) -> Result<Option<NativeFetchResponse>, NativeEngineError> {
+    let object = value.as_object().ok_or_else(|| {
+        NativeEngineError::worker_failure(
+            "decode parent font request",
+            NativeWorkerFailureKind::Protocol,
+            "font metadata must be an object",
+        )
+    })?;
+    if !object.is_empty() {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent font request",
+            NativeWorkerFailureKind::Protocol,
+            "font metadata contains an unknown field",
+        ));
+    }
+    validate_url_text("parent font document URL", document_url)?;
+    validate_url_text("parent font target URL", href)?;
+    let document = Url::parse(without_fragment(document_url)).map_err(|_| {
+        NativeEngineError::worker_failure(
+            "decode parent font request",
+            NativeWorkerFailureKind::Protocol,
+            "font document URL is invalid",
+        )
+    })?;
+    let target = Url::parse(href)
+        .or_else(|_| document.join(href))
+        .map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent font request",
+                NativeWorkerFailureKind::Protocol,
+                "font target URL is invalid",
+            )
+        })?;
+    if !is_network_url(target.as_str()) {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent font request",
+            NativeWorkerFailureKind::Protocol,
+            "parent font broker accepts only HTTP(S) targets",
+        ));
+    }
+    let response = loader
+        .load_font_response_async(document_url, href, None)
+        .await?;
+    if response
+        .as_ref()
+        .is_some_and(|response| response.body.len() > MAX_NATIVE_FONT_BYTES)
+    {
+        return Err(NativeEngineError::limit(
+            "parent font response",
+            MAX_NATIVE_FONT_BYTES,
+            response
+                .as_ref()
+                .map_or(usize::MAX, |response| response.body.len()),
+        ));
+    }
+    Ok(response)
+}
+
 async fn load_parent_page_script_async(
     loader: &mut NativeResourceLoader,
     document_url: &str,
@@ -7451,6 +7721,32 @@ fn parent_media_response_payload(
         }),
         Ok(None) => json!({
             "kind": "page_media_unavailable",
+            "id": id,
+            "fetch_id": fetch_id,
+        }),
+        Err(error) => json!({
+            "kind": "error",
+            "id": id,
+            "fetch_id": fetch_id,
+            "reason": error.to_string(),
+        }),
+    }
+}
+
+fn parent_font_response_payload(
+    id: u64,
+    fetch_id: u32,
+    result: Result<Option<NativeFetchResponse>, NativeEngineError>,
+) -> Value {
+    match result {
+        Ok(Some(response)) => {
+            let mut payload = parent_fetch_response_payload(id, Ok(response));
+            payload["kind"] = Value::String("page_font_loaded".into());
+            payload["fetch_id"] = Value::from(fetch_id);
+            payload
+        }
+        Ok(None) => json!({
+            "kind": "page_font_unavailable",
             "id": id,
             "fetch_id": fetch_id,
         }),
@@ -8193,6 +8489,7 @@ async fn load_font_faces(
     runtime: Option<&NativeJavaScriptRuntime>,
     loader: &mut NativeResourceLoader,
     document_url: &str,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<(), NativeEngineError> {
     let mut resources = Vec::new();
     let system_fonts = NativeFontBook::system();
@@ -8214,11 +8511,24 @@ async fn load_font_faces(
                         .map(|runtime| runtime.object_url_resource(source))
                         .transpose()?
                         .flatten();
-                    loader
-                        .load_font_async(document_url, source, object_url.as_ref())
-                        .await
-                        .ok()
-                        .flatten()
+                    if object_url.is_none()
+                        && is_network_page_script_target(document_url, source)
+                        && let Some(broker) = parent_fetch_broker.as_deref_mut()
+                    {
+                        refresh_parent_broker_meta_csp(loader, Some(broker))?;
+                        broker
+                            .load_font_response(document_url, source)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|response| response.body)
+                    } else {
+                        loader
+                            .load_font_async(document_url, source, object_url.as_ref())
+                            .await
+                            .ok()
+                            .flatten()
+                    }
                 }
             };
             if let Some(bytes) = bytes {
@@ -12969,7 +13279,14 @@ async fn load_content_resource(
     document.set_external_stylesheet_states(external_stylesheet_states);
     document.mark_inline_style_reports_seen();
     document.mark_content_security_policy_meta_processed();
-    load_font_faces(&mut document, None, loader, &resource.url).await?;
+    load_font_faces(
+        &mut document,
+        None,
+        loader,
+        &resource.url,
+        Some(&mut parent_fetch_broker),
+    )
+    .await?;
     resource_events.extend(
         load_external_images(
             &mut document,
@@ -13540,6 +13857,7 @@ async fn load_dynamic_external_stylesheets(
     loader: &mut NativeResourceLoader,
     document_url: &str,
     viewport: Viewport,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
     let links = document
         .external_stylesheet_links()
@@ -13629,7 +13947,14 @@ async fn load_dynamic_external_stylesheets(
     if previous_states != next_states {
         document.set_external_stylesheet_states(next_states);
         document.rebuild_external_stylesheet(document_url)?;
-        load_font_faces(document, Some(runtime), loader, document_url).await?;
+        load_font_faces(
+            document,
+            Some(runtime),
+            loader,
+            document_url,
+            parent_fetch_broker.as_deref_mut(),
+        )
+        .await?;
         document.refresh_background_image_sources();
     }
     Ok(events)
@@ -16524,8 +16849,15 @@ async fn mutate_script_document(
     }
     retain_font_face_network_commands(&mut dynamic_result, font_face_follow_up_commands);
     let stylesheet_events = if let Some(loader) = loader.as_deref_mut() {
-        load_dynamic_external_stylesheets(&mut next, runtime, loader, &document_url, viewport)
-            .await?
+        load_dynamic_external_stylesheets(
+            &mut next,
+            runtime,
+            loader,
+            &document_url,
+            viewport,
+            parent_fetch_broker.as_deref_mut(),
+        )
+        .await?
     } else {
         Vec::new()
     };
@@ -18730,11 +19062,19 @@ async fn resolve_script_fetches(
                     Ok(NativeServiceWorkerFetchOutcome::Handled(response)) => {
                         fetch_response_payload(Ok(response))
                     }
-                    Ok(NativeServiceWorkerFetchOutcome::NotHandled) => font_fetch_response_payload(
-                        loader
-                            .load_font_response_async(&current_url, &href, object_url.as_ref())
-                            .await,
-                    ),
+                    Ok(NativeServiceWorkerFetchOutcome::NotHandled) => {
+                        let response = if is_network_page_script_target(&current_url, &href)
+                            && let Some(broker) = parent_fetch_broker.as_mut()
+                        {
+                            refresh_parent_broker_meta_csp(loader, Some(broker))?;
+                            broker.load_font_response(&current_url, &href).await
+                        } else {
+                            loader
+                                .load_font_response_async(&current_url, &href, object_url.as_ref())
+                                .await
+                        };
+                        font_fetch_response_payload(response)
+                    }
                     Ok(NativeServiceWorkerFetchOutcome::Suspended) => {
                         fetch_response_payload(Err(NativeEngineError::Worker {
                             operation: "content process font fetch".into(),

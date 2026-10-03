@@ -259,6 +259,15 @@ runs the full feature suite, and macOS/Windows now run the socket-free
 contract tests. See the
 [slice 840 task](tasks/native-engine-browser-840.md) and
 [slice 841 task](tasks/native-engine-browser-841.md).
+Slice 842 makes cookie ownership a parent-only contract: the browser parent
+must own the complete per-context jar, request matching, `Set-Cookie`
+acceptance, and persistence. Content processes receive only a document-scoped
+non-HttpOnly `document.cookie` projection and return typed writes/requests to
+the parent; HttpOnly cookie values and cookie-bearing profile files must not
+cross that boundary. The current implementation still mirrors full profiles
+and allows child-side persistence, so this is an explicit open gap. See the
+[Slice 842 task](tasks/native-engine-browser-842.md) and [cookie authority
+contract](../architecture/native-engine.md#cookie-authority-and-process-boundary).
 Process-backed request/header/no-duplicate, cancellation, source-document
 referrer-policy/redirect, and worker-visible `Request.referrer` regression
 sources previously compiled with `--tests` but have not run here because local

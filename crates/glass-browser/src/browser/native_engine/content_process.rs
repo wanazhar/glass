@@ -291,6 +291,7 @@ impl NativeContentFetchBroker<'_> {
         }
         let document_cookie = document_cookie.to_owned();
         *self.document_cookie_projection = Some(document_cookie.clone());
+        self.runtime.set_cookie_state(document_cookie.clone());
         let fetch = if response.get("kind").and_then(Value::as_str) == Some("error") {
             Err(NativeEngineError::Network {
                 operation: "parent-brokered script fetch".into(),
@@ -7525,6 +7526,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         None,
                         None,
                         "fetch",
+                        None,
                         None,
                         None,
                     )
@@ -15769,6 +15771,7 @@ async fn resolve_script_fetches(
                             "font",
                             None,
                             None,
+                            parent_fetch_broker.as_mut(),
                         )
                         .await
                 } else {
@@ -15944,6 +15947,7 @@ async fn resolve_script_fetches(
                     "fetch",
                     None,
                     None,
+                    parent_fetch_broker.as_mut(),
                 )
                 .await;
             let payload = match intercepted {
@@ -16062,6 +16066,7 @@ async fn resolve_script_fetches(
                             "fetch",
                             None,
                             None,
+                            parent_fetch_broker.as_mut(),
                         )
                         .await;
                     match intercepted {

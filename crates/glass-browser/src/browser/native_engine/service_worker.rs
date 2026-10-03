@@ -6,6 +6,7 @@
 //! response, and message envelopes cross back to the content-process owner.
 
 use super::config::{is_network_url, validate_context_id, validate_url_text, without_fragment};
+use super::content_process::NativeContentFetchBroker;
 use super::error::NativeEngineError;
 use super::fetch_stream::{
     MAX_NATIVE_FETCH_UPLOAD_CHUNKS, NativeFetchUploadCommand, NativeFetchUploadConnection,
@@ -2026,6 +2027,7 @@ impl NativeServiceWorkerRegistry {
                 "document",
                 navigation_preload,
                 referrer,
+                None,
             )
             .await?;
         let response = match outcome {
@@ -2140,6 +2142,7 @@ impl NativeServiceWorkerRegistry {
         destination: &str,
         navigation_preload: Option<NativeServiceWorkerNavigationPreloadRequest>,
         navigation_referrer: Option<&str>,
+        parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<NativeServiceWorkerFetchOutcome, NativeEngineError> {
         let owner = parse_network_url("service worker fetch owner URL", document_url)?;
         let target =
@@ -2341,7 +2344,7 @@ impl NativeServiceWorkerRegistry {
             )?
         };
         let worker_id = worker.id;
-        let settlement = settle_service_worker_fetch(
+        let settlement = settle_service_worker_fetch_with_parent_fetch_broker(
             worker,
             loader,
             evaluation,
@@ -2351,6 +2354,7 @@ impl NativeServiceWorkerRegistry {
             &mut self.pending_open_windows,
             &mut self.lifetime_fetch_tasks,
             &mut self.lifetime_fetch_abort_handles,
+            parent_fetch_broker,
         )
         .await?;
         let (value, suspended, client_messages) = match settlement {
@@ -2915,6 +2919,7 @@ async fn settle_service_worker_cache_event(
             &mut pending,
             &mut awaiting,
             &mut value,
+            None,
         )
         .await?
         {
@@ -3511,6 +3516,7 @@ async fn resolve_service_worker_fetch_command(
     pending: &mut VecDeque<NativeScriptCommand>,
     awaiting: &mut bool,
     value: &mut Value,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<bool, NativeEngineError> {
     let Some(request) = prepare_service_worker_fetch_request(worker, command)? else {
         return Ok(false);
@@ -3537,21 +3543,46 @@ async fn resolve_service_worker_fetch_command(
         )
         .await?
     } else {
-        let payload = fetch_service_worker_request(loader, &worker.script_url, request).await;
-        let resolved = worker.runtime.resolve_service_worker_fetch(
-            worker.id,
-            &worker.script_url,
-            request_id,
-            &payload,
-            worker.is_module,
-        )?;
-        pending.extend(resolved.commands);
-        *awaiting |= resolved.top_level_await_pending;
-        if let Some(resolved_value) = worker.runtime.take_top_level_await_result()? {
-            *value = resolved_value;
-            *awaiting = false;
+        if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
+            let worker_url = worker.script_url.clone();
+            let fetch_request = NativeFetchRequest {
+                document_url: &worker_url,
+                href: &request.href,
+                method: request.method,
+                body: request.body,
+                content_type: request.content_type,
+                request_headers: request.headers,
+                credentials: request.credentials,
+                credentials_mode: Some(request.credentials_mode),
+                referrer_url: request.referrer_url,
+                referrer_policy: request.referrer_policy,
+                cors_mode: request.cors_mode,
+                redirect_mode: request.redirect_mode,
+                cache_mode: request.cache_mode,
+                timeout: request.timeout,
+                max_response_bytes: None,
+            };
+            parent_fetch_broker
+                .fetch(request_id, &fetch_request)
+                .await?
+                .0
+        } else {
+            let payload = fetch_service_worker_request(loader, &worker.script_url, request).await;
+            let resolved = worker.runtime.resolve_service_worker_fetch(
+                worker.id,
+                &worker.script_url,
+                request_id,
+                &payload,
+                worker.is_module,
+            )?;
+            pending.extend(resolved.commands);
+            *awaiting |= resolved.top_level_await_pending;
+            if let Some(resolved_value) = worker.runtime.take_top_level_await_result()? {
+                *value = resolved_value;
+                *awaiting = false;
+            }
+            return Ok(true);
         }
-        return Ok(true);
     };
     let payload = match response {
         Ok(response) => service_worker_fetch_payload(response),
@@ -4059,6 +4090,33 @@ async fn settle_service_worker_fetch(
     lifetime_fetch_tasks: &mut JoinSet<NativeServiceWorkerFetchTaskResult>,
     lifetime_fetch_abort_handles: &mut BTreeMap<(u32, u32), AbortHandle>,
 ) -> Result<NativeServiceWorkerFetchSettlement, NativeEngineError> {
+    settle_service_worker_fetch_with_parent_fetch_broker(
+        worker,
+        loader,
+        evaluation,
+        cache_state,
+        _current_client_id,
+        fallback_url,
+        pending_open_windows,
+        lifetime_fetch_tasks,
+        lifetime_fetch_abort_handles,
+        None,
+    )
+    .await
+}
+
+async fn settle_service_worker_fetch_with_parent_fetch_broker<'broker>(
+    worker: &mut NativeServiceWorker,
+    loader: &mut NativeResourceLoader,
+    evaluation: NativeScriptEvaluation,
+    cache_state: &mut NativeServiceWorkerCacheState,
+    _current_client_id: &str,
+    fallback_url: &str,
+    pending_open_windows: &mut VecDeque<NativeServiceWorkerOpenWindowRequest>,
+    lifetime_fetch_tasks: &mut JoinSet<NativeServiceWorkerFetchTaskResult>,
+    lifetime_fetch_abort_handles: &mut BTreeMap<(u32, u32), AbortHandle>,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'broker>>,
+) -> Result<NativeServiceWorkerFetchSettlement, NativeEngineError> {
     let mut pending = VecDeque::from(evaluation.commands);
     let mut value = evaluation.value;
     let mut awaiting = evaluation.top_level_await_pending;
@@ -4146,6 +4204,7 @@ async fn settle_service_worker_fetch(
             &mut pending,
             &mut awaiting,
             &mut value,
+            parent_fetch_broker.as_deref_mut(),
         )
         .await?
         {

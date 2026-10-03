@@ -188,6 +188,13 @@ projection and existing native Fetch behavior.
   cookie, and a same-turn page cookie write. Other independently delivered
   worker events, autonomous turns, and SharedWorker MessagePort callbacks are
   not thereby verified as parent-brokered.
+- An awaited ordinary Fetch issued by a controlled Service Worker while
+  handling an explicit page Fetch now uses the same parent broker. The existing
+  `native_content_process_page_fetch_credentials_survive_service_worker_handoff`
+  process-backed regression passed (1 passed; 33.30-second runtime), covering
+  cross-origin credentials/CORS behavior and response-cookie visibility on a
+  later request. Service Worker lifetime/background Fetches, streamed uploads,
+  and out-of-band Service Worker events remain outside this broker path.
 - Slice 842 is complete: browser-coordinated SharedWorker creation derives
   cookies from the exact parent source owner. Its parent snapshot/override/
   deletion process regression passed (1 passed; 48.31-second test runtime),

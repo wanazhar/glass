@@ -323,7 +323,11 @@ URL, same-turn page cookie writes reach the worker Fetches, a response
 Fetch receives the parent-updated HttpOnly cookie. Worker-script/resource/module-
 graph loading, autonomous turns, independently delivered SharedWorker events,
 streamed uploads, module or font destinations, initial/resource loading, and
-Service Worker internal requests remain outside the verified path. The
+Service Worker lifetime/background Fetches remain outside the verified path.
+An awaited Fetch issued inside a controlled Service Worker during an explicit
+page Fetch now also uses the parent broker; its cross-origin credentials/CORS
+handoff regression passed (1 test; 33.30-second runtime). Other Service Worker
+internal requests remain outside the verified path. The
 parent-only cookie contract is not complete until Slice 843 removes the
 remaining child authority and the required broader checks pass.
 Process-backed request/header/no-duplicate, cancellation, source-document

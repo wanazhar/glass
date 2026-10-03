@@ -16158,31 +16158,50 @@ async fn resolve_script_fetches(
                                 fetch_response_payload(Ok(response))
                             }
                             Ok(NativeServiceWorkerFetchOutcome::NotHandled) => {
-                                let opened = loader
-                                    .open_fetch_response_stream_async(NativeFetchRequest {
-                                        document_url: &pending_fetch.document_url,
-                                        href: &pending_fetch.href,
-                                        method: pending_fetch.method,
-                                        body: Some(request_body),
-                                        content_type: pending_fetch.content_type,
-                                        request_headers: pending_fetch.headers,
-                                        credentials: pending_fetch.credentials,
-                                        credentials_mode: pending_fetch.credentials_mode,
-                                        referrer_url: pending_fetch.referrer_url,
-                                        referrer_policy: pending_fetch.referrer_policy,
-                                        cors_mode: pending_fetch.cors_mode,
-                                        redirect_mode: pending_fetch.redirect_mode,
-                                        cache_mode: pending_fetch.cache_mode,
-                                        timeout: pending_fetch.timeout,
-                                        max_response_bytes: None,
-                                    })
-                                    .await;
-                                fetch_opened_response_payload(
-                                    opened,
-                                    request_id,
-                                    fetch_stream_connections,
-                                )
-                                .await
+                                let fetch_request = NativeFetchRequest {
+                                    document_url: &pending_fetch.document_url,
+                                    href: &pending_fetch.href,
+                                    method: pending_fetch.method,
+                                    body: Some(request_body),
+                                    content_type: pending_fetch.content_type,
+                                    request_headers: pending_fetch.headers,
+                                    credentials: pending_fetch.credentials,
+                                    credentials_mode: pending_fetch.credentials_mode,
+                                    referrer_url: pending_fetch.referrer_url,
+                                    referrer_policy: pending_fetch.referrer_policy,
+                                    cors_mode: pending_fetch.cors_mode,
+                                    redirect_mode: pending_fetch.redirect_mode,
+                                    cache_mode: pending_fetch.cache_mode,
+                                    timeout: pending_fetch.timeout,
+                                    max_response_bytes: None,
+                                };
+                                if is_network_url(&pending_fetch.document_url) {
+                                    if let Some(broker) = parent_fetch_broker.as_mut() {
+                                        let (fetch, document_cookie) =
+                                            broker.fetch(request_id, &fetch_request).await?;
+                                        runtime.set_cookie_state(document_cookie);
+                                        fetch_response_payload(fetch)
+                                    } else {
+                                        fetch_response_payload(Err(NativeEngineError::Worker {
+                                            operation:
+                                                "parent-brokered Service Worker upload fallback"
+                                                    .into(),
+                                            reason:
+                                                "content process parent Fetch broker is unavailable"
+                                                    .into(),
+                                        }))
+                                    }
+                                } else {
+                                    let opened = loader
+                                        .open_fetch_response_stream_async(fetch_request)
+                                        .await;
+                                    fetch_opened_response_payload(
+                                        opened,
+                                        request_id,
+                                        fetch_stream_connections,
+                                    )
+                                    .await
+                                }
                             }
                             Ok(NativeServiceWorkerFetchOutcome::Suspended) => {
                                 fetch_response_payload(Err(NativeEngineError::Worker {

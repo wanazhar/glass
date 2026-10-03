@@ -127,8 +127,12 @@ response-stream interface is preserved over a buffered parent response.
 Locally hosted SharedWorker creation/connect evaluations also receive the
 broker but lack a focused process-backed regression. Worker-script/resource/
 module-graph loading, autonomous turns, independently delivered SharedWorker
-events, streamed uploads, module destinations, initial/resource loads, and
-Service Worker internal requests remain outside the verified checkpoint.
+events, module destinations, initial/resource loads, and Service Worker
+internal requests remain outside the verified checkpoint. Explicit-turn
+page-originated stream uploads to a controlled Service Worker are separately
+verified: its handler still gets first opportunity to respond, while a declined
+network fallback uses the parent broker. Service Worker-originated upload
+streams and lifetime work remain outside that subset.
 See the [Slice 842 task](tasks/native-engine-browser-842.md) and [Slice 843
 task](tasks/native-engine-browser-843.md).
 

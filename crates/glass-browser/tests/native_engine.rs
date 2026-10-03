@@ -9544,6 +9544,8 @@ async fn native_content_process_service_worker_replays_cloned_request_body() {
             ),
             ("/echo", "text/plain", "replayed"),
             ("/stream-echo", "text/plain", "native-sw-stream"),
+            ("/unhandled-stream", "text/plain", "parent-fallback"),
+            ("/cookie-check", "text/plain", "cookie-confirmed"),
         ] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request_bytes(&mut stream).await;
@@ -9586,9 +9588,30 @@ async fn native_content_process_service_worker_replays_cloned_request_body() {
                             .starts_with("transfer-encoding: chunked"))
                 );
                 assert_eq!(&request[header_end..], b"native-sw-stream");
+            } else if expected_path == "/unhandled-stream" {
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                assert!(headers.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("cookie")
+                            && value.contains("sw_upload_turn=from-page")
+                    })
+                }));
+                assert_eq!(&request[header_end..], b"page-unhandled-stream");
+            } else if expected_path == "/cookie-check" {
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                assert!(headers.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("cookie") && value.contains("sw_parent=accepted")
+                    })
+                }));
             }
+            let set_cookie = if expected_path == "/unhandled-stream" {
+                "Set-Cookie: sw_parent=accepted; HttpOnly; Path=/\r\n"
+            } else {
+                ""
+            };
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{set_cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(response.as_bytes()).await.unwrap();
@@ -9616,6 +9639,18 @@ async fn native_content_process_service_worker_replays_cloned_request_body() {
                 "streamed": "native-sw-stream",
                 "controlled": "page-stream",
             })
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await (async () => { document.cookie = 'sw_upload_turn=from-page; Path=/'; const response = await fetch('/unhandled-stream', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([112, 97, 103, 101, 45, 117, 110, 104, 97, 110, 100, 108, 101, 100, 45, 115, 116, 114, 101, 97, 109])); controller.close(); } }) }); const fallback = await response.text(); const cookieCheck = await fetch('/cookie-check').then(response => response.text()); return { fallback, cookieCheck }; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "fallback": "parent-fallback",
+            "cookieCheck": "cookie-confirmed",
+        })
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

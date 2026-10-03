@@ -66,11 +66,14 @@ and intends to use [Semantic Versioning](https://semver.org/).
   while the worker script URL remains the request base; same-turn page writes
   and response-cookie updates are applied by the parent. The worker's existing
   response-stream interface is retained, but the parent transport buffers the
-  response. Worker-script/resource/module-graph loading, autonomous worker
-  turns, independently delivered SharedWorker events, streamed uploads,
-  module/font destinations, and Service Worker internal requests remain
-  outside this broker path. The child still has a full cookie mirror and
-  profile-path access, so parent-only cookie authority is not complete.
+  response. Explicit-turn page and dedicated-worker upload streams, including
+  page uploads declined by a controlled Service Worker, are buffered within
+  the existing limit and then sent through the parent. Service Worker-originated
+  upload streams, worker-script/resource/module-graph loading, autonomous
+  worker turns, independently delivered SharedWorker events, module/font
+  destinations, and other Service Worker internal requests remain outside this
+  broker path. The child still has a full cookie mirror and profile-path
+  access, so parent-only cookie authority is not complete.
 - Native content-worker dialog IPC now uses one stdin reader to route dialog
   decisions separately from ordinary asynchronous requests.
 - Native event-pump shutdown now cancels an in-flight owner turn through a

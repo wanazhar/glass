@@ -150,7 +150,9 @@ projection and existing native Fetch behavior.
   same-turn setter before Fetch, initial and updated HttpOnly request cookies,
   the visible projection, and the next request.
   This does not cover Fetch during initial document loading,
-  dedicated-worker/Service Worker upload streams, module/font destinations,
+  explicit-turn page/dedicated-worker upload streams (covered by later
+  checkpoints below), Service Worker-originated upload streams,
+  module/font destinations,
   worker-script/resource/module-graph loading, autonomous worker events,
   independently delivered SharedWorker messages, or Service Worker internal
   network requests, which still use the child loader.
@@ -195,9 +197,9 @@ projection and existing native Fetch behavior.
   `native_content_process_page_fetch_credentials_survive_service_worker_handoff`
   process-backed regression passed (1 passed; 33.30-second runtime), covering
   cross-origin credentials/CORS behavior and response-cookie visibility on a
-  later request. Service Worker lifetime/background Fetches, Service Worker
-  upload streams, and out-of-band Service Worker events remain outside this
-  broker path.
+  later request. Service Worker lifetime/background Fetches,
+  Service Worker-originated upload streams, and out-of-band Service Worker
+  events remain outside this broker path.
 - Ordinary explicit page Fetches with a `ReadableStream` request body now
   collect the bounded body (up to `MAX_NATIVE_FORM_BODY_BYTES`) before using
   the parent broker. `native_content_process_commits_page_work_from_stream_upload_pull`
@@ -205,9 +207,9 @@ projection and existing native Fetch behavior.
   effects, and an HttpOnly cookie set by the upload response on a same-turn
   follow-up Fetch. This preserves bounded memory and parent cookie authority,
   but gives up socket-level upload streaming/backpressure for this path; the
-  network request begins after the source closes. Service Worker upload streams
-  and dedicated-worker uploads from autonomous event turns are not covered by
-  this change.
+  network request begins after the source closes. Service Worker-originated
+  upload streams and dedicated-worker uploads from autonomous event turns are
+  not covered by this change.
 - Dedicated-worker Fetch `ReadableStream` uploads initiated during an explicit
   page-script turn now collect under `MAX_NATIVE_FORM_BODY_BYTES` and use the
   parent Fetch broker. The parent broker remains attached while upload-pull
@@ -218,8 +220,24 @@ projection and existing native Fetch behavior.
   the upload request cookie, an HttpOnly response cookie, a same-turn follow-up
   worker Fetch, and the public parent cookie view. As on page uploads, HTTP
   starts only after the source closes, so socket-level upload streaming and
-  backpressure are lost. Service Worker upload streams and autonomous worker
-  turns remain outside this broker path.
+  backpressure are lost. Service Worker-originated upload streams and
+  autonomous worker turns remain outside this broker path.
+- Page-originated Fetch `ReadableStream` uploads to a controlled Service Worker
+  are collected under the existing body limit, offered to the Service Worker,
+  and sent through the parent broker only if the handler declines them. A
+  missing parent broker fails explicitly; network requests never fall back to
+  the child loader. The broker applies the page's owner-tagged cookie write
+  before selecting upload cookies and commits the response's HttpOnly
+  `Set-Cookie` before a same-turn follow-up request.
+  `native_content_process_service_worker_replays_cloned_request_body`
+  passed (1 passed; 27.81-second runtime), preserving the handled upload
+  response and verifying both cookie directions on the network fallback. The
+  upload remains buffered rather than socket-streamed. The declining FetchEvent
+  path also exposed that the Service Worker dispatcher returned a plain object
+  when `respondWith()` was not called even though its host always awaited a
+  promise; it now returns a resolved promise, allowing the existing network
+  fallback to run. Service Worker-originated upload streams and lifetime or
+  autonomous worker turns remain outside this broker path.
 - Slice 842 is complete: browser-coordinated SharedWorker creation derives
   cookies from the exact parent source owner. Its parent snapshot/override/
   deletion process regression passed (1 passed; 48.31-second test runtime),

@@ -277,9 +277,15 @@ probes that busy owner: it validates the captured context and document
 generation under the awaited owner guard used for the parent cookie snapshot,
 then confirms the frame still maps to that same owner. Its transfer route is
 inserted without reacquiring the busy owner. The focused check and formatting
-pass, but the final process-backed regression attempt timed out while Cargo
-was linking the integration target, before the test started; Slice 842 remains
-open pending behavioral verification. Separately, the local content-process
+pass, but the process-backed regression now starts and reaches worker creation
+without receiving its expected `writer-ready` page message within 25 seconds.
+Independent review found a same-owner document-generation race and an
+early-error orphan-route path. The current patch synchronizes generation
+validation, the parent snapshot, and route registration; it also changes the
+busy-owner MessagePort delivery path and adds socket-free regressions. The
+patch is not yet compiled or tested, so Slice 842 remains open pending focused
+behavioral verification and re-review. Separately,
+the local content-process
 credentials/redirect regression timed out twice at
 `crates/glass-browser/tests/native_engine.rs:33229`; that unresolved route is
 tracked by Slice 843 and is not evidence about this parent failure. See the

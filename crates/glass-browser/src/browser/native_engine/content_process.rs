@@ -8755,8 +8755,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             }
             NativeContentProcessInput::ServiceWorkerLifetimeFetch(None) => continue,
             NativeContentProcessInput::WorkerTimer => {
-                // Browser-coordinated owners must run worker timers inside an
-                // owner turn so worker Fetch can use the parent's cookie broker.
+                // Browser-coordinated owners must run Service Worker timers
+                // inside the exact page owner turn so Fetch uses the parent's
+                // cookie broker; standalone engines retain local timer turns.
+                let service_worker_timer_delay = service_workers.next_timer_delay_ms()?;
+                let defer_service_worker_timer =
+                    external_shared_worker_routing && service_worker_timer_delay.is_some();
                 let defer_worker_timer = external_shared_worker_routing
                     && workers
                         .next_timer_delay_ms()?
@@ -8768,7 +8772,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             reason: "content process has no resource loader".into(),
                         });
                     };
-                    service_workers.run_due_timers(loader).await?;
+                    if !defer_service_worker_timer {
+                        service_workers.run_due_timers(loader).await?;
+                    }
                     if !defer_worker_timer {
                         workers.run_due_timers(loader).await?;
                     }
@@ -8825,7 +8831,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     cookie_changes,
                     "worker timer cookie changes",
                 )?;
-                let has_pending_effects = defer_worker_timer
+                let has_pending_effects = defer_service_worker_timer
+                    || defer_worker_timer
                     || content_worker_effects_pending(
                         &pending_worker_messages,
                         &pending_message_port_messages,
@@ -10412,7 +10419,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     });
                 };
                 runtime.set_inline_script_policy(loader.inline_script_policy(&committed_url)?);
-                service_workers.run_due_timers(loader).await?;
                 {
                     let mut parent_fetch_broker = NativeContentFetchBroker {
                         request_id: id.as_u64().ok_or_else(|| {
@@ -10430,6 +10436,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         page_meta_content_security_policies: loader
                             .document_meta_content_security_policies(&committed_url)?,
                     };
+                    service_workers
+                        .run_due_timers_with_parent_fetch_broker(loader, &mut parent_fetch_broker)
+                        .await?;
                     workers
                         .run_due_timers_with_parent_fetch_broker(loader, &mut parent_fetch_broker)
                         .await?;

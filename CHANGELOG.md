@@ -125,7 +125,7 @@ and intends to use [Semantic Versioning](https://semver.org/).
   passed (1 test; 34.25 seconds).
   The existing nested dynamic classic-script regression passed (1 test; 19.89
   seconds); runtime `import()` still needs cookie-specific process coverage.
-  Other page subresources, Service Worker timer/lifetime work,
+  Other page subresources, Service Worker lifetime/background work,
   independently delivered SharedWorker events,
   worker module/font destinations, and other autonomous worker network turns
   remain outside this broker path. The child still has a full cookie mirror and
@@ -142,8 +142,16 @@ and intends to use [Semantic Versioning](https://semver.org/).
   navigation. The
   live-document referrer-policy regression passed (1 test; 26.09 seconds) after
   successful history synchronization began updating the parent's active owner
-  URL. Service Worker timers/lifetime, FetchEvent-internal requests, and other
-  internal network paths remain child-side.
+  URL. Browser-coordinated Service Worker timer callbacks in process-backed
+  documents now run on the page owner's script turn with its parent Fetch
+  broker. The process-backed
+  `browser_owned_service_worker_timer_fetch_uses_parent_cookie_authority`
+  regression passed (1 test; 22.89 seconds), verifying parent-selected
+  HttpOnly cookies on the first timer Fetch, a parent-accepted cookie rotation,
+  and the updated cookie on the next timer Fetch while script-visible cookies
+  remain filtered. Service Worker lifetime/background Fetch tasks,
+  FetchEvent-internal requests, and other internal network paths remain
+  child-side.
 - Native content-worker dialog IPC now uses one stdin reader to route dialog
   decisions separately from ordinary asynchronous requests.
 - Native event-pump shutdown now cancels an in-flight owner turn through a

@@ -277,10 +277,9 @@ projection and existing native Fetch behavior.
   only; raw cookie headers and the complete jar are not part of this broker
   response. Non-network worker sources remain local. The new process test
   directly covers the entry script, one classic imported script, and later
-  timer Fetch, not module-graph variants. Full child-profile removal,
-  page-resource broker coverage, ServiceWorker timer/lifetime requests, and
-  other unbrokered network
-  classes remain open.
+  DedicatedWorker timer Fetch, not module-graph variants. Full child-profile
+  removal, page-resource broker coverage, ServiceWorker timer/lifetime requests,
+  and other unbrokered network classes remain open at this checkpoint.
 - HTTP(S) dynamic page-script loads discovered during an explicit,
   parent-brokered page script turn now use the parent loader. This includes
   dynamically attached classic/module script elements, static module graph
@@ -389,11 +388,23 @@ projection and existing native Fetch behavior.
   regression passed (1 passed; 33.09 seconds), verifying that restoration
   entry and dependency response cookies are available to the following
   parent-owned navigation while all remain HttpOnly to the page. The scoped
-  `cargo check -p glass-browser --features native-engine --lib --test
-  native_engine --locked --quiet` also passed with existing dead-code warnings.
-  Service Worker
-  timer/lifetime work, FetchEvent-internal requests, and other Service Worker
-  network paths remain outside this brokered script-load slice.
+  `cargo check -p glass-browser --features native-engine --tests --locked --quiet`
+  passed. Browser-coordinated Service Worker timer callbacks now defer to the
+  exact page owner's script turn and execute with its parent Fetch broker. The
+  process-backed `browser_owned_service_worker_timer_fetch_uses_parent_cookie_authority`
+  regression passed (1 passed; 22.89 seconds), proving the first Fetch receives
+  the parent script cookie and pre-rotation HttpOnly cookie, then the next
+  Fetch receives the parent's accepted HttpOnly rotation; both secrets remain
+  hidden from `document.cookie`. The combined
+  `cargo test -p glass-browser --features native-engine --lib --locked --quiet parent_cookie_authority`
+  run passed both DedicatedWorker and Service Worker timer regressions (2
+  passed; 35.36 seconds). These process-backed unit tests launch the separate
+  `glass-native-content-worker` executable, so rebuild it first with
+  `cargo build -p glass-browser --features native-engine --bin glass-native-content-worker --locked`;
+  otherwise an existing stale executable can make the test exercise old child
+  code. Service Worker lifetime/background Fetches, FetchEvent-internal
+  requests, upload streams from Service Workers, and other internal network
+  paths remain outside this timer checkpoint.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.

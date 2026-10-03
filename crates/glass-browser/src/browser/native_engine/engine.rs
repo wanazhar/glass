@@ -11625,7 +11625,15 @@ mod tests {
         assert!(cookie_for("/timer-worker.js").contains("timer_session=visible"));
         assert!(cookie_for("/timer-worker.js").contains("timer_secret=before"));
         assert!(cookie_for("/timer-dependency.js").contains("timer_script=loaded"));
-        assert!(cookie_for("/timer-first").contains("timer_script=loaded"));
+        assert!(
+            cookie_for("/timer-first").contains("timer_script=loaded"),
+            "timer Fetch did not receive the parent script cookie: {:?}; parent cookies: {:?}",
+            cookie_for("/timer-first"),
+            cookies
+                .iter()
+                .map(|cookie| (&cookie.name, &cookie.value))
+                .collect::<Vec<_>>()
+        );
         assert!(cookie_for("/timer-first").contains("timer_dependency=loaded"));
         assert!(cookie_for("/timer-first").contains("timer_secret=before"));
         assert!(cookie_for("/timer-second").contains("timer_secret=after"));
@@ -11653,6 +11661,164 @@ mod tests {
             cookies
                 .iter()
                 .any(|cookie| cookie.name == "timer_script" && cookie.value == "loaded")
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_owned_service_worker_timer_fetch_uses_parent_cookie_authority() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..4 {
+                let accepted =
+                    tokio::time::timeout(std::time::Duration::from_secs(45), listener.accept())
+                        .await
+                        .unwrap_or_else(|_| {
+                            panic!(
+                                "Service Worker timer requests timed out after paths {:?}",
+                                requests
+                                    .iter()
+                                    .map(|(path, _): &(String, Option<String>)| path)
+                                    .collect::<Vec<_>>()
+                            )
+                        })
+                        .unwrap();
+                let (mut stream, _) = accepted;
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 2048];
+                loop {
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&request).into_owned();
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("Service Worker timer request includes a path")
+                    .to_owned();
+                let cookie = request
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim().to_owned());
+                let (headers, content_type, body) = match path.as_str() {
+                    "/page" => (
+                        concat!(
+                            "Set-Cookie: timer_session=visible; Path=/; SameSite=Lax\r\n",
+                            "Set-Cookie: timer_secret=before; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        ),
+                        "text/html",
+                        "<script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>Service Worker timer cookie broker</main>",
+                    ),
+                    "/sw.js" => (
+                        "Set-Cookie: timer_script=loaded; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "application/javascript",
+                        "self.addEventListener('install', event => event.waitUntil(self.skipWaiting())); setTimeout(async () => { try { const first = await fetch('/timer-first'); await first.text(); const second = await fetch('/timer-second'); await second.text(); } catch (_) {} }, 0);",
+                    ),
+                    "/timer-first" => (
+                        "Set-Cookie: timer_secret=after; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "text/plain",
+                        "first",
+                    ),
+                    "/timer-second" => ("", "text/plain", "second"),
+                    other => panic!("unexpected Service Worker timer request: {other}"),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push((path, cookie));
+            }
+            requests
+        });
+
+        let config =
+            NativeEngineConfig::default().with_initial_url(format!("http://{address}/page"));
+        let mut engine = NativeEngine::new_with_browser_shared_workers(
+            config,
+            NativeDialogControlPlane::default(),
+        )
+        .unwrap();
+        engine.initialize_async().await.unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while !server.is_finished() {
+                for notification in engine.take_async_effect_notifications().unwrap() {
+                    engine
+                        .dispatch_async_effect_notification(&notification)
+                        .await
+                        .unwrap();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect(
+            "the browser owner should dispatch lifecycle and timer turns until both Fetches finish",
+        );
+        let visible_cookies = engine.evaluate_async("document.cookie").await.unwrap();
+        let cookies = engine.cookies_async().await.unwrap();
+        engine.close_async().await.unwrap();
+        let requests = server.await.unwrap();
+
+        assert_eq!(
+            requests
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            ["/page", "/sw.js", "/timer-first", "/timer-second"]
+        );
+        let cookie_for = |path: &str| {
+            requests
+                .iter()
+                .find(|(request_path, _)| request_path == path)
+                .and_then(|(_, cookie)| cookie.as_deref())
+                .unwrap_or_default()
+        };
+        assert!(cookie_for("/sw.js").contains("timer_secret=before"));
+        assert!(
+            cookie_for("/timer-first").contains("timer_script=loaded"),
+            "timer Fetch did not receive the parent script cookie: {:?}; parent cookies: {:?}",
+            cookie_for("/timer-first"),
+            cookies
+                .iter()
+                .map(|cookie| (&cookie.name, &cookie.value))
+                .collect::<Vec<_>>()
+        );
+        assert!(cookie_for("/timer-first").contains("timer_secret=before"));
+        assert!(cookie_for("/timer-second").contains("timer_secret=after"));
+        assert!(
+            visible_cookies
+                .as_str()
+                .is_some_and(|value| value.contains("timer_session=visible"))
+        );
+        assert!(
+            !visible_cookies
+                .as_str()
+                .is_some_and(|value| value.contains("timer_secret="))
+        );
+        assert!(
+            !visible_cookies
+                .as_str()
+                .is_some_and(|value| value.contains("timer_script="))
+        );
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == "timer_secret" && cookie.value == "after")
         );
     }
 

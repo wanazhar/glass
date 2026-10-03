@@ -163,8 +163,19 @@ request cookies, and accepts response-cookie changes. The worker's current
   dynamic root, an HttpOnly response cookie on its CSS import and later Fetch,
   and script-visible filtering. Dynamic stylesheet requests outside an active
   parent-brokered turn, independently delivered SharedWorker events, worker
-  module destinations, and Service Worker internal requests remain outside the
-  verified checkpoint.
+  module destinations, and Service Worker timer/lifetime requests remain
+  outside the verified checkpoint. HTTP(S) Service Worker registration/update
+  entry scripts, classic `importScripts()` dependencies, and static module
+  dependencies now use the parent worker-script broker during parser-time
+  registration and explicit page-script turns. The process-backed
+  `native_content_process_service_worker_module_registration_uses_parent_cookie_authority`
+  regression passed (1 test; 24.85 seconds), verifying the page-to-entry-to-
+  module HttpOnly cookie chain on registration and update while the page's
+  `document.cookie` remains empty. The existing live-document referrer-policy
+  regression passed (1 test; 26.09 seconds) after successful history sync now
+  advances the parent's active owner URL. Service Worker restoration,
+  FetchEvent-internal requests, and other internal network requests remain
+  direct child paths.
   In browser-coordinated mode, due
   DedicatedWorker timer turns now wait for the exact context/frame owner pump
   and execute with that turn's parent Fetch broker; standalone `NativeEngine` keeps
@@ -174,7 +185,8 @@ request cookies, and accepts response-cookie changes. The worker's current
   a classic `importScripts()` dependency request, HttpOnly cookies set by both
   responses and sent on later requests, a parent-accepted HttpOnly response
   update, the parent cookie API, and the script-visible projection.
-  ServiceWorker timer and lifetime work remain outside this subset.
+  ServiceWorker timer and lifetime work remain outside this subset; parent
+  brokering of registration/update script loads does not cover those turns.
   Explicit-turn page-originated stream
 uploads to a controlled Service Worker are separately verified: its handler
 still gets first opportunity to respond, while a declined network fallback

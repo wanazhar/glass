@@ -322,8 +322,8 @@ process-backed regression passed (1 test; 35.17-second test runtime). It
 verifies that the page owner is validated separately from the worker request
 URL, same-turn page cookie writes reach the worker Fetches, a response
 `Set-Cookie` is visible on later worker requests, and a MessagePort-triggered
-Fetch receives the parent-updated HttpOnly cookie. Worker module-graph process
-coverage, autonomous turns, independently delivered SharedWorker events,
+Fetch receives the parent-updated HttpOnly cookie. Dedicated/SharedWorker
+module-graph process coverage, autonomous turns, independently delivered SharedWorker events,
 worker module or font destinations, initial/resource loading, and Service
 Worker lifetime/background Fetches remain outside the verified path. Explicit-turn
 dedicated-worker upload streams are covered by the separate regression below.
@@ -10462,6 +10462,23 @@ outside the slice. Focused, full-native, two-crate, strict, package, fuzz,
 security, formatting, and static local certification passed; exact evidence
 and cleanup are recorded in the task. Remote CI remains pending because the
 checkout is local-only.
+
+Slice 843 now routes HTTP(S) Service Worker registration and `update()` entry
+scripts through the parent worker-script broker during parser-time registration
+and explicit page-script turns. Classic `importScripts()` dependencies and
+static module graph dependencies use the same parent loader. The process-backed
+`native_content_process_service_worker_module_registration_uses_parent_cookie_authority`
+regression passed (1 test; 24.85 seconds), verifying HttpOnly cookies set by
+the page, entry script, and imported module reach both registration and update
+requests while `document.cookie` remains empty. The existing
+`native_content_process_service_worker_registration_uses_live_document_referrer_policy`
+regression passed (1 test; 26.09 seconds) after successful history sync began
+updating the parent's active owner URL, preserving live `history.pushState`
+referrers and owner validation. Service Worker restoration, timer/lifetime
+work, FetchEvent-internal requests, and other internal network paths remain
+unbrokered. Slice 843 remains in progress: the content process still mirrors
+the full cookie profile and has other direct network paths. Exact scope and
+verification are in the [Slice 843 task](tasks/native-engine-browser-843.md).
 
 ## Historical plan: Glass v0.3.6 issue #36
 

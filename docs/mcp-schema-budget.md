@@ -13,8 +13,8 @@ On the current checkout, `target/debug/glass` reports:
 | Metric | Measured value |
 |---|---:|
 | Negotiated tools | 346 |
-| Serialized `tools` array | 173,237 UTF-8 bytes |
-| Four-bytes-per-token estimate | 43,310 tokens (rounded up) |
+| Serialized `tools` array | 173,741 UTF-8 bytes |
+| Four-bytes-per-token estimate | 43,436 tokens (rounded up) |
 | JSON-RPC framing | excluded |
 
 This is a reproducible local measurement, not a guarantee for another commit,
@@ -54,10 +54,10 @@ workspace catalog. This is a regression alarm, not permission to consume the
 remaining space. Any increase must include the before/after scoreboard and
 explain why a new public tool is preferable to an existing typed verb or a
 namespaced resource.
-The measured full-product catalog is 9,397 bytes above the 160 KiB ceiling on this checkout. Treat that as an active budget exception: release documentation must not call the catalog within budget until the catalog is reduced or the ceiling is deliberately changed with compatibility and release evidence.
+The measured full-product catalog is 9,901 bytes above the 160 KiB ceiling on this checkout. Treat that as an active budget exception: release documentation must not call the catalog within budget until the catalog is reduced or the ceiling is deliberately changed with compatibility and release evidence.
 
 The increase from the published 0.3.4 measurement of 129,444 bytes to the
-current 173,237-byte development inventory covers explicit trust, autonomous
+current 173,741-byte development inventory covers explicit trust, autonomous
 task, measured experiment, debugger inspection, governed-kernel operations,
 the governed Agent composer/runtime setup routes, workspace-local Agent todos, and Git
 fetch/pull/merge/rebase.

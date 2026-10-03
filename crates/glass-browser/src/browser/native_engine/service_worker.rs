@@ -24,7 +24,7 @@ use super::javascript::{
     NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest,
     NativeServiceWorkerRegistrationProfile, NativeServiceWorkerRegistrationState,
     NativeServiceWorkerWorkerProfile, NativeServiceWorkerWorkerState, NativeWorkerModuleGraph,
-    default_navigation_preload_header_value, load_service_worker_source,
+    default_navigation_preload_header_value, load_service_worker_entry, load_service_worker_source,
     resolve_module_request_url, validate_message_port_transfers, validate_native_message_payload,
     validate_native_object_url_transfers, validate_native_service_worker_cache_request_headers,
     validate_navigation_preload_header_value, validate_service_worker_client_states,
@@ -812,6 +812,8 @@ impl NativeServiceWorkerRegistry {
                 root_request_url,
                 resource.clone(),
                 is_module,
+                1,
+                None,
             )
             .await?;
         self.instantiate_worker(
@@ -948,6 +950,8 @@ impl NativeServiceWorkerRegistry {
         referrer_url: &str,
         referrer_policy: NativeFetchReferrerPolicy,
         loader: &mut NativeResourceLoader,
+        request_id: u32,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<NativeServiceWorkerRegistrationState, NativeEngineError> {
         let owner = parse_network_url("service worker owner URL", owner_url)?;
         let referrer = parse_network_url("service worker referrer URL", referrer_url)?;
@@ -993,18 +997,20 @@ impl NativeServiceWorkerRegistry {
             })?;
         profile.validate()?;
         let is_module = profile.worker_type.eq_ignore_ascii_case("module");
-        let resource = loader
-            .load_worker_async_with_referrer_policy(
-                referrer_url,
-                &profile.script_url,
-                MAX_NATIVE_SCRIPT_BYTES,
-                Some(referrer_policy),
-            )
-            .await?
-            .ok_or_else(|| NativeEngineError::Network {
-                operation: "service worker update".into(),
-                reason: "service worker script was blocked or unavailable".into(),
-            })?;
+        let resource = load_service_worker_entry(
+            loader,
+            owner_url,
+            referrer_url,
+            &profile.script_url,
+            request_id,
+            Some(referrer_policy),
+            parent_fetch_broker.as_deref_mut(),
+        )
+        .await?
+        .ok_or_else(|| NativeEngineError::Network {
+            operation: "service worker update".into(),
+            reason: "service worker script was blocked or unavailable".into(),
+        })?;
         let root_request_url =
             resolve_module_request_url(&profile.script_url, &profile.script_url)?;
         let (source, import_script_counts, module_graph, worker_referrer_policy) =
@@ -1014,6 +1020,8 @@ impl NativeServiceWorkerRegistry {
                 root_request_url,
                 resource.clone(),
                 is_module,
+                request_id,
+                parent_fetch_broker.as_deref_mut(),
             )
             .await?;
         let worker = self
@@ -1115,6 +1123,8 @@ impl NativeServiceWorkerRegistry {
         referrer_url: &str,
         referrer_policy: NativeFetchReferrerPolicy,
         loader: &mut NativeResourceLoader,
+        request_id: u32,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<NativeServiceWorkerRegistrationState, NativeEngineError> {
         let owner = parse_network_url("service worker owner URL", owner_url)?;
         let referrer = parse_network_url("service worker referrer URL", referrer_url)?;
@@ -1206,18 +1216,20 @@ impl NativeServiceWorkerRegistry {
                 registration_scope_count.saturating_add(1),
             ));
         }
-        let resource = loader
-            .load_worker_async_with_referrer_policy(
-                referrer_url,
-                &script,
-                MAX_NATIVE_SCRIPT_BYTES,
-                Some(referrer_policy),
-            )
-            .await?
-            .ok_or_else(|| NativeEngineError::Network {
-                operation: "service worker registration".into(),
-                reason: "service worker script was blocked or unavailable".into(),
-            })?;
+        let resource = load_service_worker_entry(
+            loader,
+            owner_url,
+            referrer_url,
+            &script,
+            request_id,
+            Some(referrer_policy),
+            parent_fetch_broker.as_deref_mut(),
+        )
+        .await?
+        .ok_or_else(|| NativeEngineError::Network {
+            operation: "service worker registration".into(),
+            reason: "service worker script was blocked or unavailable".into(),
+        })?;
         let root_request_url = resolve_module_request_url(owner_url, &script)?;
         let (source, import_script_counts, module_graph, worker_referrer_policy) =
             load_service_worker_source(
@@ -1226,6 +1238,8 @@ impl NativeServiceWorkerRegistry {
                 root_request_url,
                 resource.clone(),
                 is_module,
+                request_id,
+                parent_fetch_broker.as_deref_mut(),
             )
             .await?;
         let worker = self

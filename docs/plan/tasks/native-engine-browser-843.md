@@ -250,6 +250,17 @@ projection and existing native Fetch behavior.
   runtime). It covers credentials/CORS/redirect and invalid-mode behavior, but
   does not verify the parent-brokered dedicated-worker route; this SharedWorker
   Fetch path still performs its request directly in the content process.
+- In browser-coordinated mode, a due DedicatedWorker timer no longer executes
+  in the child idle loop. It notifies the exact context/frame owner, which runs
+  the timer on its next script turn with the parent Fetch broker; standalone
+  `NativeEngine` retains local timer dispatch. The process-backed unit
+  regression `browser_owned_worker_timer_fetch_uses_parent_cookie_authority`
+  passed (1 passed; 21.59 seconds), verifying the initial HttpOnly request
+  cookie, a parent-accepted HttpOnly response update on the next worker request,
+  the parent cookie API, and the script-visible projection. The fixture's
+  initial 20-second accept timeout proved too tight; the final 45-second bound
+  passed. ServiceWorker timer/lifetime requests and the other unbrokered
+  network classes remain open.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.

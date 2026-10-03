@@ -534,9 +534,15 @@ re-exposing the buffered parent response through its stream adapter. Locally hos
 connect evaluations also receive the broker, but lack a focused process-backed
 regression. The earlier buffered-worker checkpoint did not cover worker upload
 streams; the later explicit-turn upload regression is described below.
-Worker-script/resource/module-graph loading, autonomous turns, independently
-delivered SharedWorker events, and module-destination Fetch remain outside the
-verified broker path.
+In browser-coordinated mode, due DedicatedWorker timer turns now wait for the
+exact context/frame owner pump and execute with that turn's parent Fetch broker;
+standalone `NativeEngine` retains its local timer path. The process-backed
+`browser_owned_worker_timer_fetch_uses_parent_cookie_authority` regression
+passed (1 passed; 21.59 seconds), checking the initial HttpOnly request cookie,
+a parent-accepted HttpOnly response update on the next worker request, and the
+script-visible projection. Worker-script/resource/module-graph loading,
+ServiceWorker timer and lifetime work, independently delivered SharedWorker
+events, and module-destination Fetch remain outside the verified broker path.
 An awaited ordinary Fetch issued by a controlled Service Worker while handling
 an explicit page Fetch now also uses that operation's parent broker. The
 process-backed regression

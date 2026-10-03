@@ -126,13 +126,21 @@ request cookies, and accepts response-cookie changes. The worker's current
 response-stream interface is preserved over a buffered parent response.
 Locally hosted SharedWorker creation/connect evaluations also receive the
 broker but lack a focused process-backed regression. Worker-script/resource/
-module-graph loading, autonomous turns, independently delivered SharedWorker
-events, module destinations, initial/resource loads, and Service Worker
-internal requests remain outside the verified checkpoint. Explicit-turn
-page-originated stream uploads to a controlled Service Worker are separately
-verified: its handler still gets first opportunity to respond, while a declined
-network fallback uses the parent broker. Service Worker-originated upload
-streams and lifetime work remain outside that subset.
+module-graph loading, independently delivered SharedWorker events, module
+destinations, initial/resource loads, and Service Worker internal requests
+remain outside the verified checkpoint. In browser-coordinated mode, due
+DedicatedWorker timer turns now wait for the exact context/frame owner pump and
+execute with that turn's parent Fetch broker; standalone `NativeEngine` keeps
+its local timer path. The process-backed
+`browser_owned_worker_timer_fetch_uses_parent_cookie_authority` regression
+passed (1 passed; 21.59 seconds), checking the initial HttpOnly request cookie,
+a parent-accepted HttpOnly response update on the next worker request, the
+parent cookie API, and the script-visible projection. ServiceWorker timer and
+lifetime work remain outside this subset. Explicit-turn page-originated stream
+uploads to a controlled Service Worker are separately verified: its handler
+still gets first opportunity to respond, while a declined network fallback
+uses the parent broker. Service Worker-originated upload streams remain outside
+that subset.
 See the [Slice 842 task](tasks/native-engine-browser-842.md) and [Slice 843
 task](tasks/native-engine-browser-843.md).
 

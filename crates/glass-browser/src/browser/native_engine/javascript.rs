@@ -2287,6 +2287,23 @@ impl NativeWorkerRegistry {
         &mut self,
         loader: &mut NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
+        self.run_due_timers_inner(loader, None).await
+    }
+
+    pub(crate) async fn run_due_timers_with_parent_fetch_broker(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+        parent_fetch_broker: &mut NativeContentFetchBroker<'_>,
+    ) -> Result<(), NativeEngineError> {
+        self.run_due_timers_inner(loader, Some(parent_fetch_broker))
+            .await
+    }
+
+    async fn run_due_timers_inner<'broker>(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'broker>>,
+    ) -> Result<(), NativeEngineError> {
         let worker_ids = self.workers.keys().copied().collect::<Vec<_>>();
         let mut selected_worker_id = None;
         let after_cursor = worker_ids
@@ -2322,8 +2339,13 @@ impl NativeWorkerRegistry {
         });
         match evaluation {
             Ok(evaluation) => {
-                self.collect_worker_evaluation(worker_id, evaluation, loader)
-                    .await?
+                self.collect_worker_evaluation_with_parent_fetch_broker(
+                    worker_id,
+                    evaluation,
+                    loader,
+                    parent_fetch_broker.as_deref_mut(),
+                )
+                .await?
             }
             Err(error) => {
                 let worker_url = self

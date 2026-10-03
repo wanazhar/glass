@@ -112,8 +112,14 @@ and intends to use [Semantic Versioning](https://semver.org/).
   from a CSS font through a later image, HttpOnly exclusion from the
   `FontFace.load()` script projection,
   and both cookies set by that font response on a later Fetch. Font requests
-  outside an active parent-brokered turn, dynamically attached stylesheet
-  network loads, and Service-Worker-provided navigation responses remain
+  outside an active parent-brokered turn remain child-side paths. Dynamic
+  HTTP(S) stylesheet links and their CSS imports during an explicit
+  parent-brokered page-script turn now use the existing parent stylesheet
+  loader. The process-backed referrer-policy regression passed (1 test; 29.43
+  seconds), covering HttpOnly cookie selection and acceptance across the
+  dynamic stylesheet, its import, and a later Fetch without changing cascade
+  or referrer behavior. Dynamic stylesheet requests outside an active
+  parent-brokered turn and Service-Worker-provided navigation responses remain
   child-side paths.
   The Service Worker `clients.openWindow`-resumed navigation regression also
   passed (1 test; 34.25 seconds).

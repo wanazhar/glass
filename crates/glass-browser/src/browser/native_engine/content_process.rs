@@ -13896,17 +13896,33 @@ async fn load_dynamic_external_stylesheets(
         }
         let object_url = runtime.object_url_resource(&href)?;
         let referrer_policy = document.stylesheet_link_referrer_policy_for_node_index(node_index);
-        let body = match loader
-            .load_stylesheet_async_with_object_url_and_referrer_policy(
-                document_url,
-                &href,
-                integrity.as_deref(),
-                crossorigin.as_deref(),
-                object_url.as_ref(),
-                Some(referrer_policy),
-            )
-            .await
+        let stylesheet_result = if object_url.is_none()
+            && is_network_page_script_target(document_url, &href)
+            && let Some(broker) = parent_fetch_broker.as_deref_mut()
         {
+            refresh_parent_broker_meta_csp(loader, Some(broker))?;
+            broker
+                .load_stylesheet(
+                    document_url,
+                    &href,
+                    integrity.as_deref(),
+                    crossorigin.as_deref(),
+                    Some(referrer_policy),
+                )
+                .await
+        } else {
+            loader
+                .load_stylesheet_async_with_object_url_and_referrer_policy(
+                    document_url,
+                    &href,
+                    integrity.as_deref(),
+                    crossorigin.as_deref(),
+                    object_url.as_ref(),
+                    Some(referrer_policy),
+                )
+                .await
+        };
+        let body = match stylesheet_result {
             Ok(Some(stylesheet)) => {
                 if is_network_url(&stylesheet.url) {
                     expand_network_stylesheet_imports(
@@ -13915,7 +13931,7 @@ async fn load_dynamic_external_stylesheets(
                         stylesheet,
                         viewport,
                         &mut loaded_bytes,
-                        None,
+                        parent_fetch_broker.as_deref_mut(),
                     )
                     .await
                     .ok()

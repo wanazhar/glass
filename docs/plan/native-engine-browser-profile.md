@@ -156,9 +156,15 @@ request cookies, and accepts response-cookie changes. The worker's current
   CSS-font-to-image path, script-visible
   HttpOnly filtering for `FontFace.load()`, and parent-retained cookies on a
   later Fetch. Font requests outside an active parent-brokered turn,
-  dynamically attached stylesheet network loads, independently delivered
-  SharedWorker events, worker module destinations, and Service Worker internal
-  requests remain outside the verified checkpoint.
+  dynamically attached stylesheet network loads during explicit
+  parent-brokered page-script turns now reuse the parent stylesheet loader. The
+  referrer-policy process regression passed (1 test; 29.43 seconds), retaining
+  cascade/referrer behavior while checking an HttpOnly page cookie on the
+  dynamic root, an HttpOnly response cookie on its CSS import and later Fetch,
+  and script-visible filtering. Dynamic stylesheet requests outside an active
+  parent-brokered turn, independently delivered SharedWorker events, worker
+  module destinations, and Service Worker internal requests remain outside the
+  verified checkpoint.
   In browser-coordinated mode, due
   DedicatedWorker timer turns now wait for the exact context/frame owner pump
   and execute with that turn's parent Fetch broker; standalone `NativeEngine` keeps

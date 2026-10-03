@@ -380,8 +380,14 @@ requests through the parent font loader. The extended process regression passed
 seconds): a CSS font's cookies reach a later image request, the FontFace path
 updates only the visible script projection, and a later Fetch carries both
 cookies set by that response. Font requests outside an active parent-brokered
-turn, dynamically attached stylesheet network loads, and other unbrokered
-requests remain child-side paths.
+turn, dynamic stylesheet network loads outside an active parent-brokered page
+script turn, and other unbrokered requests remain child-side paths. Dynamic
+HTTP(S) stylesheets and their CSS imports created during an explicit
+parent-brokered page-script turn now reuse the parent stylesheet loader. The
+process-backed referrer-policy regression passed (1 test; 29.43 seconds),
+checking the parent-selected HttpOnly page cookie on a dynamic stylesheet, its
+response cookie on the import and later Fetch, script-visible filtering, and
+the unchanged cascade/referrer behavior.
 A new Slice 843 checkpoint moves unhandled HTTP(S) top-level document
 navigation to the parent loader after content-side Service Worker
 interception declines it. The request is bound to the active load ID,

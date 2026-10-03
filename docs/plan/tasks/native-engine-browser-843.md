@@ -351,9 +351,22 @@ projection and existing native Fetch behavior.
   cookies reach the following image request, the `FontFace.load()` path exposes
   only the visible cookie to script, and a subsequent Fetch carries both
   cookies set by that font response. Font requests outside an active
-  parent-brokered turn, dynamically attached stylesheet network loads,
-  Service-Worker-handled navigation responses, and the full child
-  profile/read/write path remain outstanding.
+  parent-brokered turn, dynamic stylesheet loads outside an active
+  parent-brokered page-script turn, Service-Worker-handled navigation
+  responses, and the full child profile/read/write path remain outstanding.
+  HTTP(S) dynamic stylesheet links and their CSS imports created during an
+  explicit parent-brokered page-script turn now reuse the existing parent
+  stylesheet protocol. `native_content_process_applies_stylesheet_link_referrer_policy`
+  passed (1 passed; 897 filtered; 29.43 seconds), retaining cache/referrer and
+  cascade assertions while proving the parent
+  selects an initial HttpOnly page cookie for the dynamic stylesheet, accepts
+  its HttpOnly response cookie for the imported stylesheet and later Fetch,
+  and keeps both secrets out of `document.cookie`.
+  The initial test-target rebuild took 3m02. Its first run reached the final
+  computed-style assertion after the new cookie checks passed, and differed
+  only because this engine serializes the `bold` keyword as `"bold"`, not
+  `"700"`; the test-only correction rebuilt in 1m08 and the focused rerun
+  passed.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.

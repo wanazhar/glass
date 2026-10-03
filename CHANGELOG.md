@@ -105,8 +105,15 @@ and intends to use [Semantic Versioning](https://semver.org/).
   child-side paths. The follow-up process run passed (1 test; 25.76 seconds)
   after HTTP(S) media elements moved to the parent broker; it verifies the
   parent's media `Set-Cookie` updates reach the next parser request while
-  HttpOnly remains absent from `document.cookie`. Fonts, dynamically attached
-  stylesheets, and Service Worker-provided navigation responses remain
+  HttpOnly remains absent from `document.cookie`. Protocol version 24 now
+  brokers initial and dynamically recascaded CSS `@font-face` and explicit page
+  `FontFace` destination loads through the parent font loader. The extended
+  process regression passed (1 test; 32.16 seconds), checking cookie ordering
+  from a CSS font through a later image, HttpOnly exclusion from the
+  `FontFace.load()` script projection,
+  and both cookies set by that font response on a later Fetch. Font requests
+  outside an active parent-brokered turn, dynamically attached stylesheet
+  network loads, and Service-Worker-provided navigation responses remain
   child-side paths.
   The Service Worker `clients.openWindow`-resumed navigation regression also
   passed (1 test; 34.25 seconds).
@@ -114,8 +121,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
   seconds); runtime `import()` still needs cookie-specific process coverage.
   Other page subresources, Service Worker timer/lifetime work,
   independently delivered SharedWorker events,
-  module/font destinations, and other autonomous worker network turns remain
-  outside this broker path. The child still has a full cookie mirror and
+  worker module/font destinations, and other autonomous worker network turns
+  remain outside this broker path. The child still has a full cookie mirror and
   profile-path access, so parent-only cookie authority is not complete.
 - Native content-worker dialog IPC now uses one stdin reader to route dialog
   decisions separately from ordinary asynchronous requests.

@@ -342,8 +342,16 @@ projection and existing native Fetch behavior.
   while request and response cookies stay in the parent. The same process test
   passed after extension (1 passed; 25.76 seconds), verifying the media
   response's visible and HttpOnly cookies reach the later parser request while
-  only the visible value enters the script projection. Fonts, dynamically
-  attached stylesheets,
+  only the visible value enters the script projection. Protocol version 24
+  routes initial and dynamically recascaded CSS `@font-face` loads and explicit
+  page `FontFace` destination requests through the parent font loader. The
+  scoped check passed with the existing 69 dead-code warnings. The test target
+  rebuilt in 3m54; the extended process regression passed (1 passed; 897
+  filtered; 32.16 seconds): the CSS font response's
+  cookies reach the following image request, the `FontFace.load()` path exposes
+  only the visible cookie to script, and a subsequent Fetch carries both
+  cookies set by that font response. Font requests outside an active
+  parent-brokered turn, dynamically attached stylesheet network loads,
   Service-Worker-handled navigation responses, and the full child
   profile/read/write path remain outstanding.
 - The Slice 842 HTTP regression successfully bound a local listener. The

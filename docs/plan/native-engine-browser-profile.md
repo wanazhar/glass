@@ -149,12 +149,17 @@ request cookies, and accepts response-cookie changes. The worker's current
   that process test (1 test; 25.76 seconds) verifies parent-brokered HTTP(S)
   media elements: a media response's visible and HttpOnly cookies stay in the
   parent and are sent on the later parser-script request, while script sees
-  only the visible cookie. Fonts, dynamically attached stylesheets,
-  independently delivered SharedWorker
-  events, module/font Fetch destinations, and Service Worker internal requests
-  remain outside the verified checkpoint.
-  In
-  browser-coordinated mode, due
+  only the visible cookie. Protocol version 24 routes initial and dynamically
+  recascaded CSS `@font-face` loads and explicit page
+  `FontFace` destination requests through the parent font loader. Its process
+  regression passed (1 test; 32.16 seconds), verifying ordered cookies on the
+  CSS-font-to-image path, script-visible
+  HttpOnly filtering for `FontFace.load()`, and parent-retained cookies on a
+  later Fetch. Font requests outside an active parent-brokered turn,
+  dynamically attached stylesheet network loads, independently delivered
+  SharedWorker events, worker module destinations, and Service Worker internal
+  requests remain outside the verified checkpoint.
+  In browser-coordinated mode, due
   DedicatedWorker timer turns now wait for the exact context/frame owner pump
   and execute with that turn's parent Fetch broker; standalone `NativeEngine` keeps
   its local timer path. The process-backed

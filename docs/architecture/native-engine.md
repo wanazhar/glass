@@ -91,16 +91,22 @@ brokers HTTP(S) media-element requests through the parent; the same process
 regression passed again (1 test; 25.76 seconds), proving the media response's
 visible and HttpOnly cookies stay parent-owned and are sent on the next
 parser-script request while HttpOnly remains outside the script projection.
-Fonts, dynamically attached stylesheets, and other network classes are not all
-brokered. Unhandled HTTP(S) top-level
-navigation is now parent-brokered after
+Initial and dynamically recascaded CSS `@font-face` resources and explicit page
+`FontFace` destination loads now use the parent's font loader as well. The
+extended process regression passed (1 test; 32.16 seconds): CSS font response
+cookies are sent on the later
+image request, `FontFace.load()` receives only the visible cookie projection,
+and a subsequent Fetch carries both cookies set by that font response.
+Font requests outside an active parent-brokered turn, dynamically attached
+stylesheet network loads, and other network classes are not all brokered.
+Unhandled HTTP(S) top-level navigation is now parent-brokered after
 Service Worker interception declines it. Its extended process-backed cookie
 regression passes (1 test; 21.17 seconds), verifying parser-script request
 cookies, visible projection refresh, and parent retention of HttpOnly response
 cookies. The `clients.openWindow`-resumed navigation regression also passes (1
-test; 34.25 seconds). Service Worker-provided navigation responses and other initial
-resource loads remain child-side. The full cookie profile remains mirrored
-into the content process; issue #40 is still open.
+test; 34.25 seconds). Service Worker-provided navigation responses and other
+unbrokered initial resources remain child-side. The full cookie profile
+remains mirrored into the content process; issue #40 is still open.
 
 CI runs the full native-engine feature suite on Linux and the socket-free
 `asynchronous_effect`, `async_effect`, and `dropping_runtime_backend` test
@@ -628,11 +634,12 @@ streams from autonomous turns remain outside this broker path. Content-side
 Service Worker interception remains in place; unhandled HTTP(S) top-level
 navigation is parent-brokered after that interception declines it. HTTP(S)
 parser-discovered page scripts, initial stylesheets, static CSS imports, page
-images, and initial/dynamically attached media elements now use the parent
-broker. The child still loads fonts, module/font Fetch destinations, and
-Service-Worker-provided navigation responses and other Service Worker internal
-requests directly; dynamically attached stylesheets also remain child-side. The child still receives the
-shared storage path and
+images, initial/dynamically attached media elements, CSS `@font-face` resources,
+and explicit page `FontFace` destination requests now use the parent broker.
+Font requests without an active parent broker and Service-Worker-provided
+navigation responses and other Service Worker internal requests remain direct
+child paths; dynamically attached stylesheet network loads also remain
+child-side. The child still receives the shared storage path and
 complete profile and can rewrite the combined storage snapshot, so its write
 capability is not yet removed. The
 content process still loads complete cookie profiles and mirrors cookies for

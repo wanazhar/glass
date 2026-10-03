@@ -927,6 +927,7 @@ struct NativeNetworkState {
     font_cache: BTreeMap<String, NativeFontCacheEntry>,
     cookies: Vec<NativeCookie>,
     document_policies: BTreeMap<String, NativeCspPolicy>,
+    document_response_policy_headers: BTreeMap<String, Vec<(String, String)>>,
     document_referrer_policies: BTreeMap<String, NativeFetchReferrerPolicy>,
     preflight_cache: BTreeMap<String, Instant>,
 }
@@ -4050,6 +4051,24 @@ impl NativeResourceLoader {
             .unwrap_or(NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin))
     }
 
+    pub(crate) fn document_response_policy_headers(
+        &self,
+        document_url: &str,
+    ) -> Result<Vec<(String, String)>, NativeEngineError> {
+        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "Document response policy owner URL is not valid URL syntax".into(),
+            }
+        })?;
+        reject_credentials(&document_url)?;
+        Ok(self
+            .network
+            .document_response_policy_headers
+            .get(&cache_key(&document_url))
+            .cloned()
+            .unwrap_or_default())
+    }
+
     pub(crate) fn enforce_service_worker_connect_policy(
         &self,
         document_url: &Url,
@@ -4678,6 +4697,17 @@ impl NativeResourceLoader {
                 self.cookie_changes
                     .extend(self.network.store_cookie(&cookie_url, &cookie));
             }
+            let policy_header_updates = document_response_policy_headers(&response_headers)?;
+            if !policy_header_updates.is_empty() {
+                let mut headers = self
+                    .network
+                    .document_response_policy_headers
+                    .remove(&document_cache_key)
+                    .unwrap_or_default();
+                merge_document_response_policy_headers(&mut headers, policy_header_updates);
+                self.network
+                    .store_document_response_policy_headers(document_cache_key.clone(), headers);
+            }
             if response_headers.contains_key("referrer-policy") {
                 self.network.store_document_referrer_policy(
                     document_cache_key.clone(),
@@ -4763,6 +4793,10 @@ impl NativeResourceLoader {
         self.network.store_document_policy(
             cache_key(&final_url),
             content_security_policy(&response_headers),
+        );
+        self.network.store_document_response_policy_headers(
+            cache_key(&final_url),
+            document_response_policy_headers(&response_headers)?,
         );
         self.network.store_document_referrer_policy(
             cache_key(&final_url),
@@ -8408,6 +8442,66 @@ fn content_security_policy(headers: &HeaderMap) -> NativeCspPolicy {
     policy
 }
 
+fn document_response_policy_headers(
+    headers: &HeaderMap,
+) -> Result<Vec<(String, String)>, NativeEngineError> {
+    const POLICY_HEADERS: [&str; 5] = [
+        "content-security-policy",
+        "content-security-policy-report-only",
+        "reporting-endpoints",
+        "report-to",
+        "referrer-policy",
+    ];
+    let mut pairs = Vec::new();
+    let mut total_bytes = 0usize;
+    for name in POLICY_HEADERS {
+        for value in headers.get_all(name).iter() {
+            let value = value.to_str().map_err(|_| NativeEngineError::Network {
+                operation: "document response policy".into(),
+                reason: "response contains a non-text policy header".into(),
+            })?;
+            if value.len() > MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES {
+                return Err(NativeEngineError::limit(
+                    "document response policy header value",
+                    MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
+                    value.len(),
+                ));
+            }
+            total_bytes = total_bytes
+                .saturating_add(name.len())
+                .saturating_add(value.len());
+            if pairs.len() >= MAX_NATIVE_RESPONSE_HEADERS {
+                return Err(NativeEngineError::limit(
+                    "document response policy headers",
+                    MAX_NATIVE_RESPONSE_HEADERS,
+                    pairs.len().saturating_add(1),
+                ));
+            }
+            if total_bytes > MAX_NATIVE_RESPONSE_HEADER_BYTES {
+                return Err(NativeEngineError::limit(
+                    "document response policy header bytes",
+                    MAX_NATIVE_RESPONSE_HEADER_BYTES,
+                    total_bytes,
+                ));
+            }
+            pairs.push((name.to_owned(), value.to_owned()));
+        }
+    }
+    Ok(pairs)
+}
+
+fn merge_document_response_policy_headers(
+    current: &mut Vec<(String, String)>,
+    updates: Vec<(String, String)>,
+) {
+    let updated_names = updates
+        .iter()
+        .map(|(name, _)| name.to_ascii_lowercase())
+        .collect::<std::collections::BTreeSet<_>>();
+    current.retain(|(name, _)| !updated_names.contains(&name.to_ascii_lowercase()));
+    current.extend(updates);
+}
+
 fn parse_csp_directives(value: &str) -> NativeCspDirectives {
     let mut policy = NativeCspDirectives::default();
     for directive in value.split(';') {
@@ -10076,6 +10170,24 @@ impl NativeNetworkState {
             self.document_policies.remove(&oldest);
         }
         self.document_policies.insert(key, policy);
+    }
+
+    fn store_document_response_policy_headers(
+        &mut self,
+        key: String,
+        headers: Vec<(String, String)>,
+    ) {
+        if headers.is_empty() {
+            self.document_response_policy_headers.remove(&key);
+            return;
+        }
+        if !self.document_response_policy_headers.contains_key(&key)
+            && self.document_response_policy_headers.len() >= MAX_NATIVE_CACHE_ENTRIES
+            && let Some(oldest) = self.document_response_policy_headers.keys().next().cloned()
+        {
+            self.document_response_policy_headers.remove(&oldest);
+        }
+        self.document_response_policy_headers.insert(key, headers);
     }
 
     fn store_document_referrer_policy(

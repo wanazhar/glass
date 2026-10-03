@@ -363,8 +363,21 @@ setter on the dynamic module request, HttpOnly delivery to its dependency, and
 HttpOnly exclusion from `document.cookie`. The dynamic import-map/module
 regression passed (1 test; 20.92 seconds). Runtime `import()` has no
 cookie-specific process regression yet. Parser-discovered initial page scripts,
-initial/navigation resources, stylesheets, images, fonts, media, and other
-unbrokered requests remain child-side paths.
+stylesheets, images, fonts, media, and other unbrokered requests remain
+child-side paths.
+A new Slice 843 checkpoint moves unhandled HTTP(S) top-level document
+navigation to the parent loader after content-side Service Worker
+interception declines it. The request is bound to the active load ID,
+generation, context, frame, and original URL. The parent selects navigation
+cookies and accepts response cookies, then sends only the bounded decoded
+document, response policy headers, and URL-scoped visible cookie projection
+back to the child. The process-backed navigation-cookie regression passed
+(1 test; 20.40 seconds), verifying script visibility and the parent cookie
+API, including HttpOnly retention. The Service Worker openWindow-resume
+regression also passed (1 test; 34.25 seconds) on a 4 MiB test thread.
+Parser-discovered scripts, other initial resources, Service Worker-provided
+navigation responses, and the full child cookie profile remain outside this
+checkpoint.
 Process-backed request/header/no-duplicate, cancellation, source-document
 referrer-policy/redirect, and worker-visible `Request.referrer` regressions
 remain unrun. Slice 842's parent-cookie regression did bind a local HTTP

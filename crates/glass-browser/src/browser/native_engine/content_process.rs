@@ -120,7 +120,7 @@ const MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS: usize = MAX_CONTENT_PROCESS_OUTPUT
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
     MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 19;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 20;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1627,6 +1627,7 @@ pub(crate) struct NativeContentProcess {
     nested_scroll_offsets: BTreeMap<u32, NativePoint>,
     current_document_url: Option<String>,
     current_document_generation: Option<u32>,
+    pending_navigation_request: Option<Value>,
     parent_brokered_script_owner: Option<NativeContentCookieOwner>,
     parent_brokered_script_urls: BTreeSet<String>,
     context_id: Option<String>,
@@ -1999,6 +2000,7 @@ impl NativeContentProcess {
             nested_scroll_offsets: BTreeMap::new(),
             current_document_url: None,
             current_document_generation: None,
+            pending_navigation_request: None,
             parent_brokered_script_owner: None,
             parent_brokered_script_urls: BTreeSet::new(),
             context_id: None,
@@ -2385,6 +2387,7 @@ impl NativeContentProcess {
         client_id: &str,
         service_worker_clients: &[NativeServiceWorkerClientState],
         cancellation: Option<&NativeNavigationCancellation>,
+        parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentLoadResult, NativeEngineError> {
         self.load_with_deadline(
             navigation,
@@ -2395,6 +2398,7 @@ impl NativeContentProcess {
             client_id,
             service_worker_clients,
             cancellation,
+            parent_loader,
             CONTENT_PROCESS_LOAD_TIMEOUT,
         )
         .await
@@ -2410,6 +2414,7 @@ impl NativeContentProcess {
         client_id: &str,
         service_worker_clients: &[NativeServiceWorkerClientState],
         cancellation: Option<&NativeNavigationCancellation>,
+        parent_loader: &mut NativeResourceLoader,
         deadline: Duration,
     ) -> Result<NativeContentLoadResult, NativeEngineError> {
         let generation = self
@@ -2455,6 +2460,7 @@ impl NativeContentProcess {
             "client_id": client_id,
             "service_worker_clients": service_worker_clients,
         });
+        let parent_request = request.clone();
         if cancellation.is_some_and(NativeNavigationCancellation::is_cancelled) {
             return Err(NativeEngineError::NavigationCancelled);
         }
@@ -2462,18 +2468,24 @@ impl NativeContentProcess {
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => None,
-                response = self.exchange_with_timeout(
+                response = self.exchange_with_parent_loader_timeout(
                     request,
                     "content process load",
                     deadline,
+                    Some(parent_loader),
                 ) => {
                     Some(response)
                 }
             }
         } else {
             Some(
-                self.exchange_with_timeout(request, "content process load", deadline)
-                    .await,
+                self.exchange_with_parent_loader_timeout(
+                    request,
+                    "content process load",
+                    deadline,
+                    Some(parent_loader),
+                )
+                .await,
             )
         };
         let response = match response_result {
@@ -2503,6 +2515,9 @@ impl NativeContentProcess {
         if let Ok(NativeContentLoadResult::Loaded(content)) = &result {
             self.current_document_url = Some(content.url.clone());
             self.current_document_generation = Some(content.generation);
+            self.pending_navigation_request = None;
+        } else if matches!(&result, Ok(NativeContentLoadResult::Suspended(_))) {
+            self.pending_navigation_request = Some(parent_request);
         }
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
@@ -2513,16 +2528,27 @@ impl NativeContentProcess {
 
     pub(crate) async fn resume_service_worker_navigation(
         &mut self,
+        parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentLoadResult, NativeEngineError> {
         let id = self.next_id();
+        let mut request = self.pending_navigation_request.clone().ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "content process service worker fetch resume",
+                NativeWorkerFailureKind::Protocol,
+                "the parent has no captured navigation request to resume",
+            )
+        })?;
+        request["id"] = Value::from(id);
+        request["protocol"] = Value::from(CONTENT_WORKER_PROTOCOL_VERSION);
+        request["resume_service_worker_fetch"] = Value::Bool(true);
         let response = match timeout(
             CONTENT_PROCESS_LOAD_TIMEOUT,
-            self.exchange(json!({
-                "kind": "load",
-                "id": id,
-                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
-                "resume_service_worker_fetch": true,
-            })),
+            self.exchange_with_parent_loader_timeout(
+                request,
+                "content process service worker fetch resume",
+                CONTENT_PROCESS_LOAD_TIMEOUT,
+                Some(parent_loader),
+            ),
         )
         .await
         {
@@ -2551,6 +2577,7 @@ impl NativeContentProcess {
         if let Ok(NativeContentLoadResult::Loaded(content)) = &result {
             self.current_document_url = Some(content.url.clone());
             self.current_document_generation = Some(content.generation);
+            self.pending_navigation_request = None;
         }
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
@@ -3796,6 +3823,16 @@ impl NativeContentProcess {
         let mut resumed_dialog: Option<NativeDialogWait> = None;
         loop {
             let response = self.read_response_value().await?;
+            if response.get("kind").and_then(Value::as_str) == Some("parent_navigation_request") {
+                Box::pin(self.handle_parent_navigation_request(
+                    request_id,
+                    &request,
+                    &response,
+                    parent_loader.as_deref_mut(),
+                ))
+                .await?;
+                continue;
+            }
             if response.get("kind").and_then(Value::as_str) == Some("parent_fetch_request") {
                 let loader = parent_loader.as_deref_mut().ok_or_else(|| {
                     NativeEngineError::worker_failure(
@@ -4328,6 +4365,39 @@ impl NativeContentProcess {
             write_frame(&mut self.stdin, &decision).await?;
             resumed_dialog = Some(resolution);
         }
+    }
+
+    async fn handle_parent_navigation_request(
+        &mut self,
+        request_id: u64,
+        load_request: &Value,
+        broker_request: &Value,
+        parent_loader: Option<&mut NativeResourceLoader>,
+    ) -> Result<(), NativeEngineError> {
+        let loader = parent_loader.ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "content process parent navigation broker",
+                NativeWorkerFailureKind::Protocol,
+                "content process requested parent navigation without a broker",
+            )
+        })?;
+        let broker_response = Box::pin(parent_navigation_broker_response(
+            request_id,
+            load_request,
+            broker_request,
+            self.context_id.as_deref(),
+            self.frame_id.as_deref(),
+            loader,
+        ))
+        .await?;
+        let payload = serde_json::to_vec(&broker_response).map_err(|_| {
+            NativeEngineError::worker_failure(
+                "encode parent navigation response",
+                NativeWorkerFailureKind::Protocol,
+                "parent navigation response could not be encoded",
+            )
+        })?;
+        write_frame(&mut self.stdin, &payload).await
     }
 
     fn next_id(&mut self) -> u64 {
@@ -8063,6 +8133,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     )
                 } else {
                     if !resume_service_worker_fetch {
+                        parent_document_cookie_projection = None;
                         frame_script_bindings.clear();
                         websocket_connections.clear();
                         worker_websocket_connections.clear();
@@ -8114,6 +8185,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         storage_state = runtime.storage_state();
                     }
                     match load_content_resource(
+                        request_id,
                         &load_request,
                         &mut resource_loader,
                         storage_profile_path.as_deref(),
@@ -8121,6 +8193,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         &environment,
                         &mut service_workers,
                         resumed_fetch,
+                        &storage_context_id,
+                        &frame_id,
+                        &mut stdout,
+                        &mut ipc_request_rx,
+                        &mut parent_document_cookie_projection,
                     )
                     .await
                     {
@@ -8175,11 +8252,14 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             {
                                 runtime.set_sync_xhr_loader(loader);
                             }
-                            let document_cookie = resource_loader
-                                .as_ref()
-                                .map(|loader| loader.document_cookie(&resource.url))
-                                .transpose()?
-                                .unwrap_or_default();
+                            let document_cookie = match parent_document_cookie_projection.as_ref() {
+                                Some(projection) => projection.clone(),
+                                None => resource_loader
+                                    .as_ref()
+                                    .map(|loader| loader.document_cookie(&resource.url))
+                                    .transpose()?
+                                    .unwrap_or_default(),
+                            };
                             let mut page_scripts = execute_page_scripts(
                                 &mut parsed,
                                 &mut script_runtime,
@@ -10932,7 +11012,383 @@ async fn resolve_service_worker_commands(
     Ok(document_commands)
 }
 
+async fn parent_navigation_broker_response(
+    request_id: u64,
+    load_request: &Value,
+    broker_request: &Value,
+    context_id: Option<&str>,
+    frame_id: Option<&str>,
+    loader: &mut NativeResourceLoader,
+) -> Result<Value, NativeEngineError> {
+    if broker_request.get("id").and_then(Value::as_u64) != Some(request_id)
+        || load_request.get("kind").and_then(Value::as_str) != Some("load")
+    {
+        return Err(NativeEngineError::worker_failure(
+            "content process parent navigation broker",
+            NativeWorkerFailureKind::Protocol,
+            "parent navigation request belongs to a different content operation",
+        ));
+    }
+    let generation = load_request
+        .get("generation")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|generation| *generation != 0)
+        .ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "content process parent navigation broker",
+                NativeWorkerFailureKind::Protocol,
+                "load operation has no valid document generation",
+            )
+        })?;
+    if broker_request.get("generation").and_then(Value::as_u64) != Some(u64::from(generation))
+        || broker_request.get("url").and_then(Value::as_str)
+            != load_request.get("url").and_then(Value::as_str)
+        || broker_request.get("context_id").and_then(Value::as_str) != context_id
+        || broker_request.get("frame_id").and_then(Value::as_str) != frame_id
+    {
+        return Err(NativeEngineError::worker_failure(
+            "content process parent navigation broker",
+            NativeWorkerFailureKind::Protocol,
+            "parent navigation request does not match its captured load owner",
+        ));
+    }
+    let result = async {
+        let navigation = decode_content_process_load_navigation(load_request)?;
+        if !is_network_url(without_fragment(&navigation.url)) {
+            return Err(NativeEngineError::worker_failure(
+                "content process parent navigation broker",
+                NativeWorkerFailureKind::Protocol,
+                "only HTTP(S) navigations may use the parent network broker",
+            ));
+        }
+        let referrer = load_request
+            .get("referrer")
+            .and_then(|value| value.as_str());
+        let referrer_policy = load_request
+            .get("referrer_policy")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process parent navigation broker",
+                    NativeWorkerFailureKind::Protocol,
+                    "load operation omitted its Referrer-Policy",
+                )
+            })
+            .and_then(NativeFetchReferrerPolicy::parse)?;
+        let resource = loader
+            .load_async_request_with_referrer_policy(&navigation, referrer, referrer_policy)
+            .await?;
+        let document_cookie = loader.document_cookie(&resource.url)?;
+        if document_cookie.len() > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+            return Err(NativeEngineError::limit(
+                "parent document.cookie projection",
+                MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                document_cookie.len(),
+            ));
+        }
+        let policy_headers = loader.document_response_policy_headers(&resource.url)?;
+        let body = resource.body.into_bytes();
+        if body.len() > loader.max_document_bytes() {
+            return Err(NativeEngineError::limit(
+                "parent-brokered navigation document",
+                loader.max_document_bytes(),
+                body.len(),
+            ));
+        }
+        Ok(json!({
+            "kind": "parent_navigation_response",
+            "id": request_id,
+            "generation": generation,
+            "url": resource.url,
+            "body_base64": base64::engine::general_purpose::STANDARD.encode(body),
+            "document_cookie": document_cookie,
+            "response_policy_headers": policy_headers,
+        }))
+    }
+    .await;
+    Ok(match result {
+        Ok(response) => response,
+        Err(error) => json!({
+            "kind": "error",
+            "id": request_id,
+            "generation": generation,
+            "reason": error.to_string(),
+        }),
+    })
+}
+
+async fn load_parent_content_navigation(
+    request_id: u64,
+    generation: u32,
+    context_id: &str,
+    frame_id: &str,
+    navigation: &NativeNavigationRequest,
+    stdout: &mut (impl AsyncWrite + Unpin),
+    ipc_requests: &mut mpsc::Receiver<Result<Vec<u8>, NativeEngineError>>,
+    loader: &mut NativeResourceLoader,
+    document_cookie_projection: &mut Option<String>,
+) -> Result<NativeResource, NativeEngineError> {
+    if !is_network_url(without_fragment(&navigation.url)) {
+        return Err(NativeEngineError::UnsupportedUrl {
+            reason: "the parent navigation broker accepts only HTTP(S) URLs".into(),
+        });
+    }
+    write_value_frame(
+        stdout,
+        &json!({
+            "kind": "parent_navigation_request",
+            "id": request_id,
+            "generation": generation,
+            "context_id": context_id,
+            "frame_id": frame_id,
+            "url": navigation.url,
+        }),
+    )
+    .await?;
+    let payload = ipc_requests
+        .recv()
+        .await
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "parent navigation broker".into(),
+            reason: "parent closed the navigation response channel".into(),
+        })??;
+    let response: Value = serde_json::from_slice(&payload).map_err(|_| {
+        NativeEngineError::worker_failure(
+            "decode parent navigation response",
+            NativeWorkerFailureKind::Protocol,
+            "parent returned invalid navigation JSON",
+        )
+    })?;
+    if response.get("kind").and_then(Value::as_str) == Some("error") {
+        return Err(NativeEngineError::Network {
+            operation: "parent-brokered navigation".into(),
+            reason: response
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("parent rejected the document navigation")
+                .to_owned(),
+        });
+    }
+    if response.get("kind").and_then(Value::as_str) != Some("parent_navigation_response")
+        || response.get("id").and_then(Value::as_u64) != Some(request_id)
+        || response.get("generation").and_then(Value::as_u64) != Some(u64::from(generation))
+    {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent navigation response",
+            NativeWorkerFailureKind::Protocol,
+            "parent response does not match the pending document navigation",
+        ));
+    }
+    let url = response.get("url").and_then(Value::as_str).ok_or_else(|| {
+        NativeEngineError::worker_failure(
+            "decode parent navigation response",
+            NativeWorkerFailureKind::Protocol,
+            "parent omitted the final document URL",
+        )
+    })?;
+    validate_url_text("parent navigation final URL", url)?;
+    if !is_network_url(without_fragment(url)) {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent navigation response",
+            NativeWorkerFailureKind::Protocol,
+            "parent returned a non-HTTP(S) document URL",
+        ));
+    }
+    let encoded_body = response
+        .get("body_base64")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "decode parent navigation response",
+                NativeWorkerFailureKind::Protocol,
+                "parent omitted the bounded document body",
+            )
+        })?;
+    let body = base64::engine::general_purpose::STANDARD
+        .decode(encoded_body)
+        .map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent navigation response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned an invalid document body encoding",
+            )
+        })?;
+    if body.len() > loader.max_document_bytes() {
+        return Err(NativeEngineError::limit(
+            "parent-brokered navigation document",
+            loader.max_document_bytes(),
+            body.len(),
+        ));
+    }
+    let body = String::from_utf8(body).map_err(|_| {
+        NativeEngineError::worker_failure(
+            "decode parent navigation response",
+            NativeWorkerFailureKind::Protocol,
+            "parent returned a non-UTF-8 decoded document",
+        )
+    })?;
+    let document_cookie = response
+        .get("document_cookie")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "decode parent navigation response",
+                NativeWorkerFailureKind::Protocol,
+                "parent omitted the visible document.cookie projection",
+            )
+        })?;
+    if document_cookie.len() > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+        return Err(NativeEngineError::limit(
+            "parent document.cookie projection",
+            MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+            document_cookie.len(),
+        ));
+    }
+    let policy_headers = response
+        .get("response_policy_headers")
+        .cloned()
+        .ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "decode parent navigation response",
+                NativeWorkerFailureKind::Protocol,
+                "parent omitted response policy metadata",
+            )
+        })
+        .and_then(|value| {
+            serde_json::from_value::<Vec<(String, String)>>(value).map_err(|_| {
+                NativeEngineError::worker_failure(
+                    "decode parent navigation response",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent returned malformed response policy metadata",
+                )
+            })
+        })?;
+    loader.set_document_content_security_policy_from_pairs(url, &policy_headers)?;
+    *document_cookie_projection = Some(document_cookie.to_owned());
+    let parsed_url = Url::parse(without_fragment(url)).map_err(|_| {
+        NativeEngineError::worker_failure(
+            "decode parent navigation response",
+            NativeWorkerFailureKind::Protocol,
+            "parent returned invalid final URL syntax",
+        )
+    })?;
+    Ok(NativeResource {
+        url: url.to_owned(),
+        origin: NativeOrigin::from_url(&parsed_url)?,
+        body,
+    })
+}
+
+fn decode_content_process_load_navigation(
+    request: &Value,
+) -> Result<NativeNavigationRequest, NativeEngineError> {
+    let url = request
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| NativeEngineError::invalid("content-process URL", "must be text"))?;
+    validate_url_text("content-process URL", url)?;
+    if request
+        .get("object_url")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Err(NativeEngineError::worker_failure(
+            "content process parent navigation broker",
+            NativeWorkerFailureKind::Protocol,
+            "an object URL cannot use the HTTP(S) parent navigation broker",
+        ));
+    }
+    let method = match request.get("method").and_then(Value::as_str) {
+        Some("GET") => NativeNavigationMethod::Get,
+        Some("POST") => NativeNavigationMethod::Post,
+        _ => {
+            return Err(NativeEngineError::invalid(
+                "content-process navigation method",
+                "must be GET or POST",
+            ));
+        }
+    };
+    let text_body = request
+        .get("body")
+        .and_then(|value| (!value.is_null()).then_some(value))
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "content-process navigation body",
+                    "must be text or null",
+                )
+            })
+        })
+        .transpose()?;
+    let binary_body = request
+        .get("body_base64")
+        .and_then(|value| (!value.is_null()).then_some(value))
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "content-process navigation binary body",
+                    "must be base64 text or null",
+                )
+            })
+        })
+        .transpose()?;
+    if text_body.is_some() && binary_body.is_some() {
+        return Err(NativeEngineError::invalid(
+            "content-process navigation body",
+            "must use either text or base64 bytes",
+        ));
+    }
+    let body = match binary_body {
+        Some(encoded) => Some(NativeRequestBody::Bytes(
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .map_err(|_| {
+                    NativeEngineError::invalid(
+                        "content-process navigation binary body",
+                        "must be valid base64",
+                    )
+                })?,
+        )),
+        None => text_body.map(str::to_owned).map(NativeRequestBody::Text),
+    };
+    let content_type = request
+        .get("content_type")
+        .and_then(|value| (!value.is_null()).then_some(value))
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "content-process navigation content type",
+                    "must be text or null",
+                )
+            })
+        })
+        .transpose()?;
+    match method {
+        NativeNavigationMethod::Get if body.is_none() && content_type.is_none() => {
+            Ok(NativeNavigationRequest::get(url))
+        }
+        NativeNavigationMethod::Post => NativeNavigationRequest::post_with_body(
+            url,
+            body.ok_or_else(|| {
+                NativeEngineError::invalid("content-process POST body", "must be present")
+            })?,
+            content_type
+                .unwrap_or("application/x-www-form-urlencoded")
+                .to_owned(),
+        ),
+        NativeNavigationMethod::Get => Err(NativeEngineError::invalid(
+            "content-process GET body",
+            "must be absent",
+        )),
+        _ => Err(NativeEngineError::invalid(
+            "content-process navigation method",
+            "must be GET or POST",
+        )),
+    }
+}
+
 async fn load_content_resource(
+    request_id: u64,
     request: &Value,
     resource_loader: &mut Option<NativeResourceLoader>,
     storage_path: Option<&Path>,
@@ -10940,6 +11396,11 @@ async fn load_content_resource(
     environment: &NativeEnvironmentOverrides,
     service_workers: &mut NativeServiceWorkerRegistry,
     resumed_fetch: Option<NativeServiceWorkerFetchCompletion>,
+    context_id: &str,
+    frame_id: &str,
+    stdout: &mut (impl AsyncWrite + Unpin),
+    ipc_requests: &mut mpsc::Receiver<Result<Vec<u8>, NativeEngineError>>,
+    parent_document_cookie_projection: &mut Option<String>,
 ) -> Result<
     Option<(
         NativeContentLoad,
@@ -11210,9 +11671,28 @@ async fn load_content_resource(
                 resource
             }
             None => {
-                loader
-                    .load_async_request_with_referrer_policy(&navigation, referrer, referrer_policy)
+                if is_network_url(without_fragment(&navigation.url)) {
+                    load_parent_content_navigation(
+                        request_id,
+                        generation,
+                        context_id,
+                        frame_id,
+                        &navigation,
+                        stdout,
+                        ipc_requests,
+                        loader,
+                        parent_document_cookie_projection,
+                    )
                     .await?
+                } else {
+                    loader
+                        .load_async_request_with_referrer_policy(
+                            &navigation,
+                            referrer,
+                            referrer_policy,
+                        )
+                        .await?
+                }
             }
         }
     } else {
@@ -11224,9 +11704,28 @@ async fn load_content_resource(
         {
             NativeServiceWorkerNavigationOutcome::Handled(resource) => resource,
             NativeServiceWorkerNavigationOutcome::NotHandled => {
-                loader
-                    .load_async_request_with_referrer_policy(&navigation, referrer, referrer_policy)
+                if is_network_url(without_fragment(&navigation.url)) {
+                    load_parent_content_navigation(
+                        request_id,
+                        generation,
+                        context_id,
+                        frame_id,
+                        &navigation,
+                        stdout,
+                        ipc_requests,
+                        loader,
+                        parent_document_cookie_projection,
+                    )
                     .await?
+                } else {
+                    loader
+                        .load_async_request_with_referrer_policy(
+                            &navigation,
+                            referrer,
+                            referrer_policy,
+                        )
+                        .await?
+                }
             }
             NativeServiceWorkerNavigationOutcome::Suspended => return Ok(None),
         }
@@ -18711,6 +19210,9 @@ mod tests {
             .id()
             .expect("content worker should have a PID");
         let navigation = NativeNavigationRequest::get(format!("http://{address}/dialog"));
+        let mut parent_loader =
+            NativeResourceLoader::new(&super::super::config::NativeEngineConfig::default())
+                .unwrap();
         let pending_load = tokio::spawn(async move {
             process
                 .load(
@@ -18722,6 +19224,7 @@ mod tests {
                     super::super::browsing_context::NATIVE_CONTEXT_ID,
                     &[],
                     None,
+                    &mut parent_loader,
                 )
                 .await
         });
@@ -18788,6 +19291,9 @@ mod tests {
             }
         });
         let control = NativeDialogControlPlane::for_modal_owner();
+        let mut parent_loader =
+            NativeResourceLoader::new(&super::super::config::NativeEngineConfig::default())
+                .unwrap();
         let mut process = NativeContentProcess::spawn(
             None,
             "test-writer",
@@ -18824,6 +19330,7 @@ mod tests {
                 super::super::browsing_context::NATIVE_CONTEXT_ID,
                 &[],
                 None,
+                &mut parent_loader,
             )
             .await
             .unwrap();
@@ -18880,6 +19387,7 @@ mod tests {
                     super::super::browsing_context::NATIVE_CONTEXT_ID,
                     &[],
                     None,
+                    &mut parent_loader,
                     Duration::from_secs(5),
                 )
                 .await

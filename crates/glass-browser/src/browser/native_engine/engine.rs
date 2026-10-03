@@ -919,9 +919,10 @@ impl NativeEngine {
                 ));
             }
             self.request_ledger.begin()?;
-            let result = process
-                .resolve_service_worker_open_window(worker_id, request_id, &window)
-                .await;
+            let result = Box::pin(
+                process.resolve_service_worker_open_window(worker_id, request_id, &window),
+            )
+            .await;
             self.request_ledger.finish();
             result?
         };
@@ -958,7 +959,7 @@ impl NativeEngine {
             self.sync_content_history_async().await?;
         }
         if service_worker_fetch_resumed {
-            self.resume_pending_service_worker_navigation().await?;
+            Box::pin(self.resume_pending_service_worker_navigation()).await?;
         }
         Ok(())
     }
@@ -1252,9 +1253,7 @@ impl NativeEngine {
                             operation: "content process navigation policy".into(),
                             reason: "native content process is not running".into(),
                         })?;
-                process
-                    .check_navigation_policy(document_url, target_url, true)
-                    .await?
+                Box::pin(process.check_navigation_policy(document_url, target_url, true)).await?
             };
             if !policy.csp_violations.is_empty() {
                 let page_events = NativePageEventBatch {
@@ -1996,6 +1995,8 @@ impl NativeEngine {
                 return Ok(None);
             }
             first_content_load = false;
+            self.reconcile_pending_content_cookie_changes("navigation parent cookie snapshot")?;
+            self.persist_pending_loader_cookie_changes()?;
             self.request_ledger.begin()?;
             let client_id = self.service_worker_client_id();
             let service_worker_clients = self.service_worker_clients.clone();
@@ -2011,6 +2012,7 @@ impl NativeEngine {
                             &client_id,
                             &service_worker_clients,
                             cancellation.as_ref(),
+                            &mut self.loader,
                         )
                         .await
                 }
@@ -2020,6 +2022,10 @@ impl NativeEngine {
                 }),
             };
             self.request_ledger.finish();
+            self.reconcile_pending_content_cookie_changes(
+                "content process navigation cookie changes",
+            )?;
+            self.persist_pending_loader_cookie_changes()?;
             let mut content = match content_result {
                 Ok(NativeContentLoadResult::Loaded(content)) => content,
                 Ok(NativeContentLoadResult::Suspended(open_windows)) => {
@@ -2160,10 +2166,13 @@ impl NativeEngine {
                 ));
             }
             self.request_ledger.begin()?;
-            let result = process.resume_service_worker_navigation().await;
+            let result = Box::pin(process.resume_service_worker_navigation(&mut self.loader)).await;
             self.request_ledger.finish();
-            result?
+            result
         };
+        self.reconcile_pending_content_cookie_changes("resumed navigation parent cookie changes")?;
+        self.persist_pending_loader_cookie_changes()?;
+        let content_result = content_result?;
         let mut content = match content_result {
             NativeContentLoadResult::Loaded(content) => content,
             NativeContentLoadResult::Suspended(open_windows) => {

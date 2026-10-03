@@ -33095,6 +33095,110 @@ async fn native_engine_parent_fetch_owns_cookie_matching_and_response_updates() 
 }
 
 #[tokio::test]
+async fn native_content_process_script_fetch_uses_parent_cookie_authority() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for _ in 0..3 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("parent-owned script Fetch should reach the local server")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("request includes a path")
+                .to_owned();
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
+            let (headers, content_type, body) = match path.as_str() {
+                "/page" => (
+                    concat!(
+                        "Set-Cookie: script_session=initial; Path=/; SameSite=Lax\r\n",
+                        "Set-Cookie: script_secret=initial-secret; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    ),
+                    "text/html",
+                    "<p>page</p>",
+                ),
+                "/set" => (
+                    concat!(
+                        "Set-Cookie: script_session=latest; Path=/; SameSite=Lax\r\n",
+                        "Set-Cookie: script_secret=latest-secret; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    ),
+                    "text/plain",
+                    "updated",
+                ),
+                "/inspect" => ("", "text/plain", "inspected"),
+                other => panic!("unexpected parent-owned script Fetch path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push((path, cookie));
+        }
+        requests
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let updated = engine
+        .evaluate_async(
+            "document.cookie = 'same_turn=present; Path=/'; await fetch('/set').then(response => response.text())",
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated, serde_json::json!("updated"));
+    let visible_cookies = engine.evaluate_async("document.cookie").await.unwrap();
+    assert!(
+        visible_cookies
+            .as_str()
+            .is_some_and(|value| value.contains("script_session=latest"))
+    );
+    assert!(
+        visible_cookies
+            .as_str()
+            .is_some_and(|value| value.contains("same_turn=present"))
+    );
+    let inspected = engine
+        .evaluate_async("await fetch('/inspect').then(response => response.text())")
+        .await
+        .unwrap();
+    assert_eq!(inspected, serde_json::json!("inspected"));
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(
+        requests
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect::<Vec<_>>(),
+        ["/page", "/set", "/inspect"]
+    );
+    let update_cookie = requests[1].1.as_deref().unwrap_or_default();
+    assert!(
+        update_cookie.contains("script_session=initial"),
+        "the first brokered request did not carry the parent cookie: {requests:?}"
+    );
+    assert!(update_cookie.contains("script_secret=initial-secret"));
+    assert!(update_cookie.contains("same_turn=present"));
+    let inspect_cookie = requests[2].1.as_deref().unwrap_or_default();
+    assert!(inspect_cookie.contains("script_session=latest"));
+    assert!(inspect_cookie.contains("script_secret=latest-secret"));
+    assert!(inspect_cookie.contains("same_turn=present"));
+}
+
+#[tokio::test]
 async fn native_content_process_shared_worker_fetch_credentials_modes_follow_redirects() {
     let _guard = native_content_process_test_lock().lock().await;
     let primary_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

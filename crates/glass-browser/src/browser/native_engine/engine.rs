@@ -2593,18 +2593,7 @@ impl NativeEngine {
         self.deliver_pending_external_storage_events().await?;
         let href = href.into();
         self.ensure_content_process().await?;
-        let mut pending_content_cookie_changes = self
-            .pending_content_cookie_changes
-            .lock()
-            .map_err(|_| NativeEngineError::Worker {
-                operation: "parent Fetch cookie snapshot".into(),
-                reason: "content process cookie change queue is poisoned".into(),
-            })?;
-        let pending_cookie_changes = pending_content_cookie_changes.clone();
-        self.loader.apply_cookie_changes(&pending_cookie_changes)?;
-        self.loader.take_cookie_changes();
-        pending_content_cookie_changes.clear();
-        drop(pending_content_cookie_changes);
+        self.reconcile_pending_content_cookie_changes("parent Fetch cookie snapshot")?;
         self.request_ledger.begin()?;
         let result = match self.content_process.as_mut() {
             Some(process) => {
@@ -2650,6 +2639,23 @@ impl NativeEngine {
             .await
     }
 
+    fn reconcile_pending_content_cookie_changes(
+        &mut self,
+        operation: &'static str,
+    ) -> Result<(), NativeEngineError> {
+        let mut pending_changes =
+            self.pending_content_cookie_changes
+                .lock()
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: operation.into(),
+                    reason: "content process cookie change queue is poisoned".into(),
+                })?;
+        self.loader.apply_cookie_changes(&pending_changes)?;
+        self.loader.take_cookie_changes();
+        pending_changes.clear();
+        Ok(())
+    }
+
     /// Give the inline owner the same bounded worker Fetch stream turn that
     /// the content process already runs around page evaluations. The yield is
     /// intentional: local fixture streams are spawned tasks, so their next
@@ -2678,6 +2684,9 @@ impl NativeEngine {
         self.sync_external_storage_events()?;
         if self.content_process.is_some() {
             self.deliver_pending_external_storage_events().await?;
+            self.reconcile_pending_content_cookie_changes(
+                "page-script parent Fetch cookie snapshot",
+            )?;
             if let Some(process) = self.content_process.as_mut() {
                 process
                     .sync_frame_script_context(self.frame_script_context.as_ref())
@@ -2690,6 +2699,38 @@ impl NativeEngine {
                     .sync_nested_scroll_offsets(&self.nested_scroll_offsets)
                     .await?;
             }
+            let process_result = {
+                let process = self
+                    .content_process
+                    .as_mut()
+                    .expect("content process presence was checked");
+                if !process.refresh_health() {
+                    return Err(NativeEngineError::worker_failure(
+                        "content process script",
+                        process
+                            .failure_kind()
+                            .unwrap_or(NativeWorkerFailureKind::Exited),
+                        "content process is unavailable after a failed operation; navigate to recover it",
+                    ));
+                }
+                self.request_ledger.begin()?;
+                let result = process
+                    .evaluate_with_page_events(&source, &page_events, Some(&mut self.loader))
+                    .await;
+                self.request_ledger.finish();
+                result
+            };
+            let cookie_changes = self.loader.take_cookie_changes();
+            let cookie_persist_result = if cookie_changes.is_empty() {
+                Ok(())
+            } else {
+                self.publish_external_cookie_changes(&cookie_changes)
+            };
+            let script_result = match (process_result, cookie_persist_result) {
+                (Ok(result), Ok(())) => result,
+                (Err(error), Ok(())) => return Err(error),
+                (_, Err(error)) => return Err(error),
+            };
             let NativeContentScriptResult {
                 value,
                 mutation,
@@ -2708,27 +2749,7 @@ impl NativeEngine {
                 frame_scripts,
                 window_name,
                 mut history,
-            } = {
-                let process = self
-                    .content_process
-                    .as_mut()
-                    .expect("content process presence was checked");
-                if !process.refresh_health() {
-                    return Err(NativeEngineError::worker_failure(
-                        "content process script",
-                        process
-                            .failure_kind()
-                            .unwrap_or(NativeWorkerFailureKind::Exited),
-                        "content process is unavailable after a failed operation; navigate to recover it",
-                    ));
-                }
-                self.request_ledger.begin()?;
-                let result = process
-                    .evaluate_with_page_events(&source, &page_events)
-                    .await;
-                self.request_ledger.finish();
-                result?
-            };
+            } = script_result;
             self.config.window_name = window_name;
             self.queue_frame_script_requests(frame_scripts)?;
             self.queue_page_message_port_commands(page_message_port_commands)?;

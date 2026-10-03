@@ -207,7 +207,8 @@ pub(crate) struct NativeObjectUrlTransfer {
 /// this separate from decoded audio/video frames: callers can inspect source
 /// ownership and media readiness without retaining an unbounded codec buffer
 /// in the document wire.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct NativeMediaMetadata {
     pub(crate) content_type: String,
     pub(crate) byte_length: usize,

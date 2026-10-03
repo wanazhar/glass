@@ -145,8 +145,12 @@ request cookies, and accepts response-cookie changes. The worker's current
   regression (1 test; 24.90 seconds) verifies parent meta-CSP handoff by
   confirming `img-src 'self'` blocks a cross-origin image before the server
   sees a request. The initial
-  module graph still lacks a dedicated cookie regression. Fonts/media,
-  dynamically attached stylesheets, independently delivered SharedWorker
+  module graph still lacks a dedicated cookie regression. A follow-up run of
+  that process test (1 test; 25.76 seconds) verifies parent-brokered HTTP(S)
+  media elements: a media response's visible and HttpOnly cookies stay in the
+  parent and are sent on the later parser-script request, while script sees
+  only the visible cookie. Fonts, dynamically attached stylesheets,
+  independently delivered SharedWorker
   events, module/font Fetch destinations, and Service Worker internal requests
   remain outside the verified checkpoint.
   In

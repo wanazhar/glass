@@ -100,8 +100,14 @@ and intends to use [Semantic Versioning](https://semver.org/).
   invisibility, and parent cookie API retention. The parent receives the
   applied meta-CSP policy list; `img-src 'self'` blocks a cross-origin image
   before network access. The initial module graph still lacks a dedicated
-  cookie regression. Fonts/media, dynamically attached stylesheets, and
-  Service Worker-provided navigation responses remain child-side paths.
+  cookie regression. At that checkpoint, fonts/media, dynamically attached
+  stylesheets, and Service Worker-provided navigation responses remained
+  child-side paths. The follow-up process run passed (1 test; 25.76 seconds)
+  after HTTP(S) media elements moved to the parent broker; it verifies the
+  parent's media `Set-Cookie` updates reach the next parser request while
+  HttpOnly remains absent from `document.cookie`. Fonts, dynamically attached
+  stylesheets, and Service Worker-provided navigation responses remain
+  child-side paths.
   The Service Worker `clients.openWindow`-resumed navigation regression also
   passed (1 test; 34.25 seconds).
   The existing nested dynamic classic-script regression passed (1 test; 19.89

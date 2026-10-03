@@ -363,14 +363,18 @@ setter on the dynamic module request, HttpOnly delivery to its dependency, and
 HttpOnly exclusion from `document.cookie`. The dynamic import-map/module
 regression passed (1 test; 20.92 seconds). Runtime `import()` has no
 cookie-specific process regression yet. Parser-discovered HTTP(S) page scripts,
-initial page stylesheets, static CSS imports, and initial page images now use
-the parent broker. The process-backed cookie regression passed (1 test;
+initial page stylesheets, static CSS imports, initial page images, and HTTP(S)
+media elements now use the parent broker. The process-backed cookie regression passed (1 test;
 24.90 seconds) and covers navigation, stylesheet, CSS import, image, and
 classic parser-script requests, including ordered cookie updates, HttpOnly
 invisibility, and parent API retention. The parent also receives the child's
 applied meta-CSP policy list before these loads; the regression verifies
 `img-src 'self'` blocks a cross-origin image before a request reaches the
-server. Fonts, media, and other unbrokered requests remain child-side paths.
+server. Its follow-up process run passed (1 test; 25.76 seconds) with `/media.wav`
+also parent-brokered: its visible and HttpOnly response cookies are retained by
+the parent, sent on the next parser-script request, and filtered correctly from
+the script-visible projection. Fonts, dynamically attached stylesheets, and
+other unbrokered requests remain child-side paths.
 A new Slice 843 checkpoint moves unhandled HTTP(S) top-level document
 navigation to the parent loader after content-side Service Worker
 interception declines it. The request is bound to the active load ID,
@@ -381,10 +385,10 @@ back to the child. The process-backed navigation-cookie regression passed
 (1 test; 20.40 seconds), verifying script visibility and the parent cookie
 API, including HttpOnly retention. The Service Worker openWindow-resume
 regression also passed (1 test; 34.25 seconds) on a 4 MiB test thread.
-Initial parser scripts, stylesheets/imports, and images are now parent-brokered
-after the unhandled-navigation response; fonts/media, Service Worker-provided
-navigation responses, and the full child cookie profile remain outside this
-checkpoint.
+At that navigation checkpoint, parser scripts, stylesheets/imports, and images
+were parent-brokered; fonts/media, Service Worker-provided navigation
+responses, and the full child cookie profile remained outside it. The later
+media-resource checkpoint above supersedes its media status.
 Process-backed request/header/no-duplicate, cancellation, source-document
 referrer-policy/redirect, and worker-visible `Request.referrer` regressions
 remain unrun. Slice 842's parent-cookie regression did bind a local HTTP

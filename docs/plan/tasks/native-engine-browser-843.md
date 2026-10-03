@@ -159,11 +159,13 @@ projection and existing native Fetch behavior.
   module-graph coverage remains outstanding.
   The broker currently buffers the bounded response before resolving Fetch;
   incremental network response streaming/backpressure remains outstanding.
-- The latest scoped `cargo check -p glass-browser --features native-engine
-  --lib --test native_engine --locked --quiet` passed with existing dead-code
-  warnings only. The extended process-backed
+- After protocol version 23 added the parent media-resource path, the scoped
+  `cargo check -p glass-browser --features native-engine --lib --test
+  native_engine --locked --quiet` passed with existing dead-code warnings only.
+  The extended process-backed
   `native_content_process_http_navigation_uses_parent_cookie_authority` test
-  also passed (1 passed; 21.17 seconds); it is recorded below.
+  passed (1 passed, 897 filtered; 25.76 seconds), verifying media response
+  cookies remain parent-owned and the visible projection excludes HttpOnly.
 - `cargo fmt --all -- --check`, `git diff --check`, release-documentation
   truth, documentation depth, and TUI shortcut inventory checks pass. The
   latest static doc reports cover 1,471 Markdown files with zero current-claim
@@ -335,8 +337,13 @@ projection and existing native Fetch behavior.
   ordered cookie updates across navigation, stylesheet, CSS import, image, and
   classic parser-script requests, and proving `img-src 'self'` blocks the
   cross-origin image before network access. The initial module graph still
-  lacks a dedicated cookie regression. Fonts/media, dynamically attached
-  stylesheets,
+  lacks a dedicated cookie regression. Protocol version 23 adds parent-owned
+  HTTP(S) page-media loads; only bounded media metadata returns to the child,
+  while request and response cookies stay in the parent. The same process test
+  passed after extension (1 passed; 25.76 seconds), verifying the media
+  response's visible and HttpOnly cookies reach the later parser request while
+  only the visible value enters the script projection. Fonts, dynamically
+  attached stylesheets,
   Service-Worker-handled navigation responses, and the full child
   profile/read/write path remain outstanding.
 - The Slice 842 HTTP regression successfully bound a local listener. The

@@ -247,6 +247,9 @@ impl BrowserRuntimeSession {
             native_observation_cache: Mutex::new(None),
             native_clipboard: Mutex::new(String::new()),
         };
+        if let BackendStartup::Native(backend) = &session.backend {
+            backend.start_async_effect_pump()?;
+        }
         BrowserBackendDispatcher::new(&session.backend)
             .initialize()
             .await?;
@@ -446,7 +449,7 @@ impl BrowserRuntimeSession {
     pub async fn native_select_target(&self, target_id: &str) -> BrowserResult<PageTargetInfo> {
         let _operation = self.operation_lock.lock().await;
         match &self.backend {
-            BackendStartup::Native(backend) => Ok(backend.select_target(target_id)?),
+            BackendStartup::Native(backend) => Ok(backend.select_target(target_id).await?),
             _ => Err("native target selection is only available on the native runtime".into()),
         }
     }

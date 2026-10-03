@@ -50,6 +50,12 @@ jobs:
           sudo apt-get install --yes bubblewrap
       - name: Build native content worker test prerequisite
         run: cargo build --package glass-browser --features native-engine --bin glass-native-content-worker --locked
+      - name: Run native async-effect owner contract tests
+        if: runner.os != 'Linux'
+        run: |
+          cargo test --package glass-browser --lib --features native-engine --locked asynchronous_effect -- --nocapture
+          cargo test --package glass-browser --lib --features native-engine --locked async_effect -- --nocapture
+          cargo test --package glass-browser --lib --features native-engine --locked dropping_runtime_backend -- --nocapture
       - name: Run native-engine navigation preload process tests
         if: runner.os != 'Linux'
         run: cargo test --package glass-browser --test native_engine --features native-engine --locked navigation_preload -- --nocapture --test-threads=1

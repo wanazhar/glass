@@ -320,6 +320,17 @@ pub struct NativeEffectsSnapshot {
     pub effects: Vec<NativeEffect>,
 }
 
+/// Results produced when an accepted child notification advances its exact
+/// owning page through one script task turn.
+#[derive(Debug)]
+pub(crate) struct NativeAsyncEffectTurn {
+    pub(crate) sequence: u64,
+    pub(crate) context_id: String,
+    pub(crate) frame_id: String,
+    pub(crate) event_effects: Vec<NativeEffect>,
+    pub(crate) frame_scripts: Vec<NativeFrameScriptRequest>,
+}
+
 /// Bounded diagnostics associated with the current native document revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeDiagnosticsSnapshot {
@@ -766,8 +777,6 @@ impl NativeEngine {
         self.content_process_event_notify.clone()
     }
 
-    // Consumed by the backend event pump in the dependent owner-pump slice.
-    #[allow(dead_code)]
     pub(crate) fn take_async_effect_notifications(
         &mut self,
     ) -> Result<Vec<NativeContentAsyncEffectNotification>, NativeEngineError> {
@@ -775,6 +784,38 @@ impl NativeEngine {
             Some(process) => process.take_async_effect_notifications(),
             None => Ok(Vec::new()),
         }
+    }
+
+    /// Deliver one validated child notification by advancing only this
+    /// engine's owning realm. Backend routing must select the engine by the
+    /// notification's context and frame identity before calling this method.
+    pub(crate) async fn dispatch_async_effect_notification(
+        &mut self,
+        notification: &NativeContentAsyncEffectNotification,
+    ) -> Result<NativeAsyncEffectTurn, NativeEngineError> {
+        if notification.sequence == 0
+            || notification.context_id != self.config.context_id
+            || notification.frame_id != self.frame_id
+        {
+            return Err(NativeEngineError::worker_failure(
+                "dispatch asynchronous content effects",
+                NativeWorkerFailureKind::Protocol,
+                "content effect notification does not identify this native context and frame",
+            ));
+        }
+
+        let previous_revision = self.revision;
+        self.evaluate_async("void 0").await?;
+        let event_effects = self.effects_since(previous_revision)?.effects;
+        let frame_scripts = self.take_pending_frame_scripts();
+
+        Ok(NativeAsyncEffectTurn {
+            sequence: notification.sequence,
+            context_id: notification.context_id.clone(),
+            frame_id: notification.frame_id.clone(),
+            event_effects,
+            frame_scripts,
+        })
     }
 
     pub(crate) fn service_worker_client_id(&self) -> String {
@@ -11259,6 +11300,69 @@ mod tests {
         let mut engine = NativeEngine::new(config).expect("native engine must construct");
         engine.initialize().expect("native engine must initialize");
         engine
+    }
+
+    #[tokio::test]
+    async fn asynchronous_effect_turn_rejects_a_different_context_or_frame() {
+        let config = NativeEngineConfig::default()
+            .with_initial_url("fixture://async-effect-owner")
+            .with_fixture("fixture://async-effect-owner", "<main>owner</main>")
+            .unwrap();
+        let mut engine = NativeEngine::new(config).unwrap();
+        engine.initialize_async().await.unwrap();
+        let revision = engine.revision();
+        let expected_context_id = engine.config.context_id.clone();
+        let expected_frame_id = engine.frame_id.clone();
+
+        for (context_id, frame_id) in [
+            ("other-context".to_owned(), expected_frame_id),
+            (expected_context_id, "other-frame".to_owned()),
+        ] {
+            let error = engine
+                .dispatch_async_effect_notification(&NativeContentAsyncEffectNotification {
+                    sequence: 1,
+                    context_id,
+                    frame_id,
+                })
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                NativeEngineError::WorkerFailure {
+                    kind: NativeWorkerFailureKind::Protocol,
+                    ..
+                }
+            ));
+            assert_eq!(engine.revision(), revision);
+        }
+
+        engine.close_async().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn asynchronous_effect_turn_runs_in_the_matching_page_owner() {
+        let config = NativeEngineConfig::default()
+            .with_initial_url("fixture://async-effect-turn")
+            .with_fixture("fixture://async-effect-turn", "<main>owner</main>")
+            .unwrap();
+        let mut engine = NativeEngine::new(config).unwrap();
+        engine.initialize_async().await.unwrap();
+        let context_id = engine.config.context_id.clone();
+        let frame_id = engine.frame_id.clone();
+
+        let turn = engine
+            .dispatch_async_effect_notification(&NativeContentAsyncEffectNotification {
+                sequence: 7,
+                context_id: context_id.clone(),
+                frame_id: frame_id.clone(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(turn.sequence, 7);
+        assert_eq!(turn.context_id, context_id);
+        assert_eq!(turn.frame_id, frame_id);
+        engine.close_async().await.unwrap();
     }
 
     #[tokio::test]

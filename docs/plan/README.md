@@ -208,8 +208,9 @@ the same worker realm. The content child also advances the earliest due
 DedicatedWorker, SharedWorker, or ServiceWorker timer while waiting for IPC,
 then persists loader/cache/cookie changes. Streaming uploads and Fetch
 commands encountered while the `respondWith()` response is still pending can
-still delay settlement; browser-facing effects from later lifetime callbacks
-remain queued until a parent response. The runtime now also stops later
+still delay settlement. Slice 841 now provides an owner-pump path for
+browser-facing effects from later lifetime callbacks; process-backed delivery
+remains unverified. The runtime now also stops later
 FetchEvent listeners after the first `respondWith()` call. `self.onfetch` is
 dispatched in registration order with `addEventListener("fetch", ...)`;
 replacing an active handler preserves its position, and null/deactivation then
@@ -220,9 +221,42 @@ The content worker now has a single blocking stdin reader that routes dialog
 decision frames to the synchronous dialog host and ordinary IPC frames to the
 asynchronous loop; its socket-free regression verifies both routes without
 claiming process-backed dialog or out-of-band browser-effect delivery.
-Slice 840 now provides the bounded, sequenced child-to-owner effect-ready
-transport. Slice 841 is ready and owns backend wakeup, exact target/frame
-routing, callback delivery, and cascaded effect processing. See the
+Slice 840 adds bounded, sequenced child-to-owner effect-ready notifications.
+Slice 841 now connects a runtime wake task, bounded pending queue, exact live
+context/frame routing, owner script turns, and the existing
+event/frame-script/browser-effect cascades; pump failures are surfaced and
+shutdown cancels and joins the task using a stop signal separate from event
+wakeups; dropping the runtime owner also requests stop while an internal pump
+reference is active. Focused future-drop and backend-drop lifecycle tests plus
+the cancelled-dialog cleanup test pass. Backend fixture tests verify
+parked-target delivery and reject a frame paired with the wrong context. The
+scoped native-engine `cargo check --lib --tests` passes with existing
+superseded-parser dead-code warnings. Socket-free pump-owner and parent-frame
+regressions prove the target registry remains available while an owner wait is
+pending and the operation settles after release. The parent-frame regression
+enters the validated-route phase directly because fixture origins are opaque;
+it proves lock liveness, not event-projection success. Slice 841 remains in
+progress: owner draining remains sequential. ServiceWorker-client sync now
+serializes sync invocations, reconciles a target/frame snapshot off-lock, checks
+identity before commit, and returns an explicit error after three topology
+conflicts; it revalidates before synchronous client-lease persistence under the
+registry and again after sequential async client replacement, retrying the full
+sync against a fresh snapshot when topology drift is detected. Earlier owners
+may briefly see a stale list before that retry; atomic multi-owner publication
+is not guaranteed. A new socket-free owner-wait regression confirms the target
+registry remains available while ServiceWorker synchronization waits for a
+parked owner, changes active-frame topology during that wait, and verifies the
+stale snapshot is discarded and retried. Owner updates remain sequential, so a
+blocked owner can delay the synchronization cascade. A second socket-free
+regression changes topology after the first owner receives its client list and
+verifies post-publication drift also triggers a retry without overwriting the
+new topology.
+Independent process-backed delivery, blocked-owner shutdown, separate
+target/frame concurrency and order, teardown races, queue overflow, WPT, and
+remote green evidence remain unverified. The existing Linux native-engine job
+runs the full feature suite, and macOS/Windows now run the socket-free
+`asynchronous_effect`, `async_effect`, and `dropping_runtime_backend` owner
+contract tests. See the
 [slice 840 task](tasks/native-engine-browser-840.md) and
 [slice 841 task](tasks/native-engine-browser-841.md).
 Process-backed request/header/no-duplicate, cancellation, source-document

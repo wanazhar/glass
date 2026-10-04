@@ -162,6 +162,7 @@ enum NativeContentProcessInput {
 
 pub(crate) struct NativeContentFetchBroker<'a> {
     request_id: u64,
+    captured_load_fetches: bool,
     owner: NativeContentCookieOwner,
     runtime: Option<&'a NativeJavaScriptRuntime>,
     stdout: &'a mut tokio::io::Stdout,
@@ -308,7 +309,9 @@ impl NativeContentFetchBroker<'_> {
         fetch_id: u32,
         request: &NativeFetchRequest<'_>,
     ) -> Result<(Result<NativeFetchResponse, NativeEngineError>, String), NativeEngineError> {
-        self.fetch_inner(fetch_id, request, false, false).await
+        let captured_load_fetch = self.captured_load_fetches;
+        self.fetch_inner(fetch_id, request, captured_load_fetch, false)
+            .await
     }
 
     async fn open_event_source(
@@ -12248,6 +12251,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         (Some(runtime), Some(loader)) => {
                                             let mut parent_fetch_broker =
                                                 NativeContentFetchBroker {
+                                                    captured_load_fetches: true,
                                                     request_id: id.as_u64().ok_or_else(|| {
                                                         NativeEngineError::invalid(
                                                             "content-process load request ID",
@@ -12391,6 +12395,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             (Some(runtime), Some(loader)) => {
                                                 let mut parent_fetch_broker =
                                                     NativeContentFetchBroker {
+                                                        captured_load_fetches: true,
                                                         request_id: id.as_u64().ok_or_else(|| {
                                                             NativeEngineError::invalid(
                                                                 "content-process load request ID",
@@ -12447,6 +12452,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     match (script_runtime.as_ref(), resource_loader.as_mut()) {
                                         (Some(runtime), Some(loader)) => {
                                             let parent_fetch_broker = NativeContentFetchBroker {
+                                                captured_load_fetches: true,
                                                 request_id: id.as_u64().ok_or_else(|| {
                                                     NativeEngineError::invalid(
                                                         "content-process load request ID",
@@ -12558,9 +12564,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             parsed.generation(),
                                             &mut pending_shared_worker_commands,
                                         )?;
-                                        workers
-                                            .apply_commands(worker_commands, loader, &resource.url)
-                                            .await?;
                                         let message_port_commands =
                                             runtime.take_message_port_commands();
                                         service_workers
@@ -12569,15 +12572,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                                 loader,
                                             )
                                             .await?;
-                                        apply_worker_page_message_port_commands(
-                                            &mut workers,
-                                            message_port_commands,
-                                            loader,
-                                            external_shared_worker_routing,
-                                            None,
-                                        )
-                                        .await?;
                                         let mut parent_fetch_broker = NativeContentFetchBroker {
+                                            captured_load_fetches: true,
                                             request_id: id.as_u64().ok_or_else(|| {
                                                 NativeEngineError::invalid(
                                                     "content-process load request ID",
@@ -12602,6 +12598,22 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                                     &resource.url,
                                                 )?,
                                         };
+                                        workers
+                                            .apply_commands_with_parent_fetch_broker(
+                                                worker_commands,
+                                                loader,
+                                                &resource.url,
+                                                &mut parent_fetch_broker,
+                                            )
+                                            .await?;
+                                        apply_worker_page_message_port_commands(
+                                            &mut workers,
+                                            message_port_commands,
+                                            loader,
+                                            external_shared_worker_routing,
+                                            Some(&mut parent_fetch_broker),
+                                        )
+                                        .await?;
                                         let mut worker_websocket_commands =
                                             pending_worker_websocket_commands
                                                 .drain(..)
@@ -13012,6 +13024,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 runtime.set_inline_script_policy(loader.inline_script_policy(&committed_url)?);
                 {
                     let mut parent_fetch_broker = NativeContentFetchBroker {
+                        captured_load_fetches: false,
                         request_id: id.as_u64().ok_or_else(|| {
                             NativeEngineError::invalid(
                                 "content-process script request ID",
@@ -13110,6 +13123,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     });
                 };
                 let mut parent_fetch_broker = NativeContentFetchBroker {
+                    captured_load_fetches: false,
                     request_id: id.as_u64().ok_or_else(|| {
                         NativeEngineError::invalid(
                             "content-process script request ID",
@@ -13294,6 +13308,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             runtime,
                             resource_loader.as_mut(),
                             Some(NativeContentFetchBroker {
+                                captured_load_fetches: false,
                                 request_id: id.as_u64().ok_or_else(|| {
                                     NativeEngineError::invalid(
                                         "content-process script request ID",
@@ -13360,6 +13375,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     &mut pending_shared_worker_commands,
                                 )?;
                                 let mut parent_fetch_broker = NativeContentFetchBroker {
+                                    captured_load_fetches: false,
                                     request_id: id.as_u64().ok_or_else(|| {
                                         NativeEngineError::invalid(
                                             "content-process script request ID",
@@ -14487,6 +14503,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     )
                 })?;
                 let mut parent_fetch_broker = NativeContentFetchBroker {
+                    captured_load_fetches: false,
                     request_id,
                     owner,
                     runtime: Some(runtime),
@@ -15974,6 +15991,7 @@ async fn load_content_resource(
         service_workers.begin_document(url, client_id)?;
         let mut navigation_parent_fetch_broker =
             is_network_url(without_fragment(url)).then(|| NativeContentFetchBroker {
+                captured_load_fetches: false,
                 request_id,
                 owner: NativeContentCookieOwner {
                     context_id: context_id.to_owned(),
@@ -16047,6 +16065,7 @@ async fn load_content_resource(
         document_url: resource.url.clone(),
     };
     let mut parent_fetch_broker = NativeContentFetchBroker {
+        captured_load_fetches: false,
         request_id,
         owner,
         runtime: None,

@@ -112,10 +112,11 @@ projection and existing native Fetch behavior.
   `<profile>.cookies` sidecar; before child startup the parent migrates legacy
   cookies out of the shared Web Storage file. The content loader starts with
   an empty jar instead of loading from that path, and child profile writes keep
-  its cookie field empty. However, `set_cookies` and related IPC still send the
-  full cookie profile into the child mirror, and direct child network paths
-  remain. Full-cookie IPC removal, mutation authority, and general network
-  brokering are outstanding. The restart persistence regression passed
+  its cookie field empty. At this checkpoint, `set_cookies` and related IPC
+  still sent the full cookie profile into the child mirror, and direct child
+  network paths remained. A later protocol-27 checkpoint removed full-cookie
+  IPC; broader request brokering and child-journal removal remain outstanding.
+  The restart persistence regression passed
   (1 passed; 93.27-second runtime); its test name now describes the observed
   process-restart behavior rather than attributing durable writes to the child.
   Cookie import and clear now commit through the parent profile writer; the
@@ -196,12 +197,13 @@ projection and existing native Fetch behavior.
   `native_content_process_worker_message_fetch_uses_parent_cookie_authority`
   regression passed (1 passed; 24.15-second test runtime), checking a same-turn
   page setter on the startup Fetch, the parent Set-Cookie update on the later
-  message Fetch, response delivery, and distinct page/worker URLs. Worker
-  script/resource/module-graph loading, autonomous turns, independently
-  delivered SharedWorker events, module/font destinations, initial/resource
-  loading, and Service Worker internal requests remain outside the verified
-  broker path. Dedicated-worker upload streams were not covered at that
-  checkpoint; see the subsequent upload-stream checkpoint below.
+  message Fetch, response delivery, and distinct page/worker URLs. At this
+  checkpoint, worker script/resource/module-graph loading, autonomous turns,
+  independently delivered SharedWorker events, module/font destinations,
+  initial/resource loading, and Service Worker internal requests remained
+  outside the verified broker path. Dedicated-worker upload streams were not
+  covered at that checkpoint; see the subsequent upload-stream checkpoint
+  below.
 - Page-to-dedicated-worker events delivered through a transferred `MessagePort`
   now retain the parent Fetch broker through worker callback evaluation. The
   expanded `native_content_process_worker_message_fetch_uses_parent_cookie_authority`
@@ -586,5 +588,15 @@ projection and existing native Fetch behavior.
   and HttpOnly invisibility in `document.cookie`. The scoped `cargo check`
   passed with existing dead-code warnings. This does not cover other
   child-direct internal network classes or claim full parent-only ownership.
+- Initial document-load DedicatedWorker creation and startup Fetch now use an
+  owner-checked parent broker. Only brokers created for that captured load set
+  the captured-load marker; the parent still validates the exact context,
+  frame, generation, and document URL, and later script/mutation brokers remain
+  unmarked. The process-backed
+  `native_content_process_initial_worker_startup_fetch_uses_parent_cookie_authority`
+  regression passed (1 passed; 904 filtered; 22.11 seconds), verifying parent-
+  selected HttpOnly cookies on Worker entry/startup Fetch, response-cookie
+  rotation on a later Worker message Fetch, and HttpOnly invisibility in the
+  page projection. Scoped `cargo check` passed with existing dead-code warnings.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

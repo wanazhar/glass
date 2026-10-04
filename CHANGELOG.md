@@ -46,6 +46,11 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Initial document-load DedicatedWorker creation and startup Fetch now use the
+  owner-checked parent cookie broker. Captured-load Fetches are accepted only
+  for the exact in-flight document owner; a process-backed regression verifies
+  HttpOnly request-cookie selection, response-cookie rotation, and visible-only
+  `document.cookie` without a child-loader fallback.
 - HTTP(S) stylesheets, CSS imports/fonts, images, and media created by page
   action mutations now settle through the owner-checked parent resource broker.
   Mutation IPC carries the parent loader, so these requests use parent-owned

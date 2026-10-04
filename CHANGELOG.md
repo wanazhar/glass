@@ -46,6 +46,11 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Browser-coordinated DedicatedWorker timers with any due deadline now defer
+  to the exact page-owner turn and its parent Fetch broker, rather than running
+  nonzero-delay callbacks inside the child. A 25 ms process regression verifies
+  parent-selected request cookies and HttpOnly response-cookie rotation;
+  standalone `NativeEngine` keeps its local timer path.
 - Durable cookies now live in a parent-managed `<profile>.cookies` sidecar.
   Legacy combined profiles migrate before a content worker starts; the child
   loader no longer hydrates cookies from the shared Web Storage path, and its

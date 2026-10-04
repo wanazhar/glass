@@ -513,5 +513,11 @@ projection and existing native Fetch behavior.
   projection, parent-applied script setters, hidden HttpOnly import, and clear.
   The scoped native-engine check and rebuilt companion worker also passed with
   existing DOM dead-code warnings.
+- Browser-coordinated DedicatedWorker timers now defer every due callback,
+  including nonzero deadlines, to the exact page-owner turn with its parent
+  Fetch broker. The process regression now uses a 25 ms delay and passed
+  (1 passed; 25.12 seconds), retaining HttpOnly filtering and parent-accepted
+  response-cookie rotation. Standalone `NativeEngine` timer scheduling remains
+  local.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

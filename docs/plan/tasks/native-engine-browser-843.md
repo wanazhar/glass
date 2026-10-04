@@ -34,8 +34,11 @@ projection and existing native Fetch behavior.
 - Browser-context frames, targets, and the browser-owned SharedWorker
   coordinator share the exact parent cookie jar. The coordinator must not seed
   itself from a cookie-profile snapshot or replay cookie overrides. Its direct
-  parent-loader authority is limited to SharedWorker script entries and their
-  import graph; content-process registries remain broker-only.
+  parent-loader authority covers SharedWorker script entries, their import
+  graph, and runtime Fetch. Parent-owned Fetch responses are bounded and
+  buffered inside the coordinator; content-process registries remain
+  broker-only. This does not close WebSocket/EventSource or other network API
+  gaps.
 - Do not send a complete cookie profile, HttpOnly value, raw `Cookie` or
   `Set-Cookie` header, or cookie-bearing profile path into the content process.
   Remove content-process cookie-profile load/save and persistence paths.
@@ -759,19 +762,22 @@ projection and existing native Fetch behavior.
   target engines and the browser-owned SharedWorker coordinator. Ordinary
   resource-loader clones remain isolated, and staged cookie transactions merge
   only their changes so a sibling update during IPC cannot be overwritten. The
-  coordinator's parent-loader authority covers worker script entries and their
-  import graph; content-process registries remain broker-only, and runtime
-  Fetch still requires the broker. The process-backed
+  coordinator's parent-loader authority covers worker script entries, their
+  import graph, and runtime Fetch; parent-owned Fetch responses are bounded and
+  buffered while content-process registries remain broker-only. The process-backed
   `native_cross_origin_parent_security_and_cookie_authority` regression passed
   (1 passed; 31.22 seconds), retaining the cross-origin SecurityError checks
   while verifying parent HttpOnly cookies on the child request and a later
   parent request. The process-backed
   `native_runtime_shared_worker_cookie_changes_reach_all_live_profile_contexts`
-  regression passed (1 passed; 52.14 seconds), verifying that the parent-owned
-  SharedWorker entry response updates the shared jar and reaches all live
-  same-profile frames/targets without reaching an isolated profile. Scoped
-  `cargo check` and the companion worker build passed with existing dead-code
-  warnings. This does not close unbrokered request classes or full cookie-
-  policy parity.
+  regression passed (1 passed; 51.95 seconds), verifying the SharedWorker
+  runtime Fetch sends the entry's parent-owned HttpOnly cookie, accepts another
+  HttpOnly response cookie, and propagates it to same-profile frames/targets
+  without exposing it to script or reaching an isolated profile. Its direct
+  bounded response is buffered because the browser coordinator does not own a
+  separate stream-event pump. Scoped `cargo check` and the companion worker
+  build passed with existing dead-code warnings. WebSocket/EventSource and
+  other unbrokered request classes remain open; full cookie-policy parity is
+  not claimed.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

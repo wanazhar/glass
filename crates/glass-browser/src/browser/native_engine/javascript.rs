@@ -2121,7 +2121,7 @@ impl NativeWorkerRegistry {
     }
 
     /// Construct the browser-parent SharedWorker registry. Only this owner
-    /// may use its own parent-side loader for worker scripts when no child IPC
+    /// may use its parent-side loader for network resources when no child IPC
     /// broker exists; sandboxed content registries remain broker-only.
     pub(crate) fn new_with_parent_network_authority() -> Self {
         Self::new_inner(true, true)
@@ -4464,7 +4464,10 @@ impl NativeWorkerRegistry {
         let (upload_connection, upload_source) = spawn_native_fetch_upload_source();
         self.worker_fetch_upload_connections
             .insert(upload_key, upload_connection);
-        if is_parent_owned_network_target(&worker_url, &href) && parent_fetch_broker.is_none() {
+        if is_parent_owned_network_target(&worker_url, &href)
+            && parent_fetch_broker.is_none()
+            && !self.parent_loader_owns_network
+        {
             self.cancel_worker_fetch_upload_connection(upload_key);
             return Ok(Err(missing_parent_network_authority("Worker Fetch upload")));
         }
@@ -4527,30 +4530,44 @@ impl NativeWorkerRegistry {
         if is_network_url(&worker_url) {
             let request_body = upload_source.into_body();
             let task_loader = loader.clone();
+            let parent_loader_owns_network = self.parent_loader_owns_network;
             let task = tokio::spawn(async move {
                 let mut task_loader = task_loader;
-                let result = task_loader
-                    .open_fetch_response_stream_with_body_async(
-                        NativeFetchRequest {
-                            document_url: &worker_url,
-                            href: &href,
-                            method,
-                            body: None,
-                            content_type,
-                            request_headers: headers,
-                            credentials,
-                            credentials_mode: Some(credentials_mode),
-                            referrer_url,
-                            referrer_policy,
-                            cors_mode,
-                            redirect_mode,
-                            cache_mode,
-                            timeout,
-                            max_response_bytes: None,
-                        },
-                        Some(request_body),
-                    )
-                    .await;
+                let request = NativeFetchRequest {
+                    document_url: &worker_url,
+                    href: &href,
+                    method,
+                    body: None,
+                    content_type,
+                    request_headers: headers,
+                    credentials,
+                    credentials_mode: Some(credentials_mode),
+                    referrer_url,
+                    referrer_policy,
+                    cors_mode,
+                    redirect_mode,
+                    cache_mode,
+                    timeout,
+                    max_response_bytes: Some(MAX_NATIVE_FETCH_STREAM_BODY_BYTES),
+                };
+                let result = if parent_loader_owns_network {
+                    task_loader
+                        .fetch_request_with_body_async(request, request_body)
+                        .await
+                        .map(|mut response| {
+                            let cached_body = Some(std::mem::take(&mut response.body));
+                            NativeFetchResponseStream {
+                                response,
+                                body: None,
+                                cached_body,
+                                max_response_bytes: MAX_NATIVE_FETCH_STREAM_BODY_BYTES,
+                            }
+                        })
+                } else {
+                    task_loader
+                        .open_fetch_response_stream_with_body_async(request, Some(request_body))
+                        .await
+                };
                 (result, task_loader)
             });
             let (opened, task_loader) = self
@@ -4926,10 +4943,16 @@ impl NativeWorkerRegistry {
                 } else {
                     worker_fetch_response_payload(response)
                 }
-            } else if is_parent_owned_network_target(&worker_url, &href) {
+            } else if is_parent_owned_network_target(&worker_url, &href)
+                && !self.parent_loader_owns_network
+            {
                 worker_fetch_response_payload(Err(missing_parent_network_authority(
                     "Worker Fetch request",
                 )))
+            } else if self.parent_loader_owns_network {
+                worker_fetch_response_payload(
+                    loader.fetch_request_with_headers_async(request).await,
+                )
             } else if self.stream_worker_fetches {
                 self.worker_fetch_opened_payload(
                     worker_id,

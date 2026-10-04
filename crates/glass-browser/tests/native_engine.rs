@@ -38168,7 +38168,7 @@ fn native_runtime_shared_worker_cookie_changes_reach_all_live_profile_contexts()
             let server = tokio::spawn(async move {
                 tokio::time::timeout(Duration::from_secs(60), async move {
                     let mut requests = Vec::new();
-                    for _ in 0..8 {
+                    for _ in 0..9 {
                         let (mut stream, _) = listener.accept().await.unwrap();
                         let request = read_http_request(&mut stream).await;
                         let path = request
@@ -38200,7 +38200,12 @@ globalThis.startCookieFanout = () => {
                                 "/cookie-writer.js" => (
                                     "Set-Cookie: fanout=from-worker; Path=/; SameSite=Lax\r\n",
                                     "application/javascript",
-                                    "globalThis.onconnect = event => event.ports[0].postMessage('ready');",
+                                    "globalThis.onconnect = event => { const port = event.ports[0]; port.postMessage('ready'); fetch('/cookie-fetch', { credentials: 'include' }).then(response => response.text()).then(body => port.postMessage(body), error => port.postMessage(String(error))); };",
+                                ),
+                                "/cookie-fetch" => (
+                                    "Set-Cookie: fanout-fetch=from-fetch; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                    "text/plain",
+                                    "fetch-observed",
                                 ),
                                 "/peer-page" => (
                                     "",
@@ -38278,7 +38283,7 @@ globalThis.startCookieFanout = () => {
                         .await
                         .unwrap()
                         .value;
-                    if messages.as_array().is_some_and(|values| values.len() == 1) {
+                    if messages.as_array().is_some_and(|values| values.len() == 2) {
                         break messages;
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -38286,6 +38291,7 @@ globalThis.startCookieFanout = () => {
             })
             .await
             .expect("the SharedWorker response cookie is accepted");
+            assert_eq!(writer_messages, serde_json::json!(["ready", "fetch-observed"]));
 
             session.native_select_target(&peer.id).await.unwrap();
             let peer_observation = session
@@ -38299,6 +38305,10 @@ globalThis.startCookieFanout = () => {
                 .as_str()
                 .unwrap()
                 .contains("fanout=from-worker"));
+            assert!(!peer_observation["cookie"]
+                .as_str()
+                .unwrap()
+                .contains("fanout-fetch=from-fetch"));
             assert_eq!(peer_observation["response"], "peer-observed");
 
             session.native_select_frame(&child_frame).await.unwrap();
@@ -38313,6 +38323,10 @@ globalThis.startCookieFanout = () => {
                 .as_str()
                 .unwrap()
                 .contains("fanout=from-worker"));
+            assert!(!frame_observation["cookie"]
+                .as_str()
+                .unwrap()
+                .contains("fanout-fetch=from-fetch"));
             assert_eq!(frame_observation["response"], "frame-observed");
 
             assert_eq!(
@@ -38327,8 +38341,6 @@ globalThis.startCookieFanout = () => {
                 isolated.script("document.cookie").await.unwrap().value,
                 serde_json::json!("")
             );
-            assert_eq!(writer_messages, serde_json::json!(["ready"]));
-
             session.close().await.unwrap();
             isolated.close().await.unwrap();
             let requests = server.await.unwrap();
@@ -38343,7 +38355,10 @@ globalThis.startCookieFanout = () => {
                     .to_owned()
             };
             assert!(cookie_for("/observe-peer").contains("fanout=from-worker"));
+            assert!(cookie_for("/cookie-fetch").contains("fanout=from-worker"));
             assert!(cookie_for("/observe-frame").contains("fanout=from-worker"));
+            assert!(cookie_for("/observe-peer").contains("fanout-fetch=from-fetch"));
+            assert!(cookie_for("/observe-frame").contains("fanout-fetch=from-fetch"));
             assert!(!cookie_for("/observe-isolated").contains("fanout="));
 
             for path in [

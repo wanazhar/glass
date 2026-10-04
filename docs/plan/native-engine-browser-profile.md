@@ -107,9 +107,11 @@ explicit browser-context ownership decision. A staged cookie transaction
 commits only its cookie changes into the shared jar, so it cannot replace
 unrelated changes made by a sibling engine while the transaction awaited IPC.
 The browser-owned SharedWorker registry may use its parent loader for worker
-entry scripts and their classic/module import graph; content-process registries
-remain broker-only. This does not authorize unbrokered SharedWorker Fetch or
-other runtime network APIs.
+entry scripts, their classic/module import graph, and runtime Fetch requests.
+Those direct Fetch responses are bounded and buffered within the browser
+coordinator; content-process registries remain broker-only and retain their
+parent-mediated response path. This does not imply parity for other runtime
+network APIs such as WebSocket or EventSource.
 
 The parent must not send a cookie profile, an HttpOnly value, or raw
 `Cookie`/`Set-Cookie` headers to a content process. It gives a document only a
@@ -231,8 +233,10 @@ removed the child cookie-profile field from browser-coordinated SharedWorker
 creation. Slice 843 now binds the browser-owned coordinator loader directly to
 the same context jar used by frames and targets, removing creation-time cookie
 profile snapshots and coordinator override replay. Its explicit parent-loader
-authority covers SharedWorker script entries and their import graph, not
-unbrokered runtime Fetch. Slice 843 continues to track the remaining
+authority covers SharedWorker script entries, their import graph, and runtime
+Fetch; the process-backed cookie-fanout regression verifies HttpOnly response
+cookie acceptance and propagation while keeping the value out of script. Slice
+843 continues to track the remaining
 unbrokered network paths; the profile is not parent-only until that work also
 passes. A
 process-backed checkpoint now brokers standard buffered Fetches emitted during

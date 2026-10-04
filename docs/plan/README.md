@@ -324,13 +324,13 @@ URL, same-turn page cookie writes reach the worker Fetches, a response
 `Set-Cookie` is visible on later worker requests, and a MessagePort-triggered
 Fetch receives the parent-updated HttpOnly cookie. Dedicated/SharedWorker
 module-graph process coverage, autonomous turns, independently delivered SharedWorker events,
-worker module or font destinations, initial/resource loading, and Service
-Worker lifetime/background Fetches remain outside the verified path. Explicit-turn
+worker module or font destinations, and initial/resource loading remain
+outside the verified path at that checkpoint. Explicit-turn
 dedicated-worker upload streams are covered by the separate regression below.
 Page-originated upload streams sent to a controlled Service Worker are offered
 to the worker first; when it declines the request, the network fallback uses
-the parent broker. Service Worker-originated upload streams and lifetime work
-remain outside that path. The process-backed
+the parent broker. Service Worker-originated upload streams and background
+work outside intercepted FetchEvents remain outside that path. The process-backed
 `native_content_process_service_worker_replays_cloned_request_body` regression
 passed (1 test; 27.81-second runtime), preserving the worker-handled response
 and verifying a page cookie on the fallback upload plus the parent's HttpOnly
@@ -10485,9 +10485,14 @@ with its parent Fetch broker.
 The `browser_owned_service_worker_timer_fetch_uses_parent_cookie_authority`
 regression passed (1 test; 22.89 seconds), checking parent HttpOnly-cookie
 selection and rotation across two timer Fetches while `document.cookie` keeps
-both secrets hidden. Service Worker lifetime/background Fetches,
-FetchEvent-internal requests, and other internal network paths remain
-unbrokered. Slice 843 remains in progress: the content process still mirrors
+both secrets hidden. Non-awaited standard Fetches created by a controlled
+FetchEvent now queue for the parent broker on the next exact-owner turn without
+holding the event's independent `respondWith()` result. The process-backed
+`browser_owned_service_worker_lifetime_fetch_uses_parent_cookie_authority`
+regression passed (1 test; 28.49 seconds), checking parent cookie selection,
+HttpOnly response rotation, and the next page Fetch. Service Worker-originated
+upload streams, background work outside intercepted FetchEvents, and other
+internal network paths remain unbrokered. Slice 843 remains in progress: the content process still mirrors
 the full cookie profile and has other direct network paths. Exact scope and
 verification are in the [Slice 843 task](tasks/native-engine-browser-843.md).
 

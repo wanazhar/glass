@@ -205,9 +205,11 @@ projection and existing native Fetch behavior.
   `native_content_process_page_fetch_credentials_survive_service_worker_handoff`
   process-backed regression passed (1 passed; 33.30-second runtime), covering
   cross-origin credentials/CORS behavior and response-cookie visibility on a
-  later request. Service Worker lifetime/background Fetches,
-  Service Worker-originated upload streams, and out-of-band Service Worker
-  events remain outside this broker path.
+  later request. At that checkpoint, Service Worker lifetime/background
+  Fetches, Service Worker-originated upload streams, and out-of-band Service
+  Worker events remained outside this broker path; a later checkpoint below
+  adds parent brokering for non-awaited Fetches created by a controlled
+  FetchEvent.
 - Ordinary explicit page Fetches with a `ReadableStream` request body now
   collect the bounded body (up to `MAX_NATIVE_FORM_BODY_BYTES`) before using
   the parent broker. `native_content_process_commits_page_work_from_stream_upload_pull`
@@ -244,8 +246,9 @@ projection and existing native Fetch behavior.
   path also exposed that the Service Worker dispatcher returned a plain object
   when `respondWith()` was not called even though its host always awaited a
   promise; it now returns a resolved promise, allowing the existing network
-  fallback to run. Service Worker-originated upload streams and lifetime or
-  autonomous worker turns remain outside this broker path.
+  fallback to run. Service Worker-originated upload streams, background work
+  outside intercepted FetchEvents, and autonomous worker turns remain outside
+  this broker path.
 - Slice 842 is complete: browser-coordinated SharedWorker creation derives
   cookies from the exact parent source owner. Its parent snapshot/override/
   deletion process regression passed (1 passed; 48.31-second test runtime),
@@ -402,9 +405,14 @@ projection and existing native Fetch behavior.
   `glass-native-content-worker` executable, so rebuild it first with
   `cargo build -p glass-browser --features native-engine --bin glass-native-content-worker --locked`;
   otherwise an existing stale executable can make the test exercise old child
-  code. Service Worker lifetime/background Fetches, FetchEvent-internal
-  requests, upload streams from Service Workers, and other internal network
-  paths remain outside this timer checkpoint.
+  code. Non-awaited ordinary Fetches created by a controlled FetchEvent now
+  queue to the parent and run on the next exact-owner turn, leaving the
+  independent `respondWith()` response unblocked. The process-backed
+  `browser_owned_service_worker_lifetime_fetch_uses_parent_cookie_authority`
+  regression passed (1 passed; 28.49 seconds), verifying parent cookie
+  selection, HttpOnly rotation, and the next page Fetch. Service
+  Worker-originated upload streams, background work outside intercepted
+  FetchEvents, and other internal network paths remain outside this checkpoint.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.

@@ -10684,7 +10684,19 @@ regression passed (1 passed; 51.95 seconds), verifying the worker uses its
 parent-selected HttpOnly cookie, accepts an HttpOnly response cookie, and
 propagates it to same-profile frames/targets without exposing it to script or
 leaking it into an isolated profile. Other uncovered HTTP(S) classes and
-WebSocket/EventSource parity remain open; Slice 843 remains in progress.
+WebSocket requests remain open. Browser-owned SharedWorker EventSource now
+opens, streams, reconnects, and closes through the coordinator's parent loader;
+the parent selects request cookies and accepts response cookies before later
+requests. The process-backed
+`native_runtime_shared_worker_event_source_uses_parent_cookie_authority`
+regression passed (1 passed; 910 filtered; 29.94 seconds), verifying named
+multiline SSE delivery, HttpOnly request/response cookie ownership, a later
+page Fetch, and persistence after reopening the profile while the script cookie
+projection stays empty. A default Tokio stack overflow led to configuring
+4 MiB thread stacks in both products' runtime entrypoints and the test helper;
+the regression passes without a shell environment override. This increases
+reserved stack space per Tokio thread. Scoped package checks pass; remote CI for
+this unpushed checkpoint is not yet available. Slice 843 remains in progress.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

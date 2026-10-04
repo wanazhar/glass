@@ -133,10 +133,10 @@ const MAX_NATIVE_COOKIE_CHANGE_BATCH: usize = MAX_NATIVE_EFFECTS;
 const NATIVE_WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const NATIVE_WEBSOCKET_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_NATIVE_WEBSOCKET_EVENTS: usize = MAX_NATIVE_EFFECTS;
-const NATIVE_EVENTSOURCE_INITIAL_RETRY: Duration = Duration::from_secs(3);
-const NATIVE_EVENTSOURCE_MAX_RETRY: Duration = Duration::from_secs(30);
-const MAX_NATIVE_EVENTSOURCE_RECONNECTS: usize = MAX_NATIVE_EFFECTS;
-const MAX_NATIVE_EVENTSOURCE_CONNECTIONS: usize = MAX_NATIVE_EFFECTS;
+pub(crate) const NATIVE_EVENTSOURCE_INITIAL_RETRY: Duration = Duration::from_secs(3);
+pub(crate) const NATIVE_EVENTSOURCE_MAX_RETRY: Duration = Duration::from_secs(30);
+pub(crate) const MAX_NATIVE_EVENTSOURCE_RECONNECTS: usize = MAX_NATIVE_EFFECTS;
+pub(crate) const MAX_NATIVE_EVENTSOURCE_CONNECTIONS: usize = MAX_NATIVE_EFFECTS;
 const MAX_CONTENT_STYLESHEETS: usize = 16;
 const MAX_CONTENT_STYLESHEET_BYTES: usize = 512 * 1024;
 const MAX_CONTENT_IMAGES: usize = 64;
@@ -2201,22 +2201,32 @@ struct NativeEventSourceConnection {
 }
 
 #[derive(Default)]
-struct NativeEventSourceParser {
+pub(crate) struct NativeEventSourceParser {
     buffer: Vec<u8>,
     data: String,
     event: String,
-    last_event_id: String,
-    retry: Duration,
+    pub(crate) last_event_id: String,
+    pub(crate) retry: Duration,
     skip_lf_after_cr: bool,
 }
 
-struct NativeEventSourceMessage {
-    event: String,
-    data: String,
-    last_event_id: String,
+impl NativeEventSourceParser {
+    pub(crate) fn with_state(last_event_id: String, retry: Duration) -> Self {
+        Self {
+            last_event_id,
+            retry,
+            ..Self::default()
+        }
+    }
 }
 
-fn parse_event_source_chunk(
+pub(crate) struct NativeEventSourceMessage {
+    pub(crate) event: String,
+    pub(crate) data: String,
+    pub(crate) last_event_id: String,
+}
+
+pub(crate) fn parse_event_source_chunk(
     parser: &mut NativeEventSourceParser,
     chunk: &[u8],
 ) -> Result<Vec<NativeEventSourceMessage>, NativeEngineError> {

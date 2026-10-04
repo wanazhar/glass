@@ -19457,6 +19457,7 @@ fn run_native_browser_worker_test(test: impl FnOnce(tokio::runtime::Runtime) + S
         .stack_size(8 * 1024 * 1024)
         .spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
+                .thread_stack_size(4 * 1024 * 1024)
                 .enable_all()
                 .build()
                 .expect("native browser test runtime should build");
@@ -38408,6 +38409,205 @@ globalThis.startCookieFanout = () => {
                 &isolated_cookie_profile_path,
                 &isolated_lock_path,
                 &isolated_cookie_profile_lock_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+        });
+    });
+}
+
+#[test]
+fn native_runtime_shared_worker_event_source_uses_parent_cookie_authority() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let _guard = native_content_process_test_lock().lock().await;
+            let profile_path = std::env::temp_dir().join(format!(
+                "glass-native-shared-worker-eventsource-{}-profile.json",
+                std::process::id()
+            ));
+            let cookie_profile_path =
+                std::path::PathBuf::from(format!("{}.cookies", profile_path.display()));
+            let profile_lock_path = profile_path.with_extension("lock");
+            let cookie_profile_lock_path = cookie_profile_path.with_extension("lock");
+            let worker_clients_path = profile_path.with_extension("clients");
+            let worker_events_path = profile_path.with_extension("events");
+            let worker_readers_path = profile_path.with_extension("readers");
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(60), async move {
+                    let mut requests = Vec::new();
+                    for _ in 0..5 {
+                        let (mut stream, _) = listener.accept().await.unwrap();
+                        let request = read_http_request(&mut stream).await;
+                        let path = request
+                            .split_whitespace()
+                            .nth(1)
+                            .expect("SharedWorker EventSource request has a path")
+                            .to_owned();
+                        let cookie = request
+                            .lines()
+                            .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                            .and_then(|line| line.split_once(':'))
+                            .map(|(_, value)| value.trim().to_owned());
+                        let (headers, content_type, body): (&str, &str, &str) = match path.as_str()
+                        {
+                            "/page" => (
+                                "Set-Cookie: parent_seed=page; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                "text/html",
+                                r#"<script>
+globalThis.eventSourceMessages = [];
+globalThis.startSharedWorkerEventSource = () => {
+  const worker = new SharedWorker('/shared-eventsource.js', {
+    name: 'parent-cookie-eventsource', credentials: 'include',
+  });
+  worker.port.addEventListener('message', event => eventSourceMessages.push(event.data));
+  worker.port.start();
+};
+</script>"#,
+                            ),
+                            "/shared-eventsource.js" => (
+                                "Set-Cookie: worker_entry=shared; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                "text/javascript",
+                                "onconnect = event => { const port = event.ports[0]; const source = new EventSource('/events', { withCredentials: true }); source.addEventListener('open', () => port.postMessage(['open', source.readyState])); source.addEventListener('greeting', message => { port.postMessage([message.type, message.data, message.lastEventId, message.origin]); source.close(); }); source.onerror = error => port.postMessage(['error', String(error.message || '')]); };",
+                            ),
+                            "/events" => (
+                                "Set-Cookie: event_stream=sse; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                "text/event-stream",
+                                "retry: 5\r\nid: 42\r\nevent: greeting\r\ndata: hello\r\ndata: worker\r\n\r\n",
+                            ),
+                            "/after" => ("", "text/plain", "after"),
+                            "/reopen" => ("", "text/html", "<p>reopened</p>"),
+                            other => panic!("unexpected SharedWorker EventSource request: {other}"),
+                        };
+                        if path == "/shared-eventsource.js" {
+                            assert!(cookie
+                                .as_deref()
+                                .is_some_and(|value| value.contains("parent_seed=page")));
+                        }
+                        if path == "/events" {
+                            assert!(cookie
+                                .as_deref()
+                                .is_some_and(|value| value.contains("parent_seed=page")));
+                            assert!(cookie
+                                .as_deref()
+                                .is_some_and(|value| value.contains("worker_entry=shared")));
+                        }
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                        requests.push((path, cookie));
+                    }
+                    requests
+                })
+                .await
+                .expect("SharedWorker EventSource requests stay bounded")
+            });
+
+            let session = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("http://{address}/page")),
+            )
+            .await
+            .unwrap();
+            session
+                .script("startSharedWorkerEventSource(); true")
+                .await
+                .unwrap();
+            let messages = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let messages = session
+                        .script("eventSourceMessages")
+                        .await
+                        .unwrap()
+                        .value;
+                    if messages.as_array().is_some_and(|values| values.len() == 2) {
+                        break messages;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("parent EventSource stream events reach the SharedWorker");
+            assert_eq!(
+                messages,
+                serde_json::json!([
+                    ["open", 1],
+                    [
+                        "greeting",
+                        "hello\nworker",
+                        "42",
+                        format!("http://{address}")
+                    ]
+                ])
+            );
+            assert_eq!(
+                session.script("document.cookie").await.unwrap().value,
+                serde_json::json!("")
+            );
+            assert_eq!(
+                session
+                    .script("await fetch('/after').then(response => response.text())")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("after")
+            );
+            session.close().await.unwrap();
+
+            let reopened = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("http://{address}/reopen")),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                reopened.script("document.cookie").await.unwrap().value,
+                serde_json::json!("")
+            );
+            reopened.close().await.unwrap();
+            let requests = server.await.unwrap();
+            let cookie_for = |path: &str| {
+                requests
+                    .iter()
+                    .find(|(request_path, _)| request_path == path)
+                    .unwrap_or_else(|| panic!("missing SharedWorker EventSource request {path}"))
+                    .1
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            for path in ["/after", "/reopen"] {
+                let cookie = cookie_for(path);
+                for name in ["parent_seed=page", "worker_entry=shared", "event_stream=sse"] {
+                    assert!(cookie.contains(name), "{path} must send parent cookie {name}");
+                }
+            }
+
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
             ] {
                 let _ = fs::remove_file(path);
             }

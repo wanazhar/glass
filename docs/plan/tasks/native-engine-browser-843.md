@@ -35,10 +35,11 @@ projection and existing native Fetch behavior.
   coordinator share the exact parent cookie jar. The coordinator must not seed
   itself from a cookie-profile snapshot or replay cookie overrides. Its direct
   parent-loader authority covers SharedWorker script entries, their import
-  graph, and runtime Fetch. Parent-owned Fetch responses are bounded and
-  buffered inside the coordinator; content-process registries remain
-  broker-only. This does not close WebSocket/EventSource or other network API
-  gaps.
+  graph, runtime Fetch, and SharedWorker EventSource open/stream/reconnect/close.
+  Parent-owned Fetch responses are bounded and buffered; EventSource delivery
+  remains incremental and bounded inside the coordinator. Content-process
+  registries remain broker-only. WebSocket and other network API gaps remain
+  separate follow-up work.
 - Do not send a complete cookie profile, HttpOnly value, raw `Cookie` or
   `Set-Cookie` header, or cookie-bearing profile path into the content process.
   Remove content-process cookie-profile load/save and persistence paths.
@@ -73,6 +74,9 @@ projection and existing native Fetch behavior.
 - `crates/glass-browser/src/browser/native_engine/service_worker.rs`
 - `crates/glass-browser/src/browser/native_engine/resource_loader.rs`
 - `crates/glass-browser/tests/native_engine.rs`
+- `crates/glass-browser/src/main.rs`
+- `crates/glass-dev/src/main.rs`
+- `crates/glass-dev/src/browser_main.rs`
 - `docs/architecture/native-engine.md`
 - `docs/plan/native-engine-browser-profile.md`
 - `docs/plan/README.md`
@@ -103,6 +107,11 @@ projection and existing native Fetch behavior.
   process-backed regressions; the tests spawn this companion executable, which
   `cargo check` does not rebuild:
   `cargo build -p glass-browser --features native-engine --bin glass-native-content-worker --locked --quiet`
+- Configure Glass-owned Tokio runtime entrypoints with the verified 4 MiB
+  thread stack; test through the shared helper without relying on a shell-only
+  `RUST_MIN_STACK` override.
+- Run
+  `cargo test --quiet -p glass-browser --features native-engine --test native_engine --locked native_runtime_shared_worker_event_source_uses_parent_cookie_authority -- --exact`
 - Run focused process-backed cookie tests after the check; reserve workspace
   and all-feature validation for the final issue #40 gate.
 - `cargo fmt --all -- --check`
@@ -780,8 +789,22 @@ projection and existing native Fetch behavior.
   while `document.cookie` exposes only the non-HttpOnly cookie. This process-
   backed persistence check passed (1 passed; 62.28 seconds). The test also
   removes its cookie sidecar and lock files. Scoped `cargo check` and the
-  companion worker build passed with existing dead-code warnings. WebSocket/
-  EventSource and other unbrokered request classes remain open; full cookie-
-  policy parity is not claimed.
+  companion worker build passed with existing dead-code warnings. Browser-owned
+  SharedWorker EventSource open, streaming, reconnect, and close now use the
+  coordinator's parent loader and exact shared context cookie jar; stream
+  chunks remain bounded and are dispatched in the owning worker realm. The
+  process-backed `native_runtime_shared_worker_event_source_uses_parent_cookie_authority`
+  regression passed (1 passed; 910 filtered; 29.94 seconds), checking named
+  multiline event delivery, parent-selected HttpOnly cookies on the worker
+  entry and EventSource request, cookie visibility to a later Fetch, and
+  persistence through a fresh session on the same profile. `document.cookie`
+  remains empty. The first run overflowed the default Tokio stack; 4 MiB
+  passes, matching CI's configured minimum. Runtime entrypoints in both
+  product packages now set 4 MiB; this reserves more stack per runtime thread,
+  using the lowest size verified here. Scoped checks pass for both packages,
+  and the focused test passes without a `RUST_MIN_STACK` override. No remote CI
+  result is claimed for this unpushed checkpoint. WebSocket and other
+  unbrokered request classes remain open; full cookie-policy parity is not
+  claimed.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

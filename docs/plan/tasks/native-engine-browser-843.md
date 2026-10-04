@@ -687,9 +687,12 @@ projection and existing native Fetch behavior.
   `native_content_process_service_worker_lifecycle_fetches_use_parent_cookie_authority`,
   `native_content_process_worker_message_fetch_uses_parent_cookie_authority`,
   and `native_host_fetch_service_worker_nested_cookie_uses_parent_authority`
-  passed (1 each; 30.16s, 19.39s, 20.15s, 20.38s, and 20.34s). The latest
-  hardening disables content-process cookie reads/writes/profile installation
-  and rejects nonempty child cookie journals. Unit regressions cover target-
+  passed (1 each; 30.16s, 19.39s, 20.15s, 20.38s, and 20.34s). The parent-cookie
+  navigation-preload CacheStorage/timer regression also passes (1 passed; 906
+  filtered; 33.70 seconds), proving the parent attaches an HttpOnly cookie
+  while keeping it out of the worker's `document.cookie` projection. The
+  current boundary disables content-process cookie reads/writes/profile
+  installation and rejects nonempty child cookie journals. Unit regressions cover target-
   based selection across HTTP(S), file, data, and fixture bases, plus disabled
   child cookie authority. A transport-level guard now rejects direct HTTP(S)
   requests from the content loader, so uncovered request classes fail closed

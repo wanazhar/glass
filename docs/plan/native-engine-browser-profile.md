@@ -676,14 +676,17 @@ following page Fetch while remaining absent from `document.cookie`.
 The socket-free navigation-preload tests cover response cloning, immutable
 headers, the no-preload result, eligibility, and network errors. The
 process-backed CacheStorage/timer-response regression now passes (1 passed;
-906 filtered; 33.83 seconds): it settles a delayed response with preload
+906 filtered; 33.70 seconds): it settles a delayed response with preload
 disabled, then matches an origin-scoped cached response and settles it after a
 timer while an enabled parent-brokered preload is held. Navigation commits
 before release, and the unused preload socket closes. Leading CacheStorage
 commands progress in FIFO order; later non-cache commands remain deferred. The
-parent-only cookie authority is unchanged. The earlier timer-progress gap is
-fixed; this regression uses the product's
-8 MiB resident-worker stack contract, not the default Rust test-harness stack.
+parent-only cookie authority is unchanged. The same regression seeds an
+HttpOnly cookie in the parent, asserts the script-visible projection is empty,
+and verifies that the parent attaches the cookie to the navigation-preload
+request. The earlier timer-progress gap is fixed; this regression uses the
+product's 8 MiB resident-worker stack contract, not the default Rust
+test-harness stack.
 Process-backed eligibility boundary controls,
 navigation cancellation, and response progress that depends on pending network
 Fetches, streaming uploads, or other non-CacheStorage host commands remain

@@ -12790,8 +12790,13 @@ self.addEventListener('fetch', event => {
             let request = read_http_request(&mut stream).await;
             assert_eq!(request.split_whitespace().next(), Some("GET"));
             assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let set_cookie = if expected_path == "/register" {
+                "Set-Cookie: parent-session=seed; Path=/; HttpOnly\r\n"
+            } else {
+                ""
+            };
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{set_cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(response.as_bytes()).await.unwrap();
@@ -12836,6 +12841,10 @@ self.addEventListener('fetch', event => {
         .script("await navigator.serviceWorker.ready.then(registration => { if (!registration.active) throw new Error('active ServiceWorker is missing'); })")
         .await
         .unwrap();
+    assert_eq!(
+        session.script("document.cookie").await.unwrap().value,
+        serde_json::json!("")
+    );
 
     session
         .navigate(format!("http://{address}/early-response-no-preload"))
@@ -13103,6 +13112,12 @@ self.addEventListener('fetch', event => {
                         request
                             .to_ascii_lowercase()
                             .contains("service-worker-navigation-preload: true")
+                    );
+                    assert!(
+                        request
+                            .to_ascii_lowercase()
+                            .contains("cookie: parent-session=seed"),
+                        "the parent must attach its HttpOnly cookie to the preload request"
                     );
                     let _ = preload_seen_tx.send(());
                     let mut byte = [0_u8; 1];

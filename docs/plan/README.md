@@ -206,13 +206,15 @@ filtered; 36.50 seconds). The process-backed controlled-navigation
 broker (1 passed; 906 filtered; 25.04 seconds): HttpOnly request and response
 cookies stay parent-owned, are reused on the following page request, and do
 not appear in `document.cookie`. The process-backed CacheStorage/timer-response
-regression passes (1 passed; 906 filtered; 33.83 seconds), covering an
+regression passes (1 passed; 906 filtered; 33.70 seconds), covering an
 asynchronous `respondWith()` with preload disabled and with its parent-brokered
 preload body held. The held-preload case first resolves a CacheStorage match
 and then waits on a timer; leading CacheStorage commands progress without
 borrowing the parent's network/cookie broker. Navigation commits before
 release, and the server observes the unused preload socket close. The parent
-remains the sole cookie jar owner. This fixes the earlier timer-progress
+remains the sole cookie jar owner. The regression also confirms an HttpOnly
+seed stays out of `document.cookie` while the parent attaches it to the
+preload request. This fixes the earlier timer-progress
 failure; the regression uses Glass's 8 MiB resident-worker stack contract, not
 the default Rust test-harness stack. The scoped check and
 six socket-free navigation-preload tests pass, including the runtime test.

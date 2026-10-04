@@ -360,8 +360,10 @@ projection and existing native Fetch behavior.
   Fetches. The process regression passed (1 test; 24.90 seconds), covering
   ordered cookie updates across navigation, stylesheet, CSS import, image, and
   classic parser-script requests, and proving `img-src 'self'` blocks the
-  cross-origin image before network access. The initial module graph still
-  lacks a dedicated cookie regression. Protocol version 23 adds parent-owned
+  cross-origin image before network access. At this protocol-22 checkpoint,
+  the initial module graph still lacked a dedicated cookie regression; the
+  later process-backed module-worker coverage is recorded below. Protocol
+  version 23 adds parent-owned
   HTTP(S) page-media loads; only bounded media metadata returns to the child,
   while request and response cookies stay in the parent. The same process test
   passed after extension (1 passed; 25.76 seconds), verifying the media
@@ -701,5 +703,17 @@ projection and existing native Fetch behavior.
   rather than run without parent cookies. They still need parent-broker wiring
   for request-cookie matching and response-cookie acceptance, so parent-only
   behavioral ownership and Issue #40 remain incomplete.
+- The process-backed
+  `native_content_process_module_worker_graph_uses_parent_cookie_authority`
+  regression passed (1 passed; 907 filtered; 19.60 seconds). It verifies that
+  the parent sends the page's HttpOnly cookie to the module Worker entry,
+  accepts the entry's HttpOnly response cookie before loading its static
+  dependency, accepts the dependency's cookie before the startup Fetch, and
+  sends all four accumulated HttpOnly cookies on a later Worker-message Fetch.
+  The parent cookie API retains all four values while `document.cookie` stays
+  empty. Scoped `cargo check` passed with existing dead-code warnings, and the
+  content-worker companion was rebuilt before the process regression. This
+  closes the initial module-worker graph coverage gap only; other uncovered
+  HTTP(S) request classes still fail closed and Slice 843 remains in progress.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

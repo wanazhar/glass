@@ -8907,6 +8907,182 @@ async fn native_content_process_initial_worker_startup_fetch_uses_parent_cookie_
 }
 
 #[tokio::test]
+async fn native_content_process_module_worker_graph_uses_parent_cookie_authority() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests: Vec<(String, Option<String>)> = Vec::new();
+        for _ in 0..5 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "module Worker graph request idle timeout after paths {:?}",
+                        requests.iter().map(|(path, _)| path).collect::<Vec<_>>()
+                    )
+                })
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("module Worker graph request includes a URL")
+                .to_owned();
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
+            let (response_headers, content_type, body): (&str, &str, &str) = match path.as_str() {
+                "/module-worker-page" => (
+                    "Set-Cookie: module_page_secret=seed; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/html",
+                    "<script>globalThis.moduleWorkerMessages = []; globalThis.moduleWorker = new Worker('/module-worker-entry.mjs', { type: 'module' }); moduleWorker.onmessage = event => moduleWorkerMessages.push(event.data);</script>",
+                ),
+                "/module-worker-entry.mjs" => (
+                    "Set-Cookie: module_entry_secret=entry; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/javascript",
+                    "import { value } from './module-worker-dependency.mjs'; self.onmessage = async event => { if (event.data !== 'after') return; const response = await fetch('/module-worker-after'); postMessage({ kind: 'after', text: await response.text() }); }; fetch('/module-worker-data').then(async response => postMessage({ kind: 'startup', module: value, text: await response.text() })).catch(error => postMessage({ kind: 'error', message: String(error) }));",
+                ),
+                "/module-worker-dependency.mjs" => (
+                    "Set-Cookie: module_dependency_secret=dependency; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/javascript",
+                    "export const value = 'module dependency loaded';",
+                ),
+                "/module-worker-data" => (
+                    "Set-Cookie: module_data_secret=data; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/plain",
+                    "module worker startup fetch",
+                ),
+                "/module-worker-after" => ("", "text/plain", "module worker follow-up fetch"),
+                other => panic!("unexpected module Worker graph request: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{response_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push((path, cookie));
+        }
+        requests
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/module-worker-page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let mut messages = serde_json::Value::Null;
+    for _ in 0..8 {
+        messages = engine.evaluate_async("moduleWorkerMessages").await.unwrap();
+        if messages.as_array().is_some_and(|messages| {
+            messages
+                .iter()
+                .any(|message| message["kind"] == "startup" || message["kind"] == "error")
+        }) {
+            break;
+        }
+    }
+    assert_eq!(
+        messages,
+        serde_json::json!([{
+            "kind": "startup",
+            "module": "module dependency loaded",
+            "text": "module worker startup fetch",
+        }])
+    );
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("")
+    );
+
+    engine
+        .evaluate_async("moduleWorker.postMessage('after')")
+        .await
+        .unwrap();
+    for _ in 0..8 {
+        messages = engine.evaluate_async("moduleWorkerMessages").await.unwrap();
+        if messages.as_array().is_some_and(|messages| {
+            messages
+                .iter()
+                .any(|message| message["kind"] == "after" || message["kind"] == "error")
+        }) {
+            break;
+        }
+    }
+    assert_eq!(
+        messages,
+        serde_json::json!([
+            {
+                "kind": "startup",
+                "module": "module dependency loaded",
+                "text": "module worker startup fetch",
+            },
+            {
+                "kind": "after",
+                "text": "module worker follow-up fetch",
+            },
+        ])
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    for (name, value) in [
+        ("module_page_secret", "seed"),
+        ("module_entry_secret", "entry"),
+        ("module_dependency_secret", "dependency"),
+        ("module_data_secret", "data"),
+    ] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == name && cookie.value == value),
+            "parent cookie jar is missing {name}"
+        );
+    }
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+    let cookie_for = |path: &str| {
+        requests
+            .iter()
+            .find(|(request_path, _)| request_path == path)
+            .unwrap_or_else(|| panic!("missing module Worker request {path}"))
+            .1
+            .as_deref()
+            .unwrap_or("")
+            .to_owned()
+    };
+    assert!(cookie_for("/module-worker-entry.mjs").contains("module_page_secret=seed"));
+    for name in ["module_page_secret=seed", "module_entry_secret=entry"] {
+        assert!(
+            cookie_for("/module-worker-dependency.mjs").contains(name),
+            "parent did not apply the module entry response cookie before loading its dependency"
+        );
+    }
+    for name in [
+        "module_page_secret=seed",
+        "module_entry_secret=entry",
+        "module_dependency_secret=dependency",
+    ] {
+        assert!(
+            cookie_for("/module-worker-data").contains(name),
+            "parent did not select {name} for the module Worker startup Fetch"
+        );
+    }
+    for name in [
+        "module_page_secret=seed",
+        "module_entry_secret=entry",
+        "module_dependency_secret=dependency",
+        "module_data_secret=data",
+    ] {
+        assert!(
+            cookie_for("/module-worker-after").contains(name),
+            "parent did not select {name} for the follow-up Worker Fetch"
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_content_process_worker_fetch_preserves_large_response_payload() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

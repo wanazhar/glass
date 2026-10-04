@@ -128,6 +128,11 @@ Initial document-load DedicatedWorker creation and startup Fetch use the same
 parent authority. Their Fetch IPC carries a captured-load marker that the
 parent accepts only for the exact in-flight context, frame, generation, and
 document URL; it does not authorize later requests or bypass owner validation.
+A process-backed module DedicatedWorker graph regression now also verifies
+parent-selected HttpOnly cookies on the entry and static dependency, ordered
+response-cookie acceptance before the startup and later Worker Fetches, and an
+empty `document.cookie` projection. This is targeted graph coverage only; the
+broader parent-only contract remains in progress.
 
 This contract preserves script-visible cookie behavior without exposing
 HttpOnly state to the child. A Slice 843 checkpoint now stores durable cookies
@@ -225,8 +230,8 @@ request cookies, and accepts response-cookie changes. The worker's current
   import, classic parser script, and initial image requests. The same
   regression (1 test; 24.90 seconds) verifies parent meta-CSP handoff by
   confirming `img-src 'self'` blocks a cross-origin image before the server
-  sees a request. The initial
-  module graph still lacks a dedicated cookie regression. A follow-up run of
+  sees a request. At that protocol-22 checkpoint, the initial module graph
+  still lacked a dedicated cookie regression. A follow-up run of
   that process test (1 test; 25.76 seconds) verifies parent-brokered HTTP(S)
   media elements: a media response's visible and HttpOnly cookies stay in the
   parent and are sent on the later parser-script request, while script sees

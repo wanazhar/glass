@@ -276,11 +276,8 @@ fn report(p: Progress<'_>) {
             // A newline only when text is mid-line, so a turn that starts with
             // a tool call does not open with a blank row.
             let _ = write!(io, "\n\x1b[38;5;179m◆ {name}\x1b[0m ");
-            match command {
-                Some(c) => {
-                    let _ = write!(io, "\x1b[90m{}\x1b[0m", first_line(c, 120));
-                }
-                None => {}
+            if let Some(c) = command {
+                let _ = write!(io, "\x1b[90m{}\x1b[0m", first_line(c, 120));
             }
             let _ = io.flush();
         }

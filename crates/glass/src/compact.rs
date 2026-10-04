@@ -116,7 +116,7 @@ pub fn rebuild(records: &[Record], state: &State) -> Vec<Record> {
 /// Tool output is where the tokens are, and the model rarely needs the middle
 /// of a `rg` sweep twice. Head and tail are preserved because they carry the
 /// command and the conclusion.
-pub fn shrink_tool_results(records: &mut Vec<Record>, pressure: f32) -> usize {
+pub fn shrink_tool_results(records: &mut [Record], pressure: f32) -> usize {
     if pressure < COMPACT_AT {
         return 0;
     }

@@ -88,8 +88,11 @@ pub struct Agent<'a> {
     /// Skill catalogue, appended after the prompt.
     catalogue: Option<String>,
     /// Called as the loop makes progress. `None` disables reporting entirely.
-    pub on_progress: Option<Box<dyn Fn(Progress<'_>) + 'a>>,
+    pub on_progress: Option<ProgressSink<'a>>,
 }
+
+/// A progress callback.
+pub type ProgressSink<'a> = Box<dyn Fn(Progress<'_>) + 'a>;
 
 impl<'a> Agent<'a> {
     /// Report a progress event if an observer is attached.

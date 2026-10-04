@@ -57,11 +57,10 @@ impl Editor {
             KeyCode::Enter if !ctrl => {
                 let text = std::mem::take(&mut self.buf);
                 self.cursor = 0;
-                if !text.trim().is_empty() {
-                    if self.hist_idx.is_none() || self.history.last().map(String::as_str) != Some(text.as_str()) {
+                if !text.trim().is_empty()
+                    && (self.hist_idx.is_none() || self.history.last().map(String::as_str) != Some(text.as_str())) {
                         self.history.push(text.clone());
                     }
-                }
                 self.hist_idx = None;
                 self.draft.clear();
                 Edit::Submit(text)

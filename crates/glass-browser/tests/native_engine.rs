@@ -18415,7 +18415,7 @@ async fn native_content_process_dynamic_page_module_uses_parent_cookie_authority
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         let mut requests = Vec::new();
-        for _ in 0..3 {
+        for _ in 0..6 {
             let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
                 .await
                 .expect("parent-brokered dynamic module request should reach the local server")
@@ -18443,13 +18443,24 @@ async fn native_content_process_dynamic_page_module_uses_parent_cookie_authority
                 "/parent.mjs" => (
                     "Set-Cookie: parent_script_secret=module-root; HttpOnly; Path=/\r\n",
                     "application/javascript",
-                    "import { value } from './dependency.mjs'; document.body.setAttribute('data-parent-module', value);",
+                    "import { value } from './dependency.mjs'; document.body.setAttribute('data-parent-module', value); globalThis.runtimeImportPromise = import('./runtime-parent.mjs').then(runtime => { document.body.setAttribute('data-runtime-module', runtime.value); return runtime.value; });",
                 ),
                 "/dependency.mjs" => (
                     "",
                     "application/javascript",
                     "export const value = 'module dependency loaded';",
                 ),
+                "/runtime-parent.mjs" => (
+                    "Set-Cookie: runtime_script_secret=runtime-root; HttpOnly; Path=/\r\n",
+                    "application/javascript",
+                    "import { value as dependencyValue } from './runtime-dependency.mjs'; export const value = dependencyValue;",
+                ),
+                "/runtime-dependency.mjs" => (
+                    "",
+                    "application/javascript",
+                    "export const value = 'runtime import dependency loaded';",
+                ),
+                "/runtime-followup" => ("", "text/plain", "ok"),
                 other => panic!("unexpected parent-brokered dynamic module path: {other}"),
             };
             let response = format!(
@@ -18480,6 +18491,22 @@ async fn native_content_process_dynamic_page_module_uses_parent_cookie_authority
             .unwrap(),
         serde_json::json!("module dependency loaded")
     );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await globalThis.runtimeImportPromise.then(value => value, error => String(error))",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("runtime import dependency loaded")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/runtime-followup').then(response => response.status)")
+            .await
+            .unwrap(),
+        serde_json::json!(200)
+    );
     let public_cookies = engine.evaluate_async("document.cookie").await.unwrap();
     assert!(
         public_cookies
@@ -18491,9 +18518,22 @@ async fn native_content_process_dynamic_page_module_uses_parent_cookie_authority
             .as_str()
             .is_some_and(|cookies| cookies.contains("page_secret"))
     );
+    assert!(
+        !public_cookies
+            .as_str()
+            .is_some_and(|cookies| cookies.contains("parent_script_secret"))
+    );
+    assert!(
+        !public_cookies
+            .as_str()
+            .is_some_and(|cookies| cookies.contains("runtime_script_secret"))
+    );
     let stored_cookies = engine.cookies_async().await.unwrap();
     assert!(stored_cookies.iter().any(|cookie| {
         cookie.name == "parent_script_secret" && cookie.value == "module-root" && cookie.http_only
+    }));
+    assert!(stored_cookies.iter().any(|cookie| {
+        cookie.name == "runtime_script_secret" && cookie.value == "runtime-root" && cookie.http_only
     }));
     engine.close_async().await.unwrap();
     let requests = server.await.unwrap();
@@ -18503,7 +18543,14 @@ async fn native_content_process_dynamic_page_module_uses_parent_cookie_authority
             .iter()
             .map(|(path, _)| path.as_str())
             .collect::<Vec<_>>(),
-        ["/page", "/parent.mjs", "/dependency.mjs"]
+        [
+            "/page",
+            "/parent.mjs",
+            "/dependency.mjs",
+            "/runtime-parent.mjs",
+            "/runtime-dependency.mjs",
+            "/runtime-followup",
+        ]
     );
     let root_cookie = requests[1].1.as_deref().unwrap_or_default();
     assert!(root_cookie.contains("page_session=initial"));
@@ -18514,6 +18561,14 @@ async fn native_content_process_dynamic_page_module_uses_parent_cookie_authority
     assert!(dependency_cookie.contains("page_secret=initial-secret"));
     assert!(dependency_cookie.contains("parent_script_secret=module-root"));
     assert!(dependency_cookie.contains("same_turn=present"));
+    let runtime_root_cookie = requests[3].1.as_deref().unwrap_or_default();
+    assert!(runtime_root_cookie.contains("page_secret=initial-secret"));
+    assert!(runtime_root_cookie.contains("parent_script_secret=module-root"));
+    assert!(runtime_root_cookie.contains("same_turn=present"));
+    let runtime_dependency_cookie = requests[4].1.as_deref().unwrap_or_default();
+    assert!(runtime_dependency_cookie.contains("runtime_script_secret=runtime-root"));
+    let followup_cookie = requests[5].1.as_deref().unwrap_or_default();
+    assert!(followup_cookie.contains("runtime_script_secret=runtime-root"));
 }
 
 #[tokio::test]

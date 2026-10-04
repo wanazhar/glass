@@ -191,9 +191,16 @@ request cookies, and accepts response-cookie changes. The worker's current
   `browser_owned_service_worker_lifetime_fetch_uses_parent_cookie_authority`
   regression passed (1 test; 28.49 seconds), verifying HttpOnly cookie
   selection and rotation through the parent and the following page Fetch.
-  Service Worker-originated upload streams, background work outside
-  intercepted FetchEvents, and other internal network requests remain direct
-  child paths.
+  Streamed Fetch uploads created by a controlled Service Worker during a
+  parent-brokered FetchEvent now collect within the existing body/chunk limits
+  and use that same parent broker. The process-backed
+  `native_content_process_service_worker_stream_upload_uses_parent_cookie_authority`
+  regression verifies an HttpOnly seed and same-turn page cookie on the
+  upload, parent acceptance of an HttpOnly rotation, and the next request's
+  rotated cookie while `document.cookie` remains filtered. Upload bytes are
+  buffered before network dispatch, so this path does not retain socket-level
+  upload backpressure. Background work outside intercepted FetchEvents and
+  other internal network requests remain direct child paths.
   In browser-coordinated mode, due
   DedicatedWorker timer turns now wait for the exact context/frame owner pump
   and execute with that turn's parent Fetch broker; standalone `NativeEngine` keeps
@@ -205,15 +212,17 @@ request cookies, and accepts response-cookie changes. The worker's current
   update, the parent cookie API, and the script-visible projection.
   Browser-coordinated Service Worker timer callbacks now use the parent broker
   on their page-owner script turn; non-awaited standard FetchEvent Fetches also
-  queue to the parent on the next owner turn. Service Worker-originated upload
-  streams, background work outside intercepted FetchEvents, and other
+  queue to the parent on the next owner turn. Service Worker-originated stream
+  uploads during a brokered FetchEvent now use the parent broker after bounded
+  collection. Background work outside intercepted FetchEvents and other
   out-of-band work remain outside this subset. Parent brokering of
   registration/update and restoration script loads remains a distinct path.
   Explicit-turn page-originated stream
 uploads to a controlled Service Worker are separately verified: its handler
 still gets first opportunity to respond, while a declined network fallback
-uses the parent broker. Service Worker-originated upload streams remain outside
-that subset.
+uses the parent broker. Service Worker-originated stream uploads are now
+separately covered for brokered FetchEvent turns, with bounded buffering
+before dispatch.
 See the [Slice 842 task](tasks/native-engine-browser-842.md) and [Slice 843
 task](tasks/native-engine-browser-843.md).
 

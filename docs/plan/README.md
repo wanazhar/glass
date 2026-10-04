@@ -329,8 +329,10 @@ outside the verified path at that checkpoint. Explicit-turn
 dedicated-worker upload streams are covered by the separate regression below.
 Page-originated upload streams sent to a controlled Service Worker are offered
 to the worker first; when it declines the request, the network fallback uses
-the parent broker. Service Worker-originated upload streams and background
-work outside intercepted FetchEvents remain outside that path. The process-backed
+the parent broker. Service Worker-originated ReadableStream uploads during
+brokered FetchEvents are now separately parent-brokered after bounded
+collection; background work outside intercepted FetchEvents remains outside
+that path. The process-backed
 `native_content_process_service_worker_replays_cloned_request_body` regression
 passed (1 test; 27.81-second runtime), preserving the worker-handled response
 and verifying a page cookie on the fallback upload plus the parent's HttpOnly

@@ -157,8 +157,16 @@ and intends to use [Semantic Versioning](https://semver.org/).
   `browser_owned_service_worker_lifetime_fetch_uses_parent_cookie_authority`
   regression passed (1 test; 28.49 seconds), verifying parent-selected
   HttpOnly cookies, accepted rotation, and the rotated cookie on a following
-  page Fetch. Service Worker-originated upload streams, background work outside
-  intercepted FetchEvents, and other internal network paths remain child-side.
+  page Fetch. Streamed Fetch uploads created by a controlled Service Worker
+  during a parent-brokered FetchEvent now collect within the existing body and
+  chunk limits before using that same parent broker. The process-backed
+  `native_content_process_service_worker_stream_upload_uses_parent_cookie_authority`
+  regression verifies parent-selected HttpOnly and same-turn page cookies on
+  the upload, parent acceptance of its HttpOnly rotation, and the rotated
+  cookie on the next request while the page projection stays filtered. This
+  upload path buffers before network dispatch and does not retain
+  socket-level upload backpressure; background work outside intercepted
+  FetchEvents and other internal network paths remain child-side.
 - Native content-worker dialog IPC now uses one stdin reader to route dialog
   decisions separately from ordinary asynchronous requests.
 - Native event-pump shutdown now cancels an in-flight owner turn through a

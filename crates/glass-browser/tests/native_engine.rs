@@ -34297,6 +34297,120 @@ async fn native_content_process_worker_stream_upload_uses_parent_cookie_authorit
 }
 
 #[tokio::test]
+async fn native_content_process_service_worker_stream_upload_uses_parent_cookie_authority() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/sw.js", "/upload", "/after"] {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("parent-brokered Service Worker upload should reach the local server")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned())
+                .unwrap_or_default();
+            let (headers, content_type, body) = match expected_path {
+                "/page" => (
+                    "Set-Cookie: sw_parent_seed=initial; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/html",
+                    "<!doctype html><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>Service Worker upload cookies</main>",
+                ),
+                "/sw.js" => {
+                    assert!(cookie.contains("sw_parent_seed=initial"));
+                    (
+                        "",
+                        "text/javascript",
+                        r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  if (new URL(event.request.url).pathname === '/trigger') {
+    event.respondWith((async () => {
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('sw-owned-stream'));
+          controller.close();
+        },
+      });
+      const uploaded = await fetch('/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body,
+      });
+      return new Response(await uploaded.text());
+    })());
+  }
+});"#,
+                    )
+                }
+                "/upload" => {
+                    assert!(request.starts_with("POST "));
+                    assert!(request.ends_with("sw-owned-stream"));
+                    assert!(cookie.contains("sw_parent_seed=initial"));
+                    assert!(cookie.contains("sw_turn=present"));
+                    (
+                        "Set-Cookie: sw_parent_rotated=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "text/plain",
+                        "uploaded",
+                    )
+                }
+                "/after" => {
+                    assert!(cookie.contains("sw_parent_seed=initial"));
+                    assert!(cookie.contains("sw_parent_rotated=accepted"));
+                    assert!(cookie.contains("sw_turn=present"));
+                    ("", "text/plain", "after")
+                }
+                _ => unreachable!(),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(async () => { document.cookie = 'sw_turn=present; Path=/'; const uploaded = await fetch('/trigger').then(response => response.text()); const visible = document.cookie; const after = await fetch('/after').then(response => response.text()); return { controlled: navigator.serviceWorker.controller !== null, uploaded, visible, after }; })",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({
+            "controlled": true,
+            "uploaded": "uploaded",
+            "visible": "sw_turn=present",
+            "after": "after",
+        })
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+    for (name, value) in [
+        ("sw_parent_seed", "initial"),
+        ("sw_parent_rotated", "accepted"),
+        ("sw_turn", "present"),
+    ] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == name && cookie.value == value)
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_content_process_shared_worker_fetch_credentials_modes_follow_redirects() {
     let _guard = native_content_process_test_lock().lock().await;
     let primary_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

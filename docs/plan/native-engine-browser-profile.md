@@ -112,9 +112,14 @@ This contract preserves script-visible cookie behavior without exposing
 HttpOnly state to the child. A Slice 843 checkpoint now stores durable cookies
 in a parent-managed `<profile>.cookies` sidecar, migrates legacy combined
 profiles before content-worker startup, and keeps child Web Storage snapshots
-cookie-empty; the child loader does not hydrate from the sidecar. The process
-protocol still mirrors complete profiles into child memory and some direct
-child network paths remain, so the contract is not yet met. Slice 842 has
+cookie-empty; the child loader does not hydrate from the sidecar. The content
+protocol now sends only an owner-checked, URL-scoped visible projection and no
+longer has full-cookie set/apply/clear commands. Script setter writes return to
+the parent without mutating the child loader, and cookie import/update/clear
+operations refresh the projection rather than mirroring a cookie profile.
+Child-direct internal network paths can still populate a transient child jar
+and emit a bounded cookie-change journal to the parent, so the parent-only
+contract is not yet met. Slice 842 has
 removed the child cookie-profile field from browser-coordinated SharedWorker
 creation and now seeds the shared coordinator from the parent engine resolved
 by the exact source frame, replaying coordinator cookie overrides afterward.

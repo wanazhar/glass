@@ -44,18 +44,17 @@ use super::javascript::{
     MAX_NATIVE_SCRIPT_BYTES, MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
     MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES, MAX_NATIVE_WEBSOCKET_PROTOCOL_BYTES,
     MAX_NATIVE_WEBSOCKET_PROTOCOLS, MAX_NATIVE_WORKER_MESSAGES, MAX_NATIVE_XHR_TIMEOUT_MS,
-    NATIVE_JSON_MODULE_NAME_PREFIX, NativeCookieChange, NativeCookieProfileEntry, NativeDialog,
-    NativeDialogHandler, NativeFrameScriptBinding, NativeFrameScriptContext,
-    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeHashChangeEvent,
-    NativeIndexedDbChange, NativeIndexedDbState, NativeJavaScriptRuntime,
-    NativeMessagePortPageMessage, NativePageEventBatch, NativePageMessagePortCommand,
-    NativePageScript, NativePageScriptResult, NativePopupRequest, NativePostMessageRequest,
-    NativeScriptCommand, NativeScriptEvaluation, NativeServiceWorkerClientMessage,
-    NativeServiceWorkerClientState, NativeServiceWorkerOpenWindowRequest,
-    NativeSharedWorkerStorageKey, NativeStorageEvent, NativeWebStorageState,
-    NativeWindowCloseRequest, NativeWindowNavigationRequest, NativeWindowProxyUpdate,
-    NativeWorkerEventSourceCommand, NativeWorkerMessage, NativeWorkerRegistry,
-    NativeWorkerWebSocketCommand, append_storage_changes,
+    NATIVE_JSON_MODULE_NAME_PREFIX, NativeCookieChange, NativeDialog, NativeDialogHandler,
+    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
+    NativeFrameScriptWindow, NativeHashChangeEvent, NativeIndexedDbChange, NativeIndexedDbState,
+    NativeJavaScriptRuntime, NativeMessagePortPageMessage, NativePageEventBatch,
+    NativePageMessagePortCommand, NativePageScript, NativePageScriptResult, NativePopupRequest,
+    NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
+    NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
+    NativeServiceWorkerOpenWindowRequest, NativeSharedWorkerStorageKey, NativeStorageEvent,
+    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
+    NativeWorkerRegistry, NativeWorkerWebSocketCommand, append_storage_changes,
     apply_document_commands_with_font_face_ack, apply_page_script_evaluation,
     diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts,
     host_click_event_batch_with_modifiers, host_event_batch, host_event_batch_at,
@@ -125,7 +124,7 @@ const MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS: usize = MAX_CONTENT_PROCESS_OUTPUT
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
     MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 26;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 27;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -3866,79 +3865,77 @@ impl NativeContentProcess {
         result
     }
 
-    pub(crate) async fn set_cookies(
+    pub(crate) async fn sync_document_cookie_projection(
         &mut self,
-        cookies: &[NativeCookieProfileEntry],
+        document_url: &str,
+        document_cookie: &str,
     ) -> Result<(), NativeEngineError> {
-        let id = self.next_id();
-        let response = self
-            .exchange_with_timeout(
-                json!({
-                "kind": "set_cookies",
-                "id": id,
-                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
-                "cookies": cookies,
-                }),
-                "content process set cookies",
-                CONTENT_PROCESS_SCRIPT_TIMEOUT,
-            )
-            .await?;
-        require_response_kind(&response, "cookies_set", id, "content process set cookies")
-    }
-
-    pub(crate) async fn apply_cookie_changes(
-        &mut self,
-        changes: &[NativeCookieChange],
-        persist_profile: bool,
-    ) -> Result<(), NativeEngineError> {
-        let id = self.next_id();
-        let response = self
-            .exchange_with_timeout(
-                json!({
-                "kind": "apply_cookie_changes",
-                "id": id,
-                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
-                "changes": changes,
-                "persist_profile": persist_profile,
-                }),
-                "content process apply cookie changes",
-                CONTENT_PROCESS_SCRIPT_TIMEOUT,
-            )
-            .await?;
-        require_response_kind(
-            &response,
-            "cookie_changes_applied",
-            id,
-            "content process apply cookie changes",
-        )?;
-        if response.get("persist_profile").and_then(Value::as_bool) != Some(persist_profile) {
-            return Err(NativeEngineError::worker_failure(
-                "content process apply cookie changes",
-                NativeWorkerFailureKind::Protocol,
-                "content process returned a mismatched profile-persistence decision",
+        validate_url_text("parent document.cookie projection URL", document_url)?;
+        if document_cookie.len() > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+            return Err(NativeEngineError::limit(
+                "parent document.cookie projection",
+                MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                document_cookie.len(),
             ));
         }
-        Ok(())
-    }
-
-    pub(crate) async fn clear_cookies(&mut self) -> Result<(), NativeEngineError> {
+        if document_cookie.chars().any(char::is_control) {
+            return Err(NativeEngineError::invalid(
+                "parent document.cookie projection",
+                "must not contain control characters",
+            ));
+        }
+        if self
+            .current_document_url
+            .as_deref()
+            .is_none_or(|current| without_fragment(current) != without_fragment(document_url))
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "document.cookie projection belongs to a different document".into(),
+            });
+        }
+        let owner = NativeContentCookieOwner {
+            context_id: self.context_id.clone().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process document.cookie projection",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no browser context identity",
+                )
+            })?,
+            frame_id: self.frame_id.clone().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process document.cookie projection",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no frame identity",
+                )
+            })?,
+            generation: self.current_document_generation.ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process document.cookie projection",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no committed document generation",
+                )
+            })?,
+            document_url: document_url.to_owned(),
+        };
         let id = self.next_id();
         let response = self
             .exchange_with_timeout(
                 json!({
-                "kind": "clear_cookies",
+                "kind": "document_cookie_projection",
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "owner": owner,
+                "document_cookie": document_cookie,
                 }),
-                "content process clear cookies",
+                "content process document.cookie projection",
                 CONTENT_PROCESS_SCRIPT_TIMEOUT,
             )
             .await?;
         require_response_kind(
             &response,
-            "cookies_cleared",
+            "document_cookie_projection_synced",
             id,
-            "content process clear cookies",
+            "content process document.cookie projection",
         )
     }
 
@@ -9632,89 +9629,61 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
                 json!({"kind":"history_synced","id":id})
             }
-            "set_cookies" if protocol_matches(&request) && running => {
-                let values = request.get("cookies").ok_or_else(|| {
-                    NativeEngineError::invalid("content-process cookies", "must be an array")
-                })?;
-                let cookies: Vec<NativeCookieProfileEntry> = serde_json::from_value(values.clone())
-                    .map_err(|_| {
+            "document_cookie_projection" if protocol_matches(&request) && running => {
+                let owner = decode_content_cookie_owner(
+                    request.get("owner").ok_or_else(|| {
                         NativeEngineError::invalid(
-                            "content-process cookies",
-                            "must be valid native cookie profiles",
+                            "content-process document.cookie projection owner",
+                            "must be present",
                         )
-                    })?;
-                let Some(loader) = resource_loader.as_mut() else {
-                    return Err(NativeEngineError::Worker {
-                        operation: "content process set cookies".into(),
-                        reason: "content process has no resource loader".into(),
-                    });
-                };
-                loader.set_cookie_profiles(&cookies)?;
-                loader.take_cookie_changes();
-                parent_document_cookie_projection = None;
-                refresh_content_runtime_cookie(
-                    javascript_runtime.as_ref(),
-                    resource_loader.as_ref(),
-                    document_url.as_deref(),
+                    })?,
+                    "content-process document.cookie projection owner",
                 )?;
-                json!({"kind":"cookies_set","id":id})
-            }
-            "apply_cookie_changes" if protocol_matches(&request) && running => {
-                let persist_profile = request
-                    .get("persist_profile")
-                    .and_then(Value::as_bool)
+                let active_generation = document.as_ref().map(NativeDocument::generation);
+                if owner.context_id != storage_context_id
+                    || owner.frame_id != frame_id
+                    || Some(owner.generation) != active_generation
+                    || document_url.as_deref().is_none_or(|active_url| {
+                        without_fragment(active_url) != without_fragment(&owner.document_url)
+                    })
+                {
+                    return Err(NativeEngineError::TargetNotActionable {
+                        reason:
+                            "document.cookie projection belongs to a stale or different document"
+                                .into(),
+                    });
+                }
+                let projection = request
+                    .get("document_cookie")
+                    .and_then(Value::as_str)
                     .ok_or_else(|| {
                         NativeEngineError::invalid(
-                            "content-process cookie profile persistence",
-                            "must be a boolean",
+                            "content-process document.cookie projection",
+                            "must be text",
                         )
                     })?;
-                let values = request.get("changes").ok_or_else(|| {
-                    NativeEngineError::invalid("content-process cookie changes", "must be an array")
-                })?;
-                let changes: Vec<NativeCookieChange> = serde_json::from_value(values.clone())
-                    .map_err(|_| {
-                        NativeEngineError::invalid(
-                            "content-process cookie changes",
-                            "must contain valid native cookie changes",
-                        )
-                    })?;
-                let Some(loader) = resource_loader.as_mut() else {
+                if projection.len() > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "content-process document.cookie projection",
+                        MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                        projection.len(),
+                    ));
+                }
+                if projection.chars().any(char::is_control) {
+                    return Err(NativeEngineError::invalid(
+                        "content-process document.cookie projection",
+                        "must not contain control characters",
+                    ));
+                }
+                let Some(runtime) = javascript_runtime.as_ref() else {
                     return Err(NativeEngineError::Worker {
-                        operation: "content process apply cookie changes".into(),
-                        reason: "content process has no resource loader".into(),
+                        operation: "content process document.cookie projection".into(),
+                        reason: "content process has no active JavaScript runtime".into(),
                     });
                 };
-                loader.apply_cookie_changes(&changes)?;
-                loader.take_cookie_changes();
-                parent_document_cookie_projection = None;
-                refresh_content_runtime_cookie(
-                    javascript_runtime.as_ref(),
-                    resource_loader.as_ref(),
-                    document_url.as_deref(),
-                )?;
-                json!({
-                    "kind":"cookie_changes_applied",
-                    "id":id,
-                    "persist_profile":persist_profile,
-                })
-            }
-            "clear_cookies" if protocol_matches(&request) && running => {
-                let Some(loader) = resource_loader.as_mut() else {
-                    return Err(NativeEngineError::Worker {
-                        operation: "content process clear cookies".into(),
-                        reason: "content process has no resource loader".into(),
-                    });
-                };
-                loader.clear_cookies();
-                loader.take_cookie_changes();
-                parent_document_cookie_projection = None;
-                refresh_content_runtime_cookie(
-                    javascript_runtime.as_ref(),
-                    resource_loader.as_ref(),
-                    document_url.as_deref(),
-                )?;
-                json!({"kind":"cookies_cleared","id":id})
+                parent_document_cookie_projection = Some(projection.to_owned());
+                runtime.set_cookie_state(projection.to_owned());
+                json!({"kind":"document_cookie_projection_synced","id":id})
             }
             "storage_events" if protocol_matches(&request) && running => {
                 let values = request.get("events").ok_or_else(|| {
@@ -12042,7 +12011,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 )?;
                 let cookie_writes = take_content_cookie_writes(
                     javascript_runtime.as_ref(),
-                    &mut resource_loader,
                     &storage_context_id,
                     &frame_id,
                     document.as_ref().map(NativeDocument::generation),
@@ -12130,7 +12098,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
         )?;
         let cookie_writes = take_content_cookie_writes(
             javascript_runtime.as_ref(),
-            &mut resource_loader,
             &storage_context_id,
             &frame_id,
             document.as_ref().map(NativeDocument::generation),
@@ -12177,25 +12144,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
         if javascript_runtime.is_some() {
             window_name = response_window_name.clone();
         }
-        let is_cookie_change_sync =
-            response.get("kind").and_then(Value::as_str) == Some("cookie_changes_applied");
-        let persist_cookie_profile = response
-            .get("persist_profile")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
-        let cookie_changes = if is_cookie_change_sync && !persist_cookie_profile {
-            Vec::new()
-        } else {
-            persist_content_profile(
-                storage_profile_path.as_deref(),
-                &storage_state,
-                &indexed_db_state,
-                &storage_events,
-                &indexed_db_changes,
-                &mut service_workers,
-                &mut resource_loader,
-            )?
-        };
+        let cookie_changes = persist_content_profile(
+            storage_profile_path.as_deref(),
+            &storage_state,
+            &indexed_db_state,
+            &storage_events,
+            &indexed_db_changes,
+            &mut service_workers,
+            &mut resource_loader,
+        )?;
         if !cookie_changes.is_empty() {
             parent_document_cookie_projection = None;
         }
@@ -12204,11 +12161,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             cookie_changes,
             "content process cookie changes",
         )?;
-        let cookie_changes = if is_cookie_change_sync {
-            Vec::new()
-        } else {
-            std::mem::take(&mut pending_lifetime_cookie_changes)
-        };
+        let cookie_changes = std::mem::take(&mut pending_lifetime_cookie_changes);
         let encoded_cookie_changes =
             serde_json::to_value(cookie_changes).map_err(|_| NativeEngineError::Worker {
                 operation: "encode content process cookie changes".into(),
@@ -12465,7 +12418,6 @@ fn sync_content_runtime_state(
 
 fn take_content_cookie_writes(
     runtime: Option<&NativeJavaScriptRuntime>,
-    resource_loader: &mut Option<NativeResourceLoader>,
     context_id: &str,
     frame_id: &str,
     generation: Option<u32>,
@@ -12528,21 +12480,6 @@ fn take_content_cookie_writes(
             ));
         }
     }
-    let Some(loader) = resource_loader.as_mut() else {
-        return Err(NativeEngineError::Worker {
-            operation: "content process document.cookie writes".into(),
-            reason: "content process has no resource loader for its cookie mirror".into(),
-        });
-    };
-    let pending_network_cookie_changes = loader.take_cookie_changes();
-    let mirror_result = values
-        .iter()
-        .try_for_each(|value| loader.set_document_cookie(document_url, value));
-    // Keep network response changes for parent reconciliation, but do not
-    // turn the script setter into a child-derived cookie mutation.
-    loader.take_cookie_changes();
-    loader.restore_cookie_changes(pending_network_cookie_changes);
-    mirror_result?;
     let writes = values
         .into_iter()
         .map(|value| NativeContentCookieWrite {

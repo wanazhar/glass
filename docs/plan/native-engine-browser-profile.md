@@ -110,6 +110,10 @@ remain parent-only.
 User action mutations also carry the parent loader into the content-process
 turn, so newly created HTTP(S) stylesheets and their CSS imports/fonts, images,
 and media use the same owner-checked broker and response-cookie authority.
+Initial document-load DedicatedWorker creation and startup Fetch use the same
+parent authority. Their Fetch IPC carries a captured-load marker that the
+parent accepts only for the exact in-flight context, frame, generation, and
+document URL; it does not authorize later requests or bypass owner validation.
 
 This contract preserves script-visible cookie behavior without exposing
 HttpOnly state to the child. A Slice 843 checkpoint now stores durable cookies
@@ -132,6 +136,11 @@ URL-scoped script-visible cookie projection. Worker requests retain the worker
 script URL as their network initiator, while the captured page owner scopes IPC
 streams and cookie-write journals. No child-loader fallback is permitted for
 these transports.
+The process-backed
+`native_content_process_initial_worker_startup_fetch_uses_parent_cookie_authority`
+regression verifies parent-selected HttpOnly cookies on the worker entry and
+startup Fetch, parent response-cookie rotation on a later Worker message turn,
+and the visible-only page projection.
 Child-direct internal network paths can still populate a transient child jar
 and emit a bounded cookie-change journal to the parent, so the parent-only
 contract is not yet met. Page and dedicated Worker EventSource responses use

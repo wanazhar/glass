@@ -269,8 +269,10 @@ writes/requests to the parent; HttpOnly values and cookie-bearing profile files
 must not cross that boundary. A later Slice 843 checkpoint split durable
 cookies into a parent-managed `<profile>.cookies` sidecar, migrates legacy
 combined profiles before worker startup, and keeps child Web Storage snapshots
-cookie-empty. This does not close the gap: full cookie profiles still cross
-`set_cookies` IPC, and direct child network paths remain. The first
+cookie-empty. At that checkpoint full cookie profiles still crossed
+`set_cookies` IPC; a later protocol-27 checkpoint removed that IPC and replaced
+it with an owner-checked, URL-scoped visible-cookie projection. Direct child
+network paths and their residual transient cookie journals remain. The first
 code checkpoint removes the content child's full profile from the
 browser-coordinated SharedWorker-create message; the parent now reads the
 profile from the exact source frame owner and replays coordinator overrides.
@@ -303,9 +305,10 @@ while rebuilding the integration target, leaving too little test runtime. A
 no-build run of the already-compiled binary then passed the exact regression
 (1 passed; 48.31-second test runtime, 48.37 seconds total). Independent review
 found no static lock/order defect; its initial timeout finding is resolved by
-that process-backed pass. Slice 842 is complete. The overall parent-only
-cookie contract remains incomplete until dependent Slice 843 removes the
-content-process mirror and routes every cookie-bearing path through the parent.
+that process-backed pass. Slice 842 is complete. The full-profile mirror has
+since been removed, but the overall parent-only cookie contract remains
+incomplete until Slice 843 routes every cookie-bearing network path through the
+parent and eliminates child-generated cookie journals.
 Separately, the content-process SharedWorker credentials/redirect regression
 `native_content_process_shared_worker_fetch_credentials_modes_follow_redirects`
 passed in an earlier run (1 passed; 24.64-second runtime), but two no-build
@@ -316,8 +319,8 @@ parent-brokered transport. See the
 [Slice 842 task](tasks/native-engine-browser-842.md) and
 [cookie authority
 contract](native-engine-browser-profile.md#parent-owned-cookie-authority).
-The remaining content-process cookie mirror/persistence and unbrokered network
-paths are tracked in the dependent [Slice 843 task](tasks/native-engine-browser-843.md).
+The remaining unbrokered network paths and residual child cookie journals are
+tracked in the dependent [Slice 843 task](tasks/native-engine-browser-843.md).
 A Slice 843 checkpoint now brokers standard buffered Fetch emitted during
 dedicated-worker initialization and while handling an explicit page
 `Worker.postMessage` or a transferred page `MessagePort` event; its expanded
@@ -10539,6 +10542,13 @@ passed (1 passed; 904 filtered; 23.11 seconds), verifying HttpOnly selection,
 response-cookie updates, and script-visible filtering for a click-created
 stylesheet/import chain. Exact scope and verification are in the [Slice 843
 task](tasks/native-engine-browser-843.md).
+Initial document-load DedicatedWorker creation and startup Fetch now also use
+the captured-load parent broker. The parent validates the exact in-flight
+context/frame/generation/document owner; the process-backed
+`native_content_process_initial_worker_startup_fetch_uses_parent_cookie_authority`
+regression verifies parent-selected HttpOnly cookies on the Worker entry and
+startup Fetch, response-cookie rotation for a later Worker message Fetch, and
+the visible-only page cookie projection.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

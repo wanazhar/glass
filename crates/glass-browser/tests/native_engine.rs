@@ -8790,33 +8790,52 @@ async fn native_content_process_transfers_array_buffers_between_page_and_worker_
 }
 
 #[tokio::test]
-async fn native_content_process_worker_fetch_resolves_inside_worker_realm() {
+async fn native_content_process_initial_worker_startup_fetch_uses_parent_cookie_authority() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for (path, content_type, body) in [
+        let mut requests = Vec::new();
+        for (path, content_type, body, response_headers) in [
             (
                 "/worker-fetch-page",
                 "text/html",
                 "<script>globalThis.workerMessages = []; globalThis.worker = new Worker('/worker-fetch.js'); worker.onmessage = event => workerMessages.push(event.data);</script>",
+                concat!(
+                    "Set-Cookie: worker_startup_visible=present; Path=/; SameSite=Lax\r\n",
+                    "Set-Cookie: worker_startup_secret=initial-secret; HttpOnly; Path=/; SameSite=Lax\r\n",
+                ),
             ),
             (
                 "/worker-fetch.js",
                 "text/javascript",
-                "const request = new Request('worker-data'); fetch(request).then(response => response.text().then(text => postMessage({ kind: 'fetched', text, status: response.status, url: response.url, requestUrl: request.url }))).catch(error => postMessage({ kind: 'error', message: String(error) }));",
+                "fetch('/worker-data').then(async response => postMessage({ kind: 'fetched', text: await response.text(), status: response.status })).catch(error => postMessage({ kind: 'error', message: String(error) })); self.onmessage = async event => { if (event.data !== 'follow-up') return; const after = await fetch('/worker-data-after'); postMessage({ kind: 'follow-up', text: await after.text() }); };",
+                "",
             ),
-            ("/worker-data", "text/plain", "hello from worker fetch"),
+            (
+                "/worker-data",
+                "text/plain",
+                "hello from worker fetch",
+                "Set-Cookie: worker_startup_secret=rotated-secret; HttpOnly; Path=/; SameSite=Lax\r\n",
+            ),
+            ("/worker-data-after", "text/plain", "follow-up received", ""),
         ] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
             assert_eq!(request.split_whitespace().nth(1), Some(path));
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\n{response_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push((path.to_owned(), cookie));
         }
+        requests
     });
 
     let mut engine = NativeEngine::new(
@@ -8831,12 +8850,60 @@ async fn native_content_process_worker_fetch_resolves_inside_worker_realm() {
             "kind": "fetched",
             "text": "hello from worker fetch",
             "status": 200,
-            "url": format!("http://{address}/worker-data"),
-            "requestUrl": format!("http://{address}/worker-data"),
         }])
     );
+    engine
+        .evaluate_async("worker.postMessage('follow-up')")
+        .await
+        .unwrap();
+    let mut worker_messages = serde_json::Value::Null;
+    for _ in 0..8 {
+        worker_messages = engine.evaluate_async("workerMessages").await.unwrap();
+        if worker_messages.as_array().is_some_and(|messages| {
+            messages
+                .iter()
+                .any(|message| message["kind"] == "follow-up")
+        }) {
+            break;
+        }
+    }
+    assert_eq!(
+        worker_messages,
+        serde_json::json!([
+            {"kind": "fetched", "text": "hello from worker fetch", "status": 200},
+            {"kind": "follow-up", "text": "follow-up received"},
+        ])
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    assert!(cookies.iter().any(|cookie| {
+        cookie.name == "worker_startup_secret" && cookie.value == "rotated-secret"
+    }));
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("worker_startup_visible=present")
+    );
     engine.close_async().await.unwrap();
-    server.await.unwrap();
+    let requests = server.await.unwrap();
+    let cookie_for = |path: &str| {
+        requests
+            .iter()
+            .find(|(request_path, _)| request_path == path)
+            .unwrap_or_else(|| panic!("missing initial Worker request {path}"))
+            .1
+            .as_deref()
+            .unwrap_or("")
+            .to_owned()
+    };
+    for path in ["/worker-fetch.js", "/worker-data"] {
+        assert!(
+            cookie_for(path).contains("worker_startup_secret=initial-secret"),
+            "parent-selected HttpOnly cookie missing from {path}"
+        );
+    }
+    assert!(
+        cookie_for("/worker-data-after").contains("worker_startup_secret=rotated-secret"),
+        "parent did not select the startup response cookie for the follow-up request: {requests:?}"
+    );
 }
 
 #[tokio::test]

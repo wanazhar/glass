@@ -84,6 +84,13 @@ loading and brokered script turns. The process-backed cookie regression
 verifies ordered request selection and response-cookie acceptance across
 navigation, a stylesheet, a CSS import, an image, and a classic parser script
 (1 test; 24.90 seconds), while keeping HttpOnly values out of `document.cookie`.
+Initial document-load DedicatedWorker creation and startup Fetch also use the
+owner-checked parent broker. A captured-load marker is accepted only against
+the exact in-flight context, frame, generation, and document URL; the
+process-backed `native_content_process_initial_worker_startup_fetch_uses_parent_cookie_authority`
+regression verifies HttpOnly cookies on the worker entry and startup Fetch,
+parent response-cookie rotation on a later worker message turn, and a visible-
+only `document.cookie` projection.
 Before parent page loads, the child transfers its applied meta-CSP policy
 sources; the regression also verifies `img-src 'self'` prevents a cross-origin image request. The
 initial module graph lacks a dedicated cookie regression. A follow-up now
@@ -117,8 +124,9 @@ regression passes (1 test; 21.17 seconds), verifying parser-script request
 cookies, visible projection refresh, and parent retention of HttpOnly response
 cookies. The `clients.openWindow`-resumed navigation regression also passes (1
 test; 34.25 seconds). Service Worker-provided navigation responses and other
-unbrokered initial resources remain child-side. The full cookie profile
-remains mirrored into the content process; issue #40 is still open.
+unbrokered initial resources remain child-side. The child no longer receives
+the full cookie profile; residual child-direct network paths can still create
+transient cookie state and journal updates. Issue #40 is still open.
 
 CI runs the full native-engine feature suite on Linux and the socket-free
 `asynchronous_effect`, `async_effect`, and `dropping_runtime_backend` test

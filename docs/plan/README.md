@@ -10549,6 +10549,12 @@ context/frame/generation/document owner; the process-backed
 regression verifies parent-selected HttpOnly cookies on the Worker entry and
 startup Fetch, response-cookie rotation for a later Worker message Fetch, and
 the visible-only page cookie projection.
+Local SharedWorker startup/connect Fetch and explicit page MessagePort Fetch
+now also use the owner-checked parent broker. The process-backed
+`native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
+regression verifies HttpOnly selection and response-cookie updates across
+startup, `include`/`omit`, and a later MessagePort request. Standalone
+content-process autonomous WorkerTimer turns remain a direct-loader gap.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

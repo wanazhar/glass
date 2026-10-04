@@ -192,8 +192,9 @@ projection and existing native Fetch behavior.
   request cookies, commits response-cookie changes in the parent, and returns
   the page owner's visible cookie projection. The existing worker
   response-stream interface is preserved over the buffered parent response.
-  Locally hosted SharedWorker creation/connect evaluations also receive the
-  broker, but lack a focused process-backed regression. The process-backed
+  At that checkpoint locally hosted SharedWorker creation/connect evaluations
+  also received the broker but lacked a focused process-backed regression;
+  the later SharedWorker regression is recorded below. The process-backed
   `native_content_process_worker_message_fetch_uses_parent_cookie_authority`
   regression passed (1 passed; 24.15-second test runtime), checking a same-turn
   page setter on the startup Fetch, the parent Set-Cookie update on the later
@@ -598,5 +599,14 @@ projection and existing native Fetch behavior.
   selected HttpOnly cookies on Worker entry/startup Fetch, response-cookie
   rotation on a later Worker message Fetch, and HttpOnly invisibility in the
   page projection. Scoped `cargo check` passed with existing dead-code warnings.
+- Local SharedWorker startup/connect Fetch and explicit page MessagePort turns
+  now have process-backed evidence for the parent broker. The regression
+  `native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
+  passed (1 passed; 904 filtered; 23.75 seconds), verifying HttpOnly request
+  cookies on startup and `include`, no cookies for `omit`, startup and explicit
+  response-cookie updates/deletion in later requests, and visible-only page
+  cookies. Standalone content-process autonomous WorkerTimer turns still use
+  the local loader and are not covered by this brokered path. The scoped check
+  passed with existing dead-code warnings.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

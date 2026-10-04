@@ -34335,13 +34335,13 @@ async fn native_content_process_resolves_runtime_shared_worker_module_imports() 
 }
 
 #[tokio::test]
-async fn native_content_process_shared_worker_fetch_api_uses_live_cookies() {
+async fn native_content_process_shared_worker_fetch_uses_parent_cookie_authority() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         let mut requests = Vec::new();
-        for _ in 0..5 {
+        for _ in 0..6 {
             let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
                 .await
                 .unwrap_or_else(|_| {
@@ -34379,7 +34379,12 @@ async fn native_content_process_shared_worker_fetch_api_uses_live_cookies() {
                 "/shared-fetch.js" => (
                     "",
                     "application/javascript",
-                    "globalThis.onconnect = event => { const port = event.ports[0]; port.postMessage({ kind: 'ready' }); port.onmessage = async message => { if (message.data !== 'fetch') return; try { const included = await fetch('/include', { credentials: 'include' }); const includeBody = await included.text(); const omitted = await fetch('/omit', { credentials: 'omit' }); const omitBody = await omitted.text(); const after = await fetch('/after', { credentials: 'include' }); const afterBody = await after.text(); port.postMessage({ kind: 'complete', values: [includeBody, omitBody, afterBody], statuses: [included.status, omitted.status, after.status] }); } catch (error) { port.postMessage({ kind: 'error', message: String(error) }); } }; };",
+                    "globalThis.onconnect = event => { const port = event.ports[0]; port.postMessage({ kind: 'ready' }); fetch('/startup', { credentials: 'include' }).then(async response => port.postMessage({ kind: 'startup', text: await response.text() })).catch(error => port.postMessage({ kind: 'error', message: String(error) })); port.onmessage = async message => { if (message.data !== 'fetch') return; try { const included = await fetch('/include', { credentials: 'include' }); const includeBody = await included.text(); const omitted = await fetch('/omit', { credentials: 'omit' }); const omitBody = await omitted.text(); const after = await fetch('/after', { credentials: 'include' }); const afterBody = await after.text(); port.postMessage({ kind: 'complete', values: [includeBody, omitBody, afterBody], statuses: [included.status, omitted.status, after.status] }); } catch (error) { port.postMessage({ kind: 'error', message: String(error) }); } }; };",
+                ),
+                "/startup" => (
+                    "Set-Cookie: worker_startup_secret=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/plain",
+                    "startup complete",
                 ),
                 "/include" => (
                     concat!(
@@ -34409,18 +34414,21 @@ async fn native_content_process_shared_worker_fetch_api_uses_live_cookies() {
     )
     .unwrap();
     engine.initialize_async().await.unwrap();
-    for _ in 0..4 {
+    for _ in 0..8 {
         let messages = engine.evaluate_async("sharedFetchMessages").await.unwrap();
-        if messages
-            .as_array()
-            .is_some_and(|messages| messages.iter().any(|message| message["kind"] == "ready"))
-        {
+        if messages.as_array().is_some_and(|messages| {
+            messages.iter().any(|message| message["kind"] == "ready")
+                && messages.iter().any(|message| message["kind"] == "startup")
+        }) {
             break;
         }
     }
     assert_eq!(
         engine.evaluate_async("sharedFetchMessages").await.unwrap(),
-        serde_json::json!([{ "kind": "ready" }])
+        serde_json::json!([
+            { "kind": "ready" },
+            { "kind": "startup", "text": "startup complete" },
+        ])
     );
     engine
         .evaluate_async("sharedFetchWorker.port.postMessage('fetch')")
@@ -34436,13 +34444,13 @@ async fn native_content_process_shared_worker_fetch_api_uses_live_cookies() {
         }
     }
     let messages = engine.evaluate_async("sharedFetchMessages").await.unwrap();
-    engine.close_async().await.unwrap();
     let requests = server.await.unwrap();
 
     assert_eq!(
         messages,
         serde_json::json!([
             { "kind": "ready" },
+            { "kind": "startup", "text": "startup complete" },
             { "kind": "complete", "values": ["included", "omitted", "after"], "statuses": [200, 200, 200] },
         ]),
         "a connected SharedWorker Fetch API must resolve response bodies and report the later request"
@@ -34460,12 +34468,26 @@ async fn native_content_process_shared_worker_fetch_api_uses_live_cookies() {
     let included_cookie = cookie_for("/include");
     assert!(included_cookie.contains("worker_fetch=initial"));
     assert!(included_cookie.contains("worker_fetch_secret=initial-secret"));
+    assert!(included_cookie.contains("worker_startup_secret=accepted"));
     assert!(!included_cookie.contains("worker_fetch_removed="));
     assert!(cookie_for("/omit").is_empty());
     let after_cookie = cookie_for("/after");
     assert!(after_cookie.contains("worker_fetch=latest"));
     assert!(after_cookie.contains("worker_fetch_secret=latest-secret"));
+    assert!(after_cookie.contains("worker_startup_secret=accepted"));
     assert!(!after_cookie.contains("worker_fetch_removed="));
+    assert!(cookie_for("/startup").contains("worker_fetch_secret=initial-secret"));
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("worker_fetch=latest")
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    assert!(
+        cookies
+            .iter()
+            .any(|cookie| { cookie.name == "worker_startup_secret" && cookie.value == "accepted" })
+    );
+    engine.close_async().await.unwrap();
 }
 
 #[tokio::test]

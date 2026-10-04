@@ -654,5 +654,17 @@ projection and existing native Fetch behavior.
   passed with existing dead-code warnings; the companion content worker was
   explicitly rebuilt before the passing regression. Other child-direct internal
   network paths remain open.
+- Native host `fetch_async` now carries its parent-captured active document
+  owner over IPC, which the content process checks against its current document
+  before ServiceWorker interception. The ServiceWorker turn receives the parent
+  Fetch broker, so awaited nested Fetches and scheduled lifetime Fetches do not
+  use the child loader. Content-worker protocol is now version 33. The
+  process-backed
+  `native_host_fetch_service_worker_nested_cookie_uses_parent_authority`
+  regression passed (1 passed; 905 filtered; 19.72 seconds), verifying the
+  nested request's initial HttpOnly cookies, parent acceptance of its HttpOnly
+  response cookie, use on a later host request, and `document.cookie` filtering.
+  Scoped `cargo check` and explicit companion-worker build passed; other
+  child-direct internal network paths remain in scope.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

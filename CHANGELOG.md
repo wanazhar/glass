@@ -51,7 +51,13 @@ and intends to use [Semantic Versioning](https://semver.org/).
   request carries the parent's captured document owner over IPC, which the
   content process validates before dispatch; an HttpOnly response cookie is
   accepted by the parent and sent on the subsequent page request. The
-  content-worker protocol is now version 32.
+  content-worker protocol advanced to version 32 for this owner-bound
+  resolution.
+- Native host `fetch_async` now carries its exact parent-captured document
+  owner into content-process ServiceWorker interception. Nested ServiceWorker
+  Fetch requests use the parent cookie/network broker, and an HttpOnly response
+  cookie is reused by a later host Fetch. The content-worker protocol is now
+  version 33.
 - ServiceWorker `postMessage` and page-to-ServiceWorker MessagePort event Fetches
   now retain the owner-checked parent cookie broker for content-worker turns.
   A process-backed regression covers parent-owned HttpOnly response-cookie

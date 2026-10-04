@@ -10578,6 +10578,12 @@ passed (1 passed; 904 filtered; 33.95 seconds), verifying the resumed request's
 HttpOnly cookie selection, parent response-cookie acceptance, follow-up page
 request, and `document.cookie` filtering. The content-worker protocol is now
 version 32; other child-direct internal requests remain open.
+Native host `fetch_async` now owner-binds its ServiceWorker IPC and gives
+ServiceWorker interception the parent Fetch broker, including nested requests.
+`native_host_fetch_service_worker_nested_cookie_uses_parent_authority` passed
+(1 passed; 905 filtered; 19.72 seconds), checking parent-selected HttpOnly
+cookies, response-cookie persistence, reuse by a later host request, and
+`document.cookie` filtering. The content-worker protocol is now version 33.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

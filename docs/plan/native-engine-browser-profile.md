@@ -124,7 +124,7 @@ protocol now sends only an owner-checked, URL-scoped visible projection and no
 longer has full-cookie set/apply/clear commands. Script setter writes return to
 the parent without mutating the child loader, and cookie import/update/clear
 operations refresh the projection rather than mirroring a cookie profile.
-The content-worker protocol is now version 32. Page and dedicated Worker
+The content-worker protocol is now version 33. Page and dedicated Worker
 EventSource open, response streaming, reconnect, and close use the parent
 broker. WebSocket handshakes, frame sends/receives, and close also use it: the
 parent owns each live socket, keeps handshake cookies and `Set-Cookie` inside
@@ -145,6 +145,16 @@ verifies initial HttpOnly request cookies, parent acceptance of the resumed
 Fetch's HttpOnly response cookie, reuse on a later page request, and exclusion
 from `document.cookie`; it passed (1 passed; 904 filtered; 33.95 seconds).
 Other child-direct internal requests remain in Slice 843's audit.
+The native host `fetch_async` IPC now also carries the parent's exact active
+document owner. Content-process ServiceWorker interception and any nested
+Fetches retain the parent broker instead of selecting cookies from a child
+loader. The process-backed
+`native_host_fetch_service_worker_nested_cookie_uses_parent_authority` test
+passed (1 passed; 905 filtered; 19.72 seconds), verifying the nested request's
+initial HttpOnly cookies, acceptance of its HttpOnly response cookie into the
+parent jar, reuse on the next host request, and visible-cookie filtering. This
+advances the content-worker protocol to version 33; other child-direct internal
+requests remain in Slice 843's audit.
 The process-backed
 `native_content_process_initial_worker_startup_fetch_uses_parent_cookie_authority`
 regression verifies parent-selected HttpOnly cookies on the worker entry and

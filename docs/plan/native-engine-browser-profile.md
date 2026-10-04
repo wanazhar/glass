@@ -117,15 +117,23 @@ protocol now sends only an owner-checked, URL-scoped visible projection and no
 longer has full-cookie set/apply/clear commands. Script setter writes return to
 the parent without mutating the child loader, and cookie import/update/clear
 operations refresh the projection rather than mirroring a cookie profile.
+The content-worker protocol is now version 28. Page EventSource open,
+response streaming, reconnect, and close use the parent broker; only bounded
+body chunks and opaque stream IDs cross the process boundary. Worker
+EventSource remains a direct child path.
 Child-direct internal network paths can still populate a transient child jar
 and emit a bounded cookie-change journal to the parent, so the parent-only
-contract is not yet met. Slice 842 has
-removed the child cookie-profile field from browser-coordinated SharedWorker
+contract is not yet met. Page EventSource open, response streaming, reconnect,
+and close now use the parent broker; the content process receives bounded
+response chunks addressed by opaque stream IDs and never receives cookie
+headers or the full profile. Worker EventSource and other direct child network
+paths remain outside this guarantee. Slice 842 has removed the child
+cookie-profile field from browser-coordinated SharedWorker
 creation and now seeds the shared coordinator from the parent engine resolved
 by the exact source frame, replaying coordinator cookie overrides afterward.
-This fixes only that SharedWorker creation path. Slice 843 still tracks
-full-cookie IPC removal and unbrokered network paths; the profile is not
-parent-only until that work also passes. A
+This fixes only that SharedWorker creation path. Slice 843 continues to track
+the remaining unbrokered network paths; the profile is not parent-only until
+that work also passes. A
 process-backed checkpoint now brokers standard buffered Fetches emitted during
 dedicated-worker initialization and while handling an explicit page
 `Worker.postMessage`. The parent validates the captured page owner separately

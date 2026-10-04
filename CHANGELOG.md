@@ -46,6 +46,12 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Page EventSource open, live response reads, reconnects, and close now use the
+  parent network/cookie broker. The content process receives bounded chunks
+  via opaque stream IDs, never cookie headers; the focused SSE regression
+  verifies request-cookie selection and persisted response cookies. This
+  advances the content-worker protocol to version 28. Worker EventSource
+  remains a direct child path.
 - Browser-coordinated DedicatedWorker timers with any due deadline now defer
   to the exact page-owner turn and its parent Fetch broker, rather than running
   nonzero-delay callbacks inside the child. A 25 ms process regression verifies

@@ -1433,7 +1433,6 @@ impl NativeEngine {
             Some(
                 NativeContentProcess::spawn_with_event_notify(
                     self.config.storage_path.as_deref(),
-                    &self.storage_writer_id,
                     self.loader.allowed_file_roots(),
                     self.dialog_control.clone(),
                     self.pending_content_cookie_changes.clone(),
@@ -1569,6 +1568,17 @@ impl NativeEngine {
         match self.lifecycle {
             NativeLifecycleState::Running => {
                 self.persist_local_web_storage()?;
+                let process_close_result = if let Some(process) = self.content_process.as_mut() {
+                    if process.refresh_health() {
+                        Some(process.close().await)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                self.reconcile_pending_content_cookie_changes("close parent cookie authority")?;
+                self.persist_pending_loader_cookie_changes()?;
                 unregister_storage_reader(
                     self.config.storage_path.as_deref(),
                     &self.storage_writer_id,
@@ -1580,11 +1590,10 @@ impl NativeEngine {
                 )?;
                 self.runtime.close()?;
                 self.runtime_worker.take();
+                self.content_process.take();
                 self.lifecycle = NativeLifecycleState::Closed;
-                if let Some(mut process) = self.content_process.take()
-                    && process.refresh_health()
-                {
-                    process.close().await?;
+                if let Some(result) = process_close_result {
+                    result?;
                 }
                 Ok(())
             }
@@ -1927,7 +1936,6 @@ impl NativeEngine {
         if self.content_process.is_none() {
             let mut process = NativeContentProcess::spawn_with_event_notify(
                 self.config.storage_path.as_deref(),
-                &self.storage_writer_id,
                 self.loader.allowed_file_roots(),
                 self.dialog_control.clone(),
                 self.pending_content_cookie_changes.clone(),
@@ -2676,8 +2684,9 @@ impl NativeEngine {
             self.loader.restore_cookie_changes(existing_loader_changes);
             return Err(error);
         }
-        self.loader.take_cookie_changes();
+        let reconciled_changes = self.loader.take_cookie_changes();
         self.loader.restore_cookie_changes(existing_loader_changes);
+        self.loader.restore_cookie_changes(reconciled_changes);
         pending_changes.clear();
         drop(pending_changes);
         for write in cookie_writes {

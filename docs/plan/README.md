@@ -323,9 +323,10 @@ parent-brokered transport. See the
 [Slice 842 task](tasks/native-engine-browser-842.md) and
 [cookie authority
 contract](native-engine-browser-profile.md#parent-owned-cookie-authority).
-The remaining unbrokered network paths are tracked in the dependent
+The remaining unbrokered request classes are tracked in the dependent
 [Slice 843 task](tasks/native-engine-browser-843.md); the child cookie jar is
-now disabled and nonempty child journals are rejected.
+disabled, nonempty journals are rejected, and direct child HTTP(S) transport
+fails closed until each class is wired to the parent broker.
 A Slice 843 checkpoint now brokers standard buffered Fetch emitted during
 dedicated-worker initialization and while handling an explicit page
 `Worker.postMessage` or a transferred page `MessagePort` event; its expanded
@@ -458,9 +459,10 @@ passed, as did the process-backed HTTP navigation (30.16s), mutation
 stylesheet (19.39s), ServiceWorker lifecycle (20.15s), Worker message Fetch
 (20.38s), and host nested ServiceWorker Fetch (20.34s) cookie regressions. A
 unit test verifies target-based classification for network, file, data, and
-fixture base URLs. Child cookie state is now disabled and child journals are
-rejected; remaining direct network paths still need parent-broker coverage, so
-this does not complete Slice 843's broader acceptance matrix.
+fixture base URLs. Child cookie state is disabled, nonempty journals are
+rejected, and direct child HTTP(S) transport fails closed; remaining request
+classes still need parent-broker wiring, so this does not complete Slice 843's
+broader acceptance matrix.
 The navigation-preload process regression verifies the header on each eligible
 navigation, no preload header on registration/resource requests, source-document
 Referrer-Policy on direct and redirected loads, worker-visible
@@ -10549,17 +10551,20 @@ FetchEvent now queue for the parent broker on the next exact-owner turn without
 holding the event's independent `respondWith()` result. The process-backed
 `browser_owned_service_worker_lifetime_fetch_uses_parent_cookie_authority`
 regression passed (1 test; 28.49 seconds), checking parent cookie selection,
-HttpOnly response rotation, and the next page Fetch. Service Worker-originated
-upload streams, background work outside intercepted FetchEvents, and other
-internal network paths remain unbrokered. Initial-load HTTP(S) scripts
+HttpOnly response rotation, and the next page Fetch. At that earlier
+checkpoint, Service Worker-originated upload streams, background work outside
+intercepted FetchEvents, and other internal network paths remained unbrokered.
+The latest transport guard rejects direct child HTTP(S) attempts for uncovered
+classes until parent-brokered. Initial-load HTTP(S) scripts
 inserted by inline scripts now use the owner-checked parent broker; the
 process-backed navigation regression passed (1 test; 34.45 seconds), verifying
 HttpOnly request-cookie selection, response-cookie acceptance, and the visible
 script projection for a dynamically inserted classic script. At that earlier
 checkpoint, child-direct internal requests could mutate a transient child jar
-and publish cookie journals. The latest hardening disables child cookie state
-and rejects nonempty journals, but direct requests still need parent-broker
-coverage for cookie behavior. Slice 843 remains in progress. User action
+and publish cookie journals. The latest hardening disables child cookie state,
+rejects nonempty journals, and fails closed on direct child HTTP(S) transport.
+Request classes without broker coverage remain unavailable, so Slice 843
+remains in progress. User action
 mutations now receive the parent loader and broker
 HTTP(S) stylesheets, CSS imports/fonts, images, and media created by those
 turns; `native_content_process_mutation_stylesheets_use_parent_cookie_authority`
@@ -10602,7 +10607,9 @@ the child. The expanded process-backed
 passed (1 passed; 904 filtered; 33.95 seconds), verifying the resumed request's
 HttpOnly cookie selection, parent response-cookie acceptance, follow-up page
 request, and `document.cookie` filtering. The content-worker protocol is now
-version 32; other child-direct internal requests remain open.
+version 32; at that checkpoint, other child-direct internal requests remained
+open. The latest transport guard now rejects direct HTTP(S) attempts for
+unbrokered classes until parent-brokered.
 Native host `fetch_async` now owner-binds its ServiceWorker IPC and gives
 ServiceWorker interception the parent Fetch broker, including nested requests.
 `native_host_fetch_service_worker_nested_cookie_uses_parent_authority` passed

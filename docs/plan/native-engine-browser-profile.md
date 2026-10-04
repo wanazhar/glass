@@ -115,10 +115,12 @@ resource paths.
 The sandboxed content-process loader has cookie authority disabled: it cannot
 read or create cookies, accept cookie profiles or change batches, or publish a
 nonempty cookie journal. The parent rejects a nonempty journal as a protocol
-violation. This closes the child-cookie-store path, but it does not complete
-request coverage: any remaining direct child HTTP(S) path currently lacks the
-parent jar's request-cookie matching and response `Set-Cookie` processing and
-must be moved behind the parent broker.
+violation. The content loader also rejects direct HTTP(S) transport unless the
+request has gone through the parent broker. This closes the child-cookie-store
+and cookie-less-child-request paths, but does not complete request coverage:
+any request class not yet wired to the broker fails closed and remains
+unavailable until parent request-cookie matching and response `Set-Cookie`
+processing are connected.
 User action mutations also carry the parent loader into the content-process
 turn, so newly created HTTP(S) stylesheets and their CSS imports/fonts, images,
 and media use the same owner-checked broker and response-cookie authority.
@@ -176,13 +178,15 @@ and the visible-only page projection.
 At the earlier checkpoint, child-direct internal network paths could populate
 transient child cookie state and emit bounded cookie-change journals;
 autonomous content-process worker timers were subsequently moved off those
-paths. The latest hardening disables child cookie state and rejects any
-nonempty journal, but network paths not yet covered by the parent broker still
-lack parent cookie semantics. Page and dedicated Worker EventSource
+paths. The latest hardening disables child cookie state, rejects any nonempty
+journal, and blocks direct HTTP(S) at the content-loader transport boundary.
+Network paths not yet covered by the parent broker therefore fail closed and
+remain unavailable rather than silently running without parent cookie
+semantics. Page and dedicated Worker EventSource
 responses use bounded chunks addressed by opaque stream IDs, and WebSocket frames use
 bounded message records addressed by opaque stream IDs; cookie headers and the
-full profile never cross IPC. Other direct child network paths remain outside
-this guarantee. Slice 842 has removed the child cookie-profile field from
+full profile never cross IPC. Other request classes still need parent-broker
+coverage and fail closed at the child transport boundary until then. Slice 842 has removed the child cookie-profile field from
 browser-coordinated SharedWorker
 creation and now seeds the shared coordinator from the parent engine resolved
 by the exact source frame, replaying coordinator cookie overrides afterward.
@@ -299,8 +303,10 @@ request cookies, and accepts response-cookie changes. The worker's current
   `native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority`
   regression verifies the cookie sequence through activation, preload, the
   navigation event, and a later page Fetch while `document.cookie` remains
-  filtered. Background work outside intercepted FetchEvents and other internal
-  network requests remain direct child paths.
+  filtered. At this earlier checkpoint, background work outside intercepted
+  FetchEvents and other internal network requests remained direct child paths;
+  the latest transport guard rejects their direct HTTP(S) attempts until they
+  are parent-brokered.
   At the earlier timer checkpoint, browser-coordinated DedicatedWorker and
   ServiceWorker callbacks used the parent broker while standalone content
   processes still ran due timers against their local loader. Slice 843 now
@@ -336,9 +342,10 @@ cookie tests for initial HTTP resources, mutation-created stylesheets/imports,
 ServiceWorker lifecycle Fetches, Worker message Fetch, and host nested
 ServiceWorker Fetch. A unit regression covers target-based routing across
 network and local base URLs. The content-process loader now has cookie
-authority disabled, and any nonempty cookie journal is rejected. Remaining
-direct child HTTP(S) paths still need the parent broker for request-cookie
-matching and response-cookie acceptance, so behavioral parity is incomplete.
+authority disabled, rejects nonempty journals, and fails closed on direct
+HTTP(S) transport. Remaining request classes still need broker wiring for
+parent request-cookie matching and response-cookie acceptance, so behavioral
+parity is incomplete.
 
 ### Shared-profile cookie synchronization
 
@@ -433,7 +440,8 @@ content process's loader. The process-backed
 passed (1 passed; 1,691 filtered; 25.87 seconds), checking the message-event
 response's HttpOnly cookie on the following page request while keeping it out
 of `document.cookie`. This closes those message-event routes only; remaining
-child-direct internal network classes remain in Slice 843's open audit.
+unbrokered internal request classes remain in Slice 843's open audit and fail
+closed at the content-loader transport boundary until wired to the parent.
 
 ### Fetch referrer policy containers
 

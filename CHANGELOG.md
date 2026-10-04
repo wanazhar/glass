@@ -52,8 +52,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
   cookie state, import a parent cookie profile, or publish cookie changes; a
   nonempty child cookie journal is rejected. Local-owner code continues using
   the browser engine's parent loader directly, and local file, Blob, fixture,
-  and other non-network resources stay local. Remaining direct child network
-  paths still need parent-broker coverage to regain parent cookie semantics.
+  and other non-network resources stay local. The content loader now rejects
+  every direct HTTP(S) request unless it reaches the parent broker; remaining
+  request classes must be wired through that broker to restore availability.
 - A ServiceWorker FetchEvent resumed after `clients.openWindow()` now keeps the
   parent-owned cookie broker across its pending continuation. The resumed
   request carries the parent's captured document owner over IPC, which the
@@ -99,16 +100,18 @@ and intends to use [Semantic Versioning](https://semver.org/).
   the child receives only opaque stream IDs and bounded frame data. Page and
   Worker regressions cover request-cookie selection, and the page regression
   verifies handshake response-cookie persistence. The content-worker protocol
-  is now version 30; other child-direct network paths remain tracked under
-  Slice 843.
+  is now version 30. At that checkpoint, other child-direct network paths
+  remained tracked under Slice 843; the latest transport guard rejects their
+  direct HTTP(S) attempts until they are brokered.
 - Page and dedicated Worker EventSource open, live response reads, reconnects,
   and close now use the parent network/cookie broker. The content process
   receives bounded chunks via opaque stream IDs, never cookie headers; worker
   requests retain the worker-script initiator URL while the parent-captured
   page owner scopes their IPC stream. Focused regressions verify parent-selected
   request cookies and persisted HttpOnly response cookies. This advances the
-  content-worker protocol to version 29; other child-direct network paths
-  remain tracked under Slice 843.
+  content-worker protocol to version 29. At that checkpoint, other child-
+  direct network paths remained tracked under Slice 843; the latest transport
+  guard rejects their direct HTTP(S) attempts until they are brokered.
 - At the earlier timer checkpoint, browser-coordinated DedicatedWorker timers
   deferred to the exact page-owner turn while standalone content-process
   timers still ran locally. Slice 843 now removes that exception: every
@@ -123,10 +126,12 @@ and intends to use [Semantic Versioning](https://semver.org/).
   profile writes keep the cookie field empty. Full-cookie `set_cookies` IPC
   and cookie-change sync commands are replaced with an owner- and URL-scoped,
   script-visible `document.cookie` projection; script setter writes no longer
-  mutate the child loader. Child-generated changes from still-direct internal
-  network paths can still be journaled to the parent, so complete parent-only
-  network ownership remains open. This advances the content-worker protocol
-  to version 27.
+  mutate the child loader. At that checkpoint, child-generated changes from
+  direct internal network paths could still be journaled to the parent. The
+  latest hardening rejects those journals and direct HTTP(S) transport;
+  complete parent-only network ownership remains open until uncovered request
+  classes are brokered. This advances the content-worker protocol to version
+  27.
 - Service Worker navigation preload now preserves NavigationPreloadManager
   identity across repeated page-bootstrap injection. Parent-brokered preloads
   use an owner-bound cancellation handshake: unfinished requests are cancelled
@@ -141,7 +146,9 @@ and intends to use [Semantic Versioning](https://semver.org/).
   page-script turn now receives a parent-computed, URL-scoped visible cookie
   projection and returns bounded owner-tagged setter writes—even when the turn
   makes no Fetch—for the parent to apply. Child-side full-profile mirroring,
-  shared profile access, and unbrokered network ownership remain in progress.
+  shared profile access, and parent-broker coverage remain in progress;
+  uncovered direct child HTTP(S) attempts now fail closed at the transport
+  boundary.
 - The unhandled-network fallback for the bounded native host Fetch command and
   eligible HTTP(S) Fetch requests from explicit page-script evaluation now run
   through a parent broker. For eligible script Fetches, the parent reconciles

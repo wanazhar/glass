@@ -487,8 +487,10 @@ projection and existing native Fetch behavior.
   navigation preload Set-Cookie, navigation FetchEvent Set-Cookie, and the next
   page Fetch. All HttpOnly values remained unavailable through
   `document.cookie`. The scoped test-target check passed with existing DOM
-  dead-code warnings. Background work outside intercepted FetchEvents and
-  other internal network paths remain direct child requests.
+  dead-code warnings. At this checkpoint, background work outside intercepted
+  FetchEvents and other internal network paths remained direct child requests;
+  the later transport guard rejects direct child HTTP(S) attempts until those
+  classes are parent-brokered.
 - The navigation-preload API process regression exposed two coupled failures:
   repeated page-bootstrap injection recreated the manager brand WeakMaps, and a
   fast `respondWith()` could drop a preload after the parent had started its
@@ -521,9 +523,11 @@ projection and existing native Fetch behavior.
 - Content-worker protocol 27 removes the parent-to-child full-profile set,
   change, and clear commands. The parent now sends only an owner-checked,
   URL-scoped script-visible cookie projection; page setter lines return to the
-  parent without mutating the child loader. Child-direct internal requests can
-  still produce cookie-change journals, so this narrows the authority boundary
-  but does not finish it. The process-backed
+  parent without mutating the child loader. At that protocol-27 checkpoint,
+  child-direct internal requests could still produce cookie-change journals,
+  so this narrowed the authority boundary but did not finish it. Later
+  hardening rejects nonempty journals and direct HTTP(S) child transport. The
+  process-backed
   `native_content_process_synchronizes_document_cookie_with_http_session`
   regression passed (1 passed; 36.21 seconds), covering initial and refreshed
   projection, parent-applied script setters, hidden HttpOnly import, and clear.
@@ -687,8 +691,10 @@ projection and existing native Fetch behavior.
   hardening disables content-process cookie reads/writes/profile installation
   and rejects nonempty child cookie journals. Unit regressions cover target-
   based selection across HTTP(S), file, data, and fixture bases, plus disabled
-  child cookie authority. Remaining direct child HTTP(S) paths still need the
-  parent broker for request-cookie matching and response-cookie acceptance,
-  so parent-only behavioral ownership and Issue #40 remain incomplete.
+  child cookie authority. A transport-level guard now rejects direct HTTP(S)
+  requests from the content loader, so uncovered request classes fail closed
+  rather than run without parent cookies. They still need parent-broker wiring
+  for request-cookie matching and response-cookie acceptance, so parent-only
+  behavioral ownership and Issue #40 remain incomplete.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

@@ -61,8 +61,9 @@ use super::javascript::{
     host_click_event_batch_with_modifiers, host_event_batch, host_event_batch_at,
     host_key_event_batch, host_key_event_batch_with_modifiers, host_submit_event_batch,
     load_indexed_db_profile, load_service_worker_cache_profile,
-    load_service_worker_registration_profiles, load_web_storage_profile, native_module_loader_name,
-    order_page_scripts, page_script_sources_to_scripts, resolve_module_request_url,
+    load_service_worker_registration_profiles, load_web_storage_profile,
+    migrate_cookie_profile_from_web_storage, native_module_loader_name, order_page_scripts,
+    page_script_sources_to_scripts, resolve_module_request_url, save_content_web_storage_profile,
     save_service_worker_cache_profile, save_web_storage_profile, static_module_requests,
     storage_key, validate_message_port_transfers, validate_native_message_payload,
     validate_native_object_url_transfers,
@@ -2479,6 +2480,7 @@ impl NativeContentProcess {
         pending_cookie_changes: Arc<Mutex<Vec<NativeCookieChange>>>,
         event_notify: Option<Arc<tokio::sync::Notify>>,
     ) -> Result<Self, NativeEngineError> {
+        migrate_cookie_profile_from_web_storage(storage_path)?;
         let path = worker_binary_path()?;
         if let Some(storage_path) = storage_path
             && !storage_path.exists()
@@ -12565,12 +12567,10 @@ fn persist_content_profile(
         .map(NativeResourceLoader::take_cookie_changes)
         .unwrap_or_default();
     let cookie_changes = coalesce_cookie_changes(cookie_changes, "content process cookie changes")?;
-    save_web_storage_profile(
+    save_content_web_storage_profile(
         storage_path,
         storage_state,
         storage_events,
-        &[],
-        &[],
         indexed_db_state,
         indexed_db_changes,
     )?;

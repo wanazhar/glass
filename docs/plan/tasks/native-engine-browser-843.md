@@ -102,10 +102,14 @@ projection and existing native Fetch behavior.
   overlay for response `Set-Cookie` and stale queued changes after clear.
   The parent process now applies child-reported cookie mutations to the
   durable profile, and child content snapshots no longer apply their cookie
-  changes there. The child still receives the shared path and full profile and
-  can rewrite the combined snapshot, so child write capability is not removed
-  yet. Child profile loading/mirroring, mutation authority, and general network
-  brokering remain outstanding. The restart persistence regression passed
+  changes there. Cookie persistence is now split into a parent-managed
+  `<profile>.cookies` sidecar; before child startup the parent migrates legacy
+  cookies out of the shared Web Storage file. The content loader starts with
+  an empty jar instead of loading from that path, and child profile writes keep
+  its cookie field empty. However, `set_cookies` and related IPC still send the
+  full cookie profile into the child mirror, and direct child network paths
+  remain. Full-cookie IPC removal, mutation authority, and general network
+  brokering are outstanding. The restart persistence regression passed
   (1 passed; 93.27-second runtime); its test name now describes the observed
   process-restart behavior rather than attributing durable writes to the child.
   Cookie import and clear now commit through the parent profile writer; the
@@ -490,5 +494,13 @@ projection and existing native Fetch behavior.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.
+- Native profile persistence now stores cookies in a dedicated sidecar and
+  keeps cookie values out of the shared Web Storage profile. The scoped
+  cookie-profile unit tests passed (3 passed), and the process-backed
+  `native_cookie_profile_survives_native_process_restart` regression passed
+  (1 passed; 32.51 seconds) with a freshly rebuilt content worker. This is a
+  disk/profile boundary only: complete cookie profiles and changes are still
+  sent to the child over IPC, and remaining direct child network paths still
+  need to be brought under parent ownership.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

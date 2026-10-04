@@ -2964,7 +2964,7 @@ impl NativeResourceLoader {
 
     pub(crate) fn for_content_process(
         max_document_bytes: usize,
-        storage_path: Option<&std::path::Path>,
+        _storage_path: Option<&std::path::Path>,
         allowed_file_roots: &[PathBuf],
     ) -> Result<Self, NativeEngineError> {
         if max_document_bytes == 0 || max_document_bytes > MAX_NATIVE_DOCUMENT_BYTES {
@@ -2974,12 +2974,14 @@ impl NativeResourceLoader {
             ));
         }
         let allowed_file_roots = canonical_file_roots(allowed_file_roots)?;
-        let cookies = load_cookie_profile(storage_path)?;
         Ok(Self {
             fixtures: BTreeMap::new(),
             allowed_file_roots,
             max_document_bytes,
-            network: NativeNetworkState::from_profile(cookies)?,
+            // The parent keeps the durable cookie jar. Content-process cookie
+            // state is only a temporary compatibility projection and must not
+            // be hydrated by opening the shared profile path.
+            network: NativeNetworkState::default(),
             environment: NativeEnvironmentOverrides::default(),
             cookie_changes: Vec::new(),
             csp_violations: Vec::new(),
@@ -10642,7 +10644,8 @@ fn hex_value(value: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::super::javascript::{
-        NativeIndexedDbState, NativeWebStorageState, save_web_storage_profile,
+        NativeIndexedDbState, NativeWebStorageState, load_cookie_profile,
+        migrate_cookie_profile_from_web_storage, save_web_storage_profile,
     };
     use super::{
         JAVASCRIPT_MIME_TYPE_ESSENCES, MAX_NATIVE_CACHE_ENTRIES,
@@ -11305,9 +11308,13 @@ mod tests {
             "glass-native-web-storage-{}-cookie-merge.json",
             std::process::id()
         ));
+        let cookie_path = PathBuf::from(format!("{}.cookies", profile_path.display()));
         let lock_path = profile_path.with_extension("lock");
+        let cookie_lock_path = cookie_path.with_extension("lock");
         let _ = fs::remove_file(&profile_path);
+        let _ = fs::remove_file(&cookie_path);
         let _ = fs::remove_file(&lock_path);
+        let _ = fs::remove_file(&cookie_lock_path);
         let config = NativeEngineConfig::default().with_storage_path(profile_path.clone());
         let page = "https://example.test/account/page";
         let mut first = NativeResourceLoader::new(&config).unwrap();
@@ -11349,8 +11356,84 @@ mod tests {
             reopened.document_cookie(page).unwrap(),
             "first=one; second=two"
         );
+        let web_profile: serde_json::Value =
+            serde_json::from_slice(&fs::read(&profile_path).unwrap()).unwrap();
+        let cookie_profile: serde_json::Value =
+            serde_json::from_slice(&fs::read(&cookie_path).unwrap()).unwrap();
+        assert_eq!(web_profile["cookies"], serde_json::json!([]));
+        assert_eq!(cookie_profile["cookies"].as_array().unwrap().len(), 2);
+
+        let content_loader =
+            NativeResourceLoader::for_content_process(256 * 1024, Some(&profile_path), &[])
+                .unwrap();
+        assert!(
+            content_loader
+                .cookies_for_document(page)
+                .unwrap()
+                .is_empty()
+        );
+
         let _ = fs::remove_file(profile_path);
+        let _ = fs::remove_file(cookie_path);
         let _ = fs::remove_file(lock_path);
+        let _ = fs::remove_file(cookie_lock_path);
+    }
+
+    #[test]
+    fn legacy_cookie_profile_migrates_out_of_content_readable_storage_file() {
+        let profile_path = std::env::temp_dir().join(format!(
+            "glass-native-web-storage-{}-cookie-migrate.json",
+            std::process::id()
+        ));
+        let cookie_path = PathBuf::from(format!("{}.cookies", profile_path.display()));
+        let lock_path = profile_path.with_extension("lock");
+        let cookie_lock_path = cookie_path.with_extension("lock");
+        let _ = fs::remove_file(&profile_path);
+        let _ = fs::remove_file(&cookie_path);
+        let _ = fs::remove_file(&lock_path);
+        let _ = fs::remove_file(&cookie_lock_path);
+        let legacy_cookie = serde_json::json!({
+            "name": "legacy_secret",
+            "value": "must-stay-parent-owned",
+            "domain": "example.test",
+            "path": "/",
+            "host_only": true,
+            "secure": false,
+            "http_only": true,
+            "same_site": "Lax",
+            "priority": null,
+            "expires_at_unix_seconds": null,
+        });
+        fs::write(
+            &profile_path,
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "revision": 7,
+                "local": {},
+                "cookies": [legacy_cookie],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        migrate_cookie_profile_from_web_storage(Some(&profile_path)).unwrap();
+
+        let web_profile: serde_json::Value =
+            serde_json::from_slice(&fs::read(&profile_path).unwrap()).unwrap();
+        assert_eq!(web_profile["revision"], 7);
+        assert_eq!(web_profile["cookies"], serde_json::json!([]));
+        assert_eq!(
+            load_cookie_profile(Some(&profile_path))
+                .unwrap()
+                .first()
+                .map(|cookie| cookie.value.as_str()),
+            Some("must-stay-parent-owned")
+        );
+
+        let _ = fs::remove_file(profile_path);
+        let _ = fs::remove_file(cookie_path);
+        let _ = fs::remove_file(lock_path);
+        let _ = fs::remove_file(cookie_lock_path);
     }
 
     #[test]

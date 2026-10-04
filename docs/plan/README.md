@@ -347,8 +347,14 @@ process-backed
 `native_content_process_service_worker_lifecycle_fetches_use_parent_cookie_authority`
 regression verifies ordered HttpOnly cookie changes through install and
 activate and their use on the following page request. Navigation-time
-activation of an already-waiting worker and background work outside intercepted
-FetchEvents remain outside this subset. The
+activation of an already-waiting worker, navigation preload, and the
+navigation FetchEvent now retain the captured owner-bound parent broker. The
+process-backed
+`native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority`
+regression verifies HttpOnly cookies from activation and preload are sent on
+the navigation-event Fetch and the following page Fetch, while the visible
+page cookie remains filtered. Background work outside intercepted FetchEvents
+and other internal network requests remain outside this subset. The
 ordinary page Fetch `ReadableStream` upload path now buffers the request body
 under `MAX_NATIVE_FORM_BODY_BYTES` before using the parent broker; its
 process-backed pull/upload-cookie regression passed (1 test; 22.37-second
@@ -398,6 +404,12 @@ process-backed referrer-policy regression passed (1 test; 29.43 seconds),
 checking the parent-selected HttpOnly page cookie on a dynamic stylesheet, its
 response cookie on the import and later Fetch, script-visible filtering, and
 the unchanged cascade/referrer behavior.
+Protocol version 25 carries validated captured-load owner metadata and routes
+waiting Service Worker activation, top-level navigation preload, and the
+navigation FetchEvent through the parent cookie broker. The process-backed
+`native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority`
+regression passed (1 test; 28.78 seconds), verifying the activation-to-preload-
+to-navigation-Fetch cookie sequence and HttpOnly filtering on the next page.
 A new Slice 843 checkpoint moves unhandled HTTP(S) top-level document
 navigation to the parent loader after content-side Service Worker
 interception declines it. The request is bound to the active load ID,

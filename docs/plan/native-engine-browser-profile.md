@@ -161,7 +161,15 @@ request cookies, and accepts response-cookie changes. The worker's current
   referrer-policy process regression passed (1 test; 29.43 seconds), retaining
   cascade/referrer behavior while checking an HttpOnly page cookie on the
   dynamic root, an HttpOnly response cookie on its CSS import and later Fetch,
-  and script-visible filtering. Dynamic stylesheet requests outside an active
+  and script-visible filtering. Protocol version 25 routes waiting-worker
+  navigation activation, top-level navigation preload, and navigation
+  FetchEvent requests through the captured-load parent broker after exact owner
+  validation. The process-backed
+  `native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority`
+  regression passed (1 test; 28.78 seconds), verifying ordered HttpOnly cookie
+  updates through activation, preload, navigation Fetch, and the next page
+  request while `document.cookie` remains filtered. Dynamic stylesheet
+  requests outside an active
   parent-brokered turn, independently delivered SharedWorker events, worker
   module destinations, and Service Worker timer/lifetime requests were still
   outside that earlier checkpoint. HTTP(S) Service Worker registration/update
@@ -207,9 +215,13 @@ request cookies, and accepts response-cookie changes. The worker's current
   install response's HttpOnly cookie on activate, and the accepted lifecycle
   cookies on a later page request while hidden from `document.cookie`.
   Captured-load Fetches remain bound to the exact active or in-flight document
-  owner. Background work outside intercepted FetchEvents, navigation-time
-  activation of a waiting worker, and other internal network requests remain
-  direct child paths.
+  owner. Navigation-time activation of a waiting worker, top-level navigation
+  preload, and its FetchEvent use that parent broker as well. The process-backed
+  `native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority`
+  regression verifies the cookie sequence through activation, preload, the
+  navigation event, and a later page Fetch while `document.cookie` remains
+  filtered. Background work outside intercepted FetchEvents and other internal
+  network requests remain direct child paths.
   In browser-coordinated mode, due
   DedicatedWorker timer turns now wait for the exact context/frame owner pump
   and execute with that turn's parent Fetch broker; standalone `NativeEngine` keeps

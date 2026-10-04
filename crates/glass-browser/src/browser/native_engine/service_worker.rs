@@ -2077,12 +2077,13 @@ impl NativeServiceWorkerRegistry {
         navigation: &NativeNavigationRequest,
         referrer: Option<&str>,
         referrer_policy: NativeFetchReferrerPolicy,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<NativeServiceWorkerNavigationOutcome, NativeEngineError> {
         let target = parse_network_url(
             "service worker navigation URL",
             without_fragment(&navigation.url),
         )?;
-        self.activate_waiting_for_navigation(loader, &target)
+        self.activate_waiting_for_navigation(loader, &target, parent_fetch_broker.as_deref_mut())
             .await?;
         let navigation_preload = self
             .navigation_preload_configuration(&target, navigation.method.as_str())?
@@ -2122,7 +2123,8 @@ impl NativeServiceWorkerRegistry {
                 "document",
                 navigation_preload,
                 referrer,
-                None,
+                parent_fetch_broker.as_deref_mut(),
+                true,
             )
             .await?;
         let response = match outcome {
@@ -2237,7 +2239,8 @@ impl NativeServiceWorkerRegistry {
         destination: &str,
         navigation_preload: Option<NativeServiceWorkerNavigationPreloadRequest>,
         navigation_referrer: Option<&str>,
-        parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+        allow_captured_load_fetch: bool,
     ) -> Result<NativeServiceWorkerFetchOutcome, NativeEngineError> {
         let owner = parse_network_url("service worker fetch owner URL", document_url)?;
         let target =
@@ -2355,7 +2358,10 @@ impl NativeServiceWorkerRegistry {
                         "must be present for an eligible preload",
                     )
                 })?;
-            let mut preload_request = Box::pin(loader.fetch_navigation_preload_async(
+            let mut preload_request = Box::pin(fetch_service_worker_navigation_preload(
+                loader,
+                parent_fetch_broker.as_deref_mut(),
+                preload.request_id,
                 target.as_str(),
                 navigation_referrer,
                 preload_referrer_policy,
@@ -2450,6 +2456,7 @@ impl NativeServiceWorkerRegistry {
             &mut self.lifetime_fetch_tasks,
             &mut self.lifetime_fetch_abort_handles,
             parent_fetch_broker,
+            allow_captured_load_fetch,
         )
         .await?;
         let (value, suspended, client_messages) = match settlement {
@@ -2691,6 +2698,7 @@ impl NativeServiceWorkerRegistry {
                 &mut self.lifetime_fetch_tasks,
                 &mut self.lifetime_fetch_abort_handles,
                 parent_fetch_broker.as_deref_mut(),
+                false,
             )
             .await?;
             let message_port_commands = worker.runtime.take_message_port_commands();
@@ -2722,6 +2730,7 @@ impl NativeServiceWorkerRegistry {
                 &mut self.lifetime_fetch_tasks,
                 &mut self.lifetime_fetch_abort_handles,
                 parent_fetch_broker.as_deref_mut(),
+                false,
             )
             .await?;
             let message_port_commands = worker.runtime.take_message_port_commands();
@@ -2796,6 +2805,7 @@ impl NativeServiceWorkerRegistry {
         &mut self,
         loader: &mut NativeResourceLoader,
         target: &Url,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<(), NativeEngineError> {
         let Some(scope) = self.matching_waiting_scope(target)? else {
             return Ok(());
@@ -2803,7 +2813,10 @@ impl NativeServiceWorkerRegistry {
         let Some(mut worker) = self.waiting_workers.remove(&scope) else {
             return Ok(());
         };
-        if let Err(error) = self.settle_worker_activate(&mut worker, loader, None).await {
+        if let Err(error) = self
+            .settle_worker_activate(&mut worker, loader, parent_fetch_broker.as_deref_mut())
+            .await
+        {
             self.waiting_workers.insert(scope, worker);
             return Err(error);
         }
@@ -3068,6 +3081,57 @@ fn service_worker_scope_matches(scope_path: &str, target_path: &str) -> bool {
         || target_path
             .strip_prefix(scope_path)
             .is_some_and(|remainder| remainder.starts_with('/'))
+}
+
+async fn fetch_service_worker_navigation_preload<'broker>(
+    loader: &mut NativeResourceLoader,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'broker>>,
+    request_id: u32,
+    target_url: &str,
+    referrer: Option<&str>,
+    referrer_policy: NativeFetchReferrerPolicy,
+    header_value: &str,
+) -> Result<NativeFetchResponse, NativeEngineError> {
+    validate_navigation_preload_header_value(header_value)?;
+    let referrer = referrer.filter(|value| !value.is_empty());
+    let owner_url = referrer.unwrap_or(target_url);
+    let referrer_url = referrer.map(str::to_owned).unwrap_or_default();
+    if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
+        let request = NativeFetchRequest {
+            document_url: owner_url,
+            href: target_url,
+            referrer_url: Some(referrer_url),
+            referrer_policy: Some(referrer_policy.as_str().to_owned()),
+            method: NativeFetchMethod::get(),
+            body: None,
+            content_type: None,
+            request_headers: BTreeMap::from([
+                (
+                    "accept".to_owned(),
+                    "text/html,application/xhtml+xml".to_owned(),
+                ),
+                (
+                    "service-worker-navigation-preload".to_owned(),
+                    header_value.to_owned(),
+                ),
+            ]),
+            credentials: true,
+            credentials_mode: Some(NativeFetchCredentialsMode::Include),
+            cors_mode: NativeCorsMode::Navigation,
+            redirect_mode: NativeFetchRedirectMode::Follow,
+            cache_mode: NativeFetchCacheMode::Default,
+            timeout: None,
+            max_response_bytes: Some(loader.max_document_bytes().min(MAX_NATIVE_FORM_BODY_BYTES)),
+        };
+        parent_fetch_broker
+            .fetch_for_captured_navigation(request_id, &request)
+            .await?
+            .0
+    } else {
+        loader
+            .fetch_navigation_preload_async(target_url, referrer, referrer_policy, header_value)
+            .await
+    }
 }
 
 async fn settle_service_worker_cache_event(
@@ -4483,6 +4547,7 @@ async fn settle_service_worker_fetch(
         lifetime_fetch_tasks,
         lifetime_fetch_abort_handles,
         None,
+        false,
     )
     .await
 }
@@ -4498,6 +4563,7 @@ async fn settle_service_worker_fetch_with_parent_fetch_broker<'broker>(
     lifetime_fetch_tasks: &mut JoinSet<NativeServiceWorkerFetchTaskResult>,
     lifetime_fetch_abort_handles: &mut BTreeMap<(u32, u32), AbortHandle>,
     mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'broker>>,
+    allow_captured_load_fetch: bool,
 ) -> Result<NativeServiceWorkerFetchSettlement, NativeEngineError> {
     let mut pending = VecDeque::from(evaluation.commands);
     let mut value = evaluation.value;
@@ -4588,7 +4654,7 @@ async fn settle_service_worker_fetch_with_parent_fetch_broker<'broker>(
             &mut awaiting,
             &mut value,
             parent_fetch_broker.as_deref_mut(),
-            false,
+            allow_captured_load_fetch,
         )
         .await?
         {

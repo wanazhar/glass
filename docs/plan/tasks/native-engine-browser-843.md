@@ -356,6 +356,13 @@ projection and existing native Fetch behavior.
   parent-brokered turn, dynamic stylesheet loads outside an active
   parent-brokered page-script turn, Service-Worker-handled navigation
   responses, and the full child profile/read/write path remain outstanding.
+  Protocol version 25 extends captured-load owner validation to waiting-worker
+  navigation activation, top-level navigation preload, and navigation
+  FetchEvent requests. The process-backed
+  `native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority`
+  regression passed (1 passed; 28.78 seconds), verifying ordered parent cookie
+  updates through activation, preload, navigation Fetch, and the next page
+  Fetch, with HttpOnly values filtered from `document.cookie`.
   HTTP(S) dynamic stylesheet links and their CSS imports created during an
   explicit parent-brokered page-script turn now reuse the existing parent
   stylesheet protocol. `native_content_process_applies_stylesheet_link_referrer_policy`
@@ -446,6 +453,22 @@ projection and existing native Fetch behavior.
   `document.cookie`. The scoped check and rebuilt companion worker pass with
   existing dead-code warnings. Navigation-time activation of an already-waiting
   worker and background work outside intercepted FetchEvents remain direct.
+- Navigation-time activation of an already-waiting worker now retains the
+  parent Fetch broker through its `activate` settlement. The same captured-load
+  broker covers Service Worker navigation preload and the navigation FetchEvent;
+  preload requests preserve top-level navigation cookie policy and are bounded
+  by the configured document/body limit. The parent accepts these requests
+  only after checking the captured-load marker and exact active/in-flight
+  context, frame, generation, and URL. Ordinary page Fetch paths continue to
+  omit the captured-load marker. The process-backed
+  `native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority`
+  regression passed (1 passed; 28.78 seconds), exercising persisted active and
+  waiting worker restoration, page-cookie flush, waiting-worker activation,
+  navigation preload Set-Cookie, navigation FetchEvent Set-Cookie, and the next
+  page Fetch. All HttpOnly values remained unavailable through
+  `document.cookie`. The scoped test-target check passed with existing DOM
+  dead-code warnings. Background work outside intercepted FetchEvents and
+  other internal network paths remain direct child requests.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.

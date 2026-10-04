@@ -17118,6 +17118,242 @@ self.addEventListener('activate', event => {
 }
 
 #[tokio::test]
+async fn native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-waiting-service-worker-navigation-cookies-{}.json",
+        std::process::id()
+    ));
+    let lock_path = profile_path.with_extension("lock");
+    let events_path = profile_path.with_extension("events");
+    let readers_path = profile_path.with_extension("readers");
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+    let origin = format!("http://{address}");
+    let profile = serde_json::json!({
+        "version": 1,
+        "revision": 0,
+        "local": {},
+        "cookies": [{
+            "name": "sw_nav_seed",
+            "value": "initial",
+            "domain": "127.0.0.1",
+            "path": "/",
+            "host_only": true,
+            "secure": false,
+            "http_only": true,
+            "same_site": "Lax",
+            "priority": null,
+            "expires_at_unix_seconds": null
+        }],
+        "service_worker_registrations": [{
+            "script_url": format!("{origin}/sw-active.js"),
+            "scope": format!("{origin}/destination/"),
+            "worker_type": "classic",
+            "navigation_preload_enabled": true,
+            "navigation_preload_header_value": "glass-nav-preload",
+            "waiting": {
+                "script_url": format!("{origin}/sw-next.js"),
+                "worker_type": "classic"
+            }
+        }]
+    });
+    fs::write(&profile_path, serde_json::to_vec(&profile).unwrap()).unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in [
+            "/sw-active.js",
+            "/sw-next.js",
+            "/page",
+            "/flush",
+            "/activate-fetch",
+            "/destination/page",
+            "/nav-fetch",
+            "/after",
+        ] {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("navigation Service Worker Fetch should reach the parent network")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned())
+                .unwrap_or_default();
+            let (set_cookie, content_type, body) = match expected_path {
+                "/sw-active.js" => {
+                    assert!(cookie.contains("sw_nav_seed=initial"));
+                    (
+                        "",
+                        "text/javascript",
+                        "self.addEventListener('fetch', event => {});",
+                    )
+                }
+                "/sw-next.js" => {
+                    assert!(cookie.contains("sw_nav_seed=initial"));
+                    (
+                        "",
+                        "text/javascript",
+                        r#"self.addEventListener('activate', event => {
+  event.waitUntil(fetch('/activate-fetch').then(response => response.text()));
+  event.waitUntil(self.clients.claim());
+});
+self.addEventListener('fetch', event => {
+  if (event.request.mode !== 'navigate') return;
+  event.respondWith((async () => {
+    const preload = await event.preloadResponse;
+    const preloadText = preload ? await preload.text() : 'missing-preload';
+    const response = await fetch('/nav-fetch');
+    const fetchText = await response.text();
+    return new Response(`<!doctype html><main>${preloadText}:${fetchText}</main>`, {
+      headers: {'Content-Type': 'text/html'}
+    });
+  })());
+});"#,
+                    )
+                }
+                "/page" => {
+                    assert!(cookie.contains("sw_nav_seed=initial"));
+                    (
+                        "",
+                        "text/html",
+                        "<!doctype html><script>document.cookie = 'sw_nav_turn=present; Path=/';</script><main>navigation cookies</main>",
+                    )
+                }
+                "/flush" => {
+                    assert!(cookie.contains("sw_nav_seed=initial"));
+                    assert!(cookie.contains("sw_nav_turn=present"));
+                    ("", "text/plain", "flushed")
+                }
+                "/activate-fetch" => {
+                    assert!(cookie.contains("sw_nav_seed=initial"));
+                    assert!(cookie.contains("sw_nav_turn=present"));
+                    (
+                        "Set-Cookie: sw_nav_activate=done; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "text/plain",
+                        "activated",
+                    )
+                }
+                "/destination/page" => {
+                    assert!(cookie.contains("sw_nav_seed=initial"));
+                    assert!(cookie.contains("sw_nav_turn=present"));
+                    assert!(cookie.contains("sw_nav_activate=done"));
+                    assert!(request.lines().any(|line| {
+                        line.to_ascii_lowercase()
+                            .starts_with("service-worker-navigation-preload: glass-nav-preload")
+                    }));
+                    (
+                        "Set-Cookie: sw_nav_preload=done; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "text/plain",
+                        "preloaded",
+                    )
+                }
+                "/nav-fetch" => {
+                    for expected_cookie in [
+                        "sw_nav_seed=initial",
+                        "sw_nav_turn=present",
+                        "sw_nav_activate=done",
+                        "sw_nav_preload=done",
+                    ] {
+                        assert!(
+                            cookie.contains(expected_cookie),
+                            "missing {expected_cookie}"
+                        );
+                    }
+                    (
+                        "Set-Cookie: sw_nav_fetch=done; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "text/plain",
+                        "fetched",
+                    )
+                }
+                "/after" => {
+                    for expected_cookie in [
+                        "sw_nav_seed=initial",
+                        "sw_nav_turn=present",
+                        "sw_nav_activate=done",
+                        "sw_nav_preload=done",
+                        "sw_nav_fetch=done",
+                    ] {
+                        assert!(
+                            cookie.contains(expected_cookie),
+                            "missing {expected_cookie}"
+                        );
+                    }
+                    ("", "text/plain", "after")
+                }
+                _ => unreachable!(),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{set_cookie}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/page"))
+            .with_storage_path(profile_path.clone()),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/flush').then(response => response.text())")
+            .await
+            .unwrap(),
+        serde_json::json!("flushed")
+    );
+    engine
+        .navigate_async(format!("http://{address}/destination/page"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.body.innerText")
+            .await
+            .unwrap(),
+        serde_json::json!("preloaded:fetched")
+    );
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("sw_nav_turn=present")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/after').then(response => response.text())")
+            .await
+            .unwrap(),
+        serde_json::json!("after")
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+    for name in [
+        "sw_nav_seed",
+        "sw_nav_activate",
+        "sw_nav_preload",
+        "sw_nav_fetch",
+    ] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == name && cookie.http_only),
+            "parent cookie jar should retain {name} as HttpOnly"
+        );
+    }
+    for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
 async fn native_content_process_service_worker_restoration_uses_parent_cookie_authority() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

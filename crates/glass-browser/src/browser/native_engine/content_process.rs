@@ -124,7 +124,7 @@ const MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS: usize = MAX_CONTENT_PROCESS_OUTPUT
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
     MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 24;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 25;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -218,7 +218,7 @@ impl NativeContentFetchBroker<'_> {
         fetch_id: u32,
         request: &NativeFetchRequest<'_>,
     ) -> Result<(Result<NativeFetchResponse, NativeEngineError>, String), NativeEngineError> {
-        self.fetch_inner(fetch_id, request, false).await
+        self.fetch_inner(fetch_id, request, false, false).await
     }
 
     pub(crate) async fn fetch_for_captured_load(
@@ -226,7 +226,15 @@ impl NativeContentFetchBroker<'_> {
         fetch_id: u32,
         request: &NativeFetchRequest<'_>,
     ) -> Result<(Result<NativeFetchResponse, NativeEngineError>, String), NativeEngineError> {
-        self.fetch_inner(fetch_id, request, true).await
+        self.fetch_inner(fetch_id, request, true, false).await
+    }
+
+    pub(crate) async fn fetch_for_captured_navigation(
+        &mut self,
+        fetch_id: u32,
+        request: &NativeFetchRequest<'_>,
+    ) -> Result<(Result<NativeFetchResponse, NativeEngineError>, String), NativeEngineError> {
+        self.fetch_inner(fetch_id, request, true, true).await
     }
 
     async fn fetch_inner(
@@ -234,6 +242,7 @@ impl NativeContentFetchBroker<'_> {
         fetch_id: u32,
         request: &NativeFetchRequest<'_>,
         captured_load_fetch: bool,
+        top_level_navigation: bool,
     ) -> Result<(Result<NativeFetchResponse, NativeEngineError>, String), NativeEngineError> {
         let cookie_writes = self.take_cookie_writes()?;
         let page_meta_csp = (without_fragment(request.document_url)
@@ -286,6 +295,8 @@ impl NativeContentFetchBroker<'_> {
                         NativeFetchCacheMode::OnlyIfCached => "only-if-cached",
                     },
                     "timeout_ms": request.timeout.map(|timeout| timeout.as_millis()),
+                    "max_response_bytes": request.max_response_bytes,
+                    "top_level_navigation": top_level_navigation,
                     "credentials_mode": request.credentials_mode.map(|mode| mode.as_str()),
                     "referrer_url": request.referrer_url,
                     "referrer_policy": request.referrer_policy,
@@ -5130,10 +5141,48 @@ impl NativeContentProcess {
                         credentials,
                         fetch_request,
                     )?;
+                    let top_level_navigation = fetch_request
+                        .get("top_level_navigation")
+                        .map(|value| {
+                            value.as_bool().ok_or_else(|| {
+                                NativeEngineError::worker_failure(
+                                    "content process parent Fetch broker",
+                                    NativeWorkerFailureKind::Protocol,
+                                    "top-level navigation marker must be boolean",
+                                )
+                            })
+                        })
+                        .transpose()?
+                        .unwrap_or(false);
+                    if top_level_navigation
+                        && (!captured_load_fetch
+                            || request.cors_mode != NativeCorsMode::Navigation
+                            || request.method.as_str() != "GET"
+                            || request.body.is_some())
+                    {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent Fetch broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "top-level navigation Fetch must be a captured, bodyless navigation GET",
+                        ));
+                    }
+                    if !top_level_navigation && request.cors_mode == NativeCorsMode::Navigation {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent Fetch broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "navigation-mode Fetch omitted its top-level navigation marker",
+                        ));
+                    }
                     for write in &cookie_writes {
                         loader.set_document_cookie(&write.owner.document_url, &write.value)?;
                     }
-                    loader.fetch_request_with_headers_async(request).await
+                    if top_level_navigation {
+                        loader
+                            .fetch_request_with_navigation_context_async(request, true)
+                            .await
+                    } else {
+                        loader.fetch_request_with_headers_async(request).await
+                    }
                 } else {
                     if !cookie_writes.is_empty() {
                         return Err(NativeEngineError::worker_failure(
@@ -6749,6 +6798,7 @@ fn decode_parent_fetch_request<'a>(
         "cors" => NativeCorsMode::Cors,
         "no-cors" => NativeCorsMode::NoCors,
         "same-origin" => NativeCorsMode::SameOrigin,
+        "navigation" => NativeCorsMode::Navigation,
         _ => {
             return Err(NativeEngineError::worker_failure(
                 "decode parent Fetch request",
@@ -6811,6 +6861,20 @@ fn decode_parent_fetch_request<'a>(
         NativeFetchReferrerPolicy::parse(policy)?;
     }
 
+    let max_response_bytes = match object.get("max_response_bytes") {
+        None | Some(Value::Null) => MAX_CONTENT_DOCUMENT_WIRE_BYTES,
+        Some(value) => {
+            let max_response_bytes = value.as_u64().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "decode parent Fetch request",
+                    NativeWorkerFailureKind::Protocol,
+                    "Fetch response limit is malformed",
+                )
+            })?;
+            usize::try_from(max_response_bytes).unwrap_or(usize::MAX)
+        }
+    };
+
     Ok(NativeFetchRequest {
         document_url,
         href,
@@ -6826,7 +6890,7 @@ fn decode_parent_fetch_request<'a>(
         redirect_mode,
         cache_mode,
         timeout,
-        max_response_bytes: Some(MAX_CONTENT_DOCUMENT_WIRE_BYTES),
+        max_response_bytes: Some(max_response_bytes.min(MAX_CONTENT_DOCUMENT_WIRE_BYTES)),
     })
 }
 
@@ -10186,6 +10250,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         None,
                         None,
                         None,
+                        false,
                     )
                     .await;
                 pending_message_port_messages.extend(service_workers.take_message_port_messages());
@@ -13270,8 +13335,8 @@ async fn load_content_resource(
         }
     } else {
         service_workers.begin_document(url, client_id)?;
-        if is_network_url(without_fragment(url)) {
-            let mut restore_parent_fetch_broker = NativeContentFetchBroker {
+        let mut navigation_parent_fetch_broker =
+            is_network_url(without_fragment(url)).then(|| NativeContentFetchBroker {
                 request_id,
                 owner: NativeContentCookieOwner {
                     context_id: context_id.to_owned(),
@@ -13285,14 +13350,10 @@ async fn load_content_resource(
                 document_cookie_projection: parent_document_cookie_projection,
                 next_content_resource_fetch_id: 0,
                 page_meta_content_security_policies: Vec::new(),
-            };
+            });
+        if let Some(parent_fetch_broker) = navigation_parent_fetch_broker.as_mut() {
             service_workers
-                .restore_for_document(
-                    url,
-                    loader,
-                    generation,
-                    Some(&mut restore_parent_fetch_broker),
-                )
+                .restore_for_document(url, loader, generation, Some(parent_fetch_broker))
                 .await?;
         } else {
             service_workers
@@ -13300,7 +13361,13 @@ async fn load_content_resource(
                 .await?;
         }
         match service_workers
-            .intercept_navigation(loader, &navigation, referrer, referrer_policy)
+            .intercept_navigation(
+                loader,
+                &navigation,
+                referrer,
+                referrer_policy,
+                navigation_parent_fetch_broker.as_mut(),
+            )
             .await?
         {
             NativeServiceWorkerNavigationOutcome::Handled(resource) => resource,
@@ -19247,6 +19314,7 @@ async fn resolve_script_fetches(
                             None,
                             None,
                             parent_fetch_broker.as_mut(),
+                            false,
                         )
                         .await
                 } else {
@@ -19478,6 +19546,7 @@ async fn resolve_script_fetches(
                     None,
                     None,
                     parent_fetch_broker.as_mut(),
+                    false,
                 )
                 .await;
             let payload = match intercepted {
@@ -19630,6 +19699,7 @@ async fn resolve_script_fetches(
                                 None,
                                 None,
                                 parent_fetch_broker.as_mut(),
+                                false,
                             )
                             .await;
                         match intercepted {

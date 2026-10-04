@@ -483,6 +483,13 @@ fixture base URLs. Child cookie state is disabled, nonempty journals are
 rejected, and direct child HTTP(S) transport fails closed; remaining request
 classes still need parent-broker wiring, so this does not complete Slice 843's
 broader acceptance matrix.
+The process-backed
+`native_content_process_form_post_uses_parent_cookie_authority` regression
+passed (1 passed; 909 filtered; 22.04 seconds): the parent selects the initial
+HttpOnly cookie for the form POST, accepts its response cookie, and sends both
+on the next page Fetch while `document.cookie` remains empty. The URL-encoded
+request body and content type are preserved. This adds form-POST evidence only;
+other unbrokered HTTP(S) request classes remain fail-closed.
 The navigation-preload process regression verifies the header on each eligible
 navigation, no preload header on registration/resource requests, source-document
 Referrer-Policy on direct and redirected loads, worker-visible

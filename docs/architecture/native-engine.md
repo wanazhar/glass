@@ -121,6 +121,13 @@ regression covers both a parser-discovered page module entry and an inline-
 inserted module root, each with a static dependency. Parent-selected HttpOnly
 cookies flow through each graph, the parser module's Fetch, and a later page
 Fetch while `document.cookie` remains empty.
+The process-backed
+`native_content_process_form_post_uses_parent_cookie_authority` regression
+also verifies parent cookie selection for a form POST, parent acceptance of
+the response cookie, and both HttpOnly cookies on a later page Fetch; the
+URL-encoded body is preserved and `document.cookie` remains empty. This is
+targeted form-navigation evidence only; uncovered HTTP(S) request classes
+remain fail-closed and Slice 843 remains in progress.
 Before parent page loads, the child transfers its applied meta-CSP policy
 sources; the regression also verifies `img-src 'self'` prevents a cross-origin
 image request. At that protocol-22 checkpoint, the initial module graph lacked

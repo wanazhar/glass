@@ -741,5 +741,14 @@ projection and existing native Fetch behavior.
   Initial parser and inline-inserted module-root cookie coverage is now
   explicit. Other uncovered HTTP(S) classes remain fail closed and Slice 843
   remains in progress.
+- The process-backed
+  `native_content_process_form_post_uses_parent_cookie_authority` regression
+  passed (1 passed; 909 filtered; 22.04 seconds). The parent selects the
+  initial HttpOnly page cookie for the form POST, receives and retains the
+  POST response's HttpOnly cookie, then sends both cookies on the next page
+  Fetch; `document.cookie` remains empty. The request also preserves the
+  URL-encoded POST body and content type. This closes only form-POST cookie
+  coverage; other uncovered HTTP(S) classes still fail closed and Slice 843
+  remains in progress.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

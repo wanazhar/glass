@@ -147,6 +147,13 @@ regression also verifies the initial parser-discovered module entry and a
 module root inserted by inline script, each with a static dependency. Parent-
 selected HttpOnly cookies reach the module Fetch and a later page Fetch;
 `document.cookie` remains empty.
+The process-backed
+`native_content_process_form_post_uses_parent_cookie_authority` regression
+also verifies parent selection of the HttpOnly cookie on a form POST,
+parent acceptance of the POST response cookie, and both cookies on the next
+page Fetch. The form body and URL-encoded content type are preserved, while
+`document.cookie` remains empty. This is targeted form-navigation evidence;
+uncovered HTTP(S) request classes still fail closed.
 
 This contract preserves script-visible cookie behavior without exposing
 HttpOnly state to the child. A Slice 843 checkpoint now stores durable cookies

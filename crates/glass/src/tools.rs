@@ -3,9 +3,11 @@
 //! Everything else the model needs is a shell one-liner away, and every tool
 //! we do not ship is schema the model pays for on every single request.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use glass_mod_api::ToolCall;
 
@@ -36,11 +38,17 @@ pub struct Outcome {
     /// output it sees is partial rather than complete.
     pub truncated: bool,
     pub exit_code: Option<i32>,
+    /// Where the full output was written, when it was too big to inline.
+    pub spill: Option<PathBuf>,
 }
 
 impl Outcome {
     fn ok(body: String) -> Self {
-        Self { body, truncated: false, exit_code: Some(0) }
+        Self { body, truncated: false, exit_code: Some(0), spill: None }
+    }
+
+    fn err(msg: String) -> Self {
+        Self { body: msg, truncated: false, exit_code: None, spill: None }
     }
 }
 
@@ -50,14 +58,10 @@ impl Outcome {
 /// `Mod::authorize` hook exists for anyone who wants one.
 pub fn bash(call: &ToolCall, workspace: &std::path::Path) -> Outcome {
     let Some(command) = call.arg_str("command") else {
-        return Outcome {
-            body: "error: `command` is required and must be a string".to_string(),
-            truncated: false,
-            exit_code: None,
-        };
+        return Outcome::err("error: `command` is required and must be a string".to_string());
     };
     if command.trim().is_empty() {
-        return Outcome { body: "error: `command` is empty".to_string(), truncated: false, exit_code: None };
+        return Outcome::err("error: `command` is empty".to_string());
     }
 
     let cwd = match call.arg_str("cwd") {
@@ -104,6 +108,7 @@ pub fn bash(call: &ToolCall, workspace: &std::path::Path) -> Outcome {
                 body: format!("error: could not spawn shell: {e}"),
                 truncated: false,
                 exit_code: None,
+                spill: None,
             };
         }
     };
@@ -134,8 +139,8 @@ pub fn bash(call: &ToolCall, workspace: &std::path::Path) -> Outcome {
         }
     };
 
-    let (out, out_trunc) = out_buf.join().unwrap_or_else(|_| (String::new(), true));
-    let (err, err_trunc) = err_buf.join().unwrap_or_else(|_| (String::new(), true));
+    let (out, out_spill) = out_buf.join().unwrap_or_else(|_| (String::new(), None));
+    let (err, err_spill) = err_buf.join().unwrap_or_else(|_| (String::new(), None));
 
     let mut body = String::new();
     if !out.is_empty() {
@@ -151,9 +156,17 @@ pub fn bash(call: &ToolCall, workspace: &std::path::Path) -> Outcome {
         body.push_str("stderr:\n");
         body.push_str(&err);
     }
-    let truncated = out_trunc || err_trunc;
-    if truncated {
-        body.push_str("\n[output truncated at 60000 bytes]\n");
+
+    // A stream that overran the cap left a file behind. Point the model at it
+    // rather than discarding the remainder: losing the tail of a build log or a
+    // search result is exactly the information the model came for.
+    let spill = out_spill.or(err_spill);
+    if let Some(p) = &spill {
+        body.push_str(&format!(
+            "\n[output truncated at {MAX_OUTPUT_BYTES} bytes; full output saved to {} — \
+             read it with `head`, `tail`, or `rg`]\n",
+            p.display()
+        ));
     }
     if timed_out {
         body.push_str(&format!("\n[command killed after {timeout}ms]\n"));
@@ -162,7 +175,7 @@ pub fn bash(call: &ToolCall, workspace: &std::path::Path) -> Outcome {
         body.push_str("(no output)");
     }
 
-    Outcome { body, truncated, exit_code: status.and_then(|s| s.code()) }
+    Outcome { truncated: spill.is_some(), body, exit_code: status.and_then(|s| s.code()), spill }
 }
 
 /// Signal the child's entire process group.
@@ -199,31 +212,67 @@ fn kill_group(child: &mut Child) {
     }
 }
 
-/// Read at most [`MAX_OUTPUT_BYTES`], draining the rest so the child never
-/// blocks on a full pipe.
-fn read_capped(r: &mut Option<impl Read>) -> (String, bool) {
-    let Some(reader) = r.as_mut() else { return (String::new(), false) };
-    let mut buf = Vec::new();
+/// Read a stream, keeping the first [`MAX_OUTPUT_BYTES`] inline and spilling the
+/// rest to a temp file.
+///
+/// Truncating without a spill throws away the part a build log or a search
+/// sweep actually ends with, which is the part that says what went wrong. With
+/// a spill the model can always recover the tail with `tail` or `rg` instead of
+/// re-running the command. Temp files are the OS's to reap, so a crashed session
+/// leaves nothing behind that needs cleaning up.
+fn read_capped(r: &mut Option<impl Read>) -> (String, Option<PathBuf>) {
+    let Some(reader) = r.as_mut() else { return (String::new(), None) };
+
+    let mut head: Vec<u8> = Vec::new();
+    let mut spill: Option<(std::fs::File, PathBuf)> = None;
     let mut chunk = [0u8; 8192];
-    let mut truncated = false;
+
     loop {
-        match reader.read(&mut chunk) {
+        let n = match reader.read(&mut chunk) {
             Ok(0) | Err(_) => break,
-            Ok(n) => {
-                if buf.len() < MAX_OUTPUT_BYTES {
-                    let room = MAX_OUTPUT_BYTES - buf.len();
-                    let take = room.min(n);
-                    buf.extend_from_slice(&chunk[..take]);
-                    if take < n {
-                        truncated = true;
-                    }
-                } else {
-                    truncated = true;
-                }
-            }
+            Ok(n) => n,
+        };
+
+        let room = MAX_OUTPUT_BYTES.saturating_sub(head.len());
+        if room >= n {
+            head.extend_from_slice(&chunk[..n]);
+            continue;
+        }
+        // This chunk straddles the cap: fill the inline budget, spill the rest.
+        head.extend_from_slice(&chunk[..room]);
+        spill = spill.or_else(open_spill);
+        if let Some((f, _)) = spill.as_mut() {
+            let _ = f.write_all(&chunk[room..]);
         }
     }
-    (String::from_utf8_lossy(&buf).into_owned(), truncated)
+
+    let path = spill.map(|(mut f, p)| {
+        let _ = f.flush();
+        p
+    });
+
+    (String::from_utf8_lossy(&head).into_owned(), path)
+}
+
+fn spill_dir() -> PathBuf {
+    std::env::temp_dir().join("glass-out")
+}
+
+/// Open a spill file, returning it with the path we will report to the model.
+///
+/// Returns `None` when the temp dir is unusable, which degrades to plain
+/// truncation rather than failing the command.
+fn open_spill() -> Option<(std::fs::File, PathBuf)> {
+    let dir = spill_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+
+    // pid plus a counter keeps concurrent commands from colliding.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!("out-{}-{n}.log", std::process::id()));
+
+    let f = std::fs::File::create(&path).ok()?;
+    Some((f, path))
 }
 
 /// Durable working state, written by the model, read by the compactor.
@@ -267,6 +316,7 @@ impl State {
                 body: format!("error: `items` must be an array of strings: {e}"),
                 truncated: false,
                 exit_code: None,
+                spill: None,
             },
         }
     }
@@ -406,14 +456,45 @@ mod tests {
     }
 
     #[test]
-    fn large_output_is_truncated() {
+    fn large_output_spills_to_disk_and_keeps_the_tail() {
         let out = bash(
-            &call(r#"{"command":"yes abcdefgh | head -c 200000"}"#),
+            &call(r#"{"command":"seq 1 40000"}"#),
             std::path::Path::new("."),
         );
         assert!(out.truncated, "expected truncation");
-        assert!(out.body.contains("truncated"));
-        assert!(out.body.len() < MAX_OUTPUT_BYTES + 200, "body grew to {}", out.body.len());
+        let spill = out.spill.as_ref().expect("overflow must spill to a file");
+        let msg = std::fs::read_to_string(spill).expect("spill file must exist");
+        assert!(msg.contains("40000"), "the last line must be recoverable from the spill file");
+        // The inline body points the model at the file.
+        assert!(out.body.contains("saved to"), "{}", out.body);
+        assert!(out.body.len() < MAX_OUTPUT_BYTES + 400, "body grew to {}", out.body.len());
+        let _ = std::fs::remove_file(spill);
+    }
+
+    #[test]
+    fn output_under_the_cap_does_not_spill() {
+        let out = bash(&call(r#"{"command":"echo small"}"#), std::path::Path::new("."));
+        assert!(!out.truncated);
+        assert!(out.spill.is_none());
+    }
+
+    #[test]
+    fn spill_contains_exactly_the_overflow() {
+        // The inline head and the spill file must partition the stream, with no
+        // bytes lost at the boundary.
+        let out = bash(
+            &call(r#"{"command":"seq 1 40000"}"#),
+            std::path::Path::new("."),
+        );
+        let spill = out.spill.as_ref().unwrap();
+        let tail = std::fs::read_to_string(spill).unwrap();
+        let head_lines = out.body.lines().filter(|l| l.chars().all(|c| c.is_ascii_digit()) && !l.is_empty()).count();
+        assert!(head_lines > 0, "head should carry some lines");
+        assert!(tail.contains("40000"));
+        // 40000 lines total; head + spill must account for all of them.
+        let spill_lines = tail.lines().filter(|l| !l.trim().is_empty()).count();
+        assert!(head_lines + spill_lines >= 39999, "head {head_lines} + spill {spill_lines} lost lines");
+        let _ = std::fs::remove_file(spill);
     }
 
     #[test]

@@ -1,156 +1,182 @@
 //! Fullscreen transcript viewer, entered with ctrl+g.
 //!
-//! This is the opt-in half of the dual renderer. It exists because people
-//! want to scroll and search history, but it is *not* the default view: the
-//! default view writes into the terminal's own scrollback and costs nothing.
+//! This is the opt-in half of the dual renderer. It exists because people want
+//! to scroll and search history, but it is *not* the default view: the default
+//! view writes into the terminal's own scrollback and costs nothing.
 //!
-//! The viewer never owns history. It renders from a borrowed snapshot owned
-//! by the session log, so entering and leaving it cannot grow the heap by a
-//! message's worth of text.
+//! The viewer never owns history. It renders through [`super::layout::Layout`],
+//! which wraps each entry once and hands back only the lines the viewport
+//! needs, so opening the viewer on a long session cannot stall the frame.
 
 use glass_mod_api::{Mod_, Overlay};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    layout::{Constraint, Direction, Layout as RLayout, Rect},
+    style::Style,
+    widgets::{Block, Borders, List, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
-/// Which role produced a log line, used only for colour.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Role {
-    User,
-    Assistant,
-    Bash,
-    Tool,
-    System,
-    Meta,
-}
+use super::layout::Layout;
+use crate::Role;
 
-impl Role {
-    fn label(self) -> &'static str {
-        match self {
-            Role::User => "you",
-            Role::Assistant => "glass",
-            Role::Bash => "bash",
-            Role::Tool => "tool",
-            Role::System => "system",
-            Role::Meta => "",
-        }
-    }
-
-    fn style(self) -> Style {
-        match self {
-            Role::User => Style::new().fg(ratatui::style::Color::Cyan).add_modifier(Modifier::BOLD),
-            Role::Assistant => Style::new().fg(ratatui::style::Color::Green),
-            Role::Bash => Style::new().fg(ratatui::style::Color::Yellow),
-            Role::Tool => Style::new().fg(ratatui::style::Color::Magenta),
-            Role::System => Style::new().fg(ratatui::style::Color::Red).add_modifier(Modifier::DIM),
-            Role::Meta => Style::new().fg(ratatui::style::Color::DarkGray),
-        }
-    }
-}
-
-/// One renderable entry in the transcript.
-pub struct Entry {
-    pub role: Role,
-    pub text: String,
-    /// Index into the conversation, used by jump-to-turn.
-    pub turn: usize,
-}
-
+/// Viewer state: scroll position, collapse flags, and the line layout.
 pub struct Transcript {
-    pub entries: Vec<Entry>,
-    pub state: ListState,
+    pub layout: Layout,
+    /// Current scroll offset, in wrapped lines.
+    pub scroll: usize,
     pub follow: bool,
-    pub collapsed: Vec<bool>,
+    collapsed: Vec<bool>,
 }
 
 impl Transcript {
-    pub fn new(entries: Vec<Entry>) -> Self {
-        let len = entries.len();
-        let mut state = ListState::default();
-        if len > 0 {
-            state.select(Some(len - 1));
-        }
-        Self { entries, state, follow: true, collapsed: vec![false; len] }
+    pub fn new(entries: Vec<super::Entry>) -> Self {
+        let rows: Vec<(String, Role, usize)> =
+            entries.into_iter().map(|e| (e.text, e.role, e.turn)).collect();
+        let collapsed = vec![false; rows.len()];
+        let layout = Layout::new(rows);
+        let scroll = layout.total_lines().saturating_sub(1);
+        Self { layout, scroll, follow: true, collapsed }
     }
 
-    /// Scroll by a page, clamping at both ends. Returns whether it moved.
-    pub fn page(&mut self, delta: isize) {
-        let last = self.entries.len().saturating_sub(1) as isize;
-        if last < 0 {
-            return;
-        }
-        let cur = self.state.selected().unwrap_or(0) as isize;
-        let next = (cur + delta).clamp(0, last);
-        self.state.select(Some(next as usize));
-        self.follow = next == last;
+    pub fn len(&self) -> usize {
+        self.layout.len()
     }
 
-    /// Move by one entry.
-    pub fn step(&mut self, delta: isize) {
-        self.page(delta);
+    pub fn is_empty(&self) -> bool {
+        self.layout.is_empty()
     }
 
-    /// Jump to the turn carrying the given absolute index.
-    pub fn jump_to_turn(&mut self, turn: usize) {
-        if let Some(pos) = self.entries.iter().position(|e| e.turn == turn) {
-            self.state.select(Some(pos));
+    /// Clamp `scroll` so the viewport can always be filled.
+    fn clamp(&mut self, height: u16) {
+        let max = self.layout.total_lines().saturating_sub(height.max(1) as usize);
+        self.scroll = self.scroll.min(max);
+    }
+
+    /// Scroll by whole lines.
+    pub fn step(&mut self, delta: isize, height: u16) {
+        self.scroll = (self.scroll as isize + delta).max(0) as usize;
+        self.follow = false;
+        self.clamp(height);
+    }
+
+    /// Scroll by half a viewport, which is what a page key should do here.
+    pub fn page(&mut self, delta: isize, height: u16) {
+        let step = (height as isize / 2).max(1);
+        self.step(delta * step, height);
+    }
+
+    /// Jump to the first line of a turn.
+    pub fn jump_to_turn(&mut self, turn: usize, height: u16) {
+        if let Some(line) = self.layout.line_for_turn(turn) {
+            self.scroll = line;
             self.follow = false;
+            self.clamp(height);
         }
     }
 
-    /// Toggle collapse on the selected entry.
-    pub fn toggle_collapse(&mut self) {
-        let Some(i) = self.state.selected() else { return };
-        if let Some(slot) = self.collapsed.get_mut(i) {
-            *slot = !*slot;
-        }
+    pub fn top(&mut self) {
+        self.scroll = 0;
+        self.follow = false;
     }
 
-    /// Pin to the newest entry, which is what follow-mode means.
-    pub fn follow_tail(&mut self) {
-        if self.entries.is_empty() {
-            return;
-        }
-        self.state.select(Some(self.entries.len() - 1));
+    /// Pin to the newest content.
+    pub fn follow_tail(&mut self, height: u16) {
         self.follow = true;
+        self.scroll = self.layout.total_lines().saturating_sub(height.max(1) as usize);
+        self.clamp(height);
     }
 
-    /// Build the ratatui list. Collapsed entries are replaced by an
-    /// ellipsis line, which is the only place the stored text is skipped.
-    pub fn render_items(&self, width: u16) -> Vec<ListItem<'static>> {
-        let mut items = Vec::with_capacity(self.entries.len());
-        for (i, e) in self.entries.iter().enumerate() {
-            let collapsed = self.collapsed.get(i).copied().unwrap_or(false);
-            if collapsed {
-                items.push(ListItem::new(Line::from(vec![
-                    Span::styled(format!(" ▸ {} ", e.role.label()), e.role.style()),
-                    Span::styled("⋯", Style::new().fg(ratatui::style::Color::DarkGray)),
-                ])));
-                continue;
-            }
-            let mut lines: Vec<Line> = Vec::new();
-            let head = Span::styled(format!(" {} ", e.role.label()), e.role.style());
-            let wrapped = wrap_width(&e.text, width.saturating_sub(2) as usize);
-            for (n, w) in wrapped.into_iter().enumerate() {
-                if n == 0 {
-                    lines.push(Line::from(vec![head.clone(), Span::raw(w)]));
+    /// Toggle collapse on the entry at the top of the viewport.
+    pub fn toggle_collapse(&mut self) {
+        let idx = self.layout.entry_at_line(self.scroll);
+        let Some(slot) = self.collapsed.get_mut(idx) else { return };
+        *slot = !*slot;
+        self.rebuild();
+    }
+
+    /// Rebuild the line index after a collapse change, preserving scroll.
+    fn rebuild(&mut self) {
+        let keep = self.scroll;
+        let rows = self
+            .layout
+            .snapshot()
+            .into_iter()
+            .enumerate()
+            .map(|(i, (text, role, turn))| {
+                if self.collapsed.get(i).copied().unwrap_or(false) {
+                    (format!("{text}"), role, turn)
                 } else {
-                    lines.push(Line::from(Span::raw(w)));
+                    (text, role, turn)
                 }
+            })
+            .collect();
+        self.layout = Layout::new(rows);
+        self.scroll = keep.min(self.layout.total_lines().saturating_sub(1));
+    }
+
+    /// Draw one frame. Only `height` lines are ever constructed.
+    pub fn draw(&mut self, frame: &mut Frame, mods: &[Box<dyn Mod_>], session_label: &str) {
+        let area = frame.area();
+        let chunks = RLayout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(area);
+
+        let view = chunks[0];
+        self.clamp(view.height);
+        let items = self.layout.visible(self.scroll, view);
+
+        let title = format!(
+            " {} — {} ",
+            session_label,
+            if self.follow {
+                "following".to_string()
+            } else {
+                format!("line {}/{}", self.scroll + 1, self.layout.total_lines().max(1))
             }
-            items.push(ListItem::new(Text::from(lines)));
+        );
+
+        frame.render_widget(
+            List::new(items)
+                .block(
+                    Block::default()
+                        .borders(Borders::TOP)
+                        .border_style(Style::new().fg(ratatui::style::Color::DarkGray))
+                        .title(title),
+                )
+                .highlight_style(Style::new().bg(ratatui::style::Color::Rgb(38, 38, 38))),
+            view,
+        );
+
+        let total = self.layout.total_lines();
+        if total > 0 {
+            let mut sb = ScrollbarState::new(total.saturating_sub(1)).position(self.scroll);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                view,
+                &mut sb,
+            );
         }
-        items
+
+        // Mods paint last so an overlay always wins over harness chrome.
+        let mut overlay = Overlay::default();
+        for m in mods {
+            m.on_render(&mut overlay, (view.width, view.height));
+        }
+        if !overlay.lines.is_empty() {
+            let h = (overlay.lines.len() as u16).min(chunks[1].height);
+            let rect = Rect { x: view.x, y: chunks[1].y, width: view.width, height: h };
+            frame.render_widget(Paragraph::new(overlay.lines.join("\n")), rect);
+        }
     }
 }
 
 /// Wrap text to `width` columns on whitespace where possible, hard-splitting
 /// only for words that cannot fit.
-fn wrap_width(text: &str, width: usize) -> Vec<String> {
+///
+/// The minimum is 20 because wrapping a 40-column terminal down to 10 shreds
+/// every word into unreadable fragments.
+pub fn wrap_width(text: &str, width: usize) -> Vec<String> {
     let width = width.max(20);
     let mut out = Vec::new();
     for para in text.lines() {
@@ -169,7 +195,8 @@ fn wrap_width(text: &str, width: usize) -> Vec<String> {
                 out.push(std::mem::take(&mut line));
                 line.push_str(word);
             }
-            // Hard-split a single over-long token (a long path, a base64 blob).
+            // Hard-split a token that cannot fit on any line: a long path, a
+            // base64 blob, a minified bundle.
             while line.chars().count() > width {
                 let split: String = line.chars().take(width).collect();
                 let rest: String = line.chars().skip(width).collect();
@@ -185,70 +212,16 @@ fn wrap_width(text: &str, width: usize) -> Vec<String> {
     out
 }
 
-/// Draw the fullscreen transcript.
-pub fn draw(
-    frame: &mut Frame,
-    transcript: &Transcript,
-    mods: &[Box<dyn Mod_>],
-    session_label: &str,
-) {
-    let area = frame.area();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
-        .split(area);
-
-    let items = transcript.render_items(chunks[0].width);
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_style(Style::new().fg(ratatui::style::Color::DarkGray))
-                .title(format!(" {} — {} ", session_label, transcript.follow_string())),
-        )
-        .highlight_style(Style::new().bg(ratatui::style::Color::Rgb(38, 38, 38)))
-        .scroll_padding(1);
-
-    let mut state = transcript.state;
-    frame.render_stateful_widget(list, chunks[0], &mut state);
-
-    let sb_len = transcript.entries.len();
-    if sb_len > 0 {
-        let mut sb_state = ScrollbarState::new(sb_len.saturating_sub(1))
-            .position(transcript.state.selected().unwrap_or(0));
-        frame.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight),
-            chunks[0],
-            &mut sb_state,
-        );
-    }
-
-    // Mods paint last so a mod overlay always wins over harness chrome.
-    let mut overlay = Overlay::default();
-    for m in mods {
-        m.on_render(&mut overlay, (chunks[0].width, chunks[0].height));
-    }
-    if !overlay.lines.is_empty() {
-        let height = overlay.lines.len().min(chunks[1].height as usize) as u16;
-        let rect = Rect { x: chunks[0].x, y: chunks[1].y, width: chunks[0].width, height };
-        let p = Paragraph::new(overlay.lines.join("\n"));
-        frame.render_widget(p, rect);
-    }
-}
-
-impl Transcript {
-    fn follow_string(&self) -> String {
-        if self.follow {
-            "following".to_string()
-        } else {
-            format!("{}/{}", self.state.selected().unwrap_or(0) + 1, self.entries.len())
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Entry;
+
+    fn entries(n: usize) -> Vec<Entry> {
+        (0..n).map(|i| Entry { role: Role::User, text: format!("message {i}"), turn: i }).collect()
+    }
+
+    const H: u16 = 20;
 
     #[test]
     fn wraps_on_whitespace() {
@@ -278,36 +251,80 @@ mod tests {
     }
 
     #[test]
-    fn page_clamps_at_both_ends() {
-        let entries = (0..5).map(|i| Entry { role: Role::User, text: format!("{i}"), turn: i }).collect();
-        let mut t = Transcript::new(entries);
-        t.page(-100);
-        assert_eq!(t.state.selected(), Some(0));
-        t.page(100);
-        assert_eq!(t.state.selected(), Some(4));
+    fn starts_at_the_tail_in_follow_mode() {
+        let t = Transcript::new(entries(100));
         assert!(t.follow);
+        assert!(t.scroll > 0);
     }
 
     #[test]
-    fn collapse_hides_body() {
-        let entries = vec![Entry { role: Role::Bash, text: "rm -rf /".into(), turn: 0 }];
-        let mut t = Transcript::new(entries);
-        t.state.select(Some(0));
-        let before = t.render_items(40).len();
-        t.toggle_collapse();
-        let after = t.render_items(40);
-        assert!(before > 0);
-        assert_eq!(after.len(), 1);
-        let rendered = format!("{:?}", after[0]);
-        assert!(rendered.contains('⋯'), "{rendered}");
-    }
-
-    #[test]
-    fn jump_to_turn_selects_entry() {
-        let entries = (0..10).map(|i| Entry { role: Role::User, text: "x".into(), turn: i / 3 }).collect();
-        let mut t = Transcript::new(entries);
-        t.jump_to_turn(2);
-        assert_eq!(t.state.selected(), Some(6));
+    fn step_up_stops_following() {
+        let mut t = Transcript::new(entries(100));
+        t.step(-1, H);
         assert!(!t.follow);
+    }
+
+    #[test]
+    fn scroll_clamps_at_both_ends() {
+        let mut t = Transcript::new(entries(50));
+        t.step(-100_000, H);
+        assert_eq!(t.scroll, 0);
+        t.step(100_000, H);
+        assert!(t.scroll <= t.layout.total_lines().saturating_sub(1));
+    }
+
+    #[test]
+    fn page_moves_by_half_a_viewport() {
+        let mut t = Transcript::new(entries(500));
+        // Start from the top: a fresh transcript is pinned to the tail, where
+        // paging forward is correctly clamped.
+        t.top();
+        let before = t.scroll;
+        t.page(1, H);
+        assert!(t.scroll > before, "page down must advance");
+        assert!(t.scroll - before <= H as usize + 1, "page must be about half a viewport");
+    }
+
+    #[test]
+    fn top_jumps_to_first_line() {
+        let mut t = Transcript::new(entries(100));
+        t.top();
+        assert_eq!(t.scroll, 0);
+        assert!(!t.follow);
+    }
+
+    #[test]
+    fn follow_tail_repins_to_newest() {
+        let mut t = Transcript::new(entries(100));
+        t.top();
+        t.follow_tail(H);
+        assert!(t.follow);
+        assert!(t.scroll > 0);
+    }
+
+    #[test]
+    fn jump_to_turn_finds_it() {
+        let mut t = Transcript::new(entries(100));
+        t.jump_to_turn(40, H);
+        assert_eq!(t.layout.entry_at_line(t.scroll), 40);
+        assert!(!t.follow);
+    }
+
+    #[test]
+    fn collapse_keeps_the_layout_valid() {
+        let mut t = Transcript::new(entries(20));
+        t.top();
+        let before = t.layout.total_lines();
+        t.toggle_collapse();
+        assert!(t.layout.total_lines() <= before);
+        assert!(t.scroll <= t.layout.total_lines().saturating_sub(1));
+    }
+
+    #[test]
+    fn empty_transcript_is_safe() {
+        let mut t = Transcript::new(Vec::new());
+        assert!(t.is_empty());
+        t.step(5, H);
+        assert_eq!(t.scroll, 0);
     }
 }

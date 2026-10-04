@@ -124,7 +124,7 @@ const MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS: usize = MAX_CONTENT_PROCESS_OUTPUT
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
     MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 32;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 33;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -3998,6 +3998,41 @@ impl NativeContentProcess {
         credentials: bool,
         parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeFetchResponse, NativeEngineError> {
+        let owner = NativeContentCookieOwner {
+            context_id: self.context_id.clone().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process fetch owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no browser context identity",
+                )
+            })?,
+            frame_id: self.frame_id.clone().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process fetch owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no frame identity",
+                )
+            })?,
+            generation: self.current_document_generation.ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process fetch owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no committed document generation",
+                )
+            })?,
+            document_url: self.current_document_url.clone().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process fetch owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no committed document URL",
+                )
+            })?,
+        };
+        if without_fragment(&owner.document_url) != without_fragment(document_url) {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "native Fetch owner does not match the committed document".into(),
+            });
+        }
         let id = self.next_id();
         let response = match timeout(
             CONTENT_PROCESS_LOAD_TIMEOUT,
@@ -4009,6 +4044,7 @@ impl NativeContentProcess {
                     "document_url": document_url,
                     "href": href,
                     "credentials": credentials,
+                    "owner": owner,
                 }),
                 Some(parent_loader),
             ),
@@ -12780,7 +12816,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 }
             }
             "fetch" if protocol_matches(&request) && running => {
-                let document_url = request
+                let request_document_url = request
                     .get("document_url")
                     .and_then(Value::as_str)
                     .ok_or_else(|| {
@@ -12796,16 +12832,79 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     .get("credentials")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
+                let owner_document =
+                    document.as_ref().ok_or_else(|| NativeEngineError::Worker {
+                        operation: "content process fetch".into(),
+                        reason: "content process has no active document owner".into(),
+                    })?;
+                let active_owner_url =
+                    document_url
+                        .as_deref()
+                        .ok_or_else(|| NativeEngineError::Worker {
+                            operation: "content process fetch".into(),
+                            reason: "content process has no active document URL".into(),
+                        })?;
+                let owner = decode_content_cookie_owner(
+                    request.get("owner").ok_or_else(|| {
+                        NativeEngineError::invalid("content-process fetch owner", "must be present")
+                    })?,
+                    "content-process fetch owner",
+                )?;
+                if owner.context_id != storage_context_id
+                    || owner.frame_id != frame_id
+                    || owner.generation != owner_document.generation()
+                    || without_fragment(&owner.document_url) != without_fragment(active_owner_url)
+                    || without_fragment(&owner.document_url)
+                        != without_fragment(request_document_url)
+                {
+                    return Err(NativeEngineError::worker_failure(
+                        "content process fetch owner",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent owner does not match the active content document",
+                    ));
+                }
+                if !is_network_url(without_fragment(&owner.document_url)) {
+                    return Err(NativeEngineError::Worker {
+                        operation: "content process fetch".into(),
+                        reason: "parent Fetch broker requires a network document owner".into(),
+                    });
+                }
+                let runtime =
+                    javascript_runtime
+                        .as_ref()
+                        .ok_or_else(|| NativeEngineError::Worker {
+                            operation: "content process fetch".into(),
+                            reason: "content process has no active JavaScript runtime".into(),
+                        })?;
+                let ipc_request_id = id.as_u64().ok_or_else(|| {
+                    NativeEngineError::invalid(
+                        "content-process fetch request ID",
+                        "must be an unsigned integer",
+                    )
+                })?;
                 let loader = resource_loader
                     .as_mut()
                     .ok_or_else(|| NativeEngineError::Worker {
                         operation: "content process fetch".into(),
                         reason: "content process has no resource loader".into(),
                     })?;
+                let mut parent_fetch_broker = NativeContentFetchBroker {
+                    captured_load_fetches: false,
+                    request_id: ipc_request_id,
+                    owner: owner.clone(),
+                    runtime: Some(runtime),
+                    stdout: &mut stdout,
+                    ipc_requests: &mut ipc_request_rx,
+                    cancelled_parent_fetches: &mut cancelled_parent_fetches,
+                    document_cookie_projection: &mut parent_document_cookie_projection,
+                    next_content_resource_fetch_id: 0,
+                    page_meta_content_security_policies: loader
+                        .document_meta_content_security_policies(&owner.document_url)?,
+                };
                 let intercepted = service_workers
                     .intercept_fetch(
                         loader,
-                        document_url,
+                        request_document_url,
                         href,
                         "GET",
                         BTreeMap::new(),
@@ -12822,7 +12921,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         "fetch",
                         None,
                         None,
-                        None,
+                        Some(&mut parent_fetch_broker),
                         false,
                     )
                     .await;
@@ -12836,8 +12935,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             &mut stdout,
                             &json!({
                                 "kind": "parent_fetch_request",
-                                "id": request_id,
-                                "document_url": document_url,
+                                "id": ipc_request_id,
+                                "document_url": request_document_url,
                                 "href": href,
                                 "credentials": credentials,
                             }),
@@ -12866,7 +12965,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     .to_owned(),
                             })
                         } else {
-                            decode_fetch_response(&broker_response, request_id)
+                            decode_fetch_response(&broker_response, ipc_request_id)
                         }
                     }
                     Ok(NativeServiceWorkerFetchOutcome::Suspended) => {

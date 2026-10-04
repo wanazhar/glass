@@ -34647,6 +34647,121 @@ async fn native_engine_parent_fetch_owns_cookie_matching_and_response_updates() 
 }
 
 #[tokio::test]
+async fn native_host_fetch_service_worker_nested_cookie_uses_parent_authority() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for _ in 0..4 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("host Fetch and nested ServiceWorker request should reach the server")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("request includes a path")
+                .to_owned();
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
+            let (headers, content_type, body) = match path.as_str() {
+                "/page" => (
+                    concat!(
+                        "Set-Cookie: host_session=initial; Path=/; SameSite=Lax\r\n",
+                        "Set-Cookie: host_secret=initial-secret; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    ),
+                    "text/html",
+                    "<!doctype html><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>host Fetch</main>",
+                ),
+                "/sw.js" => (
+                    "",
+                    "application/javascript",
+                    r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {
+  if (new URL(event.request.url).pathname === '/api') {
+    event.respondWith((async () => {
+      const response = await fetch('/nested', { credentials: 'include' });
+      return new Response(await response.text());
+    })());
+  }
+});"#,
+                ),
+                "/nested" => (
+                    "Set-Cookie: nested_worker=parent-owned; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/plain",
+                    "nested response",
+                ),
+                "/after" => ("", "text/plain", "after"),
+                "/api" => ("", "text/plain", "host Fetch bypassed ServiceWorker"),
+                other => panic!("unexpected host ServiceWorker Fetch path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push((path, cookie));
+        }
+        requests
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(reg => [reg.active.state, navigator.serviceWorker.controller !== null])",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["activated", true])
+    );
+    let response = engine
+        .fetch_async(format!("http://{address}/api"), true)
+        .await
+        .unwrap();
+    assert_eq!(response.body, b"nested response");
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        "host_session=initial"
+    );
+    assert!(engine.cookies_async().await.unwrap().iter().any(|cookie| {
+        cookie.name == "nested_worker" && cookie.value == "parent-owned" && cookie.http_only
+    }));
+    assert_eq!(
+        engine
+            .fetch_async(format!("http://{address}/after"), true)
+            .await
+            .unwrap()
+            .body,
+        b"after"
+    );
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect::<Vec<_>>(),
+        ["/page", "/sw.js", "/nested", "/after"]
+    );
+    let nested_cookie = requests[2].1.as_deref().unwrap_or_default();
+    assert!(nested_cookie.contains("host_session=initial"));
+    assert!(nested_cookie.contains("host_secret=initial-secret"));
+    let after_cookie = requests[3].1.as_deref().unwrap_or_default();
+    assert!(after_cookie.contains("nested_worker=parent-owned"));
+}
+
+#[tokio::test]
 async fn native_content_process_script_fetch_uses_parent_cookie_authority() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

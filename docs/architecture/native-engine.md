@@ -771,6 +771,11 @@ captured document owner, which the child validates against its committed
 document before any resumed network request. The process-backed regression
 checks parent-owned HttpOnly request/response cookies and the later page
 request, while keeping the cookie out of `document.cookie`.
+The native host `fetch_async` IPC also carries the parent's exact active
+context/frame/generation/document URL. The content process validates it before
+ServiceWorker interception and retains the parent broker for nested awaited
+Fetches and lifetime work; the host-fetch regression checks parent-selected
+HttpOnly request cookies, accepted response cookies, and a later request.
 Font and dynamic stylesheet requests outside parent-brokered script or
 user-action mutation operations, plus Service-Worker-provided navigation
 responses, Service Worker background work outside intercepted FetchEvents, and
@@ -783,8 +788,9 @@ there. Its loader no longer opens the cookie sidecar. Cookie import, updates,
 and clear now send only an owner-checked, URL-scoped visible projection; they do
 not send full cookie profiles/change batches, and script setter writes do not
 mutate the child's loader. Resumed ServiceWorker FetchEvent work after
-`clients.openWindow()` is also owner-checked and parent-brokered. The
-content-worker protocol is now version 32.
+`clients.openWindow()` and nested Fetches dispatched during native host
+`fetch_async` interception are owner-checked and parent-brokered. The
+content-worker protocol is now version 33.
 Child-direct internal requests can still mutate a transient child jar and
 return bounded cookie-change journals to the parent. Slice 843 remains in
 progress to broker those remaining requests and remove child-generated cookie

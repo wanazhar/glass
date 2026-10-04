@@ -2398,6 +2398,65 @@ impl NativeServiceWorkerRegistry {
                 &payload,
                 is_module,
             )?;
+            let mut preload_resolved = false;
+            let mut timer_turns = 0usize;
+            if evaluation.top_level_await_pending && evaluation.commands.is_empty() {
+                loop {
+                    if take_service_worker_fetch_response(worker, &mut evaluation)? {
+                        break;
+                    }
+                    if !preload_resolved && let Some(result) = preload_result.as_ref() {
+                        let resolved = resolve_service_worker_navigation_preload(
+                            &worker.runtime,
+                            worker_id,
+                            &worker_url,
+                            preload.request_id,
+                            Some(result),
+                            is_module,
+                        )?;
+                        append_service_worker_fetch_evaluation(
+                            &mut evaluation,
+                            resolved,
+                            "native ServiceWorker navigation preload commands",
+                        )?;
+                        preload_response = result.as_ref().ok().cloned();
+                        preload_resolved = true;
+                        continue;
+                    }
+                    if !evaluation.commands.is_empty() {
+                        break;
+                    }
+                    let timer_delay = worker.runtime.next_worker_timer_delay_ms()?;
+                    if !preload_resolved {
+                        if let Some(timer_delay) = timer_delay {
+                            tokio::select! {
+                                biased;
+                                result = &mut preload_request => {
+                                    preload_result = Some(result);
+                                }
+                                _ = tokio::time::sleep(Duration::from_millis(timer_delay)) => {
+                                    run_service_worker_fetch_timer_turn(
+                                        worker,
+                                        &mut evaluation,
+                                        &mut timer_turns,
+                                    )?;
+                                }
+                            }
+                        } else {
+                            preload_result = Some(preload_request.as_mut().await);
+                        }
+                    } else if let Some(timer_delay) = timer_delay {
+                        tokio::time::sleep(Duration::from_millis(timer_delay)).await;
+                        run_service_worker_fetch_timer_turn(
+                            worker,
+                            &mut evaluation,
+                            &mut timer_turns,
+                        )?;
+                    } else {
+                        break;
+                    }
+                }
+            }
             let fetch_handler_responded = !evaluation.top_level_await_pending
                 && evaluation.value.get("handled").and_then(Value::as_bool) == Some(true);
             if fetch_handler_responded && preload_result.is_none() {
@@ -2409,65 +2468,56 @@ impl NativeServiceWorkerRegistry {
                 })
                 .await;
             }
-            let preload_result = match preload_result {
-                Some(result) => Some(result),
-                None if fetch_handler_responded => {
-                    drop(preload_request);
-                    if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
-                        parent_fetch_broker
-                            .cancel_parent_fetch(preload.request_id)
-                            .await?;
-                    }
-                    None
+            if preload_result.is_none() && fetch_handler_responded {
+                drop(preload_request);
+                if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
+                    parent_fetch_broker
+                        .cancel_parent_fetch(preload.request_id)
+                        .await?;
                 }
-                None => Some(preload_request.await),
-            };
-            let resolve_payload = match &preload_result {
-                Some(Ok(response)) => service_worker_fetch_payload(response.clone()),
-                Some(Err(error)) => {
-                    let message = error.to_string().chars().take(1024).collect::<String>();
-                    json!({"error": message})
-                }
-                None => json!({
-                    "error": "navigation preload was aborted after the ServiceWorker response settled"
-                }),
-            };
-            let resolved = worker.runtime.resolve_service_worker_navigation_preload(
-                worker_id,
-                &worker_url,
-                preload.request_id,
-                &resolve_payload,
-                is_module,
-            )?;
-            if evaluation
-                .commands
-                .len()
-                .saturating_add(resolved.commands.len())
-                > MAX_NATIVE_WORKER_MESSAGES
-            {
-                return Err(NativeEngineError::limit(
+            } else if preload_result.is_none() {
+                preload_result = Some(preload_request.await);
+            }
+            if !preload_resolved {
+                let resolved = resolve_service_worker_navigation_preload(
+                    &worker.runtime,
+                    worker_id,
+                    &worker_url,
+                    preload.request_id,
+                    preload_result.as_ref(),
+                    is_module,
+                )?;
+                append_service_worker_fetch_evaluation(
+                    &mut evaluation,
+                    resolved,
                     "native ServiceWorker navigation preload commands",
-                    MAX_NATIVE_WORKER_MESSAGES,
-                    evaluation
-                        .commands
-                        .len()
-                        .saturating_add(resolved.commands.len()),
-                ));
+                )?;
+                preload_response = preload_result
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok().cloned());
             }
-            evaluation.commands.extend(resolved.commands);
-            evaluation.top_level_await_pending |= resolved.top_level_await_pending;
-            if evaluation.worker_script_error.is_none() {
-                evaluation.worker_script_error = resolved.worker_script_error;
-            }
-            preload_response = preload_result.and_then(Result::ok);
             evaluation
         } else {
-            worker.runtime.evaluate_service_worker_fetch(
+            let mut evaluation = worker.runtime.evaluate_service_worker_fetch(
                 worker.id,
                 &worker.script_url,
                 &payload,
                 worker.is_module,
-            )?
+            )?;
+            if evaluation.top_level_await_pending && evaluation.commands.is_empty() {
+                let mut timer_turns = 0usize;
+                while evaluation.top_level_await_pending && evaluation.commands.is_empty() {
+                    if take_service_worker_fetch_response(worker, &mut evaluation)? {
+                        break;
+                    }
+                    let Some(timer_delay) = worker.runtime.next_worker_timer_delay_ms()? else {
+                        break;
+                    };
+                    tokio::time::sleep(Duration::from_millis(timer_delay)).await;
+                    run_service_worker_fetch_timer_turn(worker, &mut evaluation, &mut timer_turns)?;
+                }
+            }
+            evaluation
         };
         let worker_id = worker.id;
         let settlement = settle_service_worker_fetch_with_parent_fetch_broker(
@@ -4796,6 +4846,103 @@ fn service_worker_fetch_payload(response: NativeFetchResponse) -> Value {
         "opaque": response.opaque,
         "opaqueRedirect": response.opaque_redirect,
     })
+}
+
+fn resolve_payload_for_preload(
+    preload_result: Option<&Result<NativeFetchResponse, NativeEngineError>>,
+) -> Value {
+    match preload_result {
+        Some(Ok(response)) => service_worker_fetch_payload(response.clone()),
+        Some(Err(error)) => {
+            let message = error.to_string().chars().take(1024).collect::<String>();
+            json!({"error": message})
+        }
+        None => json!({
+            "error": "navigation preload was aborted after the ServiceWorker response settled"
+        }),
+    }
+}
+
+fn resolve_service_worker_navigation_preload(
+    runtime: &NativeJavaScriptRuntime,
+    worker_id: u32,
+    worker_url: &str,
+    request_id: u32,
+    preload_result: Option<&Result<NativeFetchResponse, NativeEngineError>>,
+    is_module: bool,
+) -> Result<NativeScriptEvaluation, NativeEngineError> {
+    runtime.resolve_service_worker_navigation_preload(
+        worker_id,
+        worker_url,
+        request_id,
+        &resolve_payload_for_preload(preload_result),
+        is_module,
+    )
+}
+
+fn append_service_worker_fetch_evaluation(
+    evaluation: &mut NativeScriptEvaluation,
+    additional: NativeScriptEvaluation,
+    operation: &'static str,
+) -> Result<(), NativeEngineError> {
+    let command_count = evaluation
+        .commands
+        .len()
+        .saturating_add(additional.commands.len());
+    if command_count > MAX_NATIVE_WORKER_MESSAGES {
+        return Err(NativeEngineError::limit(
+            operation,
+            MAX_NATIVE_WORKER_MESSAGES,
+            command_count,
+        ));
+    }
+    evaluation.commands.extend(additional.commands);
+    evaluation.top_level_await_pending |= additional.top_level_await_pending;
+    if evaluation.worker_script_error.is_none() {
+        evaluation.worker_script_error = additional.worker_script_error;
+    }
+    Ok(())
+}
+
+fn take_service_worker_fetch_response(
+    worker: &NativeServiceWorker,
+    evaluation: &mut NativeScriptEvaluation,
+) -> Result<bool, NativeEngineError> {
+    if !evaluation.top_level_await_pending {
+        return Ok(true);
+    }
+    if let Some(value) = worker.runtime.take_top_level_await_result()? {
+        evaluation.value = value;
+        evaluation.top_level_await_pending = false;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn run_service_worker_fetch_timer_turn(
+    worker: &NativeServiceWorker,
+    evaluation: &mut NativeScriptEvaluation,
+    timer_turns: &mut usize,
+) -> Result<bool, NativeEngineError> {
+    *timer_turns = timer_turns.saturating_add(1);
+    if *timer_turns > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "native ServiceWorker FetchEvent timer turns",
+            MAX_NATIVE_EFFECTS,
+            *timer_turns,
+        ));
+    }
+    let timer_evaluation = worker.runtime.evaluate_service_worker_timers(
+        worker.id,
+        &worker.script_url,
+        worker.is_module,
+    )?;
+    append_service_worker_fetch_evaluation(
+        evaluation,
+        timer_evaluation,
+        "native ServiceWorker FetchEvent timer commands",
+    )?;
+    take_service_worker_fetch_response(worker, evaluation)
 }
 
 fn decode_service_worker_response(

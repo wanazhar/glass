@@ -666,14 +666,17 @@ the captured-load parent broker (1 passed; 906 filtered; 25.04 seconds):
 HttpOnly request and response cookies stay parent-owned and are reused by a
 following page Fetch while remaining absent from `document.cookie`.
 The socket-free navigation-preload tests cover response cloning, immutable
-headers, the no-preload result, eligibility, and network errors. A gated
-process probe with a timer-delayed independent response did not commit before
-the preload body was released; this is a live response-progress gap, not a
-listener-binding limitation. Its default test-thread stack also overflowed.
-Process-backed eligibility, no-duplicate fallback, cancellation, source-policy
-redirect updates, worker-visible `Request.referrer`, and asynchronous
-response/preload overlap remain open, as do WPT, remote CI, and cross-platform
-validation.
+headers, the no-preload result, eligibility, and network errors. The
+process-backed timer-response regression now passes (1 passed; 906 filtered;
+31.72 seconds): it settles a delayed response with preload disabled, then
+settles another delayed response while an enabled parent-brokered preload is
+held, commits before release, and verifies the unused preload socket closes.
+The earlier timer-progress gap is fixed; this regression uses the product's
+8 MiB resident-worker stack contract, not the default Rust test-harness stack.
+Process-backed eligibility boundary controls,
+navigation cancellation, and response progress that depends on other pending
+host commands remain open, as do selected WPT evidence, remote CI, and
+cross-platform validation.
 Navigation Preload is still incomplete until those integrations and remaining
 CI/WPT/platform evidence pass.
 

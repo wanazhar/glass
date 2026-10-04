@@ -11,10 +11,15 @@ eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,
 and reuses successful results for unhandled navigation. Its process-backed
 header/response-reuse test passed (1 passed; 906 filtered; 36.50 seconds), as
 did the controlled-navigation `fetch(event.request)` parent-cookie test (1
-passed; 906 filtered; 25.04 seconds). However, a gated process probe with a
-timer-delayed independent response did not commit until the preload body was
-released; process-backed asynchronous response/preload overlap remains open.
-The default test-thread stack also overflows on that probe. The socket-free
+passed; 906 filtered; 25.04 seconds). The process-backed timer-response test
+also passes (1 passed; 906 filtered; 31.72 seconds), covering a delayed
+`respondWith()` both with preload disabled and while the enabled parent-
+brokered preload body is gated. Navigation commits before preload release and
+the upstream socket closes, proving cancellation of the unused preload. The
+earlier failed probe exposed that timer turns were not advancing during this
+wait; the event turn now advances the owning ServiceWorker's timers. The test
+uses Glass's 8 MiB resident-worker stack contract; it does not assess the
+default Rust test-harness stack. The socket-free
 navigation-preload tests cover readable cloned responses, immutable headers,
 absent preloads, and network errors. The FetchEvent runtime separately settles
 an independent `respondWith()` response without waiting for a pending

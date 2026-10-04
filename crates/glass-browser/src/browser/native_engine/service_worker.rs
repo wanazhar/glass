@@ -1574,6 +1574,7 @@ impl NativeServiceWorkerRegistry {
         source_origin: &str,
         data: &Value,
         transfer_ports: &[NativeMessagePortTransfer],
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<(), NativeEngineError> {
         let Some(worker_id) = self.registrations.get(scope).map(|worker| worker.id) else {
             return Ok(());
@@ -1654,7 +1655,7 @@ impl NativeServiceWorkerRegistry {
             self.remove_transfer_routes(transfer_ports);
             return Err(error);
         }
-        let client_messages = match settle_service_worker_cache_event(
+        let client_messages = match settle_service_worker_cache_event_with_parent_fetch_broker(
             self.registrations
                 .get_mut(scope)
                 .expect("service worker registration was retained"),
@@ -1663,6 +1664,8 @@ impl NativeServiceWorkerRegistry {
             &mut self.cache_state,
             None,
             &mut self.pending_open_windows,
+            parent_fetch_broker.as_deref_mut(),
+            false,
         )
         .await
         {
@@ -1927,6 +1930,7 @@ impl NativeServiceWorkerRegistry {
         &mut self,
         commands: Vec<NativeScriptCommand>,
         loader: &mut NativeResourceLoader,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<(), NativeEngineError> {
         if commands.len() > MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
@@ -1975,17 +1979,20 @@ impl NativeServiceWorkerRegistry {
                     {
                         return Err(error);
                     }
-                    let client_messages = settle_service_worker_cache_event(
-                        self.registrations
-                            .get_mut(&scope)
-                            .expect("service worker registration was retained"),
-                        evaluation,
-                        loader,
-                        &mut self.cache_state,
-                        None,
-                        &mut self.pending_open_windows,
-                    )
-                    .await?;
+                    let client_messages =
+                        settle_service_worker_cache_event_with_parent_fetch_broker(
+                            self.registrations
+                                .get_mut(&scope)
+                                .expect("service worker registration was retained"),
+                            evaluation,
+                            loader,
+                            &mut self.cache_state,
+                            None,
+                            &mut self.pending_open_windows,
+                            parent_fetch_broker.as_deref_mut(),
+                            false,
+                        )
+                        .await?;
                     self.enqueue_client_messages(client_messages)?;
                     continue;
                 }
@@ -2045,7 +2052,7 @@ impl NativeServiceWorkerRegistry {
                 self.remove_transfer_routes(&transfer_ports);
                 return Err(error);
             }
-            let client_messages = match settle_service_worker_cache_event(
+            let client_messages = match settle_service_worker_cache_event_with_parent_fetch_broker(
                 self.registrations
                     .get_mut(&scope)
                     .expect("service worker registration was retained"),
@@ -2054,6 +2061,8 @@ impl NativeServiceWorkerRegistry {
                 &mut self.cache_state,
                 None,
                 &mut self.pending_open_windows,
+                parent_fetch_broker.as_deref_mut(),
+                false,
             )
             .await
             {

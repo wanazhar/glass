@@ -46,6 +46,10 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- ServiceWorker `postMessage` and page-to-ServiceWorker MessagePort event Fetches
+  now retain the owner-checked parent cookie broker for content-worker turns.
+  A process-backed regression covers parent-owned HttpOnly response-cookie
+  persistence and use by the following page request.
 - Initial document-load DedicatedWorker startup Fetch and local SharedWorker
   creation/connect Fetch now use the owner-checked parent cookie broker.
   Captured-load Fetches are accepted only for the exact in-flight document

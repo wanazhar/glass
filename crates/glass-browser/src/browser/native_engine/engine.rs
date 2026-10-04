@@ -11804,7 +11804,6 @@ mod tests {
             NativeEngineConfig::default().with_initial_url(format!("http://{address}/page"));
         let mut engine = NativeEngine::new(config).unwrap();
         engine.initialize_async().await.unwrap();
-
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
             while !server.is_finished() {
                 for notification in engine.take_async_effect_notifications().unwrap() {
@@ -11870,6 +11869,135 @@ mod tests {
             cookies
                 .iter()
                 .any(|cookie| cookie.name == "timer_secret" && cookie.value == "after")
+        );
+    }
+
+    #[tokio::test]
+    async fn native_content_process_service_worker_message_fetch_uses_parent_cookie_authority() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..4 {
+                let accepted =
+                    tokio::time::timeout(std::time::Duration::from_secs(45), listener.accept())
+                        .await
+                        .expect("ServiceWorker message and follow-up requests arrive")
+                        .unwrap();
+                let (mut stream, _) = accepted;
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 2048];
+                loop {
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&request).into_owned();
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("ServiceWorker message request includes a path")
+                    .to_owned();
+                let cookie = request
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim().to_owned());
+                let (headers, content_type, body) = match path.as_str() {
+                    "/page" => (
+                        concat!(
+                            "Set-Cookie: message_visible=visible; Path=/; SameSite=Lax\r\n",
+                            "Set-Cookie: message_secret=before; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        ),
+                        "text/html",
+                        "<script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>ServiceWorker message cookie broker</main>",
+                    ),
+                    "/sw.js" => (
+                        "Set-Cookie: message_script=loaded; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "application/javascript",
+                        "self.addEventListener('install', event => event.waitUntil(self.skipWaiting())); self.addEventListener('activate', event => event.waitUntil(self.clients.claim())); self.addEventListener('message', event => { if (event.data === 'cookie-check') event.waitUntil(fetch('/message-fetch').then(response => response.text())); });",
+                    ),
+                    "/message-fetch" => (
+                        "Set-Cookie: message_secret=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "text/plain",
+                        "message fetch completed",
+                    ),
+                    "/after" => ("", "text/plain", "after"),
+                    other => panic!("unexpected ServiceWorker message request: {other}"),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push((path, cookie));
+            }
+            requests
+        });
+
+        let config =
+            NativeEngineConfig::default().with_initial_url(format!("http://{address}/page"));
+        let mut engine = NativeEngine::new(config).unwrap();
+        engine.initialize_async().await.unwrap();
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(registration => registration.active.postMessage('cookie-check'))",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            engine
+                .evaluate_async("await fetch('/after').then(response => response.text())")
+                .await
+                .unwrap(),
+            "after"
+        );
+        let visible_cookies = engine.evaluate_async("document.cookie").await.unwrap();
+        let cookies = engine.cookies_async().await.unwrap();
+        engine.close_async().await.unwrap();
+        let requests = server.await.unwrap();
+
+        assert_eq!(
+            requests
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            ["/page", "/sw.js", "/message-fetch", "/after"]
+        );
+        let cookie_for = |path: &str| {
+            requests
+                .iter()
+                .find(|(request_path, _)| request_path == path)
+                .and_then(|(_, cookie)| cookie.as_deref())
+                .unwrap_or_default()
+        };
+        assert!(cookie_for("/message-fetch").contains("message_script=loaded"));
+        assert!(cookie_for("/message-fetch").contains("message_secret=before"));
+        assert!(cookie_for("/after").contains("message_secret=accepted"));
+        assert!(
+            visible_cookies
+                .as_str()
+                .is_some_and(|value| value.contains("message_visible=visible"))
+        );
+        assert!(
+            !visible_cookies
+                .as_str()
+                .is_some_and(|value| value.contains("message_secret="))
+        );
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == "message_secret" && cookie.value == "accepted")
         );
     }
 

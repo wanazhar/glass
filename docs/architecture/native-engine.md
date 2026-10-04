@@ -228,7 +228,12 @@ in the parent coordinator. The earlier checkpoint still had standalone
 content-process WorkerTimer turns on the local loader; Slice 843 now defers
 all autonomous content-process timers to an exact-owner script turn with the
 parent Fetch broker. The scoped check passed with existing dead-code warnings
-from the superseded HTML parser in `dom.rs`. Slice 823 preserves `omit`,
+from the superseded HTML parser in `dom.rs`. ServiceWorker `postMessage` and
+page MessagePort delivery also retain that broker while settling ServiceWorker
+message events; `native_content_process_service_worker_message_fetch_uses_parent_cookie_authority`
+passed (1 passed; 1,691 filtered; 25.87 seconds), verifying an HttpOnly
+response cookie from the message event is committed in the parent and sent on
+the next page request. Slice 823 preserves `omit`,
 `same-origin`, and
 `include` through
 direct worker Fetch requests and reevaluates cookie send/accept behavior at
@@ -572,7 +577,8 @@ The parent exposes only a document-URL-scoped, non-HttpOnly
 `document.cookie` projection to script. Cookie setter lines return to the
 parent with their context, frame, document generation, and source URL so the
 parent can validate the write and refresh the projection. Eligible Fetch
-requests created by page or worker code and page/dedicated-Worker EventSource
+requests created by page or worker code, ServiceWorker message-event Fetches
+delivered during a parent-owned page turn, and page/dedicated-Worker EventSource
 requests go through a bounded parent broker; cookie credentials are selected
 for each request and redirect hop by the parent. Dedicated Worker EventSource
 carries the worker-script URL as the network initiator while its IPC stream remains scoped to the

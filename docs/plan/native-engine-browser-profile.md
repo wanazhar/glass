@@ -373,6 +373,19 @@ semantics, WPT conformance, and cross-platform parity remain open. See the
 [Slice 822 task](tasks/native-engine-browser-822.md) and
 [Slice 823 task](tasks/native-engine-browser-823.md).
 
+### ServiceWorker message-event Fetch
+
+In the content-worker path, `ServiceWorker.postMessage` and page-originated
+MessagePort delivery dispatch their ServiceWorker events with the active
+owner-checked parent Fetch broker. Event-handler Fetch requests therefore use
+the parent's cookie matching and response-cookie persistence instead of the
+content process's loader. The process-backed
+`native_content_process_service_worker_message_fetch_uses_parent_cookie_authority`
+passed (1 passed; 1,691 filtered; 25.87 seconds), checking the message-event
+response's HttpOnly cookie on the following page request while keeping it out
+of `document.cookie`. This closes those message-event routes only; remaining
+child-direct internal network classes remain in Slice 843's open audit.
+
 ### Fetch referrer policy containers
 
 This elaborates the existing `network-origin` requirement for referrer

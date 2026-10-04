@@ -5051,7 +5051,7 @@ impl NativeResourceLoader {
             .await
     }
 
-    async fn fetch_request_with_navigation_context_async(
+    pub(crate) async fn fetch_request_with_navigation_context_async(
         &mut self,
         request: NativeFetchRequest<'_>,
         top_level_navigation: bool,

@@ -175,8 +175,16 @@ and intends to use [Semantic Versioning](https://semver.org/).
   lifecycle Fetches, an HttpOnly `Set-Cookie` from install on the activate
   Fetch, and both accepted lifecycle cookies on the next page Fetch while
   hidden from `document.cookie`. Captured-load Fetches still require the exact
-  active or in-flight document owner; navigation-time activation of an already
-  waiting worker and other background paths remain outside this checkpoint.
+  active or in-flight document owner. Navigation-time activation of an already
+  waiting worker, navigation preload, and the navigation FetchEvent now retain
+  the parent broker through the same captured-load owner check. The process-
+  backed `native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority`
+  regression verifies the parent-owned HttpOnly cookie sequence through
+  activation, preload, the worker navigation Fetch, and the next page Fetch,
+  while the page sees only its non-HttpOnly cookie. Background work outside
+  intercepted FetchEvents and other internal network paths remain child-side.
+  Content-worker parent-Fetch IPC is protocol version 25, including validated
+  captured-load and top-level-navigation request metadata.
 - Native content-worker dialog IPC now uses one stdin reader to route dialog
   decisions separately from ordinary asynchronous requests.
 - Native event-pump shutdown now cancels an in-flight owner turn through a

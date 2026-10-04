@@ -664,8 +664,14 @@ The process-backed
 `native_content_process_service_worker_lifecycle_fetches_use_parent_cookie_authority`
 regression verifies an owner-bound page setter, install-to-activate HttpOnly
 cookie rotation, and the next page request while script-visible cookies remain
-filtered. Navigation-time activation of a waiting worker and other background
-Fetches remain direct child paths.
+filtered. Navigation-time activation of a waiting worker, top-level navigation
+preload, and the navigation FetchEvent now retain the parent broker and exact
+captured-load owner validation. The process-backed
+`native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority`
+regression verifies activation, preload, navigation-event Fetch, and the next
+page request share parent-owned HttpOnly cookies while `document.cookie` stays
+filtered. Background work outside intercepted FetchEvents and other internal
+network paths remain direct child paths.
 
 For an explicit page Fetch with a `ReadableStream` body, the content process
 now collects the body under `MAX_NATIVE_FORM_BODY_BYTES` before sending the

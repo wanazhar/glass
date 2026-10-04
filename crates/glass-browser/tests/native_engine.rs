@@ -38152,13 +38152,27 @@ fn native_runtime_shared_worker_cookie_changes_reach_all_live_profile_contexts()
                 "glass-native-shared-worker-cookie-fanout-{}-isolated.json",
                 std::process::id()
             ));
+            let cookie_profile_path = std::path::PathBuf::from(format!(
+                "{}.cookies",
+                profile_path.display()
+            ));
+            let isolated_cookie_profile_path = std::path::PathBuf::from(format!(
+                "{}.cookies",
+                isolated_profile_path.display()
+            ));
             let profile_lock_path = profile_path.with_extension("lock");
             let isolated_lock_path = isolated_profile_path.with_extension("lock");
+            let cookie_profile_lock_path = cookie_profile_path.with_extension("lock");
+            let isolated_cookie_profile_lock_path = isolated_cookie_profile_path.with_extension("lock");
             for path in [
                 &profile_path,
+                &cookie_profile_path,
                 &profile_lock_path,
+                &cookie_profile_lock_path,
                 &isolated_profile_path,
+                &isolated_cookie_profile_path,
                 &isolated_lock_path,
+                &isolated_cookie_profile_lock_path,
             ] {
                 let _ = fs::remove_file(path);
             }
@@ -38168,7 +38182,7 @@ fn native_runtime_shared_worker_cookie_changes_reach_all_live_profile_contexts()
             let server = tokio::spawn(async move {
                 tokio::time::timeout(Duration::from_secs(60), async move {
                     let mut requests = Vec::new();
-                    for _ in 0..9 {
+                    for _ in 0..10 {
                         let (mut stream, _) = listener.accept().await.unwrap();
                         let request = read_http_request(&mut stream).await;
                         let path = request
@@ -38222,6 +38236,9 @@ globalThis.startCookieFanout = () => {
                                 "/observe-frame" => ("", "text/plain", "frame-observed"),
                                 "/observe-isolated" => {
                                     ("", "text/plain", "isolated-observed")
+                                }
+                                "/reopened-profile" => {
+                                    ("", "text/html", "<p>reopened profile</p>")
                                 }
                                 other => panic!("unexpected live-context cookie request: {other}"),
                             };
@@ -38343,6 +38360,25 @@ globalThis.startCookieFanout = () => {
             );
             session.close().await.unwrap();
             isolated.close().await.unwrap();
+
+            let reopened = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("http://{address}/reopened-profile")),
+            )
+            .await
+            .unwrap();
+            let reopened_document_cookie = reopened.script("document.cookie").await.unwrap().value;
+            assert!(reopened_document_cookie
+                .as_str()
+                .unwrap()
+                .contains("fanout=from-worker"));
+            assert!(!reopened_document_cookie
+                .as_str()
+                .unwrap()
+                .contains("fanout-fetch=from-fetch"));
+            reopened.close().await.unwrap();
+
             let requests = server.await.unwrap();
             let cookie_for = |path: &str| {
                 requests
@@ -38360,12 +38396,18 @@ globalThis.startCookieFanout = () => {
             assert!(cookie_for("/observe-peer").contains("fanout-fetch=from-fetch"));
             assert!(cookie_for("/observe-frame").contains("fanout-fetch=from-fetch"));
             assert!(!cookie_for("/observe-isolated").contains("fanout="));
+            assert!(cookie_for("/reopened-profile").contains("fanout=from-worker"));
+            assert!(cookie_for("/reopened-profile").contains("fanout-fetch=from-fetch"));
 
             for path in [
                 &profile_path,
+                &cookie_profile_path,
                 &profile_lock_path,
+                &cookie_profile_lock_path,
                 &isolated_profile_path,
+                &isolated_cookie_profile_path,
                 &isolated_lock_path,
+                &isolated_cookie_profile_lock_path,
             ] {
                 let _ = fs::remove_file(path);
             }

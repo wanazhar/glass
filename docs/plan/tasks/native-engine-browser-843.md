@@ -770,14 +770,18 @@ projection and existing native Fetch behavior.
   while verifying parent HttpOnly cookies on the child request and a later
   parent request. The process-backed
   `native_runtime_shared_worker_cookie_changes_reach_all_live_profile_contexts`
-  regression passed (1 passed; 51.95 seconds), verifying the SharedWorker
-  runtime Fetch sends the entry's parent-owned HttpOnly cookie, accepts another
-  HttpOnly response cookie, and propagates it to same-profile frames/targets
-  without exposing it to script or reaching an isolated profile. Its direct
-  bounded response is buffered because the browser coordinator does not own a
-  separate stream-event pump. Scoped `cargo check` and the companion worker
-  build passed with existing dead-code warnings. WebSocket/EventSource and
-  other unbrokered request classes remain open; full cookie-policy parity is
-  not claimed.
+  regression previously passed (1 passed; 51.95 seconds); it verified the
+  SharedWorker runtime Fetch sent the entry's parent-owned HttpOnly cookie,
+  accepted another HttpOnly response cookie, and propagated it to same-profile
+  frames/targets without exposing it to script or reaching an isolated profile.
+  Its bounded direct response is buffered because the browser coordinator lacks
+  a separate stream-event pump. The regression now closes all sessions and opens
+  a fresh session against the same profile: both cookies are sent on navigation,
+  while `document.cookie` exposes only the non-HttpOnly cookie. This process-
+  backed persistence check passed (1 passed; 62.28 seconds). The test also
+  removes its cookie sidecar and lock files. Scoped `cargo check` and the
+  companion worker build passed with existing dead-code warnings. WebSocket/
+  EventSource and other unbrokered request classes remain open; full cookie-
+  policy parity is not claimed.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

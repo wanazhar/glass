@@ -882,10 +882,14 @@ regression passed (1 test; 31.22 seconds), retaining cross-origin security
 errors while verifying parent HttpOnly request/response cookie authority. The
 process-backed
 `native_runtime_shared_worker_cookie_changes_reach_all_live_profile_contexts`
-regression passed (1 test; 51.95 seconds), verifying a browser-owned
+regression passed (1 test; 62.28 seconds), verifying a browser-owned
 SharedWorker Fetch uses the parent-owned entry cookie, accepts an HttpOnly
 response cookie, and fans it out to live same-profile frames/targets without
 exposing it through `document.cookie` or leaking it to an isolated profile.
+After all sessions close, a fresh session using the same profile sends both
+cookies on navigation while its `document.cookie` projection exposes only the
+non-HttpOnly value, verifying parent-side cookie-sidecar persistence across
+restart.
 These are targeted authority checks, not complete cookie-policy or
 uncovered-request parity.
 

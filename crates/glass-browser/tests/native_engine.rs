@@ -44,7 +44,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, oneshot};
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::{
+    accept_async, accept_hdr_async,
+    tungstenite::{
+        Message,
+        handshake::server::{Request as WebSocketRequest, Response as WebSocketResponse},
+        http::{
+            HeaderValue,
+            header::{COOKIE, SET_COOKIE},
+        },
+    },
+};
 use url::Url;
 
 fn native_content_process_test_lock() -> &'static Mutex<()> {
@@ -74583,6 +74593,8 @@ async fn native_content_process_drives_websocket_text_binary_and_close_events() 
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let websocket_cookie_seen = Arc::new(AtomicBool::new(false));
+    let websocket_cookie_seen_by_server = Arc::clone(&websocket_cookie_seen);
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let request = read_http_request(&mut stream).await;
@@ -74591,13 +74603,34 @@ async fn native_content_process_drives_websocket_text_binary_and_close_events() 
             "<input id='result' value='pending'><script>globalThis.pageScriptStatus = 'before'; globalThis.pageMessages = []; try {{ globalThis.pageSocket = new WebSocket('ws://{address}/socket'); globalThis.pageSocket.binaryType = 'arraybuffer'; globalThis.pageSocket.onopen = () => {{ globalThis.pageSocket.send('client-text'); globalThis.pageSocket.send(new Uint8Array([1, 2, 3])); }}; globalThis.pageSocket.onmessage = event => {{ if (typeof event.data === 'string') globalThis.pageMessages.push(event.data); else globalThis.pageMessages.push(Array.from(new Uint8Array(event.data)).join(',')); if (globalThis.pageMessages.length === 2) {{ document.getElementById('result').value = globalThis.pageMessages.join('|'); globalThis.pageSocket.close(1000, 'done'); }} }}; globalThis.pageSocket.onerror = () => {{ globalThis.pageSocketError = true; }}; globalThis.pageScriptStatus = 'after'; }} catch (error) {{ globalThis.pageScriptStatus = String(error); }}</script>"
         );
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: page-cookie=parent-secret; HttpOnly; Path=/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         stream.write_all(response.as_bytes()).await.unwrap();
 
         let (stream, _) = listener.accept().await.unwrap();
-        let mut websocket = accept_async(stream).await.unwrap();
+        let websocket_cookie_seen = Arc::clone(&websocket_cookie_seen_by_server);
+        let mut websocket = accept_hdr_async(
+            stream,
+            move |request: &WebSocketRequest, mut response: WebSocketResponse| {
+                let cookie = request
+                    .headers()
+                    .get(COOKIE)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default();
+                websocket_cookie_seen.store(
+                    cookie.contains("page-cookie=parent-secret"),
+                    Ordering::SeqCst,
+                );
+                response.headers_mut().insert(
+                    SET_COOKIE,
+                    HeaderValue::from_static("ws-cookie=handshake-secret; HttpOnly; Path=/"),
+                );
+                Ok(response)
+            },
+        )
+        .await
+        .unwrap();
         websocket
             .send(Message::Ping(b"keepalive".to_vec().into()))
             .await
@@ -74636,6 +74669,22 @@ async fn native_content_process_drives_websocket_text_binary_and_close_events() 
         );
         assert!(pong_received);
         let _ = tokio::time::timeout(Duration::from_secs(2), websocket.next()).await;
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/cookie-check"));
+        let cookie = request
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("Cookie: ")
+                    .or_else(|| line.strip_prefix("cookie: "))
+            })
+            .unwrap_or_default();
+        let body = cookie.to_owned();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
     });
 
     let mut engine = NativeEngine::new(
@@ -74666,8 +74715,18 @@ async fn native_content_process_drives_websocket_text_binary_and_close_events() 
             .unwrap(),
         serde_json::json!("server-text|7,8,255")
     );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await fetch('/cookie-check').then(response => response.text()).then(value => value.includes('ws-cookie=handshake-secret'))",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
     engine.close_async().await.unwrap();
     server.await.unwrap();
+    assert!(websocket_cookie_seen.load(Ordering::SeqCst));
 }
 
 #[tokio::test]
@@ -74766,6 +74825,8 @@ async fn native_content_process_worker_drives_websocket_text_binary_and_close_ev
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let websocket_cookie_seen = Arc::new(AtomicBool::new(false));
+    let websocket_cookie_seen_by_server = Arc::clone(&websocket_cookie_seen);
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let request = read_http_request(&mut stream).await;
@@ -74775,7 +74836,7 @@ async fn native_content_process_worker_drives_websocket_text_binary_and_close_ev
         );
         let body = "<script>globalThis.workerMessages = []; globalThis.worker = new Worker('/worker-websocket.js'); worker.onmessage = event => workerMessages.push(event.data);</script>";
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: worker-page-cookie=worker-secret; HttpOnly; Path=/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         stream.write_all(response.as_bytes()).await.unwrap();
@@ -74796,7 +74857,24 @@ async fn native_content_process_worker_drives_websocket_text_binary_and_close_ev
         stream.write_all(response.as_bytes()).await.unwrap();
 
         let (stream, _) = listener.accept().await.unwrap();
-        let mut websocket = accept_async(stream).await.unwrap();
+        let websocket_cookie_seen = Arc::clone(&websocket_cookie_seen_by_server);
+        let mut websocket = accept_hdr_async(
+            stream,
+            move |request: &WebSocketRequest, response: WebSocketResponse| {
+                let cookie = request
+                    .headers()
+                    .get(COOKIE)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default();
+                websocket_cookie_seen.store(
+                    cookie.contains("worker-page-cookie=worker-secret"),
+                    Ordering::SeqCst,
+                );
+                Ok(response)
+            },
+        )
+        .await
+        .unwrap();
         websocket
             .send(Message::Ping(b"worker-keepalive".to_vec().into()))
             .await
@@ -74863,6 +74941,7 @@ async fn native_content_process_worker_drives_websocket_text_binary_and_close_ev
     assert_eq!(messages, serde_json::json!([["server-text", "7,8,255"]]));
     engine.close_async().await.unwrap();
     server.await.unwrap();
+    assert!(websocket_cookie_seen.load(Ordering::SeqCst));
 }
 
 #[tokio::test]

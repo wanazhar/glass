@@ -117,18 +117,21 @@ protocol now sends only an owner-checked, URL-scoped visible projection and no
 longer has full-cookie set/apply/clear commands. Script setter writes return to
 the parent without mutating the child loader, and cookie import/update/clear
 operations refresh the projection rather than mirroring a cookie profile.
-The content-worker protocol is now version 29. Page and dedicated Worker
+The content-worker protocol is now version 30. Page and dedicated Worker
 EventSource open, response streaming, reconnect, and close use the parent
-broker. Worker requests retain the worker script URL as their network
+broker. WebSocket handshakes, frame sends/receives, and close also use it: the
+parent owns each live socket, keeps handshake cookies and `Set-Cookie` inside
+the parent jar, and sends only bounded frames and opaque stream IDs to the
+child. Worker requests retain the worker script URL as their network
 initiator, while the captured page owner scopes IPC streams and cookie-write
-journals. Only bounded body chunks and opaque stream IDs cross the process
-boundary; no child-loader fallback is permitted.
+journals. No child-loader fallback is permitted for these transports.
 Child-direct internal network paths can still populate a transient child jar
 and emit a bounded cookie-change journal to the parent, so the parent-only
-contract is not yet met. Page and dedicated Worker EventSource responses use bounded
-chunks addressed by opaque stream IDs; cookie headers and the full profile
-never cross IPC. Other direct child network paths remain outside this
-guarantee. Slice 842 has removed the child cookie-profile field from
+contract is not yet met. Page and dedicated Worker EventSource responses use
+bounded chunks addressed by opaque stream IDs, and WebSocket frames use
+bounded message records addressed by opaque stream IDs; cookie headers and the
+full profile never cross IPC. Other direct child network paths remain outside
+this guarantee. Slice 842 has removed the child cookie-profile field from
 browser-coordinated SharedWorker
 creation and now seeds the shared coordinator from the parent engine resolved
 by the exact source frame, replaying coordinator cookie overrides afterward.

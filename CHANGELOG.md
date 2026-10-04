@@ -46,6 +46,14 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Page and dedicated Worker WebSocket handshakes, frame sends/receives, and
+  closes now use the parent network/cookie broker. The parent owns each live
+  socket, selects HttpOnly request cookies, and applies handshake `Set-Cookie`;
+  the child receives only opaque stream IDs and bounded frame data. Page and
+  Worker regressions cover request-cookie selection, and the page regression
+  verifies handshake response-cookie persistence. The content-worker protocol
+  is now version 30; other child-direct network paths remain tracked under
+  Slice 843.
 - Page and dedicated Worker EventSource open, live response reads, reconnects,
   and close now use the parent network/cookie broker. The content process
   receives bounded chunks via opaque stream IDs, never cookie headers; worker

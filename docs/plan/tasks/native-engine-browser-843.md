@@ -540,5 +540,14 @@ projection and existing native Fetch behavior.
   passed; `native_content_process_worker_drives_event_source_named_events`
   passed (1 passed; 902 filtered; 24.63 seconds). Its incremental test-target
   build took 4m48.
+- Content-worker protocol 30 now routes page and dedicated Worker WebSocket
+  handshakes, frame sends/receives, and close through the parent cookie/network
+  authority. The parent owns live sockets and handshake cookies; the child gets
+  only opaque stream IDs, bounded frames, and lifecycle events. Focused
+  `cargo check` passed; the page and Worker text/binary/close regressions passed
+  (2 passed; 901 filtered; 40.73 seconds), verifying parent-selected HttpOnly
+  handshake cookies and parent-persisted WebSocket response cookies. The page
+  ordinary-turn background-delivery regression also passed (1 passed; 902
+  filtered; 30.11 seconds).
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

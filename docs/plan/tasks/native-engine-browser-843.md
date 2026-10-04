@@ -411,8 +411,25 @@ projection and existing native Fetch behavior.
   `browser_owned_service_worker_lifetime_fetch_uses_parent_cookie_authority`
   regression passed (1 passed; 28.49 seconds), verifying parent cookie
   selection, HttpOnly rotation, and the next page Fetch. Service
-  Worker-originated upload streams, background work outside intercepted
-  FetchEvents, and other internal network paths remain outside this checkpoint.
+  Worker-originated ReadableStream Fetch uploads during a parent-brokered
+  FetchEvent now collect through the existing demand protocol under the
+  `MAX_NATIVE_FORM_BODY_BYTES` and chunk-count limits before being sent through
+  the parent broker. The new process-backed
+  `native_content_process_service_worker_stream_upload_uses_parent_cookie_authority`
+  regression verifies the HttpOnly seed and same-turn page cookie on the upload,
+  the parent-accepted HttpOnly response rotation on the following request, and
+  that the page projection excludes both HttpOnly values. This path buffers the
+  upload before network dispatch, so it does not retain socket-level upload
+  backpressure; standalone no-parent Service Worker uploads keep their existing
+  direct streaming path. Background work outside intercepted FetchEvents and
+  other internal network paths remain outside this checkpoint. The scoped
+  `cargo check -p glass-browser --features native-engine --tests --locked
+  --quiet` and companion worker binary build passed with existing dead-code
+  warnings; the focused process regression passed (1 passed; 24.52 seconds).
+  Formatting and diff checks pass. Documentation gates pass: 1,471 Markdown
+  files with zero current-claim failures, 93 current guides and 19 contracts,
+  15 implementation shortcut keys/63 markers, and coverage of 346 MCP tools,
+  17 examples, and 22 public modules.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.

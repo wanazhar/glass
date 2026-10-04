@@ -10,7 +10,7 @@ use super::content_process::NativeContentFetchBroker;
 use super::error::NativeEngineError;
 use super::fetch_stream::{
     MAX_NATIVE_FETCH_UPLOAD_CHUNKS, NativeFetchUploadCommand, NativeFetchUploadConnection,
-    NativeFetchUploadEvent, spawn_native_fetch_upload_stream,
+    NativeFetchUploadEvent, spawn_native_fetch_upload_source, spawn_native_fetch_upload_stream,
 };
 use super::interaction::{MAX_NATIVE_EFFECTS, MAX_NATIVE_FORM_BODY_BYTES};
 use super::javascript::{
@@ -3388,6 +3388,130 @@ fn process_service_worker_fetch_upload_command(
     }
 }
 
+/// Collect a bounded Service Worker request body for the parent Fetch broker.
+/// The worker remains the sole producer and is resumed only when the collector
+/// asks for the next chunk; unrelated commands return to the owning turn.
+async fn collect_service_worker_fetch_upload(
+    worker: &mut NativeServiceWorker,
+    request_id: u32,
+    pending: &mut VecDeque<NativeScriptCommand>,
+) -> Result<Result<Vec<u8>, NativeEngineError>, NativeEngineError> {
+    if worker.fetch_upload_connections.contains_key(&request_id) {
+        return Err(NativeEngineError::Network {
+            operation: "service worker fetch request upload".into(),
+            reason: "service worker fetch upload identifier is already active".into(),
+        });
+    }
+    if worker.fetch_upload_connections.len() >= MAX_NATIVE_SERVICE_WORKER_FETCH_UPLOADS {
+        return Err(NativeEngineError::limit(
+            "native service worker fetch request uploads",
+            MAX_NATIVE_SERVICE_WORKER_FETCH_UPLOADS,
+            worker.fetch_upload_connections.len().saturating_add(1),
+        ));
+    }
+    let (upload_connection, upload_source) = spawn_native_fetch_upload_source();
+    worker
+        .fetch_upload_connections
+        .insert(request_id, upload_connection);
+    let mut task = Some(tokio::spawn(async move {
+        upload_source.collect(MAX_NATIVE_FORM_BODY_BYTES).await
+    }));
+    loop {
+        if task
+            .as_ref()
+            .is_some_and(tokio::task::JoinHandle::is_finished)
+        {
+            let collected = match task
+                .take()
+                .expect("active Service Worker upload collector task")
+                .await
+            {
+                Ok(collected) => collected,
+                Err(_) => {
+                    cancel_service_worker_fetch_upload(worker, request_id);
+                    return Err(NativeEngineError::Worker {
+                        operation: "service worker fetch request upload collector".into(),
+                        reason: "native service worker upload collector terminated unexpectedly"
+                            .into(),
+                    });
+                }
+            };
+            cancel_service_worker_fetch_upload(worker, request_id);
+            return Ok(collected.map_err(|reason| NativeEngineError::Network {
+                operation: "service worker fetch request upload".into(),
+                reason,
+            }));
+        }
+
+        let mut disconnected = false;
+        let demand = if let Some(connection) = worker.fetch_upload_connections.get_mut(&request_id)
+        {
+            match connection.events.try_recv() {
+                Ok(NativeFetchUploadEvent::Demand) => {
+                    connection.demand_pending = true;
+                    true
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => false,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        if disconnected {
+            task.take()
+                .expect("active Service Worker upload collector task")
+                .abort();
+            cancel_service_worker_fetch_upload(worker, request_id);
+            return Err(NativeEngineError::Network {
+                operation: "service worker fetch request upload".into(),
+                reason: "service worker fetch upload collector is unavailable".into(),
+            });
+        }
+        if demand {
+            let evaluation = match worker.runtime.evaluate_service_worker_fetch_upload_event(
+                worker.id,
+                &worker.script_url,
+                request_id,
+                &json!({"type": "demand"}),
+                worker.is_module,
+            ) {
+                Ok(evaluation) => evaluation,
+                Err(error) => {
+                    task.take()
+                        .expect("active Service Worker upload collector task")
+                        .abort();
+                    cancel_service_worker_fetch_upload(worker, request_id);
+                    return Err(error);
+                }
+            };
+            for command in evaluation.commands {
+                let consumed = match process_service_worker_fetch_upload_command(
+                    worker,
+                    request_id,
+                    command.clone(),
+                ) {
+                    Ok(consumed) => consumed,
+                    Err(error) => {
+                        task.take()
+                            .expect("active Service Worker upload collector task")
+                            .abort();
+                        cancel_service_worker_fetch_upload(worker, request_id);
+                        return Err(error);
+                    }
+                };
+                if !consumed {
+                    pending.push_back(command);
+                }
+            }
+        } else {
+            tokio::task::yield_now().await;
+        }
+    }
+}
+
 /// Drive a Service Worker-owned request body until its HTTP fetch has
 /// completed. The Service Worker remains the sole stream producer: each
 /// upload demand re-enters its serialized realm and any unrelated commands
@@ -3741,7 +3865,42 @@ async fn resolve_service_worker_fetch_command(
         return Ok(false);
     };
     let request_id = request.request_id;
-    let response = if request.upload_stream_id.is_some() {
+    let response = if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
+        let body = if request.upload_stream_id.is_some() {
+            collect_service_worker_fetch_upload(worker, request_id, pending)
+                .await?
+                .map(|body| Some(NativeRequestBody::Bytes(body)))
+        } else {
+            Ok(request.body)
+        };
+        match body {
+            Ok(body) => {
+                let worker_url = worker.script_url.clone();
+                let fetch_request = NativeFetchRequest {
+                    document_url: &worker_url,
+                    href: &request.href,
+                    method: request.method,
+                    body,
+                    content_type: request.content_type,
+                    request_headers: request.headers,
+                    credentials: request.credentials,
+                    credentials_mode: Some(request.credentials_mode),
+                    referrer_url: request.referrer_url,
+                    referrer_policy: request.referrer_policy,
+                    cors_mode: request.cors_mode,
+                    redirect_mode: request.redirect_mode,
+                    cache_mode: request.cache_mode,
+                    timeout: request.timeout,
+                    max_response_bytes: None,
+                };
+                parent_fetch_broker
+                    .fetch(request_id, &fetch_request)
+                    .await?
+                    .0
+            }
+            Err(error) => Err(error),
+        }
+    } else if request.upload_stream_id.is_some() {
         open_service_worker_fetch_upload(
             worker,
             loader,
@@ -3762,46 +3921,21 @@ async fn resolve_service_worker_fetch_command(
         )
         .await?
     } else {
-        if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
-            let worker_url = worker.script_url.clone();
-            let fetch_request = NativeFetchRequest {
-                document_url: &worker_url,
-                href: &request.href,
-                method: request.method,
-                body: request.body,
-                content_type: request.content_type,
-                request_headers: request.headers,
-                credentials: request.credentials,
-                credentials_mode: Some(request.credentials_mode),
-                referrer_url: request.referrer_url,
-                referrer_policy: request.referrer_policy,
-                cors_mode: request.cors_mode,
-                redirect_mode: request.redirect_mode,
-                cache_mode: request.cache_mode,
-                timeout: request.timeout,
-                max_response_bytes: None,
-            };
-            parent_fetch_broker
-                .fetch(request_id, &fetch_request)
-                .await?
-                .0
-        } else {
-            let payload = fetch_service_worker_request(loader, &worker.script_url, request).await;
-            let resolved = worker.runtime.resolve_service_worker_fetch(
-                worker.id,
-                &worker.script_url,
-                request_id,
-                &payload,
-                worker.is_module,
-            )?;
-            pending.extend(resolved.commands);
-            *awaiting |= resolved.top_level_await_pending;
-            if let Some(resolved_value) = worker.runtime.take_top_level_await_result()? {
-                *value = resolved_value;
-                *awaiting = false;
-            }
-            return Ok(true);
+        let payload = fetch_service_worker_request(loader, &worker.script_url, request).await;
+        let resolved = worker.runtime.resolve_service_worker_fetch(
+            worker.id,
+            &worker.script_url,
+            request_id,
+            &payload,
+            worker.is_module,
+        )?;
+        pending.extend(resolved.commands);
+        *awaiting |= resolved.top_level_await_pending;
+        if let Some(resolved_value) = worker.runtime.take_top_level_await_result()? {
+            *value = resolved_value;
+            *awaiting = false;
         }
+        return Ok(true);
     };
     let payload = match response {
         Ok(response) => service_worker_fetch_payload(response),

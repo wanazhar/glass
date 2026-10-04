@@ -10554,7 +10554,15 @@ now also use the owner-checked parent broker. The process-backed
 `native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
 regression verifies HttpOnly selection and response-cookie updates across
 startup, `include`/`omit`, and a later MessagePort request. Standalone
-content-process autonomous WorkerTimer turns remain a direct-loader gap.
+content-process autonomous WorkerTimer turns previously remained a
+direct-loader gap. Slice 843 now defers every autonomous content-process
+DedicatedWorker and ServiceWorker timer to an exact-owner script turn with the
+parent Fetch broker, and pumps Worker Fetch-stream callbacks within that same
+broker scope. Both standalone process-backed timer regressions passed together
+(2 passed; 1,689 filtered; 39.15 seconds), verifying parent-selected HttpOnly
+request cookies, response-cookie rotation, and the visible-only page cookie
+projection. Process-backed tests spawn `glass-native-content-worker`, so build
+that companion binary after `cargo check` before running them.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

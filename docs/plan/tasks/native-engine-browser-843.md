@@ -90,6 +90,10 @@ projection and existing native Fetch behavior.
 - Run selected Fetch/Cookie/SharedWorker WPT cases and record exact selections
   and deviations; mocked-loader checks do not replace network regressions.
 - `cargo check -p glass-browser --features native-engine --lib --tests --locked --quiet`
+- Build `glass-native-content-worker` explicitly after the check and before
+  process-backed regressions; the tests spawn this companion executable, which
+  `cargo check` does not rebuild:
+  `cargo build -p glass-browser --features native-engine --bin glass-native-content-worker --locked --quiet`
 - Run focused process-backed cookie tests after the check; reserve workspace
   and all-feature validation for the final issue #40 gate.
 - `cargo fmt --all -- --check`
@@ -274,10 +278,12 @@ projection and existing native Fetch behavior.
   runtime). It covers credentials/CORS/redirect and invalid-mode behavior, but
   does not verify the parent-brokered dedicated-worker route; this SharedWorker
   Fetch path still performs its request directly in the content process.
-- In browser-coordinated mode, a due DedicatedWorker timer no longer executes
-  in the child idle loop. It notifies the exact context/frame owner, which runs
-  the timer on its next script turn with the parent Fetch broker; standalone
-  `NativeEngine` retains local timer dispatch. The process-backed unit
+- At this earlier checkpoint, a browser-coordinated due DedicatedWorker timer
+  no longer executed in the child idle loop. It notified the exact
+  context/frame owner, which ran the timer on its next script turn with the
+  parent Fetch broker; standalone `NativeEngine` still retained local timer
+  dispatch. The latest checkpoint below removes that standalone exception.
+  The process-backed unit
   regression `browser_owned_worker_timer_fetch_uses_parent_cookie_authority`
   passed (1 passed; 22.87 seconds), verifying cookies on the worker entry
   request, a classic `importScripts()` dependency request, HttpOnly cookies set
@@ -522,12 +528,14 @@ projection and existing native Fetch behavior.
   projection, parent-applied script setters, hidden HttpOnly import, and clear.
   The scoped native-engine check and rebuilt companion worker also passed with
   existing DOM dead-code warnings.
-- Browser-coordinated DedicatedWorker timers now defer every due callback,
+- At the earlier DedicatedWorker timer checkpoint, browser-coordinated timers
+  deferred every due callback,
   including nonzero deadlines, to the exact page-owner turn with its parent
   Fetch broker. The process regression now uses a 25 ms delay and passed
   (1 passed; 25.12 seconds), retaining HttpOnly filtering and parent-accepted
-  response-cookie rotation. Standalone `NativeEngine` timer scheduling remains
-  local.
+  response-cookie rotation. Standalone `NativeEngine` timer scheduling still
+  used its local content-process timer path then; Slice 843's latest checkpoint
+  below removes that standalone exception.
 - At the protocol-28 checkpoint, page EventSource open, chunk reads,
   reconnects, and close through the parent network/cookie authority. The parent
   retains each live response stream and applies request-cookie selection and
@@ -605,8 +613,22 @@ projection and existing native Fetch behavior.
   passed (1 passed; 904 filtered; 23.75 seconds), verifying HttpOnly request
   cookies on startup and `include`, no cookies for `omit`, startup and explicit
   response-cookie updates/deletion in later requests, and visible-only page
-  cookies. Standalone content-process autonomous WorkerTimer turns still use
-  the local loader and are not covered by this brokered path. The scoped check
-  passed with existing dead-code warnings.
+  cookies. At this checkpoint, standalone content-process autonomous
+  WorkerTimer turns still used the local loader. The latest checkpoint below
+  replaces that behavior; the scoped check passed with existing dead-code
+  warnings.
+- Autonomous DedicatedWorker and ServiceWorker timers now defer in every
+  content-process mode. The child only announces the due owner; the parent
+  advances the timer on the exact context/frame script turn, where timer Fetch
+  and Worker Fetch-stream callbacks use the parent broker. The process-backed
+  standalone regressions
+  `native_content_process_worker_timer_fetch_uses_parent_cookie_authority` and
+  `native_content_process_service_worker_timer_fetch_uses_parent_cookie_authority`
+  passed together (2 passed; 1,689 filtered; 39.15 seconds), verifying
+  parent-selected HttpOnly request cookies, accepted response-cookie rotation,
+  and the visible-only `document.cookie` projection. `cargo check` passed;
+  explicitly rebuilding `glass-native-content-worker` was required because
+  process tests spawn that separate executable. The first run used a stale
+  worker binary and failed; the rebuilt-worker run passed.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

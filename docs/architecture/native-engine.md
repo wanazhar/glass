@@ -66,11 +66,13 @@ dependencies through the browser parent's specialized resource loader. The
 parent applies owner-tagged script cookie writes before loading and retains
 cookie selection, response-cookie acceptance, redirects, and script policy;
 the child receives only bounded source, final URL, response Referrer-Policy,
-and the visible cookie projection. The process-backed
+and the visible cookie projection. The earlier
 `browser_owned_worker_timer_fetch_uses_parent_cookie_authority` regression
-passes with the entry-script request and its HttpOnly response cookie covered.
-The same regression covers a classic `importScripts()` dependency and an
-HttpOnly cookie set by that dependency. HTTP(S) dynamic page classic/module
+covered browser-coordinated timers and worker-entry cookies; the current
+standalone timer regressions are
+`native_content_process_worker_timer_fetch_uses_parent_cookie_authority` and
+`native_content_process_service_worker_timer_fetch_uses_parent_cookie_authority`.
+HTTP(S) dynamic page classic/module
 script elements, their static module dependencies, and runtime `import()`
 requests discovered during explicit parent-brokered script turns use that same
 parent authority; local blob/file sources remain local. A second process-backed
@@ -222,10 +224,12 @@ regression passed (1 passed; 904 filtered; 23.75 seconds), covering startup
 Fetch, `include`/`omit`, HttpOnly request cookies, response rotation/deletion,
 and the later MessagePort request while keeping HttpOnly values out of
 `document.cookie`. Browser-coordinated SharedWorker requests continue to run
-in the parent coordinator. Autonomous WorkerTimer turns in standalone content
-processes still use the local loader and remain outside this broker guarantee.
-The scoped check passed with existing dead-code warnings from the superseded
-HTML parser in `dom.rs`. Slice 823 preserves `omit`, `same-origin`, and
+in the parent coordinator. The earlier checkpoint still had standalone
+content-process WorkerTimer turns on the local loader; Slice 843 now defers
+all autonomous content-process timers to an exact-owner script turn with the
+parent Fetch broker. The scoped check passed with existing dead-code warnings
+from the superseded HTML parser in `dom.rs`. Slice 823 preserves `omit`,
+`same-origin`, and
 `include` through
 direct worker Fetch requests and reevaluates cookie send/accept behavior at
 each redirect. Its two-origin process-backed regression passed (1 passed;
@@ -628,18 +632,21 @@ worker request URL, applies same-turn page cookie writes, and owns
 response-cookie updates. The process-backed regression also verifies the
 MessagePort-triggered request sees an HttpOnly cookie set by an earlier parent
 response. The existing worker response-stream interface is preserved by
-re-exposing the buffered parent response through its stream adapter. Locally hosted SharedWorker creation and
-connect evaluations also receive the broker, but lack a focused process-backed
-regression. The earlier buffered-worker checkpoint did not cover worker upload
+re-exposing the buffered parent response through its stream adapter. Locally
+hosted SharedWorker creation and connect evaluations also receive the broker;
+the process-backed `native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
+regression now covers startup/connect and explicit page MessagePort requests.
+The earlier buffered-worker checkpoint did not cover worker upload
 streams; the later explicit-turn upload regression is described below.
-In browser-coordinated mode, every due DedicatedWorker timer turn—including
-nonzero-delay timers—waits for the exact context/frame owner pump and executes
-with that turn's parent Fetch broker; standalone `NativeEngine` retains its
-local timer path. The process-backed
-`browser_owned_worker_timer_fetch_uses_parent_cookie_authority` regression now
-uses a 25 ms timer and passes (1 passed; 25.12 seconds), checking the initial
-HttpOnly request cookie, a parent-accepted HttpOnly response update on the next
-worker request, and the script-visible projection. At the earlier checkpoint
+At the earlier timer checkpoint, browser-coordinated DedicatedWorker and
+ServiceWorker timers used the parent broker while standalone content-process
+timers still ran locally. Slice 843 now defers every autonomous
+content-process timer in either mode to the exact context/frame owner's script
+turn; timer callbacks and Worker Fetch-stream events use that turn's parent
+Fetch broker. The standalone process-backed DedicatedWorker and ServiceWorker
+timer regressions passed together (2 passed; 1,689 filtered; 39.15 seconds),
+verifying parent-selected HttpOnly request cookies, response-cookie rotation,
+and the script-visible projection. At the earlier checkpoint
 worker-script loading was outside the verified broker path. Slice 843 now
 brokers worker entry scripts, classic `importScripts()` dependencies, and
 static/dynamic worker module dependencies; the recorded worker HTTP regression

@@ -11537,7 +11537,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_owned_worker_timer_fetch_uses_parent_cookie_authority() {
+    async fn native_content_process_worker_timer_fetch_uses_parent_cookie_authority() {
         use tokio::{
             io::{AsyncReadExt, AsyncWriteExt},
             net::TcpListener,
@@ -11624,11 +11624,7 @@ mod tests {
 
         let config =
             NativeEngineConfig::default().with_initial_url(format!("http://{address}/page"));
-        let mut engine = NativeEngine::new_with_browser_shared_workers(
-            config,
-            NativeDialogControlPlane::default(),
-        )
-        .unwrap();
+        let mut engine = NativeEngine::new(config).unwrap();
         engine.initialize_async().await.unwrap();
         engine
             .evaluate_async(
@@ -11724,7 +11720,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_owned_service_worker_timer_fetch_uses_parent_cookie_authority() {
+    async fn native_content_process_service_worker_timer_fetch_uses_parent_cookie_authority() {
         use tokio::{
             io::{AsyncReadExt, AsyncWriteExt},
             net::TcpListener,
@@ -11806,11 +11802,7 @@ mod tests {
 
         let config =
             NativeEngineConfig::default().with_initial_url(format!("http://{address}/page"));
-        let mut engine = NativeEngine::new_with_browser_shared_workers(
-            config,
-            NativeDialogControlPlane::default(),
-        )
-        .unwrap();
+        let mut engine = NativeEngine::new(config).unwrap();
         engine.initialize_async().await.unwrap();
 
         tokio::time::timeout(std::time::Duration::from_secs(30), async {

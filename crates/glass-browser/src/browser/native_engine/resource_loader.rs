@@ -3138,13 +3138,19 @@ impl NativeResourceLoader {
     fn apply_environment_headers(
         &self,
         request: reqwest::RequestBuilder,
-    ) -> reqwest::RequestBuilder {
-        request
+    ) -> Result<reqwest::RequestBuilder, NativeEngineError> {
+        if !self.network.cookie_authority_enabled {
+            return Err(NativeEngineError::Worker {
+                operation: "content-process direct network request".into(),
+                reason: "HTTP(S) requests must use the browser parent broker".into(),
+            });
+        }
+        Ok(request
             .header(reqwest::header::USER_AGENT, self.environment.user_agent())
             .header(
                 reqwest::header::ACCEPT_LANGUAGE,
                 self.environment.accept_language(),
-            )
+            ))
     }
 
     pub(crate) fn max_document_bytes(&self) -> usize {
@@ -3803,7 +3809,7 @@ impl NativeResourceLoader {
                     .get(request_url)
                     .header(reqwest::header::ACCEPT, "text/event-stream")
                     .header(reqwest::header::CACHE_CONTROL, "no-cache"),
-            );
+            )?;
             if current_url.origin() != document_url.origin() {
                 request = request.header(
                     reqwest::header::ORIGIN,
@@ -4697,7 +4703,7 @@ impl NativeResourceLoader {
                 client
                     .request(current_method.reqwest_method(), request_url)
                     .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml"),
-            );
+            )?;
             if let Some(body) = current_body.clone() {
                 request = match body {
                     NativeRequestBody::Text(body) => request.body(body),
@@ -5561,7 +5567,7 @@ impl NativeResourceLoader {
                 client
                     .request(current_method.reqwest_method(), request_url)
                     .header(reqwest::header::ACCEPT, accept),
-            );
+            )?;
             if let Some(body) = current_request_body.take() {
                 request = request.body(body);
             } else if let Some(body) = current_body.as_ref() {
@@ -5946,7 +5952,7 @@ impl NativeResourceLoader {
                 .request(reqwest::Method::OPTIONS, target_url.clone())
                 .header("Origin", origin)
                 .header("Access-Control-Request-Method", method),
-        );
+        )?;
         if let Some(referrer) = referrer {
             request = request.header(reqwest::header::REFERER, referrer);
         }
@@ -6335,7 +6341,7 @@ impl NativeResourceLoader {
                 client
                     .get(request_url)
                     .header(reqwest::header::ACCEPT, "text/css"),
-            );
+            )?;
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
@@ -6672,7 +6678,7 @@ impl NativeResourceLoader {
             let mut request = self.apply_environment_headers(client.get(request_url).header(
                 reqwest::header::ACCEPT,
                 "image/avif,image/webp,image/apng,image/svg+xml,image/jpeg,image/png,image/*;q=0.8, */*;q=0.5",
-            ));
+            ))?;
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
@@ -7206,7 +7212,7 @@ impl NativeResourceLoader {
             let mut request = self.apply_environment_headers(client.get(request_url).header(
                 reqwest::header::ACCEPT,
                 "font/woff2,font/woff,font/otf,font/ttf,application/font-woff,*/*;q=0.1",
-            ));
+            ))?;
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
@@ -7474,7 +7480,7 @@ impl NativeResourceLoader {
             let mut request = self.apply_environment_headers(client.get(request_url).header(
                 reqwest::header::ACCEPT,
                 "audio/*,video/*,application/ogg,application/vnd.apple.mpegurl,*/*;q=0.5",
-            ));
+            ))?;
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
@@ -8253,7 +8259,7 @@ impl NativeResourceLoader {
                 client
                     .get(request_url)
                     .header(reqwest::header::ACCEPT, accept),
-            );
+            )?;
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
@@ -11273,10 +11279,13 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn content_process_loader_cannot_read_or_change_cookie_state() {
+    #[tokio::test]
+    async fn content_process_loader_cannot_read_or_change_cookie_state() {
         let mut loader = NativeResourceLoader::for_content_process(1024, None, &[]).unwrap();
         let url = Url::parse("https://app.test/page").unwrap();
+
+        let direct_request_error = loader.load_async(url.as_str()).await.unwrap_err();
+        assert!(direct_request_error.to_string().contains("parent broker"));
 
         assert_eq!(
             loader.network.cookie_header_for_request(

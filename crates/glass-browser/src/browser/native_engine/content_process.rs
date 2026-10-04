@@ -1065,8 +1065,10 @@ impl NativeContentFetchBroker<'_> {
         &mut self,
         fetch_id: u32,
         request: &NativeFetchRequest<'_>,
+        top_level_navigation: bool,
     ) -> Result<(Result<NativeFetchResponse, NativeEngineError>, String), NativeEngineError> {
-        self.fetch_inner(fetch_id, request, true, false).await
+        self.fetch_inner(fetch_id, request, true, top_level_navigation)
+            .await
     }
 
     pub(crate) async fn fetch_for_captured_navigation(

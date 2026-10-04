@@ -3999,6 +3999,7 @@ async fn resolve_service_worker_fetch_command(
         match body {
             Ok(body) => {
                 let worker_url = worker.script_url.clone();
+                let top_level_navigation = request.cors_mode == NativeCorsMode::Navigation;
                 let fetch_request = NativeFetchRequest {
                     document_url: &worker_url,
                     href: &request.href,
@@ -4016,9 +4017,11 @@ async fn resolve_service_worker_fetch_command(
                     timeout: request.timeout,
                     max_response_bytes: None,
                 };
+                // Only the captured navigation turn may forward the trusted
+                // FetchEvent navigation request through the parent's broker.
                 let parent_response = if allow_captured_load_fetch {
                     parent_fetch_broker
-                        .fetch_for_captured_load(request_id, &fetch_request)
+                        .fetch_for_captured_load(request_id, &fetch_request, top_level_navigation)
                         .await?
                 } else {
                     parent_fetch_broker
@@ -4991,9 +4994,10 @@ fn parse_cors_mode(value: &str) -> Result<NativeCorsMode, NativeEngineError> {
         "no-cors" => Ok(NativeCorsMode::NoCors),
         "cors" => Ok(NativeCorsMode::Cors),
         "same-origin" => Ok(NativeCorsMode::SameOrigin),
+        "navigate" => Ok(NativeCorsMode::Navigation),
         _ => Err(NativeEngineError::invalid(
             "service worker fetch mode",
-            "must be no-cors, cors, or same-origin",
+            "must be navigate, no-cors, cors, or same-origin",
         )),
     }
 }

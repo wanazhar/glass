@@ -30,14 +30,13 @@ Status: the bounded foundation is complete through `native-engine-234`.
 Slices 830 and 831 have recorded passing wire regressions. An earlier session
 reported that its sandbox denied loopback `TcpListener::bind`, but later
 process-backed HTTP regressions in Slices 842 and 843 bound successfully.
-Slice 832's corrected two-origin test remains unverified, not blocked on that
-earlier listener denial. Slice 833's
-process-backed DedicatedWorker and
-SharedWorker module graphs now pass, including top-level `await import()` and
-the actual referrer-header assertions; it remains in progress pending Slice
-832. The process-backed cases for Slices 834-836 pass, but remain in progress
-because their declared dependency chain includes Slice 832/833. The
-A previously recorded remote CI run, `36616367412` on `ee67f930`, failed; it
+Slice 832's corrected two-origin test passed (1 passed; 905 filtered;
+19.33 seconds), so its earlier unverified status is stale. Slice 833's
+process-backed DedicatedWorker and SharedWorker module graphs pass, including
+top-level `await import()` and actual referrer-header assertions. The
+process-backed cases for Slices 834-836 also pass. These local results do not
+establish WPT or platform conformance. A previously recorded remote CI run,
+`36616367412` on `ee67f930`, failed; it
 predates the local edits recorded below and is not evidence about them. WPT
 conformance, remote CI for these edits, and
 cross-platform certification remain open. Slice 818
@@ -142,10 +141,10 @@ module graphs, without changing ordinary page `fetch()`. The earlier HTTP
 fixture incorrectly served the inline module's relative import from the
 separate module origin, invalidating that request's header evidence. The
 corrected fixture serves it from the document origin and checks the
-origin-only `Referer`; the current sandbox denies the process-backed test's
-TCP listener bind before engine startup. Socket-free QuickJS tests and the
-file-backed process graph pass, but do not replace the two-origin HTTP gate.
-Slice 832 remains in progress pending a successful run of the corrected test.
+origin-only `Referer`; its corrected process-backed two-origin test passed
+(1 passed; 905 filtered; 19.33 seconds). The earlier listener denial was a
+historical environment limitation, not the current state. Slice 832 remains
+in progress for its broader conformance and platform gates.
 See the [slice 832 task](tasks/native-engine-browser-832.md).
 Slice 833 implements creator-Document referrer policy on DedicatedWorker and
 SharedWorker module entry fetches and carries per-module response policies and
@@ -178,18 +177,20 @@ response/meta referrer policy through `register()` and explicit
 `ServiceWorkerRegistration.update()` entry fetches, preserving the original
 creation URL after same-document History API changes. It preserves the
 ServiceWorker script response policy container from Slice 836 and excludes
-background updates without an active client. Its process-backed header
-regression is blocked before engine startup by this sandbox's denied listener
-bind; a socket-free command-capture/validation regression passes. See the
+background updates without an active client. Its process-backed header test
+was not rerun after an earlier checkpoint failed at listener setup; later
+process-backed tests in Slices 842-843 demonstrate that loopback binding now
+works. The socket-free command-capture/validation regression passes, but the
+Slice 837 wire assertion remains open. See the
 [slice 837 task](tasks/native-engine-browser-837.md).
 Slice 838 implements the per-registration `NavigationPreloadManager` API,
 typed state errors, and durable enabled/header-value settings, with
-backward-compatible profile defaults. Its scoped native-engine check and two
-socket-free unit tests pass. The process-backed persistence regression
-compiles but could not run because this sandbox denies local TCP listener
-binding, so end-to-end persistence remains unverified and the slice stays
-in-progress. Before Slice 839, the FetchEvent shim resolved `preloadResponse`
-to `undefined`. Slice 839 now wires an eligible enabled GET navigation through
+backward-compatible profile defaults. Its scoped native-engine check, two
+socket-free unit tests, and process-backed persistence regression pass; the
+last verifies page API state after profile reload (1 passed; 906 filtered;
+39.70 seconds). Slice 838 is complete. Before Slice 839, the FetchEvent shim
+resolved `preloadResponse` to `undefined`. Slice 839 now wires an eligible
+enabled GET navigation through
 the native loader alongside FetchEvent dispatch, exposes navigation request
 mode, resolves `preloadResponse`, and reuses a successful preload when the
 handler does not call `respondWith`. The scoped native-engine check and nine
@@ -198,10 +199,17 @@ cloning, immutable headers, absent preloads, eligibility, and network errors.
 The full source URL stays internal to fetch calculations; the ServiceWorker
 sees the policy-filtered `FetchEvent.request.referrer`.
 An already-settled independent ServiceWorker response now returns without
-waiting for a still-pending preload body; a process-backed gated-response
-regression compiles, but running it stops at `TcpListener::bind("127.0.0.1:0")`
-with `PermissionDenied` before engine startup. The current scoped check and
-six socket-free navigation-preload tests pass, including the new runtime test.
+waiting for an unused preload in the socket-free runtime case. The process-
+backed navigation-header/response-reuse regression passes (1 passed; 906
+filtered; 36.50 seconds). The process-backed controlled-navigation
+`fetch(event.request)` regression also passes through the captured-load parent
+broker (1 passed; 906 filtered; 25.04 seconds): HttpOnly request and response
+cookies stay parent-owned, are reused on the following page request, and do
+not appear in `document.cookie`. A gated process probe with a timer-delayed
+independent response did not commit until the preload body was released, so
+process-backed asynchronous response/preload overlap remains open; the
+default test-thread stack also overflowed on that probe. The scoped check and
+six socket-free navigation-preload tests pass, including the runtime test.
 The FetchEvent runtime separately returns an independent `respondWith()`
 response while a JavaScript-only `waitUntil()` promise remains pending and
 retained by the worker. A bodyless native Fetch emitted by `waitUntil()` after

@@ -33,7 +33,11 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   `Service-Worker-Navigation-Preload` header value, and bypass ServiceWorker
   interception for that clone. Reuse the native loader's URL, origin,
   credentials, redirect, network-policy, cookie, response-size, and
-  cancellation behavior; do not create a second browser/backend path.
+  cancellation behavior; do not create a second browser/backend path. In a
+  sandboxed content process, both preload and `fetch(event.request)` must use
+  the exact captured-load, owner-checked parent broker. The parent alone
+  selects request cookies, accepts `Set-Cookie`, and persists the jar; the
+  child receives only the URL-scoped script-visible cookie projection.
 - Carry the source Document URL and its effective Referrer-Policy separately
   across the browser/content-process boundary. Apply that policy to the
   initial preload and recompute the `Referer` after redirects, including
@@ -116,6 +120,9 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 - `cargo test -p glass-browser --lib --features native-engine --locked navigation_preload -- --quiet` passes (six socket-free tests, including the immediate-response runtime regression).
 - `cargo test -p glass-browser --lib --features native-engine --locked service_worker_fetch_ -- --quiet` passes (five socket-free runtime tests, including independent `waitUntil()` lifetime, listener suppression, `onfetch` registration order, handler replacement, and deactivation/reactivation).
 - `cargo test -p glass-browser --lib --features native-engine --locked independent_response_survives_and_retains_lifetime_fetch_work -- --nocapture` passes. Its fixture-backed native-loader fetch returns the independent response first, remains owned by the Service Worker registry, then resolves the `waitUntil(fetch())` continuation in the same worker realm.
+- Process-backed `native_content_process_persists_service_worker_cache_across_restart` passed (1 passed; 906 filtered; 39.70 seconds), closing Slice 838's persistence gate.
+- Process-backed `native_service_worker_navigation_preload_sends_header_and_reuses_response` passed on the current broker signature (1 passed; 906 filtered; 36.50 seconds), verifying the configured header, navigation response reuse, referrer behavior, and following navigation.
+- Process-backed `native_service_worker_fetch_event_navigation_request_uses_parent_cookie_authority` passed on its final cleanup-adjusted rerun (1 passed; 906 filtered; 25.04 seconds). `fetch(event.request)` on a controlled navigation sends the parent's HttpOnly seed, accepts the parent's HttpOnly response-cookie rotation, and sends both on the next page Fetch; `document.cookie` stays empty while `cookies_async()` reads the parent jar.
 - `cargo fmt --all -- --check`, release-documentation truth, documentation depth, TUI shortcut inventory, and `git diff --check` pass.
 - The response test proves headers are immutable and both the original and
   cloned response bodies remain readable. It also verifies the policy-reduced
@@ -150,13 +157,15 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   FetchEvent listener sequence, replacement preserves its position,
   deactivation/reactivation appends it at the new position, and `respondWith()`
   suppresses only later listeners.
-- The new process-backed `waitUntil(fetch())` response-deadline regression
-  compiles with the integration-test target. Its HTTP assertion is not
-  executable in this sandbox: the test's `TcpListener::bind("127.0.0.1:0")`
-  fails with `PermissionDenied` before engine startup. The existing
-  process-backed navigation-preload deadline regression has the same
-  environment limitation.
-- Process-backed HTTP request/header/no-duplicate, navigation-cancellation,
-  source-policy/redirect, worker-visible `Request.referrer`, and independent-
-  response behavior still need execution evidence. WPT, remote CI, and
-  cross-platform validation remain open.
+- Local TCP listener binding works in the current checkout. An exploratory
+  process-backed overlap probe used a timer-delayed independent FetchEvent
+  response and a gated preload body. With `RUST_MIN_STACK=8388608`, the
+  navigation still did not commit before the preload was released; this
+  exposes a real response-progress gap while a parent-brokered preload is in
+  flight. The default test-thread stack also overflows on that probe. Keep
+  asynchronous response/preload overlap and cancellation open until the
+  content-process event loop can advance the response independently.
+- Process-backed eligibility controls, no-duplicate fallback, source-policy
+  redirect updates, worker-visible `Request.referrer`, independent-response
+  overlap, and cancellation are not all closed by the passing header/cookie
+  tests above. WPT, remote CI, and cross-platform validation remain open.

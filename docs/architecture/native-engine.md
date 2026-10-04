@@ -1,34 +1,25 @@
 # Native browser engine
 
-Status: issue #40 remains open. An earlier sandbox denied local TCP listener
-binding, but the current checkout has since run process-backed HTTP
-regressions successfully; see the current Slice 843 evidence below. Slices 830
-and 831, and 833-836, retain previously recorded passing wire results, but the
-corrected Slice 832 regression has not
-been rerun and its inline import settlement remains unverified. The new Slice
-837 socket-free command-capture test passes; at that checkpoint its HTTP
-regression stopped at `TcpListener::bind` before engine initialization. Slice
-833 remains in progress
-pending Slice 832; Slices 834-837 remain in progress behind that dependency
-chain. Slice 838 implements the page-facing NavigationPreloadManager and
-durable registration settings; its scoped native-engine check and two
-socket-free unit tests pass. At that checkpoint, the extended process-backed
-restart regression compiled but could not execute because local TCP listener
-binding was denied,
-so end-to-end persistence remains unverified and Slice 838 stays in progress.
-Slice 839 now starts eligible GET preloads through the native loader alongside
-FetchEvent dispatch, resolves `preloadResponse`, and reuses the result when
-the handler does not call `respondWith`. An already-settled ServiceWorker
-response no longer waits for a still-pending, unused preload body; a
-process-backed gated-response regression was added and compiled. At that
-checkpoint, the test stopped at `TcpListener::bind("127.0.0.1:0")` with
-`PermissionDenied` before engine startup. The scoped native-engine check and the new socket-free
-runtime regression pass as part of six socket-free navigation-preload tests.
-The separate navigation referrer-policy unit had passed before this change;
-the preload tests cover readable cloned responses, immutable headers, absent
-preloads, and network errors. The FetchEvent runtime now settles an independent
-`respondWith()` response without waiting for a pending JavaScript-only
-`waitUntil()` promise and retains that event lifetime. A fixture-backed
+Status: issue #40 remains open. The earlier loopback-listener denial is stale:
+the current checkout has process-backed HTTP evidence through Slices 838 and
+843. Slice 832's corrected two-origin regression passed (1 passed; 905
+filtered; 19.33 seconds); Slices 833-836 also have recorded passing
+process-backed cases, while WPT and cross-platform conformance remain open.
+Slice 838's NavigationPreloadManager persistence regression passed (1 passed;
+906 filtered; 39.70 seconds), so that slice is complete. Slice 839 starts
+eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,
+and reuses successful results for unhandled navigation. Its process-backed
+header/response-reuse test passed (1 passed; 906 filtered; 36.50 seconds), as
+did the controlled-navigation `fetch(event.request)` parent-cookie test (1
+passed; 906 filtered; 25.04 seconds). However, a gated process probe with a
+timer-delayed independent response did not commit until the preload body was
+released; process-backed asynchronous response/preload overlap remains open.
+The default test-thread stack also overflows on that probe. The socket-free
+navigation-preload tests cover readable cloned responses, immutable headers,
+absent preloads, and network errors. The FetchEvent runtime separately settles
+an independent `respondWith()` response without waiting for a pending
+JavaScript-only `waitUntil()` promise and retains that event lifetime. A
+fixture-backed
 registry regression now runs a bodyless native `fetch()` from `waitUntil()`
 after the independent response is ready, then resolves its promise callback in
 the same worker realm. The content child multiplexes owned fetch-task
@@ -731,6 +722,13 @@ filtered. At the earlier checkpoint described here, background work outside
 intercepted FetchEvents and other internal network paths remained direct child
 paths. The current content-loader transport guard now rejects their direct
 HTTP(S) attempts until they are parent-brokered.
+The process-backed
+`native_service_worker_fetch_event_navigation_request_uses_parent_cookie_authority`
+regression separately verifies `fetch(event.request)` on a controlled
+navigation uses the captured-load parent broker: the parent selects an
+HttpOnly request cookie, accepts and reuses an HttpOnly response-cookie
+rotation, and keeps both out of `document.cookie` (1 passed; 906 filtered;
+25.04 seconds).
 
 For an explicit page Fetch with a `ReadableStream` body, the content process
 now collects the body under `MAX_NATIVE_FORM_BODY_BYTES` before sending the

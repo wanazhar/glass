@@ -72822,10 +72822,15 @@ async fn native_cookie_profile_survives_native_process_restart() {
         "glass-native-web-storage-{}-cookie-restart.json",
         std::process::id()
     ));
+    let cookie_profile_path =
+        std::path::PathBuf::from(format!("{}.cookies", profile_path.display()));
     let lock_path = profile_path.with_extension("lock");
+    let cookie_lock_path = cookie_profile_path.with_extension("lock");
     let events_path = profile_path.with_extension("events");
     let _ = fs::remove_file(&profile_path);
+    let _ = fs::remove_file(&cookie_profile_path);
     let _ = fs::remove_file(&lock_path);
+    let _ = fs::remove_file(&cookie_lock_path);
     let _ = fs::remove_file(&events_path);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -72876,9 +72881,12 @@ async fn native_cookie_profile_survives_native_process_restart() {
         engine.close_async().await.unwrap();
     }
 
-    let profile: serde_json::Value =
+    let storage_profile: serde_json::Value =
         serde_json::from_slice(&fs::read(&profile_path).unwrap()).unwrap();
-    assert_eq!(profile["cookies"].as_array().map(Vec::len), Some(2));
+    let cookie_profile: serde_json::Value =
+        serde_json::from_slice(&fs::read(&cookie_profile_path).unwrap()).unwrap();
+    assert_eq!(storage_profile["cookies"], serde_json::json!([]));
+    assert_eq!(cookie_profile["cookies"].as_array().map(Vec::len), Some(2));
 
     {
         let mut engine = NativeEngine::new(config).unwrap();
@@ -72892,7 +72900,9 @@ async fn native_cookie_profile_survives_native_process_restart() {
 
     server.await.unwrap();
     let _ = fs::remove_file(profile_path);
+    let _ = fs::remove_file(cookie_profile_path);
     let _ = fs::remove_file(lock_path);
+    let _ = fs::remove_file(cookie_lock_path);
     let _ = fs::remove_file(events_path);
 }
 

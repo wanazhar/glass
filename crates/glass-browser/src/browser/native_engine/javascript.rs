@@ -6638,6 +6638,14 @@ struct NativeWebStorageProfile {
     service_worker_registrations: Vec<NativeServiceWorkerRegistrationProfile>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct NativeCookieProfileFile {
+    version: u64,
+    cookies: Vec<NativeCookieProfileEntry>,
+}
+
+const NATIVE_COOKIE_PROFILE_FILE_VERSION: u64 = 1;
+
 /// Profile-owned CacheStorage state. The map is partitioned by serialized
 /// origin, then cache name, then a method/URL key. Keeping this state beside
 /// the existing browser profile makes cache writes survive content-process
@@ -6980,6 +6988,7 @@ struct NativeStorageReaderLeaseFile {
 }
 
 static NATIVE_STORAGE_WRITER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static NATIVE_PROFILE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn new_storage_writer_id() -> Result<String, NativeEngineError> {
     let writer_id = format!(
@@ -8322,11 +8331,42 @@ pub(crate) fn load_cookie_profile(
     let Some(path) = path else {
         return Ok(Vec::new());
     };
-    let _lock = lock_web_storage_profile(path, false)?;
-    let Some(profile) = read_web_storage_profile(path)? else {
-        return Ok(Vec::new());
+    let _profile_lock = lock_web_storage_profile(path, false)?;
+    let _cookie_lock = lock_web_storage_profile(&cookie_profile_path(path), false)?;
+    if let Some(cookies) = read_cookie_profile_file(path)? {
+        return Ok(cookies);
+    }
+    Ok(read_web_storage_profile(path)?.map_or_else(Vec::new, |profile| profile.cookies))
+}
+
+/// Move legacy cookies out of the combined profile before its path is shared
+/// with the content process. The profile and cookie locks are always acquired
+/// in that order by all writers, so this migration cannot deadlock a profile
+/// update racing process startup.
+pub(crate) fn migrate_cookie_profile_from_web_storage(
+    path: Option<&Path>,
+) -> Result<(), NativeEngineError> {
+    let Some(path) = path else {
+        return Ok(());
     };
-    Ok(profile.cookies)
+    let _profile_lock = lock_web_storage_profile(path, true)?;
+    let Some(mut profile) = read_web_storage_profile(path)? else {
+        return Ok(());
+    };
+    let cookie_path = cookie_profile_path(path);
+    let _cookie_lock = lock_web_storage_profile(&cookie_path, true)?;
+    let cookies = match read_cookie_profile_file(path)? {
+        Some(cookies) => cookies,
+        None => profile.cookies.clone(),
+    };
+    if read_cookie_profile_file(path)?.is_none() && !cookies.is_empty() {
+        write_cookie_profile_file(path, &cookies)?;
+    }
+    if profile.cookies.is_empty() {
+        return Ok(());
+    }
+    profile.cookies.clear();
+    write_web_storage_profile_file(path, &profile, "migrate native cookie profile")
 }
 
 pub(crate) fn load_indexed_db_profile(
@@ -8452,6 +8492,157 @@ fn read_web_storage_profile(
     }))
 }
 
+fn cookie_profile_path(path: &Path) -> PathBuf {
+    let mut cookie_path = path.as_os_str().to_os_string();
+    cookie_path.push(".cookies");
+    PathBuf::from(cookie_path)
+}
+
+/// Read the sidecar while the caller holds the profile lock and then the
+/// cookie-sidecar lock. A missing sidecar means the profile may still be in
+/// the version-1 combined format.
+fn read_cookie_profile_file(
+    profile_path: &Path,
+) -> Result<Option<Vec<NativeCookieProfileEntry>>, NativeEngineError> {
+    let cookie_path = cookie_profile_path(profile_path);
+    let metadata = match fs::metadata(&cookie_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err(NativeEngineError::Worker {
+                operation: "load native cookie profile".into(),
+                reason: "native cookie profile metadata is unavailable".into(),
+            });
+        }
+    };
+    let profile_bytes = usize::try_from(metadata.len()).map_err(|_| {
+        NativeEngineError::limit(
+            "native cookie profile",
+            MAX_WEB_STORAGE_PROFILE_BYTES,
+            usize::MAX,
+        )
+    })?;
+    if profile_bytes > MAX_WEB_STORAGE_PROFILE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native cookie profile",
+            MAX_WEB_STORAGE_PROFILE_BYTES,
+            profile_bytes,
+        ));
+    }
+    let bytes = fs::read(&cookie_path).map_err(|_| NativeEngineError::Worker {
+        operation: "load native cookie profile".into(),
+        reason: "native cookie profile cannot be read".into(),
+    })?;
+    let profile: NativeCookieProfileFile = serde_json::from_slice(&bytes).map_err(|_| {
+        NativeEngineError::invalid(
+            "cookie profile",
+            "must contain a valid native cookie profile",
+        )
+    })?;
+    if profile.version != NATIVE_COOKIE_PROFILE_FILE_VERSION {
+        return Err(NativeEngineError::invalid(
+            "cookie profile version",
+            "is unsupported",
+        ));
+    }
+    validate_cookie_profile(&profile.cookies)?;
+    let now = unix_time_seconds();
+    Ok(Some(
+        profile
+            .cookies
+            .into_iter()
+            .filter(|cookie| {
+                cookie
+                    .expires_at_unix_seconds
+                    .is_none_or(|expires_at| expires_at > now)
+            })
+            .collect(),
+    ))
+}
+
+fn write_cookie_profile_file(
+    profile_path: &Path,
+    cookies: &[NativeCookieProfileEntry],
+) -> Result<(), NativeEngineError> {
+    validate_cookie_profile(cookies)?;
+    let profile = NativeCookieProfileFile {
+        version: NATIVE_COOKIE_PROFILE_FILE_VERSION,
+        cookies: cookies.to_vec(),
+    };
+    let bytes = serde_json::to_vec(&profile).map_err(|_| NativeEngineError::Worker {
+        operation: "save native cookie profile".into(),
+        reason: "native cookie profile cannot be encoded".into(),
+    })?;
+    if bytes.len() > MAX_WEB_STORAGE_PROFILE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native cookie profile",
+            MAX_WEB_STORAGE_PROFILE_BYTES,
+            bytes.len(),
+        ));
+    }
+    write_profile_file_atomic(
+        &cookie_profile_path(profile_path),
+        &bytes,
+        "native cookie profile",
+    )
+}
+
+fn write_web_storage_profile_file(
+    path: &Path,
+    profile: &NativeWebStorageProfile,
+    operation: &'static str,
+) -> Result<(), NativeEngineError> {
+    let bytes = serde_json::to_vec(profile).map_err(|_| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: "native Web Storage profile cannot be encoded".into(),
+    })?;
+    if bytes.len() > MAX_WEB_STORAGE_PROFILE_BYTES {
+        return Err(NativeEngineError::limit(
+            "native Web Storage profile",
+            MAX_WEB_STORAGE_PROFILE_BYTES,
+            bytes.len(),
+        ));
+    }
+    write_profile_file_atomic(path, &bytes, "native Web Storage profile")
+}
+
+fn write_profile_file_atomic(
+    path: &Path,
+    bytes: &[u8],
+    resource_name: &'static str,
+) -> Result<(), NativeEngineError> {
+    let sequence = NATIVE_PROFILE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("profile");
+    let temporary_path = path.with_file_name(format!(
+        ".{file_name}.tmp-{}-{sequence}",
+        std::process::id()
+    ));
+    fs::write(&temporary_path, bytes).map_err(|_| NativeEngineError::Worker {
+        operation: format!("save {resource_name}"),
+        reason: format!("{resource_name} cannot be written"),
+    })?;
+    if let Err(rename_error) = fs::rename(&temporary_path, path) {
+        let expected_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let fallback = fs::copy(&temporary_path, path).and_then(|copied_bytes| {
+            (copied_bytes == expected_bytes)
+                .then_some(())
+                .ok_or_else(|| std::io::Error::from(ErrorKind::WriteZero))
+        });
+        if fallback.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(NativeEngineError::Worker {
+                operation: format!("save {resource_name}"),
+                reason: format!("{resource_name} cannot be committed: {rename_error}"),
+            });
+        }
+        let _ = fs::remove_file(&temporary_path);
+    }
+    Ok(())
+}
+
 pub(crate) fn save_web_storage_profile(
     path: Option<&Path>,
     state: &NativeWebStorageState,
@@ -8460,6 +8651,48 @@ pub(crate) fn save_web_storage_profile(
     cookie_changes: &[NativeCookieChange],
     indexed_db: &NativeIndexedDbState,
     indexed_db_changes: &[NativeIndexedDbChange],
+) -> Result<(), NativeEngineError> {
+    save_web_storage_profile_inner(
+        path,
+        state,
+        storage_changes,
+        cookie_state,
+        cookie_changes,
+        indexed_db,
+        indexed_db_changes,
+        true,
+    )
+}
+
+pub(crate) fn save_content_web_storage_profile(
+    path: Option<&Path>,
+    state: &NativeWebStorageState,
+    storage_changes: &[NativeStorageEvent],
+    indexed_db: &NativeIndexedDbState,
+    indexed_db_changes: &[NativeIndexedDbChange],
+) -> Result<(), NativeEngineError> {
+    save_web_storage_profile_inner(
+        path,
+        state,
+        storage_changes,
+        &[],
+        &[],
+        indexed_db,
+        indexed_db_changes,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn save_web_storage_profile_inner(
+    path: Option<&Path>,
+    state: &NativeWebStorageState,
+    storage_changes: &[NativeStorageEvent],
+    cookie_state: &[NativeCookieProfileEntry],
+    cookie_changes: &[NativeCookieChange],
+    indexed_db: &NativeIndexedDbState,
+    indexed_db_changes: &[NativeIndexedDbChange],
+    parent_owns_cookies: bool,
 ) -> Result<(), NativeEngineError> {
     let Some(path) = path else {
         return Ok(());
@@ -8477,6 +8710,12 @@ pub(crate) fn save_web_storage_profile(
     }
     let _lock = lock_web_storage_profile(path, true)?;
     let current = read_web_storage_profile(path)?;
+    let sidecar_path = cookie_profile_path(path);
+    let _cookie_lock = if parent_owns_cookies {
+        Some(lock_web_storage_profile(&sidecar_path, true)?)
+    } else {
+        None
+    };
     let mut local = current
         .as_ref()
         .map(|profile| profile.local.clone())
@@ -8485,11 +8724,17 @@ pub(crate) fn save_web_storage_profile(
     if current.is_some() {
         merge_local_storage_changes(&mut local, storage_changes)?;
     }
-    let mut cookies = current
-        .as_ref()
-        .map(|profile| profile.cookies.clone())
-        .unwrap_or_else(|| cookie_state.to_vec());
-    merge_cookie_changes(&mut cookies, cookie_changes)?;
+    let mut cookies = Vec::new();
+    if parent_owns_cookies {
+        let sidecar = read_cookie_profile_file(path)?;
+        cookies = sidecar.unwrap_or_else(|| {
+            current
+                .as_ref()
+                .map(|profile| profile.cookies.clone())
+                .unwrap_or_else(|| cookie_state.to_vec())
+        });
+        merge_cookie_changes(&mut cookies, cookie_changes)?;
+    }
     let mut merged_indexed_db = current
         .as_ref()
         .map(|profile| profile.indexed_db.clone())
@@ -8516,7 +8761,7 @@ pub(crate) fn save_web_storage_profile(
         version: WEB_STORAGE_PROFILE_VERSION,
         revision,
         local: merged_state.local,
-        cookies,
+        cookies: Vec::new(),
         indexed_db: merged_indexed_db,
         service_worker_caches: current
             .as_ref()
@@ -8529,42 +8774,18 @@ pub(crate) fn save_web_storage_profile(
     };
     profile.service_worker_caches.validate()?;
     validate_service_worker_registration_profiles(&profile.service_worker_registrations)?;
-    let bytes = serde_json::to_vec(&profile).map_err(|_| NativeEngineError::Worker {
-        operation: "save native Web Storage profile".into(),
-        reason: "native Web Storage profile cannot be encoded".into(),
-    })?;
-    if bytes.len() > MAX_WEB_STORAGE_PROFILE_BYTES {
-        return Err(NativeEngineError::limit(
-            "native Web Storage profile",
-            MAX_WEB_STORAGE_PROFILE_BYTES,
-            bytes.len(),
-        ));
-    }
-    let temporary_path = path.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(&temporary_path, &bytes).map_err(|_| NativeEngineError::Worker {
-        operation: "save native Web Storage profile".into(),
-        reason: "native Web Storage profile cannot be written".into(),
-    })?;
-    if let Err(rename_error) = fs::rename(&temporary_path, path) {
-        // Unix replaces an existing destination atomically. Windows refuses
-        // that rename, so copy the already-complete bounded snapshot as a
-        // portable fallback and keep the original until the copy starts.
-        let expected_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let fallback = fs::copy(&temporary_path, path).and_then(|copied_bytes| {
-            (copied_bytes == expected_bytes)
-                .then_some(())
-                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::WriteZero))
-        });
-        if fallback.is_err() {
-            let _ = fs::remove_file(&temporary_path);
-            return Err(NativeEngineError::Worker {
-                operation: "save native Web Storage profile".into(),
-                reason: format!("native Web Storage profile cannot be committed: {rename_error}"),
-            });
+    if parent_owns_cookies {
+        let needs_cookie_sidecar = read_cookie_profile_file(path)?.is_some()
+            || !cookies.is_empty()
+            || !cookie_changes.is_empty()
+            || current
+                .as_ref()
+                .is_some_and(|profile| !profile.cookies.is_empty());
+        if needs_cookie_sidecar {
+            write_cookie_profile_file(path, &cookies)?;
         }
-        let _ = fs::remove_file(&temporary_path);
     }
-    Ok(())
+    write_web_storage_profile_file(path, &profile, "save native Web Storage profile")
 }
 
 pub(crate) fn save_service_worker_cache_profile(
@@ -8635,10 +8856,7 @@ pub(crate) fn save_service_worker_cache_profile(
             .as_ref()
             .map(|profile| profile.local.clone())
             .unwrap_or_default(),
-        cookies: current
-            .as_ref()
-            .map(|profile| profile.cookies.clone())
-            .unwrap_or_default(),
+        cookies: Vec::new(),
         indexed_db: current
             .as_ref()
             .map(|profile| profile.indexed_db.clone())

@@ -109,15 +109,18 @@ directly with a local jar. Cookie profiles and cookie-bearing storage files
 remain parent-only.
 
 This contract preserves script-visible cookie behavior without exposing
-HttpOnly state to the child. The current implementation still mirrors complete
-profiles into the content process and permits child-side cookie persistence;
-that is a known gap, not compliant behavior. Slice 842 has removed the child
-cookie-profile field from browser-coordinated SharedWorker creation and now
-seeds the shared coordinator from the parent engine resolved by the exact
-source frame, replaying coordinator cookie overrides afterward. This fixes
-only that SharedWorker creation path. Slice 843 tracks the remaining
-content-process profile mirroring, child-side persistence, and unbrokered
-network paths; the profile is not parent-only until that work also passes. A
+HttpOnly state to the child. A Slice 843 checkpoint now stores durable cookies
+in a parent-managed `<profile>.cookies` sidecar, migrates legacy combined
+profiles before content-worker startup, and keeps child Web Storage snapshots
+cookie-empty; the child loader does not hydrate from the sidecar. The process
+protocol still mirrors complete profiles into child memory and some direct
+child network paths remain, so the contract is not yet met. Slice 842 has
+removed the child cookie-profile field from browser-coordinated SharedWorker
+creation and now seeds the shared coordinator from the parent engine resolved
+by the exact source frame, replaying coordinator cookie overrides afterward.
+This fixes only that SharedWorker creation path. Slice 843 still tracks
+full-cookie IPC removal and unbrokered network paths; the profile is not
+parent-only until that work also passes. A
 process-backed checkpoint now brokers standard buffered Fetches emitted during
 dedicated-worker initialization and while handling an explicit page
 `Worker.postMessage`. The parent validates the captured page owner separately

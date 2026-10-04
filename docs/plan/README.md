@@ -263,11 +263,14 @@ contract tests. See the
 [slice 841 task](tasks/native-engine-browser-841.md).
 Slice 842 makes cookie ownership a parent-only contract: the browser parent
 must own the complete per-context jar, request matching, `Set-Cookie`
-acceptance, and persistence. Content processes receive only a document-scoped
-non-HttpOnly `document.cookie` projection and return typed writes/requests to
-the parent; HttpOnly cookie values and cookie-bearing profile files must not
-cross that boundary. The current implementation still mirrors full profiles
-and allows child-side persistence, so this is an explicit open gap. The first
+acceptance, and persistence. Content processes should receive only a
+document-scoped non-HttpOnly `document.cookie` projection and return typed
+writes/requests to the parent; HttpOnly values and cookie-bearing profile files
+must not cross that boundary. A later Slice 843 checkpoint split durable
+cookies into a parent-managed `<profile>.cookies` sidecar, migrates legacy
+combined profiles before worker startup, and keeps child Web Storage snapshots
+cookie-empty. This does not close the gap: full cookie profiles still cross
+`set_cookies` IPC, and direct child network paths remain. The first
 code checkpoint removes the content child's full profile from the
 browser-coordinated SharedWorker-create message; the parent now reads the
 profile from the exact source frame owner and replays coordinator overrides.

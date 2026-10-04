@@ -46,6 +46,11 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Durable cookies now live in a parent-managed `<profile>.cookies` sidecar.
+  Legacy combined profiles migrate before a content worker starts; the child
+  loader no longer hydrates cookies from the shared Web Storage path, and its
+  profile writes keep the cookie field empty. Full-cookie `set_cookies` IPC
+  mirroring and remaining direct child network paths are still open work.
 - Service Worker navigation preload now preserves NavigationPreloadManager
   identity across repeated page-bootstrap injection. Parent-brokered preloads
   use an owner-bound cancellation handshake: unfinished requests are cancelled

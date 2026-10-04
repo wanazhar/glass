@@ -566,10 +566,16 @@ new typed command. This keeps cancellation and response-cookie effects inside
 the parent broker without making a fast Service Worker response wait for an
 unused preload.
 
-The current content-process implementation still receives and mirrors full
-cookie profiles, including HttpOnly state; shared-profile writes for other
-storage can also rewrite that combined cookie snapshot. That behavior is a
-known mismatch with the target contract, not an allowed mirror. Slice 842 removed the
+The on-disk profile is now split: accepted cookies live in a parent-managed
+`<profile>.cookies` sidecar, while the shared Web Storage profile has an empty
+cookie field. Before launching a content worker, the parent migrates cookies
+out of a legacy combined profile. The child loader no longer hydrates cookies
+from its storage path, and child profile persistence writes no cookie data.
+This is a storage-boundary improvement, not completion of parent-only cookie
+authority: the process protocol still sends full cookie profiles into the
+child mirror, which can still affect child-direct network operations. That
+remaining behavior is a known mismatch with the target contract, not an
+allowed mirror. Slice 842 removed the
 browser-coordinated SharedWorker create-message cookie profile and seeds its
 loader from the parent-owned engine resolved by the exact source frame while
 holding that owner's lock, then replays its existing cookie overrides. The
@@ -708,13 +714,13 @@ navigation responses, Service Worker background work outside intercepted
 FetchEvents, and other internal requests remain direct child paths.
 Registration/update loads and persisted
 Service Worker entry/module graphs during the brokered operations above are
-the verified exception. The child still receives the shared storage path and
-complete profile and can rewrite the combined storage snapshot, so its write
-capability is not yet removed. The
-content process still loads complete cookie profiles and mirrors cookies for
-script projections and remaining direct child-network paths. Cookie import
-and clear now commit through the parent loader; the
-child only refreshes its runtime mirror and discards local change records.
+the verified exception. The child receives the non-cookie storage-profile path
+and can update Web Storage, IndexedDB, CacheStorage, and Service Worker state
+there. Its loader no longer opens the cookie sidecar, but full cookie profiles
+still cross through `set_cookies` and related IPC commands; child memory
+mirroring and remaining direct child-network paths therefore remain open.
+Cookie import and clear now commit through the parent loader; the child only
+refreshes its runtime mirror and discards local change records.
 Slice 843 remains in progress to remove those child authority paths and broker
 cookie-bearing requests through the parent. See the [Slice 842 task](../plan/tasks/native-engine-browser-842.md),
 the [Slice 843 task](../plan/tasks/native-engine-browser-843.md), and the

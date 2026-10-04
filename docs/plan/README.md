@@ -10670,12 +10670,18 @@ cookies, response-cookie persistence, reuse by a later host request, and
 `document.cookie` filtering. The content-worker protocol is now version 33.
 The process-backed
 `native_cross_origin_parent_security_and_cookie_authority` regression passed
-(1 passed; 30.73 seconds). Frame and target engines in one browser context now
-receive the parent's explicitly shared cookie jar: the cross-origin child
-frame request carries the parent's HttpOnly cookie, and the child response's
-HttpOnly cookie is selected on a later parent request. The parent's
-`document.cookie` projection stays empty. This is targeted frame-sharing
-evidence only; Slice 843 remains in progress.
+(1 passed; 31.22 seconds), retaining cross-origin access errors while
+verifying parent HttpOnly cookie selection for the child and the child's
+response cookie on a later parent request. Frame and target engines share the
+parent's browser-context jar. The browser-owned SharedWorker coordinator now
+shares that exact jar as well rather than replacing cookie profiles or replaying
+overrides at creation. Its explicit parent-loader authority covers worker
+script entries and their import graph; content-process registries remain
+broker-only. The process-backed
+`native_runtime_shared_worker_cookie_changes_reach_all_live_profile_contexts`
+regression passed (1 passed; 52.14 seconds), verifying cookie-change fanout to
+all live profile contexts. Runtime Fetch and other uncovered HTTP(S) classes
+remain fail-closed until parent-brokered; Slice 843 remains in progress.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

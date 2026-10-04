@@ -12,18 +12,16 @@
 //! could expose or restore a half-reconciled frame tree.
 #![allow(clippy::await_holding_lock)]
 
-use super::native_engine::NativeResourceLoader;
 use super::native_engine::{
-    MAX_NATIVE_COOKIE_PROFILE_ENTRIES, MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION,
-    NativeAction, NativeAsyncEffectTurn, NativeContentAsyncEffectNotification, NativeCookieChange,
-    NativeCookieProfileEntry, NativeDialogControlPlane, NativeDialogController, NativeEffect,
-    NativeEngine, NativeEngineConfig, NativeEngineError, NativeEventKind, NativeFile,
-    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
-    NativeFrameScriptWindow, NativeHistoryDirection, NativeInspectionSnapshot,
-    NativeLayoutSnapshot, NativeNavigationCancellation, NativeNavigationMethod,
-    NativeNavigationRequest, NativeNodeSubtreeTransfer, NativeOrigin, NativePageMessagePortCommand,
-    NativePendingDialog, NativePoint, NativePopupRequest, NativePostMessageRequest,
-    NativePreflightAction, NativeRequestBody, NativeScriptCommand,
+    MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeAction, NativeAsyncEffectTurn,
+    NativeContentAsyncEffectNotification, NativeCookieChange, NativeDialogControlPlane,
+    NativeDialogController, NativeEffect, NativeEngine, NativeEngineConfig, NativeEngineError,
+    NativeEventKind, NativeFile, NativeFrameScriptBinding, NativeFrameScriptContext,
+    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeHistoryDirection,
+    NativeInspectionSnapshot, NativeLayoutSnapshot, NativeNavigationCancellation,
+    NativeNavigationMethod, NativeNavigationRequest, NativeNodeSubtreeTransfer, NativeOrigin,
+    NativePageMessagePortCommand, NativePendingDialog, NativePoint, NativePopupRequest,
+    NativePostMessageRequest, NativePreflightAction, NativeRequestBody, NativeScriptCommand,
     NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
     NativeSharedWorkerCreateRequest, NativeSharedWorkerStorageKey, NativeSurface,
     NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
@@ -31,6 +29,7 @@ use super::native_engine::{
     parse_point_target, synchronize_service_worker_client_leases, validate_message_port_transfers,
     validate_page_message_port_command, validate_target_navigation_payload,
 };
+use super::native_engine::{NativeCookieJar, NativeResourceLoader};
 use crate::browser::session::{
     FrameInfo, GeoLocation, NavigationControlOutcome, NetworkConditions, PageTargetInfo,
     VisualCapture, VisualCaptureMetadata, VisualCaptureOptions, VisualClip, VisualFormat,
@@ -132,70 +131,32 @@ struct NativeSharedWorkerCoordinator {
     registry: NativeWorkerRegistry,
     loader: NativeResourceLoader,
     page_ports: BTreeMap<String, NativeSharedWorkerPageRoute>,
-    cookie_overrides: BTreeMap<(String, String, String), NativeCookieChange>,
     next_connection_id: u64,
 }
 
 impl NativeSharedWorkerCoordinator {
-    fn new(loader: NativeResourceLoader) -> Self {
+    fn new(mut loader: NativeResourceLoader, cookie_jar: NativeCookieJar) -> Self {
+        loader.use_shared_cookie_jar(cookie_jar);
         Self {
-            registry: NativeWorkerRegistry::new_with_fetch_streams(),
+            registry: NativeWorkerRegistry::new_with_parent_network_authority(),
             loader,
             page_ports: BTreeMap::new(),
-            cookie_overrides: BTreeMap::new(),
             next_connection_id: 1,
         }
     }
 
-    fn replay_cookie_overrides(&mut self) -> Result<(), NativeEngineError> {
-        let changes = self.cookie_overrides.values().cloned().collect::<Vec<_>>();
-        self.loader.apply_cookie_changes(&changes)
-    }
-
     fn remember_cookie_changes(&mut self) -> Result<Vec<NativeCookieChange>, NativeEngineError> {
-        let mut loader = self.loader.clone();
-        let changes = loader.take_cookie_changes();
-        let mut overrides = self.cookie_overrides.clone();
-        Self::remember_cookie_overrides(&mut overrides, &changes)?;
-        self.loader = loader;
-        self.cookie_overrides = overrides;
-        Ok(changes)
+        Ok(self.loader.take_cookie_changes())
     }
 
     fn apply_page_cookie_changes(
         &mut self,
         changes: &[NativeCookieChange],
     ) -> Result<(), NativeEngineError> {
-        let mut loader = self.loader.clone();
-        loader.apply_cookie_changes(changes)?;
-        let changes = loader.take_cookie_changes();
-        let mut overrides = self.cookie_overrides.clone();
-        Self::remember_cookie_overrides(&mut overrides, &changes)?;
-        self.loader = loader;
-        self.cookie_overrides = overrides;
-        Ok(())
-    }
-
-    fn remember_cookie_overrides(
-        overrides: &mut BTreeMap<(String, String, String), NativeCookieChange>,
-        changes: &[NativeCookieChange],
-    ) -> Result<(), NativeEngineError> {
-        for change in changes {
-            let key = (
-                change.name.clone(),
-                change.domain.clone(),
-                change.path.clone(),
-            );
-            if !overrides.contains_key(&key) && overrides.len() >= MAX_NATIVE_COOKIE_PROFILE_ENTRIES
-            {
-                return Err(NativeEngineError::limit(
-                    "native SharedWorker cookie change entries",
-                    MAX_NATIVE_COOKIE_PROFILE_ENTRIES,
-                    overrides.len().saturating_add(1),
-                ));
-            }
-            overrides.insert(key, change.clone());
-        }
+        self.loader.apply_cookie_changes(changes)?;
+        // All browser-owned engines share this jar, so this only keeps the
+        // coordinator loader's change queue from replaying page changes.
+        self.loader.take_cookie_changes();
         Ok(())
     }
 }
@@ -776,7 +737,10 @@ impl NativeEngineBackend {
             NativeEngine::new_with_browser_shared_workers(config, dialog_control.clone())
                 .map_err(native_error)?;
         engine.set_content_process_event_notify(Arc::clone(&content_process_event_notify));
-        let shared_workers = NativeSharedWorkerCoordinator::new(engine.clone_resource_loader());
+        let shared_workers = NativeSharedWorkerCoordinator::new(
+            engine.clone_resource_loader(),
+            engine.shared_cookie_jar(),
+        );
         let active_name = native_window_name(&engine.config().window_name);
         Ok(Self {
             inner: Arc::new(NativeEngineBackendInner {
@@ -2452,17 +2416,21 @@ impl NativeEngineBackend {
             )
             .await?;
             let top_id = native_main_frame_id(&target_id);
-            let top_engine = native_frame_engine(&frames, &engine, &top_id)
-                .await
-                .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                    reason: "native top frame disappeared during script context projection".into(),
-                })?;
-            let top_snapshot = top_engine.snapshot().map_err(native_error)?;
-            let top_same_origin = current_snapshot.origin != NativeOrigin::Opaque
-                && current_snapshot.origin == top_snapshot.origin;
-            let top_window =
+            let top_window = if top_id == parent_id {
+                parent_window.clone()
+            } else {
+                let top_engine = native_frame_engine(&frames, &engine, &top_id)
+                    .await
+                    .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                        reason: "native top frame disappeared during script context projection"
+                            .into(),
+                    })?;
+                let top_snapshot = top_engine.snapshot().map_err(native_error)?;
+                let top_same_origin = current_snapshot.origin != NativeOrigin::Opaque
+                    && current_snapshot.origin == top_snapshot.origin;
                 native_frame_script_window(&frames, &engine, &top_id, &top_engine, top_same_origin)
-                    .await?;
+                    .await?
+            };
             let frame_element = frames.active_owner_node_index.and_then(|node_index| {
                 parent_engine
                     .script_document_snapshot()
@@ -2534,22 +2502,26 @@ impl NativeEngineBackend {
         )
         .await?;
         let top_id = native_main_frame_id(&target_id);
-        let top_engine = native_frame_engine(&targets.active_frames, &engine, &top_id)
-            .await
-            .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                reason: "native top frame disappeared during action context projection".into(),
-            })?;
-        let top_snapshot = top_engine.snapshot().map_err(native_error)?;
-        let top_same_origin = current_snapshot.origin != NativeOrigin::Opaque
-            && current_snapshot.origin == top_snapshot.origin;
-        let top_window = native_frame_script_window(
-            &targets.active_frames,
-            &engine,
-            &top_id,
-            &top_engine,
-            top_same_origin,
-        )
-        .await?;
+        let top_window = if top_id == parent_id {
+            parent_window.clone()
+        } else {
+            let top_engine = native_frame_engine(&targets.active_frames, &engine, &top_id)
+                .await
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native top frame disappeared during action context projection".into(),
+                })?;
+            let top_snapshot = top_engine.snapshot().map_err(native_error)?;
+            let top_same_origin = current_snapshot.origin != NativeOrigin::Opaque
+                && current_snapshot.origin == top_snapshot.origin;
+            native_frame_script_window(
+                &targets.active_frames,
+                &engine,
+                &top_id,
+                &top_engine,
+                top_same_origin,
+            )
+            .await?
+        };
         let frame_element = owner_node_index.and_then(|node_index| {
             parent_engine
                 .script_document_snapshot()
@@ -4969,21 +4941,13 @@ impl NativeEngineBackend {
     /// Commit SharedWorker route state while the exact source engine owner's
     /// async mutex is held. This synchronous section is the creation
     /// linearization point: navigation cannot replace the document between
-    /// generation validation, the parent-cookie snapshot, and route
-    /// registration. Do not add an await while any of these shared locks are
-    /// held.
+    /// generation validation and route registration. Do not add an await
+    /// while any of these shared locks are held.
     fn register_shared_worker_connection_with_owner_locked(
         &self,
         source_engine: &tokio::sync::OwnedMutexGuard<NativeEngine>,
         request: &NativeSharedWorkerCreateRequest,
-    ) -> Result<
-        (
-            u32,
-            NativeSharedWorkerPageRoute,
-            Vec<NativeCookieProfileEntry>,
-        ),
-        BrowserBackendError,
-    > {
+    ) -> Result<(u32, NativeSharedWorkerPageRoute), BrowserBackendError> {
         let source_context = source_engine.config().context_id.as_str();
         let source_generation = source_engine.document_generation().map_err(native_error)?;
         if source_context != request.source_context_id
@@ -4991,7 +4955,7 @@ impl NativeEngineBackend {
         {
             return Err(BrowserBackendError::SelectionFailed {
                 reason: format!(
-                    "native SharedWorker source owner {}:{} changed before cookie state was read",
+                    "native SharedWorker source owner {}:{} changed before route registration",
                     request.source_context_id, request.source_frame_id
                 ),
             });
@@ -4999,7 +4963,6 @@ impl NativeEngineBackend {
         validate_message_port_transfers(std::slice::from_ref(&request.transfer_port))
             .map_err(native_error)?;
 
-        let parent_cookie_profile = source_engine.clone_resource_loader().cookie_profile();
         let mut coordinator = self.shared_workers.lock().map_err(|_| {
             poisoned_lock_error(BackendOperation::Script, "SharedWorker coordinator")
         })?;
@@ -5024,7 +4987,7 @@ impl NativeEngineBackend {
             .page_ports
             .insert(request.transfer_port.bridge_key.clone(), page_route.clone());
 
-        Ok((connection_id, page_route, parent_cookie_profile))
+        Ok((connection_id, page_route))
     }
 
     async fn page_message_port_route(
@@ -5745,7 +5708,7 @@ impl NativeEngineBackend {
                 ),
             });
         }
-        let (connection_id, page_route, parent_cookie_profile) = {
+        let (connection_id, page_route) = {
             let source_engine = lock_native_engine_owner(&source_owner).await;
             self.register_shared_worker_connection_with_owner_locked(&source_engine, &request)?
         };
@@ -5775,22 +5738,13 @@ impl NativeEngineBackend {
                 return Err(error);
             }
         };
-        let result = match coordinator
-            .loader
-            .replace_cookie_profiles(&parent_cookie_profile)
-        {
-            Ok(()) => match coordinator.replay_cookie_overrides() {
-                Ok(()) => {
-                    let NativeSharedWorkerCoordinator {
-                        registry, loader, ..
-                    } = &mut *coordinator;
-                    registry
-                        .apply_commands(vec![command], loader, &request.owner_url)
-                        .await
-                }
-                Err(error) => Err(error),
-            },
-            Err(error) => Err(error),
+        let result = {
+            let NativeSharedWorkerCoordinator {
+                registry, loader, ..
+            } = &mut *coordinator;
+            registry
+                .apply_commands(vec![command], loader, &request.owner_url)
+                .await
         };
         let mut cookie_changes = Vec::new();
         let result = match (result, coordinator.remember_cookie_changes()) {

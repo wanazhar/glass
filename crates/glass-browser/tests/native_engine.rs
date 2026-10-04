@@ -21391,6 +21391,12 @@ async fn native_cross_origin_parent_security_and_cookie_authority_inner() {
     .unwrap();
     let frames = session.native_list_frames().await.unwrap();
     assert_eq!(frames.len(), 2);
+    let child_id = frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("the cross-origin child frame is present")
+        .id
+        .clone();
 
     let parent_cookie_observation = session
         .script(
@@ -21423,6 +21429,24 @@ async fn native_cross_origin_parent_security_and_cookie_authority_inner() {
             "length": 0,
             "parent": true,
             "location": format!("http://{child_address}/child"),
+        })
+    );
+
+    session.native_select_frame(&child_id).await.unwrap();
+    let child_view = session
+        .script(
+            "(() => { let parentDocumentError; let parentHistoryError; try { window.parent.document; } catch (error) { parentDocumentError = [error instanceof DOMException, error.name, error.code]; } try { window.parent.history; } catch (error) { parentHistoryError = [error instanceof DOMException, error.name, error.code]; } return { frameElement: window.frameElement, parentDocumentError, parentHistoryError, parentLocation: window.parent.location.href, top: window.top === window.parent }; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        child_view.value,
+        serde_json::json!({
+            "frameElement": null,
+            "parentDocumentError": [true, "SecurityError", 18],
+            "parentHistoryError": [true, "SecurityError", 18],
+            "parentLocation": format!("http://{parent_address}/parent"),
+            "top": true,
         })
     );
 

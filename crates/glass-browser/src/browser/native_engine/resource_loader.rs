@@ -1288,10 +1288,6 @@ impl NativeCookieJar {
         Self(Arc::clone(&self.0))
     }
 
-    fn replace(&self, cookies: Vec<NativeCookie>) {
-        *self.lock() = cookies;
-    }
-
     fn len(&self) -> usize {
         self.lock().len()
     }
@@ -4417,6 +4413,10 @@ impl NativeResourceLoader {
         self.network.cookies.shared_clone()
     }
 
+    pub(crate) fn use_shared_cookie_jar(&mut self, cookie_jar: NativeCookieJar) {
+        self.network.cookies = cookie_jar;
+    }
+
     pub(crate) fn cookie_change_checkpoint(&self) -> usize {
         self.cookie_changes.len()
     }
@@ -4513,31 +4513,6 @@ impl NativeResourceLoader {
                 cookie: Some(profile.clone()),
             });
         }
-        Ok(())
-    }
-
-    pub(crate) fn replace_cookie_profiles(
-        &mut self,
-        profiles: &[NativeCookieProfileEntry],
-    ) -> Result<(), NativeEngineError> {
-        if !self.network.cookie_authority_enabled {
-            return Err(NativeEngineError::Worker {
-                operation: "replace content-process cookies".into(),
-                reason: "cookie profiles are owned by the browser process".into(),
-            });
-        }
-        if profiles.len() > MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
-            return Err(NativeEngineError::limit(
-                "native cookie profile entries",
-                MAX_NATIVE_COOKIE_PROFILE_ENTRIES,
-                profiles.len(),
-            ));
-        }
-        let replacement = NativeNetworkState::from_profile(profiles.to_vec())?
-            .cookies
-            .snapshot();
-        self.network.cookies.replace(replacement);
-        self.cookie_changes.clear();
         Ok(())
     }
 
@@ -11444,7 +11419,6 @@ mod tests {
         let parent_profile = parent_loader.cookie_profile();
         assert_eq!(parent_profile.len(), 1);
         assert!(loader.set_cookie_profiles(&parent_profile).is_err());
-        assert!(loader.replace_cookie_profiles(&parent_profile).is_err());
         assert!(
             loader
                 .apply_cookie_changes(&[NativeCookieChange {

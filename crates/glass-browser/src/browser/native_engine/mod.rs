@@ -79,16 +79,18 @@ pub use interaction::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FILE_COUNT, MAX_NATIVE_FILE_TOTAL_BYTES,
     NativeAction, NativeEffect, NativeEventKind, NativeFile,
 };
+#[cfg(test)]
+pub(crate) use javascript::{MAX_NATIVE_COOKIE_PROFILE_ENTRIES, NativeCookieProfileEntry};
 pub(crate) use javascript::{
-    MAX_NATIVE_COOKIE_PROFILE_ENTRIES, MAX_NATIVE_DIALOG_TEXT_BYTES, NativeCookieChange,
-    NativeCookieProfileEntry, NativeFrameScriptBinding, NativeFrameScriptContext,
-    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeMessagePortTransfer,
-    NativePageMessagePortCommand, NativePopupRequest, NativePostMessageRequest,
-    NativeScriptCommand, NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
-    NativeSharedWorkerCreateRequest, NativeSharedWorkerStorageKey, NativeWindowCloseRequest,
-    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerMessage,
-    NativeWorkerRegistry, synchronize_service_worker_client_leases,
-    validate_message_port_transfers, validate_page_message_port_command,
+    MAX_NATIVE_DIALOG_TEXT_BYTES, NativeCookieChange, NativeFrameScriptBinding,
+    NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
+    NativeMessagePortTransfer, NativePageMessagePortCommand, NativePopupRequest,
+    NativePostMessageRequest, NativeScriptCommand, NativeServiceWorkerClientMessage,
+    NativeServiceWorkerOpenWindowRequest, NativeSharedWorkerCreateRequest,
+    NativeSharedWorkerStorageKey, NativeWindowCloseRequest, NativeWindowNavigationRequest,
+    NativeWindowProxyUpdate, NativeWorkerMessage, NativeWorkerRegistry,
+    synchronize_service_worker_client_leases, validate_message_port_transfers,
+    validate_page_message_port_command,
 };
 pub use layout::{
     NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect, NativeSvgSubpath,
@@ -104,11 +106,11 @@ pub use raster::{
     MAX_NATIVE_OPACITY_GROUP_DEPTH, MAX_NATIVE_OPACITY_LAYER_PIXELS, MAX_NATIVE_SURFACE_PIXELS,
     NativeSurface,
 };
-pub use resource_loader::{NativeFetchResponse, NativeResource, NativeResourceLoader};
 pub(crate) use resource_loader::{
-    NativeNavigationMethod, NativeNavigationRequest, NativeRequestBody,
+    NativeCookieJar, NativeNavigationMethod, NativeNavigationRequest, NativeRequestBody,
     validate_target_navigation_payload,
 };
+pub use resource_loader::{NativeFetchResponse, NativeResource, NativeResourceLoader};
 pub use runtime::{
     MAX_NATIVE_MICROTASKS, MAX_NATIVE_RUNTIME_TRACE, NativeCancellationToken, NativeMicrotask,
     NativeRuntime, NativeRuntimeState, NativeRuntimeTraceEvent, NativeRuntimeTraceKind,

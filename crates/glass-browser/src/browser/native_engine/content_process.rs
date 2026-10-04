@@ -12227,6 +12227,33 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 let dynamic_result =
                                     match (script_runtime.as_ref(), resource_loader.as_mut()) {
                                         (Some(runtime), Some(loader)) => {
+                                            let mut parent_fetch_broker =
+                                                NativeContentFetchBroker {
+                                                    request_id: id.as_u64().ok_or_else(|| {
+                                                        NativeEngineError::invalid(
+                                                            "content-process load request ID",
+                                                            "must be an unsigned integer",
+                                                        )
+                                                    })?,
+                                                    owner: NativeContentCookieOwner {
+                                                        context_id: storage_context_id.clone(),
+                                                        frame_id: frame_id.clone(),
+                                                        generation: parsed.generation(),
+                                                        document_url: resource.url.clone(),
+                                                    },
+                                                    runtime: Some(runtime),
+                                                    stdout: &mut stdout,
+                                                    ipc_requests: &mut ipc_request_rx,
+                                                    cancelled_parent_fetches:
+                                                        &mut cancelled_parent_fetches,
+                                                    document_cookie_projection:
+                                                        &mut parent_document_cookie_projection,
+                                                    next_content_resource_fetch_id: 0,
+                                                    page_meta_content_security_policies: loader
+                                                        .document_meta_content_security_policies(
+                                                            &resource.url,
+                                                        )?,
+                                                };
                                             execute_dynamic_page_scripts_with_loader(
                                                 &mut parsed,
                                                 runtime,
@@ -12235,7 +12262,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                                 &resource.url,
                                                 &resource.origin,
                                                 loaded_viewport,
-                                                None,
+                                                Some(&mut parent_fetch_broker),
                                             )
                                             .await
                                         }

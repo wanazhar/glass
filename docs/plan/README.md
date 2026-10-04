@@ -10525,9 +10525,15 @@ holding the event's independent `respondWith()` result. The process-backed
 regression passed (1 test; 28.49 seconds), checking parent cookie selection,
 HttpOnly response rotation, and the next page Fetch. Service Worker-originated
 upload streams, background work outside intercepted FetchEvents, and other
-internal network paths remain unbrokered. Slice 843 remains in progress: the content process still mirrors
-the full cookie profile and has other direct network paths. Exact scope and
-verification are in the [Slice 843 task](tasks/native-engine-browser-843.md).
+internal network paths remain unbrokered. Initial-load HTTP(S) scripts
+inserted by inline scripts now use the owner-checked parent broker; the
+process-backed navigation regression passed (1 test; 34.45 seconds), verifying
+HttpOnly request-cookie selection, response-cookie acceptance, and the visible
+script projection for a dynamically inserted classic script. Slice 843 remains
+in progress: full-profile cookie IPC has been removed, but child-direct
+internal requests can still mutate a transient child jar and publish cookie
+journals. Exact scope and verification are in the [Slice 843
+task](tasks/native-engine-browser-843.md).
 
 ## Historical plan: Glass v0.3.6 issue #36
 

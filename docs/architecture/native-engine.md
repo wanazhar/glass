@@ -713,8 +713,12 @@ autonomous turns remain outside it. Content-side
 Service Worker interception remains in place; unhandled HTTP(S) top-level
 navigation is parent-brokered after that interception declines it. HTTP(S)
 parser-discovered page scripts, initial stylesheets, static CSS imports, page
-images, initial/dynamically attached media elements, CSS `@font-face` resources,
-and explicit page `FontFace` destination requests now use the parent broker.
+images, classic/module scripts inserted by inline scripts during initial
+loading, initial/dynamically attached media elements, CSS `@font-face`
+resources, and explicit page `FontFace` destination requests now use the parent
+broker. The process-backed navigation regression verifies the inserted
+classic-script cookie flow; its module-root variant is implemented on the same
+broker but does not yet have a dedicated cookie regression.
 Page and dedicated Worker EventSource open/read/reconnect/close also use the
 parent broker: the parent owns each live response stream and network/cookie
 policy, while the child receives bounded chunks by opaque stream ID and runs the

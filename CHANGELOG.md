@@ -46,6 +46,10 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- HTTP(S) classic and module scripts inserted by inline scripts during initial
+  document loading now use the owner-checked parent network/cookie broker.
+  The navigation regression verifies HttpOnly request cookies, response-cookie
+  acceptance, and a script-visible-only projection for the inserted script.
 - Synchronous page and dedicated Worker XHR now use a blocking parent
   network/cookie broker round trip. Pending script cookie writes are applied
   before request-cookie selection; response `Set-Cookie` stays in the parent,

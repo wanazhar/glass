@@ -232,12 +232,13 @@ request cookies, and accepts response-cookie changes. The worker's current
   navigation event, and a later page Fetch while `document.cookie` remains
   filtered. Background work outside intercepted FetchEvents and other internal
   network requests remain direct child paths.
-  In browser-coordinated mode, due
-  DedicatedWorker timer turns now wait for the exact context/frame owner pump
-  and execute with that turn's parent Fetch broker; standalone `NativeEngine` keeps
-  its local timer path. The process-backed
+  In browser-coordinated mode, every due DedicatedWorker timer, including
+  nonzero-delay timers, now waits for the exact context/frame owner pump and
+  executes with that turn's parent Fetch broker; standalone `NativeEngine`
+  keeps its local timer path. The process-backed
   `browser_owned_worker_timer_fetch_uses_parent_cookie_authority` regression
-  passed (1 passed; 22.87 seconds), checking the worker entry request cookies,
+  passed with a 25 ms timer (1 passed; 25.12 seconds), checking the worker
+  entry request cookies,
   a classic `importScripts()` dependency request, HttpOnly cookies set by both
   responses and sent on later requests, a parent-accepted HttpOnly response
   update, the parent cookie API, and the script-visible projection.

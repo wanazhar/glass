@@ -11567,7 +11567,7 @@ mod tests {
                     "/timer-dependency.js" => (
                         "Set-Cookie: timer_dependency=loaded; HttpOnly; Path=/; SameSite=Lax\r\n",
                         "application/javascript",
-                        "setTimeout(async () => { try { const first = await fetch('/timer-first'); const firstBody = await first.text(); const second = await fetch('/timer-second'); postMessage({ kind: 'complete', firstBody, secondBody: await second.text() }); } catch (error) { postMessage({ kind: 'error', message: String(error) }); } }, 0);",
+                        "setTimeout(async () => { try { const first = await fetch('/timer-first'); const firstBody = await first.text(); const second = await fetch('/timer-second'); postMessage({ kind: 'complete', firstBody, secondBody: await second.text() }); } catch (error) { postMessage({ kind: 'error', message: String(error) }); } }, 25);",
                     ),
                     "/timer-first" => (
                         "Set-Cookie: timer_secret=after; HttpOnly; Path=/; SameSite=Lax\r\n",

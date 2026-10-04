@@ -9045,16 +9045,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             }
             NativeContentProcessInput::ServiceWorkerLifetimeFetch(None) => continue,
             NativeContentProcessInput::WorkerTimer => {
-                // Browser-coordinated owners must run Service Worker timers
-                // inside the exact page owner turn so Fetch uses the parent's
-                // cookie broker; standalone engines retain local timer turns.
+                // Browser-coordinated Service Worker and DedicatedWorker
+                // timers run only in the exact page-owner turn so Fetch uses
+                // the parent's cookie broker; standalone engines retain
+                // local timer turns.
                 let service_worker_timer_delay = service_workers.next_timer_delay_ms()?;
                 let defer_service_worker_timer =
                     external_shared_worker_routing && service_worker_timer_delay.is_some();
-                let defer_worker_timer = external_shared_worker_routing
-                    && workers
-                        .next_timer_delay_ms()?
-                        .is_some_and(|delay| delay == 0);
+                let defer_worker_timer =
+                    external_shared_worker_routing && workers.next_timer_delay_ms()?.is_some();
                 {
                     let Some(loader) = resource_loader.as_mut() else {
                         return Err(NativeEngineError::Worker {

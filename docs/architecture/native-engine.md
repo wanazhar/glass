@@ -97,9 +97,16 @@ process-backed `native_content_process_initial_worker_startup_fetch_uses_parent_
 regression verifies HttpOnly cookies on the worker entry and startup Fetch,
 parent response-cookie rotation on a later worker message turn, and a visible-
 only `document.cookie` projection.
+The process-backed
+`native_content_process_module_worker_graph_uses_parent_cookie_authority`
+regression additionally verifies parent-owned HttpOnly-cookie sequencing
+across a module DedicatedWorker entry, static dependency, startup Fetch, and
+later Worker Fetch, while `document.cookie` remains empty. This is targeted
+coverage, not evidence that all content-process network classes are brokered.
 Before parent page loads, the child transfers its applied meta-CSP policy
-sources; the regression also verifies `img-src 'self'` prevents a cross-origin image request. The
-initial module graph lacks a dedicated cookie regression. A follow-up now
+sources; the regression also verifies `img-src 'self'` prevents a cross-origin
+image request. At that protocol-22 checkpoint, the initial module graph lacked
+a dedicated cookie regression. A follow-up now
 brokers HTTP(S) media-element requests through the parent; the same process
 regression passed again (1 test; 25.76 seconds), proving the media response's
 visible and HttpOnly cookies stay parent-owned and are sent on the next

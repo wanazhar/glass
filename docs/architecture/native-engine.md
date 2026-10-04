@@ -12,10 +12,15 @@ and reuses successful results for unhandled navigation. Its process-backed
 header/response-reuse test passed (1 passed; 906 filtered; 36.50 seconds), as
 did the controlled-navigation `fetch(event.request)` parent-cookie test (1
 passed; 906 filtered; 25.04 seconds). The process-backed timer-response test
-also passes (1 passed; 906 filtered; 31.72 seconds), covering a delayed
+also passes (1 passed; 906 filtered; 33.83 seconds), covering a delayed
 `respondWith()` both with preload disabled and while the enabled parent-
-brokered preload body is gated. Navigation commits before preload release and
-the upstream socket closes, proving cancellation of the unused preload. The
+brokered preload body is gated. The enabled case first matches a cached
+response, then waits on a timer. Navigation commits before preload release and
+the upstream socket closes, proving cancellation of the unused preload.
+Leading CacheStorage commands now progress while that response is pending;
+the first non-cache command and its FIFO tail remain deferred. CacheStorage
+state is separate from cookie authority: the parent remains the sole cookie
+jar owner and all network Fetch/preload requests remain parent-brokered. The
 earlier failed probe exposed that timer turns were not advancing during this
 wait; the event turn now advances the owning ServiceWorker's timers. The test
 uses Glass's 8 MiB resident-worker stack contract; it does not assess the
@@ -164,8 +169,9 @@ the latter confirms the sync retries and preserves the changed topology.
 Process-backed timer/lifetime delivery, independent owner ordering, stale-owner
 teardown, queue overflow, relevant WPT cases, and remote cross-platform CI
 remain open.
-Streaming upload fetches and fetch commands encountered while the
-`respondWith()` response is still pending can still delay settlement. Browser-
+Streaming upload fetches, network Fetch commands, and other non-CacheStorage
+host commands encountered while the `respondWith()` response is still pending
+can still delay settlement. Browser-
 facing effects from later lifetime callbacks now have an owner-pump delivery
 path, but its process-backed timer/lifetime behavior remains unverified. The first
 `respondWith()` now suppresses later registered FetchEvent listeners, with a

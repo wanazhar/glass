@@ -2398,6 +2398,13 @@ impl NativeServiceWorkerRegistry {
                 &payload,
                 is_module,
             )?;
+            if evaluation.top_level_await_pending && !evaluation.commands.is_empty() {
+                resolve_service_worker_fetch_cache_commands(
+                    worker,
+                    &mut evaluation,
+                    &mut self.cache_state,
+                )?;
+            }
             let mut preload_resolved = false;
             let mut timer_turns = 0usize;
             if evaluation.top_level_await_pending && evaluation.commands.is_empty() {
@@ -4830,6 +4837,62 @@ fn is_service_worker_cache_command(command: &NativeScriptCommand) -> bool {
             | NativeScriptCommand::ServiceWorkerCacheDeleteRequest { .. }
             | NativeScriptCommand::ServiceWorkerCacheEntries { .. }
     )
+}
+
+fn resolve_service_worker_fetch_cache_commands(
+    worker: &mut NativeServiceWorker,
+    evaluation: &mut NativeScriptEvaluation,
+    cache_state: &mut NativeServiceWorkerCacheState,
+) -> Result<(), NativeEngineError> {
+    let mut pending = VecDeque::from(std::mem::take(&mut evaluation.commands));
+    let mut deferred = VecDeque::new();
+    let mut cache_turns = 0usize;
+    while let Some(command) = pending.pop_front() {
+        if !is_service_worker_cache_command(&command) {
+            deferred.push_back(command);
+            deferred.append(&mut pending);
+            break;
+        }
+        cache_turns = cache_turns.saturating_add(1);
+        if cache_turns > MAX_NATIVE_MODULE_IMPORTS {
+            return Err(NativeEngineError::limit(
+                "native ServiceWorker FetchEvent CacheStorage turns",
+                MAX_NATIVE_MODULE_IMPORTS,
+                cache_turns,
+            ));
+        }
+        let (request_id, payload) =
+            apply_service_worker_cache_command(worker, command, cache_state)?;
+        let resolved = worker.runtime.resolve_service_worker_cache(
+            worker.id,
+            &worker.script_url,
+            request_id,
+            &payload,
+            worker.is_module,
+        )?;
+        let command_count = deferred
+            .len()
+            .saturating_add(pending.len())
+            .saturating_add(resolved.commands.len());
+        if command_count > MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native ServiceWorker FetchEvent CacheStorage commands",
+                MAX_NATIVE_WORKER_MESSAGES,
+                command_count,
+            ));
+        }
+        pending.extend(resolved.commands);
+        evaluation.top_level_await_pending |= resolved.top_level_await_pending;
+        if evaluation.worker_script_error.is_none() {
+            evaluation.worker_script_error = resolved.worker_script_error;
+        }
+        if let Some(value) = worker.runtime.take_top_level_await_result()? {
+            evaluation.value = value;
+            evaluation.top_level_await_pending = false;
+        }
+    }
+    evaluation.commands = deferred.into_iter().collect();
+    Ok(())
 }
 
 fn service_worker_fetch_payload(response: NativeFetchResponse) -> Value {

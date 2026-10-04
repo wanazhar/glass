@@ -52,7 +52,11 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   network response or allow a late response to mutate a committed/cancelled
   navigation. If the handler has already produced its own response while the
   preload is still pending, commit the ServiceWorker response without waiting
-  for the unused preload body and abort that pending request.
+  for the unused preload body and abort that pending request. During this
+  response wait, advance FIFO-leading CacheStorage commands against the
+  worker's origin-scoped CacheStorage; stop at the first non-cache command and
+  defer the remaining commands in order. This must not transfer cookie or
+  network authority from the parent to the worker.
 - The navigation `FetchEvent.request` exposes `mode === "navigate"`. Create
   that internal request without weakening the public `Request` constructor's
   rejection of `new Request(url, { mode: "navigate" })`.
@@ -116,14 +120,14 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 
 ## Current Evidence
 
-- `cargo check -p glass-browser --features native-engine --lib --tests --locked -q` passes on the current revision.
+- `cargo check -p glass-browser --features native-engine --lib --test native_engine --locked --quiet` passes on the current revision.
 - `cargo test -p glass-browser --lib --features native-engine --locked navigation_preload -- --quiet` passes (six socket-free tests, including the immediate-response runtime regression).
 - `cargo test -p glass-browser --lib --features native-engine --locked service_worker_fetch_ -- --quiet` passes (five socket-free runtime tests, including independent `waitUntil()` lifetime, listener suppression, `onfetch` registration order, handler replacement, and deactivation/reactivation).
 - `cargo test -p glass-browser --lib --features native-engine --locked independent_response_survives_and_retains_lifetime_fetch_work -- --nocapture` passes. Its fixture-backed native-loader fetch returns the independent response first, remains owned by the Service Worker registry, then resolves the `waitUntil(fetch())` continuation in the same worker realm.
 - Process-backed `native_content_process_persists_service_worker_cache_across_restart` passed (1 passed; 906 filtered; 39.70 seconds), closing Slice 838's persistence gate.
 - Process-backed `native_service_worker_navigation_preload_sends_header_and_reuses_response` passed on the current broker signature (1 passed; 906 filtered; 36.50 seconds), verifying the configured header, navigation response reuse, referrer behavior, and following navigation.
 - Process-backed `native_service_worker_fetch_event_navigation_request_uses_parent_cookie_authority` passed on its final cleanup-adjusted rerun (1 passed; 906 filtered; 25.04 seconds). `fetch(event.request)` on a controlled navigation sends the parent's HttpOnly seed, accepts the parent's HttpOnly response-cookie rotation, and sends both on the next page Fetch; `document.cookie` stays empty while `cookies_async()` reads the parent jar.
-- Process-backed `native_service_worker_navigation_preload_does_not_delay_independent_timer_response` passed (1 passed; 906 filtered; 31.72 seconds). It verifies timer-delayed `respondWith()` with preload disabled and with a parent-brokered preload held at the server, navigation commit before preload release, and upstream socket closure after the unused preload is cancelled.
+- Process-backed `native_service_worker_navigation_preload_does_not_delay_independent_timer_response` passed (1 passed; 906 filtered; 33.83 seconds). It verifies timer-delayed `respondWith()` with preload disabled and resolves an origin-scoped CacheStorage match before a held parent-brokered preload; navigation commits before preload release and the unused upstream socket closes. Parent cookie ownership is unchanged.
 - `cargo fmt --all -- --check`, release-documentation truth, documentation depth, TUI shortcut inventory, and `git diff --check` pass.
 - The response test proves headers are immutable and both the original and
   cloned response bodies remain readable. It also verifies the policy-reduced
@@ -161,13 +165,16 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 - An earlier timer-delayed overlap probe exposed that a pending preload
   prevented the owning worker's timer turn from advancing. The FetchEvent turn
   now multiplexes those timer turns with the parent preload broker; the
-  process-backed regression above verifies the independent response commits
-  and the unused parent request is cancelled. The regression runs on the
-  product's 8 MiB resident-worker stack contract, not the default Rust
-  test-harness stack.
+  process-backed CacheStorage/timer regression above resolves an origin-scoped
+  cache match, verifies the independent response commits, and confirms the
+  unused parent request is cancelled. It passed (1 passed; 906 filtered;
+  33.83 seconds) on the product's 8 MiB resident-worker stack contract, not the
+  default Rust test-harness stack. Parent-owned cookie selection and persistence
+  remain unchanged.
 - Process-backed non-GET and absent-listener eligibility controls, navigation
-  cancellation, and response progress depending on other pending host commands
-  remain open. The timer regression covers the disabled-preload control. The
+  cancellation, and response progress depending on network Fetches, streaming
+  uploads, or other non-CacheStorage host commands remain open. The timer
+  regression covers the disabled-preload control. The
   existing HTTP regression covers
   no-duplicate preload reuse, source-policy redirect updates, and worker-visible
   `Request.referrer`. WPT, remote CI, and cross-platform validation remain

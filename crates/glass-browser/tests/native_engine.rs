@@ -12754,16 +12754,23 @@ async fn native_service_worker_navigation_preload_timer_response_inner() {
     let (preload_cancelled_tx, preload_cancelled_rx) = oneshot::channel();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let registration_page = "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>preload overlap</main></body></html>";
-    let worker_script = r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+    let worker_script = r#"self.addEventListener('install', event => event.waitUntil(
+  caches.open('preload').then(cache => cache.put('/cached-response', new Response(
+    '<!doctype html><html><body>ServiceWorker cached timer response before preload</body></html>',
+    { headers: { 'Content-Type': 'text/html' } },
+  ))).then(() => self.skipWaiting())
+));
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', event => {
   const pathname = new URL(event.request.url).pathname;
-  if (pathname === '/early-response' || pathname === '/early-response-no-preload') {
-    const body = pathname === '/early-response'
-      ? 'ServiceWorker timer response before preload'
-      : 'ServiceWorker timer response without preload';
+  if (pathname === '/early-response') {
+    event.respondWith(caches.match('/cached-response').then(cached => new Promise(resolve => setTimeout(
+      () => resolve(cached || new Response('cache miss', { status: 503 })),
+      40,
+    ))));
+  } else if (pathname === '/early-response-no-preload') {
     event.respondWith(new Promise(resolve => setTimeout(() => resolve(new Response(
-      '<!doctype html><html><body>' + body + '</body></html>',
+      '<!doctype html><html><body>ServiceWorker timer response without preload</body></html>',
       { headers: { 'Content-Type': 'text/html' } },
     )), 40)));
   }
@@ -12913,7 +12920,7 @@ self.addEventListener('fetch', event => {
     assert_eq!(
         response_body,
         Some(serde_json::json!(
-            "ServiceWorker timer response before preload"
+            "ServiceWorker cached timer response before preload"
         ))
     );
 }

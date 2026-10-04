@@ -1,6 +1,6 @@
 id: native-engine-browser-838
 scope: glass-browser/native-engine/service-worker-navigation-preload-manager
-status: in-progress
+status: complete
 depends-on: []
 ---
 
@@ -71,8 +71,9 @@ and persist its settings as part of the ServiceWorker registration profile.
 - `cargo check -p glass-browser --features native-engine --lib --tests --locked -q`
 - Focused socket-free NavigationPreloadManager and profile-persistence unit
   tests.
-- Focused process-backed test when local listener binding is available; compile
-  success is not network evidence.
+- Process-backed
+  `native_content_process_persists_service_worker_cache_across_restart` after
+  the scoped check.
 - `git diff --check`.
 
 ## Progress
@@ -85,11 +86,9 @@ and persist its settings as part of the ServiceWorker registration profile.
 - The process-backed
   `native_content_process_persists_service_worker_cache_across_restart`
   regression sets manager state through the page API and verifies it after
-  profile reload. It compiles under `cargo check --tests`, but cannot be
-  executed in this sandbox because `TcpListener::bind` is denied before engine
-  initialization; persistence through the process-backed path remains
-  unverified.
+  profile reload. It passed on the current checkout (1 passed; 906 filtered;
+  39.70 seconds).
 - `cargo fmt --all -- --check`, documentation coverage and depth gates, and
-  `git diff --check` pass. This slice remains in progress until its
-  process-backed persistence assertion can run. Actual network preloading and
+  `git diff --check` pass. The manager and process-backed persistence contract
+  is complete for this slice. Actual network preloading and
   `FetchEvent.preloadResponse` remain assigned to Slice 839.

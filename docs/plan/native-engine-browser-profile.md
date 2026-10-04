@@ -300,13 +300,20 @@ request cookies, and accepts response-cookie changes. The worker's current
   Captured-load Fetches remain bound to the exact active or in-flight document
   owner. Navigation-time activation of a waiting worker, top-level navigation
   preload, and its FetchEvent use that parent broker as well. The process-backed
-  `native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority`
-  regression verifies the cookie sequence through activation, preload, the
-  navigation event, and a later page Fetch while `document.cookie` remains
-  filtered. At this earlier checkpoint, background work outside intercepted
-  FetchEvents and other internal network requests remained direct child paths;
-  the latest transport guard rejects their direct HTTP(S) attempts until they
-  are parent-brokered.
+`native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority`
+regression verifies the cookie sequence through activation, preload, the
+navigation event, and a later page Fetch while `document.cookie` remains
+filtered. At this earlier checkpoint, background work outside intercepted
+FetchEvents and other internal network requests remained direct child paths;
+the latest transport guard rejects their direct HTTP(S) attempts until they
+are parent-brokered.
+The separate process-backed
+`native_service_worker_fetch_event_navigation_request_uses_parent_cookie_authority`
+regression verifies a controlled navigation handler's `fetch(event.request)`
+uses that same parent authority: parent-selected HttpOnly request cookies,
+parent acceptance and reuse of an HttpOnly response-cookie rotation, an empty
+`document.cookie` projection, and both cookies visible through the parent
+`cookies_async()` API (1 passed; 906 filtered; 25.04 seconds).
   At the earlier timer checkpoint, browser-coordinated DedicatedWorker and
   ServiceWorker callbacks used the parent broker while standalone content
   processes still ran due timers against their local loader. Slice 843 now
@@ -648,26 +655,25 @@ cross-platform validation remain completion gates for Slice 839.
 
 Before Slice 839, the FetchEvent shim resolved `preloadResponse` to `undefined`
 for every request. Slice 838 implements the manager and durable registration
-settings; its scoped compile and socket-free unit tests pass, but its
-process-backed persistence regression did not run at the Slice 838 checkpoint
-because local TCP listener binding was denied. Slice 839 now starts eligible GET preloads through
-the native loader alongside FetchEvent dispatch, exposes navigation request
-mode, delivers the bounded response through `preloadResponse`, and reuses it
-for an unhandled navigation. An already-settled independent ServiceWorker
-response now returns without waiting for a still-pending preload body; a
-process-backed gated-response regression compiles, but at that checkpoint it
-stopped at `TcpListener::bind("127.0.0.1:0")` with `PermissionDenied` before
-engine startup. The scoped native-engine check and new socket-free runtime
-test pass as part of six socket-free navigation-preload tests. The separate
-navigation referrer-policy unit had passed before this change; the preload
-tests cover response cloning, immutable headers, the no-preload result,
-eligibility, and network errors. Existing process-backed
-HTTP/header/no-duplicate, cancellation, source-policy/redirect, and
-worker-visible `Request.referrer` regression sources previously compiled with
-`--tests`, but were not run at that checkpoint because local TCP listener
-binding was denied; this later checkout has run other process-backed HTTP
-regressions, while those specific network, overlap, and cancellation behaviors
-remain unverified.
+settings; its scoped check, socket-free tests, and process-backed persistence
+regression pass (1 passed; 906 filtered; 39.70 seconds). Slice 839 starts
+eligible GET preloads alongside FetchEvent dispatch, exposes navigation
+request mode, delivers the bounded response through `preloadResponse`, and
+reuses it for an unhandled navigation. Its process-backed header/response
+reuse regression passes (1 passed; 906 filtered; 36.50 seconds). The
+controlled-navigation `fetch(event.request)` regression also passes through
+the captured-load parent broker (1 passed; 906 filtered; 25.04 seconds):
+HttpOnly request and response cookies stay parent-owned and are reused by a
+following page Fetch while remaining absent from `document.cookie`.
+The socket-free navigation-preload tests cover response cloning, immutable
+headers, the no-preload result, eligibility, and network errors. A gated
+process probe with a timer-delayed independent response did not commit before
+the preload body was released; this is a live response-progress gap, not a
+listener-binding limitation. Its default test-thread stack also overflowed.
+Process-backed eligibility, no-duplicate fallback, cancellation, source-policy
+redirect updates, worker-visible `Request.referrer`, and asynchronous
+response/preload overlap remain open, as do WPT, remote CI, and cross-platform
+validation.
 Navigation Preload is still incomplete until those integrations and remaining
 CI/WPT/platform evidence pass.
 

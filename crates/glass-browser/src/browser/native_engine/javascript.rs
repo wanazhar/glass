@@ -22927,6 +22927,12 @@ mod native_static_dynamic_import_tests {
   let constructorRejectsNavigationMode = false;
   try { new Request(navigationRequest.url, { mode: 'navigate' }); }
   catch (error) { constructorRejectsNavigationMode = error instanceof TypeError; }
+  let clonedRequestInitMode = 'failed';
+  try { clonedRequestInitMode = new Request(navigationRequest, { headers: { 'x-forwarded': 'yes' } }).mode; }
+  catch (_error) {}
+  let clonedExplicitNavigationModeRejects = false;
+  try { new Request(navigationRequest, { mode: 'navigate' }); }
+  catch (error) { clonedExplicitNavigationModeRejects = error instanceof TypeError; }
   event.respondWith(event.preloadResponse.then(async response => {
     if (!(response instanceof Response)) return new Response('missing');
     const clonedResponse = response.clone();
@@ -22943,6 +22949,8 @@ mod native_static_dynamic_import_tests {
       referrer: navigationRequest.referrer,
       referrerPolicy: navigationRequest.referrerPolicy,
       constructorRejectsNavigationMode,
+      clonedRequestInitMode,
+      clonedExplicitNavigationModeRejects,
       marker: response.headers.get('x-preload-marker'),
       immutableHeaders,
       body: await response.text(),
@@ -23009,7 +23017,7 @@ mod native_static_dynamic_import_tests {
                     "statusText": "",
                     "headers": [["content-type", "application/json"]],
                     "contentType": "application/json",
-                    "bodyBase64": base64::engine::general_purpose::STANDARD.encode(r#"{"status":200,"url":"https://preload.test/final-page","redirected":true,"type":"basic","mode":"navigate","clonedMode":"navigate","referrer":"https://source.test/","referrerPolicy":"strict-origin-when-cross-origin","constructorRejectsNavigationMode":true,"marker":"preserved","immutableHeaders":true,"body":"preloaded body","clonedBody":"preloaded body"}"#),
+                    "bodyBase64": base64::engine::general_purpose::STANDARD.encode(r#"{"status":200,"url":"https://preload.test/final-page","redirected":true,"type":"basic","mode":"navigate","clonedMode":"navigate","referrer":"https://source.test/","referrerPolicy":"strict-origin-when-cross-origin","constructorRejectsNavigationMode":true,"clonedRequestInitMode":"same-origin","clonedExplicitNavigationModeRejects":true,"marker":"preserved","immutableHeaders":true,"body":"preloaded body","clonedBody":"preloaded body"}"#),
                     "bodyNull": false,
                     "redirected": false,
                 }
@@ -30435,16 +30443,16 @@ fn worker_bootstrap(
     const inheritedNavigationRequest = source
       && workerNavigationRequestInstances.has(source)
       && !requestInitIsNonEmpty;
-    if (source && workerNavigationRequestInstances.has(source)
-        && requestInitIsNonEmpty && !Object.prototype.hasOwnProperty.call(overrides, "mode")
-        && String(settings.mode).toLowerCase() === "navigate")
-      settings.mode = "same-origin";
     if (source && !hasBodyOverride && (source.bodyUsed || source.body && workerReadableStreamState(source.body).locked))
       throw new TypeError("native Worker Request body is unusable");
     if (!source && !sourceUrl && typeof input !== "string")
       throw new TypeError("native Worker Request URL must be a string");
     const href = workerRequestUrl(source ? source.url : sourceUrl || input);
     const settings = Object.assign({{}}, source ? source._settings : {{}}, overrides);
+    if (source && workerNavigationRequestInstances.has(source)
+        && requestInitIsNonEmpty && !Object.prototype.hasOwnProperty.call(overrides, "mode")
+        && String(settings.mode).toLowerCase() === "navigate")
+      settings.mode = "same-origin";
     const inheritedPayload = source && !hasBodyOverride
       ? source.__glassWorkerRequestBodyPayload
       : null;
@@ -30806,8 +30814,17 @@ fn worker_bootstrap(
     let method;
     try {{ method = workerRequestMethod(settings.method === undefined ? "GET" : settings.method); }}
     catch (error) {{ return Promise.reject(error); }}
-    const mode = settings.mode === undefined ? "cors" : String(settings.mode).toLowerCase();
-    if (!["cors", "no-cors", "same-origin"].includes(mode))
+    let mode = settings.mode === undefined ? "cors" : String(settings.mode).toLowerCase();
+    const inheritedNavigationRequest = sourceRequest
+      && workerNavigationRequestInstances.has(sourceRequest)
+      && String(sourceRequest._settings.mode).toLowerCase() === "navigate";
+    if (inheritedNavigationRequest && requestInitIsNonEmpty
+        && !Object.prototype.hasOwnProperty.call(optionsObject, "mode")
+        && mode === "navigate")
+      mode = "same-origin";
+    const forwardingNavigationRequest = inheritedNavigationRequest
+      && !requestInitIsNonEmpty && mode === "navigate";
+    if (!["cors", "no-cors", "same-origin"].includes(mode) && !forwardingNavigationRequest)
       return Promise.reject(new TypeError("native Worker fetch mode is unsupported"));
     const redirect = settings.redirect === undefined ? "follow" : String(settings.redirect).toLowerCase();
     if (!["follow", "error", "manual"].includes(redirect))

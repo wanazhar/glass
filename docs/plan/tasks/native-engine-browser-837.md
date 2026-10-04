@@ -79,18 +79,18 @@ ServiceWorker script entry fetches initiated by `register()` and
   a same-generation active-URL change, live meta policy capture for
   classic/module registration and explicit update commands, plus rejection of
   an invalid policy token.
-- The process-backed test was previously started and its first
+- At an earlier checkpoint, the process-backed test's first
   `TcpListener::bind` returned `PermissionDenied` before engine initialization.
-  The updated regression now changes the active URL with `pushState()` and
-  asserts the creation-URL Referer, and its source passed the scoped
-  `cargo check --tests`; it was not relinked/rerun because this session's same
-  listener restriction occurs before the engine or assertions. The
-  process-backed HTTP gate remains open; compilation is not wire evidence.
+  Later process-backed HTTP regressions in Slices 842-843 bound successfully,
+  but this specific Slice 837 test has not been rerun. Its updated source
+  changes the active URL with `pushState()` and asserts the creation-URL
+  `Referer`; scoped compilation is not wire evidence, so this process-backed
+  assertion remains open.
 - Maintainer documentation gates passed after the final documentation edit:
-  release truth audited 1,465 Markdown files (83 current, 63 previous-version
-  hits, 1,640 semantic hits, 0 current-claim failures); depth covered 93
+  release truth audited 1,471 Markdown files (83 current, 63 previous-version
+  hits, 1,654 semantic hits, 0 current-claim failures); depth covered 93
   current guides and 19 contracts; shortcut inventory covered 15 implementation
   keys and 63 documentation markers; coverage found 346 full-product MCP tools
   (101 browser-only), 17 examples, and 22 public modules. `cargo fmt --all --
   --check` and `git diff --check` passed. These static gates do not replace the
-  still-blocked process-backed HTTP assertions above.
+  still-open process-backed HTTP assertion above.

@@ -76,18 +76,17 @@ overrides on dynamically fetched modules.
   assertion was not valid conformance evidence.
 - The regression now serves `/inline-dynamic.js` from the page origin and
   checks its origin-only `Referer` header; the module origin serves the four
-  external graph requests. The corrected process-backed test cannot run past
-  listener setup in this sandbox: the first `TcpListener::bind` returns
-  `PermissionDenied` before engine initialization. The file-backed
-  content-process graph and socket-free QuickJS tests pass, but do not replace
-  the two-origin HTTP gate. Slice 832 remains in progress pending a successful
-  run of the corrected process-backed test and the remaining broader gates.
+  external graph requests. The corrected process-backed two-origin test
+  passed (1 passed, 905 filtered, 19.33 seconds), confirming the origin-only
+  `Referer` wire assertion. An earlier listener-setup denial was historical;
+  later HTTP process tests also bound successfully. Slice 832 remains in
+  progress for its broader conformance and platform gates.
 - `cargo fmt --all -- --check` and `git diff --check` passed.
-- Maintainer documentation gates passed: release-documentation truth (1,460
+- Maintainer documentation gates passed: release-documentation truth (1,471
   Markdown documents, zero current-claim failures), documentation depth (93
   routed guides and 19 substantive contracts), TUI shortcut inventory (15
   implementation keys and 63 documentation markers), and documentation
-  coverage (1,460 Markdown files, 346 MCP tools, 17 examples, 22 public
+  coverage (1,471 Markdown files, 346 MCP tools, 17 examples, 22 public
   modules).
 - Remote CI, WPT conformance, and cross-platform certification are not part of
   local results and must not be claimed without evidence.

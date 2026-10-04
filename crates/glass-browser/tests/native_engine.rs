@@ -12235,7 +12235,14 @@ async fn native_content_process_persists_service_worker_cache_across_restart() {
 });
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', event => {
-  event.respondWith(caches.match(event.request).then(cached => cached || fetch(event.request)));
+  event.respondWith(caches.match(event.request).then(async cached => {
+    if (cached) return cached;
+    if (event.request.mode === 'navigate') {
+      const preload = await event.preloadResponse;
+      if (preload) return preload;
+    }
+    return fetch(event.request);
+  }));
 });"#,
             ),
             (
@@ -12263,7 +12270,14 @@ self.addEventListener('fetch', event => {
 });
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', event => {
-  event.respondWith(caches.match(event.request).then(cached => cached || fetch(event.request)));
+  event.respondWith(caches.match(event.request).then(async cached => {
+    if (cached) return cached;
+    if (event.request.mode === 'navigate') {
+      const preload = await event.preloadResponse;
+      if (preload) return preload;
+    }
+    return fetch(event.request);
+  }));
 });"#,
             ),
             (
@@ -12377,6 +12391,137 @@ self.addEventListener('fetch', event => {
     server.await.unwrap();
 
     for path in [&profile_path, &lock_path, &events_path, &readers_path] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[tokio::test]
+async fn native_service_worker_fetch_event_navigation_request_uses_parent_cookie_authority() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-service-worker-navigation-fetch-cookies-{}.json",
+        std::process::id()
+    ));
+    let cookie_profile_path =
+        std::path::PathBuf::from(format!("{}.cookies", profile_path.display()));
+    let lock_path = profile_path.with_extension("lock");
+    let cookie_lock_path = cookie_profile_path.with_extension("lock");
+    let events_path = profile_path.with_extension("events");
+    let readers_path = profile_path.with_extension("readers");
+    for path in [
+        &profile_path,
+        &cookie_profile_path,
+        &lock_path,
+        &cookie_lock_path,
+        &events_path,
+        &readers_path,
+    ] {
+        let _ = fs::remove_file(path);
+    }
+
+    let register_page = "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>service worker navigation fetch</main></body></html>";
+    let worker_script = r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => event.respondWith(fetch(event.request)));"#;
+    let server = tokio::spawn(async move {
+        for expected_path in ["/register", "/sw.js", "/controlled", "/after"] {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("Service Worker navigation Fetch should reach the parent network")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned())
+                .unwrap_or_default();
+            let (set_cookie, content_type, body) = match expected_path {
+                "/register" => (
+                    "Set-Cookie: sw_fetch_seed=parent; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/html",
+                    register_page,
+                ),
+                "/sw.js" => {
+                    assert!(cookie.contains("sw_fetch_seed=parent"));
+                    ("", "text/javascript", worker_script)
+                }
+                "/controlled" => {
+                    assert!(cookie.contains("sw_fetch_seed=parent"));
+                    (
+                        "Set-Cookie: sw_fetch_rotation=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "text/html",
+                        "<!doctype html><html><body><main>parent-brokered navigation</main></body></html>",
+                    )
+                }
+                "/after" => {
+                    assert!(cookie.contains("sw_fetch_seed=parent"));
+                    assert!(cookie.contains("sw_fetch_rotation=accepted"));
+                    ("", "text/plain", "parent-cookie-ok")
+                }
+                _ => unreachable!(),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{set_cookie}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_initial_url(format!("http://{address}/register"))
+            .with_storage_path(profile_path.clone()),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(reg => [reg.active.state, reg.active.scriptURL])"
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["activated", format!("http://{address}/sw.js")])
+    );
+    engine
+        .navigate_async(format!("http://{address}/controlled"))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/after').then(response => response.text())")
+            .await
+            .unwrap(),
+        serde_json::json!("parent-cookie-ok")
+    );
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("")
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    for expected_name in ["sw_fetch_seed", "sw_fetch_rotation"] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| { cookie.name == expected_name && cookie.http_only })
+        );
+    }
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+
+    for path in [
+        &profile_path,
+        &cookie_profile_path,
+        &lock_path,
+        &cookie_lock_path,
+        &events_path,
+        &readers_path,
+    ] {
         let _ = fs::remove_file(path);
     }
 }

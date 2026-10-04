@@ -271,8 +271,10 @@ cookies into a parent-managed `<profile>.cookies` sidecar, migrates legacy
 combined profiles before worker startup, and keeps child Web Storage snapshots
 cookie-empty. At that checkpoint full cookie profiles still crossed
 `set_cookies` IPC; a later protocol-27 checkpoint removed that IPC and replaced
-it with an owner-checked, URL-scoped visible-cookie projection. Direct child
-network paths and their residual transient cookie journals remain. The first
+it with an owner-checked, URL-scoped visible-cookie projection. At this
+historical checkpoint, direct child network paths and transient cookie
+journals remained; current child-loader hardening disables that cookie state.
+The first
 code checkpoint removes the content child's full profile from the
 browser-coordinated SharedWorker-create message; the parent now reads the
 profile from the exact source frame owner and replays coordinator overrides.
@@ -307,8 +309,10 @@ no-build run of the already-compiled binary then passed the exact regression
 found no static lock/order defect; its initial timeout finding is resolved by
 that process-backed pass. Slice 842 is complete. The full-profile mirror has
 since been removed, but the overall parent-only cookie contract remains
-incomplete until Slice 843 routes every cookie-bearing network path through the
-parent and eliminates child-generated cookie journals.
+incomplete until Slice 843 routes every cookie-bearing network path through
+the parent. Current hardening has disabled child cookie state and rejects
+child-generated journals, but remaining direct requests still lack parent
+cookie semantics.
 Separately, the content-process SharedWorker credentials/redirect regression
 `native_content_process_shared_worker_fetch_credentials_modes_follow_redirects`
 passed in an earlier run (1 passed; 24.64-second runtime), but two no-build
@@ -319,8 +323,9 @@ parent-brokered transport. See the
 [Slice 842 task](tasks/native-engine-browser-842.md) and
 [cookie authority
 contract](native-engine-browser-profile.md#parent-owned-cookie-authority).
-The remaining unbrokered network paths and residual child cookie journals are
-tracked in the dependent [Slice 843 task](tasks/native-engine-browser-843.md).
+The remaining unbrokered network paths are tracked in the dependent
+[Slice 843 task](tasks/native-engine-browser-843.md); the child cookie jar is
+now disabled and nonempty child journals are rejected.
 A Slice 843 checkpoint now brokers standard buffered Fetch emitted during
 dedicated-worker initialization and while handling an explicit page
 `Worker.postMessage` or a transferred page `MessagePort` event; its expanded
@@ -404,8 +409,8 @@ updates only the visible script projection, and a later Fetch carries both
 cookies set by that response. At the protocol-24 checkpoint, font requests
 outside an active parent-brokered turn and dynamic stylesheet loads outside an
 active page-script turn still used the child loader. The latest fail-closed
-audit below supersedes that behavior for HTTP(S) document owners: those
-requests now require the parent broker. Dynamic HTTP(S) stylesheets and their
+audit below supersedes that behavior for HTTP(S) request targets in the
+sandboxed content process without requiring an HTTP(S) owner URL. Dynamic HTTP(S) stylesheets and their
 CSS imports created during an explicit
 parent-brokered page-script turn now reuse the parent stylesheet loader. The
 process-backed referrer-policy regression passed (1 test; 29.43 seconds),
@@ -440,18 +445,22 @@ At that navigation checkpoint, parser scripts, stylesheets/imports, and images
 were parent-brokered; fonts/media, Service Worker-provided navigation
 responses, and the full child cookie profile remained outside it. The later
 media-resource checkpoint above supersedes its media status.
-The latest Slice 843 audit closes a different gap: for HTTP(S) document owners,
-network font/image/background-image/media loads, stylesheet imports and dynamic
-stylesheets, classic/module scripts and dependencies, page Fetch/font requests,
-and Worker/ServiceWorker script and Fetch paths now require the owner-bound
-parent broker. Missing broker state fails closed rather than retrying through a
-content-worker loader. The broker-owner rule remains scoped to HTTP(S)
-documents; local and non-network owner behavior is unchanged. The scoped check
-and explicit content-worker build passed, as did the process-backed HTTP
-navigation (30.16s), mutation stylesheet (19.39s), ServiceWorker lifecycle
-(20.15s), Worker message Fetch (20.38s), and host nested ServiceWorker Fetch
-(20.34s) cookie regressions. This does not yet remove every child transient
-cookie journal or complete Slice 843's broader acceptance matrix.
+The latest Slice 843 audit selects parent ownership by resolved HTTP(S) target
+for sandboxed content-process requests, without requiring the owner URL itself
+to be HTTP(S). Network font/image/background-image/media loads, stylesheet
+imports and dynamic stylesheets, classic/module scripts and dependencies,
+page Fetch/font requests, and Worker/ServiceWorker script and Fetch paths
+require the owner-bound parent broker. Missing broker state fails closed
+rather than retrying through a content-worker loader. Local-owner documents
+run in the browser engine and use its parent loader directly; local resource
+targets remain local. The scoped check and explicit content-worker build
+passed, as did the process-backed HTTP navigation (30.16s), mutation
+stylesheet (19.39s), ServiceWorker lifecycle (20.15s), Worker message Fetch
+(20.38s), and host nested ServiceWorker Fetch (20.34s) cookie regressions. A
+unit test verifies target-based classification for network, file, data, and
+fixture base URLs. Child cookie state is now disabled and child journals are
+rejected; remaining direct network paths still need parent-broker coverage, so
+this does not complete Slice 843's broader acceptance matrix.
 The navigation-preload process regression verifies the header on each eligible
 navigation, no preload header on registration/resource requests, source-document
 Referrer-Policy on direct and redirected loads, worker-visible
@@ -10546,10 +10555,12 @@ internal network paths remain unbrokered. Initial-load HTTP(S) scripts
 inserted by inline scripts now use the owner-checked parent broker; the
 process-backed navigation regression passed (1 test; 34.45 seconds), verifying
 HttpOnly request-cookie selection, response-cookie acceptance, and the visible
-script projection for a dynamically inserted classic script. Slice 843 remains
-in progress: full-profile cookie IPC has been removed, but child-direct
-internal requests can still mutate a transient child jar and publish cookie
-journals. User action mutations now receive the parent loader and broker
+script projection for a dynamically inserted classic script. At that earlier
+checkpoint, child-direct internal requests could mutate a transient child jar
+and publish cookie journals. The latest hardening disables child cookie state
+and rejects nonempty journals, but direct requests still need parent-broker
+coverage for cookie behavior. Slice 843 remains in progress. User action
+mutations now receive the parent loader and broker
 HTTP(S) stylesheets, CSS imports/fonts, images, and media created by those
 turns; `native_content_process_mutation_stylesheets_use_parent_cookie_authority`
 passed (1 passed; 904 filtered; 23.11 seconds), verifying HttpOnly selection,

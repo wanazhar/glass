@@ -667,20 +667,28 @@ projection and existing native Fetch behavior.
   response cookie, use on a later host request, and `document.cookie` filtering.
   Scoped `cargo check` and explicit companion-worker build passed; other
   child-direct internal network paths remain in scope.
-- HTTP(S)-document network resources, page script/module loads, Worker and
-  ServiceWorker script/Fetch paths, and page Fetch/font requests now fail
-  closed when their owner-bound parent broker is unavailable; these paths no
-  longer retry through the content loader. The parent-owned target helper
-  keeps existing local/non-network owner behavior unchanged. Scoped native
-  engine `cargo check` and explicit `glass-native-content-worker` build passed.
+- Covered HTTP(S) targets initiated by the sandboxed content process now use
+  the owner-bound parent broker regardless of the owner URL's scheme. Page
+  network resources, scripts/modules, Fetch, Worker, and ServiceWorker paths
+  fail closed when that broker is unavailable; local-owner documents continue
+  to execute in the browser engine with its parent loader, and local file,
+  Blob, fixture, and other non-network resource targets remain local. Host
+  Fetch/openWindow owner validation no longer rejects non-network document
+  owners, and action-mutation resource settlement also carries the parent
+  broker for those owners. Scoped native engine `cargo check` and explicit
+  `glass-native-content-worker` build passed.
   The process-backed tests
   `native_content_process_http_navigation_uses_parent_cookie_authority`,
   `native_content_process_mutation_stylesheets_use_parent_cookie_authority`,
   `native_content_process_service_worker_lifecycle_fetches_use_parent_cookie_authority`,
   `native_content_process_worker_message_fetch_uses_parent_cookie_authority`,
   and `native_host_fetch_service_worker_nested_cookie_uses_parent_authority`
-  passed (1 each; 30.16s, 19.39s, 20.15s, 20.38s, and 20.34s). The child
-  transient jar and cookie-change journals remain outside covered brokered
-  turns, so parent-only ownership and Issue #40 remain incomplete.
+  passed (1 each; 30.16s, 19.39s, 20.15s, 20.38s, and 20.34s). The latest
+  hardening disables content-process cookie reads/writes/profile installation
+  and rejects nonempty child cookie journals. Unit regressions cover target-
+  based selection across HTTP(S), file, data, and fixture bases, plus disabled
+  child cookie authority. Remaining direct child HTTP(S) paths still need the
+  parent broker for request-cookie matching and response-cookie acceptance,
+  so parent-only behavioral ownership and Issue #40 remain incomplete.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

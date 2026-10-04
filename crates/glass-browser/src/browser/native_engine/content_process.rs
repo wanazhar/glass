@@ -4918,6 +4918,13 @@ impl NativeContentProcess {
                 operation: "decode content process cookie changes".into(),
                 reason: "content process returned an invalid cookie change journal".into(),
             })?;
+        if !changes.is_empty() {
+            return Err(NativeEngineError::worker_failure(
+                "content process cookie authority",
+                NativeWorkerFailureKind::InvalidTransfer,
+                "a content process cannot publish cookie changes; HTTP(S) requests must use the parent broker",
+            ));
+        }
         let mut pending =
             self.pending_cookie_changes
                 .lock()
@@ -12089,12 +12096,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         "parent owner does not match the active content document",
                     ));
                 }
-                if !is_network_url(without_fragment(&owner.document_url)) {
-                    return Err(NativeEngineError::Worker {
-                        operation: "content process service worker openWindow resolution".into(),
-                        reason: "parent Fetch broker requires a network document owner".into(),
-                    });
-                }
                 let runtime =
                     javascript_runtime
                         .as_ref()
@@ -12864,12 +12865,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         NativeWorkerFailureKind::Protocol,
                         "parent owner does not match the active content document",
                     ));
-                }
-                if !is_network_url(without_fragment(&owner.document_url)) {
-                    return Err(NativeEngineError::Worker {
-                        operation: "content process fetch".into(),
-                        reason: "parent Fetch broker requires a network document owner".into(),
-                    });
                 }
                 let runtime =
                     javascript_runtime
@@ -14649,10 +14644,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
         };
         let is_action_mutation = response.get("kind").and_then(Value::as_str) == Some("mutated")
             && kind.starts_with("mutate_");
-        if is_action_mutation
-            && let Some(current_document_url) =
-                document_url.as_deref().filter(|url| is_network_url(url))
-        {
+        if is_action_mutation && let Some(current_document_url) = document_url.as_deref() {
             let settlement = async {
                 let owner = active_cookie_owner.clone().ok_or_else(|| {
                     NativeEngineError::worker_failure(
@@ -15211,6 +15203,13 @@ fn persist_content_profile(
         .as_mut()
         .map(NativeResourceLoader::take_cookie_changes)
         .unwrap_or_default();
+    if !cookie_changes.is_empty() {
+        return Err(NativeEngineError::worker_failure(
+            "content process cookie authority",
+            NativeWorkerFailureKind::Protocol,
+            "content loader changed cookie state despite having no cookie authority",
+        ));
+    }
     let cookie_changes = coalesce_cookie_changes(cookie_changes, "content process cookie changes")?;
     save_content_web_storage_profile(
         storage_path,
@@ -17159,8 +17158,10 @@ pub(crate) fn is_network_page_script_target(document_url: &str, href: &str) -> b
 }
 
 pub(crate) fn is_parent_owned_network_target(document_url: &str, href: &str) -> bool {
-    is_network_url(without_fragment(document_url))
-        && is_network_page_script_target(document_url, href)
+    // Cookie authority follows the HTTP(S) request target, not the scheme of
+    // the document that initiated it. A file:, data:, or fixture: document
+    // must not create a transient child cookie jar for remote requests.
+    is_network_page_script_target(document_url, href)
 }
 
 async fn load_page_script_source_list(
@@ -24357,6 +24358,34 @@ fn worker_binary_path() -> Result<PathBuf, NativeEngineError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parent_cookie_authority_is_selected_by_network_target() {
+        for document_url in [
+            "https://app.test/page",
+            "file:///trusted/page.html",
+            "data:text/html,local%20page",
+            "fixture://app.test/page",
+        ] {
+            assert!(
+                is_parent_owned_network_target(document_url, "https://api.test/resource"),
+                "network target from {document_url} must use the parent cookie authority"
+            );
+        }
+
+        assert!(is_parent_owned_network_target(
+            "https://app.test/page",
+            "/resource"
+        ));
+        assert!(!is_parent_owned_network_target(
+            "file:///trusted/page.html",
+            "./resource.js"
+        ));
+        assert!(!is_parent_owned_network_target(
+            "fixture://app.test/page",
+            "./resource.js"
+        ));
+    }
 
     #[tokio::test]
     async fn content_ipc_reader_routes_dialog_decisions_without_stealing_requests() {

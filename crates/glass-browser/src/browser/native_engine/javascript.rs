@@ -1745,7 +1745,7 @@ async fn load_worker_script_resource(
     let network_target = Url::parse(href)
         .or_else(|_| Url::parse(without_fragment(request_base)).and_then(|base| base.join(href)))
         .is_ok_and(|target| is_network_url(target.as_str()));
-    if network_target && is_network_url(without_fragment(document_url)) {
+    if network_target {
         if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
             return parent_fetch_broker
                 .load_worker_script(

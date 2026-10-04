@@ -17918,6 +17918,153 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
 }
 
 #[tokio::test]
+async fn native_content_process_mutation_stylesheets_use_parent_cookie_authority() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("parent-brokered mutation test navigation should reach the server")
+            .unwrap();
+        let navigation_request = read_http_request(&mut stream).await;
+        let body = "<!doctype html><button id='load-style'>Load style</button><script>document.getElementById('load-style').addEventListener('click', () => { const link = document.createElement('link'); link.rel = 'stylesheet'; link.href = '/mutation.css'; document.head.appendChild(link); });</script>";
+        let navigation_response = format!(
+            concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Set-Cookie: mutation_page_visible=present; Path=/; SameSite=Lax\r\n",
+                "Set-Cookie: mutation_page_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\n",
+                "Content-Type: text/html; charset=utf-8\r\n",
+                "Content-Length: {}\r\nConnection: close\r\n\r\n{}"
+            ),
+            body.len(),
+            body
+        );
+        stream
+            .write_all(navigation_response.as_bytes())
+            .await
+            .unwrap();
+
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("parent-brokered mutation stylesheet should reach the server")
+            .unwrap();
+        let stylesheet_request = read_http_request(&mut stream).await;
+        let stylesheet = "@import '/mutation-import.css';";
+        let stylesheet_response = format!(
+            concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Set-Cookie: mutation_style_visible=present; Path=/; SameSite=Lax\r\n",
+                "Set-Cookie: mutation_style_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\n",
+                "Content-Type: text/css\r\n",
+                "Content-Length: {}\r\nConnection: close\r\n\r\n{}"
+            ),
+            stylesheet.len(),
+            stylesheet
+        );
+        stream
+            .write_all(stylesheet_response.as_bytes())
+            .await
+            .unwrap();
+
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("parent-brokered mutation stylesheet import should reach the server")
+            .unwrap();
+        let import_request = read_http_request(&mut stream).await;
+        let import = "body { color: black; }";
+        let import_response = format!(
+            concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Set-Cookie: mutation_import_visible=present; Path=/; SameSite=Lax\r\n",
+                "Set-Cookie: mutation_import_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\n",
+                "Content-Type: text/css\r\n",
+                "Content-Length: {}\r\nConnection: close\r\n\r\n{}"
+            ),
+            import.len(),
+            import
+        );
+        stream.write_all(import_response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
+            .expect("parent-owned mutation cookies should reach the follow-up request")
+            .unwrap();
+        let followup_request = read_http_request(&mut stream).await;
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        (
+            navigation_request,
+            stylesheet_request,
+            import_request,
+            followup_request,
+        )
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    engine
+        .action_async(NativeAction::Click {
+            target: "id=load-style".into(),
+        })
+        .await
+        .unwrap();
+
+    let visible_cookies = engine.evaluate_async("document.cookie").await.unwrap();
+    let visible_cookies = visible_cookies.as_str().unwrap_or_default();
+    assert!(visible_cookies.contains("mutation_page_visible=present"));
+    assert!(visible_cookies.contains("mutation_style_visible=present"));
+    assert!(visible_cookies.contains("mutation_import_visible=present"));
+    assert!(!visible_cookies.contains("mutation_page_secret"));
+    assert!(!visible_cookies.contains("mutation_style_secret"));
+    assert!(!visible_cookies.contains("mutation_import_secret"));
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/mutation-followup').then(response => response.status)")
+            .await
+            .unwrap(),
+        serde_json::json!(204)
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    for name in [
+        "mutation_page_secret",
+        "mutation_style_secret",
+        "mutation_import_secret",
+    ] {
+        assert!(
+            cookies.iter().any(|cookie| {
+                cookie.name == name && cookie.value == "hidden" && cookie.http_only
+            })
+        );
+    }
+    engine.close_async().await.unwrap();
+
+    let (navigation_request, stylesheet_request, import_request, followup_request) =
+        server.await.unwrap();
+    assert!(navigation_request.starts_with("GET /page HTTP/1.1\r\n"));
+    assert!(stylesheet_request.starts_with("GET /mutation.css HTTP/1.1\r\n"));
+    assert!(stylesheet_request.contains("mutation_page_secret=hidden"));
+    assert!(import_request.starts_with("GET /mutation-import.css HTTP/1.1\r\n"));
+    assert!(import_request.contains("mutation_style_secret=hidden"));
+    assert!(followup_request.starts_with("GET /mutation-followup HTTP/1.1\r\n"));
+    for name in [
+        "mutation_page_secret=hidden",
+        "mutation_style_secret=hidden",
+        "mutation_import_secret=hidden",
+    ] {
+        assert!(
+            followup_request.contains(name),
+            "{name}: {followup_request}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_content_process_dynamic_page_module_uses_parent_cookie_authority() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

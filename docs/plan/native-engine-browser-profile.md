@@ -107,6 +107,9 @@ applies the request's credentials mode and each redirect hop. If the parent
 broker is unavailable, the request fails explicitly; the child must not retry
 directly with a local jar. Cookie profiles and cookie-bearing storage files
 remain parent-only.
+User action mutations also carry the parent loader into the content-process
+turn, so newly created HTTP(S) stylesheets and their CSS imports/fonts, images,
+and media use the same owner-checked broker and response-cookie authority.
 
 This contract preserves script-visible cookie behavior without exposing
 HttpOnly state to the child. A Slice 843 checkpoint now stores durable cookies

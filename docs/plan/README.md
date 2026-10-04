@@ -10532,7 +10532,12 @@ HttpOnly request-cookie selection, response-cookie acceptance, and the visible
 script projection for a dynamically inserted classic script. Slice 843 remains
 in progress: full-profile cookie IPC has been removed, but child-direct
 internal requests can still mutate a transient child jar and publish cookie
-journals. Exact scope and verification are in the [Slice 843
+journals. User action mutations now receive the parent loader and broker
+HTTP(S) stylesheets, CSS imports/fonts, images, and media created by those
+turns; `native_content_process_mutation_stylesheets_use_parent_cookie_authority`
+passed (1 passed; 904 filtered; 23.11 seconds), verifying HttpOnly selection,
+response-cookie updates, and script-visible filtering for a click-created
+stylesheet/import chain. Exact scope and verification are in the [Slice 843
 task](tasks/native-engine-browser-843.md).
 
 ## Historical plan: Glass v0.3.6 issue #36

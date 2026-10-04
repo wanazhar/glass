@@ -46,6 +46,12 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- HTTP(S) stylesheets, CSS imports/fonts, images, and media created by page
+  action mutations now settle through the owner-checked parent resource broker.
+  Mutation IPC carries the parent loader, so these requests use parent-owned
+  cookie selection and response updates without a child-loader fallback. A
+  process-backed click regression covers a dynamic stylesheet/import chain,
+  HttpOnly propagation, and the visible-only `document.cookie` projection.
 - HTTP(S) classic and module scripts inserted by inline scripts during initial
   document loading now use the owner-checked parent network/cookie broker.
   The navigation regression verifies HttpOnly request cookies, response-cookie
@@ -160,15 +166,15 @@ and intends to use [Semantic Versioning](https://semver.org/).
   from a CSS font through a later image, HttpOnly exclusion from the
   `FontFace.load()` script projection,
   and both cookies set by that font response on a later Fetch. Font requests
-  outside an active parent-brokered turn remain child-side paths. Dynamic
-  HTTP(S) stylesheet links and their CSS imports during an explicit
+  outside a parent-broker-enabled content operation remain child-side paths.
+  Dynamic HTTP(S) stylesheet links and their CSS imports during an explicit
   parent-brokered page-script turn now use the existing parent stylesheet
   loader. The process-backed referrer-policy regression passed (1 test; 29.43
   seconds), covering HttpOnly cookie selection and acceptance across the
   dynamic stylesheet, its import, and a later Fetch without changing cascade
-  or referrer behavior. Dynamic stylesheet requests outside an active
-  parent-brokered turn and Service-Worker-provided navigation responses remain
-  child-side paths.
+  or referrer behavior. Dynamic stylesheet requests outside a parent-brokered
+  script or user-action mutation transaction and Service-Worker-provided
+  navigation responses remain child-side paths.
   The Service Worker `clients.openWindow`-resumed navigation regression also
   passed (1 test; 34.25 seconds).
   The existing nested dynamic classic-script regression passed (1 test; 19.89

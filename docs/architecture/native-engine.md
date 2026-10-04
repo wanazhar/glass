@@ -113,6 +113,12 @@ before connect-time and later MessagePort Fetches. That later message also
 performs a runtime import and nested import; parent-accepted HttpOnly response
 cookies reach each next request and the following Fetch, while remaining out
 of `document.cookie`.
+The new process-backed
+`native_content_process_parser_module_graph_uses_parent_cookie_authority`
+regression covers both a parser-discovered page module entry and an inline-
+inserted module root, each with a static dependency. Parent-selected HttpOnly
+cookies flow through each graph, the parser module's Fetch, and a later page
+Fetch while `document.cookie` remains empty.
 Before parent page loads, the child transfers its applied meta-CSP policy
 sources; the regression also verifies `img-src 'self'` prevents a cross-origin
 image request. At that protocol-22 checkpoint, the initial module graph lacked
@@ -784,8 +790,9 @@ images, classic/module scripts inserted by inline scripts during initial
 loading, initial/dynamically attached media elements, CSS `@font-face`
 resources, and explicit page `FontFace` destination requests now use the parent
 broker. The process-backed navigation regression verifies the inserted
-classic-script cookie flow; its module-root variant is implemented on the same
-broker but does not yet have a dedicated cookie regression.
+classic-script cookie flow. The module-graph regression also verifies the
+parser-discovered module and a module root inserted by inline script, including
+their static dependencies and parent-owned response-cookie ordering.
 Page and dedicated Worker EventSource open/read/reconnect/close also use the
 parent broker: the parent owns each live response stream and network/cookie
 policy, while the child receives bounded chunks by opaque stream ID and runs the

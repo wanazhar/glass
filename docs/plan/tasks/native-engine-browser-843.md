@@ -730,5 +730,16 @@ projection and existing native Fetch behavior.
   assertions still pass. This adds process-backed static and dynamic
   SharedWorker graph coverage; uncovered HTTP(S) request classes still fail
   closed and Slice 843 remains in progress.
+- The process-backed
+  `native_content_process_parser_module_graph_uses_parent_cookie_authority`
+  regression passed (1 passed; 908 filtered; 20.85 seconds). It covers both a
+  parser-discovered module entry and a module root inserted by an inline
+  script during initial page loading, each with a static dependency. The page's
+  HttpOnly cookie reaches both roots; each root's response cookie reaches its
+  dependency; and all six parent-owned HttpOnly values reach a later page
+  Fetch after the parser module's own Fetch. `document.cookie` remains empty.
+  Initial parser and inline-inserted module-root cookie coverage is now
+  explicit. Other uncovered HTTP(S) classes remain fail closed and Slice 843
+  remains in progress.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

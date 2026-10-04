@@ -139,6 +139,12 @@ regression also verifies the module SharedWorker entry and static dependency
 cookie sequence before connect-time Fetch. A later MessagePort handler's
 runtime import and nested import likewise preserve parent response-cookie
 ordering before Fetch; HttpOnly values stay in the parent.
+The process-backed
+`native_content_process_parser_module_graph_uses_parent_cookie_authority`
+regression also verifies the initial parser-discovered module entry and a
+module root inserted by inline script, each with a static dependency. Parent-
+selected HttpOnly cookies reach the module Fetch and a later page Fetch;
+`document.cookie` remains empty.
 
 This contract preserves script-visible cookie behavior without exposing
 HttpOnly state to the child. A Slice 843 checkpoint now stores durable cookies

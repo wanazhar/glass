@@ -720,6 +720,12 @@ parent broker: the parent owns each live response stream and network/cookie
 policy, while the child receives bounded chunks by opaque stream ID and runs the
 existing SSE parser. A Worker request retains its worker-script initiator URL;
 the captured page owner remains the IPC authorization boundary.
+Page and dedicated Worker WebSocket handshakes, frame sends/receives, and close
+also use the parent broker. The parent owns the live socket and keeps both the
+handshake `Cookie` and response `Set-Cookie` inside its cookie authority; the
+child receives only an opaque stream ID, bounded frames, and lifecycle events.
+Worker requests retain their worker-script initiator URL, with the captured
+page owner scoping each IPC stream.
 Font requests without an active parent broker and dynamic stylesheet requests
 without an active parent-brokered page-script turn, plus Service-Worker-provided
 navigation responses, Service Worker background work outside intercepted
@@ -731,7 +737,7 @@ and can update Web Storage, IndexedDB, CacheStorage, and Service Worker state
 there. Its loader no longer opens the cookie sidecar. Cookie import, updates,
 and clear now send only an owner-checked, URL-scoped visible projection; they do
 not send full cookie profiles/change batches, and script setter writes do not
-mutate the child's loader. The content-worker protocol is now version 29.
+mutate the child's loader. The content-worker protocol is now version 30.
 Child-direct internal requests can still mutate a transient child jar and
 return bounded cookie-change journals to the parent. Slice 843 remains in
 progress to broker those remaining requests and remove child-generated cookie

@@ -123,7 +123,7 @@ const MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS: usize = MAX_CONTENT_PROCESS_OUTPUT
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
     MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 29;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 30;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -209,6 +209,26 @@ enum NativeParentEventSourceRead {
 struct NativeParentEventSourceFailure {
     message: String,
     csp_violations: Vec<NativeCspViolation>,
+}
+
+#[derive(Clone)]
+struct NativeParentWebSocketOpen {
+    stream_id: u64,
+    protocol: String,
+    csp_violations: Vec<NativeCspViolation>,
+}
+
+enum NativeParentWebSocketOpenResult {
+    Opened(NativeParentWebSocketOpen),
+    Failed {
+        message: String,
+        csp_violations: Vec<NativeCspViolation>,
+    },
+}
+
+enum NativeParentWebSocketRead {
+    Pending,
+    Event(NativeWebSocketEvent),
 }
 
 impl NativeContentFetchBroker<'_> {
@@ -552,6 +572,461 @@ impl NativeContentFetchBroker<'_> {
         }
         self.update_parent_document_cookie(&response, "parent EventSource close")?;
         Ok(())
+    }
+
+    async fn open_websocket(
+        &mut self,
+        source_id: u32,
+        worker_id: Option<u32>,
+        initiator_url: &str,
+        href: &str,
+        protocols: &[String],
+    ) -> Result<NativeParentWebSocketOpenResult, NativeEngineError> {
+        if source_id == 0 || worker_id == Some(0) {
+            return Err(NativeEngineError::invalid(
+                "parent WebSocket source ID",
+                "source and optional worker IDs must be positive",
+            ));
+        }
+        validate_websocket_protocols(protocols)?;
+        let cookie_writes = self.take_cookie_writes()?;
+        write_value_frame(
+            self.stdout,
+            &json!({
+                "kind": "parent_websocket_open_request",
+                "id": self.request_id,
+                "source_id": source_id,
+                "worker_id": worker_id,
+                "owner": self.owner,
+                "document_url": self.owner.document_url,
+                "initiator_url": initiator_url,
+                "href": href,
+                "protocols": protocols,
+                "cookie_writes": cookie_writes,
+            }),
+        )
+        .await?;
+        let payload = self
+            .receive_parent_response("parent WebSocket open")
+            .await?;
+        let response: Value = serde_json::from_slice(&payload).map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent WebSocket open response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned invalid WebSocket open JSON",
+            )
+        })?;
+        if response.get("id").and_then(Value::as_u64) != Some(self.request_id)
+            || response.get("source_id").and_then(Value::as_u64) != Some(u64::from(source_id))
+            || decode_optional_content_worker_id(&response, "parent WebSocket worker ID")?
+                != worker_id
+        {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent WebSocket open response",
+                NativeWorkerFailureKind::Protocol,
+                "WebSocket open response belongs to a different request or worker",
+            ));
+        }
+        self.update_parent_document_cookie(&response, "parent WebSocket open")?;
+        let csp_violations = response
+            .get("csp_violations")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| {
+                NativeEngineError::worker_failure(
+                    "decode parent WebSocket open response",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent returned invalid WebSocket CSP violations",
+                )
+            })?
+            .unwrap_or_default();
+        if response.get("kind").and_then(Value::as_str) == Some("parent_websocket_error") {
+            return Ok(NativeParentWebSocketOpenResult::Failed {
+                message: response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("parent rejected the WebSocket request")
+                    .to_owned(),
+                csp_violations,
+            });
+        }
+        if response.get("kind").and_then(Value::as_str) != Some("parent_websocket_opened") {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent WebSocket open response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned an unknown WebSocket open result",
+            ));
+        }
+        let stream_id = response
+            .get("stream_id")
+            .and_then(Value::as_u64)
+            .filter(|stream_id| *stream_id > 0)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "decode parent WebSocket open response",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent omitted a valid WebSocket stream ID",
+                )
+            })?;
+        let protocol = response
+            .get("protocol")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "decode parent WebSocket open response",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent omitted the selected WebSocket protocol",
+                )
+            })?
+            .to_owned();
+        Ok(NativeParentWebSocketOpenResult::Opened(
+            NativeParentWebSocketOpen {
+                stream_id,
+                protocol,
+                csp_violations,
+            },
+        ))
+    }
+
+    async fn read_parent_websocket(
+        &mut self,
+        source_id: u32,
+        worker_id: Option<u32>,
+        stream_id: u64,
+    ) -> Result<NativeParentWebSocketRead, NativeEngineError> {
+        if source_id == 0 || worker_id == Some(0) || stream_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "parent WebSocket stream identity",
+                "source, optional worker, and stream IDs must be positive",
+            ));
+        }
+        let cookie_writes = self.take_cookie_writes()?;
+        write_value_frame(
+            self.stdout,
+            &json!({
+                "kind": "parent_websocket_read_request",
+                "id": self.request_id,
+                "source_id": source_id,
+                "worker_id": worker_id,
+                "stream_id": stream_id,
+                "owner": self.owner,
+                "cookie_writes": cookie_writes,
+            }),
+        )
+        .await?;
+        let payload = self
+            .receive_parent_response("parent WebSocket read")
+            .await?;
+        let response: Value = serde_json::from_slice(&payload).map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent WebSocket event",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned invalid WebSocket event JSON",
+            )
+        })?;
+        if response.get("id").and_then(Value::as_u64) != Some(self.request_id)
+            || response.get("source_id").and_then(Value::as_u64) != Some(u64::from(source_id))
+            || response.get("worker_id").and_then(Value::as_u64) != worker_id.map(u64::from)
+            || response.get("stream_id").and_then(Value::as_u64) != Some(stream_id)
+        {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent WebSocket event",
+                NativeWorkerFailureKind::Protocol,
+                "WebSocket event belongs to a different request, worker, or stream",
+            ));
+        }
+        self.update_parent_document_cookie(&response, "parent WebSocket read")?;
+        let csp_violations = response
+            .get("csp_violations")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| {
+                NativeEngineError::worker_failure(
+                    "decode parent WebSocket event",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent returned invalid WebSocket CSP violations",
+                )
+            })?
+            .unwrap_or_default();
+        let origin = response
+            .get("origin")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let event = match response.get("kind").and_then(Value::as_str) {
+            Some("parent_websocket_pending") => return Ok(NativeParentWebSocketRead::Pending),
+            Some("parent_websocket_text") => {
+                let data = response
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "decode parent WebSocket text",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent omitted WebSocket text data",
+                        )
+                    })?
+                    .to_owned();
+                if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "parent WebSocket text message",
+                        MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+                        data.len(),
+                    ));
+                }
+                NativeWebSocketEvent::MessageText { data, origin }
+            }
+            Some("parent_websocket_binary") => {
+                let encoded = response
+                    .get("data_base64")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "decode parent WebSocket binary",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent omitted WebSocket binary data",
+                        )
+                    })?;
+                let data = base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .map_err(|_| {
+                        NativeEngineError::worker_failure(
+                            "decode parent WebSocket binary",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent WebSocket binary data is not valid base64",
+                        )
+                    })?;
+                if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "parent WebSocket binary message",
+                        MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+                        data.len(),
+                    ));
+                }
+                NativeWebSocketEvent::MessageBinary { data, origin }
+            }
+            Some("parent_websocket_close") => {
+                let code = response
+                    .get("code")
+                    .and_then(Value::as_u64)
+                    .and_then(|code| u16::try_from(code).ok())
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "decode parent WebSocket close",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent omitted a valid WebSocket close code",
+                        )
+                    })?;
+                let reason = response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "decode parent WebSocket close",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent omitted the WebSocket close reason",
+                        )
+                    })?
+                    .to_owned();
+                NativeWebSocketEvent::Close {
+                    code,
+                    reason,
+                    was_clean: response
+                        .get("was_clean")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                }
+            }
+            Some("parent_websocket_error") => NativeWebSocketEvent::Error {
+                message: response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("parent WebSocket stream failed")
+                    .to_owned(),
+                csp_violations,
+            },
+            _ => {
+                return Err(NativeEngineError::worker_failure(
+                    "decode parent WebSocket event",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent returned an unknown WebSocket event",
+                ));
+            }
+        };
+        Ok(NativeParentWebSocketRead::Event(event))
+    }
+
+    async fn send_parent_websocket(
+        &mut self,
+        source_id: u32,
+        worker_id: Option<u32>,
+        stream_id: u64,
+        message: Message,
+    ) -> Result<(), NativeEngineError> {
+        if source_id == 0 || worker_id == Some(0) || stream_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "parent WebSocket stream identity",
+                "source, optional worker, and stream IDs must be positive",
+            ));
+        }
+        let message = match message {
+            Message::Text(data) if data.len() <= MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES => {
+                json!({"message_type":"text","data":data.as_str()})
+            }
+            Message::Binary(data) if data.len() <= MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES => {
+                json!({
+                    "message_type":"binary",
+                    "data_base64":base64::engine::general_purpose::STANDARD.encode(data),
+                })
+            }
+            Message::Text(data) => {
+                return Err(NativeEngineError::limit(
+                    "parent WebSocket text message",
+                    MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+                    data.len(),
+                ));
+            }
+            Message::Binary(data) => {
+                return Err(NativeEngineError::limit(
+                    "parent WebSocket binary message",
+                    MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+                    data.len(),
+                ));
+            }
+            _ => {
+                return Err(NativeEngineError::invalid(
+                    "parent WebSocket message",
+                    "only text and binary data messages are supported",
+                ));
+            }
+        };
+        let cookie_writes = self.take_cookie_writes()?;
+        write_value_frame(
+            self.stdout,
+            &json!({
+                "kind": "parent_websocket_send_request",
+                "id": self.request_id,
+                "source_id": source_id,
+                "worker_id": worker_id,
+                "stream_id": stream_id,
+                "owner": self.owner,
+                "message": message,
+                "cookie_writes": cookie_writes,
+            }),
+        )
+        .await?;
+        let response = self
+            .receive_parent_response("parent WebSocket send")
+            .await?;
+        let response: Value = serde_json::from_slice(&response).map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent WebSocket send response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned invalid WebSocket send JSON",
+            )
+        })?;
+        if response.get("id").and_then(Value::as_u64) != Some(self.request_id)
+            || response.get("source_id").and_then(Value::as_u64) != Some(u64::from(source_id))
+            || response.get("worker_id").and_then(Value::as_u64) != worker_id.map(u64::from)
+            || response.get("stream_id").and_then(Value::as_u64) != Some(stream_id)
+        {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent WebSocket send response",
+                NativeWorkerFailureKind::Protocol,
+                "WebSocket send acknowledgement does not match its stream",
+            ));
+        }
+        self.update_parent_document_cookie(&response, "parent WebSocket send")?;
+        match response.get("kind").and_then(Value::as_str) {
+            Some("parent_websocket_sent") => Ok(()),
+            Some("parent_websocket_error") => Err(NativeEngineError::Network {
+                operation: "WebSocket send".into(),
+                reason: response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("parent WebSocket stream failed")
+                    .to_owned(),
+            }),
+            _ => Err(NativeEngineError::worker_failure(
+                "decode parent WebSocket send response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned an unknown WebSocket send result",
+            )),
+        }
+    }
+
+    async fn close_parent_websocket(
+        &mut self,
+        source_id: u32,
+        worker_id: Option<u32>,
+        stream_id: u64,
+        code: u16,
+        reason: &str,
+    ) -> Result<bool, NativeEngineError> {
+        if source_id == 0 || worker_id == Some(0) || stream_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "parent WebSocket stream identity",
+                "source, optional worker, and stream IDs must be positive",
+            ));
+        }
+        if code != 1000 && !(3000..=4999).contains(&code) {
+            return Err(NativeEngineError::invalid(
+                "parent WebSocket close code",
+                "must be 1000 or in the 3000-4999 range",
+            ));
+        }
+        if reason.len() > MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES {
+            return Err(NativeEngineError::limit(
+                "parent WebSocket close reason",
+                MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
+                reason.len(),
+            ));
+        }
+        let cookie_writes = self.take_cookie_writes()?;
+        write_value_frame(
+            self.stdout,
+            &json!({
+                "kind": "parent_websocket_close_request",
+                "id": self.request_id,
+                "source_id": source_id,
+                "worker_id": worker_id,
+                "stream_id": stream_id,
+                "code": code,
+                "reason": reason,
+                "owner": self.owner,
+                "cookie_writes": cookie_writes,
+            }),
+        )
+        .await?;
+        let payload = self
+            .receive_parent_response("parent WebSocket close")
+            .await?;
+        let response: Value = serde_json::from_slice(&payload).map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent WebSocket close response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned invalid WebSocket close JSON",
+            )
+        })?;
+        if response.get("kind").and_then(Value::as_str) != Some("parent_websocket_closed")
+            || response.get("id").and_then(Value::as_u64) != Some(self.request_id)
+            || response.get("source_id").and_then(Value::as_u64) != Some(u64::from(source_id))
+            || response.get("worker_id").and_then(Value::as_u64) != worker_id.map(u64::from)
+            || response.get("stream_id").and_then(Value::as_u64) != Some(stream_id)
+        {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent WebSocket close response",
+                NativeWorkerFailureKind::Protocol,
+                "WebSocket close acknowledgement does not match its stream",
+            ));
+        }
+        self.update_parent_document_cookie(&response, "parent WebSocket close")?;
+        Ok(response
+            .get("was_clean")
+            .and_then(Value::as_bool)
+            .unwrap_or(false))
     }
 
     fn update_parent_document_cookie(
@@ -1643,11 +2118,6 @@ pub(crate) struct NativeContentEvent {
     pub(crate) kind: NativeEventKind,
 }
 
-enum NativeWebSocketCommand {
-    Send(Message),
-    Close { code: u16, reason: String },
-}
-
 enum NativeWebSocketEvent {
     Open {
         protocol: String,
@@ -1673,8 +2143,9 @@ enum NativeWebSocketEvent {
 }
 
 struct NativeWebSocketConnection {
-    commands: mpsc::Sender<NativeWebSocketCommand>,
+    event_sender: mpsc::Sender<NativeWebSocketEvent>,
     events: mpsc::Receiver<NativeWebSocketEvent>,
+    parent_stream_id: Option<u64>,
 }
 
 enum NativeEventSourceCommand {
@@ -1980,263 +2451,6 @@ async fn queue_websocket_event(
     event: NativeWebSocketEvent,
 ) -> bool {
     events.send(event).await.is_ok()
-}
-
-async fn run_native_websocket(
-    request: tokio_tungstenite::tungstenite::http::Request<()>,
-    origin: String,
-    csp_violations: Vec<NativeCspViolation>,
-    mut commands: mpsc::Receiver<NativeWebSocketCommand>,
-    events: mpsc::Sender<NativeWebSocketEvent>,
-) {
-    let connection = timeout(NATIVE_WEBSOCKET_CONNECT_TIMEOUT, connect_async(request)).await;
-    let (socket, response) = match connection {
-        Ok(Ok(connection)) => connection,
-        Ok(Err(error)) => {
-            let message = bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES);
-            if !queue_websocket_event(
-                &events,
-                NativeWebSocketEvent::Error {
-                    message,
-                    csp_violations,
-                },
-            )
-            .await
-            {
-                return;
-            }
-            let _ = queue_websocket_event(
-                &events,
-                NativeWebSocketEvent::Close {
-                    code: 1006,
-                    reason: String::new(),
-                    was_clean: false,
-                },
-            )
-            .await;
-            return;
-        }
-        Err(_) => {
-            if !queue_websocket_event(
-                &events,
-                NativeWebSocketEvent::Error {
-                    message: "native WebSocket handshake timed out".into(),
-                    csp_violations,
-                },
-            )
-            .await
-            {
-                return;
-            }
-            let _ = queue_websocket_event(
-                &events,
-                NativeWebSocketEvent::Close {
-                    code: 1006,
-                    reason: String::new(),
-                    was_clean: false,
-                },
-            )
-            .await;
-            return;
-        }
-    };
-    let protocol = response
-        .headers()
-        .get(tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_owned();
-    if !queue_websocket_event(
-        &events,
-        NativeWebSocketEvent::Open {
-            protocol,
-            csp_violations,
-        },
-    )
-    .await
-    {
-        return;
-    }
-    let (mut sink, mut stream) = socket.split();
-    loop {
-        tokio::select! {
-            command = commands.recv() => {
-                match command {
-                    Some(NativeWebSocketCommand::Send(message)) => {
-                        if let Err(error) = sink.send(message).await {
-                            let message = bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES);
-                            if !queue_websocket_event(
-                                &events,
-                                NativeWebSocketEvent::Error {
-                                    message,
-                                    csp_violations: Vec::new(),
-                                },
-                            )
-                            .await
-                            {
-                                return;
-                            }
-                            let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
-                                code: 1006,
-                                reason: String::new(),
-                                was_clean: false,
-                            }).await;
-                            return;
-                        }
-                    }
-                    Some(NativeWebSocketCommand::Close { code, reason }) => {
-                        let close = Message::Close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                            code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::from(code),
-                            reason: reason.clone().into(),
-                        }));
-                        let clean = sink.send(close).await.is_ok();
-                        let _ = sink.close().await;
-                        let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
-                            code: if clean { code } else { 1006 },
-                            reason: if clean { reason } else { String::new() },
-                            was_clean: clean,
-                        }).await;
-                        return;
-                    }
-                    None => {
-                        let _ = sink.close().await;
-                        let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
-                            code: 1006,
-                            reason: String::new(),
-                            was_clean: false,
-                        }).await;
-                        return;
-                    }
-                }
-            }
-            incoming = stream.next() => {
-                match incoming {
-                    Some(Ok(Message::Text(data))) => {
-                        let data = data.to_string();
-                        if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
-                            let _ = queue_websocket_event(&events, NativeWebSocketEvent::Error {
-                                message: "native WebSocket message exceeds its limit".into(),
-                                csp_violations: Vec::new(),
-                            }).await;
-                            let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
-                                code: 1009,
-                                reason: String::new(),
-                                was_clean: false,
-                            }).await;
-                            return;
-                        }
-                        if !queue_websocket_event(&events, NativeWebSocketEvent::MessageText { data, origin: origin.clone() }).await {
-                            return;
-                        }
-                    }
-                    Some(Ok(Message::Binary(data))) => {
-                        let data = data.to_vec();
-                        if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
-                            let _ = queue_websocket_event(&events, NativeWebSocketEvent::Error {
-                                message: "native WebSocket message exceeds its limit".into(),
-                                csp_violations: Vec::new(),
-                            }).await;
-                            let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
-                                code: 1009,
-                                reason: String::new(),
-                                was_clean: false,
-                            }).await;
-                            return;
-                        }
-                        if !queue_websocket_event(&events, NativeWebSocketEvent::MessageBinary { data, origin: origin.clone() }).await {
-                            return;
-                        }
-                    }
-                    Some(Ok(Message::Close(frame))) => {
-                        let (code, reason) = frame
-                            .map(|frame| (u16::from(frame.code), bounded_websocket_text(frame.reason, MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES)))
-                            .unwrap_or((1005, String::new()));
-                        let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
-                            code,
-                            reason,
-                            was_clean: true,
-                        }).await;
-                        return;
-                    }
-                    Some(Ok(Message::Ping(data))) => {
-                        if let Err(error) = sink.send(Message::Pong(data)).await {
-                            let message = bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES);
-                            if !queue_websocket_event(
-                                &events,
-                                NativeWebSocketEvent::Error {
-                                    message,
-                                    csp_violations: Vec::new(),
-                                },
-                            )
-                            .await
-                            {
-                                return;
-                            }
-                            let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
-                                code: 1006,
-                                reason: String::new(),
-                                was_clean: false,
-                            }).await;
-                            return;
-                        }
-                    }
-                    Some(Ok(Message::Pong(_))) => {}
-                    Some(Ok(_)) => {}
-                    Some(Err(error)) => {
-                        let message = bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES);
-                        if !queue_websocket_event(
-                            &events,
-                            NativeWebSocketEvent::Error {
-                                message,
-                                csp_violations: Vec::new(),
-                            },
-                        )
-                        .await
-                        {
-                            return;
-                        }
-                        let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
-                            code: 1006,
-                            reason: String::new(),
-                            was_clean: false,
-                        }).await;
-                        return;
-                    }
-                    None => {
-                        let _ = queue_websocket_event(&events, NativeWebSocketEvent::Close {
-                            code: 1006,
-                            reason: String::new(),
-                            was_clean: false,
-                        }).await;
-                        return;
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn spawn_native_websocket(
-    target: NativeWebSocketTarget,
-    origin: &NativeOrigin,
-    protocols: &[String],
-) -> Result<NativeWebSocketConnection, NativeEngineError> {
-    let request = native_websocket_request(&target, origin, protocols)?;
-    let csp_violations = target.csp_violations;
-    schedule_native_csp_report_deliveries(target.csp_report_deliveries);
-    let (command_sender, command_receiver) = mpsc::channel(MAX_NATIVE_WEBSOCKET_EVENTS);
-    let (event_sender, event_receiver) = mpsc::channel(MAX_NATIVE_WEBSOCKET_EVENTS);
-    tokio::spawn(run_native_websocket(
-        request,
-        origin.serialized(),
-        csp_violations,
-        command_receiver,
-        event_sender,
-    ));
-    Ok(NativeWebSocketConnection {
-        commands: command_sender,
-        events: event_receiver,
-    })
 }
 
 async fn wait_event_source_retry(
@@ -2570,6 +2784,17 @@ struct NativeParentEventSourceStream {
     response: reqwest::Response,
 }
 
+type NativeParentWebSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+struct NativeParentWebSocketStream {
+    owner: NativeContentCookieOwner,
+    source_id: u32,
+    worker_id: Option<u32>,
+    origin: String,
+    socket: NativeParentWebSocket,
+}
+
 pub(crate) struct NativeContentProcess {
     child: Child,
     stdin: ChildStdin,
@@ -2596,6 +2821,8 @@ pub(crate) struct NativeContentProcess {
     pending_cookie_writes: Vec<NativeContentCookieWrite>,
     next_parent_event_source_stream_id: u64,
     parent_event_source_streams: BTreeMap<u64, NativeParentEventSourceStream>,
+    next_parent_websocket_stream_id: u64,
+    parent_websocket_streams: BTreeMap<u64, NativeParentWebSocketStream>,
     #[cfg(windows)]
     sandbox: NativeContentSandbox,
 }
@@ -2755,6 +2982,7 @@ fn decode_async_effects_ready(
 
 fn content_worker_effects_pending(
     pending_worker_messages: &VecDeque<NativeWorkerMessage>,
+    pending_worker_websocket_commands: &VecDeque<NativeWorkerWebSocketCommand>,
     pending_message_port_messages: &VecDeque<NativeMessagePortPageMessage>,
     pending_page_message_port_commands: &VecDeque<NativePageMessagePortCommand>,
     pending_shared_worker_commands: &VecDeque<NativeScriptCommand>,
@@ -2767,6 +2995,11 @@ fn content_worker_effects_pending(
         (
             "content-process pending worker messages",
             pending_worker_messages.len(),
+            MAX_NATIVE_WORKER_MESSAGES,
+        ),
+        (
+            "content-process pending worker WebSocket commands",
+            pending_worker_websocket_commands.len(),
             MAX_NATIVE_WORKER_MESSAGES,
         ),
         (
@@ -2810,6 +3043,7 @@ fn content_worker_effects_pending(
         }
     }
     Ok(!pending_worker_messages.is_empty()
+        || !pending_worker_websocket_commands.is_empty()
         || !pending_message_port_messages.is_empty()
         || !pending_page_message_port_commands.is_empty()
         || !pending_shared_worker_commands.is_empty()
@@ -2969,6 +3203,8 @@ impl NativeContentProcess {
             pending_cookie_writes: Vec::new(),
             next_parent_event_source_stream_id: 1,
             parent_event_source_streams: BTreeMap::new(),
+            next_parent_websocket_stream_id: 1,
+            parent_websocket_streams: BTreeMap::new(),
             #[cfg(windows)]
             sandbox,
         };
@@ -4448,6 +4684,7 @@ impl NativeContentProcess {
             .await?;
         require_response_kind(&response, "closed", id, "content process close")?;
         self.parent_event_source_streams.clear();
+        self.parent_websocket_streams.clear();
         match timeout(Duration::from_secs(1), self.child.wait()).await {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(_)) => Err(NativeEngineError::Worker {
@@ -4750,6 +4987,7 @@ impl NativeContentProcess {
         self.healthy = false;
         self.failure_kind = Some(kind);
         self.parent_event_source_streams.clear();
+        self.parent_websocket_streams.clear();
     }
 
     fn discard_stale_parent_event_source_streams(&mut self, generation: u32) {
@@ -4765,6 +5003,639 @@ impl NativeContentProcess {
                 || stream.owner.frame_id != frame_id
                 || stream.owner.generation == generation
         });
+        self.parent_websocket_streams.retain(|_, stream| {
+            stream.owner.context_id != context_id
+                || stream.owner.frame_id != frame_id
+                || stream.owner.generation == generation
+        });
+    }
+
+    async fn handle_parent_websocket_request(
+        &mut self,
+        operation: &Value,
+        response: &Value,
+        parent_navigation_document_url: Option<&str>,
+        mut parent_loader: Option<&mut NativeResourceLoader>,
+    ) -> Result<Value, NativeEngineError> {
+        let request_id = response.get("id").and_then(Value::as_u64).ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "parent WebSocket broker",
+                NativeWorkerFailureKind::Protocol,
+                "WebSocket request omitted its content-operation ID",
+            )
+        })?;
+        if operation.get("id").and_then(Value::as_u64) != Some(request_id) {
+            return Err(NativeEngineError::worker_failure(
+                "parent WebSocket broker",
+                NativeWorkerFailureKind::Protocol,
+                "WebSocket request belongs to a different content operation",
+            ));
+        }
+        let kind = response
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "parent WebSocket broker",
+                    NativeWorkerFailureKind::Protocol,
+                    "WebSocket request omitted its operation kind",
+                )
+            })?;
+        let source_id = response
+            .get("source_id")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value != 0)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "parent WebSocket broker",
+                    NativeWorkerFailureKind::Protocol,
+                    "WebSocket request has an invalid source ID",
+                )
+            })?;
+        let worker_id = decode_optional_content_worker_id(response, "parent WebSocket worker ID")?;
+        let owner = decode_content_cookie_owner(
+            response.get("owner").ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "parent WebSocket broker",
+                    NativeWorkerFailureKind::Protocol,
+                    "WebSocket request omitted its parent-captured owner",
+                )
+            })?,
+            "parent WebSocket owner",
+        )?;
+        let expected_owner = operation
+            .get("owner")
+            .map(|value| decode_content_cookie_owner(value, "parent script owner"))
+            .transpose()?;
+        if expected_owner
+            .as_ref()
+            .is_some_and(|expected_owner| expected_owner != &owner)
+            || !parent_broker_owner_matches_operation(
+                self,
+                operation,
+                &owner,
+                parent_navigation_document_url,
+            )
+        {
+            return Err(NativeEngineError::worker_failure(
+                "parent WebSocket broker",
+                NativeWorkerFailureKind::Protocol,
+                "WebSocket request does not match the active document owner",
+            ));
+        }
+        let loader = parent_loader.as_deref_mut().ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "parent WebSocket broker",
+                NativeWorkerFailureKind::Protocol,
+                "content process requested WebSocket service without a parent loader",
+            )
+        })?;
+        let document_cookie = apply_parent_content_cookie_writes(
+            loader,
+            &owner,
+            response,
+            "parent WebSocket cookie-write journal",
+        )?;
+        let stream_id = response
+            .get("stream_id")
+            .and_then(Value::as_u64)
+            .filter(|stream_id| *stream_id > 0);
+        match kind {
+            "parent_websocket_open_request" => {
+                if stream_id.is_some() {
+                    return Err(NativeEngineError::worker_failure(
+                        "parent WebSocket open",
+                        NativeWorkerFailureKind::Protocol,
+                        "WebSocket open request carried a stream ID",
+                    ));
+                }
+                let document_url = response
+                    .get("document_url")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "parent WebSocket open",
+                            NativeWorkerFailureKind::Protocol,
+                            "WebSocket open omitted its page-owner URL",
+                        )
+                    })?;
+                let initiator_url = response
+                    .get("initiator_url")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "parent WebSocket open",
+                            NativeWorkerFailureKind::Protocol,
+                            "WebSocket open omitted its initiator URL",
+                        )
+                    })?;
+                let href = response
+                    .get("href")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "parent WebSocket open",
+                            NativeWorkerFailureKind::Protocol,
+                            "WebSocket open omitted its URL",
+                        )
+                    })?;
+                let protocols = response
+                    .get("protocols")
+                    .cloned()
+                    .map(serde_json::from_value::<Vec<String>>)
+                    .transpose()
+                    .map_err(|_| {
+                        NativeEngineError::worker_failure(
+                            "parent WebSocket open",
+                            NativeWorkerFailureKind::Protocol,
+                            "WebSocket protocols are malformed",
+                        )
+                    })?
+                    .unwrap_or_default();
+                if without_fragment(document_url) != without_fragment(&owner.document_url) {
+                    return Err(NativeEngineError::worker_failure(
+                        "parent WebSocket open",
+                        NativeWorkerFailureKind::Protocol,
+                        "WebSocket page URL does not match its captured owner",
+                    ));
+                }
+                if worker_id.is_none()
+                    && without_fragment(initiator_url) != without_fragment(&owner.document_url)
+                {
+                    return Err(NativeEngineError::worker_failure(
+                        "parent WebSocket open",
+                        NativeWorkerFailureKind::Protocol,
+                        "page WebSocket initiator does not match its owner",
+                    ));
+                }
+                validate_websocket_protocols(&protocols)?;
+                if self.parent_websocket_streams.len() >= MAX_NATIVE_WEBSOCKET_EVENTS {
+                    return Ok(json!({
+                        "kind": "parent_websocket_error",
+                        "id": request_id,
+                        "source_id": source_id,
+                        "worker_id": worker_id,
+                        "reason": "parent WebSocket stream limit reached",
+                        "document_cookie": loader.document_cookie(&owner.document_url)?,
+                        "csp_violations": [],
+                    }));
+                }
+                let target = match loader.websocket_target(initiator_url, href) {
+                    Ok(target) => target,
+                    Err(error) => {
+                        return Ok(json!({
+                            "kind": "parent_websocket_error",
+                            "id": request_id,
+                            "source_id": source_id,
+                            "worker_id": worker_id,
+                            "reason": bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES),
+                            "document_cookie": loader.document_cookie(&owner.document_url)?,
+                            "csp_violations": loader.take_csp_violations(),
+                        }));
+                    }
+                };
+                let origin_url = Url::parse(without_fragment(initiator_url)).map_err(|_| {
+                    NativeEngineError::UnsupportedUrl {
+                        reason: "WebSocket initiator URL is not valid HTTP(S) syntax".into(),
+                    }
+                })?;
+                let origin = NativeOrigin::from_url(&origin_url)?;
+                let request = match native_websocket_request(&target, &origin, &protocols) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        return Ok(json!({
+                            "kind": "parent_websocket_error",
+                            "id": request_id,
+                            "source_id": source_id,
+                            "worker_id": worker_id,
+                            "reason": bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES),
+                            "document_cookie": loader.document_cookie(&owner.document_url)?,
+                            "csp_violations": target.csp_violations,
+                        }));
+                    }
+                };
+                let target_url = target.url.clone();
+                let csp_violations = target.csp_violations.clone();
+                schedule_native_csp_report_deliveries(target.csp_report_deliveries);
+                let connected =
+                    timeout(NATIVE_WEBSOCKET_CONNECT_TIMEOUT, connect_async(request)).await;
+                let (socket, handshake) = match connected {
+                    Ok(Ok(connected)) => connected,
+                    Ok(Err(error)) => {
+                        return Ok(json!({
+                            "kind": "parent_websocket_error",
+                            "id": request_id,
+                            "source_id": source_id,
+                            "worker_id": worker_id,
+                            "reason": bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES),
+                            "document_cookie": loader.document_cookie(&owner.document_url)?,
+                            "csp_violations": csp_violations,
+                        }));
+                    }
+                    Err(_) => {
+                        return Ok(json!({
+                            "kind": "parent_websocket_error",
+                            "id": request_id,
+                            "source_id": source_id,
+                            "worker_id": worker_id,
+                            "reason": "native WebSocket handshake timed out",
+                            "document_cookie": loader.document_cookie(&owner.document_url)?,
+                            "csp_violations": csp_violations,
+                        }));
+                    }
+                };
+                let selected_protocol = handshake
+                    .headers()
+                    .get(tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_owned();
+                let set_cookie_headers = handshake
+                    .headers()
+                    .get_all(tokio_tungstenite::tungstenite::http::header::SET_COOKIE)
+                    .iter()
+                    .filter_map(|value| value.to_str().ok().map(str::to_owned))
+                    .collect::<Vec<_>>();
+                loader.apply_websocket_response_cookies(&target_url, &set_cookie_headers)?;
+                let stream_id = self.next_parent_websocket_stream_id;
+                self.next_parent_websocket_stream_id =
+                    stream_id.checked_add(1).ok_or_else(|| {
+                        NativeEngineError::limit(
+                            "parent WebSocket stream IDs",
+                            u64::MAX as usize,
+                            usize::MAX,
+                        )
+                    })?;
+                let origin = origin.serialized();
+                self.parent_websocket_streams.insert(
+                    stream_id,
+                    NativeParentWebSocketStream {
+                        owner: owner.clone(),
+                        source_id,
+                        worker_id,
+                        origin: origin.clone(),
+                        socket,
+                    },
+                );
+                Ok(json!({
+                    "kind": "parent_websocket_opened",
+                    "id": request_id,
+                    "source_id": source_id,
+                    "worker_id": worker_id,
+                    "stream_id": stream_id,
+                    "origin": origin,
+                    "protocol": selected_protocol,
+                    "document_cookie": document_cookie.clone(),
+                    "csp_violations": csp_violations,
+                }))
+            }
+            "parent_websocket_read_request" => {
+                let stream_id = stream_id.ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "parent WebSocket read",
+                        NativeWorkerFailureKind::Protocol,
+                        "WebSocket read has an invalid stream ID",
+                    )
+                })?;
+                let outcome =
+                    if let Some(stream) = self.parent_websocket_streams.get_mut(&stream_id) {
+                        if stream.owner != owner
+                            || stream.source_id != source_id
+                            || stream.worker_id != worker_id
+                        {
+                            return Err(NativeEngineError::worker_failure(
+                                "parent WebSocket read",
+                                NativeWorkerFailureKind::Protocol,
+                                "WebSocket stream does not belong to the requesting owner",
+                            ));
+                        }
+                        match timeout(NATIVE_WEBSOCKET_POLL_INTERVAL, stream.socket.next()).await {
+                            Err(_) => None,
+                            Ok(Some(Ok(Message::Text(data)))) => {
+                                let data = data.to_string();
+                                if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
+                                    Some(Err("native WebSocket message exceeds its limit".into()))
+                                } else {
+                                    Some(Ok(NativeWebSocketEvent::MessageText {
+                                        data,
+                                        origin: stream.origin.clone(),
+                                    }))
+                                }
+                            }
+                            Ok(Some(Ok(Message::Binary(data)))) => {
+                                if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
+                                    Some(Err("native WebSocket message exceeds its limit".into()))
+                                } else {
+                                    Some(Ok(NativeWebSocketEvent::MessageBinary {
+                                        data: data.to_vec(),
+                                        origin: stream.origin.clone(),
+                                    }))
+                                }
+                            }
+                            Ok(Some(Ok(Message::Close(frame)))) => {
+                                let (code, reason) = frame
+                                    .map(|frame| {
+                                        (
+                                            u16::from(frame.code),
+                                            bounded_websocket_text(
+                                                frame.reason,
+                                                MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
+                                            ),
+                                        )
+                                    })
+                                    .unwrap_or((1005, String::new()));
+                                Some(Ok(NativeWebSocketEvent::Close {
+                                    code,
+                                    reason,
+                                    was_clean: true,
+                                }))
+                            }
+                            Ok(Some(Ok(Message::Ping(data)))) => {
+                                match stream.socket.send(Message::Pong(data)).await {
+                                    Ok(()) => None,
+                                    Err(error) => Some(Err(bounded_websocket_text(
+                                        error.to_string(),
+                                        MAX_NATIVE_SCRIPT_BYTES,
+                                    ))),
+                                }
+                            }
+                            Ok(Some(Ok(Message::Pong(_)))) => None,
+                            Ok(Some(Ok(_))) => None,
+                            Ok(Some(Err(error))) => Some(Err(bounded_websocket_text(
+                                error.to_string(),
+                                MAX_NATIVE_SCRIPT_BYTES,
+                            ))),
+                            Ok(None) => Some(Ok(NativeWebSocketEvent::Close {
+                                code: 1006,
+                                reason: String::new(),
+                                was_clean: false,
+                            })),
+                        }
+                    } else {
+                        Some(Ok(NativeWebSocketEvent::Close {
+                            code: 1006,
+                            reason: String::new(),
+                            was_clean: false,
+                        }))
+                    };
+                let (kind, fields, remove_stream) = match outcome {
+                    None => ("parent_websocket_pending", json!({}), false),
+                    Some(Ok(NativeWebSocketEvent::MessageText { data, origin })) => (
+                        "parent_websocket_text",
+                        json!({"data": data, "origin": origin}),
+                        false,
+                    ),
+                    Some(Ok(NativeWebSocketEvent::MessageBinary { data, origin })) => (
+                        "parent_websocket_binary",
+                        json!({
+                            "data_base64": base64::engine::general_purpose::STANDARD.encode(data),
+                            "origin": origin,
+                        }),
+                        false,
+                    ),
+                    Some(Ok(NativeWebSocketEvent::Close {
+                        code,
+                        reason,
+                        was_clean,
+                    })) => (
+                        "parent_websocket_close",
+                        json!({"code": code, "reason": reason, "was_clean": was_clean}),
+                        true,
+                    ),
+                    Some(Ok(_)) => ("parent_websocket_pending", json!({}), false),
+                    Some(Err(reason)) => (
+                        "parent_websocket_error",
+                        json!({"reason": reason, "csp_violations": []}),
+                        true,
+                    ),
+                };
+                if remove_stream {
+                    self.parent_websocket_streams.remove(&stream_id);
+                }
+                let mut result = json!({
+                    "kind": kind,
+                    "id": request_id,
+                    "source_id": source_id,
+                    "worker_id": worker_id,
+                    "stream_id": stream_id,
+                    "document_cookie": loader.document_cookie(&owner.document_url)?,
+                });
+                if let (Some(result), Some(fields)) = (result.as_object_mut(), fields.as_object()) {
+                    result.extend(fields.clone());
+                }
+                Ok(result)
+            }
+            "parent_websocket_send_request" => {
+                let stream_id = stream_id.ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "parent WebSocket send",
+                        NativeWorkerFailureKind::Protocol,
+                        "WebSocket send has an invalid stream ID",
+                    )
+                })?;
+                let message = response.get("message").ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "parent WebSocket send",
+                        NativeWorkerFailureKind::Protocol,
+                        "WebSocket send omitted its payload",
+                    )
+                })?;
+                let message_type = message.get("message_type").and_then(Value::as_str);
+                let outgoing = match message_type {
+                    Some("text") => {
+                        let data =
+                            message.get("data").and_then(Value::as_str).ok_or_else(|| {
+                                NativeEngineError::worker_failure(
+                                    "parent WebSocket send",
+                                    NativeWorkerFailureKind::Protocol,
+                                    "text WebSocket message omitted its data",
+                                )
+                            })?;
+                        if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
+                            return Err(NativeEngineError::limit(
+                                "parent WebSocket text message",
+                                MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+                                data.len(),
+                            ));
+                        }
+                        Message::Text(data.to_owned().into())
+                    }
+                    Some("binary") => {
+                        let encoded = message
+                            .get("data_base64")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                NativeEngineError::worker_failure(
+                                    "parent WebSocket send",
+                                    NativeWorkerFailureKind::Protocol,
+                                    "binary WebSocket message omitted its payload",
+                                )
+                            })?;
+                        let data = base64::engine::general_purpose::STANDARD
+                            .decode(encoded)
+                            .map_err(|_| {
+                                NativeEngineError::worker_failure(
+                                    "parent WebSocket send",
+                                    NativeWorkerFailureKind::Protocol,
+                                    "binary WebSocket message is not valid base64",
+                                )
+                            })?;
+                        if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
+                            return Err(NativeEngineError::limit(
+                                "parent WebSocket binary message",
+                                MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+                                data.len(),
+                            ));
+                        }
+                        Message::Binary(data.into())
+                    }
+                    _ => {
+                        return Err(NativeEngineError::worker_failure(
+                            "parent WebSocket send",
+                            NativeWorkerFailureKind::Protocol,
+                            "WebSocket message type is unsupported",
+                        ));
+                    }
+                };
+                let result = if let Some(stream) = self.parent_websocket_streams.get_mut(&stream_id)
+                {
+                    if stream.owner != owner
+                        || stream.source_id != source_id
+                        || stream.worker_id != worker_id
+                    {
+                        return Err(NativeEngineError::worker_failure(
+                            "parent WebSocket send",
+                            NativeWorkerFailureKind::Protocol,
+                            "WebSocket send does not match its stream owner",
+                        ));
+                    }
+                    stream.socket.send(outgoing).await
+                } else {
+                    return Ok(json!({
+                        "kind": "parent_websocket_error",
+                        "id": request_id,
+                        "source_id": source_id,
+                        "worker_id": worker_id,
+                        "stream_id": stream_id,
+                        "reason": "parent WebSocket stream is no longer active",
+                        "document_cookie": document_cookie.clone(),
+                    }));
+                };
+                match result {
+                    Ok(()) => Ok(json!({
+                        "kind": "parent_websocket_sent",
+                        "id": request_id,
+                        "source_id": source_id,
+                        "worker_id": worker_id,
+                        "stream_id": stream_id,
+                        "document_cookie": document_cookie.clone(),
+                    })),
+                    Err(error) => {
+                        self.parent_websocket_streams.remove(&stream_id);
+                        Ok(json!({
+                            "kind": "parent_websocket_error",
+                            "id": request_id,
+                            "source_id": source_id,
+                            "worker_id": worker_id,
+                            "stream_id": stream_id,
+                            "reason": bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES),
+                            "document_cookie": document_cookie.clone(),
+                        }))
+                    }
+                }
+            }
+            "parent_websocket_close_request" => {
+                let stream_id = stream_id.ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "parent WebSocket close",
+                        NativeWorkerFailureKind::Protocol,
+                        "WebSocket close has an invalid stream ID",
+                    )
+                })?;
+                let code = response
+                    .get("code")
+                    .and_then(Value::as_u64)
+                    .and_then(|code| u16::try_from(code).ok())
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "parent WebSocket close",
+                            NativeWorkerFailureKind::Protocol,
+                            "WebSocket close omitted a valid code",
+                        )
+                    })?;
+                let reason = response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "parent WebSocket close",
+                            NativeWorkerFailureKind::Protocol,
+                            "WebSocket close omitted its reason",
+                        )
+                    })?;
+                if code != 1000 && !(3000..=4999).contains(&code) {
+                    return Err(NativeEngineError::invalid(
+                        "parent WebSocket close code",
+                        "must be 1000 or in the 3000-4999 range",
+                    ));
+                }
+                if reason.len() > MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "parent WebSocket close reason",
+                        MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
+                        reason.len(),
+                    ));
+                }
+                let Some(mut stream) = self.parent_websocket_streams.remove(&stream_id) else {
+                    return Ok(json!({
+                        "kind": "parent_websocket_closed",
+                        "id": request_id,
+                        "source_id": source_id,
+                        "worker_id": worker_id,
+                        "stream_id": stream_id,
+                        "was_clean": false,
+                        "document_cookie": document_cookie.clone(),
+                    }));
+                };
+                if stream.owner != owner
+                    || stream.source_id != source_id
+                    || stream.worker_id != worker_id
+                {
+                    self.parent_websocket_streams.insert(stream_id, stream);
+                    return Err(NativeEngineError::worker_failure(
+                        "parent WebSocket close",
+                        NativeWorkerFailureKind::Protocol,
+                        "WebSocket close does not match its stream owner",
+                    ));
+                }
+                let close_frame = Message::Close(Some(
+                    tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                        code:
+                            tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::from(
+                                code,
+                            ),
+                        reason: reason.to_owned().into(),
+                    },
+                ));
+                let was_clean = stream.socket.send(close_frame).await.is_ok();
+                let _ = stream.socket.close(None).await;
+                Ok(json!({
+                    "kind": "parent_websocket_closed",
+                    "id": request_id,
+                    "source_id": source_id,
+                    "worker_id": worker_id,
+                    "stream_id": stream_id,
+                    "was_clean": was_clean,
+                    "document_cookie": document_cookie.clone(),
+                }))
+            }
+            _ => Err(NativeEngineError::worker_failure(
+                "parent WebSocket broker",
+                NativeWorkerFailureKind::Protocol,
+                "content process requested an unsupported WebSocket operation",
+            )),
+        }
     }
 
     async fn exchange_inner(
@@ -4806,6 +5677,28 @@ impl NativeContentProcess {
                 {
                     parent_navigation_document_url = Some(document_url);
                 }
+                continue;
+            }
+            if response
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.starts_with("parent_websocket_"))
+            {
+                let payload_value = Box::pin(self.handle_parent_websocket_request(
+                    &request,
+                    &response,
+                    parent_navigation_document_url.as_deref(),
+                    parent_loader.as_deref_mut(),
+                ))
+                .await?;
+                let payload = serde_json::to_vec(&payload_value).map_err(|_| {
+                    NativeEngineError::worker_failure(
+                        "encode parent WebSocket response",
+                        NativeWorkerFailureKind::Protocol,
+                        "WebSocket response could not be encoded",
+                    )
+                })?;
+                write_frame(&mut self.stdin, &payload).await?;
                 continue;
             }
             if response
@@ -6374,6 +7267,59 @@ fn decode_optional_content_worker_id(
                 )
             }),
     }
+}
+
+fn apply_parent_content_cookie_writes(
+    loader: &mut NativeResourceLoader,
+    owner: &NativeContentCookieOwner,
+    response: &Value,
+    operation: &'static str,
+) -> Result<String, NativeEngineError> {
+    let writes = serde_json::from_value::<Vec<NativeContentCookieWrite>>(
+        response.get("cookie_writes").cloned().ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                operation,
+                NativeWorkerFailureKind::Protocol,
+                "parent-brokered request omitted its cookie-write journal",
+            )
+        })?,
+    )
+    .map_err(|_| {
+        NativeEngineError::worker_failure(
+            operation,
+            NativeWorkerFailureKind::Protocol,
+            "parent-brokered cookie-write journal is malformed",
+        )
+    })?;
+    if writes.len() > MAX_NATIVE_EFFECTS {
+        return Err(NativeEngineError::limit(
+            "parent-owned document.cookie writes",
+            MAX_NATIVE_EFFECTS,
+            writes.len(),
+        ));
+    }
+    let mut bytes = 0usize;
+    for write in &writes {
+        if write.owner != *owner || write.value.len() > crate::browser_backend::MAX_TEXT_BYTES {
+            return Err(NativeEngineError::worker_failure(
+                operation,
+                NativeWorkerFailureKind::Protocol,
+                "cookie write is oversized or belongs to another document owner",
+            ));
+        }
+        bytes = bytes.saturating_add(write.value.len());
+    }
+    if bytes > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+        return Err(NativeEngineError::limit(
+            "parent-owned document.cookie write journal",
+            MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+            bytes,
+        ));
+    }
+    for write in writes {
+        loader.set_document_cookie(&owner.document_url, &write.value)?;
+    }
+    loader.document_cookie(&owner.document_url)
 }
 
 async fn write_frame(
@@ -9750,6 +10696,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut workers = NativeWorkerRegistry::new_with_fetch_streams();
     let mut service_workers = NativeServiceWorkerRegistry::default();
     let mut pending_worker_messages: VecDeque<NativeWorkerMessage> = VecDeque::new();
+    let mut pending_worker_websocket_commands: VecDeque<NativeWorkerWebSocketCommand> =
+        VecDeque::new();
     let mut pending_message_port_messages: VecDeque<NativeMessagePortPageMessage> = VecDeque::new();
     let mut pending_page_message_port_commands: VecDeque<NativePageMessagePortCommand> =
         VecDeque::new();
@@ -9763,6 +10711,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
         VecDeque::new();
     let mut websocket_connections = BTreeMap::new();
     let mut worker_websocket_connections = BTreeMap::new();
+    let mut worker_websocket_read_cursor = None;
     let mut fetch_stream_connections = BTreeMap::new();
     let mut fetch_upload_connections: BTreeMap<u32, NativeFetchUploadConnection> = BTreeMap::new();
     let mut pending_upload_fetches: BTreeMap<u32, NativePendingUploadFetch> = BTreeMap::new();
@@ -9869,6 +10818,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 )?;
                 let has_pending_effects = content_worker_effects_pending(
                     &pending_worker_messages,
+                    &pending_worker_websocket_commands,
                     &pending_message_port_messages,
                     &pending_page_message_port_commands,
                     &pending_shared_worker_commands,
@@ -9913,19 +10863,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     if !defer_worker_timer {
                         workers.run_due_timers(loader).await?;
                     }
-                    process_worker_websocket_commands(
-                        workers.take_websocket_commands(),
-                        &mut worker_websocket_connections,
-                        Some(&*loader),
-                    )?;
-                    pump_worker_websocket_event(
-                        &mut workers,
-                        &mut worker_websocket_connections,
-                        loader,
-                    )
-                    .await?;
                     workers.pump_fetch_stream_events(loader).await?;
                 }
+                pending_worker_websocket_commands.extend(workers.take_websocket_commands());
                 pending_worker_messages.extend(workers.take_messages());
                 pending_message_port_messages.extend(workers.take_message_port_messages());
                 pending_message_port_messages.extend(service_workers.take_message_port_messages());
@@ -9959,6 +10899,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     || defer_worker_timer
                     || content_worker_effects_pending(
                         &pending_worker_messages,
+                        &pending_worker_websocket_commands,
                         &pending_message_port_messages,
                         &pending_page_message_port_commands,
                         &pending_shared_worker_commands,
@@ -10707,6 +11648,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         frame_script_bindings.clear();
                         websocket_connections.clear();
                         worker_websocket_connections.clear();
+                        pending_worker_websocket_commands.clear();
                         fetch_stream_connections.clear();
                         for (_, pending) in std::mem::take(&mut pending_upload_fetches) {
                             pending.task.abort();
@@ -11169,11 +12111,6 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             None,
                                         )
                                         .await?;
-                                        process_worker_websocket_commands(
-                                            workers.take_websocket_commands(),
-                                            &mut worker_websocket_connections,
-                                            Some(&*loader),
-                                        )?;
                                         let mut parent_fetch_broker = NativeContentFetchBroker {
                                             request_id: id.as_u64().ok_or_else(|| {
                                                 NativeEngineError::invalid(
@@ -11199,6 +12136,26 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                                     &resource.url,
                                                 )?,
                                         };
+                                        let mut worker_websocket_commands =
+                                            pending_worker_websocket_commands
+                                                .drain(..)
+                                                .collect::<Vec<_>>();
+                                        worker_websocket_commands
+                                            .extend(workers.take_websocket_commands());
+                                        process_worker_websocket_commands(
+                                            worker_websocket_commands,
+                                            &mut worker_websocket_connections,
+                                            Some(&mut parent_fetch_broker),
+                                        )
+                                        .await?;
+                                        pump_worker_websocket_event(
+                                            &mut workers,
+                                            &mut worker_websocket_connections,
+                                            loader,
+                                            Some(&mut parent_fetch_broker),
+                                            &mut worker_websocket_read_cursor,
+                                        )
+                                        .await?;
                                         process_worker_event_source_commands(
                                             workers.take_event_source_commands(),
                                             &mut worker_event_source_connections,
@@ -11633,18 +12590,25 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         Some(&mut parent_fetch_broker),
                     )
                     .await?;
+                    let mut worker_websocket_commands = pending_worker_websocket_commands
+                        .drain(..)
+                        .collect::<Vec<_>>();
+                    worker_websocket_commands.extend(workers.take_websocket_commands());
+                    process_worker_websocket_commands(
+                        worker_websocket_commands,
+                        &mut worker_websocket_connections,
+                        Some(&mut parent_fetch_broker),
+                    )
+                    .await?;
+                    pump_worker_websocket_event(
+                        &mut workers,
+                        &mut worker_websocket_connections,
+                        loader,
+                        Some(&mut parent_fetch_broker),
+                        &mut worker_websocket_read_cursor,
+                    )
+                    .await?;
                 }
-                process_worker_websocket_commands(
-                    workers.take_websocket_commands(),
-                    &mut worker_websocket_connections,
-                    Some(&*loader),
-                )?;
-                pump_worker_websocket_event(
-                    &mut workers,
-                    &mut worker_websocket_connections,
-                    loader,
-                )
-                .await?;
                 workers.pump_fetch_stream_events(loader).await?;
                 page_events
                     .worker_messages
@@ -11747,11 +12711,24 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     Some(&mut parent_fetch_broker),
                 )
                 .await?;
+                let mut worker_websocket_commands = pending_worker_websocket_commands
+                    .drain(..)
+                    .collect::<Vec<_>>();
+                worker_websocket_commands.extend(workers.take_websocket_commands());
                 process_worker_websocket_commands(
-                    workers.take_websocket_commands(),
+                    worker_websocket_commands,
                     &mut worker_websocket_connections,
-                    Some(&*loader),
-                )?;
+                    Some(&mut parent_fetch_broker),
+                )
+                .await?;
+                pump_worker_websocket_event(
+                    &mut workers,
+                    &mut worker_websocket_connections,
+                    loader,
+                    Some(&mut parent_fetch_broker),
+                    &mut worker_websocket_read_cursor,
+                )
+                .await?;
                 process_worker_event_source_commands(
                     workers.take_event_source_commands(),
                     &mut worker_event_source_connections,
@@ -11958,11 +12935,25 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     Some(&mut parent_fetch_broker),
                                 )
                                 .await?;
+                                let mut worker_websocket_commands =
+                                    pending_worker_websocket_commands
+                                        .drain(..)
+                                        .collect::<Vec<_>>();
+                                worker_websocket_commands.extend(workers.take_websocket_commands());
                                 process_worker_websocket_commands(
-                                    workers.take_websocket_commands(),
+                                    worker_websocket_commands,
                                     &mut worker_websocket_connections,
-                                    Some(&*loader),
-                                )?;
+                                    Some(&mut parent_fetch_broker),
+                                )
+                                .await?;
+                                pump_worker_websocket_event(
+                                    &mut workers,
+                                    &mut worker_websocket_connections,
+                                    loader,
+                                    Some(&mut parent_fetch_broker),
+                                    &mut worker_websocket_read_cursor,
+                                )
+                                .await?;
                                 process_worker_event_source_commands(
                                     workers.take_event_source_commands(),
                                     &mut worker_event_source_connections,
@@ -13269,6 +14260,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
         }
         let has_pending_effects = content_worker_effects_pending(
             &pending_worker_messages,
+            &pending_worker_websocket_commands,
             &pending_message_port_messages,
             &pending_page_message_port_commands,
             &pending_shared_worker_commands,
@@ -18602,12 +19594,66 @@ fn retain_font_face_follow_up_commands(
     retain_font_face_network_commands(dynamic_result, commands);
 }
 
-fn process_websocket_commands(
+async fn open_parent_websocket_connection(
+    broker: &mut NativeContentFetchBroker<'_>,
+    source_id: u32,
+    worker_id: Option<u32>,
+    initiator_url: &str,
+    href: &str,
+    protocols: &[String],
+) -> Result<NativeWebSocketConnection, NativeEngineError> {
+    let (event_sender, events) = mpsc::channel(MAX_NATIVE_WEBSOCKET_EVENTS);
+    let parent_stream_id = match broker
+        .open_websocket(source_id, worker_id, initiator_url, href, protocols)
+        .await?
+    {
+        NativeParentWebSocketOpenResult::Opened(opened) => {
+            queue_websocket_event(
+                &event_sender,
+                NativeWebSocketEvent::Open {
+                    protocol: opened.protocol,
+                    csp_violations: opened.csp_violations,
+                },
+            )
+            .await;
+            Some(opened.stream_id)
+        }
+        NativeParentWebSocketOpenResult::Failed {
+            message,
+            csp_violations,
+        } => {
+            queue_websocket_event(
+                &event_sender,
+                NativeWebSocketEvent::Error {
+                    message,
+                    csp_violations,
+                },
+            )
+            .await;
+            queue_websocket_event(
+                &event_sender,
+                NativeWebSocketEvent::Close {
+                    code: 1006,
+                    reason: String::new(),
+                    was_clean: false,
+                },
+            )
+            .await;
+            None
+        }
+    };
+    Ok(NativeWebSocketConnection {
+        event_sender,
+        events,
+        parent_stream_id,
+    })
+}
+
+async fn process_websocket_commands(
     commands: Vec<NativeScriptCommand>,
     connections: &mut BTreeMap<u32, NativeWebSocketConnection>,
-    loader: Option<&NativeResourceLoader>,
     document_url: &str,
-    document_origin: &NativeOrigin,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
     let mut retained = Vec::with_capacity(commands.len());
     for command in commands {
@@ -18631,12 +19677,21 @@ fn process_websocket_commands(
                         connections.len().saturating_add(1),
                     ));
                 }
-                let loader = loader.ok_or_else(|| NativeEngineError::Worker {
-                    operation: "WebSocket open".into(),
-                    reason: "content process has no resource loader".into(),
+                let broker = parent_fetch_broker.as_deref_mut().ok_or_else(|| {
+                    NativeEngineError::Worker {
+                        operation: "WebSocket open".into(),
+                        reason: "parent cookie and network authority is unavailable".into(),
+                    }
                 })?;
-                let target = loader.websocket_target(document_url, &href)?;
-                let connection = spawn_native_websocket(target, document_origin, &protocols)?;
+                let connection = open_parent_websocket_connection(
+                    broker,
+                    socket_id,
+                    None,
+                    document_url,
+                    &href,
+                    &protocols,
+                )
+                .await?;
                 connections.insert(socket_id, connection);
             }
             NativeScriptCommand::WebSocketSend {
@@ -18681,20 +19736,55 @@ fn process_websocket_commands(
                         ));
                     }
                 };
-                let connection =
-                    connections
-                        .get(&socket_id)
-                        .ok_or_else(|| NativeEngineError::Network {
-                            operation: "WebSocket send".into(),
-                            reason: "WebSocket identifier is not active".into(),
-                        })?;
-                connection
-                    .commands
-                    .try_send(NativeWebSocketCommand::Send(message))
-                    .map_err(|_| NativeEngineError::Network {
+                let stream_id = connections
+                    .get(&socket_id)
+                    .and_then(|connection| connection.parent_stream_id)
+                    .ok_or_else(|| NativeEngineError::Network {
                         operation: "WebSocket send".into(),
-                        reason: "WebSocket command queue is full or closed".into(),
+                        reason: "WebSocket is not open".into(),
                     })?;
+                let broker = parent_fetch_broker.as_deref_mut().ok_or_else(|| {
+                    NativeEngineError::Worker {
+                        operation: "WebSocket send".into(),
+                        reason: "parent cookie and network authority is unavailable".into(),
+                    }
+                })?;
+                match broker
+                    .send_parent_websocket(socket_id, None, stream_id, message)
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(error @ NativeEngineError::Network { .. }) => {
+                        let connection = connections.get_mut(&socket_id).ok_or_else(|| {
+                            NativeEngineError::Network {
+                                operation: "WebSocket send".into(),
+                                reason: "WebSocket identifier is not active".into(),
+                            }
+                        })?;
+                        connection.parent_stream_id = None;
+                        queue_websocket_event(
+                            &connection.event_sender,
+                            NativeWebSocketEvent::Error {
+                                message: bounded_websocket_text(
+                                    error.to_string(),
+                                    MAX_NATIVE_SCRIPT_BYTES,
+                                ),
+                                csp_violations: Vec::new(),
+                            },
+                        )
+                        .await;
+                        queue_websocket_event(
+                            &connection.event_sender,
+                            NativeWebSocketEvent::Close {
+                                code: 1006,
+                                reason: String::new(),
+                                was_clean: false,
+                            },
+                        )
+                        .await;
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             NativeScriptCommand::WebSocketClose {
                 socket_id,
@@ -18715,20 +19805,43 @@ fn process_websocket_commands(
                         reason.len(),
                     ));
                 }
+                let stream_id = connections
+                    .get(&socket_id)
+                    .ok_or_else(|| NativeEngineError::Network {
+                        operation: "WebSocket close".into(),
+                        reason: "WebSocket identifier is not active".into(),
+                    })?
+                    .parent_stream_id;
+                let was_clean = if let Some(stream_id) = stream_id {
+                    let broker = parent_fetch_broker.as_deref_mut().ok_or_else(|| {
+                        NativeEngineError::Worker {
+                            operation: "WebSocket close".into(),
+                            reason: "parent cookie and network authority is unavailable".into(),
+                        }
+                    })?;
+                    broker
+                        .close_parent_websocket(socket_id, None, stream_id, code, &reason)
+                        .await?
+                } else {
+                    false
+                };
                 let connection =
                     connections
-                        .get(&socket_id)
+                        .get_mut(&socket_id)
                         .ok_or_else(|| NativeEngineError::Network {
                             operation: "WebSocket close".into(),
                             reason: "WebSocket identifier is not active".into(),
                         })?;
-                connection
-                    .commands
-                    .try_send(NativeWebSocketCommand::Close { code, reason })
-                    .map_err(|_| NativeEngineError::Network {
-                        operation: "WebSocket close".into(),
-                        reason: "WebSocket command queue is full or closed".into(),
-                    })?;
+                connection.parent_stream_id = None;
+                queue_websocket_event(
+                    &connection.event_sender,
+                    NativeWebSocketEvent::Close {
+                        code: if was_clean { code } else { 1006 },
+                        reason: if was_clean { reason } else { String::new() },
+                        was_clean,
+                    },
+                )
+                .await;
             }
             command => retained.push(command),
         }
@@ -18736,10 +19849,10 @@ fn process_websocket_commands(
     Ok(retained)
 }
 
-fn process_worker_websocket_commands(
+async fn process_worker_websocket_commands(
     commands: Vec<NativeWorkerWebSocketCommand>,
     connections: &mut BTreeMap<(u32, u32), NativeWebSocketConnection>,
-    loader: Option<&NativeResourceLoader>,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<(), NativeEngineError> {
     for request in commands {
         let NativeWorkerWebSocketCommand {
@@ -18774,18 +19887,21 @@ fn process_worker_websocket_commands(
                         connections.len().saturating_add(1),
                     ));
                 }
-                let loader = loader.ok_or_else(|| NativeEngineError::Worker {
-                    operation: "Worker WebSocket open".into(),
-                    reason: "content process has no resource loader".into(),
-                })?;
-                let target = loader.websocket_target(&worker_url, &href)?;
-                let worker_url = Url::parse(without_fragment(&worker_url)).map_err(|_| {
-                    NativeEngineError::UnsupportedUrl {
-                        reason: "Worker WebSocket owner URL is not valid HTTP(S) syntax".into(),
+                let broker = parent_fetch_broker.as_deref_mut().ok_or_else(|| {
+                    NativeEngineError::Worker {
+                        operation: "Worker WebSocket open".into(),
+                        reason: "parent cookie and network authority is unavailable".into(),
                     }
                 })?;
-                let worker_origin = NativeOrigin::from_url(&worker_url)?;
-                let connection = spawn_native_websocket(target, &worker_origin, &protocols)?;
+                let connection = open_parent_websocket_connection(
+                    broker,
+                    socket_id,
+                    Some(worker_id),
+                    &worker_url,
+                    &href,
+                    &protocols,
+                )
+                .await?;
                 connections.insert(key, connection);
             }
             NativeScriptCommand::WebSocketSend {
@@ -18836,19 +19952,56 @@ fn process_worker_websocket_commands(
                         ));
                     }
                 };
-                let connection = connections.get(&(worker_id, socket_id)).ok_or_else(|| {
-                    NativeEngineError::Network {
+                let stream_id = connections
+                    .get(&(worker_id, socket_id))
+                    .and_then(|connection| connection.parent_stream_id)
+                    .ok_or_else(|| NativeEngineError::Network {
                         operation: "Worker WebSocket send".into(),
-                        reason: "WebSocket identifier is not active".into(),
+                        reason: "WebSocket is not open".into(),
+                    })?;
+                let broker = parent_fetch_broker.as_deref_mut().ok_or_else(|| {
+                    NativeEngineError::Worker {
+                        operation: "Worker WebSocket send".into(),
+                        reason: "parent cookie and network authority is unavailable".into(),
                     }
                 })?;
-                connection
-                    .commands
-                    .try_send(NativeWebSocketCommand::Send(message))
-                    .map_err(|_| NativeEngineError::Network {
-                        operation: "Worker WebSocket send".into(),
-                        reason: "WebSocket command queue is full or closed".into(),
-                    })?;
+                match broker
+                    .send_parent_websocket(socket_id, Some(worker_id), stream_id, message)
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(error @ NativeEngineError::Network { .. }) => {
+                        let connection =
+                            connections
+                                .get_mut(&(worker_id, socket_id))
+                                .ok_or_else(|| NativeEngineError::Network {
+                                    operation: "Worker WebSocket send".into(),
+                                    reason: "WebSocket identifier is not active".into(),
+                                })?;
+                        connection.parent_stream_id = None;
+                        queue_websocket_event(
+                            &connection.event_sender,
+                            NativeWebSocketEvent::Error {
+                                message: bounded_websocket_text(
+                                    error.to_string(),
+                                    MAX_NATIVE_SCRIPT_BYTES,
+                                ),
+                                csp_violations: Vec::new(),
+                            },
+                        )
+                        .await;
+                        queue_websocket_event(
+                            &connection.event_sender,
+                            NativeWebSocketEvent::Close {
+                                code: 1006,
+                                reason: String::new(),
+                                was_clean: false,
+                            },
+                        )
+                        .await;
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             NativeScriptCommand::WebSocketClose {
                 socket_id,
@@ -18875,19 +20028,48 @@ fn process_worker_websocket_commands(
                         reason.len(),
                     ));
                 }
-                let connection = connections.get(&(worker_id, socket_id)).ok_or_else(|| {
-                    NativeEngineError::Network {
+                let stream_id = connections
+                    .get(&(worker_id, socket_id))
+                    .ok_or_else(|| NativeEngineError::Network {
                         operation: "Worker WebSocket close".into(),
                         reason: "WebSocket identifier is not active".into(),
-                    }
-                })?;
-                connection
-                    .commands
-                    .try_send(NativeWebSocketCommand::Close { code, reason })
-                    .map_err(|_| NativeEngineError::Network {
-                        operation: "Worker WebSocket close".into(),
-                        reason: "WebSocket command queue is full or closed".into(),
+                    })?
+                    .parent_stream_id;
+                let was_clean = if let Some(stream_id) = stream_id {
+                    let broker = parent_fetch_broker.as_deref_mut().ok_or_else(|| {
+                        NativeEngineError::Worker {
+                            operation: "Worker WebSocket close".into(),
+                            reason: "parent cookie and network authority is unavailable".into(),
+                        }
                     })?;
+                    broker
+                        .close_parent_websocket(
+                            socket_id,
+                            Some(worker_id),
+                            stream_id,
+                            code,
+                            &reason,
+                        )
+                        .await?
+                } else {
+                    false
+                };
+                let connection = connections
+                    .get_mut(&(worker_id, socket_id))
+                    .ok_or_else(|| NativeEngineError::Network {
+                        operation: "Worker WebSocket close".into(),
+                        reason: "WebSocket identifier is not active".into(),
+                    })?;
+                connection.parent_stream_id = None;
+                queue_websocket_event(
+                    &connection.event_sender,
+                    NativeWebSocketEvent::Close {
+                        code: if was_clean { code } else { 1006 },
+                        reason: if was_clean { reason } else { String::new() },
+                        was_clean,
+                    },
+                )
+                .await;
             }
             _ => {
                 return Err(NativeEngineError::invalid(
@@ -19347,12 +20529,133 @@ fn take_worker_event_source_event(
     None
 }
 
+async fn pump_parent_websocket_stream(
+    connections: &mut BTreeMap<u32, NativeWebSocketConnection>,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+    read_cursor: &mut u32,
+) -> Result<bool, NativeEngineError> {
+    let Some(broker) = parent_fetch_broker.as_deref_mut() else {
+        return Ok(false);
+    };
+    let socket_ids = connections.keys().copied().collect::<Vec<_>>();
+    if socket_ids.is_empty() {
+        return Ok(false);
+    }
+    let start = socket_ids
+        .iter()
+        .position(|socket_id| *socket_id >= *read_cursor)
+        .unwrap_or(0);
+    for offset in 0..socket_ids.len() {
+        let socket_id = socket_ids[(start + offset) % socket_ids.len()];
+        let Some(stream_id) = connections
+            .get(&socket_id)
+            .and_then(|connection| connection.parent_stream_id)
+        else {
+            continue;
+        };
+        *read_cursor = socket_id.wrapping_add(1).max(1);
+        match broker
+            .read_parent_websocket(socket_id, None, stream_id)
+            .await?
+        {
+            NativeParentWebSocketRead::Pending => return Ok(false),
+            NativeParentWebSocketRead::Event(event) => {
+                let terminal = matches!(
+                    &event,
+                    NativeWebSocketEvent::Error { .. } | NativeWebSocketEvent::Close { .. }
+                );
+                let sent = if let Some(connection) = connections.get_mut(&socket_id) {
+                    if terminal {
+                        connection.parent_stream_id = None;
+                    }
+                    connection.event_sender.send(event).await.is_ok()
+                } else {
+                    false
+                };
+                if !sent {
+                    connections.remove(&socket_id);
+                }
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+async fn pump_parent_worker_websocket_stream(
+    connections: &mut BTreeMap<(u32, u32), NativeWebSocketConnection>,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+    read_cursor: &mut Option<u64>,
+) -> Result<bool, NativeEngineError> {
+    let Some(broker) = parent_fetch_broker.as_deref_mut() else {
+        return Ok(false);
+    };
+    let keys = connections.keys().copied().collect::<Vec<_>>();
+    if keys.is_empty() {
+        return Ok(false);
+    }
+    let key_order =
+        |(worker_id, socket_id): (u32, u32)| (u64::from(worker_id) << 32) | u64::from(socket_id);
+    let start = keys
+        .iter()
+        .position(|key| Some(key_order(*key)) >= *read_cursor)
+        .unwrap_or(0);
+    for offset in 0..keys.len() {
+        let (worker_id, socket_id) = keys[(start + offset) % keys.len()];
+        let Some(stream_id) = connections
+            .get(&(worker_id, socket_id))
+            .and_then(|connection| connection.parent_stream_id)
+        else {
+            continue;
+        };
+        *read_cursor = Some(key_order((worker_id, socket_id)).wrapping_add(1));
+        match broker
+            .read_parent_websocket(socket_id, Some(worker_id), stream_id)
+            .await?
+        {
+            NativeParentWebSocketRead::Pending => return Ok(false),
+            NativeParentWebSocketRead::Event(event) => {
+                let terminal = matches!(
+                    &event,
+                    NativeWebSocketEvent::Error { .. } | NativeWebSocketEvent::Close { .. }
+                );
+                let sent = if let Some(connection) = connections.get_mut(&(worker_id, socket_id)) {
+                    if terminal {
+                        connection.parent_stream_id = None;
+                    }
+                    connection.event_sender.send(event).await.is_ok()
+                } else {
+                    false
+                };
+                if !sent {
+                    connections.remove(&(worker_id, socket_id));
+                }
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 async fn pump_worker_websocket_event(
     workers: &mut NativeWorkerRegistry,
     connections: &mut BTreeMap<(u32, u32), NativeWebSocketConnection>,
     loader: &mut NativeResourceLoader,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+    read_cursor: &mut Option<u64>,
 ) -> Result<bool, NativeEngineError> {
-    let Some(((worker_id, socket_id), event)) = take_worker_websocket_event(connections) else {
+    let mut pending_event = take_worker_websocket_event(connections);
+    if pending_event.is_none()
+        && pump_parent_worker_websocket_stream(
+            connections,
+            parent_fetch_broker.as_deref_mut(),
+            read_cursor,
+        )
+        .await?
+    {
+        pending_event = take_worker_websocket_event(connections);
+    }
+    let Some(((worker_id, socket_id), event)) = pending_event else {
         return Ok(false);
     };
     let remove_after_dispatch = matches!(&event, NativeWebSocketEvent::Close { .. });
@@ -19368,8 +20671,9 @@ async fn pump_worker_websocket_event(
     process_worker_websocket_commands(
         workers.take_websocket_commands(),
         connections,
-        Some(&*loader),
-    )?;
+        parent_fetch_broker.as_deref_mut(),
+    )
+    .await?;
     if remove_after_dispatch {
         connections.remove(&(worker_id, socket_id));
     }
@@ -20146,7 +21450,6 @@ async fn activate_dynamic_page_script_network(
     event_source_connections: &mut BTreeMap<u32, NativeEventSourceConnection>,
     loader: Option<&NativeResourceLoader>,
     document_url: &str,
-    document_origin: &NativeOrigin,
     mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<(Vec<NativeScriptCommand>, bool), NativeEngineError> {
     if !result.pending_script_sources.is_empty() {
@@ -20160,10 +21463,10 @@ async fn activate_dynamic_page_script_network(
     let retained_websocket = process_websocket_commands(
         result.websocket_commands,
         websocket_connections,
-        loader,
         document_url,
-        document_origin,
-    )?;
+        parent_fetch_broker.as_deref_mut(),
+    )
+    .await?;
     if !retained_websocket.is_empty() {
         return Err(NativeEngineError::Worker {
             operation: "dynamic page script WebSocket commands".into(),
@@ -20228,10 +21531,10 @@ async fn process_page_fetch_resolution(
     let resolved_commands = process_websocket_commands(
         resolved.commands,
         websocket_connections,
-        Some(&*loader),
         current_url,
-        document_origin,
-    )?;
+        parent_fetch_broker.as_deref_mut(),
+    )
+    .await?;
     let resolved_commands = process_event_source_commands(
         resolved_commands,
         event_source_connections,
@@ -20292,7 +21595,6 @@ async fn process_page_fetch_resolution(
         event_source_connections,
         Some(&*loader),
         current_url,
-        document_origin,
         parent_fetch_broker.as_deref_mut(),
     )
     .await?;
@@ -20482,10 +21784,10 @@ async fn resolve_script_fetches(
     let initial_commands = process_websocket_commands(
         initial_commands,
         websocket_connections,
-        loader.as_deref(),
         &current_url,
-        document_origin,
-    )?;
+        parent_fetch_broker.as_mut(),
+    )
+    .await?;
     let initial_commands = process_event_source_commands(
         initial_commands,
         event_source_connections,
@@ -20523,7 +21825,6 @@ async fn resolve_script_fetches(
         event_source_connections,
         loader.as_deref(),
         &current_url,
-        document_origin,
         parent_fetch_broker.as_mut(),
     )
     .await?;
@@ -20533,6 +21834,7 @@ async fn resolve_script_fetches(
     let mut resolved_value = None;
     let mut event_loop_turns = 0usize;
     let mut next_task_source = NativeContentTaskSource::Networking;
+    let mut websocket_read_cursor = 0u32;
     let mut event_source_read_cursor = 0u32;
     let mut pending_upload_fetches: BTreeMap<u32, NativePendingUploadFetch> = BTreeMap::new();
     let mut pending_controlled_uploads: BTreeMap<u32, NativePendingControlledUpload> =
@@ -20588,6 +21890,18 @@ async fn resolve_script_fetches(
                 }
                 NativeContentTaskSource::WebSocket if pump_background_events => {
                     if let Some(event) = take_websocket_event(websocket_connections) {
+                        selected_websocket_event = Some(event);
+                        selected_source = Some(source);
+                        break;
+                    }
+                    if pump_parent_websocket_stream(
+                        websocket_connections,
+                        parent_fetch_broker.as_mut(),
+                        &mut websocket_read_cursor,
+                    )
+                    .await?
+                        && let Some(event) = take_websocket_event(websocket_connections)
+                    {
                         selected_websocket_event = Some(event);
                         selected_source = Some(source);
                         break;
@@ -21327,10 +22641,10 @@ async fn resolve_script_fetches(
             let event_commands = process_websocket_commands(
                 event_evaluation.commands,
                 websocket_connections,
-                loader.as_deref(),
                 &current_url,
-                document_origin,
-            )?;
+                parent_fetch_broker.as_mut(),
+            )
+            .await?;
             let event_commands = process_event_source_commands(
                 event_commands,
                 event_source_connections,
@@ -21399,7 +22713,6 @@ async fn resolve_script_fetches(
                 event_source_connections,
                 loader.as_deref(),
                 &current_url,
-                document_origin,
                 parent_fetch_broker.as_mut(),
             )
             .await?;
@@ -21435,10 +22748,10 @@ async fn resolve_script_fetches(
             let event_commands = process_websocket_commands(
                 event_evaluation.commands,
                 websocket_connections,
-                loader.as_deref(),
                 &current_url,
-                document_origin,
-            )?;
+                parent_fetch_broker.as_mut(),
+            )
+            .await?;
             let event_commands =
                 process_fetch_stream_commands(event_commands, fetch_stream_connections)?;
             let event_commands =
@@ -21490,7 +22803,6 @@ async fn resolve_script_fetches(
                 event_source_connections,
                 loader.as_deref(),
                 &current_url,
-                document_origin,
                 parent_fetch_broker.as_mut(),
             )
             .await?;
@@ -21531,10 +22843,10 @@ async fn resolve_script_fetches(
             let event_commands = process_websocket_commands(
                 event_evaluation.commands,
                 websocket_connections,
-                loader.as_deref(),
                 &current_url,
-                document_origin,
-            )?;
+                parent_fetch_broker.as_mut(),
+            )
+            .await?;
             let event_commands = process_event_source_commands(
                 event_commands,
                 event_source_connections,
@@ -21595,7 +22907,6 @@ async fn resolve_script_fetches(
                 event_source_connections,
                 loader.as_deref(),
                 &current_url,
-                document_origin,
                 parent_fetch_broker.as_mut(),
             )
             .await?;
@@ -21749,10 +23060,10 @@ async fn resolve_script_fetches(
             let event_commands = process_websocket_commands(
                 event_evaluation.commands,
                 websocket_connections,
-                loader.as_deref(),
                 &current_url,
-                document_origin,
-            )?;
+                parent_fetch_broker.as_mut(),
+            )
+            .await?;
             let event_commands = process_event_source_commands(
                 event_commands,
                 event_source_connections,
@@ -21813,7 +23124,6 @@ async fn resolve_script_fetches(
                 event_source_connections,
                 loader.as_deref(),
                 &current_url,
-                document_origin,
                 parent_fetch_broker.as_mut(),
             )
             .await?;
@@ -21869,10 +23179,10 @@ async fn resolve_script_fetches(
         let timer_commands = process_websocket_commands(
             timer_evaluation.commands,
             websocket_connections,
-            loader.as_deref(),
             &current_url,
-            document_origin,
-        )?;
+            parent_fetch_broker.as_mut(),
+        )
+        .await?;
         let timer_commands = process_event_source_commands(
             timer_commands,
             event_source_connections,
@@ -21932,7 +23242,6 @@ async fn resolve_script_fetches(
             event_source_connections,
             loader.as_deref(),
             &current_url,
-            document_origin,
             parent_fetch_broker.as_mut(),
         )
         .await?;
@@ -22414,6 +23723,7 @@ mod tests {
             &VecDeque::new(),
             &VecDeque::new(),
             &VecDeque::new(),
+            &VecDeque::new(),
             &[],
         )
         .unwrap();
@@ -22429,6 +23739,7 @@ mod tests {
         assert!(
             content_worker_effects_pending(
                 &worker_messages,
+                &VecDeque::new(),
                 &VecDeque::new(),
                 &VecDeque::new(),
                 &VecDeque::new(),
@@ -22454,6 +23765,7 @@ mod tests {
         assert!(
             content_worker_effects_pending(
                 &worker_messages,
+                &VecDeque::new(),
                 &VecDeque::new(),
                 &VecDeque::new(),
                 &VecDeque::new(),

@@ -3646,6 +3646,54 @@ impl NativeResourceLoader {
         })
     }
 
+    pub(crate) fn apply_websocket_response_cookies(
+        &mut self,
+        websocket_url: &Url,
+        set_cookie_headers: &[String],
+    ) -> Result<(), NativeEngineError> {
+        if set_cookie_headers.len() > MAX_NATIVE_RESPONSE_HEADERS {
+            return Err(NativeEngineError::limit(
+                "WebSocket Set-Cookie response headers",
+                MAX_NATIVE_RESPONSE_HEADERS,
+                set_cookie_headers.len(),
+            ));
+        }
+        let mut cookie_url = websocket_url.clone();
+        cookie_url
+            .set_scheme(if websocket_url.scheme() == "wss" {
+                "https"
+            } else if websocket_url.scheme() == "ws" {
+                "http"
+            } else {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "WebSocket cookie response URL must use ws or wss".into(),
+                });
+            })
+            .map_err(|_| NativeEngineError::UnsupportedUrl {
+                reason: "WebSocket cookie response URL could not be normalized".into(),
+            })?;
+
+        for header in set_cookie_headers {
+            if header.len() > MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES {
+                return Err(NativeEngineError::limit(
+                    "WebSocket Set-Cookie response header bytes",
+                    MAX_NATIVE_RESPONSE_HEADER_VALUE_BYTES,
+                    header.len(),
+                ));
+            }
+            let secure_cookie = header
+                .split(';')
+                .skip(1)
+                .any(|attribute| attribute.trim().eq_ignore_ascii_case("secure"));
+            if cookie_url.scheme() == "http" && secure_cookie {
+                continue;
+            }
+            self.cookie_changes
+                .extend(self.network.store_cookie(&cookie_url, header));
+        }
+        Ok(())
+    }
+
     /// Open one EventSource response through the shared URL, CSP, mixed
     /// content, referrer, redirect, cookie, and CORS policy owner. The
     /// response body is intentionally returned as a stream to the content

@@ -630,5 +630,15 @@ projection and existing native Fetch behavior.
   explicitly rebuilding `glass-native-content-worker` was required because
   process tests spawn that separate executable. The first run used a stale
   worker binary and failed; the rebuilt-worker run passed.
+- ServiceWorker `postMessage` and page MessagePort-delivered ServiceWorker
+  message events now receive the active owner-checked parent Fetch broker in
+  the content-worker script turn. The process-backed
+  `native_content_process_service_worker_message_fetch_uses_parent_cookie_authority`
+  regression passed (1 passed; 1,691 filtered; 25.87 seconds), verifying the
+  message event's HttpOnly response cookie is accepted by the parent and sent
+  on a later page request, but never exposed through `document.cookie`. The two
+  existing standalone timer regressions passed again (2 passed; 1,690 filtered;
+  42.15 seconds). This closes those event-dispatch routes only; remaining
+  child-direct internal network classes remain in scope.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

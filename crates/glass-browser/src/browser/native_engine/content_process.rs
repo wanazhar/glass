@@ -12553,6 +12553,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                             .apply_page_message_port_commands(
                                                 message_port_commands.clone(),
                                                 loader,
+                                                None,
                                             )
                                             .await?;
                                         let mut parent_fetch_broker = NativeContentFetchBroker {
@@ -13169,7 +13170,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     .await?;
                 let message_port_commands = runtime.take_message_port_commands();
                 service_workers
-                    .apply_page_message_port_commands(message_port_commands.clone(), loader)
+                    .apply_page_message_port_commands(
+                        message_port_commands.clone(),
+                        loader,
+                        Some(&mut parent_fetch_broker),
+                    )
                     .await?;
                 apply_worker_page_message_port_commands(
                     &mut workers,
@@ -13395,6 +13400,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     .apply_page_message_port_commands(
                                         dynamic_message_port_commands.clone(),
                                         loader,
+                                        Some(&mut parent_fetch_broker),
                                     )
                                     .await?;
                                 apply_worker_page_message_port_commands(
@@ -15280,7 +15286,14 @@ async fn resolve_service_worker_commands(
                 transfer_ports,
             } => {
                 registry
-                    .post_message(loader, &scope, &source_origin, &data, &transfer_ports)
+                    .post_message(
+                        loader,
+                        &scope,
+                        &source_origin,
+                        &data,
+                        &transfer_ports,
+                        parent_fetch_broker.as_deref_mut(),
+                    )
                     .await?;
                 pending.extend(runtime.take_service_worker_commands());
             }

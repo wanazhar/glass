@@ -10562,7 +10562,14 @@ broker scope. Both standalone process-backed timer regressions passed together
 (2 passed; 1,689 filtered; 39.15 seconds), verifying parent-selected HttpOnly
 request cookies, response-cookie rotation, and the visible-only page cookie
 projection. Process-backed tests spawn `glass-native-content-worker`, so build
-that companion binary after `cargo check` before running them.
+that companion binary after `cargo check` before running them. ServiceWorker
+`postMessage` and page MessagePort-delivered ServiceWorker events now retain the
+same owner-checked broker. The
+`native_content_process_service_worker_message_fetch_uses_parent_cookie_authority`
+regression passed (1 passed; 1,691 filtered; 25.87 seconds), verifying a
+message-event response cookie is stored by the parent and used on a later page
+request; HttpOnly remains excluded from the page projection. Other child-direct
+internal requests remain open in Slice 843.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

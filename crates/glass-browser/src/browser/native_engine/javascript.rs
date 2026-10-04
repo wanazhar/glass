@@ -33853,8 +33853,14 @@ const NATIVE_SERVICE_WORKER_PAGE_SCRIPT: &str = r###"
   const NavigationPreloadManagerNative = typeof globalThis.__glassNavigationPreloadManagerConstructor === "function"
     ? globalThis.__glassNavigationPreloadManagerConstructor
     : function NavigationPreloadManager() { throw new TypeError("Illegal constructor"); };
-  const serviceWorkerNavigationPreloadManagerByRegistration = new WeakMap();
-  const serviceWorkerRegistrationByNavigationPreloadManager = new WeakMap();
+  const serviceWorkerNavigationPreloadManagerByRegistration = globalThis.__glassServiceWorkerNavigationPreloadManagerByRegistration instanceof WeakMap
+    ? globalThis.__glassServiceWorkerNavigationPreloadManagerByRegistration
+    : new WeakMap();
+  globalThis.__glassServiceWorkerNavigationPreloadManagerByRegistration = serviceWorkerNavigationPreloadManagerByRegistration;
+  const serviceWorkerRegistrationByNavigationPreloadManager = globalThis.__glassServiceWorkerRegistrationByNavigationPreloadManager instanceof WeakMap
+    ? globalThis.__glassServiceWorkerRegistrationByNavigationPreloadManager
+    : new WeakMap();
+  globalThis.__glassServiceWorkerRegistrationByNavigationPreloadManager = serviceWorkerRegistrationByNavigationPreloadManager;
   if (!ServiceWorkerNative.prototype.postMessage) {
     ServiceWorkerNative.prototype.postMessage = function(message, options) {
       const envelope = glassMessageCloneWithTransfers(

@@ -2393,6 +2393,11 @@ impl NativeServiceWorkerRegistry {
                 Some(result) => Some(result),
                 None if fetch_handler_responded => {
                     drop(preload_request);
+                    if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
+                        parent_fetch_broker
+                            .cancel_parent_fetch(preload.request_id)
+                            .await?;
+                    }
                     None
                 }
                 None => Some(preload_request.await),

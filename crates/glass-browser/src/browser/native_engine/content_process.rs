@@ -124,7 +124,7 @@ const MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS: usize = MAX_CONTENT_PROCESS_OUTPUT
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
     MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 25;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 26;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -166,6 +166,7 @@ pub(crate) struct NativeContentFetchBroker<'a> {
     runtime: Option<&'a NativeJavaScriptRuntime>,
     stdout: &'a mut tokio::io::Stdout,
     ipc_requests: &'a mut mpsc::Receiver<Result<Vec<u8>, NativeEngineError>>,
+    cancelled_parent_fetches: &'a mut BTreeSet<(u64, u32)>,
     document_cookie_projection: &'a mut Option<String>,
     next_content_resource_fetch_id: u32,
     page_meta_content_security_policies: Vec<String>,
@@ -186,6 +187,49 @@ pub(crate) struct NativeContentCookieWrite {
 }
 
 impl NativeContentFetchBroker<'_> {
+    async fn receive_parent_response(
+        &mut self,
+        operation: &'static str,
+    ) -> Result<Vec<u8>, NativeEngineError> {
+        receive_content_ipc_response(self.ipc_requests, self.cancelled_parent_fetches, operation)
+            .await
+    }
+
+    pub(crate) async fn cancel_parent_fetch(
+        &mut self,
+        fetch_id: u32,
+    ) -> Result<(), NativeEngineError> {
+        if fetch_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "parent Fetch cancellation ID",
+                "must be a positive integer",
+            ));
+        }
+        let key = (self.request_id, fetch_id);
+        if self.cancelled_parent_fetches.len() >= MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "cancelled parent Fetch requests",
+                MAX_NATIVE_EFFECTS,
+                self.cancelled_parent_fetches.len().saturating_add(1),
+            ));
+        }
+        if !self.cancelled_parent_fetches.insert(key) {
+            return Err(NativeEngineError::invalid(
+                "parent Fetch cancellation",
+                "request was already cancelled",
+            ));
+        }
+        write_value_frame(
+            self.stdout,
+            &json!({
+                "kind": "parent_fetch_cancel",
+                "id": self.request_id,
+                "fetch_id": fetch_id,
+            }),
+        )
+        .await
+    }
+
     fn take_cookie_writes(&self) -> Result<Vec<NativeContentCookieWrite>, NativeEngineError> {
         let cookie_updates = self
             .runtime
@@ -304,14 +348,7 @@ impl NativeContentFetchBroker<'_> {
             }),
         )
         .await?;
-        let payload =
-            self.ipc_requests
-                .recv()
-                .await
-                .ok_or_else(|| NativeEngineError::Worker {
-                    operation: "parent Fetch broker".into(),
-                    reason: "parent closed the broker response channel".into(),
-                })??;
+        let payload = self.receive_parent_response("parent Fetch broker").await?;
         let response: Value =
             serde_json::from_slice(&payload).map_err(|_| NativeEngineError::Worker {
                 operation: "decode parent Fetch response".into(),
@@ -409,14 +446,9 @@ impl NativeContentFetchBroker<'_> {
             }),
         )
         .await?;
-        let payload =
-            self.ipc_requests
-                .recv()
-                .await
-                .ok_or_else(|| NativeEngineError::Worker {
-                    operation: "parent worker script broker".into(),
-                    reason: "parent closed the worker script response channel".into(),
-                })??;
+        let payload = self
+            .receive_parent_response("parent worker script broker")
+            .await?;
         let response: Value = serde_json::from_slice(&payload).map_err(|_| {
             NativeEngineError::worker_failure(
                 "decode parent worker script response",
@@ -591,14 +623,9 @@ impl NativeContentFetchBroker<'_> {
             }),
         )
         .await?;
-        let payload =
-            self.ipc_requests
-                .recv()
-                .await
-                .ok_or_else(|| NativeEngineError::Worker {
-                    operation: "parent page script broker".into(),
-                    reason: "parent closed the page script response channel".into(),
-                })??;
+        let payload = self
+            .receive_parent_response("parent page script broker")
+            .await?;
         let response: Value = serde_json::from_slice(&payload).map_err(|_| {
             NativeEngineError::worker_failure(
                 "decode parent page script response",
@@ -739,14 +766,9 @@ impl NativeContentFetchBroker<'_> {
             }),
         )
         .await?;
-        let payload =
-            self.ipc_requests
-                .recv()
-                .await
-                .ok_or_else(|| NativeEngineError::Worker {
-                    operation: "parent stylesheet broker".into(),
-                    reason: "parent closed the stylesheet response channel".into(),
-                })??;
+        let payload = self
+            .receive_parent_response("parent stylesheet broker")
+            .await?;
         let response: Value = serde_json::from_slice(&payload).map_err(|_| {
             NativeEngineError::worker_failure(
                 "decode parent stylesheet response",
@@ -874,14 +896,7 @@ impl NativeContentFetchBroker<'_> {
             }),
         )
         .await?;
-        let payload =
-            self.ipc_requests
-                .recv()
-                .await
-                .ok_or_else(|| NativeEngineError::Worker {
-                    operation: "parent image broker".into(),
-                    reason: "parent closed the image response channel".into(),
-                })??;
+        let payload = self.receive_parent_response("parent image broker").await?;
         let response: Value = serde_json::from_slice(&payload).map_err(|_| {
             NativeEngineError::worker_failure(
                 "decode parent image response",
@@ -997,14 +1012,7 @@ impl NativeContentFetchBroker<'_> {
             }),
         )
         .await?;
-        let payload =
-            self.ipc_requests
-                .recv()
-                .await
-                .ok_or_else(|| NativeEngineError::Worker {
-                    operation: "parent media broker".into(),
-                    reason: "parent closed the media response channel".into(),
-                })??;
+        let payload = self.receive_parent_response("parent media broker").await?;
         let response: Value = serde_json::from_slice(&payload).map_err(|_| {
             NativeEngineError::worker_failure(
                 "decode parent media response",
@@ -1121,14 +1129,7 @@ impl NativeContentFetchBroker<'_> {
             }),
         )
         .await?;
-        let payload =
-            self.ipc_requests
-                .recv()
-                .await
-                .ok_or_else(|| NativeEngineError::Worker {
-                    operation: "parent font broker".into(),
-                    reason: "parent closed the font response channel".into(),
-                })??;
+        let payload = self.receive_parent_response("parent font broker").await?;
         let response: Value = serde_json::from_slice(&payload).map_err(|_| {
             NativeEngineError::worker_failure(
                 "decode parent font response",
@@ -4374,8 +4375,19 @@ impl NativeContentProcess {
         write_frame(&mut self.stdin, &payload).await?;
         let mut resumed_dialog: Option<NativeDialogWait> = None;
         let mut parent_navigation_document_url: Option<String> = None;
+        let mut cancellable_parent_navigation_fetches = BTreeSet::new();
         loop {
             let response = self.read_response_value().await?;
+            if response.get("kind").and_then(Value::as_str) == Some("parent_fetch_cancel") {
+                let fetch_id = decode_parent_fetch_cancellation(
+                    &response,
+                    request_id,
+                    &mut cancellable_parent_navigation_fetches,
+                )?;
+                self.acknowledge_parent_fetch_cancellation(request_id, fetch_id)
+                    .await?;
+                continue;
+            }
             if response.get("kind").and_then(Value::as_str) == Some("parent_navigation_request") {
                 if let Some(document_url) = Box::pin(self.handle_parent_navigation_request(
                     request_id,
@@ -5173,13 +5185,54 @@ impl NativeContentProcess {
                             "navigation-mode Fetch omitted its top-level navigation marker",
                         ));
                     }
+                    if top_level_navigation {
+                        let fetch_id = fetch_id.ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "content process parent Fetch cancellation",
+                                NativeWorkerFailureKind::Protocol,
+                                "top-level navigation Fetch omitted its cancellation ID",
+                            )
+                        })?;
+                        if cancellable_parent_navigation_fetches.len() >= MAX_NATIVE_EFFECTS
+                            || !cancellable_parent_navigation_fetches.insert(fetch_id)
+                        {
+                            return Err(NativeEngineError::worker_failure(
+                                "content process parent Fetch cancellation",
+                                NativeWorkerFailureKind::Protocol,
+                                "top-level navigation Fetch cancellation ID is duplicated or exceeds its bound",
+                            ));
+                        }
+                    }
                     for write in &cookie_writes {
                         loader.set_document_cookie(&write.owner.document_url, &write.value)?;
                     }
                     if top_level_navigation {
-                        loader
-                            .fetch_request_with_navigation_context_async(request, true)
-                            .await
+                        let fetch_id = fetch_id.expect("validated navigation preload ID");
+                        let fetch =
+                            loader.fetch_request_with_navigation_context_async(request, true);
+                        tokio::pin!(fetch);
+                        tokio::select! {
+                            biased;
+                            result = &mut fetch => result,
+                            child_response = self.read_response_value() => {
+                                let child_response = child_response?;
+                                let cancelled_fetch_id = decode_parent_fetch_cancellation(
+                                    &child_response,
+                                    request_id,
+                                    &mut cancellable_parent_navigation_fetches,
+                                )?;
+                                if cancelled_fetch_id != fetch_id {
+                                    return Err(NativeEngineError::worker_failure(
+                                        "content process parent Fetch cancellation",
+                                        NativeWorkerFailureKind::Protocol,
+                                        "cancellation targeted a different navigation Fetch",
+                                    ));
+                                }
+                                self.acknowledge_parent_fetch_cancellation(request_id, fetch_id)
+                                    .await?;
+                                continue;
+                            }
+                        }
                     } else {
                         loader.fetch_request_with_headers_async(request).await
                     }
@@ -5362,6 +5415,26 @@ impl NativeContentProcess {
         Ok(document_url)
     }
 
+    async fn acknowledge_parent_fetch_cancellation(
+        &mut self,
+        request_id: u64,
+        fetch_id: u32,
+    ) -> Result<(), NativeEngineError> {
+        let payload = serde_json::to_vec(&json!({
+            "kind": "parent_fetch_cancelled",
+            "id": request_id,
+            "fetch_id": fetch_id,
+        }))
+        .map_err(|_| {
+            NativeEngineError::worker_failure(
+                "encode parent Fetch cancellation acknowledgement",
+                NativeWorkerFailureKind::Protocol,
+                "cancellation acknowledgement could not be encoded",
+            )
+        })?;
+        write_frame(&mut self.stdin, &payload).await
+    }
+
     fn apply_parent_page_meta_csp(
         &mut self,
         loader: &mut NativeResourceLoader,
@@ -5427,6 +5500,36 @@ fn parent_broker_owner_matches_operation(
         && captured_generation == Some(owner.generation)
         && (captured_url.is_some_and(|url| without_fragment(url) == owner_url)
             || parent_navigation_document_url.is_some_and(|url| without_fragment(url) == owner_url))
+}
+
+fn decode_parent_fetch_cancellation(
+    response: &Value,
+    request_id: u64,
+    cancellable_fetches: &mut BTreeSet<u32>,
+) -> Result<u32, NativeEngineError> {
+    let fetch_id = response
+        .get("fetch_id")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value != 0)
+        .ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "content process parent Fetch cancellation",
+                NativeWorkerFailureKind::Protocol,
+                "cancellation request has an invalid Fetch ID",
+            )
+        })?;
+    if response.get("kind").and_then(Value::as_str) != Some("parent_fetch_cancel")
+        || response.get("id").and_then(Value::as_u64) != Some(request_id)
+        || !cancellable_fetches.remove(&fetch_id)
+    {
+        return Err(NativeEngineError::worker_failure(
+            "content process parent Fetch cancellation",
+            NativeWorkerFailureKind::Protocol,
+            "cancellation request does not match a parent-brokered navigation Fetch",
+        ));
+    }
+    Ok(fetch_id)
 }
 
 async fn write_frame(
@@ -5511,6 +5614,74 @@ async fn forward_content_process_output(
     }
 }
 
+fn discard_cancelled_parent_fetch_frame(
+    value: &Value,
+    cancelled_parent_fetches: &mut BTreeSet<(u64, u32)>,
+) -> Result<bool, NativeEngineError> {
+    if value.get("kind").and_then(Value::as_str) == Some("parent_fetch_cancelled") {
+        let request_id = value.get("id").and_then(Value::as_u64).ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "parent Fetch cancellation acknowledgement",
+                NativeWorkerFailureKind::Protocol,
+                "parent omitted the content request ID",
+            )
+        })?;
+        let fetch_id = value
+            .get("fetch_id")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value != 0)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "parent Fetch cancellation acknowledgement",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent returned an invalid Fetch request ID",
+                )
+            })?;
+        cancelled_parent_fetches.remove(&(request_id, fetch_id));
+        return Ok(true);
+    }
+    let Some(request_id) = value.get("id").and_then(Value::as_u64) else {
+        return Ok(false);
+    };
+    let Some(fetch_id) = value
+        .get("fetch_id")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value != 0)
+    else {
+        return Ok(false);
+    };
+    Ok(cancelled_parent_fetches.remove(&(request_id, fetch_id)))
+}
+
+async fn receive_content_ipc_response(
+    ipc_requests: &mut mpsc::Receiver<Result<Vec<u8>, NativeEngineError>>,
+    cancelled_parent_fetches: &mut BTreeSet<(u64, u32)>,
+    operation: &'static str,
+) -> Result<Vec<u8>, NativeEngineError> {
+    loop {
+        let payload = ipc_requests
+            .recv()
+            .await
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "parent closed the broker response channel".into(),
+            })??;
+        let value: Value = serde_json::from_slice(&payload).map_err(|_| {
+            NativeEngineError::worker_failure(
+                operation,
+                NativeWorkerFailureKind::Protocol,
+                "parent returned invalid broker JSON",
+            )
+        })?;
+        if discard_cancelled_parent_fetch_frame(&value, cancelled_parent_fetches)? {
+            continue;
+        }
+        return Ok(payload);
+    }
+}
+
 fn write_sync_frame(mut writer: impl Write, payload: &[u8]) -> std::io::Result<()> {
     if payload.len() > MAX_CONTENT_IPC_FRAME_BYTES {
         return Err(std::io::Error::new(
@@ -5590,10 +5761,22 @@ fn require_response_kind(
     {
         return Ok(());
     }
+    let actual_kind = response
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("<missing>");
+    let actual_id = response.get("id").and_then(Value::as_u64);
+    let child_reason = response.get("reason").and_then(Value::as_str);
+    let detail = match child_reason {
+        Some(reason) => format!("; child reason: {reason}"),
+        None => String::new(),
+    };
     Err(NativeEngineError::worker_failure(
         operation,
         NativeWorkerFailureKind::Protocol,
-        "content process rejected the typed command",
+        format!(
+            "expected {expected} response for request {expected_id}, got {actual_kind} for request {actual_id:?}{detail}"
+        ),
     ))
 }
 
@@ -8761,6 +8944,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut external_shared_worker_routing = false;
     let mut next_async_effect_sequence = 1_u64;
     let mut async_effect_notification_pending = false;
+    let mut cancelled_parent_fetches = BTreeSet::new();
     let dialog_rpc_for_handler = Arc::clone(&dialog_rpc);
     let dialog_handler: NativeDialogHandler =
         Arc::new(move |dialog, url| dialog_rpc_for_handler.request_dialog(dialog, url));
@@ -8968,6 +9152,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 operation: "decode content IPC".into(),
                 reason: "content process received an invalid request".into(),
             })?;
+        if discard_cancelled_parent_fetch_frame(&request, &mut cancelled_parent_fetches)? {
+            continue;
+        }
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         let request_id = id.as_u64().ok_or_else(|| {
             NativeEngineError::invalid("content-process request ID", "must be an unsigned integer")
@@ -9775,6 +9962,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         &frame_id,
                         &mut stdout,
                         &mut ipc_request_rx,
+                        &mut cancelled_parent_fetches,
                         &mut parent_document_cookie_projection,
                     )
                     .await
@@ -10006,6 +10194,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                                         runtime: Some(runtime),
                                                         stdout: &mut stdout,
                                                         ipc_requests: &mut ipc_request_rx,
+                                                        cancelled_parent_fetches: &mut cancelled_parent_fetches,
                                                         document_cookie_projection:
                                                             &mut parent_document_cookie_projection,
                                                         next_content_resource_fetch_id: 0,
@@ -10270,12 +10459,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             }),
                         )
                         .await?;
-                        let payload = ipc_request_rx.recv().await.ok_or_else(|| {
-                            NativeEngineError::Worker {
-                                operation: "parent Fetch broker".into(),
-                                reason: "parent closed the broker response channel".into(),
-                            }
-                        })??;
+                        let payload = receive_content_ipc_response(
+                            &mut ipc_request_rx,
+                            &mut cancelled_parent_fetches,
+                            "parent Fetch broker",
+                        )
+                        .await?;
                         let broker_response: Value =
                             serde_json::from_slice(&payload).map_err(|_| {
                                 NativeEngineError::Worker {
@@ -10540,6 +10729,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         runtime: Some(runtime),
                         stdout: &mut stdout,
                         ipc_requests: &mut ipc_request_rx,
+                        cancelled_parent_fetches: &mut cancelled_parent_fetches,
                         document_cookie_projection: &mut parent_document_cookie_projection,
                         next_content_resource_fetch_id: 0,
                         page_meta_content_security_policies: loader
@@ -10622,6 +10812,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     runtime: Some(runtime),
                     stdout: &mut stdout,
                     ipc_requests: &mut ipc_request_rx,
+                    cancelled_parent_fetches: &mut cancelled_parent_fetches,
                     document_cookie_projection: &mut parent_document_cookie_projection,
                     next_content_resource_fetch_id: 0,
                     page_meta_content_security_policies: loader
@@ -10778,6 +10969,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 runtime: Some(runtime),
                                 stdout: &mut stdout,
                                 ipc_requests: &mut ipc_request_rx,
+                                cancelled_parent_fetches: &mut cancelled_parent_fetches,
                                 document_cookie_projection: &mut parent_document_cookie_projection,
                                 next_content_resource_fetch_id: 0,
                                 page_meta_content_security_policies:
@@ -10843,6 +11035,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     runtime: Some(runtime),
                                     stdout: &mut stdout,
                                     ipc_requests: &mut ipc_request_rx,
+                                    cancelled_parent_fetches: &mut cancelled_parent_fetches,
                                     document_cookie_projection:
                                         &mut parent_document_cookie_projection,
                                     next_content_resource_fetch_id: 0,
@@ -11878,7 +12071,11 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 id,
                 NativeEngineError::Worker {
                     operation: "content process command".into(),
-                    reason: "content process rejected the typed command".into(),
+                    reason: format!(
+                        "content process rejected kind {:?} with protocol {:?} while running={running}",
+                        request.get("kind").and_then(Value::as_str),
+                        request.get("protocol").and_then(Value::as_u64),
+                    ),
                 },
             ),
         };
@@ -12764,6 +12961,7 @@ async fn load_parent_content_navigation(
     navigation: &NativeNavigationRequest,
     stdout: &mut (impl AsyncWrite + Unpin),
     ipc_requests: &mut mpsc::Receiver<Result<Vec<u8>, NativeEngineError>>,
+    cancelled_parent_fetches: &mut BTreeSet<(u64, u32)>,
     loader: &mut NativeResourceLoader,
     document_cookie_projection: &mut Option<String>,
 ) -> Result<NativeResource, NativeEngineError> {
@@ -12784,13 +12982,12 @@ async fn load_parent_content_navigation(
         }),
     )
     .await?;
-    let payload = ipc_requests
-        .recv()
-        .await
-        .ok_or_else(|| NativeEngineError::Worker {
-            operation: "parent navigation broker".into(),
-            reason: "parent closed the navigation response channel".into(),
-        })??;
+    let payload = receive_content_ipc_response(
+        ipc_requests,
+        cancelled_parent_fetches,
+        "parent navigation broker",
+    )
+    .await?;
     let response: Value = serde_json::from_slice(&payload).map_err(|_| {
         NativeEngineError::worker_failure(
             "decode parent navigation response",
@@ -13038,6 +13235,7 @@ async fn load_content_resource(
     frame_id: &str,
     stdout: &mut tokio::io::Stdout,
     ipc_requests: &mut mpsc::Receiver<Result<Vec<u8>, NativeEngineError>>,
+    cancelled_parent_fetches: &mut BTreeSet<(u64, u32)>,
     parent_document_cookie_projection: &mut Option<String>,
 ) -> Result<
     Option<(
@@ -13318,6 +13516,7 @@ async fn load_content_resource(
                         &navigation,
                         stdout,
                         ipc_requests,
+                        cancelled_parent_fetches,
                         loader,
                         parent_document_cookie_projection,
                     )
@@ -13347,6 +13546,7 @@ async fn load_content_resource(
                 runtime: None,
                 stdout,
                 ipc_requests,
+                cancelled_parent_fetches,
                 document_cookie_projection: parent_document_cookie_projection,
                 next_content_resource_fetch_id: 0,
                 page_meta_content_security_policies: Vec::new(),
@@ -13381,6 +13581,7 @@ async fn load_content_resource(
                         &navigation,
                         stdout,
                         ipc_requests,
+                        cancelled_parent_fetches,
                         loader,
                         parent_document_cookie_projection,
                     )
@@ -13413,6 +13614,7 @@ async fn load_content_resource(
         runtime: None,
         stdout,
         ipc_requests,
+        cancelled_parent_fetches,
         document_cookie_projection: parent_document_cookie_projection,
         next_content_resource_fetch_id: 0,
         page_meta_content_security_policies: Vec::new(),

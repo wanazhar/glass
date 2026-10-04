@@ -469,6 +469,24 @@ projection and existing native Fetch behavior.
   `document.cookie`. The scoped test-target check passed with existing DOM
   dead-code warnings. Background work outside intercepted FetchEvents and
   other internal network paths remain direct child requests.
+- The navigation-preload API process regression exposed two coupled failures:
+  repeated page-bootstrap injection recreated the manager brand WeakMaps, and a
+  fast `respondWith()` could drop a preload after the parent had started its
+  brokered request, leaving the late `fetched` reply to be decoded as a new
+  content command. The maps now persist across injection. Protocol 26 adds a
+  bounded, captured-operation/Fetch-ID cancellation handshake: the parent
+  cancels unfinished network work; if its response already won, the child
+  drains that exact reply and the cancellation acknowledgement. The process
+  regression
+  `native_service_worker_navigation_preload_sends_header_and_reuses_response`
+  passes (1 passed; 44.94 seconds), including preload header/referrer behavior,
+  response reuse, the fast-response race, and a subsequent navigation. The
+  `native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority`
+  regression also passes on the rebuilt worker (1 passed; 28.42 seconds),
+  retaining parent-owned HttpOnly cookie flow through waiting-worker
+  activation, preload, navigation FetchEvent, and the following page request.
+  The scoped native-engine test-target check and formatting pass with the
+  repository's existing dead-code warnings.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.

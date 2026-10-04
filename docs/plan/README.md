@@ -404,12 +404,20 @@ process-backed referrer-policy regression passed (1 test; 29.43 seconds),
 checking the parent-selected HttpOnly page cookie on a dynamic stylesheet, its
 response cookie on the import and later Fetch, script-visible filtering, and
 the unchanged cascade/referrer behavior.
-Protocol version 25 carries validated captured-load owner metadata and routes
+Protocol version 26 carries validated captured-load owner metadata and routes
 waiting Service Worker activation, top-level navigation preload, and the
-navigation FetchEvent through the parent cookie broker. The process-backed
+navigation FetchEvent through the parent cookie broker. Preload cancellation
+is owner/request-bound: an unfinished parent request is cancelled when a fast
+`respondWith()` wins, while an already-completed matching reply is drained.
+The process-backed
 `native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority`
 regression passed (1 test; 28.78 seconds), verifying the activation-to-preload-
 to-navigation-Fetch cookie sequence and HttpOnly filtering on the next page.
+A separate
+`native_service_worker_navigation_preload_sends_header_and_reuses_response`
+process regression now passes (1 test; 44.94 seconds), covering manager
+identity across bootstrap injection, preload request headers, response reuse,
+referrer policy, cancellation, and the following navigation.
 A new Slice 843 checkpoint moves unhandled HTTP(S) top-level document
 navigation to the parent loader after content-side Service Worker
 interception declines it. The request is bound to the active load ID,
@@ -424,13 +432,13 @@ At that navigation checkpoint, parser scripts, stylesheets/imports, and images
 were parent-brokered; fonts/media, Service Worker-provided navigation
 responses, and the full child cookie profile remained outside it. The later
 media-resource checkpoint above supersedes its media status.
-Process-backed request/header/no-duplicate, cancellation, source-document
-referrer-policy/redirect, and worker-visible `Request.referrer` regressions
-remain unrun. Slice 842's parent-cookie regression did bind a local HTTP
-listener successfully, so the earlier blanket claim that this checkout denies
-local TCP binding is stale; that result does not verify these separate
-behaviors. Navigation Preload
-remains incomplete until those integrations run and pass. See the
+The navigation-preload process regression verifies the header on each eligible
+navigation, no preload header on registration/resource requests, source-document
+Referrer-Policy on direct and redirected loads, worker-visible
+`Request.referrer` and `referrerPolicy`, and response reuse. Slice 842's
+parent-cookie regression did bind a local HTTP listener successfully, so the
+earlier blanket claim that this checkout denies local TCP binding is stale;
+that result does not verify these separate behaviors. See the
 [slice 838
 task](tasks/native-engine-browser-838.md) and [slice 839
 task](tasks/native-engine-browser-839.md).

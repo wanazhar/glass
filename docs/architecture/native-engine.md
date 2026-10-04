@@ -557,6 +557,15 @@ cookie-bearing profile paths do not cross into or become writable by the
 content process. Broker failure is explicit and never triggers a direct child
 request.
 
+Captured top-level navigation preload requests are correlated with their
+content-operation and Fetch IDs. If the Service Worker settles its own response
+first, the child cancels the parent request; the parent cancels unfinished
+network work and acknowledges the cancellation. If the network response wins
+that race, the child drains the exact late reply instead of treating it as a
+new typed command. This keeps cancellation and response-cookie effects inside
+the parent broker without making a fast Service Worker response wait for an
+unused preload.
+
 The current content-process implementation still receives and mirrors full
 cookie profiles, including HttpOnly state; shared-profile writes for other
 storage can also rewrite that combined cookie snapshot. That behavior is a

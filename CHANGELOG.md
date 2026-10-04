@@ -46,6 +46,12 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Service Worker navigation preload now preserves NavigationPreloadManager
+  identity across repeated page-bootstrap injection. Parent-brokered preloads
+  use an owner-bound cancellation handshake: unfinished requests are cancelled
+  when a fast Service Worker response wins, and an already-completed reply is
+  drained rather than decoded as a content command. The focused preload
+  process regression passes with content-worker protocol version 26.
 - Native cookie enumeration now reads from the parent loader plus its pending
   process-cookie journal. The host applies child-reported mutations to the
   durable profile and owns import/clear persistence; the process no longer

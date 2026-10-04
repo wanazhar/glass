@@ -519,7 +519,7 @@ projection and existing native Fetch behavior.
   (1 passed; 25.12 seconds), retaining HttpOnly filtering and parent-accepted
   response-cookie rotation. Standalone `NativeEngine` timer scheduling remains
   local.
-- Content-worker protocol 28 now routes page EventSource open, chunk reads,
+- At the protocol-28 checkpoint, page EventSource open, chunk reads,
   reconnects, and close through the parent network/cookie authority. The parent
   retains each live response stream and applies request-cookie selection and
   response `Set-Cookie`; the child receives only bounded chunks addressed by
@@ -529,7 +529,16 @@ projection and existing native Fetch behavior.
   (1 passed; 902 filtered; 63.91 seconds), verifying the request cookie, SSE
   response-cookie persistence, a subsequent request using that cookie, and a
   cookie-free Web Storage profile. The test-target rebuild took 13m06 on this
-  checkout. Worker EventSource still uses a direct child-loader path, so the
-  parent-only cookie-authority objective remains in progress.
+  checkout; Worker EventSource was still direct at that checkpoint.
+- Content-worker protocol 29 now routes dedicated Worker EventSource open,
+  bounded reads, reconnect, and close through the parent cookie/network
+  authority. IPC binds each stream to the parent-captured page owner and worker
+  ID while preserving the worker script URL as the network initiator; no
+  Cookie/Set-Cookie headers or child-loader fallback are allowed. The existing
+  worker SSE regression now checks the parent-selected HttpOnly request cookie
+  and the parent-persisted HttpOnly response cookie. Focused `cargo check`
+  passed; `native_content_process_worker_drives_event_source_named_events`
+  passed (1 passed; 902 filtered; 24.63 seconds). Its incremental test-target
+  build took 4m48.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

@@ -74959,9 +74959,25 @@ async fn native_content_process_worker_drives_event_source_named_events() {
                         name.eq_ignore_ascii_case("accept") && value.trim() == "text/event-stream"
                     })
                 }));
+                assert!(request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("cookie")
+                            && value
+                                .trim()
+                                .split(';')
+                                .any(|cookie| cookie.trim() == "worker_parent=seed")
+                    })
+                }));
             }
+            let set_cookie = match path {
+                "/worker-eventsource-page" => {
+                    "Set-Cookie: worker_parent=seed; HttpOnly; Path=/\r\n"
+                }
+                "/worker-events" => "Set-Cookie: worker_sse=accepted; HttpOnly; Path=/\r\n",
+                _ => "",
+            };
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{set_cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(response.as_bytes()).await.unwrap();
@@ -75004,6 +75020,15 @@ async fn native_content_process_worker_drives_event_source_named_events() {
             ]
         ]])
     );
+    let cookies = engine.cookies_async().await.unwrap();
+    for name in ["worker_parent", "worker_sse"] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == name && cookie.http_only),
+            "parent cookie jar should retain Worker EventSource cookie {name} as HttpOnly"
+        );
+    }
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

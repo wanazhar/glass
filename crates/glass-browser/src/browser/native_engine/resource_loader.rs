@@ -3652,12 +3652,12 @@ impl NativeResourceLoader {
     /// process; buffering it here would defeat Server-Sent Events semantics.
     pub(crate) async fn open_event_source_async(
         &mut self,
-        document_url: &str,
+        initiator_url: &str,
         href: &str,
         with_credentials: bool,
         last_event_id: &str,
     ) -> Result<(Url, reqwest::Response), NativeEngineError> {
-        validate_url_text("EventSource owner URL", document_url)?;
+        validate_url_text("EventSource initiator URL", initiator_url)?;
         validate_url_text("EventSource URL", href)?;
         if last_event_id.len() > 128
             || last_event_id
@@ -3669,14 +3669,14 @@ impl NativeResourceLoader {
                 "must be a bounded value without line breaks",
             ));
         }
-        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+        let document_url = Url::parse(without_fragment(initiator_url)).map_err(|_| {
             NativeEngineError::UnsupportedUrl {
-                reason: "EventSource owner URL is not valid HTTP(S) syntax".into(),
+                reason: "EventSource initiator URL is not valid HTTP(S) syntax".into(),
             }
         })?;
         if !is_network_url(document_url.as_str()) {
             return Err(NativeEngineError::UnsupportedUrl {
-                reason: "EventSource requires an HTTP(S) document owner".into(),
+                reason: "EventSource requires an HTTP(S) initiator".into(),
             });
         }
         reject_credentials(&document_url)?;

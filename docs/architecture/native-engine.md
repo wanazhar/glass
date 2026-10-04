@@ -214,15 +214,19 @@ live session at its next request, including clearing a cookie written by a
 peer before the clearing session next synchronizes; its process-backed
 regression passed (1 passed, 870 filtered; 45.52 seconds). Slice 822 supplies
 the local content process with the SharedWorker constructor storage key
-derived from the active document owner, then verifies that a connected module
-SharedWorker can issue direct Fetch API requests. The HTTP regression covers
-`include` and `omit`, response-body
-reads, ordinary and HttpOnly cookies, response updates/deletion, and the next
-request; four related process-backed tests passed (68.32 seconds), including
-the new regression, and the adjacent module-import test passed separately
-(18.78 seconds). The browser-owned SharedWorker route is unchanged. The scoped
-check passed with existing dead-code warnings from the superseded HTML parser
-in `dom.rs`. Slice 823 preserves `omit`, `same-origin`, and `include` through
+derived from the active document owner and initially exercised direct Fetch.
+Slice 843 now routes local SharedWorker Fetch during startup/connect and
+explicit page MessagePort turns through the owner-checked parent broker. The
+process-backed `native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
+regression passed (1 passed; 904 filtered; 23.75 seconds), covering startup
+Fetch, `include`/`omit`, HttpOnly request cookies, response rotation/deletion,
+and the later MessagePort request while keeping HttpOnly values out of
+`document.cookie`. Browser-coordinated SharedWorker requests continue to run
+in the parent coordinator. Autonomous WorkerTimer turns in standalone content
+processes still use the local loader and remain outside this broker guarantee.
+The scoped check passed with existing dead-code warnings from the superseded
+HTML parser in `dom.rs`. Slice 823 preserves `omit`, `same-origin`, and
+`include` through
 direct worker Fetch requests and reevaluates cookie send/accept behavior at
 each redirect. Its two-origin process-backed regression passed (1 passed;
 21.71 seconds), and the separate module-graph credentials regression passed

@@ -318,16 +318,19 @@ evidence boundaries.
 The local content-process route supplies each SharedWorker create command with
 the constructor storage key derived from the owning document's origin,
 context, frame, and generation. Browser-coordinated SharedWorker creation
-continues to receive this key from the browser owner. A connected module
-SharedWorker can issue bounded direct Fetch API requests and consume response
-bodies. In the required ownership model, the browser parent executes those
-requests using its authoritative jar and returns response data without
-transferring cookie profiles or raw cookie headers to the child. The existing
-Slice 822 implementation instead executes these requests in the content
-process; its process-backed regression verifies
-`credentials: include` and `credentials: omit`, ordinary and HttpOnly request
-cookies, response updates and deletion, and the subsequent request. For direct
-worker Fetch, `Request.credentials` defaults to `same-origin`. For each URL in
+continues to receive this key from the browser owner. The historical Slice 822
+local Fetch path executed in the content process; Slice 843 now sends standard
+Fetches from local SharedWorker startup/connect and explicit page MessagePort
+turns through the owner-checked parent broker. The process-backed
+`native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
+regression passed (1 passed; 904 filtered; 23.75 seconds), verifying startup
+Fetch, `credentials: include`/`omit`, ordinary and HttpOnly request cookies,
+response updates/deletion, and a later MessagePort request while
+`document.cookie` stays script-visible only. Browser-coordinated SharedWorker
+requests execute in the browser parent coordinator. Autonomous WorkerTimer
+turns in standalone content processes remain local and are still outside this
+broker guarantee. For worker Fetch, `Request.credentials` defaults to
+`same-origin`. For each URL in
 a redirect chain, the loader sends and accepts cookies only when the mode is
 `include`, or when the mode is `same-origin` and that URL has the worker's
 origin. `omit` sends no cookies and ignores response cookies. These modes are

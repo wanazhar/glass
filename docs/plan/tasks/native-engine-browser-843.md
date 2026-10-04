@@ -82,6 +82,9 @@ projection and existing native Fetch behavior.
 - Initial-load inline-script-created HTTP(S) classic/module scripts must use
   the parent broker; verify parent-selected HttpOnly request cookies,
   response-cookie updates, and the script-visible projection.
+- HTTP(S) stylesheets, CSS imports/fonts, images, and media created by user
+  action mutations must use the parent broker and preserve response-cookie
+  ordering without a child-loader retry.
 - Verify a child shutdown/restart cannot mutate or lose the parent jar and
   that parent-broker failure cannot trigger a direct child request.
 - Run selected Fetch/Cookie/SharedWorker WPT cases and record exact selections
@@ -571,5 +574,17 @@ projection and existing native Fetch behavior.
   cookie is committed by the parent for a later request, and script sees only
   the visible projection. The code path also brokers module roots and their
   dependencies; this regression directly covers a classic script.
+- User action mutations now carry the parent resource loader through the
+  content-process IPC transaction. Newly attached HTTP(S) stylesheets and CSS
+  imports/fonts, images, and media settle through an owner-checked parent
+  broker; unavailable owner/runtime/loader state fails closed rather than
+  falling back to the child loader. The process-backed
+  `native_content_process_mutation_stylesheets_use_parent_cookie_authority`
+  regression passed (1 passed; 904 filtered; 23.11-second runtime; integration
+  target rebuild 2m21s), verifying parent-selected HttpOnly cookies on a
+  click-created stylesheet/import chain, parent acceptance for a later Fetch,
+  and HttpOnly invisibility in `document.cookie`. The scoped `cargo check`
+  passed with existing dead-code warnings. This does not cover other
+  child-direct internal network classes or claim full parent-only ownership.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

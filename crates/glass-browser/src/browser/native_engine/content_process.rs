@@ -3843,12 +3843,14 @@ impl NativeContentProcess {
         &mut self,
         node_index: u32,
         modifiers: u8,
+        parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentMutation, NativeEngineError> {
         let id = self.next_id();
         self.mutate_with_request_kind(
             id,
             "mutate_click_preflight",
             json!({"node_index": node_index, "modifiers": modifiers}),
+            parent_loader,
         )
         .await
     }
@@ -3857,12 +3859,14 @@ impl NativeContentProcess {
         &mut self,
         node_index: u32,
         text: String,
+        parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentMutation, NativeEngineError> {
         let id = self.next_id();
         self.mutate_with_request_kind(
             id,
             "mutate_type_events",
             json!({"node_index": node_index, "text": text}),
+            parent_loader,
         )
         .await
     }
@@ -3870,9 +3874,10 @@ impl NativeContentProcess {
     pub(crate) async fn mutate_form_action_with_event_bridge(
         &mut self,
         action: Value,
+        parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentMutation, NativeEngineError> {
         let id = self.next_id();
-        self.mutate_with_request_kind(id, "mutate_form_events", action)
+        self.mutate_with_request_kind(id, "mutate_form_events", action, parent_loader)
             .await
     }
 
@@ -3880,12 +3885,14 @@ impl NativeContentProcess {
         &mut self,
         node_index: u32,
         key: String,
+        parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentMutation, NativeEngineError> {
         let id = self.next_id();
         self.mutate_with_request_kind(
             id,
             "mutate_key_events",
             json!({"node_index": node_index, "key": key}),
+            parent_loader,
         )
         .await
     }
@@ -3896,6 +3903,7 @@ impl NativeContentProcess {
         key: String,
         kind: NativeEventKind,
         modifiers: i64,
+        parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentMutation, NativeEngineError> {
         let id = self.next_id();
         self.mutate_with_request_kind(
@@ -3907,6 +3915,7 @@ impl NativeContentProcess {
                 "kind": event_kind_text(kind),
                 "modifiers": modifiers,
             }),
+            parent_loader,
         )
         .await
     }
@@ -3917,6 +3926,7 @@ impl NativeContentProcess {
         key: String,
         modifiers: i64,
         apply_default: bool,
+        parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentMutation, NativeEngineError> {
         let id = self.next_id();
         self.mutate_with_request_kind(
@@ -3929,6 +3939,7 @@ impl NativeContentProcess {
                 "modifiers": modifiers,
                 "apply_default": apply_default,
             }),
+            parent_loader,
         )
         .await
     }
@@ -3936,6 +3947,7 @@ impl NativeContentProcess {
     pub(crate) async fn dispatch_lifecycle_events(
         &mut self,
         events: &[NativeEventKind],
+        parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentMutation, NativeEngineError> {
         let event_names = events
             .iter()
@@ -3946,15 +3958,17 @@ impl NativeContentProcess {
             id,
             "mutate_lifecycle_events",
             json!({"events": event_names}),
+            parent_loader,
         )
         .await
     }
 
     pub(crate) async fn dispatch_before_unload(
         &mut self,
+        parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentMutation, NativeEngineError> {
         let id = self.next_id();
-        self.mutate_with_request_kind(id, "mutate_before_unload", Value::Null)
+        self.mutate_with_request_kind(id, "mutate_before_unload", Value::Null, parent_loader)
             .await
     }
 
@@ -3962,12 +3976,14 @@ impl NativeContentProcess {
         &mut self,
         old_url: &str,
         new_url: &str,
+        parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentMutation, NativeEngineError> {
         let id = self.next_id();
         self.mutate_with_request_kind(
             id,
             "mutate_hash_change",
             json!({"old_url": old_url, "new_url": new_url}),
+            parent_loader,
         )
         .await
     }
@@ -4590,9 +4606,10 @@ impl NativeContentProcess {
         id: u64,
         request_kind: &str,
         action: Value,
+        parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentMutation, NativeEngineError> {
         let response = self
-            .exchange_with_timeout(
+            .exchange_with_parent_loader_timeout(
                 json!({
                 "kind": request_kind,
                 "id": id,
@@ -4601,6 +4618,7 @@ impl NativeContentProcess {
                 }),
                 "content process mutation",
                 CONTENT_PROCESS_MUTATION_TIMEOUT,
+                Some(parent_loader),
             )
             .await?;
         if response.get("kind").and_then(Value::as_str) == Some("error") {
@@ -11325,6 +11343,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             continue;
         }
         let id = request.get("id").cloned().unwrap_or(Value::Null);
+        let response_id = id.clone();
         let request_id = id.as_u64().ok_or_else(|| {
             NativeEngineError::invalid("content-process request ID", "must be an unsigned integer")
         })?;
@@ -11356,7 +11375,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             })
         });
         if let Ok(mut context) = sync_xhr_context.lock() {
-            *context = active_cookie_owner.map(|owner| (request_id, owner));
+            *context = active_cookie_owner.clone().map(|owner| (request_id, owner));
         }
         if kind == "script" {
             async_effect_notification_pending = false;
@@ -14422,6 +14441,114 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 },
             ),
         };
+        let is_action_mutation = response.get("kind").and_then(Value::as_str) == Some("mutated")
+            && kind.starts_with("mutate_");
+        if is_action_mutation
+            && let Some(current_document_url) =
+                document_url.as_deref().filter(|url| is_network_url(url))
+        {
+            let settlement = async {
+                let owner = active_cookie_owner.clone().ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "parent-brokered mutation resources",
+                        NativeWorkerFailureKind::Protocol,
+                        "the active document has no captured cookie owner",
+                    )
+                })?;
+                let current_document = document.as_mut().ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "parent-brokered mutation resources",
+                        NativeWorkerFailureKind::Protocol,
+                        "the active document disappeared during mutation settlement",
+                    )
+                })?;
+                if owner.context_id != storage_context_id
+                    || owner.frame_id != frame_id
+                    || owner.generation != current_document.generation()
+                {
+                    return Err(NativeEngineError::worker_failure(
+                        "parent-brokered mutation resources",
+                        NativeWorkerFailureKind::Protocol,
+                        "captured cookie owner does not match the mutated document",
+                    ));
+                }
+                let runtime = javascript_runtime.as_ref().ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "parent-brokered mutation resources",
+                        NativeWorkerFailureKind::Protocol,
+                        "the active document has no JavaScript runtime",
+                    )
+                })?;
+                let loader = resource_loader.as_mut().ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "parent-brokered mutation resources",
+                        NativeWorkerFailureKind::Protocol,
+                        "the active document has no resource loader",
+                    )
+                })?;
+                let mut parent_fetch_broker = NativeContentFetchBroker {
+                    request_id,
+                    owner,
+                    runtime: Some(runtime),
+                    stdout: &mut stdout,
+                    ipc_requests: &mut ipc_request_rx,
+                    cancelled_parent_fetches: &mut cancelled_parent_fetches,
+                    document_cookie_projection: &mut parent_document_cookie_projection,
+                    next_content_resource_fetch_id: 0,
+                    page_meta_content_security_policies: loader
+                        .document_meta_content_security_policies(current_document_url)?,
+                };
+                load_mutation_external_resources(
+                    current_document,
+                    runtime,
+                    loader,
+                    current_document_url,
+                    viewport,
+                    &mut parent_fetch_broker,
+                )
+                .await
+            }
+            .await;
+            match settlement {
+                Ok(resource_events) => {
+                    let Some(current_document) = document.as_ref() else {
+                        return Err(NativeEngineError::worker_failure(
+                            "parent-brokered mutation resources",
+                            NativeWorkerFailureKind::Protocol,
+                            "the active document disappeared after resource settlement",
+                        ));
+                    };
+                    let encoded_document = serde_json::to_vec(&current_document.to_content_wire())
+                        .map_err(|_| NativeEngineError::Worker {
+                            operation: "encode parent-brokered mutation resources".into(),
+                            reason: "the mutated document could not be encoded".into(),
+                        })?;
+                    response["document_base64"] = Value::String(
+                        base64::engine::general_purpose::STANDARD.encode(encoded_document),
+                    );
+                    let events = response["events"].as_array_mut().ok_or_else(|| {
+                        NativeEngineError::Worker {
+                            operation: "encode parent-brokered mutation events".into(),
+                            reason: "the mutation response omitted its event list".into(),
+                        }
+                    })?;
+                    if events.len().saturating_add(resource_events.len()) > MAX_NATIVE_EFFECTS {
+                        return Err(NativeEngineError::limit(
+                            "parent-brokered mutation resource events",
+                            MAX_NATIVE_EFFECTS,
+                            events.len().saturating_add(resource_events.len()),
+                        ));
+                    }
+                    events.extend(resource_events.into_iter().map(|(node_index, kind)| {
+                        json!({
+                            "node_index": node_index,
+                            "kind": event_kind_text(kind),
+                        })
+                    }));
+                }
+                Err(error) => response = content_error_response(response_id, error),
+            }
+        }
         let is_document_mutation = response.get("document_base64").is_some()
             && matches!(
                 response.get("kind").and_then(Value::as_str),
@@ -16731,6 +16858,47 @@ async fn load_dynamic_external_stylesheets(
         .await?;
         document.refresh_background_image_sources();
     }
+    Ok(events)
+}
+
+async fn load_mutation_external_resources(
+    document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    viewport: Viewport,
+    parent_fetch_broker: &mut NativeContentFetchBroker<'_>,
+) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
+    let mut events = load_dynamic_external_stylesheets(
+        document,
+        runtime,
+        loader,
+        document_url,
+        viewport,
+        Some(&mut *parent_fetch_broker),
+    )
+    .await?;
+    events.extend(
+        load_external_images(
+            document,
+            Some(runtime),
+            loader,
+            document_url,
+            viewport,
+            Some(&mut *parent_fetch_broker),
+        )
+        .await?,
+    );
+    events.extend(
+        load_external_media(
+            document,
+            Some(runtime),
+            loader,
+            document_url,
+            Some(&mut *parent_fetch_broker),
+        )
+        .await?,
+    );
     Ok(events)
 }
 

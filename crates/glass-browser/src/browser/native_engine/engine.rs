@@ -2440,7 +2440,7 @@ impl NativeEngine {
             if !process.refresh_health() {
                 return Ok((true, None));
             }
-            process.dispatch_before_unload().await?
+            process.dispatch_before_unload(&mut self.loader).await?
         };
         let navigation = mutation
             .navigation
@@ -2466,7 +2466,9 @@ impl NativeEngine {
             if !process.refresh_health() {
                 return Ok(None);
             }
-            process.dispatch_lifecycle_events(events).await?
+            process
+                .dispatch_lifecycle_events(events, &mut self.loader)
+                .await?
         };
         let navigation = mutation
             .navigation
@@ -2494,7 +2496,7 @@ impl NativeEngine {
             return Ok(None);
         }
         let mutation = process
-            .dispatch_lifecycle_events(&[NativeEventKind::PageShow])
+            .dispatch_lifecycle_events(&[NativeEventKind::PageShow], &mut self.loader)
             .await?;
         let navigation = mutation.navigation.clone();
         let next_revision = self.next_revision()?;
@@ -2515,7 +2517,9 @@ impl NativeEngine {
             if !process.refresh_health() {
                 return Ok(None);
             }
-            process.dispatch_hash_change(old_url, new_url).await?
+            process
+                .dispatch_hash_change(old_url, new_url, &mut self.loader)
+                .await?
         };
         let navigation = mutation
             .navigation
@@ -4749,7 +4753,11 @@ impl NativeEngine {
                                 reason: "native content process is not running".into(),
                             })?;
                     process
-                        .mutate_click_with_event_preflight(id.index(), click_modifiers)
+                        .mutate_click_with_event_preflight(
+                            id.index(),
+                            click_modifiers,
+                            &mut self.loader,
+                        )
                         .await?
                 };
                 let navigation = mutation.navigation.clone();
@@ -4848,10 +4856,13 @@ impl NativeEngine {
                                 reason: "native content process is not running".into(),
                             })?;
                     process
-                        .mutate_form_action_with_event_bridge(serde_json::json!({
-                            "kind": "hover",
-                            "node_index": id.index(),
-                        }))
+                        .mutate_form_action_with_event_bridge(
+                            serde_json::json!({
+                                "kind": "hover",
+                                "node_index": id.index(),
+                            }),
+                            &mut self.loader,
+                        )
                         .await?
                 };
                 let next_revision = self.next_revision()?;
@@ -4878,11 +4889,14 @@ impl NativeEngine {
                                 reason: "native content process is not running".into(),
                             })?;
                     process
-                        .mutate_form_action_with_event_bridge(serde_json::json!({
-                            "kind": "drag",
-                            "node_index": source_id.index(),
-                            "destination_node_index": destination_id.index(),
-                        }))
+                        .mutate_form_action_with_event_bridge(
+                            serde_json::json!({
+                                "kind": "drag",
+                                "node_index": source_id.index(),
+                                "destination_node_index": destination_id.index(),
+                            }),
+                            &mut self.loader,
+                        )
                         .await?
                 };
                 let next_revision = self.next_revision()?;
@@ -4903,11 +4917,14 @@ impl NativeEngine {
                                 reason: "native content process is not running".into(),
                             })?;
                     process
-                        .mutate_form_action_with_event_bridge(serde_json::json!({
-                            "kind": "upload",
-                            "node_index": id.index(),
-                            "files": files,
-                        }))
+                        .mutate_form_action_with_event_bridge(
+                            serde_json::json!({
+                                "kind": "upload",
+                                "node_index": id.index(),
+                                "files": files,
+                            }),
+                            &mut self.loader,
+                        )
                         .await?
                 };
                 let next_revision = self.next_revision()?;
@@ -4933,7 +4950,7 @@ impl NativeEngine {
                                 reason: "native content process is not running".into(),
                             })?;
                     process
-                        .mutate_type_with_event_bridge(id.index(), text)
+                        .mutate_type_with_event_bridge(id.index(), text, &mut self.loader)
                         .await?
                 };
                 let next_revision = self.next_revision()?;
@@ -4954,10 +4971,13 @@ impl NativeEngine {
                                 reason: "native content process is not running".into(),
                             })?;
                     process
-                        .mutate_form_action_with_event_bridge(serde_json::json!({
-                            "kind": "clear",
-                            "node_index": id.index(),
-                        }))
+                        .mutate_form_action_with_event_bridge(
+                            serde_json::json!({
+                                "kind": "clear",
+                                "node_index": id.index(),
+                            }),
+                            &mut self.loader,
+                        )
                         .await?
                 };
                 let next_revision = self.next_revision()?;
@@ -4979,11 +4999,14 @@ impl NativeEngine {
                                 reason: "native content process is not running".into(),
                             })?;
                     process
-                        .mutate_form_action_with_event_bridge(serde_json::json!({
-                            "kind": "select",
-                            "node_index": id.index(),
-                            "value": value,
-                        }))
+                        .mutate_form_action_with_event_bridge(
+                            serde_json::json!({
+                                "kind": "select",
+                                "node_index": id.index(),
+                                "value": value,
+                            }),
+                            &mut self.loader,
+                        )
                         .await?
                 };
                 let next_revision = self.next_revision()?;
@@ -5015,6 +5038,7 @@ impl NativeEngine {
                             key,
                             NativeEventKind::KeyDown,
                             0,
+                            &mut self.loader,
                         )
                         .await?
                 };
@@ -5040,6 +5064,7 @@ impl NativeEngine {
                             key,
                             NativeEventKind::KeyUp,
                             0,
+                            &mut self.loader,
                         )
                         .await?
                 };
@@ -5081,6 +5106,7 @@ impl NativeEngine {
                             key,
                             modifiers,
                             apply_default,
+                            &mut self.loader,
                         )
                         .await?
                 };
@@ -5102,7 +5128,7 @@ impl NativeEngine {
                                 reason: "native content process is not running".into(),
                             })?;
                     process
-                        .mutate_key_with_event_bridge(id.index(), key)
+                        .mutate_key_with_event_bridge(id.index(), key, &mut self.loader)
                         .await?
                 };
                 let next_revision = self.next_revision()?;

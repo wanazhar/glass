@@ -720,13 +720,15 @@ projection and existing native Fetch behavior.
   classes still fail closed and Slice 843 remains in progress.
 - The expanded process-backed
   `native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
-  regression passed (1 passed; 907 filtered; 21.18 seconds). Its module
+  regression passed (1 passed; 907 filtered; 21.50 seconds). Its module
   SharedWorker entry sets an HttpOnly cookie that the parent selects for the
   static dependency; that response's HttpOnly cookie is then selected for the
-  connect-time startup Fetch. The later MessagePort Fetch verifies both module
-  cookies remain parent-owned, while the existing `include`/`omit`, response
-  rotation/deletion, and script-visible cookie assertions still pass. This
-  adds process-backed SharedWorker graph coverage; uncovered HTTP(S) request
-  classes still fail closed and Slice 843 remains in progress.
+  connect-time startup Fetch. The later MessagePort handler dynamically loads
+  an import root and nested dependency; each response cookie is selected for
+  the next request, and both reach the following Fetch. The existing
+  `include`/`omit`, response rotation/deletion, and script-visible cookie
+  assertions still pass. This adds process-backed static and dynamic
+  SharedWorker graph coverage; uncovered HTTP(S) request classes still fail
+  closed and Slice 843 remains in progress.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

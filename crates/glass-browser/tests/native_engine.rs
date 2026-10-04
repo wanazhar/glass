@@ -22259,6 +22259,134 @@ async fn native_content_process_form_post_target_preserves_payload() {
     server.await.unwrap();
 }
 
+#[test]
+fn native_content_process_form_post_uses_parent_cookie_authority() {
+    std::thread::Builder::new()
+        .name("native-form-post-cookie-test".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("form POST cookie test runtime should build");
+            runtime.block_on(native_content_process_form_post_uses_parent_cookie_authority_inner());
+        })
+        .expect("form POST cookie test thread should start")
+        .join()
+        .expect("form POST cookie test thread should finish");
+}
+
+async fn native_content_process_form_post_uses_parent_cookie_authority_inner() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for expected_path in ["/form", "/result", "/after"] {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("parent-owned form navigation request should reach the server")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("form navigation request includes a path")
+                .to_owned();
+            assert_eq!(path, expected_path);
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
+            let (method, headers, content_type, body) = match path.as_str() {
+                "/form" => (
+                    "GET",
+                    "Set-Cookie: form_page_secret=seed; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/html",
+                    "<!doctype html><form id='form' action='/result' method='post'><input name='query' value='hello'></form>",
+                ),
+                "/result" => {
+                    assert!(
+                        cookie
+                            .as_deref()
+                            .is_some_and(|value| value.contains("form_page_secret=seed")),
+                        "parent did not select the form page cookie for POST: {request}"
+                    );
+                    assert!(request.starts_with("POST /result HTTP/1.1\r\n"));
+                    assert!(request.lines().any(|line| {
+                        line.eq_ignore_ascii_case("content-type: application/x-www-form-urlencoded")
+                    }));
+                    assert_eq!(request.split("\r\n\r\n").nth(1), Some("query=hello"));
+                    (
+                        "POST",
+                        "Set-Cookie: form_result_secret=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "text/html",
+                        "<!doctype html><title>Form result</title><p>posted</p>",
+                    )
+                }
+                "/after" => {
+                    for name in ["form_page_secret=seed", "form_result_secret=accepted"] {
+                        assert!(
+                            cookie.as_deref().is_some_and(|value| value.contains(name)),
+                            "parent did not select {name} for the later Fetch: {request}"
+                        );
+                    }
+                    ("GET", "", "text/plain", "form response cookie retained")
+                }
+                other => panic!("unexpected form navigation path: {other}"),
+            };
+            assert!(request.starts_with(&format!("{method} {expected_path} HTTP/1.1")));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push((path, cookie));
+        }
+        requests
+    });
+
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/form")),
+    )
+    .await
+    .unwrap();
+    session
+        .script("document.getElementById('form').submit()")
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .evidence(EvidenceLevel::Compact)
+            .await
+            .unwrap()
+            .title,
+        "Form result"
+    );
+    assert_eq!(
+        session.script("document.cookie").await.unwrap().value,
+        serde_json::json!("")
+    );
+    assert_eq!(
+        session
+            .script("await fetch('/after').then(response => response.text())")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("form response cookie retained")
+    );
+    session.close().await.unwrap();
+    let requests = server.await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect::<Vec<_>>(),
+        ["/form", "/result", "/after"]
+    );
+}
+
 #[tokio::test]
 async fn native_content_process_multipart_form_post_target_preserves_binary_body() {
     let _guard = native_content_process_test_lock().lock().await;

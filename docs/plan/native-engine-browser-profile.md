@@ -131,7 +131,9 @@ document URL; it does not authorize later requests or bypass owner validation.
 A process-backed module DedicatedWorker graph regression now also verifies
 parent-selected HttpOnly cookies on the entry and static dependency, ordered
 response-cookie acceptance before the startup and later Worker Fetches, and an
-empty `document.cookie` projection. This is targeted graph coverage only; the
+empty `document.cookie` projection. A later Worker message also performs a
+runtime import and nested import, with parent-owned cookies available on the
+next request. This is targeted graph coverage only; the
 broader parent-only contract remains in progress.
 The process-backed
 `native_content_process_shared_worker_fetch_uses_parent_cookie_authority`

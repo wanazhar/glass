@@ -8913,7 +8913,7 @@ async fn native_content_process_module_worker_graph_uses_parent_cookie_authority
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         let mut requests: Vec<(String, Option<String>)> = Vec::new();
-        for _ in 0..5 {
+        for _ in 0..7 {
             let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
                 .await
                 .unwrap_or_else(|_| {
@@ -8943,7 +8943,7 @@ async fn native_content_process_module_worker_graph_uses_parent_cookie_authority
                 "/module-worker-entry.mjs" => (
                     "Set-Cookie: module_entry_secret=entry; HttpOnly; Path=/; SameSite=Lax\r\n",
                     "text/javascript",
-                    "import { value } from './module-worker-dependency.mjs'; self.onmessage = async event => { if (event.data !== 'after') return; const response = await fetch('/module-worker-after'); postMessage({ kind: 'after', text: await response.text() }); }; fetch('/module-worker-data').then(async response => postMessage({ kind: 'startup', module: value, text: await response.text() })).catch(error => postMessage({ kind: 'error', message: String(error) }));",
+                    "import { value } from './module-worker-dependency.mjs'; self.onmessage = async event => { if (event.data !== 'after') return; const runtime = await import('./module-worker-runtime.mjs'); const dependency = await runtime.load(); const response = await fetch('/module-worker-after'); postMessage({ kind: 'after', runtime: dependency.value, text: await response.text() }); }; fetch('/module-worker-data').then(async response => postMessage({ kind: 'startup', module: value, text: await response.text() })).catch(error => postMessage({ kind: 'error', message: String(error) }));",
                 ),
                 "/module-worker-dependency.mjs" => (
                     "Set-Cookie: module_dependency_secret=dependency; HttpOnly; Path=/; SameSite=Lax\r\n",
@@ -8954,6 +8954,16 @@ async fn native_content_process_module_worker_graph_uses_parent_cookie_authority
                     "Set-Cookie: module_data_secret=data; HttpOnly; Path=/; SameSite=Lax\r\n",
                     "text/plain",
                     "module worker startup fetch",
+                ),
+                "/module-worker-runtime.mjs" => (
+                    "Set-Cookie: module_runtime_secret=runtime; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/javascript",
+                    "export function load() { return import('./module-worker-runtime-dependency.mjs'); }",
+                ),
+                "/module-worker-runtime-dependency.mjs" => (
+                    "Set-Cookie: module_runtime_dependency_secret=runtime-dependency; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/javascript",
+                    "export const value = 'runtime module dependency loaded';",
                 ),
                 "/module-worker-after" => ("", "text/plain", "module worker follow-up fetch"),
                 other => panic!("unexpected module Worker graph request: {other}"),
@@ -9022,9 +9032,14 @@ async fn native_content_process_module_worker_graph_uses_parent_cookie_authority
             },
             {
                 "kind": "after",
+                "runtime": "runtime module dependency loaded",
                 "text": "module worker follow-up fetch",
             },
         ])
+    );
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("")
     );
     let cookies = engine.cookies_async().await.unwrap();
     for (name, value) in [
@@ -9032,11 +9047,13 @@ async fn native_content_process_module_worker_graph_uses_parent_cookie_authority
         ("module_entry_secret", "entry"),
         ("module_dependency_secret", "dependency"),
         ("module_data_secret", "data"),
+        ("module_runtime_secret", "runtime"),
+        ("module_runtime_dependency_secret", "runtime-dependency"),
     ] {
         assert!(
             cookies
                 .iter()
-                .any(|cookie| cookie.name == name && cookie.value == value),
+                .any(|cookie| { cookie.name == name && cookie.value == value && cookie.http_only }),
             "parent cookie jar is missing {name}"
         );
     }
@@ -9074,10 +9091,35 @@ async fn native_content_process_module_worker_graph_uses_parent_cookie_authority
         "module_entry_secret=entry",
         "module_dependency_secret=dependency",
         "module_data_secret=data",
+        "module_runtime_secret=runtime",
+        "module_runtime_dependency_secret=runtime-dependency",
     ] {
         assert!(
             cookie_for("/module-worker-after").contains(name),
             "parent did not select {name} for the follow-up Worker Fetch"
+        );
+    }
+    for name in [
+        "module_page_secret=seed",
+        "module_entry_secret=entry",
+        "module_dependency_secret=dependency",
+        "module_data_secret=data",
+    ] {
+        assert!(
+            cookie_for("/module-worker-runtime.mjs").contains(name),
+            "parent did not select {name} for the runtime module root"
+        );
+    }
+    for name in [
+        "module_page_secret=seed",
+        "module_entry_secret=entry",
+        "module_dependency_secret=dependency",
+        "module_data_secret=data",
+        "module_runtime_secret=runtime",
+    ] {
+        assert!(
+            cookie_for("/module-worker-runtime-dependency.mjs").contains(name),
+            "parent did not select {name} for the runtime module dependency"
         );
     }
 }

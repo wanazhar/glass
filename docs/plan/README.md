@@ -10614,9 +10614,11 @@ regression verifies HttpOnly selection and response-cookie updates across
 startup, `include`/`omit`, and a later MessagePort request. It now also uses a
 module SharedWorker entry with a static dependency: the parent accepts the
 entry's HttpOnly response cookie before the dependency request, then accepts
-the dependency cookie before startup Fetch. The extended process test passed
-(1 passed; 907 filtered; 21.18 seconds), including the later message Fetch and
-HttpOnly filtering from `document.cookie`. Standalone
+the dependency cookie before startup Fetch. Its later message handler also
+loads a runtime-import root and nested dependency; both HttpOnly response
+cookies are accepted before the subsequent Fetch. The extended process test
+passed (1 passed; 907 filtered; 21.50 seconds), retaining `include`/`omit`,
+response rotation/deletion, and HttpOnly filtering from `document.cookie`. Standalone
 content-process autonomous WorkerTimer turns previously remained a
 direct-loader gap. Slice 843 now defers every autonomous content-process
 DedicatedWorker and ServiceWorker timer to an exact-owner script turn with the

@@ -136,8 +136,9 @@ broader parent-only contract remains in progress.
 The process-backed
 `native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
 regression also verifies the module SharedWorker entry and static dependency
-cookie sequence before connect-time and later MessagePort Fetches, with
-HttpOnly values retained only by the parent.
+cookie sequence before connect-time Fetch. A later MessagePort handler's
+runtime import and nested import likewise preserve parent response-cookie
+ordering before Fetch; HttpOnly values stay in the parent.
 
 This contract preserves script-visible cookie behavior without exposing
 HttpOnly state to the child. A Slice 843 checkpoint now stores durable cookies

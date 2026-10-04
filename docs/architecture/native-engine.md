@@ -109,8 +109,10 @@ coverage, not evidence that all content-process network classes are brokered.
 The expanded process-backed
 `native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
 regression also checks its module entry and static dependency cookie sequence
-before connect-time and later MessagePort Fetches; HttpOnly values remain in
-the parent jar and out of `document.cookie`.
+before connect-time and later MessagePort Fetches. That later message also
+performs a runtime import and nested import; parent-accepted HttpOnly response
+cookies reach each next request and the following Fetch, while remaining out
+of `document.cookie`.
 Before parent page loads, the child transfers its applied meta-CSP policy
 sources; the regression also verifies `img-src 'self'` prevents a cross-origin
 image request. At that protocol-22 checkpoint, the initial module graph lacked

@@ -10675,13 +10675,16 @@ verifying parent HttpOnly cookie selection for the child and the child's
 response cookie on a later parent request. Frame and target engines share the
 parent's browser-context jar. The browser-owned SharedWorker coordinator now
 shares that exact jar as well rather than replacing cookie profiles or replaying
-overrides at creation. Its explicit parent-loader authority covers worker
-script entries and their import graph; content-process registries remain
-broker-only. The process-backed
+overrides at creation. Its parent loader owns worker script entries, their
+import graph, and runtime Fetch; direct Fetch responses are bounded and
+buffered within the coordinator. Content-process registries remain broker-only.
+The process-backed
 `native_runtime_shared_worker_cookie_changes_reach_all_live_profile_contexts`
-regression passed (1 passed; 52.14 seconds), verifying cookie-change fanout to
-all live profile contexts. Runtime Fetch and other uncovered HTTP(S) classes
-remain fail-closed until parent-brokered; Slice 843 remains in progress.
+regression passed (1 passed; 51.95 seconds), verifying the worker uses its
+parent-selected HttpOnly cookie, accepts an HttpOnly response cookie, and
+propagates it to same-profile frames/targets without exposing it to script or
+leaking it into an isolated profile. Other uncovered HTTP(S) classes and
+WebSocket/EventSource parity remain open; Slice 843 remains in progress.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

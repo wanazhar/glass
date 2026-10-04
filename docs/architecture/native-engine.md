@@ -655,9 +655,11 @@ browser-coordinated SharedWorker create-message cookie profile. Slice 843 now
 binds its parent-side coordinator loader directly to the browser-context jar
 shared with frame and target engines, with no creation-time profile snapshot or
 cookie-override replay. The browser-owned registry uses its parent loader only
-for SharedWorker script entries and their import graph; content-process
-registries remain broker-only, and runtime Fetch still requires the parent
-broker. The first Slice 843 checkpoint also makes the public cookie-list API read from a
+for SharedWorker script entries, their import graph, and runtime Fetch. Direct
+Fetch responses are bounded and buffered inside the browser coordinator;
+content-process registries remain broker-only. WebSocket, EventSource, and
+other runtime network APIs remain separate coverage. The first Slice 843
+checkpoint also makes the public cookie-list API read from a
 parent-loader snapshot overlaid with the parent's pending content-cookie
 journal, and removes the content-process command that returned complete cookie
 profiles. The host applies child-reported network changes to the durable
@@ -880,9 +882,11 @@ regression passed (1 test; 31.22 seconds), retaining cross-origin security
 errors while verifying parent HttpOnly request/response cookie authority. The
 process-backed
 `native_runtime_shared_worker_cookie_changes_reach_all_live_profile_contexts`
-regression also passed (1 test; 52.14 seconds), verifying browser-owned
-SharedWorker script loading and cookie-change fanout to each live profile
-context. These are targeted authority checks, not complete cookie-policy or
+regression passed (1 test; 51.95 seconds), verifying a browser-owned
+SharedWorker Fetch uses the parent-owned entry cookie, accepts an HttpOnly
+response cookie, and fans it out to live same-profile frames/targets without
+exposing it through `document.cookie` or leaking it to an isolated profile.
+These are targeted authority checks, not complete cookie-policy or
 uncovered-request parity.
 
 ## HTML parser ownership

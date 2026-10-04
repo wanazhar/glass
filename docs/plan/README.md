@@ -401,10 +401,12 @@ requests through the parent font loader. The extended process regression passed
 (1 test; 32.16
 seconds): a CSS font's cookies reach a later image request, the FontFace path
 updates only the visible script projection, and a later Fetch carries both
-cookies set by that response. Font requests outside an active parent-brokered
-turn, dynamic stylesheet network loads outside an active parent-brokered page
-script turn, and other unbrokered requests remain child-side paths. Dynamic
-HTTP(S) stylesheets and their CSS imports created during an explicit
+cookies set by that response. At the protocol-24 checkpoint, font requests
+outside an active parent-brokered turn and dynamic stylesheet loads outside an
+active page-script turn still used the child loader. The latest fail-closed
+audit below supersedes that behavior for HTTP(S) document owners: those
+requests now require the parent broker. Dynamic HTTP(S) stylesheets and their
+CSS imports created during an explicit
 parent-brokered page-script turn now reuse the parent stylesheet loader. The
 process-backed referrer-policy regression passed (1 test; 29.43 seconds),
 checking the parent-selected HttpOnly page cookie on a dynamic stylesheet, its
@@ -438,6 +440,18 @@ At that navigation checkpoint, parser scripts, stylesheets/imports, and images
 were parent-brokered; fonts/media, Service Worker-provided navigation
 responses, and the full child cookie profile remained outside it. The later
 media-resource checkpoint above supersedes its media status.
+The latest Slice 843 audit closes a different gap: for HTTP(S) document owners,
+network font/image/background-image/media loads, stylesheet imports and dynamic
+stylesheets, classic/module scripts and dependencies, page Fetch/font requests,
+and Worker/ServiceWorker script and Fetch paths now require the owner-bound
+parent broker. Missing broker state fails closed rather than retrying through a
+content-worker loader. The broker-owner rule remains scoped to HTTP(S)
+documents; local and non-network owner behavior is unchanged. The scoped check
+and explicit content-worker build passed, as did the process-backed HTTP
+navigation (30.16s), mutation stylesheet (19.39s), ServiceWorker lifecycle
+(20.15s), Worker message Fetch (20.38s), and host nested ServiceWorker Fetch
+(20.34s) cookie regressions. This does not yet remove every child transient
+cookie journal or complete Slice 843's broader acceptance matrix.
 The navigation-preload process regression verifies the header on each eligible
 navigation, no preload header on registration/resource requests, source-document
 Referrer-Policy on direct and redirected loads, worker-visible

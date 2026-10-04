@@ -10917,17 +10917,19 @@ async fn load_font_faces(
                         .map(|runtime| runtime.object_url_resource(source))
                         .transpose()?
                         .flatten();
-                    if object_url.is_none()
-                        && is_network_page_script_target(document_url, source)
-                        && let Some(broker) = parent_fetch_broker.as_deref_mut()
+                    if object_url.is_none() && is_parent_owned_network_target(document_url, source)
                     {
-                        refresh_parent_broker_meta_csp(loader, Some(broker))?;
-                        broker
-                            .load_font_response(document_url, source)
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(|response| response.body)
+                        if let Some(broker) = parent_fetch_broker.as_deref_mut() {
+                            refresh_parent_broker_meta_csp(loader, Some(broker))?;
+                            broker
+                                .load_font_response(document_url, source)
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|response| response.body)
+                        } else {
+                            None
+                        }
                     } else {
                         loader
                             .load_font_async(document_url, source, object_url.as_ref())
@@ -16298,7 +16300,7 @@ async fn load_content_resource(
     {
         let (node_index, href, integrity, crossorigin) = href;
         let referrer_policy = discovery.stylesheet_link_referrer_policy_for_node_index(node_index);
-        let stylesheet_result = if is_network_page_script_target(&resource.url, &href) {
+        let stylesheet_result = if is_parent_owned_network_target(&resource.url, &href) {
             parent_fetch_broker
                 .load_stylesheet(
                     &resource.url,
@@ -16639,7 +16641,7 @@ async fn load_external_images(
             .transpose()?
             .flatten();
         let referrer_policy = document.image_referrer_policy_for_node(node_id);
-        let image = if is_network_page_script_target(document_url, &source) {
+        let image = if is_parent_owned_network_target(document_url, &source) {
             if let Some(broker) = parent_fetch_broker.as_deref_mut() {
                 broker.page_meta_content_security_policies =
                     loader.document_meta_content_security_policies(document_url)?;
@@ -16647,14 +16649,7 @@ async fn load_external_images(
                     .load_image(document_url, &source, referrer_policy)
                     .await
             } else {
-                loader
-                    .load_image_async_with_object_url_and_referrer_policy(
-                        document_url,
-                        &source,
-                        object_url.as_ref(),
-                        referrer_policy,
-                    )
-                    .await
+                Err(missing_parent_network_authority("image load"))
             }
         } else {
             loader
@@ -16691,7 +16686,7 @@ async fn load_external_images(
             .map(|runtime| runtime.object_url_resource(&source))
             .transpose()?
             .flatten();
-        let image = if is_network_page_script_target(document_url, &source) {
+        let image = if is_parent_owned_network_target(document_url, &source) {
             if let Some(broker) = parent_fetch_broker.as_deref_mut() {
                 broker.page_meta_content_security_policies =
                     loader.document_meta_content_security_policies(document_url)?;
@@ -16703,18 +16698,7 @@ async fn load_external_images(
                     )
                     .await
             } else {
-                match runtime {
-                    None => loader.load_image_async(document_url, &source).await,
-                    Some(_) => {
-                        loader
-                            .load_image_async_with_object_url(
-                                document_url,
-                                &source,
-                                object_url.as_ref(),
-                            )
-                            .await
-                    }
-                }
+                Err(missing_parent_network_authority("background image load"))
             }
         } else {
             match runtime {
@@ -16758,12 +16742,12 @@ async fn load_external_media(
             continue;
         }
         document.mark_media_load(node_index, source.clone())?;
-        let metadata = if !is_blob && is_network_page_script_target(document_url, &source) {
+        let metadata = if !is_blob && is_parent_owned_network_target(document_url, &source) {
             if let Some(broker) = parent_fetch_broker.as_deref_mut() {
                 refresh_parent_broker_meta_csp(loader, Some(broker))?;
                 broker.load_media(document_url, &source).await?
             } else {
-                loader.load_media_async(document_url, &source).await?
+                return Err(missing_parent_network_authority("media load"));
             }
         } else {
             match (is_blob, runtime) {
@@ -16895,16 +16879,21 @@ fn expand_network_stylesheet_body<'a, 'b>(
                 cursor = import.end;
                 continue;
             }
-            let dependency_result =
+            let dependency_result = if is_parent_owned_network_target(document_url, &target) {
                 if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
                     parent_fetch_broker
                         .load_stylesheet(document_url, &target, None, None, None)
                         .await
                 } else {
-                    loader
-                        .load_stylesheet_async(document_url, &target, None, None)
-                        .await
-                };
+                    Err(missing_parent_network_authority(
+                        "network stylesheet dependency",
+                    ))
+                }
+            } else {
+                loader
+                    .load_stylesheet_async(document_url, &target, None, None)
+                    .await
+            };
             let dependency = dependency_result?.ok_or_else(|| NativeEngineError::Network {
                 operation: "network stylesheet dependency".into(),
                 reason: format!(
@@ -16995,32 +16984,34 @@ async fn load_dynamic_external_stylesheets(
         }
         let object_url = runtime.object_url_resource(&href)?;
         let referrer_policy = document.stylesheet_link_referrer_policy_for_node_index(node_index);
-        let stylesheet_result = if object_url.is_none()
-            && is_network_page_script_target(document_url, &href)
-            && let Some(broker) = parent_fetch_broker.as_deref_mut()
-        {
-            refresh_parent_broker_meta_csp(loader, Some(broker))?;
-            broker
-                .load_stylesheet(
-                    document_url,
-                    &href,
-                    integrity.as_deref(),
-                    crossorigin.as_deref(),
-                    Some(referrer_policy),
-                )
-                .await
-        } else {
-            loader
-                .load_stylesheet_async_with_object_url_and_referrer_policy(
-                    document_url,
-                    &href,
-                    integrity.as_deref(),
-                    crossorigin.as_deref(),
-                    object_url.as_ref(),
-                    Some(referrer_policy),
-                )
-                .await
-        };
+        let stylesheet_result =
+            if object_url.is_none() && is_parent_owned_network_target(document_url, &href) {
+                if let Some(broker) = parent_fetch_broker.as_deref_mut() {
+                    refresh_parent_broker_meta_csp(loader, Some(broker))?;
+                    broker
+                        .load_stylesheet(
+                            document_url,
+                            &href,
+                            integrity.as_deref(),
+                            crossorigin.as_deref(),
+                            Some(referrer_policy),
+                        )
+                        .await
+                } else {
+                    Err(missing_parent_network_authority("dynamic stylesheet load"))
+                }
+            } else {
+                loader
+                    .load_stylesheet_async_with_object_url_and_referrer_policy(
+                        document_url,
+                        &href,
+                        integrity.as_deref(),
+                        crossorigin.as_deref(),
+                        object_url.as_ref(),
+                        Some(referrer_policy),
+                    )
+                    .await
+            };
         let body = match stylesheet_result {
             Ok(Some(stylesheet)) => {
                 if is_network_url(&stylesheet.url) {
@@ -17159,12 +17150,17 @@ async fn load_dynamic_page_script_sources(
     .await
 }
 
-fn is_network_page_script_target(document_url: &str, href: &str) -> bool {
+pub(crate) fn is_network_page_script_target(document_url: &str, href: &str) -> bool {
     let Ok(base_url) = Url::parse(document_url) else {
         return false;
     };
     let target = Url::parse(href).or_else(|_| base_url.join(href));
     target.is_ok_and(|target| is_network_url(target.as_str()))
+}
+
+pub(crate) fn is_parent_owned_network_target(document_url: &str, href: &str) -> bool {
+    is_network_url(without_fragment(document_url))
+        && is_network_page_script_target(document_url, href)
 }
 
 async fn load_page_script_source_list(
@@ -17309,23 +17305,26 @@ async fn load_page_script_source_list(
                     .transpose()?
                     .flatten();
                 let load_result = if object_url.is_none()
-                    && is_network_page_script_target(document_url, &href)
-                    && let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut()
+                    && is_parent_owned_network_target(document_url, &href)
                 {
-                    parent_fetch_broker
-                        .load_page_script(
-                            document_url,
-                            &href,
-                            None,
-                            MAX_NATIVE_SCRIPT_BYTES,
-                            parser_inserted,
-                            nonce.as_deref(),
-                            integrity.as_deref(),
-                            crossorigin.as_deref(),
-                            None,
-                            Some(referrer_policy),
-                        )
-                        .await
+                    if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
+                        parent_fetch_broker
+                            .load_page_script(
+                                document_url,
+                                &href,
+                                None,
+                                MAX_NATIVE_SCRIPT_BYTES,
+                                parser_inserted,
+                                nonce.as_deref(),
+                                integrity.as_deref(),
+                                crossorigin.as_deref(),
+                                None,
+                                Some(referrer_policy),
+                            )
+                            .await
+                    } else {
+                        Err(missing_parent_network_authority("classic script load"))
+                    }
                 } else {
                     loader
                         .load_script_async_with_metadata_and_object_url(
@@ -17382,23 +17381,26 @@ async fn load_page_script_source_list(
                     .flatten();
                 let crossorigin = crossorigin.as_deref().or(Some("anonymous"));
                 let load_result = if object_url.is_none()
-                    && is_network_page_script_target(document_url, &href)
-                    && let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut()
+                    && is_parent_owned_network_target(document_url, &href)
                 {
-                    parent_fetch_broker
-                        .load_page_script(
-                            document_url,
-                            &href,
-                            None,
-                            MAX_NATIVE_SCRIPT_BYTES,
-                            parser_inserted,
-                            nonce.as_deref(),
-                            integrity.as_deref(),
-                            crossorigin.as_deref(),
-                            None,
-                            Some(referrer_policy),
-                        )
-                        .await
+                    if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
+                        parent_fetch_broker
+                            .load_page_script(
+                                document_url,
+                                &href,
+                                None,
+                                MAX_NATIVE_SCRIPT_BYTES,
+                                parser_inserted,
+                                nonce.as_deref(),
+                                integrity.as_deref(),
+                                crossorigin.as_deref(),
+                                None,
+                                Some(referrer_policy),
+                            )
+                            .await
+                    } else {
+                        Err(missing_parent_network_authority("module script load"))
+                    }
                 } else {
                     loader
                         .load_script_async_with_metadata_and_object_url(
@@ -17531,6 +17533,13 @@ fn refresh_parent_broker_meta_csp(
     broker.page_meta_content_security_policies =
         loader.document_meta_content_security_policies(&owner_document_url)?;
     Ok(())
+}
+
+pub(crate) fn missing_parent_network_authority(operation: &'static str) -> NativeEngineError {
+    NativeEngineError::Network {
+        operation: operation.into(),
+        reason: "parent cookie and network authority is unavailable".into(),
+    }
 }
 
 /// Load and execute dynamic external/module sources discovered by a dynamic
@@ -17765,40 +17774,42 @@ async fn load_module_dependencies(
                 .transpose()?
                 .flatten();
             let integrity = import_map.integrity_for_url(&target);
-            let resource = if object_url.is_none()
-                && is_network_page_script_target(owner_url, &target)
-                && let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut()
-            {
-                parent_fetch_broker
-                    .load_page_script(
-                        owner_url,
-                        &target,
-                        Some(&current_base_url),
-                        MAX_NATIVE_SCRIPT_BYTES,
-                        true,
-                        None,
-                        integrity,
-                        Some("anonymous"),
-                        Some(request.module_type),
-                        current_policy,
-                    )
-                    .await?
-            } else {
-                loader
-                    .load_module_dependency_with_referrer_async(
-                        owner_url,
-                        &current_base_url,
-                        &target,
-                        MAX_NATIVE_SCRIPT_BYTES,
-                        true,
-                        integrity,
-                        Some("anonymous"),
-                        object_url.as_ref(),
-                        request.module_type,
-                        current_policy,
-                    )
-                    .await?
-            };
+            let resource =
+                if object_url.is_none() && is_parent_owned_network_target(owner_url, &target) {
+                    if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
+                        parent_fetch_broker
+                            .load_page_script(
+                                owner_url,
+                                &target,
+                                Some(&current_base_url),
+                                MAX_NATIVE_SCRIPT_BYTES,
+                                true,
+                                None,
+                                integrity,
+                                Some("anonymous"),
+                                Some(request.module_type),
+                                current_policy,
+                            )
+                            .await?
+                    } else {
+                        return Err(missing_parent_network_authority("module dependency"));
+                    }
+                } else {
+                    loader
+                        .load_module_dependency_with_referrer_async(
+                            owner_url,
+                            &current_base_url,
+                            &target,
+                            MAX_NATIVE_SCRIPT_BYTES,
+                            true,
+                            integrity,
+                            Some("anonymous"),
+                            object_url.as_ref(),
+                            request.module_type,
+                            current_policy,
+                        )
+                        .await?
+                };
             let Some(resource) = resource else {
                 return Err(NativeEngineError::Network {
                     operation: "module dependency".into(),
@@ -22479,24 +22490,26 @@ async fn load_dynamic_page_module(
 
     let object_url = runtime.object_url_resource(&target)?;
     let integrity = import_map.integrity_for_url(&target);
-    let resource = if object_url.is_none()
-        && is_network_page_script_target(document_url, &target)
-        && let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut()
+    let resource = if object_url.is_none() && is_parent_owned_network_target(document_url, &target)
     {
-        parent_fetch_broker
-            .load_page_script(
-                document_url,
-                &target,
-                Some(module_referrer),
-                MAX_NATIVE_SCRIPT_BYTES,
-                false,
-                None,
-                integrity,
-                Some("anonymous"),
-                Some(module_type),
-                referrer_policy,
-            )
-            .await?
+        if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
+            parent_fetch_broker
+                .load_page_script(
+                    document_url,
+                    &target,
+                    Some(module_referrer),
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    false,
+                    None,
+                    integrity,
+                    Some("anonymous"),
+                    Some(module_type),
+                    referrer_policy,
+                )
+                .await?
+        } else {
+            return Err(missing_parent_network_authority("dynamic module import"));
+        }
     } else {
         loader
             .load_module_dependency_with_referrer_async(
@@ -22939,11 +22952,13 @@ async fn resolve_script_fetches(
                         fetch_response_payload(Ok(response))
                     }
                     Ok(NativeServiceWorkerFetchOutcome::NotHandled) => {
-                        let response = if is_network_page_script_target(&current_url, &href)
-                            && let Some(broker) = parent_fetch_broker.as_mut()
-                        {
-                            refresh_parent_broker_meta_csp(loader, Some(broker))?;
-                            broker.load_font_response(&current_url, &href).await
+                        let response = if is_parent_owned_network_target(&current_url, &href) {
+                            if let Some(broker) = parent_fetch_broker.as_mut() {
+                                refresh_parent_broker_meta_csp(loader, Some(broker))?;
+                                broker.load_font_response(&current_url, &href).await
+                            } else {
+                                Err(missing_parent_network_authority("font Fetch"))
+                            }
                         } else {
                             loader
                                 .load_font_response_async(&current_url, &href, object_url.as_ref())
@@ -23050,7 +23065,8 @@ async fn resolve_script_fetches(
                     );
                     continue;
                 }
-                if is_network_url(&current_url) && parent_fetch_broker.is_some() {
+                if is_parent_owned_network_target(&current_url, &href) {
+                    let parent_brokered = parent_fetch_broker.is_some();
                     let pending_upload_count = pending_upload_fetches
                         .len()
                         .saturating_add(pending_controlled_uploads.len());
@@ -23076,7 +23092,7 @@ async fn resolve_script_fetches(
                         request_id,
                         NativePendingControlledUpload {
                             task,
-                            parent_brokered: true,
+                            parent_brokered,
                             document_url: current_url.clone(),
                             href,
                             method,
@@ -23185,13 +23201,17 @@ async fn resolve_script_fetches(
                         referrer_policy,
                         max_response_bytes: None,
                     };
-                    if is_network_url(&current_url)
-                        && let Some(broker) = parent_fetch_broker.as_mut()
-                    {
-                        let (fetch, document_cookie) =
-                            broker.fetch(request_id, &fetch_request).await?;
-                        runtime.set_cookie_state(document_cookie);
-                        fetch_response_payload(fetch)
+                    if is_parent_owned_network_target(&current_url, &href) {
+                        if let Some(broker) = parent_fetch_broker.as_mut() {
+                            let (fetch, document_cookie) =
+                                broker.fetch(request_id, &fetch_request).await?;
+                            runtime.set_cookie_state(document_cookie);
+                            fetch_response_payload(fetch)
+                        } else {
+                            fetch_response_payload(Err(missing_parent_network_authority(
+                                "Fetch request",
+                            )))
+                        }
                     } else {
                         let opened = loader.open_fetch_response_stream_async(fetch_request).await;
                         fetch_opened_response_payload(opened, request_id, fetch_stream_connections)
@@ -23338,7 +23358,10 @@ async fn resolve_script_fetches(
                                     timeout: pending_fetch.timeout,
                                     max_response_bytes: None,
                                 };
-                                if is_network_url(&pending_fetch.document_url) {
+                                if is_parent_owned_network_target(
+                                    &pending_fetch.document_url,
+                                    &pending_fetch.href,
+                                ) {
                                     if let Some(broker) = parent_fetch_broker.as_mut() {
                                         let (fetch, document_cookie) =
                                             broker.fetch(request_id, &fetch_request).await?;

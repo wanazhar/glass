@@ -62,6 +62,7 @@ projection and existing native Fetch behavior.
 - `crates/glass-browser/src/browser/native_engine/content_process.rs`
 - `crates/glass-browser/src/browser/native_engine/engine.rs`
 - `crates/glass-browser/src/browser/native_engine/javascript.rs`
+- `crates/glass-browser/src/browser/native_engine/service_worker.rs`
 - `crates/glass-browser/src/browser/native_engine/resource_loader.rs`
 - `crates/glass-browser/tests/native_engine.rs`
 - `docs/architecture/native-engine.md`
@@ -666,5 +667,20 @@ projection and existing native Fetch behavior.
   response cookie, use on a later host request, and `document.cookie` filtering.
   Scoped `cargo check` and explicit companion-worker build passed; other
   child-direct internal network paths remain in scope.
+- HTTP(S)-document network resources, page script/module loads, Worker and
+  ServiceWorker script/Fetch paths, and page Fetch/font requests now fail
+  closed when their owner-bound parent broker is unavailable; these paths no
+  longer retry through the content loader. The parent-owned target helper
+  keeps existing local/non-network owner behavior unchanged. Scoped native
+  engine `cargo check` and explicit `glass-native-content-worker` build passed.
+  The process-backed tests
+  `native_content_process_http_navigation_uses_parent_cookie_authority`,
+  `native_content_process_mutation_stylesheets_use_parent_cookie_authority`,
+  `native_content_process_service_worker_lifecycle_fetches_use_parent_cookie_authority`,
+  `native_content_process_worker_message_fetch_uses_parent_cookie_authority`,
+  and `native_host_fetch_service_worker_nested_cookie_uses_parent_authority`
+  passed (1 each; 30.16s, 19.39s, 20.15s, 20.38s, and 20.34s). The child
+  transient jar and cookie-change journals remain outside covered brokered
+  turns, so parent-only ownership and Issue #40 remain incomplete.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

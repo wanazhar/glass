@@ -18438,6 +18438,181 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
 }
 
 #[tokio::test]
+async fn native_content_process_parser_module_graph_uses_parent_cookie_authority() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests: Vec<(String, Option<String>)> = Vec::new();
+        while requests.len() < 7 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "parser module graph request idle timeout after paths {:?}",
+                        requests.iter().map(|(path, _)| path).collect::<Vec<_>>()
+                    )
+                })
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .expect("parser module graph request includes a URL")
+                .to_owned();
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
+            let (headers, content_type, body) = match path.as_str() {
+                "/page" => (
+                    "Set-Cookie: parser_module_page=seed; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/html",
+                    "<!doctype html><script type='module' src='/parser-module-entry.mjs'></script><script>globalThis.inlineModuleScript = document.createElement('script'); inlineModuleScript.type = 'module'; inlineModuleScript.src = '/inline-module-entry.mjs'; document.head.appendChild(inlineModuleScript);</script>",
+                ),
+                "/parser-module-entry.mjs" => (
+                    "Set-Cookie: parser_module_entry=entry; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/javascript",
+                    "import { value } from './parser-module-dependency.mjs'; document.documentElement.setAttribute('data-parser-module', value); fetch('/parser-module-data').then(async response => document.documentElement.setAttribute('data-parser-module-data', await response.text()));",
+                ),
+                "/parser-module-dependency.mjs" => (
+                    "Set-Cookie: parser_module_dependency=dependency; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/javascript",
+                    "export const value = 'parser module loaded';",
+                ),
+                "/parser-module-data" => (
+                    "Set-Cookie: parser_module_data=data; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/plain",
+                    "parser module fetch complete",
+                ),
+                "/inline-module-entry.mjs" => (
+                    "Set-Cookie: inline_module_entry=entry; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/javascript",
+                    "import { value } from './inline-module-dependency.mjs'; document.documentElement.setAttribute('data-inline-module', value);",
+                ),
+                "/inline-module-dependency.mjs" => (
+                    "Set-Cookie: inline_module_dependency=dependency; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/javascript",
+                    "export const value = 'inline module loaded';",
+                ),
+                "/parser-module-after" => ("", "text/plain", "parent cookies retained"),
+                other => panic!("unexpected parser module graph request: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push((path, cookie));
+        }
+        requests
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let mut state = serde_json::Value::Null;
+    for _ in 0..16 {
+        state = engine
+            .evaluate_async(
+                "({ module: document.documentElement.getAttribute('data-parser-module'), data: document.documentElement.getAttribute('data-parser-module-data'), inlineModule: document.documentElement.getAttribute('data-inline-module') })",
+            )
+            .await
+            .unwrap();
+        if state["module"] == "parser module loaded"
+            && state["data"] == "parser module fetch complete"
+            && state["inlineModule"] == "inline module loaded"
+        {
+            break;
+        }
+    }
+    assert_eq!(
+        state,
+        serde_json::json!({
+            "module": "parser module loaded",
+            "data": "parser module fetch complete",
+            "inlineModule": "inline module loaded",
+        })
+    );
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await fetch('/parser-module-after').then(response => response.text())",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("parent cookies retained")
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    for (name, value) in [
+        ("parser_module_page", "seed"),
+        ("parser_module_entry", "entry"),
+        ("parser_module_dependency", "dependency"),
+        ("parser_module_data", "data"),
+        ("inline_module_entry", "entry"),
+        ("inline_module_dependency", "dependency"),
+    ] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == name && cookie.value == value && cookie.http_only),
+            "parent cookie jar is missing HttpOnly {name}"
+        );
+    }
+    engine.close_async().await.unwrap();
+    let requests = server.await.unwrap();
+    let cookie_for = |path: &str| {
+        requests
+            .iter()
+            .find(|(request_path, _)| request_path == path)
+            .unwrap_or_else(|| panic!("missing parser module graph request {path}"))
+            .1
+            .as_deref()
+            .unwrap_or("")
+            .to_owned()
+    };
+    assert!(cookie_for("/parser-module-entry.mjs").contains("parser_module_page=seed"));
+    for name in ["parser_module_page=seed", "parser_module_entry=entry"] {
+        assert!(
+            cookie_for("/parser-module-dependency.mjs").contains(name),
+            "parent did not apply {name} before loading the parser module dependency"
+        );
+    }
+    assert!(cookie_for("/inline-module-entry.mjs").contains("parser_module_page=seed"));
+    assert!(cookie_for("/inline-module-dependency.mjs").contains("inline_module_entry=entry"));
+    for name in [
+        "parser_module_page=seed",
+        "parser_module_entry=entry",
+        "parser_module_dependency=dependency",
+    ] {
+        assert!(
+            cookie_for("/parser-module-data").contains(name),
+            "parent did not select {name} for the parser module Fetch"
+        );
+    }
+    for name in [
+        "parser_module_page=seed",
+        "parser_module_entry=entry",
+        "parser_module_dependency=dependency",
+        "parser_module_data=data",
+        "inline_module_entry=entry",
+        "inline_module_dependency=dependency",
+    ] {
+        assert!(
+            cookie_for("/parser-module-after").contains(name),
+            "parent did not select {name} for the following page Fetch"
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_content_process_mutation_stylesheets_use_parent_cookie_authority() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

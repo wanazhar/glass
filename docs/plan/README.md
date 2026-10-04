@@ -10618,7 +10618,14 @@ the dependency cookie before startup Fetch. Its later message handler also
 loads a runtime-import root and nested dependency; both HttpOnly response
 cookies are accepted before the subsequent Fetch. The extended process test
 passed (1 passed; 907 filtered; 21.50 seconds), retaining `include`/`omit`,
-response rotation/deletion, and HttpOnly filtering from `document.cookie`. Standalone
+response rotation/deletion, and HttpOnly filtering from `document.cookie`.
+The process-backed
+`native_content_process_parser_module_graph_uses_parent_cookie_authority`
+regression also covers a parser-discovered module entry and a module root
+inserted by inline script during initial loading, each with a static
+dependency. Response-cookie ordering is checked through the module Fetch and
+a later page Fetch (1 passed; 908 filtered; 20.85 seconds). All six cookies
+remain HttpOnly in the parent, and the page projection is empty. Standalone
 content-process autonomous WorkerTimer turns previously remained a
 direct-loader gap. Slice 843 now defers every autonomous content-process
 DedicatedWorker and ServiceWorker timer to an exact-owner script turn with the

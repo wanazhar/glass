@@ -143,8 +143,9 @@ startup Fetch, parent response-cookie rotation on a later Worker message turn,
 and the visible-only page projection.
 Child-direct internal network paths can still populate a transient child jar
 and emit a bounded cookie-change journal to the parent, so the parent-only
-contract is not yet met. Page and dedicated Worker EventSource responses use
-bounded chunks addressed by opaque stream IDs, and WebSocket frames use
+contract is not yet met; autonomous content-process worker timers are no
+longer among those direct paths. Page and dedicated Worker EventSource
+responses use bounded chunks addressed by opaque stream IDs, and WebSocket frames use
 bounded message records addressed by opaque stream IDs; cookie headers and the
 full profile never cross IPC. Other direct child network paths remain outside
 this guarantee. Slice 842 has removed the child cookie-profile field from
@@ -160,9 +161,11 @@ dedicated-worker initialization and while handling an explicit page
 from the worker request URL, applies same-turn page cookie writes, selects
 request cookies, and accepts response-cookie changes. The worker's current
   response-stream interface is preserved over a buffered parent response.
-  Locally hosted SharedWorker creation/connect evaluations also receive the
-  broker but lack a focused process-backed regression. HTTP(S) worker entry
-  scripts, classic `importScripts()` dependencies, and static/dynamic module
+  Locally hosted SharedWorker creation/connect evaluations receive the broker;
+  the process-backed `native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
+  regression now verifies startup and explicit MessagePort Fetch cookie flow.
+  HTTP(S) worker entry scripts, classic `importScripts()` dependencies, and
+  static/dynamic module
   dependencies now use the parent's specialized loader. HTTP(S) dynamic page
   classic/module script elements and their static module dependencies discovered
   during explicit parent-brokered page turns use that authority too; runtime
@@ -264,18 +267,16 @@ request cookies, and accepts response-cookie changes. The worker's current
   navigation event, and a later page Fetch while `document.cookie` remains
   filtered. Background work outside intercepted FetchEvents and other internal
   network requests remain direct child paths.
-  In browser-coordinated mode, every due DedicatedWorker timer, including
-  nonzero-delay timers, now waits for the exact context/frame owner pump and
-  executes with that turn's parent Fetch broker; standalone `NativeEngine`
-  keeps its local timer path. The process-backed
-  `browser_owned_worker_timer_fetch_uses_parent_cookie_authority` regression
-  passed with a 25 ms timer (1 passed; 25.12 seconds), checking the worker
-  entry request cookies,
-  a classic `importScripts()` dependency request, HttpOnly cookies set by both
-  responses and sent on later requests, a parent-accepted HttpOnly response
-  update, the parent cookie API, and the script-visible projection.
-  Browser-coordinated Service Worker timer callbacks now use the parent broker
-  on their page-owner script turn; non-awaited standard FetchEvent Fetches also
+  At the earlier timer checkpoint, browser-coordinated DedicatedWorker and
+  ServiceWorker callbacks used the parent broker while standalone content
+  processes still ran due timers against their local loader. Slice 843 now
+  defers every autonomous content-process timer in either mode to the exact
+  context/frame owner turn; DedicatedWorker and ServiceWorker timer Fetches
+  use the parent broker, and Worker Fetch-stream callbacks are pumped in that
+  same broker scope. Both standalone process-backed timer regressions passed
+  together (2 passed; 1,689 filtered; 39.15 seconds), verifying
+  parent-selected HttpOnly request cookies, response-cookie rotation, and the
+  script-visible projection. Non-awaited standard FetchEvent Fetches also
   queue to the parent on the next owner turn. Service Worker-originated stream
   uploads during a brokered FetchEvent now use the parent broker after bounded
   collection. Background work outside intercepted FetchEvents and other
@@ -328,8 +329,9 @@ Fetch, `credentials: include`/`omit`, ordinary and HttpOnly request cookies,
 response updates/deletion, and a later MessagePort request while
 `document.cookie` stays script-visible only. Browser-coordinated SharedWorker
 requests execute in the browser parent coordinator. Autonomous WorkerTimer
-turns in standalone content processes remain local and are still outside this
-broker guarantee. For worker Fetch, `Request.credentials` defaults to
+turns in standalone content processes previously used the local loader; the
+current Slice 843 checkpoint defers those turns to the exact owner script turn
+with the parent broker. For worker Fetch, `Request.credentials` defaults to
 `same-origin`. For each URL in
 a redirect chain, the loader sends and accepts cookies only when the mode is
 `include`, or when the mode is `same-origin` and that URL has the worker's

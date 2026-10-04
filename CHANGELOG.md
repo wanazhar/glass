@@ -85,11 +85,14 @@ and intends to use [Semantic Versioning](https://semver.org/).
   request cookies and persisted HttpOnly response cookies. This advances the
   content-worker protocol to version 29; other child-direct network paths
   remain tracked under Slice 843.
-- Browser-coordinated DedicatedWorker timers with any due deadline now defer
-  to the exact page-owner turn and its parent Fetch broker, rather than running
-  nonzero-delay callbacks inside the child. A 25 ms process regression verifies
-  parent-selected request cookies and HttpOnly response-cookie rotation;
-  standalone `NativeEngine` keeps its local timer path.
+- At the earlier timer checkpoint, browser-coordinated DedicatedWorker timers
+  deferred to the exact page-owner turn while standalone content-process
+  timers still ran locally. Slice 843 now removes that exception: every
+  autonomous DedicatedWorker and ServiceWorker timer waits for the exact owner
+  turn and parent Fetch broker, and Worker Fetch-stream callbacks are pumped
+  inside that broker scope. Standalone process-backed regressions for both
+  worker types pass with parent-selected HttpOnly cookies and response-cookie
+  rotation.
 - Durable cookies now live in a parent-managed `<profile>.cookies` sidecar.
   Legacy combined profiles migrate before a content worker starts; the child
   loader no longer hydrates cookies from the shared Web Storage path, and its
@@ -130,12 +133,13 @@ and intends to use [Semantic Versioning](https://semver.org/).
   response. Explicit-turn page and dedicated-worker upload streams, including
   page uploads declined by a controlled Service Worker, are buffered within
   the existing limit and then sent through the parent. Service Worker-originated
-  upload streams remain outside this path. In browser-coordinated mode, due
-  DedicatedWorker timer turns are deferred to the exact context/frame owner
-  pump and execute with that turn's parent broker; standalone `NativeEngine`
-  retains local timer execution. The process-backed
+  upload streams remain outside this path. At this earlier checkpoint,
+  browser-coordinated DedicatedWorker timers were deferred to the exact
+  context/frame owner while standalone content-process timers still ran locally;
+  Slice 843's latest checkpoint below removes that exception. The
   `browser_owned_worker_timer_fetch_uses_parent_cookie_authority` regression
-  passed (1 passed; 22.87 seconds). HTTP(S) DedicatedWorker and SharedWorker
+  passed (1 passed; 22.87 seconds) under that earlier scope. HTTP(S)
+  DedicatedWorker and SharedWorker
   entry scripts, classic `importScripts()` dependencies, and worker static and
   dynamic module dependencies now use the parent's specialized script loader.
   Cookie writes are applied before loading; the child receives only bounded

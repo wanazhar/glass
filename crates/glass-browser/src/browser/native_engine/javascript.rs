@@ -3987,14 +3987,6 @@ impl NativeWorkerRegistry {
         Ok(false)
     }
 
-    pub(crate) async fn pump_fetch_stream_events(
-        &mut self,
-        loader: &mut NativeResourceLoader,
-    ) -> Result<usize, NativeEngineError> {
-        self.pump_fetch_stream_events_with_broker(loader, None)
-            .await
-    }
-
     pub(crate) async fn pump_fetch_stream_events_with_parent_fetch_broker(
         &mut self,
         loader: &mut NativeResourceLoader,

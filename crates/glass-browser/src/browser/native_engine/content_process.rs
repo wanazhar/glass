@@ -11257,30 +11257,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             }
             NativeContentProcessInput::ServiceWorkerLifetimeFetch(None) => continue,
             NativeContentProcessInput::WorkerTimer => {
-                // Browser-coordinated Service Worker and DedicatedWorker
-                // timers run only in the exact page-owner turn so Fetch uses
-                // the parent's cookie broker; standalone engines retain
-                // local timer turns.
+                // Every autonomous worker timer runs only in the exact
+                // page-owner turn, where Fetch has the parent's cookie broker.
+                // A standalone content process must not fall back to its local
+                // loader just because it has no browser-level worker router.
                 let service_worker_timer_delay = service_workers.next_timer_delay_ms()?;
-                let defer_service_worker_timer =
-                    external_shared_worker_routing && service_worker_timer_delay.is_some();
-                let defer_worker_timer =
-                    external_shared_worker_routing && workers.next_timer_delay_ms()?.is_some();
-                {
-                    let Some(loader) = resource_loader.as_mut() else {
-                        return Err(NativeEngineError::Worker {
-                            operation: "content process worker timers".into(),
-                            reason: "content process has no resource loader".into(),
-                        });
-                    };
-                    if !defer_service_worker_timer {
-                        service_workers.run_due_timers(loader).await?;
-                    }
-                    if !defer_worker_timer {
-                        workers.run_due_timers(loader).await?;
-                    }
-                    workers.pump_fetch_stream_events(loader).await?;
-                }
+                let defer_service_worker_timer = service_worker_timer_delay.is_some();
+                let defer_worker_timer = workers.next_timer_delay_ms()?.is_some();
                 pending_worker_websocket_commands.extend(workers.take_websocket_commands());
                 pending_worker_messages.extend(workers.take_messages());
                 pending_message_port_messages.extend(workers.take_message_port_messages());
@@ -13087,8 +13070,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         &mut worker_websocket_read_cursor,
                     )
                     .await?;
+                    workers
+                        .pump_fetch_stream_events_with_parent_fetch_broker(
+                            loader,
+                            &mut parent_fetch_broker,
+                        )
+                        .await?;
                 }
-                workers.pump_fetch_stream_events(loader).await?;
                 page_events
                     .worker_messages
                     .extend(pending_worker_messages.drain(..));

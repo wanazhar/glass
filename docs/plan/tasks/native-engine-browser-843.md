@@ -312,13 +312,15 @@ projection and existing native Fetch behavior.
   Referrer-Policy, and the script-visible cookie projection. Blob, file, and
   other non-network sources retain the local loader. The process-backed
   `native_content_process_dynamic_page_module_uses_parent_cookie_authority`
-  regression passed (1 passed; 23.24 seconds), proving the page's ordinary and
+  regression passed (1 passed; 21.92 seconds), proving the page's ordinary and
   HttpOnly cookies reach a dynamically attached module, the module's HttpOnly
-  `Set-Cookie` reaches its static dependency, a same-turn setter reaches the
-  parent request, and HttpOnly remains absent from `document.cookie`. The
-  existing `native_content_process_uses_dynamic_import_map_for_a_later_module_root`
-  regression also passed (1 passed; 20.92 seconds). Runtime `import()` does
-  not yet have a cookie-specific regression. The existing
+  `Set-Cookie` reaches its static dependency, and a same-turn setter reaches the
+  parent request. Its expanded case also covers runtime `import()`: the parent
+  selects cookies for the imported module, accepts its HttpOnly response
+  cookie, sends it to the imported dependency and a later page Fetch, and keeps
+  it absent from `document.cookie`. The existing
+  `native_content_process_uses_dynamic_import_map_for_a_later_module_root`
+  regression also passed (1 passed; 20.92 seconds). The existing
   `native_content_process_runs_nested_dynamic_external_scripts` regression
   passed (1 passed; 19.89 seconds), covering the dynamically attached classic
   child script branch. At that checkpoint, parser-discovered scripts during

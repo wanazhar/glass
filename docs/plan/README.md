@@ -403,11 +403,14 @@ HTTP(S) dynamic page classic/module scripts and their static dependencies,
 discovered during explicit parent-brokered page script turns, now use the
 parent loader; runtime `import()` requests follow that route as well. The
 process-backed `native_content_process_dynamic_page_module_uses_parent_cookie_authority`
-regression passed (1 test; 23.24 seconds), proving page cookies and a same-turn
-setter on the dynamic module request, HttpOnly delivery to its dependency, and
-HttpOnly exclusion from `document.cookie`. The dynamic import-map/module
-regression passed (1 test; 20.92 seconds). Runtime `import()` has no
-cookie-specific process regression yet. Parser-discovered HTTP(S) page scripts,
+regression passed (1 test; 21.92 seconds), proving page cookies and a same-turn
+setter on a dynamically attached module request, HttpOnly delivery to its
+static dependency, and HttpOnly exclusion from `document.cookie`. It now also
+covers runtime `import()`: the parent selects cookies for the imported module,
+accepts its HttpOnly response cookie, sends that cookie to the imported
+dependency and a later page Fetch, and keeps it out of `document.cookie`. The
+dynamic import-map/module regression passed (1 test; 20.92 seconds).
+Parser-discovered HTTP(S) page scripts,
 initial page stylesheets, static CSS imports, initial page images, and HTTP(S)
 media elements now use the parent broker. The process-backed cookie regression passed (1 test;
 24.90 seconds) and covers navigation, stylesheet, CSS import, image, and

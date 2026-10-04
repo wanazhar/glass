@@ -75076,6 +75076,26 @@ async fn native_content_process_worker_dispatches_large_event_source_event_as_da
 #[tokio::test]
 async fn native_content_process_drives_event_source_named_multiline_events() {
     let _guard = native_content_process_test_lock().lock().await;
+    let profile_path = std::env::temp_dir().join(format!(
+        "glass-native-eventsource-cookie-{}.json",
+        std::process::id()
+    ));
+    let cookie_profile_path =
+        std::path::PathBuf::from(format!("{}.cookies", profile_path.display()));
+    let lock_path = profile_path.with_extension("lock");
+    let cookie_lock_path = cookie_profile_path.with_extension("lock");
+    let events_path = profile_path.with_extension("events");
+    let readers_path = profile_path.with_extension("readers");
+    for path in [
+        &profile_path,
+        &cookie_profile_path,
+        &lock_path,
+        &cookie_lock_path,
+        &events_path,
+        &readers_path,
+    ] {
+        let _ = fs::remove_file(path);
+    }
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -75150,7 +75170,9 @@ async fn native_content_process_drives_event_source_named_multiline_events() {
     });
 
     let mut engine = NativeEngine::new(
-        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+        NativeEngineConfig::default()
+            .with_storage_path(profile_path.clone())
+            .with_initial_url(format!("http://{address}/page")),
     )
     .unwrap();
     engine.initialize_async().await.unwrap();
@@ -75162,6 +75184,14 @@ async fn native_content_process_drives_event_source_named_multiline_events() {
             .await
             .unwrap(),
         serde_json::json!(["greeting", "hello\nworld", "42", 2])
+    );
+    assert!(
+        engine
+            .cookies_async()
+            .await
+            .unwrap()
+            .iter()
+            .any(|cookie| cookie.name == "sse" && cookie.value == "connected")
     );
     assert_eq!(
         engine
@@ -75179,6 +75209,26 @@ async fn native_content_process_drives_event_source_named_multiline_events() {
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();
+    let storage_profile: serde_json::Value =
+        serde_json::from_slice(&fs::read(&profile_path).unwrap()).unwrap();
+    let cookie_profile: serde_json::Value =
+        serde_json::from_slice(&fs::read(&cookie_profile_path).unwrap()).unwrap();
+    assert_eq!(storage_profile["cookies"], serde_json::json!([]));
+    assert!(cookie_profile["cookies"].as_array().is_some_and(|cookies| {
+        cookies
+            .iter()
+            .any(|cookie| cookie["name"] == "sse" && cookie["value"] == "connected")
+    }));
+    for path in [
+        profile_path,
+        cookie_profile_path,
+        lock_path,
+        cookie_lock_path,
+        events_path,
+        readers_path,
+    ] {
+        let _ = fs::remove_file(path);
+    }
 }
 
 #[tokio::test]

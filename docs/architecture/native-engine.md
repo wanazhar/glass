@@ -550,13 +550,14 @@ The parent exposes only a document-URL-scoped, non-HttpOnly
 `document.cookie` projection to script. Cookie setter lines return to the
 parent with their context, frame, document generation, and source URL so the
 parent can validate the write and refresh the projection. Eligible Fetch
-requests created by page or worker code go through a bounded parent broker; cookie
-credentials are selected for each request and redirect hop by the parent.
+requests created by page or worker code and page EventSource requests go
+through a bounded parent broker; cookie credentials are selected for each
+request and redirect hop by the parent.
 For those parent-brokered requests, cookie profiles, HttpOnly values, raw
 `Cookie`/`Set-Cookie` headers, and cookie-bearing profile paths stay in the
 parent; broker failure is explicit and never triggers a direct child retry.
-Remaining child-direct internal network paths are not yet covered by that
-guarantee and are tracked below.
+Remaining child-direct internal network paths, including Worker EventSource,
+are not yet covered by that guarantee and are tracked below.
 
 Captured top-level navigation preload requests are correlated with their
 content-operation and Fetch IDs. If the Service Worker settles its own response
@@ -712,6 +713,10 @@ navigation is parent-brokered after that interception declines it. HTTP(S)
 parser-discovered page scripts, initial stylesheets, static CSS imports, page
 images, initial/dynamically attached media elements, CSS `@font-face` resources,
 and explicit page `FontFace` destination requests now use the parent broker.
+Page EventSource open/read/reconnect/close also use the parent broker: the
+parent owns the live response stream and network/cookie policy, while the child
+receives bounded chunks by opaque stream ID and runs the existing SSE parser.
+Worker EventSource remains a direct child path.
 Font requests without an active parent broker and dynamic stylesheet requests
 without an active parent-brokered page-script turn, plus Service-Worker-provided
 navigation responses, Service Worker background work outside intercepted
@@ -723,7 +728,7 @@ and can update Web Storage, IndexedDB, CacheStorage, and Service Worker state
 there. Its loader no longer opens the cookie sidecar. Cookie import, updates,
 and clear now send only an owner-checked, URL-scoped visible projection; they do
 not send full cookie profiles/change batches, and script setter writes do not
-mutate the child's loader. The content-worker protocol is now version 27.
+mutate the child's loader. The content-worker protocol is now version 28.
 Child-direct internal requests can still mutate a transient child jar and
 return bounded cookie-change journals to the parent. Slice 843 remains in
 progress to broker those remaining requests and remove child-generated cookie
@@ -11042,6 +11047,8 @@ identity, OS-seeded worker and page `crypto`, and body ownership inside the
 worker realm. Asynchronous
 worker XHR, persistent worker WebSocket, and worker EventSource/SSE use the
 same owner-tagged content-process boundary and bounded page-turn delivery.
+That boundary is not parent network brokering: Worker EventSource still uses
+the child loader and remains outside the parent-cookie guarantee.
 Dedicated-worker `MessagePort` transfer now crosses that boundary in both
 directions, including worker-created ports returned to a page. Shared/service/
 worklet workers, richer transferable types, dynamic/exact `importScripts()`
@@ -11968,16 +11975,20 @@ JavaScript/mutation owner; later ordinary evaluations drain already-queued
 socket events as well. Exact evidence is recorded in
 `docs/plan/tasks/native-engine-browser-252.md`.
 
-The completed native-engine-browser-253 slice adds persistent EventSource/SSE
-transport to the same process-backed page realm. Page `EventSource` objects
-now create bounded HTTP(S) stream commands; the content worker owns the
-unbuffered response, shared URL/security/CORS/referrer/cookie policy, split
-LF/CRLF/CR event parsing, multiline and named messages, `id`/`retry` state,
-bounded reconnects, and response-cookie handoff. Open, message, error, and
-close events re-enter the serialized JavaScript/mutation owner, and explicit
-waiting evaluations pump queued WebSocket/EventSource events without allowing
-passive evaluations to consume them prematurely. Exact evidence is recorded
-in `docs/plan/tasks/native-engine-browser-253.md`.
+The completed native-engine-browser-253 slice introduced persistent
+EventSource/SSE transport to the process-backed page realm. Slice 843 moves
+page EventSource open, live response ownership, request/response cookie policy,
+reconnect, and close into the parent broker. The child receives bounded body
+chunks by opaque stream ID and retains split LF/CRLF/CR parsing, multiline and
+named messages, `id`/`retry` state, and serialized event delivery. Raw
+`Cookie`/`Set-Cookie` headers and cookie profiles do not cross IPC. The
+process-backed `native_content_process_drives_event_source_named_multiline_events`
+regression verifies request-cookie selection, response-cookie persistence, a
+follow-up request, and a cookie-free Web Storage profile. Worker EventSource
+remains a direct child path and is still part of the parent-only authority gap.
+The original transport foundation is recorded in
+`docs/plan/tasks/native-engine-browser-253.md`; current cookie authority
+evidence is recorded in `docs/plan/tasks/native-engine-browser-843.md`.
 
 The completed native-engine-browser-254 slice gives authorized page Fetches a
 transport-backed response body. The shared loader now returns response

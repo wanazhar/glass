@@ -54,12 +54,11 @@ use super::javascript::{
     NativeServiceWorkerOpenWindowRequest, NativeSharedWorkerStorageKey, NativeStorageEvent,
     NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
     NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
-    NativeWorkerRegistry, NativeWorkerWebSocketCommand, append_storage_changes,
-    apply_document_commands_with_font_face_ack, apply_page_script_evaluation,
-    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts,
-    host_click_event_batch_with_modifiers, host_event_batch, host_event_batch_at,
-    host_key_event_batch, host_key_event_batch_with_modifiers, host_submit_event_batch,
-    load_indexed_db_profile, load_service_worker_cache_profile,
+    NativeWorkerRegistry, NativeWorkerWebSocketCommand, apply_document_commands_with_font_face_ack,
+    apply_page_script_evaluation, diff_indexed_db_changes, execute_dynamic_page_scripts,
+    execute_page_scripts, host_click_event_batch_with_modifiers, host_event_batch,
+    host_event_batch_at, host_key_event_batch, host_key_event_batch_with_modifiers,
+    host_submit_event_batch, load_indexed_db_profile, load_service_worker_cache_profile,
     load_service_worker_registration_profiles, load_web_storage_profile,
     migrate_cookie_profile_from_web_storage, native_module_loader_name, order_page_scripts,
     page_script_sources_to_scripts, resolve_module_request_url, save_content_web_storage_profile,
@@ -124,7 +123,7 @@ const MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS: usize = MAX_CONTENT_PROCESS_OUTPUT
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
     MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 27;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 28;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -184,6 +183,32 @@ pub(crate) struct NativeContentCookieOwner {
 pub(crate) struct NativeContentCookieWrite {
     pub(crate) owner: NativeContentCookieOwner,
     pub(crate) value: String,
+}
+
+#[derive(Clone)]
+struct NativeParentEventSourceOpen {
+    stream_id: u64,
+    origin: String,
+    csp_violations: Vec<NativeCspViolation>,
+}
+
+enum NativeParentEventSourceOpenResult {
+    Opened(NativeParentEventSourceOpen),
+    Failed {
+        message: String,
+        csp_violations: Vec<NativeCspViolation>,
+    },
+}
+
+enum NativeParentEventSourceRead {
+    Chunk(Vec<u8>),
+    Pending,
+    End,
+}
+
+struct NativeParentEventSourceFailure {
+    message: String,
+    csp_violations: Vec<NativeCspViolation>,
 }
 
 impl NativeContentFetchBroker<'_> {
@@ -263,6 +288,290 @@ impl NativeContentFetchBroker<'_> {
         request: &NativeFetchRequest<'_>,
     ) -> Result<(Result<NativeFetchResponse, NativeEngineError>, String), NativeEngineError> {
         self.fetch_inner(fetch_id, request, false, false).await
+    }
+
+    async fn open_event_source(
+        &mut self,
+        source_id: u32,
+        href: &str,
+        with_credentials: bool,
+        last_event_id: &str,
+    ) -> Result<NativeParentEventSourceOpenResult, NativeEngineError> {
+        if source_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "parent EventSource source ID",
+                "must be positive",
+            ));
+        }
+        let cookie_writes = self.take_cookie_writes()?;
+        write_value_frame(
+            self.stdout,
+            &json!({
+                "kind": "parent_event_source_open_request",
+                "id": self.request_id,
+                "source_id": source_id,
+                "owner": self.owner,
+                "document_url": self.owner.document_url,
+                "href": href,
+                "with_credentials": with_credentials,
+                "last_event_id": last_event_id,
+                "cookie_writes": cookie_writes,
+            }),
+        )
+        .await?;
+        let payload = self
+            .receive_parent_response("parent EventSource open")
+            .await?;
+        let response: Value = serde_json::from_slice(&payload).map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent EventSource open response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned invalid EventSource open JSON",
+            )
+        })?;
+        if response.get("id").and_then(Value::as_u64) != Some(self.request_id)
+            || response.get("source_id").and_then(Value::as_u64) != Some(u64::from(source_id))
+        {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent EventSource open response",
+                NativeWorkerFailureKind::Protocol,
+                "EventSource open response belongs to a different request",
+            ));
+        }
+        self.update_parent_document_cookie(&response, "parent EventSource open")?;
+        let csp_violations = response
+            .get("csp_violations")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| {
+                NativeEngineError::worker_failure(
+                    "decode parent EventSource open response",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent returned invalid EventSource CSP violations",
+                )
+            })?
+            .unwrap_or_default();
+        if response.get("kind").and_then(Value::as_str) == Some("parent_event_source_error") {
+            return Ok(NativeParentEventSourceOpenResult::Failed {
+                message: response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("parent rejected the EventSource request")
+                    .to_owned(),
+                csp_violations,
+            });
+        }
+        if response.get("kind").and_then(Value::as_str) != Some("parent_event_source_opened") {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent EventSource open response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned an unknown EventSource open result",
+            ));
+        }
+        let stream_id = response
+            .get("stream_id")
+            .and_then(Value::as_u64)
+            .filter(|stream_id| *stream_id > 0)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "decode parent EventSource open response",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent omitted a valid EventSource stream ID",
+                )
+            })?;
+        let origin = response
+            .get("origin")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "decode parent EventSource open response",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent omitted the EventSource origin",
+                )
+            })?
+            .to_owned();
+        Ok(NativeParentEventSourceOpenResult::Opened(
+            NativeParentEventSourceOpen {
+                stream_id,
+                origin,
+                csp_violations,
+            },
+        ))
+    }
+
+    async fn read_parent_event_source(
+        &mut self,
+        source_id: u32,
+        stream_id: u64,
+    ) -> Result<NativeParentEventSourceRead, NativeEngineError> {
+        if source_id == 0 || stream_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "parent EventSource stream identity",
+                "source and stream IDs must be positive",
+            ));
+        }
+        let cookie_writes = self.take_cookie_writes()?;
+        write_value_frame(
+            self.stdout,
+            &json!({
+                "kind": "parent_event_source_read_request",
+                "id": self.request_id,
+                "source_id": source_id,
+                "stream_id": stream_id,
+                "owner": self.owner,
+                "cookie_writes": cookie_writes,
+            }),
+        )
+        .await?;
+        let payload = self
+            .receive_parent_response("parent EventSource read")
+            .await?;
+        let response: Value = serde_json::from_slice(&payload).map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent EventSource chunk",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned invalid EventSource chunk JSON",
+            )
+        })?;
+        if response.get("id").and_then(Value::as_u64) != Some(self.request_id)
+            || response.get("source_id").and_then(Value::as_u64) != Some(u64::from(source_id))
+            || response.get("stream_id").and_then(Value::as_u64) != Some(stream_id)
+        {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent EventSource chunk",
+                NativeWorkerFailureKind::Protocol,
+                "EventSource chunk belongs to a different request or stream",
+            ));
+        }
+        self.update_parent_document_cookie(&response, "parent EventSource read")?;
+        match response.get("kind").and_then(Value::as_str) {
+            Some("parent_event_source_chunk") => {
+                let encoded = response
+                    .get("chunk_base64")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "decode parent EventSource chunk",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent omitted EventSource chunk bytes",
+                        )
+                    })?;
+                let chunk = base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .map_err(|_| {
+                        NativeEngineError::worker_failure(
+                            "decode parent EventSource chunk",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent EventSource chunk is not valid base64",
+                        )
+                    })?;
+                let maximum_chunk =
+                    MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES + MAX_NATIVE_EVENTSOURCE_FIELD_BYTES;
+                if chunk.len() > maximum_chunk {
+                    return Err(NativeEngineError::limit(
+                        "parent EventSource chunk",
+                        maximum_chunk,
+                        chunk.len(),
+                    ));
+                }
+                Ok(NativeParentEventSourceRead::Chunk(chunk))
+            }
+            Some("parent_event_source_pending") => Ok(NativeParentEventSourceRead::Pending),
+            Some("parent_event_source_end") => Ok(NativeParentEventSourceRead::End),
+            Some("parent_event_source_error") => Err(NativeEngineError::Network {
+                operation: "EventSource stream".into(),
+                reason: response
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("parent EventSource stream failed")
+                    .to_owned(),
+            }),
+            _ => Err(NativeEngineError::worker_failure(
+                "decode parent EventSource chunk",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned an unknown EventSource chunk result",
+            )),
+        }
+    }
+
+    async fn close_parent_event_source(
+        &mut self,
+        source_id: u32,
+        stream_id: u64,
+    ) -> Result<(), NativeEngineError> {
+        if source_id == 0 || stream_id == 0 {
+            return Err(NativeEngineError::invalid(
+                "parent EventSource stream identity",
+                "source and stream IDs must be positive",
+            ));
+        }
+        let cookie_writes = self.take_cookie_writes()?;
+        write_value_frame(
+            self.stdout,
+            &json!({
+                "kind": "parent_event_source_close_request",
+                "id": self.request_id,
+                "source_id": source_id,
+                "stream_id": stream_id,
+                "owner": self.owner,
+                "cookie_writes": cookie_writes,
+            }),
+        )
+        .await?;
+        let payload = self
+            .receive_parent_response("parent EventSource close")
+            .await?;
+        let response: Value = serde_json::from_slice(&payload).map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent EventSource close response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned invalid EventSource close JSON",
+            )
+        })?;
+        if !matches!(
+            response.get("kind").and_then(Value::as_str),
+            Some("parent_event_source_closed") | Some("parent_event_source_end")
+        ) || response.get("id").and_then(Value::as_u64) != Some(self.request_id)
+            || response.get("source_id").and_then(Value::as_u64) != Some(u64::from(source_id))
+            || response.get("stream_id").and_then(Value::as_u64) != Some(stream_id)
+        {
+            return Err(NativeEngineError::worker_failure(
+                "decode parent EventSource close response",
+                NativeWorkerFailureKind::Protocol,
+                "EventSource close response belongs to a different request or stream",
+            ));
+        }
+        self.update_parent_document_cookie(&response, "parent EventSource close")?;
+        Ok(())
+    }
+
+    fn update_parent_document_cookie(
+        &mut self,
+        response: &Value,
+        operation: &'static str,
+    ) -> Result<(), NativeEngineError> {
+        let document_cookie = response
+            .get("document_cookie")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    operation,
+                    NativeWorkerFailureKind::Protocol,
+                    "parent omitted the document cookie projection",
+                )
+            })?;
+        if document_cookie.len() > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+            return Err(NativeEngineError::limit(
+                "parent document cookie projection",
+                MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                document_cookie.len(),
+            ));
+        }
+        let document_cookie = document_cookie.to_owned();
+        *self.document_cookie_projection = Some(document_cookie.clone());
+        self.update_runtime_cookie_projection(&document_cookie);
+        Ok(())
     }
 
     pub(crate) async fn fetch_for_captured_load(
@@ -1362,6 +1671,17 @@ struct NativeWebSocketConnection {
 
 enum NativeEventSourceCommand {
     Close,
+    Chunk(Vec<u8>),
+    End,
+    Error(String),
+    Reopened {
+        origin: String,
+        csp_violations: Vec<NativeCspViolation>,
+    },
+    OpenFailed {
+        message: String,
+        csp_violations: Vec<NativeCspViolation>,
+    },
 }
 
 enum NativeEventSourceEvent {
@@ -1380,12 +1700,18 @@ enum NativeEventSourceEvent {
         message: String,
         csp_violations: Vec<NativeCspViolation>,
     },
+    Reconnect {
+        last_event_id: String,
+    },
     Close,
 }
 
 struct NativeEventSourceConnection {
     commands: mpsc::Sender<NativeEventSourceCommand>,
     events: mpsc::Receiver<NativeEventSourceEvent>,
+    parent_stream_id: Option<u64>,
+    parent_href: String,
+    parent_with_credentials: bool,
 }
 
 #[derive(Default)]
@@ -2080,6 +2406,237 @@ fn spawn_native_event_source(
     NativeEventSourceConnection {
         commands: command_sender,
         events: event_receiver,
+        parent_stream_id: None,
+        parent_href: href.to_owned(),
+        parent_with_credentials: with_credentials,
+    }
+}
+
+async fn run_native_parent_event_source(
+    initial_open: Result<NativeParentEventSourceOpen, NativeParentEventSourceFailure>,
+    initial_last_event_id: String,
+    mut commands: mpsc::Receiver<NativeEventSourceCommand>,
+    events: mpsc::Sender<NativeEventSourceEvent>,
+) {
+    let mut last_event_id = initial_last_event_id;
+    let mut retry = NATIVE_EVENTSOURCE_INITIAL_RETRY;
+    let mut reconnects = 0usize;
+    let mut parser = NativeEventSourceParser {
+        last_event_id: last_event_id.clone(),
+        retry,
+        ..NativeEventSourceParser::default()
+    };
+    let mut origin = String::new();
+    match initial_open {
+        Ok(open) => {
+            origin = open.origin.clone();
+            if !queue_event_source_event(
+                &events,
+                NativeEventSourceEvent::Open {
+                    origin: open.origin,
+                    cookie_changes: Vec::new(),
+                    csp_violations: open.csp_violations,
+                },
+            )
+            .await
+            {
+                return;
+            }
+        }
+        Err(failure) => {
+            if !schedule_parent_event_source_reconnect(
+                &mut commands,
+                &events,
+                &failure.message,
+                failure.csp_violations,
+                retry,
+                &last_event_id,
+                &mut reconnects,
+            )
+            .await
+            {
+                return;
+            }
+        }
+    }
+
+    loop {
+        match commands.recv().await {
+            Some(NativeEventSourceCommand::Close) | None => {
+                let _ = queue_event_source_event(&events, NativeEventSourceEvent::Close).await;
+                return;
+            }
+            Some(NativeEventSourceCommand::Chunk(chunk)) => {
+                let messages = match parse_event_source_chunk(&mut parser, &chunk) {
+                    Ok(messages) => messages,
+                    Err(error) => {
+                        if !schedule_parent_event_source_reconnect(
+                            &mut commands,
+                            &events,
+                            &bounded_websocket_text(error.to_string(), MAX_NATIVE_SCRIPT_BYTES),
+                            Vec::new(),
+                            retry,
+                            &last_event_id,
+                            &mut reconnects,
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                        continue;
+                    }
+                };
+                last_event_id = parser.last_event_id.clone();
+                retry = parser.retry.min(NATIVE_EVENTSOURCE_MAX_RETRY);
+                for message in messages {
+                    last_event_id = message.last_event_id.clone();
+                    if !queue_event_source_event(
+                        &events,
+                        NativeEventSourceEvent::Message {
+                            event: message.event,
+                            data: message.data,
+                            last_event_id: message.last_event_id,
+                            origin: origin.clone(),
+                        },
+                    )
+                    .await
+                    {
+                        return;
+                    }
+                }
+            }
+            Some(NativeEventSourceCommand::End) => {
+                if !schedule_parent_event_source_reconnect(
+                    &mut commands,
+                    &events,
+                    "EventSource connection ended",
+                    Vec::new(),
+                    retry,
+                    &last_event_id,
+                    &mut reconnects,
+                )
+                .await
+                {
+                    return;
+                }
+            }
+            Some(NativeEventSourceCommand::Error(message)) => {
+                if !schedule_parent_event_source_reconnect(
+                    &mut commands,
+                    &events,
+                    &message,
+                    Vec::new(),
+                    retry,
+                    &last_event_id,
+                    &mut reconnects,
+                )
+                .await
+                {
+                    return;
+                }
+            }
+            Some(NativeEventSourceCommand::Reopened {
+                origin: reopened_origin,
+                csp_violations,
+            }) => {
+                origin = reopened_origin.clone();
+                parser = NativeEventSourceParser {
+                    last_event_id: last_event_id.clone(),
+                    retry,
+                    ..NativeEventSourceParser::default()
+                };
+                reconnects = 0;
+                if !queue_event_source_event(
+                    &events,
+                    NativeEventSourceEvent::Open {
+                        origin: reopened_origin,
+                        cookie_changes: Vec::new(),
+                        csp_violations,
+                    },
+                )
+                .await
+                {
+                    return;
+                }
+            }
+            Some(NativeEventSourceCommand::OpenFailed {
+                message,
+                csp_violations,
+            }) => {
+                if !schedule_parent_event_source_reconnect(
+                    &mut commands,
+                    &events,
+                    &message,
+                    csp_violations,
+                    retry,
+                    &last_event_id,
+                    &mut reconnects,
+                )
+                .await
+                {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+async fn schedule_parent_event_source_reconnect(
+    commands: &mut mpsc::Receiver<NativeEventSourceCommand>,
+    events: &mpsc::Sender<NativeEventSourceEvent>,
+    message: &str,
+    csp_violations: Vec<NativeCspViolation>,
+    retry: Duration,
+    last_event_id: &str,
+    reconnects: &mut usize,
+) -> bool {
+    if !queue_event_source_event(
+        events,
+        NativeEventSourceEvent::Error {
+            message: bounded_websocket_text(message, MAX_NATIVE_SCRIPT_BYTES),
+            csp_violations,
+        },
+    )
+    .await
+    {
+        return false;
+    }
+    *reconnects = reconnects.saturating_add(1);
+    if *reconnects > MAX_NATIVE_EVENTSOURCE_RECONNECTS
+        || !wait_event_source_retry(commands, retry).await
+    {
+        let _ = queue_event_source_event(events, NativeEventSourceEvent::Close).await;
+        return false;
+    }
+    queue_event_source_event(
+        events,
+        NativeEventSourceEvent::Reconnect {
+            last_event_id: last_event_id.to_owned(),
+        },
+    )
+    .await
+}
+
+fn spawn_native_parent_event_source(
+    href: &str,
+    with_credentials: bool,
+    initial_last_event_id: &str,
+    initial_open: Result<NativeParentEventSourceOpen, NativeParentEventSourceFailure>,
+) -> NativeEventSourceConnection {
+    let (command_sender, command_receiver) = mpsc::channel(MAX_NATIVE_EVENTSOURCE_CONNECTIONS);
+    let (event_sender, event_receiver) = mpsc::channel(MAX_NATIVE_EVENTSOURCE_CONNECTIONS);
+    tokio::spawn(run_native_parent_event_source(
+        initial_open,
+        initial_last_event_id.to_owned(),
+        command_receiver,
+        event_sender,
+    ));
+    NativeEventSourceConnection {
+        commands: command_sender,
+        events: event_receiver,
+        parent_stream_id: None,
+        parent_href: href.to_owned(),
+        parent_with_credentials: with_credentials,
     }
 }
 
@@ -2160,6 +2717,12 @@ pub(crate) struct NativeContentAsyncEffectNotification {
 
 /// Process-backed lifecycle and bounded document-transfer channel for one
 /// native content runtime.
+struct NativeParentEventSourceStream {
+    owner: NativeContentCookieOwner,
+    source_id: u32,
+    response: reqwest::Response,
+}
+
 pub(crate) struct NativeContentProcess {
     child: Child,
     stdin: ChildStdin,
@@ -2184,8 +2747,8 @@ pub(crate) struct NativeContentProcess {
     dialog_control: NativeDialogControlPlane,
     pending_cookie_changes: Arc<Mutex<Vec<NativeCookieChange>>>,
     pending_cookie_writes: Vec<NativeContentCookieWrite>,
-    storage_path: Option<PathBuf>,
-    storage_writer_id: String,
+    next_parent_event_source_stream_id: u64,
+    parent_event_source_streams: BTreeMap<u64, NativeParentEventSourceStream>,
     #[cfg(windows)]
     sandbox: NativeContentSandbox,
 }
@@ -2455,14 +3018,12 @@ impl NativeContentProcess {
     #[cfg(test)]
     pub(crate) async fn spawn(
         storage_path: Option<&Path>,
-        storage_writer_id: &str,
         allowed_file_roots: &[PathBuf],
         dialog_control: NativeDialogControlPlane,
         pending_cookie_changes: Arc<Mutex<Vec<NativeCookieChange>>>,
     ) -> Result<Self, NativeEngineError> {
         Self::spawn_with_event_notify(
             storage_path,
-            storage_writer_id,
             allowed_file_roots,
             dialog_control,
             pending_cookie_changes,
@@ -2473,7 +3034,6 @@ impl NativeContentProcess {
 
     pub(crate) async fn spawn_with_event_notify(
         storage_path: Option<&Path>,
-        storage_writer_id: &str,
         allowed_file_roots: &[PathBuf],
         dialog_control: NativeDialogControlPlane,
         pending_cookie_changes: Arc<Mutex<Vec<NativeCookieChange>>>,
@@ -2560,8 +3120,8 @@ impl NativeContentProcess {
             dialog_control,
             pending_cookie_changes,
             pending_cookie_writes: Vec::new(),
-            storage_path: storage_path.map(Path::to_path_buf),
-            storage_writer_id: storage_writer_id.to_owned(),
+            next_parent_event_source_stream_id: 1,
+            parent_event_source_streams: BTreeMap::new(),
             #[cfg(windows)]
             sandbox,
         };
@@ -3065,6 +3625,7 @@ impl NativeContentProcess {
             return Err(NativeEngineError::NavigationCancelled);
         }
         if let Ok(NativeContentLoadResult::Loaded(content)) = &result {
+            self.discard_stale_parent_event_source_streams(content.generation);
             self.current_document_url = Some(content.url.clone());
             self.current_document_generation = Some(content.generation);
             self.pending_navigation_request = None;
@@ -3127,6 +3688,7 @@ impl NativeContentProcess {
         }
         let result = decode_load_response(&response, id);
         if let Ok(NativeContentLoadResult::Loaded(content)) = &result {
+            self.discard_stale_parent_event_source_streams(content.generation);
             self.current_document_url = Some(content.url.clone());
             self.current_document_generation = Some(content.generation);
             self.pending_navigation_request = None;
@@ -4024,7 +4586,7 @@ impl NativeContentProcess {
         }
     }
 
-    pub(crate) async fn close(mut self) -> Result<(), NativeEngineError> {
+    pub(crate) async fn close(&mut self) -> Result<(), NativeEngineError> {
         if let Ok(Some(_)) = self.child.try_wait() {
             self.mark_failed(NativeWorkerFailureKind::Exited);
             return Ok(());
@@ -4038,6 +4600,7 @@ impl NativeContentProcess {
             }))
             .await?;
         require_response_kind(&response, "closed", id, "content process close")?;
+        self.parent_event_source_streams.clear();
         match timeout(Duration::from_secs(1), self.child.wait()).await {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(_)) => Err(NativeEngineError::Worker {
@@ -4190,24 +4753,6 @@ impl NativeContentProcess {
                 operation: "decode content process cookie changes".into(),
                 reason: "content process returned an invalid cookie change journal".into(),
             })?;
-        if !changes.is_empty() {
-            save_web_storage_profile(
-                self.storage_path.as_deref(),
-                &NativeWebStorageState::default(),
-                &[],
-                &[],
-                &changes,
-                &NativeIndexedDbState::default(),
-                &[],
-            )?;
-            append_storage_changes(
-                self.storage_path.as_deref(),
-                &self.storage_writer_id,
-                &[],
-                &[],
-                &changes,
-            )?;
-        }
         let mut pending =
             self.pending_cookie_changes
                 .lock()
@@ -4357,6 +4902,22 @@ impl NativeContentProcess {
     fn mark_failed(&mut self, kind: NativeWorkerFailureKind) {
         self.healthy = false;
         self.failure_kind = Some(kind);
+        self.parent_event_source_streams.clear();
+    }
+
+    fn discard_stale_parent_event_source_streams(&mut self, generation: u32) {
+        let (Some(context_id), Some(frame_id)) =
+            (self.context_id.as_deref(), self.frame_id.as_deref())
+        else {
+            return;
+        };
+        let context_id = context_id.to_owned();
+        let frame_id = frame_id.to_owned();
+        self.parent_event_source_streams.retain(|_, stream| {
+            stream.owner.context_id != context_id
+                || stream.owner.frame_id != frame_id
+                || stream.owner.generation == generation
+        });
     }
 
     async fn exchange_inner(
@@ -4398,6 +4959,392 @@ impl NativeContentProcess {
                 {
                     parent_navigation_document_url = Some(document_url);
                 }
+                continue;
+            }
+            if response
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.starts_with("parent_event_source_"))
+            {
+                let loader = parent_loader.as_deref_mut().ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "content process EventSource broker",
+                        NativeWorkerFailureKind::Protocol,
+                        "content process requested parent EventSource service without a loader",
+                    )
+                })?;
+                if response.get("id").and_then(Value::as_u64) != Some(request_id) {
+                    return Err(NativeEngineError::worker_failure(
+                        "content process EventSource broker",
+                        NativeWorkerFailureKind::Protocol,
+                        "EventSource request belongs to a different content operation",
+                    ));
+                }
+                let kind = response
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .expect("matched EventSource request kind");
+                let source_id = response
+                    .get("source_id")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .filter(|value| *value != 0)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "content process EventSource broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "EventSource request has an invalid source ID",
+                        )
+                    })?;
+                let owner = decode_content_cookie_owner(
+                    response.get("owner").ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "content process EventSource broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "EventSource request omitted its owner",
+                        )
+                    })?,
+                    "content process EventSource cookie owner",
+                )?;
+                let expected_owner = request
+                    .get("owner")
+                    .map(|value| decode_content_cookie_owner(value, "parent script owner"))
+                    .transpose()?;
+                if expected_owner
+                    .as_ref()
+                    .is_some_and(|expected_owner| expected_owner != &owner)
+                    || !parent_broker_owner_matches_operation(
+                        self,
+                        &request,
+                        &owner,
+                        parent_navigation_document_url.as_deref(),
+                    )
+                {
+                    return Err(NativeEngineError::worker_failure(
+                        "content process EventSource broker",
+                        NativeWorkerFailureKind::Protocol,
+                        "EventSource request does not match the active document owner",
+                    ));
+                }
+                let writes = serde_json::from_value::<Vec<NativeContentCookieWrite>>(
+                    response.get("cookie_writes").cloned().ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "content process EventSource broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "EventSource request omitted its cookie-write journal",
+                        )
+                    })?,
+                )
+                .map_err(|_| {
+                    NativeEngineError::worker_failure(
+                        "content process EventSource broker",
+                        NativeWorkerFailureKind::Protocol,
+                        "EventSource cookie-write journal is malformed",
+                    )
+                })?;
+                if writes.len() > MAX_NATIVE_EFFECTS {
+                    return Err(NativeEngineError::limit(
+                        "parent-owned document.cookie writes",
+                        MAX_NATIVE_EFFECTS,
+                        writes.len(),
+                    ));
+                }
+                let mut write_bytes = 0usize;
+                for write in &writes {
+                    if write.owner != owner
+                        || write.value.len() > crate::browser_backend::MAX_TEXT_BYTES
+                    {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process EventSource broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "EventSource cookie write is oversized or belongs to another owner",
+                        ));
+                    }
+                    write_bytes = write_bytes.saturating_add(write.value.len());
+                }
+                if write_bytes > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
+                    return Err(NativeEngineError::limit(
+                        "parent-owned document.cookie write journal",
+                        MAX_CONTENT_DOCUMENT_COOKIE_BYTES,
+                        write_bytes,
+                    ));
+                }
+                for write in &writes {
+                    loader.set_document_cookie(&owner.document_url, &write.value)?;
+                }
+                let document_cookie = loader.document_cookie(&owner.document_url)?;
+                let stream_id = response
+                    .get("stream_id")
+                    .and_then(Value::as_u64)
+                    .filter(|stream_id| *stream_id > 0);
+                let payload_value = match kind {
+                    "parent_event_source_open_request" => {
+                        if response.get("stream_id").is_some() {
+                            return Err(NativeEngineError::worker_failure(
+                                "content process EventSource open",
+                                NativeWorkerFailureKind::Protocol,
+                                "EventSource open request carried a stream ID",
+                            ));
+                        }
+                        let document_url = response
+                            .get("document_url")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                NativeEngineError::worker_failure(
+                                    "content process EventSource open",
+                                    NativeWorkerFailureKind::Protocol,
+                                    "EventSource open omitted its document URL",
+                                )
+                            })?;
+                        let href =
+                            response
+                                .get("href")
+                                .and_then(Value::as_str)
+                                .ok_or_else(|| {
+                                    NativeEngineError::worker_failure(
+                                        "content process EventSource open",
+                                        NativeWorkerFailureKind::Protocol,
+                                        "EventSource open omitted its target URL",
+                                    )
+                                })?;
+                        let with_credentials = response
+                            .get("with_credentials")
+                            .and_then(Value::as_bool)
+                            .ok_or_else(|| {
+                                NativeEngineError::worker_failure(
+                                    "content process EventSource open",
+                                    NativeWorkerFailureKind::Protocol,
+                                    "EventSource open omitted its credentials mode",
+                                )
+                            })?;
+                        let last_event_id = response
+                            .get("last_event_id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "content process EventSource open",
+                                NativeWorkerFailureKind::Protocol,
+                                "EventSource open omitted its last event ID",
+                            )
+                        })?;
+                        if without_fragment(document_url) != without_fragment(&owner.document_url) {
+                            return Err(NativeEngineError::worker_failure(
+                                "content process EventSource open",
+                                NativeWorkerFailureKind::Protocol,
+                                "EventSource document URL does not match its owner",
+                            ));
+                        }
+                        if self.parent_event_source_streams.len()
+                            >= MAX_NATIVE_EVENTSOURCE_CONNECTIONS
+                        {
+                            json!({
+                                "kind": "parent_event_source_error",
+                                "id": request_id,
+                                "source_id": source_id,
+                                "reason": "parent EventSource stream limit reached",
+                                "document_cookie": document_cookie,
+                                "csp_violations": [],
+                            })
+                        } else {
+                            match loader
+                                .open_event_source_async(
+                                    &owner.document_url,
+                                    href,
+                                    with_credentials,
+                                    last_event_id,
+                                )
+                                .await
+                            {
+                                Ok((url, stream)) => {
+                                    let stream_id = self.next_parent_event_source_stream_id;
+                                    self.next_parent_event_source_stream_id =
+                                        stream_id.checked_add(1).ok_or_else(|| {
+                                            NativeEngineError::limit(
+                                                "parent EventSource stream IDs",
+                                                u64::MAX as usize,
+                                                usize::MAX,
+                                            )
+                                        })?;
+                                    let csp_violations = loader.take_csp_violations();
+                                    self.parent_event_source_streams.insert(
+                                        stream_id,
+                                        NativeParentEventSourceStream {
+                                            owner: owner.clone(),
+                                            source_id,
+                                            response: stream,
+                                        },
+                                    );
+                                    json!({
+                                        "kind": "parent_event_source_opened",
+                                        "id": request_id,
+                                        "source_id": source_id,
+                                        "stream_id": stream_id,
+                                        "origin": url.origin().ascii_serialization(),
+                                        "document_cookie": loader.document_cookie(&owner.document_url)?,
+                                        "csp_violations": csp_violations,
+                                    })
+                                }
+                                Err(error) => json!({
+                                    "kind": "parent_event_source_error",
+                                    "id": request_id,
+                                    "source_id": source_id,
+                                    "reason": bounded_websocket_text(
+                                        error.to_string(),
+                                        MAX_NATIVE_SCRIPT_BYTES,
+                                    ),
+                                    "document_cookie": loader.document_cookie(&owner.document_url)?,
+                                    "csp_violations": loader.take_csp_violations(),
+                                }),
+                            }
+                        }
+                    }
+                    "parent_event_source_read_request" => {
+                        let stream_id = stream_id.ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "content process EventSource read",
+                                NativeWorkerFailureKind::Protocol,
+                                "EventSource read has an invalid stream ID",
+                            )
+                        })?;
+                        let read_result = if let Some(stream) =
+                            self.parent_event_source_streams.get_mut(&stream_id)
+                        {
+                            if stream.owner != owner || stream.source_id != source_id {
+                                return Err(NativeEngineError::worker_failure(
+                                    "content process EventSource read",
+                                    NativeWorkerFailureKind::Protocol,
+                                    "EventSource stream does not belong to the requesting owner",
+                                ));
+                            }
+                            Some(
+                                timeout(NATIVE_WEBSOCKET_POLL_INTERVAL, stream.response.chunk())
+                                    .await
+                                    .map(|result| {
+                                        result.map(|chunk| chunk.map(|chunk| chunk.to_vec()))
+                                    }),
+                            )
+                        } else {
+                            None
+                        };
+                        match read_result {
+                            None => json!({
+                                "kind": "parent_event_source_closed",
+                                "id": request_id,
+                                "source_id": source_id,
+                                "stream_id": stream_id,
+                                "reason": "parent EventSource stream is no longer active",
+                                "document_cookie": document_cookie,
+                            }),
+                            Some(Ok(Ok(Some(chunk)))) => {
+                                let maximum_chunk = MAX_NATIVE_EVENTSOURCE_MESSAGE_BYTES
+                                    + MAX_NATIVE_EVENTSOURCE_FIELD_BYTES;
+                                if chunk.len() > maximum_chunk {
+                                    self.parent_event_source_streams.remove(&stream_id);
+                                    json!({
+                                        "kind": "parent_event_source_error",
+                                        "id": request_id,
+                                        "source_id": source_id,
+                                        "stream_id": stream_id,
+                                        "reason": "parent EventSource chunk exceeds the bounded IPC limit",
+                                        "document_cookie": document_cookie,
+                                    })
+                                } else {
+                                    json!({
+                                        "kind": "parent_event_source_chunk",
+                                        "id": request_id,
+                                        "source_id": source_id,
+                                        "stream_id": stream_id,
+                                        "chunk_base64": base64::engine::general_purpose::STANDARD.encode(chunk),
+                                        "document_cookie": document_cookie,
+                                    })
+                                }
+                            }
+                            Some(Ok(Ok(None))) => {
+                                self.parent_event_source_streams.remove(&stream_id);
+                                json!({
+                                    "kind": "parent_event_source_end",
+                                    "id": request_id,
+                                    "source_id": source_id,
+                                    "stream_id": stream_id,
+                                    "document_cookie": document_cookie,
+                                })
+                            }
+                            Some(Ok(Err(error))) => {
+                                self.parent_event_source_streams.remove(&stream_id);
+                                json!({
+                                    "kind": "parent_event_source_error",
+                                    "id": request_id,
+                                    "source_id": source_id,
+                                    "stream_id": stream_id,
+                                    "reason": bounded_websocket_text(
+                                        error.to_string(),
+                                        MAX_NATIVE_SCRIPT_BYTES,
+                                    ),
+                                    "document_cookie": document_cookie,
+                                })
+                            }
+                            Some(Err(_)) => json!({
+                                "kind": "parent_event_source_pending",
+                                "id": request_id,
+                                "source_id": source_id,
+                                "stream_id": stream_id,
+                                "document_cookie": document_cookie,
+                            }),
+                        }
+                    }
+                    "parent_event_source_close_request" => {
+                        let stream_id = stream_id.ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "content process EventSource close",
+                                NativeWorkerFailureKind::Protocol,
+                                "EventSource close has an invalid stream ID",
+                            )
+                        })?;
+                        match self.parent_event_source_streams.get(&stream_id) {
+                            Some(stream)
+                                if stream.owner == owner && stream.source_id == source_id =>
+                            {
+                                self.parent_event_source_streams.remove(&stream_id);
+                                json!({
+                                    "kind": "parent_event_source_closed",
+                                    "id": request_id,
+                                    "source_id": source_id,
+                                    "stream_id": stream_id,
+                                    "document_cookie": document_cookie,
+                                })
+                            }
+                            Some(_) => {
+                                return Err(NativeEngineError::worker_failure(
+                                    "content process EventSource close",
+                                    NativeWorkerFailureKind::Protocol,
+                                    "EventSource close does not match the stream owner",
+                                ));
+                            }
+                            None => json!({
+                                "kind": "parent_event_source_closed",
+                                "id": request_id,
+                                "source_id": source_id,
+                                "stream_id": stream_id,
+                                "document_cookie": document_cookie,
+                            }),
+                        }
+                    }
+                    _ => {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process EventSource broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "content process sent an unknown parent EventSource operation",
+                        ));
+                    }
+                };
+                let payload = serde_json::to_vec(&payload_value).map_err(|_| {
+                    NativeEngineError::worker_failure(
+                        "encode parent EventSource response",
+                        NativeWorkerFailureKind::Protocol,
+                        "EventSource response could not be encoded",
+                    )
+                })?;
+                write_frame(&mut self.stdin, &payload).await?;
                 continue;
             }
             if response.get("kind").and_then(Value::as_str) == Some("parent_fetch_request") {
@@ -10203,11 +11150,37 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     }
                                     match (script_runtime.as_ref(), resource_loader.as_mut()) {
                                         (Some(runtime), Some(loader)) => {
+                                            let parent_fetch_broker = NativeContentFetchBroker {
+                                                request_id: id.as_u64().ok_or_else(|| {
+                                                    NativeEngineError::invalid(
+                                                        "content-process load request ID",
+                                                        "must be an unsigned integer",
+                                                    )
+                                                })?,
+                                                owner: NativeContentCookieOwner {
+                                                    context_id: storage_context_id.clone(),
+                                                    frame_id: frame_id.clone(),
+                                                    generation: parsed.generation(),
+                                                    document_url: resource.url.clone(),
+                                                },
+                                                runtime: Some(runtime),
+                                                stdout: &mut stdout,
+                                                ipc_requests: &mut ipc_request_rx,
+                                                cancelled_parent_fetches:
+                                                    &mut cancelled_parent_fetches,
+                                                document_cookie_projection:
+                                                    &mut parent_document_cookie_projection,
+                                                next_content_resource_fetch_id: 0,
+                                                page_meta_content_security_policies: loader
+                                                    .document_meta_content_security_policies(
+                                                        &resource.url,
+                                                    )?,
+                                            };
                                             let script_fetch_result = resolve_script_fetches(
                                                 &parsed,
                                                 runtime,
                                                 Some(loader),
-                                                None,
+                                                Some(parent_fetch_broker),
                                                 &mut service_workers,
                                                 &mut websocket_connections,
                                                 &mut fetch_stream_connections,
@@ -18207,11 +19180,12 @@ fn process_fetch_upload_commands(
     Ok(retained)
 }
 
-fn process_event_source_commands(
+async fn process_event_source_commands(
     commands: Vec<NativeScriptCommand>,
     connections: &mut BTreeMap<u32, NativeEventSourceConnection>,
-    loader: Option<&NativeResourceLoader>,
-    document_url: &str,
+    _loader: Option<&NativeResourceLoader>,
+    _document_url: &str,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<Vec<NativeScriptCommand>, NativeEngineError> {
     let mut retained = Vec::with_capacity(commands.len());
     for command in commands {
@@ -18235,24 +19209,59 @@ fn process_event_source_commands(
                         connections.len().saturating_add(1),
                     ));
                 }
-                let loader = loader.ok_or_else(|| NativeEngineError::Worker {
-                    operation: "EventSource open".into(),
-                    reason: "content process has no resource loader".into(),
-                })?;
                 validate_url_text("EventSource URL", &href)?;
-                connections.insert(
-                    source_id,
-                    spawn_native_event_source(loader, document_url, &href, with_credentials),
-                );
+                let broker = parent_fetch_broker.as_deref_mut().ok_or_else(|| {
+                    NativeEngineError::Worker {
+                        operation: "EventSource open".into(),
+                        reason: "parent cookie and network authority is unavailable".into(),
+                    }
+                })?;
+                let initial_open = broker
+                    .open_event_source(source_id, &href, with_credentials, "")
+                    .await?;
+                let (initial_open, parent_stream_id) = match initial_open {
+                    NativeParentEventSourceOpenResult::Opened(open) => {
+                        (Ok(open.clone()), Some(open.stream_id))
+                    }
+                    NativeParentEventSourceOpenResult::Failed {
+                        message,
+                        csp_violations,
+                    } => (
+                        Err(NativeParentEventSourceFailure {
+                            message,
+                            csp_violations,
+                        }),
+                        None,
+                    ),
+                };
+                let mut connection =
+                    spawn_native_parent_event_source(&href, with_credentials, "", initial_open);
+                connection.parent_stream_id = parent_stream_id;
+                connections.insert(source_id, connection);
             }
             NativeScriptCommand::EventSourceClose {
                 source_id,
                 worker_id: None,
             } => {
-                if let Some(connection) = connections.remove(&source_id) {
+                if let Some(mut connection) = connections.remove(&source_id) {
+                    let close_result = if let Some(stream_id) = connection.parent_stream_id.take() {
+                        match parent_fetch_broker.as_deref_mut() {
+                            Some(broker) => {
+                                broker.close_parent_event_source(source_id, stream_id).await
+                            }
+                            None => Err(NativeEngineError::Worker {
+                                operation: "EventSource close".into(),
+                                reason: "parent cookie and network authority is unavailable".into(),
+                            }),
+                        }
+                    } else {
+                        Ok(())
+                    };
                     let _ = connection
                         .commands
-                        .try_send(NativeEventSourceCommand::Close);
+                        .send(NativeEventSourceCommand::Close)
+                        .await;
+                    close_result?;
                 }
             }
             command => retained.push(command),
@@ -18400,6 +19409,94 @@ fn take_event_source_event(
     None
 }
 
+async fn pump_parent_event_source_stream(
+    connections: &mut BTreeMap<u32, NativeEventSourceConnection>,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+    cursor: &mut u32,
+) -> Result<bool, NativeEngineError> {
+    let source_ids = connections
+        .iter()
+        .filter_map(|(source_id, connection)| connection.parent_stream_id.map(|_| *source_id))
+        .collect::<Vec<_>>();
+    let Some(source_id) = source_ids
+        .iter()
+        .copied()
+        .find(|source_id| *source_id > *cursor)
+        .or_else(|| source_ids.first().copied())
+    else {
+        return Ok(false);
+    };
+    let stream_id = connections
+        .get(&source_id)
+        .and_then(|connection| connection.parent_stream_id)
+        .ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "parent EventSource stream",
+                NativeWorkerFailureKind::Protocol,
+                "selected EventSource stream disappeared before it could be read",
+            )
+        })?;
+    *cursor = source_id;
+    let broker = parent_fetch_broker
+        .as_deref_mut()
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: "parent EventSource stream".into(),
+            reason: "parent cookie and network authority is unavailable".into(),
+        })?;
+    let read = broker.read_parent_event_source(source_id, stream_id).await;
+    let Some(connection) = connections.get_mut(&source_id) else {
+        return Ok(false);
+    };
+    match read {
+        Ok(NativeParentEventSourceRead::Chunk(chunk)) => {
+            connection
+                .commands
+                .send(NativeEventSourceCommand::Chunk(chunk))
+                .await
+                .map_err(|_| {
+                    NativeEngineError::worker_failure(
+                        "parent EventSource stream",
+                        NativeWorkerFailureKind::Transport,
+                        "EventSource parser task terminated before receiving a response chunk",
+                    )
+                })?;
+            Ok(true)
+        }
+        Ok(NativeParentEventSourceRead::Pending) => Ok(false),
+        Ok(NativeParentEventSourceRead::End) => {
+            connection.parent_stream_id = None;
+            connection
+                .commands
+                .send(NativeEventSourceCommand::End)
+                .await
+                .map_err(|_| {
+                    NativeEngineError::worker_failure(
+                        "parent EventSource stream",
+                        NativeWorkerFailureKind::Transport,
+                        "EventSource parser task terminated before receiving end of stream",
+                    )
+                })?;
+            Ok(true)
+        }
+        Err(NativeEngineError::Network { reason, .. }) => {
+            connection.parent_stream_id = None;
+            connection
+                .commands
+                .send(NativeEventSourceCommand::Error(reason))
+                .await
+                .map_err(|_| {
+                    NativeEngineError::worker_failure(
+                        "parent EventSource stream",
+                        NativeWorkerFailureKind::Transport,
+                        "EventSource parser task terminated before receiving its stream error",
+                    )
+                })?;
+            Ok(true)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn take_fetch_stream_event(
     connections: &mut BTreeMap<u32, NativeFetchStreamConnection>,
 ) -> Option<(u32, NativeFetchStreamEvent)> {
@@ -18505,6 +19602,9 @@ fn event_source_event_payload(event: &NativeEventSourceEvent) -> Value {
         NativeEventSourceEvent::Error { message, .. } => {
             json!({"type": "error", "message": message})
         }
+        NativeEventSourceEvent::Reconnect { .. } => {
+            json!({"type": "error", "message": "EventSource reconnecting"})
+        }
         NativeEventSourceEvent::Close => json!({"type": "close"}),
     }
 }
@@ -18513,7 +19613,9 @@ fn event_source_csp_violations(event: &NativeEventSourceEvent) -> &[NativeCspVio
     match event {
         NativeEventSourceEvent::Open { csp_violations, .. }
         | NativeEventSourceEvent::Error { csp_violations, .. } => csp_violations,
-        NativeEventSourceEvent::Message { .. } | NativeEventSourceEvent::Close => &[],
+        NativeEventSourceEvent::Message { .. }
+        | NativeEventSourceEvent::Reconnect { .. }
+        | NativeEventSourceEvent::Close => &[],
     }
 }
 
@@ -18830,13 +19932,14 @@ async fn fetch_opened_response_payload(
 /// DOM/event effects are already committed by `mutate_script_document`; this
 /// handoff only installs persistent transports and returns fetches to the
 /// existing resolver queue.
-fn activate_dynamic_page_script_network(
+async fn activate_dynamic_page_script_network(
     result: NativePageScriptResult,
     websocket_connections: &mut BTreeMap<u32, NativeWebSocketConnection>,
     event_source_connections: &mut BTreeMap<u32, NativeEventSourceConnection>,
     loader: Option<&NativeResourceLoader>,
     document_url: &str,
     document_origin: &NativeOrigin,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<(Vec<NativeScriptCommand>, bool), NativeEngineError> {
     if !result.pending_script_sources.is_empty() {
         return Err(NativeEngineError::Worker {
@@ -18864,7 +19967,9 @@ fn activate_dynamic_page_script_network(
         event_source_connections,
         loader,
         document_url,
-    )?;
+        parent_fetch_broker.as_deref_mut(),
+    )
+    .await?;
     if !retained_event_source.is_empty() {
         return Err(NativeEngineError::Worker {
             operation: "dynamic page script EventSource commands".into(),
@@ -18924,7 +20029,9 @@ async fn process_page_fetch_resolution(
         event_source_connections,
         Some(&*loader),
         current_url,
-    )?;
+        parent_fetch_broker.as_deref_mut(),
+    )
+    .await?;
     let resolved_commands =
         process_fetch_stream_commands(resolved_commands, fetch_stream_connections)?;
     let resolved_commands =
@@ -18978,7 +20085,9 @@ async fn process_page_fetch_resolution(
         Some(&*loader),
         current_url,
         document_origin,
-    )?;
+        parent_fetch_broker.as_deref_mut(),
+    )
+    .await?;
     pending.extend(fetch_commands(&resolved_commands)?);
     pending.extend(fetch_commands(&dynamic_fetches)?);
     *pump_background_events |= dynamic_background;
@@ -19174,7 +20283,9 @@ async fn resolve_script_fetches(
         event_source_connections,
         loader.as_deref(),
         &current_url,
-    )?;
+        parent_fetch_broker.as_mut(),
+    )
+    .await?;
     let initial_commands =
         process_fetch_stream_commands(initial_commands, fetch_stream_connections)?;
     let initial_commands =
@@ -19205,13 +20316,16 @@ async fn resolve_script_fetches(
         loader.as_deref(),
         &current_url,
         document_origin,
-    )?;
+        parent_fetch_broker.as_mut(),
+    )
+    .await?;
     pending.extend(fetch_commands(&dynamic_fetches)?);
     pump_background_events |= dynamic_background;
     let mut resolved_count = 0usize;
     let mut resolved_value = None;
     let mut event_loop_turns = 0usize;
     let mut next_task_source = NativeContentTaskSource::Networking;
+    let mut event_source_read_cursor = 0u32;
     let mut pending_upload_fetches: BTreeMap<u32, NativePendingUploadFetch> = BTreeMap::new();
     let mut pending_controlled_uploads: BTreeMap<u32, NativePendingControlledUpload> =
         BTreeMap::new();
@@ -19304,6 +20418,17 @@ async fn resolve_script_fetches(
                 }
                 _ => {}
             }
+        }
+        if selected_source.is_none()
+            && pump_background_events
+            && pump_parent_event_source_stream(
+                event_source_connections,
+                parent_fetch_broker.as_mut(),
+                &mut event_source_read_cursor,
+            )
+            .await?
+        {
+            continue;
         }
         if let Some((
             request_id,
@@ -20003,7 +21128,9 @@ async fn resolve_script_fetches(
                 event_source_connections,
                 loader.as_deref(),
                 &current_url,
-            )?;
+                parent_fetch_broker.as_mut(),
+            )
+            .await?;
             let event_commands =
                 process_fetch_stream_commands(event_commands, fetch_stream_connections)?;
             let event_commands =
@@ -20065,7 +21192,9 @@ async fn resolve_script_fetches(
                 loader.as_deref(),
                 &current_url,
                 document_origin,
-            )?;
+                parent_fetch_broker.as_mut(),
+            )
+            .await?;
             pending.extend(fetch_commands(&event_commands)?);
             pending.extend(fetch_commands(&dynamic_fetches)?);
             pump_background_events |= dynamic_background;
@@ -20154,7 +21283,9 @@ async fn resolve_script_fetches(
                 loader.as_deref(),
                 &current_url,
                 document_origin,
-            )?;
+                parent_fetch_broker.as_mut(),
+            )
+            .await?;
             pending.extend(fetch_commands(&event_commands)?);
             pending.extend(fetch_commands(&dynamic_fetches)?);
             pump_background_events |= dynamic_background;
@@ -20201,7 +21332,9 @@ async fn resolve_script_fetches(
                 event_source_connections,
                 loader.as_deref(),
                 &current_url,
-            )?;
+                parent_fetch_broker.as_mut(),
+            )
+            .await?;
             let event_commands =
                 process_fetch_stream_commands(event_commands, fetch_stream_connections)?;
             let event_commands =
@@ -20255,7 +21388,9 @@ async fn resolve_script_fetches(
                 loader.as_deref(),
                 &current_url,
                 document_origin,
-            )?;
+                parent_fetch_broker.as_mut(),
+            )
+            .await?;
             pending.extend(fetch_commands(&event_commands)?);
             pending.extend(fetch_commands(&dynamic_fetches)?);
             pump_background_events |= dynamic_background;
@@ -20292,6 +21427,87 @@ async fn resolve_script_fetches(
                     event_loop_turns,
                 ));
             }
+            if let NativeEventSourceEvent::Reconnect { last_event_id } = &event {
+                let (href, with_credentials, old_stream_id) = event_source_connections
+                    .get_mut(&source_id)
+                    .map(|connection| {
+                        (
+                            connection.parent_href.clone(),
+                            connection.parent_with_credentials,
+                            connection.parent_stream_id.take(),
+                        )
+                    })
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "parent EventSource reconnect",
+                            NativeWorkerFailureKind::Protocol,
+                            "reconnecting EventSource is no longer active",
+                        )
+                    })?;
+                let broker =
+                    parent_fetch_broker
+                        .as_mut()
+                        .ok_or_else(|| NativeEngineError::Worker {
+                            operation: "parent EventSource reconnect".into(),
+                            reason: "parent cookie and network authority is unavailable".into(),
+                        })?;
+                if let Some(stream_id) = old_stream_id {
+                    broker
+                        .close_parent_event_source(source_id, stream_id)
+                        .await?;
+                }
+                let reopened = broker
+                    .open_event_source(source_id, &href, with_credentials, last_event_id)
+                    .await?;
+                let connection = event_source_connections
+                    .get_mut(&source_id)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "parent EventSource reconnect",
+                            NativeWorkerFailureKind::Protocol,
+                            "reconnecting EventSource closed while its request was opening",
+                        )
+                    })?;
+                let command = match reopened {
+                    NativeParentEventSourceOpenResult::Opened(open) => {
+                        connection.parent_stream_id = Some(open.stream_id);
+                        NativeEventSourceCommand::Reopened {
+                            origin: open.origin,
+                            csp_violations: open.csp_violations,
+                        }
+                    }
+                    NativeParentEventSourceOpenResult::Failed {
+                        message,
+                        csp_violations,
+                    } => NativeEventSourceCommand::OpenFailed {
+                        message,
+                        csp_violations,
+                    },
+                };
+                connection.commands.send(command).await.map_err(|_| {
+                    NativeEngineError::worker_failure(
+                        "parent EventSource reconnect",
+                        NativeWorkerFailureKind::Transport,
+                        "EventSource parser task terminated before receiving its reconnect result",
+                    )
+                })?;
+                continue;
+            }
+            if matches!(&event, NativeEventSourceEvent::Close)
+                && let Some(connection) = event_source_connections.get_mut(&source_id)
+                && let Some(stream_id) = connection.parent_stream_id.take()
+            {
+                let broker =
+                    parent_fetch_broker
+                        .as_mut()
+                        .ok_or_else(|| NativeEngineError::Worker {
+                            operation: "parent EventSource close".into(),
+                            reason: "parent cookie and network authority is unavailable".into(),
+                        })?;
+                broker
+                    .close_parent_event_source(source_id, stream_id)
+                    .await?;
+            }
             if let NativeEventSourceEvent::Open { cookie_changes, .. } = &event
                 && !cookie_changes.is_empty()
             {
@@ -20325,7 +21541,9 @@ async fn resolve_script_fetches(
                 event_source_connections,
                 loader.as_deref(),
                 &current_url,
-            )?;
+                parent_fetch_broker.as_mut(),
+            )
+            .await?;
             let event_commands =
                 process_fetch_stream_commands(event_commands, fetch_stream_connections)?;
             let event_commands =
@@ -20379,7 +21597,9 @@ async fn resolve_script_fetches(
                 loader.as_deref(),
                 &current_url,
                 document_origin,
-            )?;
+                parent_fetch_broker.as_mut(),
+            )
+            .await?;
             pending.extend(fetch_commands(&event_commands)?);
             pending.extend(fetch_commands(&dynamic_fetches)?);
             pump_background_events |= dynamic_background;
@@ -20441,7 +21661,9 @@ async fn resolve_script_fetches(
             event_source_connections,
             loader.as_deref(),
             &current_url,
-        )?;
+            parent_fetch_broker.as_mut(),
+        )
+        .await?;
         let timer_commands =
             process_fetch_stream_commands(timer_commands, fetch_stream_connections)?;
         let timer_commands =
@@ -20494,7 +21716,9 @@ async fn resolve_script_fetches(
             loader.as_deref(),
             &current_url,
             document_origin,
-        )?;
+            parent_fetch_broker.as_mut(),
+        )
+        .await?;
         pending.extend(fetch_commands(&timer_commands)?);
         pending.extend(fetch_commands(&dynamic_fetches)?);
         pump_background_events |= dynamic_background;
@@ -21153,7 +22377,6 @@ mod tests {
     async fn refresh_health_detects_an_exited_content_worker() {
         let mut process = NativeContentProcess::spawn(
             None,
-            "test-writer",
             &[],
             NativeDialogControlPlane::default(),
             Arc::new(Mutex::new(Vec::new())),
@@ -21200,7 +22423,6 @@ mod tests {
         let control = NativeDialogControlPlane::for_modal_owner();
         let mut process = NativeContentProcess::spawn(
             None,
-            "test-writer",
             &[],
             control.clone(),
             Arc::new(Mutex::new(Vec::new())),
@@ -21315,7 +22537,6 @@ mod tests {
                 .unwrap();
         let mut process = NativeContentProcess::spawn(
             None,
-            "test-writer",
             &[],
             control.clone(),
             Arc::new(Mutex::new(Vec::new())),

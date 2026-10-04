@@ -127,7 +127,7 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
 - Process-backed `native_content_process_persists_service_worker_cache_across_restart` passed (1 passed; 906 filtered; 39.70 seconds), closing Slice 838's persistence gate.
 - Process-backed `native_service_worker_navigation_preload_sends_header_and_reuses_response` passed on the current broker signature (1 passed; 906 filtered; 36.50 seconds), verifying the configured header, navigation response reuse, referrer behavior, and following navigation.
 - Process-backed `native_service_worker_fetch_event_navigation_request_uses_parent_cookie_authority` passed on its final cleanup-adjusted rerun (1 passed; 906 filtered; 25.04 seconds). `fetch(event.request)` on a controlled navigation sends the parent's HttpOnly seed, accepts the parent's HttpOnly response-cookie rotation, and sends both on the next page Fetch; `document.cookie` stays empty while `cookies_async()` reads the parent jar.
-- Process-backed `native_service_worker_navigation_preload_does_not_delay_independent_timer_response` passed (1 passed; 906 filtered; 33.83 seconds). It verifies timer-delayed `respondWith()` with preload disabled and resolves an origin-scoped CacheStorage match before a held parent-brokered preload; navigation commits before preload release and the unused upstream socket closes. Parent cookie ownership is unchanged.
+- Process-backed `native_service_worker_navigation_preload_does_not_delay_independent_timer_response` passed (1 passed; 906 filtered; 33.70 seconds). It verifies timer-delayed `respondWith()` with preload disabled and resolves an origin-scoped CacheStorage match before a held parent-brokered preload; navigation commits before release and the unused socket closes. A seeded HttpOnly cookie remains invisible to `document.cookie` but is attached to the preload by the parent.
 - `cargo fmt --all -- --check`, release-documentation truth, documentation depth, TUI shortcut inventory, and `git diff --check` pass.
 - The response test proves headers are immutable and both the original and
   cloned response bodies remain readable. It also verifies the policy-reduced
@@ -168,9 +168,10 @@ network layer and expose their results through `FetchEvent.preloadResponse`.
   process-backed CacheStorage/timer regression above resolves an origin-scoped
   cache match, verifies the independent response commits, and confirms the
   unused parent request is cancelled. It passed (1 passed; 906 filtered;
-  33.83 seconds) on the product's 8 MiB resident-worker stack contract, not the
-  default Rust test-harness stack. Parent-owned cookie selection and persistence
-  remain unchanged.
+  33.70 seconds) on the product's 8 MiB resident-worker stack contract, not the
+  default Rust test-harness stack. It also verifies the parent attaches a
+  seeded HttpOnly cookie to the preload while `document.cookie` remains empty;
+  parent-owned cookie selection and persistence remain unchanged.
 - Process-backed non-GET and absent-listener eligibility controls, navigation
   cancellation, and response progress depending on network Fetches, streaming
   uploads, or other non-CacheStorage host commands remain open. The timer

@@ -72809,6 +72809,10 @@ async fn native_content_process_synchronizes_document_cookie_with_http_session()
             .iter()
             .any(|cookie| cookie.name == "imported" && cookie.http_only)
     );
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("session=one; theme=dark")
+    );
     engine.clear_cookies_async().await.unwrap();
     assert!(engine.cookies_async().await.unwrap().is_empty());
     engine.close_async().await.unwrap();

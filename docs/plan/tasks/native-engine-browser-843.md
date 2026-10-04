@@ -502,5 +502,16 @@ projection and existing native Fetch behavior.
   disk/profile boundary only: complete cookie profiles and changes are still
   sent to the child over IPC, and remaining direct child network paths still
   need to be brought under parent ownership.
+- Content-worker protocol 27 removes the parent-to-child full-profile set,
+  change, and clear commands. The parent now sends only an owner-checked,
+  URL-scoped script-visible cookie projection; page setter lines return to the
+  parent without mutating the child loader. Child-direct internal requests can
+  still produce cookie-change journals, so this narrows the authority boundary
+  but does not finish it. The process-backed
+  `native_content_process_synchronizes_document_cookie_with_http_session`
+  regression passed (1 passed; 36.21 seconds), covering initial and refreshed
+  projection, parent-applied script setters, hidden HttpOnly import, and clear.
+  The scoped native-engine check and rebuilt companion worker also passed with
+  existing DOM dead-code warnings.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

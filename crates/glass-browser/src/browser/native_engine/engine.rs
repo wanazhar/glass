@@ -2621,8 +2621,12 @@ impl NativeEngine {
         } else {
             let sync_result = async {
                 self.publish_external_cookie_changes(&cookie_changes)?;
+                let document_url = self.url.clone();
+                let document_cookie = self.loader.document_cookie(&document_url)?;
                 if let Some(process) = self.content_process.as_mut() {
-                    process.apply_cookie_changes(&cookie_changes, false).await?;
+                    process
+                        .sync_document_cookie_projection(&document_url, &document_cookie)
+                        .await?;
                 }
                 Ok(())
             }
@@ -3178,10 +3182,15 @@ impl NativeEngine {
         self.deliver_pending_external_storage_events().await?;
         self.reconcile_pending_content_cookie_changes("set parent cookie authority")?;
         self.persist_pending_loader_cookie_changes()?;
+        let mut loader = self.loader.clone();
+        loader.set_cookie_profiles(&profiles)?;
+        let document_cookie = loader.document_cookie(&self.url)?;
         if let Some(process) = self.content_process.as_mut() {
-            process.set_cookies(&profiles).await?;
+            process
+                .sync_document_cookie_projection(&self.url, &document_cookie)
+                .await?;
         }
-        self.loader.set_cookie_profiles(&profiles)?;
+        self.loader = loader;
         self.persist_local_web_storage()?;
         Ok(())
     }
@@ -3219,9 +3228,11 @@ impl NativeEngine {
         if !persist_profile {
             loader.take_cookie_changes();
         }
+        let document_url = self.url.clone();
+        let document_cookie = loader.document_cookie(&document_url)?;
         if let Some(process) = self.content_process.as_mut() {
             process
-                .apply_cookie_changes(changes, persist_profile)
+                .sync_document_cookie_projection(&document_url, &document_cookie)
                 .await?;
         }
         self.loader = loader;
@@ -3235,10 +3246,15 @@ impl NativeEngine {
         self.deliver_pending_external_storage_events().await?;
         self.reconcile_pending_content_cookie_changes("clear parent cookie authority")?;
         self.persist_pending_loader_cookie_changes()?;
+        let mut loader = self.loader.clone();
+        loader.clear_cookies();
+        let document_cookie = loader.document_cookie(&self.url)?;
         if let Some(process) = self.content_process.as_mut() {
-            process.clear_cookies().await?;
+            process
+                .sync_document_cookie_projection(&self.url, &document_cookie)
+                .await?;
         }
-        self.loader.clear_cookies();
+        self.loader = loader;
         let clear_changes = self.loader.take_cookie_changes();
         self.publish_external_cookie_changes(&clear_changes)?;
         let mut pending =
@@ -6493,6 +6509,12 @@ impl NativeEngine {
         let indexed_db_state = self.indexed_db.clone();
         let recovery_pending = self.storage_state_recovery_pending;
         let indexed_db_pending = self.indexed_db_state_delivery_pending;
+        let document_url = self.url.clone();
+        let document_cookie = if cookie_changes.is_empty() {
+            None
+        } else {
+            Some(self.loader.document_cookie(&document_url)?)
+        };
         if let Some(process) = self.content_process.as_mut() {
             if !process.refresh_health() {
                 self.pending_external_storage_events = events;
@@ -6511,8 +6533,10 @@ impl NativeEngine {
                         .sync_storage_state(&storage_state, &indexed_db_state)
                         .await?;
                 }
-                if !cookie_changes.is_empty() {
-                    process.apply_cookie_changes(&cookie_changes, false).await?;
+                if let Some(document_cookie) = document_cookie.as_deref() {
+                    process
+                        .sync_document_cookie_projection(&document_url, document_cookie)
+                        .await?;
                 }
                 process.sync_storage_events(&events).await
             }

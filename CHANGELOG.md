@@ -50,7 +50,12 @@ and intends to use [Semantic Versioning](https://semver.org/).
   Legacy combined profiles migrate before a content worker starts; the child
   loader no longer hydrates cookies from the shared Web Storage path, and its
   profile writes keep the cookie field empty. Full-cookie `set_cookies` IPC
-  mirroring and remaining direct child network paths are still open work.
+  and cookie-change sync commands are replaced with an owner- and URL-scoped,
+  script-visible `document.cookie` projection; script setter writes no longer
+  mutate the child loader. Child-generated changes from still-direct internal
+  network paths can still be journaled to the parent, so complete parent-only
+  network ownership remains open. This advances the content-worker protocol
+  to version 27.
 - Service Worker navigation preload now preserves NavigationPreloadManager
   identity across repeated page-bootstrap injection. Parent-brokered preloads
   use an owner-bound cancellation handshake: unfinished requests are cancelled
@@ -60,7 +65,8 @@ and intends to use [Semantic Versioning](https://semver.org/).
 - Native cookie enumeration now reads from the parent loader plus its pending
   process-cookie journal. The host applies child-reported mutations to the
   durable profile and owns import/clear persistence; the process no longer
-  returns a complete profile in response to API enumeration. Each explicit
+  returns a complete profile in response to API enumeration or receives a
+  complete profile/change batch from its parent. Each explicit
   page-script turn now receives a parent-computed, URL-scoped visible cookie
   projection and returns bounded owner-tagged setter writes—even when the turn
   makes no Fetch—for the parent to apply. Child-side full-profile mirroring,

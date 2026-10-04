@@ -104,8 +104,10 @@ The process-backed
 `native_content_process_module_worker_graph_uses_parent_cookie_authority`
 regression additionally verifies parent-owned HttpOnly-cookie sequencing
 across a module DedicatedWorker entry, static dependency, startup Fetch, and
-later Worker Fetch, while `document.cookie` remains empty. This is targeted
-coverage, not evidence that all content-process network classes are brokered.
+later Worker Fetch. Its message handler also performs a runtime import and
+nested import, with each parent-accepted HttpOnly cookie selected for the next
+request; `document.cookie` remains empty. This is targeted coverage, not
+evidence that all content-process network classes are brokered.
 The expanded process-backed
 `native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
 regression also checks its module entry and static dependency cookie sequence

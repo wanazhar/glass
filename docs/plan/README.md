@@ -10603,9 +10603,12 @@ The process-backed
 `native_content_process_module_worker_graph_uses_parent_cookie_authority`
 regression now covers a module DedicatedWorker's entry and static dependency,
 parent acceptance of each HttpOnly response cookie before the next request,
-and both startup and later message Fetches. All four HttpOnly values remain in
-the parent cookie API and out of `document.cookie` (1 passed; 907 filtered;
-19.60 seconds). This fills the module-worker graph test gap only; unbrokered
+and both startup and later message Fetches. All six HttpOnly values remain in
+the parent cookie API and out of `document.cookie`. Its later message handler
+also loads a runtime module and nested dependency; the parent-accepted response
+cookies are selected for the next request and later Fetch (1 passed; 908
+filtered; 20.17 seconds). This covers the DedicatedWorker module graph only;
+unbrokered
 HTTP(S) request classes remain unavailable under the fail-closed boundary.
 Local SharedWorker startup/connect Fetch and explicit page MessagePort Fetch
 now also use the owner-checked parent broker. The process-backed

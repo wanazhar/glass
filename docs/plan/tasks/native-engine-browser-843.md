@@ -707,17 +707,17 @@ projection and existing native Fetch behavior.
   behavioral ownership and Issue #40 remain incomplete.
 - The process-backed
   `native_content_process_module_worker_graph_uses_parent_cookie_authority`
-  regression passed (1 passed; 907 filtered; 19.60 seconds). It verifies that
+  regression passed (1 passed; 908 filtered; 20.17 seconds). It verifies that
   the parent sends the page's HttpOnly cookie to the module Worker entry,
   accepts the entry's HttpOnly response cookie before loading its static
-  dependency, accepts the dependency's cookie before the startup Fetch, and
-  sends all four accumulated HttpOnly cookies on a later Worker-message Fetch.
-  The parent cookie API retains all four values while `document.cookie` stays
-  empty. Scoped `cargo check` passed with existing dead-code warnings, and the
-  content-worker companion was rebuilt before the process regression. This
-  closes the DedicatedWorker module-graph coverage gap; the SharedWorker
-  module-graph regression is recorded below. Other uncovered HTTP(S) request
-  classes still fail closed and Slice 843 remains in progress.
+  dependency, accepts the dependency's cookie before the startup Fetch, then
+  brokers a runtime import and nested dependency during a Worker message. The
+  parent selects each accumulated cookie on the next request and the later
+  Worker Fetch; all six values stay HttpOnly in the parent jar and out of
+  `document.cookie`. Scoped `cargo check` passed with existing dead-code
+  warnings, and the content-worker companion was rebuilt before the process
+  regression. Other uncovered HTTP(S) request classes still fail closed and
+  Slice 843 remains in progress.
 - The expanded process-backed
   `native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
   regression passed (1 passed; 907 filtered; 21.50 seconds). Its module

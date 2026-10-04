@@ -218,6 +218,23 @@ impl NativeContentFetchBroker<'_> {
         fetch_id: u32,
         request: &NativeFetchRequest<'_>,
     ) -> Result<(Result<NativeFetchResponse, NativeEngineError>, String), NativeEngineError> {
+        self.fetch_inner(fetch_id, request, false).await
+    }
+
+    pub(crate) async fn fetch_for_captured_load(
+        &mut self,
+        fetch_id: u32,
+        request: &NativeFetchRequest<'_>,
+    ) -> Result<(Result<NativeFetchResponse, NativeEngineError>, String), NativeEngineError> {
+        self.fetch_inner(fetch_id, request, true).await
+    }
+
+    async fn fetch_inner(
+        &mut self,
+        fetch_id: u32,
+        request: &NativeFetchRequest<'_>,
+        captured_load_fetch: bool,
+    ) -> Result<(Result<NativeFetchResponse, NativeEngineError>, String), NativeEngineError> {
         let cookie_writes = self.take_cookie_writes()?;
         let page_meta_csp = (without_fragment(request.document_url)
             == without_fragment(&self.owner.document_url))
@@ -238,6 +255,7 @@ impl NativeContentFetchBroker<'_> {
                 "id": self.request_id,
                 "fetch_id": fetch_id,
                 "document_url": request.document_url,
+                "captured_load_fetch": captured_load_fetch,
                 "owner": self.owner,
                 "cookie_writes": cookie_writes,
                 "page_meta_csp": page_meta_csp,
@@ -4421,6 +4439,19 @@ impl NativeContentProcess {
                             })
                     })
                     .transpose()?;
+                let captured_load_fetch = response
+                    .get("captured_load_fetch")
+                    .map(|value| {
+                        value.as_bool().ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "content process parent Fetch broker",
+                                NativeWorkerFailureKind::Protocol,
+                                "captured-load Fetch marker must be boolean",
+                            )
+                        })
+                    })
+                    .transpose()?
+                    .unwrap_or(false);
                 let cookie_writes = if fetch_id.is_some() {
                     let owner_value = response.get("owner").ok_or_else(|| {
                         NativeEngineError::worker_failure(
@@ -4444,7 +4475,8 @@ impl NativeContentProcess {
                         || response.get("page_image_load").is_some()
                         || response.get("page_media_load").is_some()
                         || response.get("page_font_load").is_some()
-                        || response.get("worker_script_load").is_some();
+                        || response.get("worker_script_load").is_some()
+                        || captured_load_fetch;
                     if expected_owner
                         .as_ref()
                         .is_some_and(|expected_owner| expected_owner != &owner)
@@ -4552,7 +4584,10 @@ impl NativeContentProcess {
                             "parent Fetch request does not match the committed document",
                         ));
                     }
-                    if response.get("owner").is_some() || response.get("cookie_writes").is_some() {
+                    if response.get("owner").is_some()
+                        || response.get("cookie_writes").is_some()
+                        || captured_load_fetch
+                    {
                         return Err(NativeEngineError::worker_failure(
                             "content process parent Fetch broker",
                             NativeWorkerFailureKind::Protocol,

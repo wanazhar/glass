@@ -750,6 +750,7 @@ impl NativeServiceWorkerRegistry {
         import_script_counts: BTreeMap<String, usize>,
         module_graph: Option<NativeWorkerModuleGraph>,
         worker_referrer_policy: NativeFetchReferrerPolicy,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<NativeServiceWorker, NativeEngineError> {
         let worker_id = self.next_worker_id()?;
         let mut runtime = NativeJavaScriptRuntime::new_with_context_id(format!(
@@ -798,13 +799,15 @@ impl NativeServiceWorkerRegistry {
                 &worker.import_script_counts,
             )?
         };
-        let client_messages = settle_service_worker_cache_event(
+        let client_messages = settle_service_worker_cache_event_with_parent_fetch_broker(
             &mut worker,
             initial,
             loader,
             &mut self.cache_state,
             None,
             &mut self.pending_open_windows,
+            parent_fetch_broker.as_deref_mut(),
+            true,
         )
         .await?;
         self.enqueue_client_messages(client_messages)?;
@@ -868,6 +871,7 @@ impl NativeServiceWorkerRegistry {
             import_script_counts,
             module_graph,
             worker_referrer_policy,
+            parent_fetch_broker.as_deref_mut(),
         )
         .await
     }
@@ -876,6 +880,7 @@ impl NativeServiceWorkerRegistry {
         &mut self,
         worker: &mut NativeServiceWorker,
         loader: &mut NativeResourceLoader,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<(), NativeEngineError> {
         self.set_worker_client_view(worker)?;
         let install = worker.runtime.evaluate_service_worker_lifecycle(
@@ -884,13 +889,15 @@ impl NativeServiceWorkerRegistry {
             "install",
             worker.is_module,
         )?;
-        let client_messages = settle_service_worker_cache_event(
+        let client_messages = settle_service_worker_cache_event_with_parent_fetch_broker(
             worker,
             install,
             loader,
             &mut self.cache_state,
             None,
             &mut self.pending_open_windows,
+            parent_fetch_broker.as_deref_mut(),
+            true,
         )
         .await?;
         self.enqueue_client_messages(client_messages)
@@ -900,6 +907,7 @@ impl NativeServiceWorkerRegistry {
         &mut self,
         worker: &mut NativeServiceWorker,
         loader: &mut NativeResourceLoader,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<(), NativeEngineError> {
         self.set_worker_client_view(worker)?;
         let activate = worker.runtime.evaluate_service_worker_lifecycle(
@@ -908,13 +916,15 @@ impl NativeServiceWorkerRegistry {
             "activate",
             worker.is_module,
         )?;
-        let client_messages = settle_service_worker_cache_event(
+        let client_messages = settle_service_worker_cache_event_with_parent_fetch_broker(
             worker,
             activate,
             loader,
             &mut self.cache_state,
             None,
             &mut self.pending_open_windows,
+            parent_fetch_broker.as_deref_mut(),
+            true,
         )
         .await?;
         self.enqueue_client_messages(client_messages)
@@ -958,11 +968,14 @@ impl NativeServiceWorkerRegistry {
         &mut self,
         mut worker: NativeServiceWorker,
         loader: &mut NativeResourceLoader,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     ) -> Result<NativeServiceWorkerRegistrationState, NativeEngineError> {
         let scope = worker.scope.clone();
-        self.settle_worker_install(&mut worker, loader).await?;
+        self.settle_worker_install(&mut worker, loader, parent_fetch_broker.as_deref_mut())
+            .await?;
         if worker.skip_waiting_requested || !self.registrations.contains_key(&scope) {
-            self.settle_worker_activate(&mut worker, loader).await?;
+            self.settle_worker_activate(&mut worker, loader, parent_fetch_broker.as_deref_mut())
+                .await?;
             return self.commit_activated_worker(&scope, worker);
         }
         if let Some(previous_waiting) = self.waiting_workers.insert(scope.clone(), worker) {
@@ -1077,9 +1090,11 @@ impl NativeServiceWorkerRegistry {
                 import_script_counts,
                 module_graph,
                 worker_referrer_policy,
+                parent_fetch_broker.as_deref_mut(),
             )
             .await?;
-        self.install_worker(worker, loader).await
+        self.install_worker(worker, loader, parent_fetch_broker.as_deref_mut())
+            .await
     }
 
     fn remember_registration(&mut self, worker: &NativeServiceWorker) {
@@ -1295,9 +1310,11 @@ impl NativeServiceWorkerRegistry {
                 import_script_counts,
                 module_graph,
                 worker_referrer_policy,
+                parent_fetch_broker.as_deref_mut(),
             )
             .await?;
-        self.install_worker(worker, loader).await
+        self.install_worker(worker, loader, parent_fetch_broker.as_deref_mut())
+            .await
     }
 
     pub(crate) fn clear_page_message_port_routes(&mut self) {
@@ -1415,6 +1432,7 @@ impl NativeServiceWorkerRegistry {
                 None,
                 &mut self.pending_open_windows,
                 parent_fetch_broker.as_deref_mut(),
+                false,
             )
             .await?
         } else {
@@ -1429,6 +1447,7 @@ impl NativeServiceWorkerRegistry {
                 None,
                 &mut self.pending_open_windows,
                 parent_fetch_broker.as_deref_mut(),
+                false,
             )
             .await?
         };
@@ -2784,7 +2803,7 @@ impl NativeServiceWorkerRegistry {
         let Some(mut worker) = self.waiting_workers.remove(&scope) else {
             return Ok(());
         };
-        if let Err(error) = self.settle_worker_activate(&mut worker, loader).await {
+        if let Err(error) = self.settle_worker_activate(&mut worker, loader, None).await {
             self.waiting_workers.insert(scope, worker);
             return Err(error);
         }
@@ -3067,6 +3086,7 @@ async fn settle_service_worker_cache_event(
         _current_client_id,
         pending_open_windows,
         None,
+        false,
     )
     .await
 }
@@ -3079,6 +3099,7 @@ async fn settle_service_worker_cache_event_with_parent_fetch_broker<'broker>(
     _current_client_id: Option<&str>,
     pending_open_windows: &mut VecDeque<NativeServiceWorkerOpenWindowRequest>,
     mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'broker>>,
+    allow_captured_load_fetch: bool,
 ) -> Result<Vec<NativeServiceWorkerClientMessage>, NativeEngineError> {
     let mut pending = VecDeque::from(evaluation.commands);
     let mut value = evaluation.value;
@@ -3126,6 +3147,7 @@ async fn settle_service_worker_cache_event_with_parent_fetch_broker<'broker>(
             &mut awaiting,
             &mut value,
             parent_fetch_broker.as_deref_mut(),
+            allow_captured_load_fetch,
         )
         .await?
         {
@@ -3860,6 +3882,7 @@ async fn resolve_service_worker_fetch_command(
     awaiting: &mut bool,
     value: &mut Value,
     mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+    allow_captured_load_fetch: bool,
 ) -> Result<bool, NativeEngineError> {
     let Some(request) = prepare_service_worker_fetch_request(worker, command)? else {
         return Ok(false);
@@ -3893,10 +3916,16 @@ async fn resolve_service_worker_fetch_command(
                     timeout: request.timeout,
                     max_response_bytes: None,
                 };
-                parent_fetch_broker
-                    .fetch(request_id, &fetch_request)
-                    .await?
-                    .0
+                let parent_response = if allow_captured_load_fetch {
+                    parent_fetch_broker
+                        .fetch_for_captured_load(request_id, &fetch_request)
+                        .await?
+                } else {
+                    parent_fetch_broker
+                        .fetch(request_id, &fetch_request)
+                        .await?
+                };
+                parent_response.0
             }
             Err(error) => Err(error),
         }
@@ -4559,6 +4588,7 @@ async fn settle_service_worker_fetch_with_parent_fetch_broker<'broker>(
             &mut awaiting,
             &mut value,
             parent_fetch_broker.as_deref_mut(),
+            false,
         )
         .await?
         {

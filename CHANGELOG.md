@@ -167,6 +167,16 @@ and intends to use [Semantic Versioning](https://semver.org/).
   upload path buffers before network dispatch and does not retain
   socket-level upload backpressure; background work outside intercepted
   FetchEvents and other internal network paths remain child-side.
+  Parent-brokered Service Worker registration/update now retains the parent
+  Fetch broker through the worker source evaluation and `install`/`activate`
+  lifecycle settlements. The process-backed
+  `native_content_process_service_worker_lifecycle_fetches_use_parent_cookie_authority`
+  regression verifies the same-turn page cookie on the worker script and
+  lifecycle Fetches, an HttpOnly `Set-Cookie` from install on the activate
+  Fetch, and both accepted lifecycle cookies on the next page Fetch while
+  hidden from `document.cookie`. Captured-load Fetches still require the exact
+  active or in-flight document owner; navigation-time activation of an already
+  waiting worker and other background paths remain outside this checkpoint.
 - Native content-worker dialog IPC now uses one stdin reader to route dialog
   decisions separately from ordinary asynchronous requests.
 - Native event-pump shutdown now cancels an in-flight owner turn through a

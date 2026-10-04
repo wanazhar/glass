@@ -205,13 +205,16 @@ filtered; 36.50 seconds). The process-backed controlled-navigation
 `fetch(event.request)` regression also passes through the captured-load parent
 broker (1 passed; 906 filtered; 25.04 seconds): HttpOnly request and response
 cookies stay parent-owned, are reused on the following page request, and do
-not appear in `document.cookie`. The process-backed timer-response regression
-passes (1 passed; 906 filtered; 31.72 seconds), covering an asynchronous
-`respondWith()` with preload disabled and with its parent-brokered preload
-body held. Navigation commits before release, and the server observes the
-unused preload socket close. This fixes the earlier timer-progress failure;
-the regression uses Glass's 8 MiB resident-worker stack contract, not the
-default Rust test-harness stack. The scoped check and
+not appear in `document.cookie`. The process-backed CacheStorage/timer-response
+regression passes (1 passed; 906 filtered; 33.83 seconds), covering an
+asynchronous `respondWith()` with preload disabled and with its parent-brokered
+preload body held. The held-preload case first resolves a CacheStorage match
+and then waits on a timer; leading CacheStorage commands progress without
+borrowing the parent's network/cookie broker. Navigation commits before
+release, and the server observes the unused preload socket close. The parent
+remains the sole cookie jar owner. This fixes the earlier timer-progress
+failure; the regression uses Glass's 8 MiB resident-worker stack contract, not
+the default Rust test-harness stack. The scoped check and
 six socket-free navigation-preload tests pass, including the runtime test.
 The FetchEvent runtime separately returns an independent `respondWith()`
 response while a JavaScript-only `waitUntil()` promise remains pending and
@@ -219,9 +222,10 @@ retained by the worker. A bodyless native Fetch emitted by `waitUntil()` after
 that response settles is now scheduled as owned background work and resumes in
 the same worker realm. The content child also advances the earliest due
 DedicatedWorker, SharedWorker, or ServiceWorker timer while waiting for IPC,
-then persists loader/cache/cookie changes. Streaming uploads and Fetch
-commands encountered while the `respondWith()` response is still pending can
-still delay settlement. Slice 841 now provides an owner-pump path for
+then persists loader/cache/cookie changes. Streaming uploads, network Fetch
+commands, and other non-CacheStorage host commands encountered while the
+`respondWith()` response is still pending can still delay settlement. Slice
+841 now provides an owner-pump path for
 browser-facing effects from later lifetime callbacks; process-backed delivery
 remains unverified. The runtime now also stops later
 FetchEvent listeners after the first `respondWith()` call. `self.onfetch` is

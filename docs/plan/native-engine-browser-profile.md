@@ -635,7 +635,14 @@ active handler keeps its position, setting it to `null` removes it, and
 reactivation registers it again at the end. Calling `respondWith()` stops only
 later listeners in that sequence. The worker owner must retain and continue
 pending lifetime work, including native host commands, after returning the
-response. A fixture-backed registry regression verifies that a bodyless native
+response. While a navigation `respondWith()` remains pending alongside an
+in-flight preload, process FIFO-leading CacheStorage commands against the
+worker's origin-scoped CacheStorage and run their promise continuations without
+waiting for the parent network broker; stop at the first non-cache command and
+preserve the remaining FIFO order. This does not move cookie authority into the
+worker: the parent alone owns the cookie jar, selects request cookies, accepts
+response cookies, and brokers network Fetch/preload. A fixture-backed registry
+regression verifies that a bodyless native
 `fetch()` started by `waitUntil()` continues after an independent response
 settles and resolves its promise callback in the same worker realm. The content
 child multiplexes those fetch completions with incoming IPC, persists resulting
@@ -648,8 +655,9 @@ bounded effect-ready notification and owner-pump path that routes later
 browser-facing lifetime effects to their exact target and frame without waiting
 for a user request; process-backed delivery is not yet verified. Other
 page-facing worker messages remain queued until a parent response can carry
-them. Streaming upload commands and fetch commands encountered while the
-`respondWith()` response is still pending can still delay settlement.
+them. Streaming upload commands, network Fetch commands, and other
+non-CacheStorage host commands encountered while the `respondWith()` response
+is still pending can still delay settlement.
 Process-backed HTTP evidence, those remaining command paths, WPT, CI, and
 cross-platform validation remain completion gates for Slice 839.
 
@@ -667,16 +675,19 @@ HttpOnly request and response cookies stay parent-owned and are reused by a
 following page Fetch while remaining absent from `document.cookie`.
 The socket-free navigation-preload tests cover response cloning, immutable
 headers, the no-preload result, eligibility, and network errors. The
-process-backed timer-response regression now passes (1 passed; 906 filtered;
-31.72 seconds): it settles a delayed response with preload disabled, then
-settles another delayed response while an enabled parent-brokered preload is
-held, commits before release, and verifies the unused preload socket closes.
-The earlier timer-progress gap is fixed; this regression uses the product's
+process-backed CacheStorage/timer-response regression now passes (1 passed;
+906 filtered; 33.83 seconds): it settles a delayed response with preload
+disabled, then matches an origin-scoped cached response and settles it after a
+timer while an enabled parent-brokered preload is held. Navigation commits
+before release, and the unused preload socket closes. Leading CacheStorage
+commands progress in FIFO order; later non-cache commands remain deferred. The
+parent-only cookie authority is unchanged. The earlier timer-progress gap is
+fixed; this regression uses the product's
 8 MiB resident-worker stack contract, not the default Rust test-harness stack.
 Process-backed eligibility boundary controls,
-navigation cancellation, and response progress that depends on other pending
-host commands remain open, as do selected WPT evidence, remote CI, and
-cross-platform validation.
+navigation cancellation, and response progress that depends on pending network
+Fetches, streaming uploads, or other non-CacheStorage host commands remain
+open, as do selected WPT evidence, remote CI, and cross-platform validation.
 Navigation Preload is still incomplete until those integrations and remaining
 CI/WPT/platform evidence pass.
 

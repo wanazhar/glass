@@ -165,14 +165,16 @@ projection and existing native Fetch behavior.
   process-backed regression passed (1 passed; 23.46 seconds) and checks a
   same-turn setter before Fetch, initial and updated HttpOnly request cookies,
   the visible projection, and the next request.
-  This does not cover Fetch during initial document loading,
-  explicit-turn page/dedicated-worker upload streams (covered by later
-  checkpoints below), Service Worker-originated upload streams,
-  module/font destinations, Dedicated/SharedWorker module-graph process coverage, autonomous worker events,
-  independently delivered SharedWorker messages, or Service Worker internal
-  network requests, which still use the child loader. A later checkpoint below
-  now routes worker entry and classic imported scripts through the parent;
-  module-graph coverage remains outstanding.
+  At this page-Fetch checkpoint, its broker did not yet cover initial document
+  loading; explicit-turn page/dedicated-worker upload streams (covered by later
+  checkpoints below); Service Worker-originated upload streams; module/font
+  destinations; Dedicated/SharedWorker module-graph process coverage;
+  autonomous worker events; independently delivered SharedWorker messages; or
+  Service Worker internal network requests. Later checkpoints below route
+  selected request classes through the parent; remaining uncovered HTTP(S)
+  requests fail closed, and
+  module-graph cookie regressions are recorded near the end of this evidence
+  log.
   The broker currently buffers the bounded response before resolving Fetch;
   incremental network response streaming/backpressure remains outstanding.
 - After protocol version 23 added the parent media-resource path, the scoped
@@ -713,7 +715,18 @@ projection and existing native Fetch behavior.
   The parent cookie API retains all four values while `document.cookie` stays
   empty. Scoped `cargo check` passed with existing dead-code warnings, and the
   content-worker companion was rebuilt before the process regression. This
-  closes the initial module-worker graph coverage gap only; other uncovered
-  HTTP(S) request classes still fail closed and Slice 843 remains in progress.
+  closes the DedicatedWorker module-graph coverage gap; the SharedWorker
+  module-graph regression is recorded below. Other uncovered HTTP(S) request
+  classes still fail closed and Slice 843 remains in progress.
+- The expanded process-backed
+  `native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
+  regression passed (1 passed; 907 filtered; 21.18 seconds). Its module
+  SharedWorker entry sets an HttpOnly cookie that the parent selects for the
+  static dependency; that response's HttpOnly cookie is then selected for the
+  connect-time startup Fetch. The later MessagePort Fetch verifies both module
+  cookies remain parent-owned, while the existing `include`/`omit`, response
+  rotation/deletion, and script-visible cookie assertions still pass. This
+  adds process-backed SharedWorker graph coverage; uncovered HTTP(S) request
+  classes still fail closed and Slice 843 remains in progress.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

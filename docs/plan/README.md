@@ -10611,7 +10611,12 @@ Local SharedWorker startup/connect Fetch and explicit page MessagePort Fetch
 now also use the owner-checked parent broker. The process-backed
 `native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
 regression verifies HttpOnly selection and response-cookie updates across
-startup, `include`/`omit`, and a later MessagePort request. Standalone
+startup, `include`/`omit`, and a later MessagePort request. It now also uses a
+module SharedWorker entry with a static dependency: the parent accepts the
+entry's HttpOnly response cookie before the dependency request, then accepts
+the dependency cookie before startup Fetch. The extended process test passed
+(1 passed; 907 filtered; 21.18 seconds), including the later message Fetch and
+HttpOnly filtering from `document.cookie`. Standalone
 content-process autonomous WorkerTimer turns previously remained a
 direct-loader gap. Slice 843 now defers every autonomous content-process
 DedicatedWorker and ServiceWorker timer to an exact-owner script turn with the

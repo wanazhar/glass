@@ -184,9 +184,16 @@ request cookies, and accepts response-cookie changes. The worker's current
   `browser_owned_service_worker_timer_fetch_uses_parent_cookie_authority`
   regression passed (1 test; 22.89 seconds), verifying HttpOnly cookie
   selection, response-cookie rotation, and script-visible filtering across
-  two timer Fetches. Service Worker lifetime/background Fetch tasks,
-  FetchEvent-internal requests, and other internal network requests remain
-  direct child paths.
+  two timer Fetches. Non-awaited ordinary Fetches created by a controlled
+  FetchEvent in browser-coordinated mode now queue for parent brokering on the
+  next exact page-owner turn without delaying the independent `respondWith()`
+  result. The process-backed
+  `browser_owned_service_worker_lifetime_fetch_uses_parent_cookie_authority`
+  regression passed (1 test; 28.49 seconds), verifying HttpOnly cookie
+  selection and rotation through the parent and the following page Fetch.
+  Service Worker-originated upload streams, background work outside
+  intercepted FetchEvents, and other internal network requests remain direct
+  child paths.
   In browser-coordinated mode, due
   DedicatedWorker timer turns now wait for the exact context/frame owner pump
   and execute with that turn's parent Fetch broker; standalone `NativeEngine` keeps
@@ -197,9 +204,10 @@ request cookies, and accepts response-cookie changes. The worker's current
   responses and sent on later requests, a parent-accepted HttpOnly response
   update, the parent cookie API, and the script-visible projection.
   Browser-coordinated Service Worker timer callbacks now use the parent broker
-  on their page-owner script turn; lifetime/background Fetches,
-  FetchEvent-internal requests, and other out-of-band work remain outside this
-  subset. Parent brokering of
+  on their page-owner script turn; non-awaited standard FetchEvent Fetches also
+  queue to the parent on the next owner turn. Service Worker-originated upload
+  streams, background work outside intercepted FetchEvents, and other
+  out-of-band work remain outside this subset. Parent brokering of
   registration/update and restoration script loads remains a distinct path.
   Explicit-turn page-originated stream
 uploads to a controlled Service Worker are separately verified: its handler

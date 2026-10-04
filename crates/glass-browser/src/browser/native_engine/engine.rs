@@ -11823,6 +11823,176 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_owned_service_worker_lifetime_fetch_uses_parent_cookie_authority() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..4 {
+                let (mut stream, _) =
+                    tokio::time::timeout(std::time::Duration::from_secs(45), listener.accept())
+                        .await
+                        .expect("Service Worker lifetime Fetch request arrives")
+                        .unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 2048];
+                loop {
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&request).into_owned();
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("request includes a path")
+                    .to_owned();
+                let cookie = request
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim().to_owned());
+                let (headers, content_type, body) = match path.as_str() {
+                    "/page" => (
+                        concat!(
+                            "Set-Cookie: lifetime_visible=visible; Path=/; SameSite=Lax\r\n",
+                            "Set-Cookie: lifetime_secret=before; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        ),
+                        "text/html",
+                        "<script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>Service Worker lifetime cookie broker</main>",
+                    ),
+                    "/sw.js" => (
+                        "",
+                        "application/javascript",
+                        "self.addEventListener('install', event => event.waitUntil(self.skipWaiting())); self.addEventListener('activate', event => event.waitUntil(self.clients.claim())); self.addEventListener('fetch', event => { if (new URL(event.request.url).pathname === '/trigger') { event.respondWith(new Response('triggered')); event.waitUntil(fetch('/lifetime-first').then(response => response.text()).then(text => { self.__lifetimeResult = text; })); } });",
+                    ),
+                    "/lifetime-first" => (
+                        "Set-Cookie: lifetime_secret=after; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "text/plain",
+                        "lifetime completed",
+                    ),
+                    "/after" => ("", "text/plain", "after"),
+                    other => panic!("unexpected Service Worker lifetime request: {other}"),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                let observed = (path, cookie);
+                request_tx.send(observed.clone()).unwrap();
+                requests.push(observed);
+            }
+            requests
+        });
+
+        let config =
+            NativeEngineConfig::default().with_initial_url(format!("http://{address}/page"));
+        let mut engine = NativeEngine::new_with_browser_shared_workers(
+            config,
+            NativeDialogControlPlane::default(),
+        )
+        .unwrap();
+        engine.initialize_async().await.unwrap();
+        assert_eq!(
+            engine
+                .evaluate_async(
+                    "await registrationPromise.then(async registration => [registration.active.state, navigator.serviceWorker.controller !== null])",
+                )
+                .await
+                .unwrap(),
+            serde_json::json!(["activated", true])
+        );
+        assert_eq!(
+            engine
+                .evaluate_async("await fetch('/trigger').then(response => response.text())")
+                .await
+                .unwrap(),
+            "triggered"
+        );
+
+        let mut observed = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while !observed
+                .iter()
+                .any(|(path, _): &(String, Option<String>)| path == "/lifetime-first")
+            {
+                for notification in engine.take_async_effect_notifications().unwrap() {
+                    engine
+                        .dispatch_async_effect_notification(&notification)
+                        .await
+                        .unwrap();
+                }
+                while let Ok(request) = request_rx.try_recv() {
+                    observed.push(request);
+                }
+                if !observed
+                    .iter()
+                    .any(|(path, _): &(String, Option<String>)| path == "/lifetime-first")
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+        })
+        .await
+        .expect("the FetchEvent lifetime request is dispatched on a parent-owned turn");
+
+        let cookies = engine.cookies_async().await.unwrap();
+        let visible_cookies = engine.evaluate_async("document.cookie").await.unwrap();
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == "lifetime_secret" && cookie.value == "after")
+        );
+        assert!(
+            visible_cookies
+                .as_str()
+                .is_some_and(|value| value.contains("lifetime_visible=visible"))
+        );
+        assert!(
+            !visible_cookies
+                .as_str()
+                .is_some_and(|value| value.contains("lifetime_secret="))
+        );
+        assert_eq!(
+            engine
+                .evaluate_async("await fetch('/after').then(response => response.text())")
+                .await
+                .unwrap(),
+            "after"
+        );
+        engine.close_async().await.unwrap();
+        let requests = server.await.unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            ["/page", "/sw.js", "/lifetime-first", "/after"]
+        );
+        let cookie_for = |path: &str| {
+            requests
+                .iter()
+                .find(|(request_path, _)| request_path == path)
+                .and_then(|(_, cookie)| cookie.as_deref())
+                .unwrap_or_default()
+        };
+        assert!(cookie_for("/lifetime-first").contains("lifetime_secret=before"));
+        assert!(cookie_for("/after").contains("lifetime_secret=after"));
+    }
+
+    #[tokio::test]
     async fn beforeunload_prompt_holds_navigation_until_exact_user_decision() {
         let config = NativeEngineConfig::default()
             .with_fixture(

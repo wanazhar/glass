@@ -8704,9 +8704,16 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         reason: "content process has no resource loader".into(),
                     });
                 };
-                service_workers
-                    .resolve_lifetime_fetch_task(completion, loader)
-                    .await?;
+                match completion {
+                    NativeServiceWorkerFetchTaskResult::Completed(completion) => {
+                        service_workers
+                            .resolve_lifetime_fetch_task(completion, loader, None)
+                            .await?;
+                    }
+                    parent_request @ NativeServiceWorkerFetchTaskResult::ParentBrokered(_) => {
+                        service_workers.queue_parent_brokered_lifetime_fetch(parent_request)?;
+                    }
+                }
                 pending_message_port_messages.extend(service_workers.take_message_port_messages());
                 pending_service_worker_client_messages
                     .extend(service_workers.take_client_messages());
@@ -8741,7 +8748,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     &pending_external_service_worker_client_messages,
                     &pending_service_worker_open_windows,
                     &pending_lifetime_cookie_changes,
-                )?;
+                )? || service_workers
+                    .has_pending_parent_lifetime_fetches();
                 write_async_effects_ready(
                     &mut stdout,
                     has_pending_effects,
@@ -8842,7 +8850,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         &pending_external_service_worker_client_messages,
                         &pending_service_worker_open_windows,
                         &pending_lifetime_cookie_changes,
-                    )?;
+                    )?
+                    || service_workers.has_pending_parent_lifetime_fetches();
                 write_async_effects_ready(
                     &mut stdout,
                     has_pending_effects,
@@ -10436,6 +10445,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         page_meta_content_security_policies: loader
                             .document_meta_content_security_policies(&committed_url)?,
                     };
+                    service_workers
+                        .run_next_parent_brokered_lifetime_fetch(loader, &mut parent_fetch_broker)
+                        .await?;
                     service_workers
                         .run_due_timers_with_parent_fetch_broker(loader, &mut parent_fetch_broker)
                         .await?;
@@ -12077,7 +12089,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             &pending_external_service_worker_client_messages,
             &pending_service_worker_open_windows,
             &pending_lifetime_cookie_changes,
-        )?;
+        )? || service_workers.has_pending_parent_lifetime_fetches();
         write_value_frame(&mut stdout, &response).await?;
         write_async_effects_ready(
             &mut stdout,

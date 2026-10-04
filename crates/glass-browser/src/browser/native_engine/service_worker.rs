@@ -97,12 +97,24 @@ struct NativeServiceWorkerFetchContinuation {
     awaiting: bool,
 }
 
-pub(crate) struct NativeServiceWorkerFetchTaskResult {
+pub(crate) enum NativeServiceWorkerFetchTaskResult {
+    Completed(NativeServiceWorkerFetchTaskCompletion),
+    ParentBrokered(NativeServiceWorkerParentFetchTask),
+}
+
+pub(crate) struct NativeServiceWorkerFetchTaskCompletion {
     worker_id: u32,
     request_id: u32,
     fallback_url: String,
     payload: Value,
-    loader: NativeResourceLoader,
+    loader: Option<NativeResourceLoader>,
+}
+
+pub(crate) struct NativeServiceWorkerParentFetchTask {
+    worker_id: u32,
+    request_id: u32,
+    fallback_url: String,
+    request: NativeServiceWorkerFetchTaskRequest,
 }
 
 struct NativeServiceWorkerFetchTaskRequest {
@@ -206,6 +218,7 @@ pub(crate) struct NativeServiceWorkerRegistry {
     pending_client_messages: VecDeque<NativeServiceWorkerClientMessage>,
     pending_open_windows: VecDeque<NativeServiceWorkerOpenWindowRequest>,
     pending_fetches: BTreeMap<(u32, u32), NativeServiceWorkerFetchContinuation>,
+    pending_parent_lifetime_fetches: VecDeque<NativeServiceWorkerParentFetchTask>,
     lifetime_fetch_tasks: JoinSet<NativeServiceWorkerFetchTaskResult>,
     lifetime_fetch_abort_handles: BTreeMap<(u32, u32), AbortHandle>,
     completed_fetches: VecDeque<NativeServiceWorkerFetchCompletion>,
@@ -232,6 +245,7 @@ impl Default for NativeServiceWorkerRegistry {
             pending_client_messages: VecDeque::new(),
             pending_open_windows: VecDeque::new(),
             pending_fetches: BTreeMap::new(),
+            pending_parent_lifetime_fetches: VecDeque::new(),
             lifetime_fetch_tasks: JoinSet::new(),
             lifetime_fetch_abort_handles: BTreeMap::new(),
             completed_fetches: VecDeque::new(),
@@ -2477,6 +2491,10 @@ impl NativeServiceWorkerRegistry {
         !self.lifetime_fetch_tasks.is_empty()
     }
 
+    pub(crate) fn has_pending_parent_lifetime_fetches(&self) -> bool {
+        !self.pending_parent_lifetime_fetches.is_empty()
+    }
+
     pub(crate) async fn next_lifetime_fetch_task(
         &mut self,
     ) -> Result<Option<NativeServiceWorkerFetchTaskResult>, NativeEngineError> {
@@ -2486,8 +2504,16 @@ impl NativeServiceWorkerRegistry {
             };
             match result {
                 Ok(completion) => {
+                    let (worker_id, request_id) = match &completion {
+                        NativeServiceWorkerFetchTaskResult::Completed(completion) => {
+                            (completion.worker_id, completion.request_id)
+                        }
+                        NativeServiceWorkerFetchTaskResult::ParentBrokered(task) => {
+                            (task.worker_id, task.request_id)
+                        }
+                    };
                     self.lifetime_fetch_abort_handles
-                        .remove(&(completion.worker_id, completion.request_id));
+                        .remove(&(worker_id, request_id));
                     return Ok(Some(completion));
                 }
                 Err(error) if error.is_cancelled() => {
@@ -2506,12 +2532,105 @@ impl NativeServiceWorkerRegistry {
         }
     }
 
-    pub(crate) async fn resolve_lifetime_fetch_task(
+    pub(crate) fn queue_parent_brokered_lifetime_fetch(
         &mut self,
-        completion: NativeServiceWorkerFetchTaskResult,
-        loader: &mut NativeResourceLoader,
+        task: NativeServiceWorkerFetchTaskResult,
     ) -> Result<(), NativeEngineError> {
-        loader.merge_fetch_task_state(completion.loader)?;
+        let NativeServiceWorkerFetchTaskResult::ParentBrokered(task) = task else {
+            return Err(NativeEngineError::invalid(
+                "Service Worker parent Fetch queue",
+                "only parent-brokered Fetch tasks can be queued",
+            ));
+        };
+        if self.pending_parent_lifetime_fetches.len() >= MAX_NATIVE_EFFECTS {
+            return Err(NativeEngineError::limit(
+                "native pending Service Worker parent Fetch tasks",
+                MAX_NATIVE_EFFECTS,
+                self.pending_parent_lifetime_fetches.len().saturating_add(1),
+            ));
+        }
+        if self.pending_parent_lifetime_fetches.iter().any(|pending| {
+            (pending.worker_id, pending.request_id) == (task.worker_id, task.request_id)
+        }) {
+            return Err(NativeEngineError::invalid(
+                "Service Worker parent Fetch queue",
+                "request identifier is already queued",
+            ));
+        }
+        self.pending_parent_lifetime_fetches.push_back(task);
+        Ok(())
+    }
+
+    pub(crate) async fn run_next_parent_brokered_lifetime_fetch(
+        &mut self,
+        loader: &mut NativeResourceLoader,
+        parent_fetch_broker: &mut NativeContentFetchBroker<'_>,
+    ) -> Result<bool, NativeEngineError> {
+        let Some(task) = self.pending_parent_lifetime_fetches.pop_front() else {
+            return Ok(false);
+        };
+        let worker_url = self
+            .registrations
+            .values()
+            .chain(self.waiting_workers.values())
+            .find(|worker| worker.id == task.worker_id)
+            .map(|worker| worker.script_url.clone());
+        let Some(worker_url) = worker_url else {
+            return Ok(true);
+        };
+        let request = task.request;
+        let fetch_request = NativeFetchRequest {
+            document_url: &worker_url,
+            href: &request.href,
+            method: request.method,
+            body: request.body,
+            content_type: request.content_type,
+            request_headers: request.headers,
+            credentials: request.credentials,
+            credentials_mode: Some(request.credentials_mode),
+            referrer_url: request.referrer_url,
+            referrer_policy: request.referrer_policy,
+            cors_mode: request.cors_mode,
+            redirect_mode: request.redirect_mode,
+            cache_mode: request.cache_mode,
+            timeout: request.timeout,
+            max_response_bytes: None,
+        };
+        let response = parent_fetch_broker
+            .fetch(task.request_id, &fetch_request)
+            .await?
+            .0;
+        let payload = match response {
+            Ok(response) => service_worker_fetch_payload(response),
+            Err(error) => json!({
+                "error": error.to_string(),
+                "timeout": false,
+            }),
+        };
+        self.resolve_lifetime_fetch_task(
+            NativeServiceWorkerFetchTaskCompletion {
+                worker_id: task.worker_id,
+                request_id: task.request_id,
+                fallback_url: task.fallback_url,
+                payload,
+                loader: None,
+            },
+            loader,
+            Some(parent_fetch_broker),
+        )
+        .await?;
+        Ok(true)
+    }
+
+    pub(crate) async fn resolve_lifetime_fetch_task<'broker>(
+        &mut self,
+        completion: NativeServiceWorkerFetchTaskCompletion,
+        loader: &mut NativeResourceLoader,
+        mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'broker>>,
+    ) -> Result<(), NativeEngineError> {
+        if let Some(task_loader) = completion.loader {
+            loader.merge_fetch_task_state(task_loader)?;
+        }
         let scope = self
             .registrations
             .iter()
@@ -2542,7 +2661,7 @@ impl NativeServiceWorkerRegistry {
                 &completion.payload,
                 worker.is_module,
             )?;
-            let settlement = settle_service_worker_fetch(
+            let settlement = settle_service_worker_fetch_with_parent_fetch_broker(
                 worker,
                 loader,
                 evaluation,
@@ -2552,6 +2671,7 @@ impl NativeServiceWorkerRegistry {
                 &mut self.pending_open_windows,
                 &mut self.lifetime_fetch_tasks,
                 &mut self.lifetime_fetch_abort_handles,
+                parent_fetch_broker.as_deref_mut(),
             )
             .await?;
             let message_port_commands = worker.runtime.take_message_port_commands();
@@ -2572,7 +2692,7 @@ impl NativeServiceWorkerRegistry {
                 &completion.payload,
                 worker.is_module,
             )?;
-            let settlement = settle_service_worker_fetch(
+            let settlement = settle_service_worker_fetch_with_parent_fetch_broker(
                 worker,
                 loader,
                 evaluation,
@@ -2582,6 +2702,7 @@ impl NativeServiceWorkerRegistry {
                 &mut self.pending_open_windows,
                 &mut self.lifetime_fetch_tasks,
                 &mut self.lifetime_fetch_abort_handles,
+                parent_fetch_broker.as_deref_mut(),
             )
             .await?;
             let message_port_commands = worker.runtime.take_message_port_commands();
@@ -2893,6 +3014,8 @@ impl NativeServiceWorkerRegistry {
             .retain(|request| request.worker_id != worker_id);
         self.pending_fetches
             .retain(|(pending_worker_id, _), _| *pending_worker_id != worker_id);
+        self.pending_parent_lifetime_fetches
+            .retain(|task| task.worker_id != worker_id);
         self.completed_fetches
             .retain(|completion| completion.worker_id != worker_id);
         self.announced_open_windows
@@ -3552,6 +3675,7 @@ fn schedule_service_worker_lifetime_fetch(
     fallback_url: &str,
     tasks: &mut JoinSet<NativeServiceWorkerFetchTaskResult>,
     abort_handles: &mut BTreeMap<(u32, u32), AbortHandle>,
+    parent_broker_available: bool,
 ) -> Result<bool, NativeEngineError> {
     let Some(request) = prepare_service_worker_fetch_request(worker, command)? else {
         return Ok(false);
@@ -3575,19 +3699,31 @@ fn schedule_service_worker_lifetime_fetch(
     }
     let worker_id = request.worker_id;
     let request_id = request.request_id;
-    let worker_url = worker.script_url.clone();
     let fallback_url = fallback_url.to_owned();
-    let mut task_loader = loader.clone();
-    let abort = tasks.spawn(async move {
-        let payload = fetch_service_worker_request(&mut task_loader, &worker_url, request).await;
-        NativeServiceWorkerFetchTaskResult {
-            worker_id,
-            request_id,
-            fallback_url,
-            payload,
-            loader: task_loader,
-        }
-    });
+    let abort = if parent_broker_available {
+        tasks.spawn(async move {
+            NativeServiceWorkerFetchTaskResult::ParentBrokered(NativeServiceWorkerParentFetchTask {
+                worker_id,
+                request_id,
+                fallback_url,
+                request,
+            })
+        })
+    } else {
+        let worker_url = worker.script_url.clone();
+        let mut task_loader = loader.clone();
+        tasks.spawn(async move {
+            let payload =
+                fetch_service_worker_request(&mut task_loader, &worker_url, request).await;
+            NativeServiceWorkerFetchTaskResult::Completed(NativeServiceWorkerFetchTaskCompletion {
+                worker_id,
+                request_id,
+                fallback_url,
+                payload,
+                loader: Some(task_loader),
+            })
+        })
+    };
     abort_handles.insert(key, abort);
     Ok(true)
 }
@@ -4235,6 +4371,7 @@ async fn settle_service_worker_fetch_with_parent_fetch_broker<'broker>(
                 fallback_url,
                 lifetime_fetch_tasks,
                 lifetime_fetch_abort_handles,
+                parent_fetch_broker.is_some(),
             )? {
                 return Err(NativeEngineError::Worker {
                     operation: "schedule service worker lifetime fetch".into(),
@@ -4963,13 +5100,20 @@ mod navigation_preload_tests {
         assert_eq!(response_body, b"response is ready");
         assert_eq!(lifetime_fetch_tasks.len(), 1);
 
-        let completion = lifetime_fetch_tasks
+        let task = lifetime_fetch_tasks
             .join_next()
             .await
             .expect("lifetime fetch task remains owned")
             .expect("lifetime fetch task completes");
+        let NativeServiceWorkerFetchTaskResult::Completed(completion) = task else {
+            panic!("standalone lifetime fetch uses its local loader");
+        };
         loader
-            .merge_fetch_task_state(completion.loader)
+            .merge_fetch_task_state(
+                completion
+                    .loader
+                    .expect("local fetch completion retains loader state"),
+            )
             .expect("lifetime fetch state merges into the worker loader");
         let resolved = worker
             .runtime

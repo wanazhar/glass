@@ -46,11 +46,14 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- HTTP(S) document and worker network requests now fail closed instead of
-  falling back to a content-worker loader when the owner-bound parent cookie
-  broker is unavailable. This covers page subresources, CSS imports, page and
-  worker scripts, Fetch and uploads, and ServiceWorker Fetch/navigation
-  preload; local and non-network owner paths retain their local loaders.
+- Covered HTTP(S) requests initiated by the sandboxed content process select
+  the owner-checked parent cookie broker by resolved target, without requiring
+  an HTTP(S) owner URL. The content-process loader can no longer read or mutate
+  cookie state, import a parent cookie profile, or publish cookie changes; a
+  nonempty child cookie journal is rejected. Local-owner code continues using
+  the browser engine's parent loader directly, and local file, Blob, fixture,
+  and other non-network resources stay local. Remaining direct child network
+  paths still need parent-broker coverage to regain parent cookie semantics.
 - A ServiceWorker FetchEvent resumed after `clients.openWindow()` now keeps the
   parent-owned cookie broker across its pending continuation. The resumed
   request carries the parent's captured document owner over IPC, which the

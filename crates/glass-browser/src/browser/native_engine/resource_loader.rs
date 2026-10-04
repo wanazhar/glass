@@ -918,8 +918,9 @@ impl fmt::Debug for NativeResourceLoader {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeNetworkState {
+    cookie_authority_enabled: bool,
     cache: BTreeMap<String, NativeDocumentCacheEntry>,
     image_cache: BTreeMap<String, NativeImageCacheEntry>,
     stylesheet_cache: BTreeMap<String, NativeTextCacheEntry>,
@@ -931,6 +932,25 @@ struct NativeNetworkState {
     document_response_policy_headers: BTreeMap<String, Vec<(String, String)>>,
     document_referrer_policies: BTreeMap<String, NativeFetchReferrerPolicy>,
     preflight_cache: BTreeMap<String, Instant>,
+}
+
+impl Default for NativeNetworkState {
+    fn default() -> Self {
+        Self {
+            cookie_authority_enabled: true,
+            cache: BTreeMap::new(),
+            image_cache: BTreeMap::new(),
+            stylesheet_cache: BTreeMap::new(),
+            script_cache: BTreeMap::new(),
+            fetch_cache: BTreeMap::new(),
+            font_cache: BTreeMap::new(),
+            cookies: Vec::new(),
+            document_policies: BTreeMap::new(),
+            document_response_policy_headers: BTreeMap::new(),
+            document_referrer_policies: BTreeMap::new(),
+            preflight_cache: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2979,9 +2999,12 @@ impl NativeResourceLoader {
             allowed_file_roots,
             max_document_bytes,
             // The parent keeps the durable cookie jar. Content-process cookie
-            // state is only a temporary compatibility projection and must not
-            // be hydrated by opening the shared profile path.
-            network: NativeNetworkState::default(),
+            // state is disabled entirely: even an accidentally unbrokered
+            // request cannot read or create a transient child cookie.
+            network: NativeNetworkState {
+                cookie_authority_enabled: false,
+                ..NativeNetworkState::default()
+            },
             environment: NativeEnvironmentOverrides::default(),
             cookie_changes: Vec::new(),
             csp_violations: Vec::new(),
@@ -3140,6 +3163,13 @@ impl NativeResourceLoader {
         &mut self,
         mut task_loader: NativeResourceLoader,
     ) -> Result<(), NativeEngineError> {
+        if self.network.cookie_authority_enabled != task_loader.network.cookie_authority_enabled {
+            return Err(NativeEngineError::Worker {
+                operation: "merge resource-loader task state".into(),
+                reason: "request task crossed the parent/content-process cookie authority boundary"
+                    .into(),
+            });
+        }
         self.network
             .fetch_cache
             .extend(std::mem::take(&mut task_loader.network.fetch_cache));
@@ -4314,6 +4344,12 @@ impl NativeResourceLoader {
         &mut self,
         profiles: &[NativeCookieProfileEntry],
     ) -> Result<(), NativeEngineError> {
+        if !self.network.cookie_authority_enabled {
+            return Err(NativeEngineError::Worker {
+                operation: "install content-process cookies".into(),
+                reason: "cookie profiles are owned by the browser process".into(),
+            });
+        }
         if profiles.len() > MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
             return Err(NativeEngineError::limit(
                 "native cookie profile entries",
@@ -4358,6 +4394,12 @@ impl NativeResourceLoader {
         &mut self,
         profiles: &[NativeCookieProfileEntry],
     ) -> Result<(), NativeEngineError> {
+        if !self.network.cookie_authority_enabled {
+            return Err(NativeEngineError::Worker {
+                operation: "replace content-process cookies".into(),
+                reason: "cookie profiles are owned by the browser process".into(),
+            });
+        }
         if profiles.len() > MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
             return Err(NativeEngineError::limit(
                 "native cookie profile entries",
@@ -4386,6 +4428,12 @@ impl NativeResourceLoader {
         &mut self,
         changes: &[NativeCookieChange],
     ) -> Result<(), NativeEngineError> {
+        if !self.network.cookie_authority_enabled {
+            return Err(NativeEngineError::Worker {
+                operation: "apply content-process cookie changes".into(),
+                reason: "cookie changes must be applied by the browser process".into(),
+            });
+        }
         for change in changes {
             match &change.cookie {
                 Some(profile) => {
@@ -9877,6 +9925,9 @@ impl NativeNetworkState {
     }
 
     fn cookie_profile(&self) -> Vec<NativeCookieProfileEntry> {
+        if !self.cookie_authority_enabled {
+            return Vec::new();
+        }
         self.cookies
             .iter()
             .filter_map(NativeCookie::to_profile)
@@ -9904,6 +9955,9 @@ impl NativeNetworkState {
     }
 
     fn matching_cookies(&self, url: &Url, include_http_only: bool) -> Vec<&NativeCookie> {
+        if !self.cookie_authority_enabled {
+            return Vec::new();
+        }
         let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
             return Vec::new();
         };
@@ -9975,6 +10029,12 @@ impl NativeNetworkState {
         &mut self,
         cookie: NativeCookie,
     ) -> Result<Option<NativeCookieProfileEntry>, NativeEngineError> {
+        if !self.cookie_authority_enabled {
+            return Err(NativeEngineError::Worker {
+                operation: "install content-process cookies".into(),
+                reason: "cookie profiles are owned by the browser process".into(),
+            });
+        }
         let same_cookie = |candidate: &NativeCookie| {
             candidate.name == cookie.name
                 && candidate.domain == cookie.domain
@@ -9999,6 +10059,9 @@ impl NativeNetworkState {
     }
 
     fn remove_cookie(&mut self, name: &str, domain: &str, path: &str) -> bool {
+        if !self.cookie_authority_enabled {
+            return false;
+        }
         let before = self.cookies.len();
         self.cookies
             .retain(|cookie| cookie.name != name || cookie.domain != domain || cookie.path != path);
@@ -10006,6 +10069,9 @@ impl NativeNetworkState {
     }
 
     fn clear_cookies(&mut self, changes: &mut Vec<NativeCookieChange>) {
+        if !self.cookie_authority_enabled {
+            return;
+        }
         for cookie in self.cookies.drain(..) {
             changes.push(NativeCookieChange {
                 name: cookie.name,
@@ -10017,7 +10083,7 @@ impl NativeNetworkState {
     }
 
     fn store_cookie(&mut self, url: &Url, line: &str) -> Vec<NativeCookieChange> {
-        if line.len() > MAX_NATIVE_COOKIE_BYTES {
+        if !self.cookie_authority_enabled || line.len() > MAX_NATIVE_COOKIE_BYTES {
             return Vec::new();
         }
         let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
@@ -10692,7 +10758,7 @@ fn hex_value(value: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::super::javascript::{
-        NativeIndexedDbState, NativeWebStorageState, load_cookie_profile,
+        NativeCookieChange, NativeIndexedDbState, NativeWebStorageState, load_cookie_profile,
         migrate_cookie_profile_from_web_storage, save_web_storage_profile,
     };
     use super::{
@@ -11205,6 +11271,55 @@ mod tests {
             Some(&format!("sha256-{wrong_sha256}")),
             body
         ));
+    }
+
+    #[test]
+    fn content_process_loader_cannot_read_or_change_cookie_state() {
+        let mut loader = NativeResourceLoader::for_content_process(1024, None, &[]).unwrap();
+        let url = Url::parse("https://app.test/page").unwrap();
+
+        assert_eq!(
+            loader.network.cookie_header_for_request(
+                &url,
+                Some(&url),
+                false,
+                NativeNavigationMethod::Get,
+            ),
+            None
+        );
+        assert!(
+            loader
+                .network
+                .store_cookie(&url, "secret=child; HttpOnly; Path=/")
+                .is_empty()
+        );
+        loader
+            .set_document_cookie(url.as_str(), "visible=child; Path=/")
+            .unwrap();
+
+        assert_eq!(loader.document_cookie(url.as_str()).unwrap(), "");
+        assert!(loader.cookie_profile().is_empty());
+        assert!(loader.take_cookie_changes().is_empty());
+        let mut parent_loader = NativeResourceLoader::new(&NativeEngineConfig::default()).unwrap();
+        parent_loader
+            .set_document_cookie(url.as_str(), "parent=owned; Path=/")
+            .unwrap();
+        let parent_profile = parent_loader.cookie_profile();
+        assert_eq!(parent_profile.len(), 1);
+        assert!(loader.set_cookie_profiles(&parent_profile).is_err());
+        assert!(loader.replace_cookie_profiles(&parent_profile).is_err());
+        assert!(
+            loader
+                .apply_cookie_changes(&[NativeCookieChange {
+                    name: "secret".into(),
+                    domain: "app.test".into(),
+                    path: "/".into(),
+                    cookie: None,
+                }])
+                .is_err()
+        );
+        assert!(loader.merge_fetch_task_state(parent_loader).is_err());
+        assert!(loader.cookie_profile().is_empty());
     }
 
     #[test]

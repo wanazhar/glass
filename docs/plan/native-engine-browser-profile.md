@@ -107,6 +107,18 @@ applies the request's credentials mode and each redirect hop. If the parent
 broker is unavailable, the request fails explicitly; the child must not retry
 directly with a local jar. Cookie profiles and cookie-bearing storage files
 remain parent-only.
+Within the sandboxed content process, this rule is selected by the resolved
+HTTP(S) request target, not by the owner URL's scheme. Local-owner documents
+execute in the browser engine itself and use its parent loader directly; local
+file, Blob, fixture, and other non-network resources remain on their local
+resource paths.
+The sandboxed content-process loader has cookie authority disabled: it cannot
+read or create cookies, accept cookie profiles or change batches, or publish a
+nonempty cookie journal. The parent rejects a nonempty journal as a protocol
+violation. This closes the child-cookie-store path, but it does not complete
+request coverage: any remaining direct child HTTP(S) path currently lacks the
+parent jar's request-cookie matching and response `Set-Cookie` processing and
+must be moved behind the parent broker.
 User action mutations also carry the parent loader into the content-process
 turn, so newly created HTTP(S) stylesheets and their CSS imports/fonts, images,
 and media use the same owner-checked broker and response-cookie authority.
@@ -161,11 +173,12 @@ The process-backed
 regression verifies parent-selected HttpOnly cookies on the worker entry and
 startup Fetch, parent response-cookie rotation on a later Worker message turn,
 and the visible-only page projection.
-Outside the parent-brokered HTTP(S) owner turns, child-direct internal network
-paths can still populate transient child cookie state and emit bounded
-cookie-change journals to the parent, so the parent-only contract is not yet
-met; autonomous content-process worker timers are no longer among those direct
-paths. Page and dedicated Worker EventSource
+At the earlier checkpoint, child-direct internal network paths could populate
+transient child cookie state and emit bounded cookie-change journals;
+autonomous content-process worker timers were subsequently moved off those
+paths. The latest hardening disables child cookie state and rejects any
+nonempty journal, but network paths not yet covered by the parent broker still
+lack parent cookie semantics. Page and dedicated Worker EventSource
 responses use bounded chunks addressed by opaque stream IDs, and WebSocket frames use
 bounded message records addressed by opaque stream IDs; cookie headers and the
 full profile never cross IPC. Other direct child network paths remain outside
@@ -312,17 +325,20 @@ before dispatch.
 See the [Slice 842 task](tasks/native-engine-browser-842.md) and [Slice 843
 task](tasks/native-engine-browser-843.md).
 
-The latest Slice 843 checkpoint makes HTTP(S)-document network resource loads,
-page script/module loads, Worker and ServiceWorker script/Fetch paths, and
-page Fetch/font requests fail closed when their owner-bound parent broker is
-missing. This removes the content-loader retry from those network-owner paths;
-local and non-network documents keep their existing local loader behavior.
-Validation passed with the scoped native-engine check and explicit content
-worker build, plus process-backed parent-cookie tests for initial HTTP
-resources, mutation-created stylesheets/imports, ServiceWorker lifecycle
-Fetches, Worker message Fetch, and host nested ServiceWorker Fetch. Child
-transient jars and cookie-change journals still exist outside those brokered
-owner turns, so this does not complete the parent-only contract.
+The latest Slice 843 checkpoint makes covered HTTP(S) targets initiated by the
+sandboxed content process use the owner-bound parent broker regardless of the
+owner URL's scheme. A missing broker fails closed instead of retrying through
+the content loader. Local-owner documents execute in the browser engine and
+use its parent loader directly; local and non-network resource targets
+keep their local loader behavior. Validation passed with the scoped native-
+engine check and explicit content worker build, plus process-backed parent-
+cookie tests for initial HTTP resources, mutation-created stylesheets/imports,
+ServiceWorker lifecycle Fetches, Worker message Fetch, and host nested
+ServiceWorker Fetch. A unit regression covers target-based routing across
+network and local base URLs. The content-process loader now has cookie
+authority disabled, and any nonempty cookie journal is rejected. Remaining
+direct child HTTP(S) paths still need the parent broker for request-cookie
+matching and response-cookie acceptance, so behavioral parity is incomplete.
 
 ### Shared-profile cookie synchronization
 

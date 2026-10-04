@@ -126,9 +126,10 @@ regression passes (1 test; 21.17 seconds), verifying parser-script request
 cookies, visible projection refresh, and parent retention of HttpOnly response
 cookies. The `clients.openWindow`-resumed navigation regression also passes (1
 test; 34.25 seconds). Service Worker-provided navigation responses and other
-unbrokered initial resources remain child-side. The child no longer receives
-the full cookie profile; residual child-direct network paths can still create
-transient cookie state and journal updates. Issue #40 is still open.
+unbrokered initial resources remain child-side. The latest hardening disables
+cookie authority in that child loader and rejects any nonempty cookie journal;
+direct network paths still need parent-broker coverage for cookie semantics.
+Issue #40 remains open.
 
 CI runs the full native-engine feature suite on Linux and the socket-free
 `asynchronous_effect`, `async_effect`, and `dropping_runtime_backend` test
@@ -791,21 +792,29 @@ mutate the child's loader. Resumed ServiceWorker FetchEvent work after
 `clients.openWindow()` and nested Fetches dispatched during native host
 `fetch_async` interception are owner-checked and parent-brokered. The
 content-worker protocol is now version 33.
-Child-direct internal requests can still mutate a transient child jar and
-return bounded cookie-change journals to the parent. Slice 843 remains in
-progress to broker those remaining requests and remove child-generated cookie
-journal updates. See the [Slice 842 task](../plan/tasks/native-engine-browser-842.md),
+At the earlier protocol-33 checkpoint, child-direct internal requests could
+mutate a transient child jar and return bounded cookie-change journals to the
+parent. The latest hardening disables that authority and rejects nonempty
+journals; Slice 843 remains in progress to broker the remaining requests so
+they use the parent's cookie matching and response-cookie handling. See the
+[Slice 842 task](../plan/tasks/native-engine-browser-842.md),
 the [Slice 843 task](../plan/tasks/native-engine-browser-843.md), and the
 versioned [Glass Core Web Profile](../plan/native-engine-browser-profile.md#parent-owned-cookie-authority)
 for the complete boundary and acceptance checks.
 
-The latest Slice 843 checkpoint removes child-loader retries for network
-resources, page script/module loads, Fetch, Worker and ServiceWorker network
-operations owned by HTTP(S) documents. If the owner-bound broker is absent,
-these requests fail closed; local/non-network documents retain their local
-loader behavior. Scoped check/build and five process-backed parent-cookie
-regressions passed. Child transient cookie journals remain outside the covered
-brokered turns, so the parent-only cookie contract is still in progress.
+The latest Slice 843 checkpoint disables cookie authority in the sandboxed
+content-process loader: it cannot read or create cookies, install a parent
+profile, apply cookie changes, or publish a nonempty cookie journal. The
+parent rejects any such journal. Covered HTTP(S) targets select the
+owner-checked parent broker by resolved target, not by owner URL scheme, and
+fail closed if that broker is absent. Local-owner documents execute in the
+browser engine and use its parent loader directly; local file, Blob, fixture,
+and other non-network resources keep their local paths. Scoped check/build and
+five HTTP-owner process regressions passed, and unit regressions cover target
+classification and the child-loader authority boundary. Some internal child
+network paths are still not parent-brokered; they can no longer use cookies,
+so their request/response cookie behavior remains incomplete and Slice 843 is
+still in progress.
 
 ## HTML parser ownership
 
@@ -11090,7 +11099,7 @@ behaviors beyond bounded Document import-map registration.
 | effects | available | current revision and changed signal; bounded event metadata is Rust-only |
 | script | available | bounded QuickJS ECMAScript with a refreshed `window`/`document` snapshot, bounded inline/classic/module-root page-script loading and parser/lifecycle ordering, HTTP(S) static module graphs and invocation-driven dynamic imports with JSON options/type identity across page, dedicated/shared Worker, classic importScripts dependencies, and rooted-file owners, bounded due-time `setTimeout`/`setInterval` turns, policy-owned bounded GET, same-origin string-body POST, and bounded cross-origin simple/preflighted POST `fetch()` promises with independent text/json/blob/UTF-8 arrayBuffer/bytes response reads and bounded demand-driven transport-backed incremental `ReadableStream` response bodies split into 8 KiB chunks with one-part reader demand, reader lock/release/cancel, transport cancellation, and bounded per-branch clone queues, bounded response bodyUsed and clone ownership, bounded Request bodyUsed, clone ownership, static ReadableStream bodies, and text/json/blob/arrayBuffer/bytes/formData consumers for bounded URL-encoded and multipart bodies, and bounded underlying-source ReadableStream start/pull/cancel controllers with queue backpressure, bounded byte-source strategies and BYOB readers/controllers with partial-buffer delivery through Fetch and tee owners, a bounded read-only response Headers view with validated response names, duplicate-name combination, deterministic sorted iteration, same-origin/CORS-exposed filtering, and script-unreadable `Set-Cookie`, plus canonical HTTP `statusText` propagation, and raw bounded byte-preserving response payloads for response body variants and binary Blob slicing, bounded Blob/File construction from ArrayBuffer and typed-array parts, bounded raw-byte-backed Blob/File request bodies for Fetch and synchronous/asynchronous XHR, bounded mutable Fetch Headers records with live owner-backed iterators plus plain-object custom request headers with JavaScript/Rust validation, forbidden/internal-header protection, same-origin transfer, and sorted multi-header CORS preflight authorization with bounded positive-`Access-Control-Max-Age` caching, bounded Fetch `cors`/`no-cors`/`same-origin` mode policy with fail-closed same-origin and no-cors request checks plus opaque cross-origin no-cors response projection, bounded Fetch `follow`/`error`/`manual` redirect policy with `redirected` and filtered `opaqueredirect` response projection, direct text-backed Blob/File request bodies with normalized MIME propagation and bounded observable fetch AbortController/AbortSignal cancellation with static abort/timeout/any composition, bounded text-only `FormData(form)` construction, text-backed and raw-byte-backed Blob/File parts, and multipart bodies with Rust-owned form association plus bounded live owner-backed `entries()`/`keys()`/`values()`/`[Symbol.iterator]()` iterators, and bounded URLSearchParams construction from strings, records, pair arrays, and pair iterables, mutation, sorting, live entries/keys/values iteration, and URL-encoded bodies, plus bounded GET/POST `XMLHttpRequest` with string, text-backed, and raw-byte-backed Blob/File request bodies, bounded `arraybuffer`/`blob`/`json` response types, page XML MIME `responseXML`/`document` responses, and page and worker buffered upload `ProgressEvent` lifecycle, canonical case-insensitive response-type selection with state-gated mutation, bounded non-zero timeout with zero disabling the extra deadline, request-local abort/reset state, bounded `readystatechange`/`abort`/`timeout` callbacks, response-header validation/filtering/sorting, and stale-continuation suppression, bounded synchronous XHR for fixture and HTTP(S) page/worker owners with the existing loader policy and terminal lifecycle, bounded persistent WebSocket text/binary/Ping-Pong transport and EventSource/SSE stream transport with serialized open/message/error/close delivery, bounded classic/module service-worker registration, install/activate lifecycle, longest-scope navigation/Fetch interception, validated worker-generated responses, and page registration/controller state, from explicit evaluations and initial page scripts, typed click/form-submit/attribute/focus commands, persistent listener records, bounded Event/CustomEvent capture/target/bubble dispatch, cancelable click preflight, transactional type/input/change event re-entry, bounded common constraint validation for required/email/URL/length/numeric/date/month/time/datetime-local/pattern controls, bounded `validity`/`validationMessage`/`willValidate` snapshots with `checkValidity()`/`reportValidity()` and custom validity, submitter event metadata and successful-control serialization, bounded external form ownership, bounded multipart/text/plain form encodings and validated `formaction`/`formmethod`/`formenctype` overrides, bounded `readyState`/`readystatechange`/DOMContentLoaded/load phase ordering, form `novalidate`/`formnovalidate` bypass, top-level link/form navigation handoff, and relative HTTP(S)/same-document resolution; no live Web IDL identity, complete child-frame lifecycle/resource parity, beforeinput/composition, full JavaScript RegExp `v`-flag/Unicode-set and file constraint validation or picker/UI parity, full live `ValidityState` identity, private-network access, streaming FormData body parity, complete XHR/Streams Web IDL semantics, complete Fetch Streams/Web IDL semantics, invalid raw response-header bytes, response trailers, full WebSocket/EventSource Web IDL identity, bounded requestAnimationFrame/cancelAnimationFrame and requestIdleCallback/cancelIdleCallback delivery with scheduled-callback error isolation, autonomous rendering opportunities, task-source fairness, background page scheduling, module types other than JavaScript/JSON, complete module scheduling, dynamic registration beyond bounded Document import maps, or browser-wide complete page-loading parity |
 | capture | available | bounded PNG, JPEG, WebP, or PDF of the current logical page surface with viewport, clip, scale, full-page, and semantic element options; screenshot-containing evidence remains a separate image-bearing capture surface |
-| storage | partial | Parent owns the durable cookie profile and sends only an owner-checked, URL-scoped visible `document.cookie` projection; setter writes return to the parent. Host/page Fetch, selected dedicated-worker/Service Worker operations, and HTTP(S) stylesheet/import/font/image/media resources created by user-action mutations are parent-brokered. Child-direct network paths outside covered HTTP(S) owner turns can still maintain transient cookie state and return change journals, so complete parent-only request ownership is not yet met. Web Storage profile/event support and a bounded IndexedDB subset exist; full cookie-policy and IndexedDB parity remain open. See the [cookie authority contract](../plan/native-engine-browser-profile.md#parent-owned-cookie-authority) and [Slice 843 evidence](../plan/tasks/native-engine-browser-843.md). |
+| storage | partial | Parent owns durable cookies and sends only owner-checked, URL-scoped script-visible projections; setter writes return to the parent. The sandboxed content-process loader has no cookie authority and nonempty child journals are rejected. Covered HTTP(S) targets use the parent broker regardless of owner URL scheme; local-owner documents run in the browser engine with its parent loader, and local non-network resources remain local. Remaining direct child network paths therefore lack parent cookie semantics until brokered. Web Storage profile/event support and bounded IndexedDB exist; full cookie-policy and IndexedDB parity remain open. See the [cookie authority contract](../plan/native-engine-browser-profile.md#parent-owned-cookie-authority) and [Slice 843 evidence](../plan/tasks/native-engine-browser-843.md). |
 | prompts | partial | bounded alert/confirm/prompt metadata, FIFO pending state, `dialogOpen`, process-backed exact-ID modal continuation through opt-in Rust/resident-service controllers, terminal CLI/TUI, and standalone/persistent MCP, plus sticky-activation-gated top-level and bounded descendant-frame `beforeunload` handling with inherited sandboxed-modals checks and generic browser copy; in-process JavaScript modal realms and cross-platform certification remain open |
 | downloads | available | bounded HTTP(S) anchor `download` attributes queue a parent-owned transfer; runtime, CLI, and MCP complete the oldest queued download for the selected target into an existing directory with sanitized collision-free file creation, SHA-256 evidence, stable completion IDs, and bounded cancellation/listing; chooser UI, programmatic/object-URL downloads, streaming/progress, service-worker interception, and cross-target/frame parity remain open |
 

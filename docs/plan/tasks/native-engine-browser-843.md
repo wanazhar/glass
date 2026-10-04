@@ -640,5 +640,19 @@ projection and existing native Fetch behavior.
   existing standalone timer regressions passed again (2 passed; 1,690 filtered;
   42.15 seconds). This closes those event-dispatch routes only; remaining
   child-direct internal network classes remain in scope.
+- ServiceWorker FetchEvent continuations resumed after `clients.openWindow()`
+  now carry the parent's exact context/frame/generation/document URL over IPC.
+  The content process validates that captured owner against its committed
+  document, and the resumed settlement retains the parent Fetch broker rather
+  than falling back to its loader. Content-worker protocol is now version 32.
+  The expanded process-backed
+  `native_runtime_service_worker_fetch_open_window_resumes_navigation`
+  regression passed (1 passed; 904 filtered; 33.95 seconds), verifying the
+  resumed Fetch sends initial parent-owned HttpOnly cookies, its HttpOnly
+  response cookie is accepted into the parent jar and sent on a later page
+  request, and `document.cookie` does not expose it. Scoped `cargo check`
+  passed with existing dead-code warnings; the companion content worker was
+  explicitly rebuilt before the passing regression. Other child-direct internal
+  network paths remain open.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

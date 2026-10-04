@@ -10569,7 +10569,15 @@ same owner-checked broker. The
 regression passed (1 passed; 1,691 filtered; 25.87 seconds), verifying a
 message-event response cookie is stored by the parent and used on a later page
 request; HttpOnly remains excluded from the page projection. Other child-direct
-internal requests remain open in Slice 843.
+internal requests remain open in Slice 843. FetchEvent continuations suspended
+on `clients.openWindow()` now retain the parent broker across the resolution
+IPC, with the parent's exact context/frame/generation/document URL checked by
+the child. The expanded process-backed
+`native_runtime_service_worker_fetch_open_window_resumes_navigation` regression
+passed (1 passed; 904 filtered; 33.95 seconds), verifying the resumed request's
+HttpOnly cookie selection, parent response-cookie acceptance, follow-up page
+request, and `document.cookie` filtering. The content-worker protocol is now
+version 32; other child-direct internal requests remain open.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

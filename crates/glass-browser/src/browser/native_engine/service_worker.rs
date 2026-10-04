@@ -1688,6 +1688,7 @@ impl NativeServiceWorkerRegistry {
         worker_id: u32,
         request_id: u32,
         payload: &Value,
+        parent_fetch_broker: &mut NativeContentFetchBroker<'_>,
     ) -> Result<bool, NativeEngineError> {
         if worker_id == 0 || request_id == 0 {
             return Err(NativeEngineError::invalid(
@@ -1778,7 +1779,7 @@ impl NativeServiceWorkerRegistry {
                     .waiting_workers
                     .get_mut(&scope)
                     .expect("waiting service worker was retained");
-                settle_service_worker_fetch(
+                settle_service_worker_fetch_with_parent_fetch_broker(
                     worker,
                     loader,
                     evaluation,
@@ -1788,6 +1789,8 @@ impl NativeServiceWorkerRegistry {
                     &mut self.pending_open_windows,
                     &mut self.lifetime_fetch_tasks,
                     &mut self.lifetime_fetch_abort_handles,
+                    Some(&mut *parent_fetch_broker),
+                    false,
                 )
                 .await?
             } else {
@@ -1795,7 +1798,7 @@ impl NativeServiceWorkerRegistry {
                     .registrations
                     .get_mut(&scope)
                     .expect("active service worker was retained");
-                settle_service_worker_fetch(
+                settle_service_worker_fetch_with_parent_fetch_broker(
                     worker,
                     loader,
                     evaluation,
@@ -1805,6 +1808,8 @@ impl NativeServiceWorkerRegistry {
                     &mut self.pending_open_windows,
                     &mut self.lifetime_fetch_tasks,
                     &mut self.lifetime_fetch_abort_handles,
+                    Some(&mut *parent_fetch_broker),
+                    false,
                 )
                 .await?
             };

@@ -11487,6 +11487,8 @@ async fn native_runtime_service_worker_fetch_open_window_resumes_navigation_inne
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let observed_requests = Arc::new(Mutex::new(Vec::new()));
+    let server_observed_requests = Arc::clone(&observed_requests);
     let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
     let server = tokio::spawn(async move {
         loop {
@@ -11496,12 +11498,26 @@ async fn native_runtime_service_worker_fetch_open_window_resumes_navigation_inne
                     let (mut stream, _) = accepted.unwrap();
                     let request = read_http_request(&mut stream).await;
                     let path = request.split_whitespace().nth(1).unwrap_or_default();
-                    let (content_type, body) = match path {
+                    let cookie = request
+                        .lines()
+                        .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                        .and_then(|line| line.split_once(':'))
+                        .map(|(_, value)| value.trim().to_owned());
+                    server_observed_requests
+                        .lock()
+                        .await
+                        .push((path.to_owned(), cookie));
+                    let (headers, content_type, body) = match path {
                         "/register" => (
+                            concat!(
+                                "Set-Cookie: parent_session=initial; Path=/; SameSite=Lax\r\n",
+                                "Set-Cookie: parent_secret=initial-secret; HttpOnly; Path=/; SameSite=Lax\r\n",
+                            ),
                             "text/html",
                             "<!doctype html><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>register</main>",
                         ),
                         "/sw.js" => (
+                            "",
                             "application/javascript",
                             r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
@@ -11509,25 +11525,35 @@ self.addEventListener('fetch', event => {
   if (new URL(event.request.url).pathname === '/suspended') {
     event.respondWith((async () => {
       const client = await clients.openWindow('/opened');
-      return new Response('<!doctype html><html><body><main id="resumed">' + (client ? client.url : 'missing') + '</main></body></html>', {
+      const response = await fetch('/message-fetch', { credentials: 'include' });
+      const text = await response.text();
+      return new Response('<!doctype html><html><body><main id="resumed">' + (client ? client.url : 'missing') + ':' + text + '</main></body></html>', {
         headers: { 'Content-Type': 'text/html' },
       });
     })());
   }
 });"#,
                         ),
+                        "/message-fetch" => (
+                            "Set-Cookie: resumed_worker=parent-owned; HttpOnly; Path=/; SameSite=Lax\r\n",
+                            "text/plain",
+                            "resumed fetch response",
+                        ),
+                        "/after" => ("", "text/plain", "after"),
                         "/opened" => (
+                            "",
                             "text/html",
                             "<!doctype html><html><body><main>opened window</main></body></html>",
                         ),
                         "/suspended" => (
+                            "",
                             "text/plain",
                             "network fallback (service worker did not resume)",
                         ),
-                        _ => ("text/plain", "unexpected native service worker request"),
+                        _ => ("", "text/plain", "unexpected native service worker request"),
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     );
                     stream.write_all(response.as_bytes()).await.unwrap();
@@ -11564,10 +11590,29 @@ self.addEventListener('fetch', event => {
         resumed,
         serde_json::json!({
             "href": format!("http://{address}/suspended"),
-            "body": format!("http://{address}/opened"),
-            "html": format!("<html><head></head><body><main id=\"resumed\">http://{address}/opened</main></body></html>"),
+            "body": format!("http://{address}/opened:resumed fetch response"),
+            "html": format!("<html><head></head><body><main id=\"resumed\">http://{address}/opened:resumed fetch response</main></body></html>"),
         })
     );
+    assert_eq!(
+        session
+            .script("await fetch('/after').then(response => response.text())")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("after")
+    );
+    let visible_cookies = session.script("document.cookie").await.unwrap().value;
+    assert!(
+        !visible_cookies
+            .as_str()
+            .unwrap_or_default()
+            .contains("resumed_worker")
+    );
+    let cookies = session.native_cookies().await.unwrap();
+    assert!(cookies.iter().any(|cookie| {
+        cookie.name == "resumed_worker" && cookie.value == "parent-owned" && cookie.http_only
+    }));
     let targets = session.native_list_targets().await.unwrap();
     assert_eq!(targets.len(), 2);
     assert!(
@@ -11579,6 +11624,29 @@ self.addEventListener('fetch', event => {
     session.close().await.unwrap();
     let _ = shutdown_sender.send(());
     server.await.unwrap();
+    let requests = observed_requests.lock().await;
+    let resumed_fetch = requests
+        .iter()
+        .find(|(path, _)| path == "/message-fetch")
+        .expect("resumed ServiceWorker FetchEvent request should reach the server");
+    let resumed_cookie = resumed_fetch.1.as_deref().unwrap_or_default();
+    assert!(
+        resumed_cookie.contains("parent_session=initial"),
+        "{requests:?}"
+    );
+    assert!(resumed_cookie.contains("parent_secret=initial-secret"));
+    let followup_fetch = requests
+        .iter()
+        .find(|(path, _)| path == "/after")
+        .expect("follow-up page request should reach the server");
+    assert!(
+        followup_fetch
+            .1
+            .as_deref()
+            .unwrap_or_default()
+            .contains("resumed_worker=parent-owned"),
+        "{requests:?}"
+    );
 }
 
 #[tokio::test]

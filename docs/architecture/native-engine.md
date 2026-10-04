@@ -765,6 +765,12 @@ Synchronous page and Worker XHR block on a parent IPC round trip: pending
 script cookie writes are applied before the request, response cookies remain
 in the parent jar, and the child receives only the visible cookie projection.
 The sync-XHR path has no child-loader fallback.
+When a ServiceWorker FetchEvent suspends on `clients.openWindow()`, the resumed
+continuation also uses the parent Fetch broker. Its IPC carries the parent's
+captured document owner, which the child validates against its committed
+document before any resumed network request. The process-backed regression
+checks parent-owned HttpOnly request/response cookies and the later page
+request, while keeping the cookie out of `document.cookie`.
 Font and dynamic stylesheet requests outside parent-brokered script or
 user-action mutation operations, plus Service-Worker-provided navigation
 responses, Service Worker background work outside intercepted FetchEvents, and
@@ -776,7 +782,9 @@ and can update Web Storage, IndexedDB, CacheStorage, and Service Worker state
 there. Its loader no longer opens the cookie sidecar. Cookie import, updates,
 and clear now send only an owner-checked, URL-scoped visible projection; they do
 not send full cookie profiles/change batches, and script setter writes do not
-mutate the child's loader. The content-worker protocol is now version 31.
+mutate the child's loader. Resumed ServiceWorker FetchEvent work after
+`clients.openWindow()` is also owner-checked and parent-brokered. The
+content-worker protocol is now version 32.
 Child-direct internal requests can still mutate a transient child jar and
 return bounded cookie-change journals to the parent. Slice 843 remains in
 progress to broker those remaining requests and remove child-generated cookie

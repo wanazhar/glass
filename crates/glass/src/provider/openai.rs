@@ -155,9 +155,7 @@ impl Provider for OpenAiCompat {
         // usually tolerated, but not universally, so we gate on the model id.
         if let Some(budget) = req.reasoning {
             let m = self.model.to_ascii_lowercase();
-            if m.starts_with("gpt-5") {
-                body["reasoning_effort"] = json!(effort_label(budget));
-            } else if m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4") {
+            if m.starts_with("gpt-5") || m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4") {
                 body["reasoning_effort"] = json!(effort_label(budget));
             } else if m.contains("glm") || m.contains("qwen3") || m.contains("deepseek") {
                 body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });

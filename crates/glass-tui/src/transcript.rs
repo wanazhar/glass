@@ -209,7 +209,7 @@ pub fn draw(
         .highlight_style(Style::new().bg(ratatui::style::Color::Rgb(38, 38, 38)))
         .scroll_padding(1);
 
-    let mut state = transcript.state.clone();
+    let mut state = transcript.state;
     frame.render_stateful_widget(list, chunks[0], &mut state);
 
     let sb_len = transcript.entries.len();

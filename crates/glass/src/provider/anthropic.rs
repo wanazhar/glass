@@ -253,18 +253,16 @@ impl<R: Read> Iterator for StreamEvents<R> {
                                 self.input_fragments.retain(|(i, _)| *i != index);
                             }
                             "text" => {
-                                if let Some(t) = block.get("text").and_then(Value::as_str) {
-                                    if !t.is_empty() {
+                                if let Some(t) = block.get("text").and_then(Value::as_str)
+                                    && !t.is_empty() {
                                         return Some(Event::Text(t.to_string()));
                                     }
-                                }
                             }
                             "thinking" => {
-                                if let Some(t) = block.get("thinking").and_then(Value::as_str) {
-                                    if !t.is_empty() {
+                                if let Some(t) = block.get("thinking").and_then(Value::as_str)
+                                    && !t.is_empty() {
                                         return Some(Event::Reasoning(t.to_string()));
                                     }
-                                }
                             }
                             _ => {}
                         }
@@ -275,18 +273,16 @@ impl<R: Read> Iterator for StreamEvents<R> {
                         let dtype = delta.get("type").and_then(Value::as_str).unwrap_or("");
                         match dtype {
                             "text_delta" => {
-                                if let Some(t) = delta.get("text").and_then(Value::as_str) {
-                                    if !t.is_empty() {
+                                if let Some(t) = delta.get("text").and_then(Value::as_str)
+                                    && !t.is_empty() {
                                         return Some(Event::Text(t.to_string()));
                                     }
-                                }
                             }
                             "thinking_delta" => {
-                                if let Some(t) = delta.get("thinking").and_then(Value::as_str) {
-                                    if !t.is_empty() {
+                                if let Some(t) = delta.get("thinking").and_then(Value::as_str)
+                                    && !t.is_empty() {
                                         return Some(Event::Reasoning(t.to_string()));
                                     }
-                                }
                             }
                             "input_json_delta" => {
                                 if let Some(frag) = delta.get("partial_json").and_then(Value::as_str) {
@@ -298,8 +294,8 @@ impl<R: Read> Iterator for StreamEvents<R> {
                     }
                     "content_block_stop" => {
                         let index = v.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-                        if let Some((idx, id, name)) = self.pending_tool.take() {
-                            if idx == index {
+                        if let Some((idx, id, name)) = self.pending_tool.take()
+                            && idx == index {
                                 let args: String = self
                                     .input_fragments
                                     .iter()
@@ -308,7 +304,6 @@ impl<R: Read> Iterator for StreamEvents<R> {
                                     .collect();
                                 return Some(Event::ToolCall { id, name, arguments: args });
                             }
-                        }
                     }
                     "message_delta" => {
                         let usage = v.get("usage").cloned();

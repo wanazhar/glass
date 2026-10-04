@@ -195,7 +195,8 @@ impl Session {
                 Some((m, e.path()))
             })
             .collect();
-        candidates.sort_by(|a, b| b.0.cmp(&a.0));
+        // Newest first, so `--last` and the resume default pick the latest.
+        candidates.sort_by_key(|(mtime, _)| std::cmp::Reverse(*mtime));
         candidates.into_iter().next().map(|(_, p)| p)
     }
 

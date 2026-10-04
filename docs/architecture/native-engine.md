@@ -726,6 +726,10 @@ handshake `Cookie` and response `Set-Cookie` inside its cookie authority; the
 child receives only an opaque stream ID, bounded frames, and lifecycle events.
 Worker requests retain their worker-script initiator URL, with the captured
 page owner scoping each IPC stream.
+Synchronous page and Worker XHR block on a parent IPC round trip: pending
+script cookie writes are applied before the request, response cookies remain
+in the parent jar, and the child receives only the visible cookie projection.
+The sync-XHR path has no child-loader fallback.
 Font requests without an active parent broker and dynamic stylesheet requests
 without an active parent-brokered page-script turn, plus Service-Worker-provided
 navigation responses, Service Worker background work outside intercepted
@@ -737,7 +741,7 @@ and can update Web Storage, IndexedDB, CacheStorage, and Service Worker state
 there. Its loader no longer opens the cookie sidecar. Cookie import, updates,
 and clear now send only an owner-checked, URL-scoped visible projection; they do
 not send full cookie profiles/change batches, and script setter writes do not
-mutate the child's loader. The content-worker protocol is now version 30.
+mutate the child's loader. The content-worker protocol is now version 31.
 Child-direct internal requests can still mutate a transient child jar and
 return bounded cookie-change journals to the parent. Slice 843 remains in
 progress to broker those remaining requests and remove child-generated cookie

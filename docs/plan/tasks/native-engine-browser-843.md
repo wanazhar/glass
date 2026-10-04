@@ -549,5 +549,15 @@ projection and existing native Fetch behavior.
   handshake cookies and parent-persisted WebSocket response cookies. The page
   ordinary-turn background-delivery regression also passed (1 passed; 902
   filtered; 30.11 seconds).
+- Content-worker protocol 31 routes synchronous page and Worker XHR through a
+  blocking parent IPC round trip. The parent applies pending script cookie
+  writes before the request, selects request cookies, accepts response
+  `Set-Cookie`, and returns the response with only the URL-scoped visible
+  cookie projection. The child has no local-loader fallback for this path.
+  Focused `cargo check` passed. The process-backed
+  `native_content_process_synchronous_xhr_uses_parent_cookie_authority`
+  regression passed (1 passed; 903 filtered; 21.41 seconds), covering page and
+  Worker XHR, a pending script setter, HttpOnly request/response cookies,
+  same-name response-cookie rotation, and later requests. Formatting passed.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

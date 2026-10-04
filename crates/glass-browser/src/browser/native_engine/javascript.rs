@@ -33,8 +33,8 @@ use super::html_parser::{
     parse_fragment_with_limits as parse_html5_fragment,
 };
 use super::interaction::{
-    MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FORM_BODY_BYTES, MAX_NATIVE_SCRIPT_COMMAND_BYTES,
-    NativeEventKind, validate_native_key,
+    MAX_NATIVE_EFFECTS, MAX_NATIVE_FILE_BYTES, MAX_NATIVE_FORM_BODY_BYTES,
+    MAX_NATIVE_SCRIPT_COMMAND_BYTES, NativeEventKind, validate_native_key,
 };
 use super::layout::NativePoint;
 use super::module_import_map::NativeModuleImportMap;
@@ -74,7 +74,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -14067,6 +14067,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     pending_storage_events: Arc<Mutex<Vec<NativeStorageEvent>>>,
     cookie: Arc<Mutex<String>>,
     cookie_updates: Arc<Mutex<Vec<String>>>,
+    parent_brokered_cookie_updates: Arc<Mutex<VecDeque<String>>>,
     unhandled_promise_rejections: Arc<Mutex<NativeUnhandledPromiseRejections>>,
     dialog_events: Arc<Mutex<Vec<NativeDialog>>>,
     dialog_handler: Arc<Mutex<Option<NativeDialogHandler>>>,
@@ -14258,6 +14259,7 @@ impl NativeJavaScriptRuntime {
             pending_storage_events: Arc::new(Mutex::new(Vec::new())),
             cookie: Arc::new(Mutex::new(String::new())),
             cookie_updates: Arc::new(Mutex::new(Vec::new())),
+            parent_brokered_cookie_updates: Arc::new(Mutex::new(VecDeque::new())),
             unhandled_promise_rejections,
             dialog_events: Arc::new(Mutex::new(Vec::new())),
             dialog_handler,
@@ -14372,10 +14374,9 @@ impl NativeJavaScriptRuntime {
         }
     }
 
-    /// Give the synchronous XHR host call a bounded snapshot of the owner's
-    /// loader. The snapshot is returned through `take_sync_xhr_loader` after a
-    /// turn so cookies, cache validators, and CSP observations can be merged
-    /// by the process that owns the live loader.
+    /// Give standalone synchronous XHR a bounded loader snapshot. A content
+    /// worker installs a parent broker instead, so its XHR never uses this
+    /// child-local copy.
     pub(crate) fn set_sync_xhr_loader(&self, loader: &NativeResourceLoader) {
         self.sync_xhr_loader_used.store(false, Ordering::Release);
         if let Ok(mut current) = self.sync_xhr_loader.lock() {
@@ -14808,10 +14809,23 @@ impl NativeJavaScriptRuntime {
     }
 
     pub(crate) fn take_cookie_updates(&self) -> Vec<String> {
-        self.cookie_updates
+        let updates = self
+            .cookie_updates
             .lock()
             .map(|mut updates| std::mem::take(&mut *updates))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let Ok(mut brokered) = self.parent_brokered_cookie_updates.lock() else {
+            return updates;
+        };
+        let mut unbrokered = Vec::with_capacity(updates.len());
+        for update in updates {
+            if brokered.front().is_some_and(|value| value == &update) {
+                brokered.pop_front();
+            } else {
+                unbrokered.push(update);
+            }
+        }
+        unbrokered
     }
 
     pub(crate) fn take_dialog_events(&self) -> Vec<NativeDialog> {
@@ -16670,6 +16684,9 @@ impl NativeJavaScriptRuntime {
                 ctx.clone(),
                 Arc::clone(&self.sync_xhr_loader),
                 Arc::clone(&self.sync_xhr_loader_used),
+                Arc::clone(&self.cookie),
+                Arc::clone(&self.cookie_updates),
+                Arc::clone(&self.parent_brokered_cookie_updates),
             )?;
             install_native_local_font_source(ctx.clone())?;
             install_native_url_source(ctx.clone())?;
@@ -17328,6 +17345,9 @@ impl NativeJavaScriptRuntime {
                 ctx.clone(),
                 Arc::clone(&self.sync_xhr_loader),
                 Arc::clone(&self.sync_xhr_loader_used),
+                Arc::clone(&self.cookie),
+                Arc::clone(&self.cookie_updates),
+                Arc::clone(&self.parent_brokered_cookie_updates),
             )?;
             install_native_url_source(ctx.clone())?;
             ctx.eval::<(), _>(bootstrap.as_str())
@@ -18461,6 +18481,9 @@ impl NativeJavaScriptRuntime {
                 ctx.clone(),
                 Arc::clone(&self.sync_xhr_loader),
                 Arc::clone(&self.sync_xhr_loader_used),
+                Arc::clone(&self.cookie),
+                Arc::clone(&self.cookie_updates),
+                Arc::clone(&self.parent_brokered_cookie_updates),
             )?;
             install_native_url_source(ctx.clone())?;
             ctx.eval::<(), _>(bootstrap.as_str())
@@ -19490,6 +19513,24 @@ struct NativeSyncXhrRequest {
     timeout_ms: Option<u32>,
     #[serde(rename = "referrerPolicy", default)]
     referrer_policy: Option<String>,
+    #[serde(rename = "cookieWrites", default)]
+    cookie_writes: Vec<String>,
+}
+
+pub(crate) type NativeSyncXhrParentBroker =
+    Arc<dyn Fn(&str, &[String]) -> Result<serde_json::Value, NativeEngineError> + Send + Sync>;
+
+static NATIVE_SYNC_XHR_PARENT_BROKER: OnceLock<NativeSyncXhrParentBroker> = OnceLock::new();
+
+pub(crate) fn install_native_sync_xhr_parent_broker(
+    broker: NativeSyncXhrParentBroker,
+) -> Result<(), NativeEngineError> {
+    NATIVE_SYNC_XHR_PARENT_BROKER
+        .set(broker)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: "install parent synchronous XHR broker".into(),
+            reason: "a parent broker is already installed for this content process".into(),
+        })
 }
 
 fn sync_xhr_error_payload(error: &NativeEngineError) -> serde_json::Value {
@@ -19502,15 +19543,18 @@ fn sync_xhr_error_payload(error: &NativeEngineError) -> serde_json::Value {
     })
 }
 
-/// Execute one synchronous XHR without creating a second HTTP policy owner.
-/// QuickJS cannot await from a synchronous host callback, so the existing
-/// async loader runs on a short-lived current-thread Tokio runtime on a
-/// dedicated OS thread. The loader snapshot comes back with the response so
-/// the owning browser/content process can merge observable state afterward.
+/// Execute one synchronous XHR through the owning loader when used by a
+/// standalone native realm. Content workers install a parent broker and do
+/// not use this local network path.
 fn run_native_sync_xhr(
     mut loader: NativeResourceLoader,
     request: NativeSyncXhrRequest,
 ) -> (NativeResourceLoader, serde_json::Value) {
+    for cookie_write in &request.cookie_writes {
+        if let Err(error) = loader.set_document_cookie(&request.document_url, cookie_write) {
+            return (loader, sync_xhr_error_payload(&error));
+        }
+    }
     let method = match NativeFetchMethod::from_fetch_method(&request.method) {
         Ok(method) => method,
         Err(error) => return (loader, sync_xhr_error_payload(&error)),
@@ -19579,6 +19623,9 @@ fn install_native_sync_xhr_source<'js>(
     ctx: rquickjs::Ctx<'js>,
     loader_slot: Arc<Mutex<Option<NativeResourceLoader>>>,
     loader_used: Arc<AtomicBool>,
+    cookie_state: Arc<Mutex<String>>,
+    cookie_updates: Arc<Mutex<Vec<String>>>,
+    parent_brokered_cookie_updates: Arc<Mutex<VecDeque<String>>>,
 ) -> Result<(), NativeEngineError> {
     let source = Function::new(
         ctx.clone(),
@@ -19588,6 +19635,50 @@ fn install_native_sync_xhr_source<'js>(
             }
             let request: NativeSyncXhrRequest =
                 serde_json::from_str(&encoded).map_err(|_| Error::Unknown)?;
+            if let Some(parent_broker) = NATIVE_SYNC_XHR_PARENT_BROKER.get().cloned() {
+                let cookie_writes =
+                    cookie_updates
+                        .lock()
+                        .map_err(|_| Error::Unknown)
+                        .map(|mut updates| {
+                            let mut writes = std::mem::take(&mut *updates);
+                            writes.extend(request.cookie_writes.iter().cloned());
+                            writes
+                        })?;
+                let marker_count = {
+                    let brokered = parent_brokered_cookie_updates
+                        .lock()
+                        .map_err(|_| Error::Unknown)?;
+                    brokered.len().saturating_add(request.cookie_writes.len())
+                };
+                if marker_count > MAX_NATIVE_EFFECTS
+                    || request.cookie_writes.len() > MAX_NATIVE_EFFECTS
+                {
+                    return Err(Error::Unknown);
+                }
+                let js_cookie_writes = request.cookie_writes.clone();
+                let broker_result = thread::spawn(move || parent_broker(&encoded, &cookie_writes))
+                    .join()
+                    .map_err(|_| Error::Unknown)?;
+                let (payload, parent_applied_writes) = match broker_result {
+                    Ok(payload) => (payload, true),
+                    Err(error) => (sync_xhr_error_payload(&error), false),
+                };
+                if parent_applied_writes {
+                    parent_brokered_cookie_updates
+                        .lock()
+                        .map_err(|_| Error::Unknown)?
+                        .extend(js_cookie_writes);
+                }
+                if let Some(document_cookie) = payload
+                    .get("documentCookie")
+                    .and_then(serde_json::Value::as_str)
+                    && let Ok(mut current) = cookie_state.lock()
+                {
+                    *current = document_cookie.to_owned();
+                }
+                return serde_json::to_string(&payload).map_err(|_| Error::Unknown);
+            }
             let loader = loader_slot
                 .lock()
                 .map_err(|_| Error::Unknown)?
@@ -31349,6 +31440,9 @@ fn worker_bootstrap(
         workerXhrFinishUpload(this, "error");
         throw error;
       }}
+      if (typeof payload.documentCookie === "string"
+          && typeof globalThis.__glassApplySyncCookieProjection === "function")
+        globalThis.__glassApplySyncCookieProjection(payload.documentCookie);
       workerXhrApplySyncResponse(this, payload, responseType);
       return;
     }}
@@ -41458,6 +41552,9 @@ fn document_bootstrap(
       contentType: contentType === undefined ? null : contentType,
       credentials: xhr.withCredentials,
       timeoutMs: xhr._timeout === 0 ? null : xhr._timeout,
+      cookieWrites: typeof globalThis.__glassTakePendingCookieWrites === "function"
+        ? globalThis.__glassTakePendingCookieWrites()
+        : [],
     }};
   }};
   const nativeXhrDecodeDocumentBytes = (bytes, responseContentType, overrideMimeType) => {{
@@ -41818,6 +41915,9 @@ fn document_bootstrap(
         nativeXhrFinishUpload(this, "error");
         throw error;
       }}
+      if (typeof payload.documentCookie === "string"
+          && typeof globalThis.__glassApplySyncCookieProjection === "function")
+        globalThis.__glassApplySyncCookieProjection(payload.documentCookie);
       nativeXhrApplySyncResponse(this, payload, responseType);
       return;
     }}
@@ -49094,6 +49194,22 @@ fn document_bootstrap(
   }};
   {font_face_script}
   let documentCookie = typeof host.cookie === "string" ? host.cookie : "";
+  const pendingDocumentCookieWrites = [];
+  Object.defineProperty(globalThis, "__glassApplySyncCookieProjection", {{
+    value(value) {{
+      if (typeof value === "string" && value.length <= storageValueLimit)
+        documentCookie = value;
+    }},
+    enumerable: false,
+    configurable: true,
+    writable: false,
+  }});
+  Object.defineProperty(globalThis, "__glassTakePendingCookieWrites", {{
+    value() {{ return pendingDocumentCookieWrites.splice(0); }},
+    enumerable: false,
+    configurable: true,
+    writable: false,
+  }});
   const previewCookieSet = (current, value) => {{
     const pair = String(value).split(";", 1)[0].trim();
     const separator = pair.indexOf("=");
@@ -49168,6 +49284,7 @@ fn document_bootstrap(
       if (text.length > storageValueLimit) throw new RangeError("native document.cookie value exceeds its limit");
       documentCookie = previewCookieSet(documentCookie, text);
       pushCommand({{ kind: "cookieSet", value: text }});
+      pendingDocumentCookieWrites.push(text);
     }},
     readyState: {ready_state},
     addEventListener(type, callback, options) {{

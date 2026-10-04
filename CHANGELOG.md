@@ -46,6 +46,12 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Synchronous page and dedicated Worker XHR now use a blocking parent
+  network/cookie broker round trip. Pending script cookie writes are applied
+  before request-cookie selection; response `Set-Cookie` stays in the parent,
+  and only the visible cookie projection returns to the page realm. The
+  process-backed regression covers HttpOnly request cookies, same-name response
+  cookie rotation, and subsequent requests.
 - Page and dedicated Worker WebSocket handshakes, frame sends/receives, and
   closes now use the parent network/cookie broker. The parent owns each live
   socket, selects HttpOnly request cookies, and applies handshake `Set-Cookie`;

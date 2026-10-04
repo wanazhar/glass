@@ -205,10 +205,13 @@ filtered; 36.50 seconds). The process-backed controlled-navigation
 `fetch(event.request)` regression also passes through the captured-load parent
 broker (1 passed; 906 filtered; 25.04 seconds): HttpOnly request and response
 cookies stay parent-owned, are reused on the following page request, and do
-not appear in `document.cookie`. A gated process probe with a timer-delayed
-independent response did not commit until the preload body was released, so
-process-backed asynchronous response/preload overlap remains open; the
-default test-thread stack also overflowed on that probe. The scoped check and
+not appear in `document.cookie`. The process-backed timer-response regression
+passes (1 passed; 906 filtered; 31.72 seconds), covering an asynchronous
+`respondWith()` with preload disabled and with its parent-brokered preload
+body held. Navigation commits before release, and the server observes the
+unused preload socket close. This fixes the earlier timer-progress failure;
+the regression uses Glass's 8 MiB resident-worker stack contract, not the
+default Rust test-harness stack. The scoped check and
 six socket-free navigation-preload tests pass, including the runtime test.
 The FetchEvent runtime separately returns an independent `respondWith()`
 response while a JavaScript-only `waitUntil()` promise remains pending and

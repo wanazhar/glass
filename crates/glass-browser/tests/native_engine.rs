@@ -12738,22 +12738,35 @@ self.addEventListener('fetch', event => {
     server.await.unwrap();
 }
 
-#[tokio::test]
-async fn native_service_worker_navigation_preload_does_not_delay_independent_response() {
+#[test]
+fn native_service_worker_navigation_preload_does_not_delay_independent_timer_response() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_service_worker_navigation_preload_timer_response_inner());
+    });
+}
+
+async fn native_service_worker_navigation_preload_timer_response_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (preload_seen_tx, preload_seen_rx) = oneshot::channel();
     let (release_preload_tx, release_preload_rx) = oneshot::channel();
+    let (preload_cancelled_tx, preload_cancelled_rx) = oneshot::channel();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let registration_page = "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>preload overlap</main></body></html>";
     let worker_script = r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', event => {
-  if (new URL(event.request.url).pathname === '/early-response')
-    event.respondWith(new Response('<!doctype html><html><body>ServiceWorker response before preload</body></html>', {
-      headers: { 'Content-Type': 'text/html' },
-    }));
+  const pathname = new URL(event.request.url).pathname;
+  if (pathname === '/early-response' || pathname === '/early-response-no-preload') {
+    const body = pathname === '/early-response'
+      ? 'ServiceWorker timer response before preload'
+      : 'ServiceWorker timer response without preload';
+    event.respondWith(new Promise(resolve => setTimeout(() => resolve(new Response(
+      '<!doctype html><html><body>' + body + '</body></html>',
+      { headers: { 'Content-Type': 'text/html' } },
+    )), 40)));
+  }
 });"#;
     let server = tokio::spawn(async move {
         let mut shutdown_rx = shutdown_rx;
@@ -12793,6 +12806,12 @@ self.addEventListener('fetch', event => {
         );
         let _ = preload_seen_tx.send(());
         let _ = release_preload_rx.await;
+        let mut probe = [0u8; 1];
+        let preload_cancelled = matches!(
+            tokio::time::timeout(Duration::from_secs(2), stream.read(&mut probe)).await,
+            Ok(Ok(0))
+        );
+        let _ = preload_cancelled_tx.send(preload_cancelled);
         let body = "<!doctype html><html><body>unused delayed preload</body></html>";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -12807,7 +12826,24 @@ self.addEventListener('fetch', event => {
         .await
         .unwrap();
     session
-        .script("await navigator.serviceWorker.ready.then(async registration => { await registration.navigationPreload.enable(); if (!registration.active) throw new Error('active ServiceWorker is missing'); })")
+        .script("await navigator.serviceWorker.ready.then(registration => { if (!registration.active) throw new Error('active ServiceWorker is missing'); })")
+        .await
+        .unwrap();
+
+    session
+        .navigate(format!("http://{address}/early-response-no-preload"))
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .script("document.body.innerText")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("ServiceWorker timer response without preload")
+    );
+    session
+        .script("await navigator.serviceWorker.getRegistration().then(registration => registration.navigationPreload.enable())")
         .await
         .unwrap();
 
@@ -12870,9 +12906,15 @@ self.addEventListener('fetch', event => {
     navigation_result
         .expect("ServiceWorker navigation settles after preload release")
         .expect("ServiceWorker navigation succeeds");
+    assert!(
+        preload_cancelled_rx.await.unwrap_or(false),
+        "the parent-brokered preload should be cancelled when the independent response commits"
+    );
     assert_eq!(
         response_body,
-        Some(serde_json::json!("ServiceWorker response before preload"))
+        Some(serde_json::json!(
+            "ServiceWorker timer response before preload"
+        ))
     );
 }
 

@@ -902,6 +902,7 @@ impl NativeEngine {
             service_worker_fetch_resumed,
             window_name,
         } = {
+            let loader = &mut self.loader;
             let process =
                 self.content_process
                     .as_mut()
@@ -920,7 +921,7 @@ impl NativeEngine {
             }
             self.request_ledger.begin()?;
             let result = Box::pin(
-                process.resolve_service_worker_open_window(worker_id, request_id, &window),
+                process.resolve_service_worker_open_window(worker_id, request_id, &window, loader),
             )
             .await;
             self.request_ledger.finish();

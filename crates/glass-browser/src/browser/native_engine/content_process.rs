@@ -124,7 +124,7 @@ const MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS: usize = MAX_CONTENT_PROCESS_OUTPUT
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
     MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 31;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 32;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -4139,6 +4139,7 @@ impl NativeContentProcess {
         worker_id: u32,
         request_id: u32,
         window: &Value,
+        parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentScriptResult, NativeEngineError> {
         if worker_id == 0 || request_id == 0 {
             return Err(NativeEngineError::invalid(
@@ -4146,31 +4147,53 @@ impl NativeContentProcess {
                 "request and worker ids must be positive",
             ));
         }
-        let id = self.next_id();
-        let response = match timeout(
-            CONTENT_PROCESS_SCRIPT_TIMEOUT,
-            self.exchange(json!({
-                "kind": "service_worker_open_window_resolve",
-                "id": id,
-                "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
-                "worker_id": worker_id,
-                "request_id": request_id,
-                "window": window,
-            })),
-        )
-        .await
-        {
-            Ok(response) => response?,
-            Err(_) => {
-                self.mark_failed(NativeWorkerFailureKind::Timeout);
-                let _ = self.child.start_kill();
-                return Err(NativeEngineError::worker_failure(
-                    "content process service worker openWindow resolution",
-                    NativeWorkerFailureKind::Timeout,
-                    "content process service worker openWindow resolution exceeded its deadline",
-                ));
-            }
+        let owner = NativeContentCookieOwner {
+            context_id: self.context_id.clone().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process service worker openWindow owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no browser context identity",
+                )
+            })?,
+            frame_id: self.frame_id.clone().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process service worker openWindow owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no frame identity",
+                )
+            })?,
+            generation: self.current_document_generation.ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process service worker openWindow owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no committed document generation",
+                )
+            })?,
+            document_url: self.current_document_url.clone().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process service worker openWindow owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no committed document URL",
+                )
+            })?,
         };
+        let id = self.next_id();
+        let response = self
+            .exchange_with_parent_loader_timeout(
+                json!({
+                    "kind": "service_worker_open_window_resolve",
+                    "id": id,
+                    "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                    "worker_id": worker_id,
+                    "request_id": request_id,
+                    "owner": owner,
+                    "window": window,
+                }),
+                "content process service worker openWindow resolution",
+                CONTENT_PROCESS_SCRIPT_TIMEOUT,
+                Some(parent_loader),
+            )
+            .await?;
         if response.get("kind").and_then(Value::as_str) == Some("error") {
             return Err(NativeEngineError::Worker {
                 operation: "content process service worker openWindow resolution".into(),
@@ -11995,8 +12018,80 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         reason: "content process has no resource loader".into(),
                     });
                 };
+                let owner_document =
+                    document.as_ref().ok_or_else(|| NativeEngineError::Worker {
+                        operation: "content process service worker openWindow resolution".into(),
+                        reason: "content process has no active document owner".into(),
+                    })?;
+                let active_owner_url =
+                    document_url
+                        .as_deref()
+                        .ok_or_else(|| NativeEngineError::Worker {
+                            operation: "content process service worker openWindow resolution"
+                                .into(),
+                            reason: "content process has no active document URL".into(),
+                        })?;
+                let owner = decode_content_cookie_owner(
+                    request.get("owner").ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process service worker openWindow owner",
+                            "must be present",
+                        )
+                    })?,
+                    "content-process service worker openWindow owner",
+                )?;
+                if owner.context_id != storage_context_id
+                    || owner.frame_id != frame_id
+                    || owner.generation != owner_document.generation()
+                    || without_fragment(&owner.document_url) != without_fragment(active_owner_url)
+                {
+                    return Err(NativeEngineError::worker_failure(
+                        "content process service worker openWindow owner",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent owner does not match the active content document",
+                    ));
+                }
+                if !is_network_url(without_fragment(&owner.document_url)) {
+                    return Err(NativeEngineError::Worker {
+                        operation: "content process service worker openWindow resolution".into(),
+                        reason: "parent Fetch broker requires a network document owner".into(),
+                    });
+                }
+                let runtime =
+                    javascript_runtime
+                        .as_ref()
+                        .ok_or_else(|| NativeEngineError::Worker {
+                            operation: "content process service worker openWindow resolution"
+                                .into(),
+                            reason: "content process has no active JavaScript runtime".into(),
+                        })?;
+                let ipc_request_id = id.as_u64().ok_or_else(|| {
+                    NativeEngineError::invalid(
+                        "content-process service worker openWindow request ID",
+                        "must be an unsigned integer",
+                    )
+                })?;
+                let mut parent_fetch_broker = NativeContentFetchBroker {
+                    captured_load_fetches: false,
+                    request_id: ipc_request_id,
+                    owner: owner.clone(),
+                    runtime: Some(runtime),
+                    stdout: &mut stdout,
+                    ipc_requests: &mut ipc_request_rx,
+                    cancelled_parent_fetches: &mut cancelled_parent_fetches,
+                    document_cookie_projection: &mut parent_document_cookie_projection,
+                    next_content_resource_fetch_id: 0,
+                    page_meta_content_security_policies: loader
+                        .document_meta_content_security_policies(&owner.document_url)?,
+                };
                 match service_workers
-                    .resolve_open_window(loader, worker_id, request_id, window)
+                    .resolve_open_window(
+                        loader,
+                        worker_id,
+                        request_id,
+                        window,
+                        &mut parent_fetch_broker,
+                    )
                     .await
                 {
                     Ok(service_worker_fetch_resumed) => {

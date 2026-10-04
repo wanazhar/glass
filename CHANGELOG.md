@@ -46,6 +46,12 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A ServiceWorker FetchEvent resumed after `clients.openWindow()` now keeps the
+  parent-owned cookie broker across its pending continuation. The resumed
+  request carries the parent's captured document owner over IPC, which the
+  content process validates before dispatch; an HttpOnly response cookie is
+  accepted by the parent and sent on the subsequent page request. The
+  content-worker protocol is now version 32.
 - ServiceWorker `postMessage` and page-to-ServiceWorker MessagePort event Fetches
   now retain the owner-checked parent cookie broker for content-worker turns.
   A process-backed regression covers parent-owned HttpOnly response-cookie

@@ -34849,7 +34849,7 @@ async fn native_content_process_shared_worker_fetch_uses_parent_cookie_authority
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         let mut requests = Vec::new();
-        for _ in 0..6 {
+        for _ in 0..7 {
             let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
                 .await
                 .unwrap_or_else(|_| {
@@ -34885,9 +34885,14 @@ async fn native_content_process_shared_worker_fetch_uses_parent_cookie_authority
                     "<script>globalThis.sharedFetchMessages = []; globalThis.sharedFetchWorker = new SharedWorker('/shared-fetch.js', { type: 'module', name: 'direct-fetch' }); sharedFetchWorker.port.onmessage = event => sharedFetchMessages.push(event.data); sharedFetchWorker.port.start();</script>",
                 ),
                 "/shared-fetch.js" => (
-                    "",
+                    "Set-Cookie: worker_entry_secret=entry; HttpOnly; Path=/; SameSite=Lax\r\n",
                     "application/javascript",
-                    "globalThis.onconnect = event => { const port = event.ports[0]; port.postMessage({ kind: 'ready' }); fetch('/startup', { credentials: 'include' }).then(async response => port.postMessage({ kind: 'startup', text: await response.text() })).catch(error => port.postMessage({ kind: 'error', message: String(error) })); port.onmessage = async message => { if (message.data !== 'fetch') return; try { const included = await fetch('/include', { credentials: 'include' }); const includeBody = await included.text(); const omitted = await fetch('/omit', { credentials: 'omit' }); const omitBody = await omitted.text(); const after = await fetch('/after', { credentials: 'include' }); const afterBody = await after.text(); port.postMessage({ kind: 'complete', values: [includeBody, omitBody, afterBody], statuses: [included.status, omitted.status, after.status] }); } catch (error) { port.postMessage({ kind: 'error', message: String(error) }); } }; };",
+                    "import { value as moduleValue } from './shared-fetch-dependency.mjs'; globalThis.onconnect = event => { const port = event.ports[0]; port.postMessage({ kind: 'ready', module: moduleValue }); fetch('/startup', { credentials: 'include' }).then(async response => port.postMessage({ kind: 'startup', text: await response.text() })).catch(error => port.postMessage({ kind: 'error', message: String(error) })); port.onmessage = async message => { if (message.data !== 'fetch') return; try { const included = await fetch('/include', { credentials: 'include' }); const includeBody = await included.text(); const omitted = await fetch('/omit', { credentials: 'omit' }); const omitBody = await omitted.text(); const after = await fetch('/after', { credentials: 'include' }); const afterBody = await after.text(); port.postMessage({ kind: 'complete', values: [includeBody, omitBody, afterBody], statuses: [included.status, omitted.status, after.status] }); } catch (error) { port.postMessage({ kind: 'error', message: String(error) }); } }; };",
+                ),
+                "/shared-fetch-dependency.mjs" => (
+                    "Set-Cookie: worker_module_secret=module; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "application/javascript",
+                    "export const value = 'module dependency loaded';",
                 ),
                 "/startup" => (
                     "Set-Cookie: worker_startup_secret=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
@@ -34934,7 +34939,7 @@ async fn native_content_process_shared_worker_fetch_uses_parent_cookie_authority
     assert_eq!(
         engine.evaluate_async("sharedFetchMessages").await.unwrap(),
         serde_json::json!([
-            { "kind": "ready" },
+            { "kind": "ready", "module": "module dependency loaded" },
             { "kind": "startup", "text": "startup complete" },
         ])
     );
@@ -34957,7 +34962,7 @@ async fn native_content_process_shared_worker_fetch_uses_parent_cookie_authority
     assert_eq!(
         messages,
         serde_json::json!([
-            { "kind": "ready" },
+            { "kind": "ready", "module": "module dependency loaded" },
             { "kind": "startup", "text": "startup complete" },
             { "kind": "complete", "values": ["included", "omitted", "after"], "statuses": [200, 200, 200] },
         ]),
@@ -34976,15 +34981,25 @@ async fn native_content_process_shared_worker_fetch_uses_parent_cookie_authority
     let included_cookie = cookie_for("/include");
     assert!(included_cookie.contains("worker_fetch=initial"));
     assert!(included_cookie.contains("worker_fetch_secret=initial-secret"));
+    assert!(included_cookie.contains("worker_entry_secret=entry"));
+    assert!(included_cookie.contains("worker_module_secret=module"));
     assert!(included_cookie.contains("worker_startup_secret=accepted"));
     assert!(!included_cookie.contains("worker_fetch_removed="));
     assert!(cookie_for("/omit").is_empty());
     let after_cookie = cookie_for("/after");
     assert!(after_cookie.contains("worker_fetch=latest"));
     assert!(after_cookie.contains("worker_fetch_secret=latest-secret"));
+    assert!(after_cookie.contains("worker_entry_secret=entry"));
+    assert!(after_cookie.contains("worker_module_secret=module"));
     assert!(after_cookie.contains("worker_startup_secret=accepted"));
     assert!(!after_cookie.contains("worker_fetch_removed="));
     assert!(cookie_for("/startup").contains("worker_fetch_secret=initial-secret"));
+    assert!(cookie_for("/shared-fetch.js").contains("worker_fetch_secret=initial-secret"));
+    let dependency_cookie = cookie_for("/shared-fetch-dependency.mjs");
+    assert!(dependency_cookie.contains("worker_fetch_secret=initial-secret"));
+    assert!(dependency_cookie.contains("worker_entry_secret=entry"));
+    assert!(cookie_for("/startup").contains("worker_entry_secret=entry"));
+    assert!(cookie_for("/startup").contains("worker_module_secret=module"));
     assert_eq!(
         engine.evaluate_async("document.cookie").await.unwrap(),
         serde_json::json!("worker_fetch=latest")
@@ -34995,6 +35010,17 @@ async fn native_content_process_shared_worker_fetch_uses_parent_cookie_authority
             .iter()
             .any(|cookie| { cookie.name == "worker_startup_secret" && cookie.value == "accepted" })
     );
+    for (name, value) in [
+        ("worker_entry_secret", "entry"),
+        ("worker_module_secret", "module"),
+    ] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == name && cookie.value == value && cookie.http_only),
+            "parent cookie jar is missing HttpOnly {name}"
+        );
+    }
     engine.close_async().await.unwrap();
 }
 

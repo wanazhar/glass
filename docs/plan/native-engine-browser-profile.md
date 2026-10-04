@@ -133,6 +133,11 @@ parent-selected HttpOnly cookies on the entry and static dependency, ordered
 response-cookie acceptance before the startup and later Worker Fetches, and an
 empty `document.cookie` projection. This is targeted graph coverage only; the
 broader parent-only contract remains in progress.
+The process-backed
+`native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
+regression also verifies the module SharedWorker entry and static dependency
+cookie sequence before connect-time and later MessagePort Fetches, with
+HttpOnly values retained only by the parent.
 
 This contract preserves script-visible cookie behavior without exposing
 HttpOnly state to the child. A Slice 843 checkpoint now stores durable cookies
@@ -215,11 +220,13 @@ request cookies, and accepts response-cookie changes. The worker's current
   `import()` requests follow the same broker path. Process-backed coverage
   verifies worker entry plus classic `importScripts()`, and a dynamically
   attached page module plus its static dependency, including HttpOnly
-  response-cookie propagation. Runtime `import()` does not yet have a
-  cookie-specific regression. Parser-discovered HTTP(S) page scripts now use
-  the parent broker during initial loading; a process-backed classic-script
-  regression verifies request cookies, response-cookie acceptance, and
-  HttpOnly invisibility. HTTP(S) classic/module scripts inserted by inline
+  response-cookie propagation. Its expanded
+  `native_content_process_dynamic_page_module_uses_parent_cookie_authority`
+  regression also covers runtime `import()`, its dependency, an HttpOnly
+  response update, and a later page Fetch. Parser-discovered HTTP(S) page
+  scripts now use the parent broker during initial loading; a process-backed
+  classic-script regression verifies request cookies, response-cookie
+  acceptance, and HttpOnly invisibility. HTTP(S) classic/module scripts inserted by inline
   scripts during initial loading now use that same parent broker; the
   navigation regression verifies a classic insertion's HttpOnly request
   cookie, response-cookie update, and visible-only projection. Initial HTTP(S)

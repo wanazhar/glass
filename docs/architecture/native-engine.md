@@ -83,8 +83,11 @@ parent authority; local blob/file sources remain local. A second process-backed
 regression verifies a dynamically attached page module and static dependency,
 same-turn setter propagation, and HttpOnly response-cookie delivery while
 keeping those values out of `document.cookie`; a dynamic import-map/module
-regression also passes. Runtime `import()` does not yet have cookie-specific
-process coverage. Parser-discovered HTTP(S) page scripts, initial stylesheets,
+regression also passes. The expanded
+`native_content_process_dynamic_page_module_uses_parent_cookie_authority`
+regression now covers runtime `import()` and its dependency, including parent
+response-cookie acceptance and reuse on a later page Fetch. Parser-discovered
+HTTP(S) page scripts, initial stylesheets,
 static CSS imports, and page images now use the parent broker during document
 loading and brokered script turns. The process-backed cookie regression
 verifies ordered request selection and response-cookie acceptance across
@@ -103,6 +106,11 @@ regression additionally verifies parent-owned HttpOnly-cookie sequencing
 across a module DedicatedWorker entry, static dependency, startup Fetch, and
 later Worker Fetch, while `document.cookie` remains empty. This is targeted
 coverage, not evidence that all content-process network classes are brokered.
+The expanded process-backed
+`native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
+regression also checks its module entry and static dependency cookie sequence
+before connect-time and later MessagePort Fetches; HttpOnly values remain in
+the parent jar and out of `document.cookie`.
 Before parent page loads, the child transfers its applied meta-CSP policy
 sources; the regression also verifies `img-src 'self'` prevents a cross-origin
 image request. At that protocol-22 checkpoint, the initial module graph lacked
@@ -672,13 +680,14 @@ and the script-visible projection. At the earlier checkpoint
 worker-script loading was outside the verified broker path. Slice 843 now
 brokers worker entry scripts, classic `importScripts()` dependencies, and
 static/dynamic worker module dependencies; the recorded worker HTTP regression
-verifies entry and classic imported-script cookie propagation, while
-Dedicated/SharedWorker module-graph process coverage remains outstanding. It
-also brokers HTTP(S)
+verifies entry and classic imported-script cookie propagation. At this
+worker-script checkpoint, Dedicated/SharedWorker module-graph process coverage
+remained outstanding; Slice 843 now records cookie regressions for both worker
+types above. It also brokers HTTP(S)
 dynamic page classic/module script elements, their static dependencies, and
 runtime `import()` requests from explicit parent-brokered script turns. The
-dynamic page module regression verifies the root/dependency cookie chain;
-runtime `import()` still lacks a cookie-specific process regression.
+dynamic page module regression verifies the root/dependency cookie chain and
+its later runtime-`import()` cookie chain.
 At this worker-script checkpoint, ServiceWorker timer and lifetime work,
 independently delivered SharedWorker events, and module-destination Fetch were
 outside the verified broker path; the later timer-owner checkpoint below adds

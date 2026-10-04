@@ -199,8 +199,17 @@ request cookies, and accepts response-cookie changes. The worker's current
   upload, parent acceptance of an HttpOnly rotation, and the next request's
   rotated cookie while `document.cookie` remains filtered. Upload bytes are
   buffered before network dispatch, so this path does not retain socket-level
-  upload backpressure. Background work outside intercepted FetchEvents and
-  other internal network requests remain direct child paths.
+  upload backpressure. Parent-brokered registration/update now also retains
+  the broker through worker source evaluation and install/activate event
+  settlement. The process-backed
+  `native_content_process_service_worker_lifecycle_fetches_use_parent_cookie_authority`
+  regression verifies the page cookie on script and lifecycle requests, an
+  install response's HttpOnly cookie on activate, and the accepted lifecycle
+  cookies on a later page request while hidden from `document.cookie`.
+  Captured-load Fetches remain bound to the exact active or in-flight document
+  owner. Background work outside intercepted FetchEvents, navigation-time
+  activation of a waiting worker, and other internal network requests remain
+  direct child paths.
   In browser-coordinated mode, due
   DedicatedWorker timer turns now wait for the exact context/frame owner pump
   and execute with that turn's parent Fetch broker; standalone `NativeEngine` keeps

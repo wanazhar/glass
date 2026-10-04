@@ -657,8 +657,15 @@ response-cookie visibility. Page-originated upload streams to a controlled
 Service Worker are buffered and offered to its handler first; declined network
 fallbacks use the parent broker, as verified by
 `native_content_process_service_worker_replays_cloned_request_body`. Service
-Worker-originated upload streams and lifetime/background Fetch tasks remain
-child-network paths.
+Worker-originated ReadableStream uploads during parent-brokered FetchEvents
+now use bounded parent brokering. Registration/update also retain the parent
+broker through worker source evaluation and install/activate lifecycle Fetches.
+The process-backed
+`native_content_process_service_worker_lifecycle_fetches_use_parent_cookie_authority`
+regression verifies an owner-bound page setter, install-to-activate HttpOnly
+cookie rotation, and the next page request while script-visible cookies remain
+filtered. Navigation-time activation of a waiting worker and other background
+Fetches remain direct child paths.
 
 For an explicit page Fetch with a `ReadableStream` body, the content process
 now collects the body under `MAX_NATIVE_FORM_BODY_BYTES` before sending the

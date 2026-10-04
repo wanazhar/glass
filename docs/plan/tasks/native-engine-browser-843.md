@@ -430,6 +430,22 @@ projection and existing native Fetch behavior.
   files with zero current-claim failures, 93 current guides and 19 contracts,
   15 implementation shortcut keys/63 markers, and coverage of 346 MCP tools,
   17 examples, and 22 public modules.
+- Parent-brokered Service Worker registration/update now keeps the broker
+  through worker source evaluation and `install`/`activate` event settlement.
+  The first process regression exposed that the parent accepts worker-script
+  loads during an in-flight navigation but rejects ordinary lifecycle Fetches
+  without a resource-load marker. Such Fetches now carry an explicit
+  captured-load marker, and the parent still validates the exact current or
+  in-flight document owner before admitting them; ordinary FetchEvent paths
+  do not set the marker. The process-backed
+  `native_content_process_service_worker_lifecycle_fetches_use_parent_cookie_authority`
+  regression passes (1 passed; 24.42 seconds), verifying the same-turn page
+  cookie on the worker script and lifecycle Fetches, the install response's
+  HttpOnly cookie on the activate Fetch, parent retention of both lifecycle
+  cookies for the following page request, and their invisibility in
+  `document.cookie`. The scoped check and rebuilt companion worker pass with
+  existing dead-code warnings. Navigation-time activation of an already-waiting
+  worker and background work outside intercepted FetchEvents remain direct.
 - The Slice 842 HTTP regression successfully bound a local listener. The
   earlier blanket claim that local TCP binding is denied is stale for this
   checkout; that result does not prove parent-brokered network transport.

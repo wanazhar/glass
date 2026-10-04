@@ -16994,6 +16994,130 @@ async fn native_content_process_service_worker_module_registration_uses_parent_c
 }
 
 #[tokio::test]
+async fn native_content_process_service_worker_lifecycle_fetches_use_parent_cookie_authority() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for expected_path in [
+            "/page",
+            "/sw.js",
+            "/install-fetch",
+            "/activate-fetch",
+            "/after",
+        ] {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("Service Worker lifecycle Fetch should reach the parent network")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned())
+                .unwrap_or_default();
+            let (set_cookie, content_type, body) = match expected_path {
+                "/page" => (
+                    "Set-Cookie: sw_lifecycle_seed=initial; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/html",
+                    "<!doctype html><script>document.cookie = 'sw_lifecycle_turn=present; Path=/'; globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>lifecycle cookies</main>",
+                ),
+                "/sw.js" => {
+                    assert!(cookie.contains("sw_lifecycle_seed=initial"));
+                    assert!(cookie.contains("sw_lifecycle_turn=present"));
+                    (
+                        "",
+                        "text/javascript",
+                        r#"self.addEventListener('install', event => {
+  event.waitUntil(fetch('/install-fetch').then(response => response.text()));
+  event.waitUntil(self.skipWaiting());
+});
+self.addEventListener('activate', event => {
+  event.waitUntil(fetch('/activate-fetch').then(response => response.text()));
+  event.waitUntil(self.clients.claim());
+});"#,
+                    )
+                }
+                "/install-fetch" => {
+                    assert!(cookie.contains("sw_lifecycle_seed=initial"));
+                    assert!(cookie.contains("sw_lifecycle_turn=present"));
+                    (
+                        "Set-Cookie: sw_lifecycle_install=done; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "text/plain",
+                        "installed",
+                    )
+                }
+                "/activate-fetch" => {
+                    assert!(cookie.contains("sw_lifecycle_seed=initial"));
+                    assert!(cookie.contains("sw_lifecycle_turn=present"));
+                    assert!(cookie.contains("sw_lifecycle_install=done"));
+                    (
+                        "Set-Cookie: sw_lifecycle_activate=done; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "text/plain",
+                        "activated",
+                    )
+                }
+                "/after" => {
+                    assert!(cookie.contains("sw_lifecycle_seed=initial"));
+                    assert!(cookie.contains("sw_lifecycle_turn=present"));
+                    assert!(cookie.contains("sw_lifecycle_install=done"));
+                    assert!(cookie.contains("sw_lifecycle_activate=done"));
+                    ("", "text/plain", "after")
+                }
+                _ => unreachable!(),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{set_cookie}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "await registrationPromise.then(async registration => ({ active: registration.active.state, controlled: navigator.serviceWorker.controller !== null }))",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!({"active":"activated","controlled":true})
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/after').then(response => response.text())")
+            .await
+            .unwrap(),
+        serde_json::json!("after")
+    );
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("sw_lifecycle_turn=present")
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+    for name in [
+        "sw_lifecycle_seed",
+        "sw_lifecycle_install",
+        "sw_lifecycle_activate",
+    ] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == name && cookie.http_only)
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_content_process_service_worker_restoration_uses_parent_cookie_authority() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -340,7 +340,15 @@ response cookie on a same-turn follow-up.
 An awaited Fetch issued inside a controlled Service Worker during an explicit
 page Fetch now also uses the parent broker; its cross-origin credentials/CORS
 handoff regression passed (1 test; 33.30-second runtime). Other Service Worker
-internal requests remain outside the verified path. The
+internal requests remained outside the verified path at that checkpoint.
+Fetches emitted while the worker script is evaluated and during install/activate
+in parent-brokered registration/update now retain the same broker. The
+process-backed
+`native_content_process_service_worker_lifecycle_fetches_use_parent_cookie_authority`
+regression verifies ordered HttpOnly cookie changes through install and
+activate and their use on the following page request. Navigation-time
+activation of an already-waiting worker and background work outside intercepted
+FetchEvents remain outside this subset. The
 ordinary page Fetch `ReadableStream` upload path now buffers the request body
 under `MAX_NATIVE_FORM_BODY_BYTES` before using the parent broker; its
 process-backed pull/upload-cookie regression passed (1 test; 22.37-second

@@ -6,7 +6,9 @@
 //! response, and message envelopes cross back to the content-process owner.
 
 use super::config::{is_network_url, validate_context_id, validate_url_text, without_fragment};
-use super::content_process::NativeContentFetchBroker;
+use super::content_process::{
+    NativeContentFetchBroker, is_parent_owned_network_target, missing_parent_network_authority,
+};
 use super::error::NativeEngineError;
 use super::fetch_stream::{
     MAX_NATIVE_FETCH_UPLOAD_CHUNKS, NativeFetchUploadCommand, NativeFetchUploadConnection,
@@ -835,6 +837,10 @@ impl NativeServiceWorkerRegistry {
                 Some(parent_fetch_broker),
             )
             .await?
+        } else if is_parent_owned_network_target(owner_url, script_url) {
+            return Err(missing_parent_network_authority(
+                "Service Worker restoration",
+            ));
         } else {
             loader
                 .load_worker_async(script_url, script_url, MAX_NATIVE_SCRIPT_BYTES)
@@ -3147,9 +3153,9 @@ async fn fetch_service_worker_navigation_preload<'broker>(
             .await?
             .0
     } else {
-        loader
-            .fetch_navigation_preload_async(target_url, referrer, referrer_policy, header_value)
-            .await
+        Err(missing_parent_network_authority(
+            "Service Worker navigation preload",
+        ))
     }
 }
 
@@ -3938,6 +3944,17 @@ fn schedule_service_worker_lifetime_fetch(
                 request,
             })
         })
+    } else if is_parent_owned_network_target(&worker.script_url, &request.href) {
+        let error = missing_parent_network_authority("Service Worker lifetime Fetch").to_string();
+        tasks.spawn(async move {
+            NativeServiceWorkerFetchTaskResult::Completed(NativeServiceWorkerFetchTaskCompletion {
+                worker_id,
+                request_id,
+                fallback_url,
+                payload: json!({"error": error, "timeout": false}),
+                loader: None,
+            })
+        })
     } else {
         let worker_url = worker.script_url.clone();
         let mut task_loader = loader.clone();
@@ -4012,6 +4029,13 @@ async fn resolve_service_worker_fetch_command(
             }
             Err(error) => Err(error),
         }
+    } else if is_parent_owned_network_target(&worker.script_url, &request.href) {
+        if request.upload_stream_id.is_some() {
+            let _ = collect_service_worker_fetch_upload(worker, request_id, pending).await?;
+        }
+        Err(missing_parent_network_authority(
+            "Service Worker Fetch request",
+        ))
     } else if request.upload_stream_id.is_some() {
         open_service_worker_fetch_upload(
             worker,

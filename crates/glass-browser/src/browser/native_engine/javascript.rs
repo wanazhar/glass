@@ -8,7 +8,9 @@ use super::config::{
     MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES, MAX_NATIVE_WINDOW_NAME_BYTES, Viewport, is_file_url,
     is_network_url, validate_context_id, validate_url_text, validate_window_name, without_fragment,
 };
-use super::content_process::NativeContentFetchBroker;
+use super::content_process::{
+    NativeContentFetchBroker, is_parent_owned_network_target, missing_parent_network_authority,
+};
 use super::css::{
     FontStyleValue, FontWeightValue, parse_font_stretch_range, parse_font_weight_range,
 };
@@ -1743,22 +1745,25 @@ async fn load_worker_script_resource(
     let network_target = Url::parse(href)
         .or_else(|_| Url::parse(without_fragment(request_base)).and_then(|base| base.join(href)))
         .is_ok_and(|target| is_network_url(target.as_str()));
-    if network_target && let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
-        return parent_fetch_broker
-            .load_worker_script(
-                request_id,
-                document_url,
-                href,
-                referrer_url,
-                max_source_bytes,
-                module_type,
-                credentials_mode,
-                referrer_policy,
-                shared_worker_module_entry,
-                None,
-            )
-            .await
-            .map(|(resource, _)| resource);
+    if network_target && is_network_url(without_fragment(document_url)) {
+        if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
+            return parent_fetch_broker
+                .load_worker_script(
+                    request_id,
+                    document_url,
+                    href,
+                    referrer_url,
+                    max_source_bytes,
+                    module_type,
+                    credentials_mode,
+                    referrer_policy,
+                    shared_worker_module_entry,
+                    None,
+                )
+                .await
+                .map(|(resource, _)| resource);
+        }
+        return Err(missing_parent_network_authority("Worker script load"));
     }
     if shared_worker_module_entry {
         return loader
@@ -4441,6 +4446,10 @@ impl NativeWorkerRegistry {
         let (upload_connection, upload_source) = spawn_native_fetch_upload_source();
         self.worker_fetch_upload_connections
             .insert(upload_key, upload_connection);
+        if is_parent_owned_network_target(&worker_url, &href) && parent_fetch_broker.is_none() {
+            self.cancel_worker_fetch_upload_connection(upload_key);
+            return Ok(Err(missing_parent_network_authority("Worker Fetch upload")));
+        }
         if parent_fetch_broker.is_some() {
             let task = tokio::spawn(async move {
                 upload_source
@@ -4899,6 +4908,10 @@ impl NativeWorkerRegistry {
                 } else {
                     worker_fetch_response_payload(response)
                 }
+            } else if is_parent_owned_network_target(&worker_url, &href) {
+                worker_fetch_response_payload(Err(missing_parent_network_authority(
+                    "Worker Fetch request",
+                )))
             } else if self.stream_worker_fetches {
                 self.worker_fetch_opened_payload(
                     worker_id,
@@ -5417,24 +5430,27 @@ pub(crate) async fn load_service_worker_entry(
     referrer_policy: Option<NativeFetchReferrerPolicy>,
     mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
-    if is_network_url(without_fragment(script_url))
-        && let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut()
-    {
-        return parent_fetch_broker
-            .load_worker_script(
-                request_id,
-                owner_url,
-                script_url,
-                None,
-                MAX_NATIVE_SCRIPT_BYTES,
-                None,
-                None,
-                referrer_policy,
-                false,
-                Some(referrer_url),
-            )
-            .await
-            .map(|(resource, _)| resource);
+    if is_parent_owned_network_target(owner_url, script_url) {
+        if let Some(parent_fetch_broker) = parent_fetch_broker.as_deref_mut() {
+            return parent_fetch_broker
+                .load_worker_script(
+                    request_id,
+                    owner_url,
+                    script_url,
+                    None,
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    None,
+                    None,
+                    referrer_policy,
+                    false,
+                    Some(referrer_url),
+                )
+                .await
+                .map(|(resource, _)| resource);
+        }
+        return Err(missing_parent_network_authority(
+            "Service Worker script load",
+        ));
     }
     loader
         .load_worker_async_with_referrer_policy(

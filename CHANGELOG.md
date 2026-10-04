@@ -46,6 +46,11 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- HTTP(S) document and worker network requests now fail closed instead of
+  falling back to a content-worker loader when the owner-bound parent cookie
+  broker is unavailable. This covers page subresources, CSS imports, page and
+  worker scripts, Fetch and uploads, and ServiceWorker Fetch/navigation
+  preload; local and non-network owner paths retain their local loaders.
 - A ServiceWorker FetchEvent resumed after `clients.openWindow()` now keeps the
   parent-owned cookie broker across its pending continuation. The resumed
   request carries the parent's captured document owner over IPC, which the

@@ -144,7 +144,8 @@ and URL against its committed document before continuing. The process-backed
 verifies initial HttpOnly request cookies, parent acceptance of the resumed
 Fetch's HttpOnly response cookie, reuse on a later page request, and exclusion
 from `document.cookie`; it passed (1 passed; 904 filtered; 33.95 seconds).
-Other child-direct internal requests remain in Slice 843's audit.
+At this checkpoint, other child-direct internal requests remained in Slice
+843's audit; the latest fail-closed audit is recorded below.
 The native host `fetch_async` IPC now also carries the parent's exact active
 document owner. Content-process ServiceWorker interception and any nested
 Fetches retain the parent broker instead of selecting cookies from a child
@@ -160,10 +161,11 @@ The process-backed
 regression verifies parent-selected HttpOnly cookies on the worker entry and
 startup Fetch, parent response-cookie rotation on a later Worker message turn,
 and the visible-only page projection.
-Child-direct internal network paths can still populate a transient child jar
-and emit a bounded cookie-change journal to the parent, so the parent-only
-contract is not yet met; autonomous content-process worker timers are no
-longer among those direct paths. Page and dedicated Worker EventSource
+Outside the parent-brokered HTTP(S) owner turns, child-direct internal network
+paths can still populate transient child cookie state and emit bounded
+cookie-change journals to the parent, so the parent-only contract is not yet
+met; autonomous content-process worker timers are no longer among those direct
+paths. Page and dedicated Worker EventSource
 responses use bounded chunks addressed by opaque stream IDs, and WebSocket frames use
 bounded message records addressed by opaque stream IDs; cookie headers and the
 full profile never cross IPC. Other direct child network paths remain outside
@@ -309,6 +311,18 @@ separately covered for brokered FetchEvent turns, with bounded buffering
 before dispatch.
 See the [Slice 842 task](tasks/native-engine-browser-842.md) and [Slice 843
 task](tasks/native-engine-browser-843.md).
+
+The latest Slice 843 checkpoint makes HTTP(S)-document network resource loads,
+page script/module loads, Worker and ServiceWorker script/Fetch paths, and
+page Fetch/font requests fail closed when their owner-bound parent broker is
+missing. This removes the content-loader retry from those network-owner paths;
+local and non-network documents keep their existing local loader behavior.
+Validation passed with the scoped native-engine check and explicit content
+worker build, plus process-backed parent-cookie tests for initial HTTP
+resources, mutation-created stylesheets/imports, ServiceWorker lifecycle
+Fetches, Worker message Fetch, and host nested ServiceWorker Fetch. Child
+transient jars and cookie-change journals still exist outside those brokered
+owner turns, so this does not complete the parent-only contract.
 
 ### Shared-profile cookie synchronization
 

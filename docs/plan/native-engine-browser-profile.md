@@ -161,10 +161,12 @@ request cookies, and accepts response-cookie changes. The worker's current
   referrer-policy process regression passed (1 test; 29.43 seconds), retaining
   cascade/referrer behavior while checking an HttpOnly page cookie on the
   dynamic root, an HttpOnly response cookie on its CSS import and later Fetch,
-  and script-visible filtering. Protocol version 25 routes waiting-worker
+  and script-visible filtering. Protocol version 26 routes waiting-worker
   navigation activation, top-level navigation preload, and navigation
   FetchEvent requests through the captured-load parent broker after exact owner
-  validation. The process-backed
+  validation. It also correlates preload cancellation with its captured
+  operation and drains a response that wins a cancellation race. The
+  process-backed
   `native_content_process_waiting_service_worker_navigation_uses_parent_cookie_authority`
   regression passed (1 test; 28.78 seconds), verifying ordered HttpOnly cookie
   updates through activation, preload, navigation Fetch, and the next page

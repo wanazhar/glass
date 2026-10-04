@@ -52,19 +52,20 @@ use super::javascript::{
     NativePostMessageRequest, NativeScriptCommand, NativeScriptEvaluation,
     NativeServiceWorkerClientMessage, NativeServiceWorkerClientState,
     NativeServiceWorkerOpenWindowRequest, NativeSharedWorkerStorageKey, NativeStorageEvent,
-    NativeWebStorageState, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
-    NativeWorkerRegistry, NativeWorkerWebSocketCommand, apply_document_commands_with_font_face_ack,
-    apply_page_script_evaluation, diff_indexed_db_changes, execute_dynamic_page_scripts,
-    execute_page_scripts, host_click_event_batch_with_modifiers, host_event_batch,
-    host_event_batch_at, host_key_event_batch, host_key_event_batch_with_modifiers,
-    host_submit_event_batch, load_indexed_db_profile, load_service_worker_cache_profile,
-    load_service_worker_registration_profiles, load_web_storage_profile,
-    migrate_cookie_profile_from_web_storage, native_module_loader_name, order_page_scripts,
-    page_script_sources_to_scripts, resolve_module_request_url, save_content_web_storage_profile,
-    save_service_worker_cache_profile, save_web_storage_profile, static_module_requests,
-    storage_key, validate_message_port_transfers, validate_native_message_payload,
-    validate_native_object_url_transfers,
+    NativeSyncXhrParentBroker, NativeWebStorageState, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerEventSourceCommand,
+    NativeWorkerMessage, NativeWorkerRegistry, NativeWorkerWebSocketCommand,
+    apply_document_commands_with_font_face_ack, apply_page_script_evaluation,
+    diff_indexed_db_changes, execute_dynamic_page_scripts, execute_page_scripts,
+    host_click_event_batch_with_modifiers, host_event_batch, host_event_batch_at,
+    host_key_event_batch, host_key_event_batch_with_modifiers, host_submit_event_batch,
+    install_native_sync_xhr_parent_broker, load_indexed_db_profile,
+    load_service_worker_cache_profile, load_service_worker_registration_profiles,
+    load_web_storage_profile, migrate_cookie_profile_from_web_storage, native_module_loader_name,
+    order_page_scripts, page_script_sources_to_scripts, resolve_module_request_url,
+    save_content_web_storage_profile, save_service_worker_cache_profile, save_web_storage_profile,
+    static_module_requests, storage_key, validate_message_port_transfers,
+    validate_native_message_payload, validate_native_object_url_transfers,
 };
 use super::layout::NativePoint;
 use super::module_import_map::NativeModuleImportMap;
@@ -123,7 +124,7 @@ const MAX_CONTENT_ASYNC_EFFECT_NOTIFICATIONS: usize = MAX_CONTENT_PROCESS_OUTPUT
 const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
     MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
-const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 30;
+const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 31;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -6117,6 +6118,175 @@ impl NativeContentProcess {
                 write_frame(&mut self.stdin, &payload).await?;
                 continue;
             }
+            if response.get("kind").and_then(Value::as_str) == Some("parent_sync_xhr_request") {
+                let loader = parent_loader.as_deref_mut().ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "content process parent synchronous XHR broker",
+                        NativeWorkerFailureKind::Protocol,
+                        "content process requested synchronous XHR without a parent network broker",
+                    )
+                })?;
+                if response.get("id").and_then(Value::as_u64) != Some(request_id) {
+                    return Err(NativeEngineError::worker_failure(
+                        "content process parent synchronous XHR broker",
+                        NativeWorkerFailureKind::Protocol,
+                        "synchronous XHR belongs to a different content operation",
+                    ));
+                }
+                let sync_id = response
+                    .get("sync_id")
+                    .and_then(Value::as_u64)
+                    .filter(|sync_id| *sync_id != 0)
+                    .ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "content process parent synchronous XHR broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "synchronous XHR has an invalid request ID",
+                        )
+                    })?;
+                let owner = decode_content_cookie_owner(
+                    response.get("owner").ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "content process parent synchronous XHR broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "synchronous XHR omitted its captured cookie owner",
+                        )
+                    })?,
+                    "content process parent synchronous XHR owner",
+                )?;
+                let expected_owner = request
+                    .get("owner")
+                    .map(|value| decode_content_cookie_owner(value, "active synchronous XHR owner"))
+                    .transpose()?;
+                if expected_owner
+                    .as_ref()
+                    .is_some_and(|expected| expected != &owner)
+                    || !parent_broker_owner_matches_operation(
+                        self,
+                        &request,
+                        &owner,
+                        parent_navigation_document_url.as_deref(),
+                    )
+                {
+                    return Err(NativeEngineError::worker_failure(
+                        "content process parent synchronous XHR broker",
+                        NativeWorkerFailureKind::Protocol,
+                        "synchronous XHR owner does not match the active document",
+                    ));
+                }
+                let xhr = response.get("request").ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "content process parent synchronous XHR broker",
+                        NativeWorkerFailureKind::Protocol,
+                        "synchronous XHR omitted request metadata",
+                    )
+                })?;
+                let document_url =
+                    xhr.get("documentUrl")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "content process parent synchronous XHR broker",
+                                NativeWorkerFailureKind::Protocol,
+                                "synchronous XHR omitted its initiator URL",
+                            )
+                        })?;
+                let href = xhr.get("href").and_then(Value::as_str).ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "content process parent synchronous XHR broker",
+                        NativeWorkerFailureKind::Protocol,
+                        "synchronous XHR omitted its target URL",
+                    )
+                })?;
+                let credentials =
+                    xhr.get("credentials")
+                        .and_then(Value::as_bool)
+                        .ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "content process parent synchronous XHR broker",
+                                NativeWorkerFailureKind::Protocol,
+                                "synchronous XHR omitted its credentials mode",
+                            )
+                        })?;
+                let body = match xhr.get("bodyBase64") {
+                    None | Some(Value::Null) => Value::Null,
+                    Some(Value::String(encoded)) => json!({
+                        "kind": "bytes",
+                        "value": encoded,
+                    }),
+                    Some(_) => {
+                        return Err(NativeEngineError::worker_failure(
+                            "content process parent synchronous XHR broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "synchronous XHR body is malformed",
+                        ));
+                    }
+                };
+                let fetch_request = json!({
+                    "method": xhr.get("method"),
+                    "body": body,
+                    "content_type": xhr.get("contentType"),
+                    "request_headers": xhr.get("headers"),
+                    "cors_mode": "cors",
+                    "redirect_mode": "follow",
+                    "cache_mode": "default",
+                    "timeout_ms": xhr.get("timeoutMs"),
+                    "referrer_url": null,
+                    "referrer_policy": xhr.get("referrerPolicy"),
+                    "credentials_mode": null,
+                    "max_response_bytes": null,
+                });
+                let request =
+                    decode_parent_fetch_request(document_url, href, credentials, &fetch_request)?;
+                let cookie_write_values = serde_json::from_value::<Vec<String>>(
+                    response.get("cookie_writes").cloned().ok_or_else(|| {
+                        NativeEngineError::worker_failure(
+                            "content process parent synchronous XHR broker",
+                            NativeWorkerFailureKind::Protocol,
+                            "synchronous XHR omitted its cookie-write journal",
+                        )
+                    })?,
+                )
+                .map_err(|_| {
+                    NativeEngineError::worker_failure(
+                        "content process parent synchronous XHR broker",
+                        NativeWorkerFailureKind::Protocol,
+                        "synchronous XHR cookie-write journal is malformed",
+                    )
+                })?;
+                let writes = cookie_write_values
+                    .into_iter()
+                    .map(|value| NativeContentCookieWrite {
+                        owner: owner.clone(),
+                        value,
+                    })
+                    .collect::<Vec<_>>();
+                let cookie_writes = json!({ "cookie_writes": writes });
+                apply_parent_content_cookie_writes(
+                    loader,
+                    &owner,
+                    &cookie_writes,
+                    "parent synchronous XHR cookie-write journal",
+                )?;
+                let fetch = loader.fetch_request_with_headers_async(request).await;
+                let document_cookie = loader.document_cookie(&owner.document_url)?;
+                let response = json!({
+                    "kind": "parent_sync_xhr_response",
+                    "id": request_id,
+                    "sync_id": sync_id,
+                    "document_cookie": document_cookie,
+                    "fetch": parent_fetch_response_payload(request_id, fetch),
+                });
+                let payload = serde_json::to_vec(&response).map_err(|_| {
+                    NativeEngineError::worker_failure(
+                        "encode parent synchronous XHR response",
+                        NativeWorkerFailureKind::Protocol,
+                        "synchronous XHR response could not be encoded",
+                    )
+                })?;
+                write_frame(&mut self.stdin, &payload).await?;
+                continue;
+            }
             if response.get("kind").and_then(Value::as_str) == Some("parent_fetch_request") {
                 let loader = parent_loader.as_deref_mut().ok_or_else(|| {
                     NativeEngineError::worker_failure(
@@ -7510,11 +7680,15 @@ fn forward_content_ipc_frames(
     request_sender: mpsc::Sender<Result<Vec<u8>, NativeEngineError>>,
     dialog_waiting: Arc<AtomicBool>,
     dialog_sender: std::sync::mpsc::Sender<Result<NativeWorkerDialogDecision, String>>,
+    sync_xhr_replies: Arc<Mutex<BTreeMap<u64, std::sync::mpsc::SyncSender<Vec<u8>>>>>,
 ) {
     loop {
         let payload = match read_sync_frame(&mut reader) {
             Ok(payload) => payload,
             Err(_) => {
+                if let Ok(mut replies) = sync_xhr_replies.lock() {
+                    replies.clear();
+                }
                 if dialog_waiting.swap(false, Ordering::AcqRel) {
                     let _ = dialog_sender.send(Err(
                         "content process pipe closed before its dialog decision".into(),
@@ -7528,6 +7702,31 @@ fn forward_content_ipc_frames(
                 break;
             }
         };
+        if let Ok(response) = serde_json::from_slice::<Value>(&payload)
+            && response.get("kind").and_then(Value::as_str) == Some("parent_sync_xhr_response")
+        {
+            let sync_id = response.get("sync_id").and_then(Value::as_u64);
+            let reply = sync_id.and_then(|sync_id| {
+                sync_xhr_replies
+                    .lock()
+                    .ok()
+                    .and_then(|mut replies| replies.remove(&sync_id))
+            });
+            if let Some(reply) = reply {
+                let _ = reply.send(payload);
+                continue;
+            }
+            if let Ok(mut replies) = sync_xhr_replies.lock() {
+                // Wake every blocked broker call before terminating the reader.
+                replies.clear();
+            }
+            let _ = request_sender.blocking_send(Err(NativeEngineError::worker_failure(
+                "route parent-brokered synchronous XHR response",
+                NativeWorkerFailureKind::Protocol,
+                "parent returned a response for an unknown synchronous XHR request",
+            )));
+            break;
+        }
         if dialog_waiting.swap(false, Ordering::AcqRel) {
             let decision = serde_json::from_slice(&payload)
                 .map_err(|_| "native dialog decision was malformed".to_owned());
@@ -10672,14 +10871,210 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let mut stdout = tokio::io::stdout();
     let (ipc_request_tx, mut ipc_request_rx) = mpsc::channel(1);
     let (dialog_decision_tx, dialog_decision_rx) = std::sync::mpsc::channel();
+    let sync_xhr_context = Arc::new(Mutex::new(None::<(u64, NativeContentCookieOwner)>));
+    let sync_xhr_replies = Arc::new(Mutex::new(BTreeMap::<
+        u64,
+        std::sync::mpsc::SyncSender<Vec<u8>>,
+    >::new()));
+    let next_sync_xhr_id = Arc::new(AtomicU64::new(1));
+    let broker_context = Arc::clone(&sync_xhr_context);
+    let broker_replies = Arc::clone(&sync_xhr_replies);
+    let broker_next_id = Arc::clone(&next_sync_xhr_id);
+    let sync_xhr_parent_broker: NativeSyncXhrParentBroker =
+        Arc::new(move |encoded_request, cookie_writes| {
+            if encoded_request.len() > MAX_NATIVE_SCRIPT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "parent-brokered synchronous XHR request",
+                    MAX_NATIVE_SCRIPT_BYTES,
+                    encoded_request.len(),
+                ));
+            }
+            let cookie_write_bytes = cookie_writes
+                .iter()
+                .fold(0usize, |total, value| total.saturating_add(value.len()));
+            if cookie_writes.len() > MAX_NATIVE_EFFECTS
+                || cookie_write_bytes > MAX_CONTENT_DOCUMENT_COOKIE_BYTES
+            {
+                return Err(NativeEngineError::limit(
+                    "parent-brokered synchronous XHR cookie writes",
+                    MAX_NATIVE_EFFECTS,
+                    cookie_writes.len(),
+                ));
+            }
+            let (request_id, owner) = broker_context
+                .lock()
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "parent-brokered synchronous XHR".into(),
+                    reason: "active content owner is unavailable".into(),
+                })?
+                .clone()
+                .ok_or_else(|| NativeEngineError::Network {
+                    operation: "parent-brokered synchronous XHR".into(),
+                    reason: "parent cookie and network authority is unavailable".into(),
+                })?;
+            let request: Value = serde_json::from_str(encoded_request).map_err(|_| {
+                NativeEngineError::invalid(
+                    "parent-brokered synchronous XHR request",
+                    "must be valid JSON",
+                )
+            })?;
+            let sync_id = broker_next_id
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    current.checked_add(1)
+                })
+                .map_err(|_| NativeEngineError::Worker {
+                    operation: "parent-brokered synchronous XHR".into(),
+                    reason: "request ID space is exhausted".into(),
+                })?;
+            let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+            {
+                let mut replies = broker_replies
+                    .lock()
+                    .map_err(|_| NativeEngineError::Worker {
+                        operation: "parent-brokered synchronous XHR".into(),
+                        reason: "response routing is unavailable".into(),
+                    })?;
+                if replies.len() >= MAX_NATIVE_EFFECTS || replies.contains_key(&sync_id) {
+                    return Err(NativeEngineError::limit(
+                        "pending parent-brokered synchronous XHR requests",
+                        MAX_NATIVE_EFFECTS,
+                        replies.len().saturating_add(1),
+                    ));
+                }
+                replies.insert(sync_id, reply_tx);
+            }
+            let frame = json!({
+                "kind": "parent_sync_xhr_request",
+                "id": request_id,
+                "sync_id": sync_id,
+                "owner": owner,
+                "request": request,
+                "cookie_writes": cookie_writes,
+            });
+            let payload = serde_json::to_vec(&frame).map_err(|_| NativeEngineError::Worker {
+                operation: "encode parent-brokered synchronous XHR".into(),
+                reason: "request could not be encoded".into(),
+            })?;
+            if let Err(error) = write_sync_frame(std::io::stdout(), &payload) {
+                if let Ok(mut replies) = broker_replies.lock() {
+                    replies.remove(&sync_id);
+                }
+                return Err(NativeEngineError::Worker {
+                    operation: "write parent-brokered synchronous XHR".into(),
+                    reason: error.to_string(),
+                });
+            }
+            let response = reply_rx.recv().map_err(|_| NativeEngineError::Worker {
+                operation: "parent-brokered synchronous XHR".into(),
+                reason: "parent closed the synchronous XHR response channel".into(),
+            })?;
+            if let Ok(mut replies) = broker_replies.lock() {
+                replies.remove(&sync_id);
+            }
+            let response: Value = serde_json::from_slice(&response).map_err(|_| {
+                NativeEngineError::worker_failure(
+                    "parent-brokered synchronous XHR",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent returned invalid synchronous XHR JSON",
+                )
+            })?;
+            if response.get("kind").and_then(Value::as_str) != Some("parent_sync_xhr_response")
+                || response.get("id").and_then(Value::as_u64) != Some(request_id)
+                || response.get("sync_id").and_then(Value::as_u64) != Some(sync_id)
+            {
+                return Err(NativeEngineError::worker_failure(
+                    "parent-brokered synchronous XHR",
+                    NativeWorkerFailureKind::Protocol,
+                    "response does not match the active request",
+                ));
+            }
+            let document_cookie = response
+                .get("document_cookie")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "parent-brokered synchronous XHR",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent omitted the visible document-cookie projection",
+                    )
+                })?;
+            if document_cookie.len() > crate::browser_backend::MAX_TEXT_BYTES {
+                return Err(NativeEngineError::limit(
+                    "parent synchronous XHR cookie projection",
+                    crate::browser_backend::MAX_TEXT_BYTES,
+                    document_cookie.len(),
+                ));
+            }
+            let fetch = response.get("fetch").ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "parent-brokered synchronous XHR",
+                    NativeWorkerFailureKind::Protocol,
+                    "parent omitted the XHR result",
+                )
+            })?;
+            if fetch.get("kind").and_then(Value::as_str) == Some("error") {
+                require_response_kind(
+                    fetch,
+                    "error",
+                    request_id,
+                    "parent-brokered synchronous XHR",
+                )?;
+            }
+            let mut result = match fetch.get("kind").and_then(Value::as_str) {
+                Some("fetched") => {
+                    let response = decode_fetch_response(fetch, request_id)?;
+                    if response.opaque || response.opaque_redirect {
+                        return Err(NativeEngineError::worker_failure(
+                            "parent-brokered synchronous XHR",
+                            NativeWorkerFailureKind::Protocol,
+                            "parent returned an opaque response for XHR",
+                        ));
+                    }
+                    json!({
+                        "error": false,
+                        "url": response.url,
+                        "status": response.status,
+                        "statusText": response.status_text,
+                        "contentType": response.content_type,
+                        "headers": response.headers,
+                        "bodyBase64": base64::engine::general_purpose::STANDARD
+                            .encode(response.body),
+                        "redirected": response.redirected,
+                    })
+                }
+                Some("error") => {
+                    let reason = fetch
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("parent rejected the synchronous XHR request");
+                    json!({
+                        "error": true,
+                        "errorMessage": reason,
+                        "timeout": reason.to_ascii_lowercase().contains("timeout"),
+                    })
+                }
+                _ => {
+                    return Err(NativeEngineError::worker_failure(
+                        "parent-brokered synchronous XHR",
+                        NativeWorkerFailureKind::Protocol,
+                        "parent returned an unknown XHR result",
+                    ));
+                }
+            };
+            result["documentCookie"] = Value::String(document_cookie.to_owned());
+            Ok(result)
+        });
+    install_native_sync_xhr_parent_broker(sync_xhr_parent_broker)?;
     let dialog_rpc = Arc::new(NativeWorkerDialogRpc::new(dialog_decision_rx));
     let dialog_waiting = Arc::clone(&dialog_rpc.dialog_waiting);
+    let reader_sync_xhr_replies = Arc::clone(&sync_xhr_replies);
     let _ipc_reader = std::thread::spawn(move || {
         forward_content_ipc_frames(
             std::io::stdin(),
             ipc_request_tx,
             dialog_waiting,
             dialog_decision_tx,
+            reader_sync_xhr_replies,
         );
     });
     let mut running = false;
@@ -10938,6 +11333,31 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             .get("kind")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        let captured_cookie_owner = request
+            .get("owner")
+            .map(|owner| decode_content_cookie_owner(owner, "active synchronous XHR owner"))
+            .transpose()?;
+        let fallback_owner_url = if kind == "load" {
+            request.get("url").and_then(Value::as_str)
+        } else {
+            document_url.as_deref()
+        };
+        let fallback_owner_generation = request
+            .get("generation")
+            .and_then(Value::as_u64)
+            .and_then(|generation| u32::try_from(generation).ok())
+            .or_else(|| document.as_ref().map(NativeDocument::generation));
+        let active_cookie_owner = captured_cookie_owner.or_else(|| {
+            Some(NativeContentCookieOwner {
+                context_id: storage_context_id.clone(),
+                frame_id: frame_id.clone(),
+                generation: fallback_owner_generation?,
+                document_url: fallback_owner_url?.to_owned(),
+            })
+        });
+        if let Ok(mut context) = sync_xhr_context.lock() {
+            *context = active_cookie_owner.map(|owner| (request_id, owner));
+        }
         if kind == "script" {
             async_effect_notification_pending = false;
         }
@@ -23547,8 +23967,18 @@ mod tests {
         let (dialog_tx, dialog_rx) = std::sync::mpsc::channel();
         let dialog_waiting = Arc::new(AtomicBool::new(false));
         let reader_waiting = Arc::clone(&dialog_waiting);
+        let sync_xhr_replies = Arc::new(Mutex::new(BTreeMap::new()));
+        let (sync_reply_tx, sync_reply_rx) = std::sync::mpsc::sync_channel(1);
+        sync_xhr_replies.lock().unwrap().insert(1, sync_reply_tx);
+        let reader_sync_xhr_replies = Arc::clone(&sync_xhr_replies);
         let reader_thread = std::thread::spawn(move || {
-            forward_content_ipc_frames(reader, request_tx, reader_waiting, dialog_tx);
+            forward_content_ipc_frames(
+                reader,
+                request_tx,
+                reader_waiting,
+                dialog_tx,
+                reader_sync_xhr_replies,
+            );
         });
 
         let request = serde_json::to_vec(&json!({"kind": "ping", "id": 7})).unwrap();
@@ -23570,6 +24000,18 @@ mod tests {
         assert_eq!(routed.dialog_id, 3);
         assert!(routed.accepted);
         assert_eq!(routed.prompt_value.as_deref(), Some("approved"));
+
+        let unknown_xhr_response =
+            serde_json::to_vec(&json!({"kind": "parent_sync_xhr_response", "sync_id": 99}))
+                .unwrap();
+        send_frame(&input_tx, &unknown_xhr_response);
+        assert!(matches!(request_rx.recv().await.unwrap(), Err(_)));
+        assert!(
+            sync_reply_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .is_err()
+        );
+        assert!(sync_xhr_replies.lock().unwrap().is_empty());
 
         drop(input_tx);
         reader_thread.join().unwrap();

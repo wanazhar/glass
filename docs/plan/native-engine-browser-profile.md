@@ -117,14 +117,18 @@ protocol now sends only an owner-checked, URL-scoped visible projection and no
 longer has full-cookie set/apply/clear commands. Script setter writes return to
 the parent without mutating the child loader, and cookie import/update/clear
 operations refresh the projection rather than mirroring a cookie profile.
-The content-worker protocol is now version 30. Page and dedicated Worker
+The content-worker protocol is now version 31. Page and dedicated Worker
 EventSource open, response streaming, reconnect, and close use the parent
 broker. WebSocket handshakes, frame sends/receives, and close also use it: the
 parent owns each live socket, keeps handshake cookies and `Set-Cookie` inside
 the parent jar, and sends only bounded frames and opaque stream IDs to the
-child. Worker requests retain the worker script URL as their network
-initiator, while the captured page owner scopes IPC streams and cookie-write
-journals. No child-loader fallback is permitted for these transports.
+child. Synchronous page and Worker XHR now use a blocking parent IPC round trip;
+the parent applies pending script-visible cookie writes before selecting
+request cookies, accepts response `Set-Cookie`, and returns only the
+URL-scoped script-visible cookie projection. Worker requests retain the worker
+script URL as their network initiator, while the captured page owner scopes IPC
+streams and cookie-write journals. No child-loader fallback is permitted for
+these transports.
 Child-direct internal network paths can still populate a transient child jar
 and emit a bounded cookie-change journal to the parent, so the parent-only
 contract is not yet met. Page and dedicated Worker EventSource responses use

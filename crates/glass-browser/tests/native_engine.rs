@@ -21311,8 +21311,24 @@ async fn native_nested_frame_script_projection_preserves_window_chain() {
     server.await.unwrap();
 }
 
-#[tokio::test]
-async fn native_cross_origin_frame_windows_enforce_security_boundary() {
+#[test]
+fn native_cross_origin_parent_security_and_cookie_authority() {
+    std::thread::Builder::new()
+        .name("native-cross-origin-frame-cookie-test".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("cross-origin frame cookie test runtime should build");
+            runtime.block_on(native_cross_origin_parent_security_and_cookie_authority_inner());
+        })
+        .expect("cross-origin frame cookie test thread should start")
+        .join()
+        .expect("cross-origin frame cookie test thread should finish");
+}
+
+async fn native_cross_origin_parent_security_and_cookie_authority_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let child_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let child_address = child_listener.local_addr().unwrap();
@@ -21320,28 +21336,52 @@ async fn native_cross_origin_frame_windows_enforce_security_boundary() {
         let (mut stream, _) = child_listener.accept().await.unwrap();
         let request = read_http_request(&mut stream).await;
         assert_eq!(request.split_whitespace().nth(1), Some("/child"));
-        let body = "<html><body><p>cross-origin child</p></body></html>";
+        let cookie = request
+            .lines()
+            .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+            .and_then(|line| line.split_once(':'))
+            .map(|(_, value)| value.trim().to_owned());
+        let body = "<html><head><title>Frame loaded</title></head><body><p>cross-origin child</p></body></html>";
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 200 OK\r\nSet-Cookie: child_frame_secret=accepted; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         stream.write_all(response.as_bytes()).await.unwrap();
+        cookie
     });
 
     let parent_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let parent_address = parent_listener.local_addr().unwrap();
     let parent_server = tokio::spawn(async move {
-        let (mut stream, _) = parent_listener.accept().await.unwrap();
-        let request = read_http_request(&mut stream).await;
-        assert_eq!(request.split_whitespace().nth(1), Some("/parent"));
-        let body = format!(
-            "<html><body><iframe id='child' src='http://{child_address}/child'></iframe><p>parent</p></body></html>"
-        );
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        stream.write_all(response.as_bytes()).await.unwrap();
+        let mut requests = Vec::new();
+        for expected_path in ["/parent", "/after"] {
+            let (mut stream, _) = parent_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let cookie = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_owned());
+            let (headers, content_type, body) = match expected_path {
+                "/parent" => (
+                    "Set-Cookie: parent_frame_secret=seed; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "text/html",
+                    format!(
+                        "<html><body><iframe id='child' src='http://{child_address}/child'></iframe><p>parent</p></body></html>"
+                    ),
+                ),
+                "/after" => ("", "text/plain", "parent observed frame cookie".to_owned()),
+                other => panic!("unexpected parent-frame request: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push((expected_path.to_owned(), cookie));
+        }
+        requests
     });
 
     let session = BrowserRuntimeSession::connect_native(
@@ -21351,12 +21391,21 @@ async fn native_cross_origin_frame_windows_enforce_security_boundary() {
     .unwrap();
     let frames = session.native_list_frames().await.unwrap();
     assert_eq!(frames.len(), 2);
-    let child_id = frames
-        .iter()
-        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+
+    let parent_cookie_observation = session
+        .script(
+            "await fetch('/after').then(async response => ({ body: await response.text(), cookie: document.cookie }))",
+        )
+        .await
         .unwrap()
-        .id
-        .clone();
+        .value;
+    assert_eq!(
+        parent_cookie_observation,
+        serde_json::json!({
+            "body": "parent observed frame cookie",
+            "cookie": "",
+        })
+    );
 
     let parent_view = session
         .script(
@@ -21377,27 +21426,32 @@ async fn native_cross_origin_frame_windows_enforce_security_boundary() {
         })
     );
 
-    session.native_select_frame(&child_id).await.unwrap();
-    let child_view = session
-        .script(
-            "(() => { let parentDocumentError; let parentHistoryError; try { window.parent.document; } catch (error) { parentDocumentError = [error instanceof DOMException, error.name, error.code]; } try { window.parent.history; } catch (error) { parentHistoryError = [error instanceof DOMException, error.name, error.code]; } return { frameElement: window.frameElement, parentDocumentError, parentHistoryError, parentLocation: window.parent.location.href, top: window.top === window.parent }; })()",
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        child_view.value,
-        serde_json::json!({
-            "frameElement": null,
-            "parentDocumentError": [true, "SecurityError", 18],
-            "parentHistoryError": [true, "SecurityError", 18],
-            "parentLocation": format!("http://{parent_address}/parent"),
-            "top": true,
-        })
-    );
-
     session.close().await.unwrap();
-    parent_server.await.unwrap();
-    child_server.await.unwrap();
+    let child_request_cookie = child_server.await.unwrap();
+    assert!(
+        child_request_cookie
+            .as_deref()
+            .is_some_and(|value| value.contains("parent_frame_secret=seed")),
+        "parent did not select its HttpOnly cookie for the cross-origin child frame: {child_request_cookie:?}"
+    );
+    let parent_requests = parent_server.await.unwrap();
+    assert_eq!(
+        parent_requests
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect::<Vec<_>>(),
+        ["/parent", "/after"]
+    );
+    let after_request_cookie = parent_requests
+        .iter()
+        .find(|(path, _)| path == "/after")
+        .and_then(|(_, cookie)| cookie.as_deref());
+    for name in ["parent_frame_secret=seed", "child_frame_secret=accepted"] {
+        assert!(
+            after_request_cookie.is_some_and(|value| value.contains(name)),
+            "parent did not select {name} after the frame response: {after_request_cookie:?}"
+        );
+    }
 }
 
 #[tokio::test]

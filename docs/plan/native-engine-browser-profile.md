@@ -97,6 +97,15 @@ acceptance or rejection of every `Set-Cookie`, expiry/deletion, profile
 persistence, and shared-profile journal publication. A content process or
 worker realm is never a cookie store or durable writer.
 
+Within one browser context, the parent owns one in-memory cookie jar shared
+explicitly with its frame and target engines. This lets a request from a
+cross-origin frame use the context's parent-selected cookies and makes cookies
+accepted from that frame's response visible to later requests in the context.
+Ordinary resource-loader clones remain isolated snapshots; sharing is an
+explicit browser-context ownership decision. A staged cookie transaction
+commits only its cookie changes into the shared jar, so it cannot replace
+unrelated changes made by a sibling engine while the transaction awaited IPC.
+
 The parent must not send a cookie profile, an HttpOnly value, or raw
 `Cookie`/`Set-Cookie` headers to a content process. It gives a document only a
 URL-scoped `document.cookie` projection containing cookies visible to script;

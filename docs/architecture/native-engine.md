@@ -869,6 +869,14 @@ guard now rejects every direct HTTP(S) request from the content loader; request
 classes not yet wired to the parent broker therefore fail closed instead of
 silently losing cookies. Their availability and response-cookie behavior
 remain incomplete, so Slice 843 is still in progress.
+The parent also shares its per-browser-context cookie jar explicitly with
+frame and target engines; ordinary loader clones remain isolated. The focused
+`native_cross_origin_parent_security_and_cookie_authority` process-backed
+regression passed (1 test; 30.73 seconds): a cross-origin child frame receives
+the parent's HttpOnly cookie, its HttpOnly response cookie is sent on a later
+parent request, and the parent script projection remains empty. This verifies
+shared context authority for that frame path, not complete cookie-policy or
+uncovered-request parity.
 
 ## HTML parser ownership
 

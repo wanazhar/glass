@@ -22,7 +22,7 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Semaphore;
 use url::Url;
@@ -927,7 +927,7 @@ struct NativeNetworkState {
     script_cache: BTreeMap<String, NativeTextCacheEntry>,
     fetch_cache: BTreeMap<String, NativeFetchCacheEntry>,
     font_cache: BTreeMap<String, NativeFontCacheEntry>,
-    cookies: Vec<NativeCookie>,
+    cookies: NativeCookieJar,
     document_policies: BTreeMap<String, NativeCspPolicy>,
     document_response_policy_headers: BTreeMap<String, Vec<(String, String)>>,
     document_referrer_policies: BTreeMap<String, NativeFetchReferrerPolicy>,
@@ -944,7 +944,7 @@ impl Default for NativeNetworkState {
             script_cache: BTreeMap::new(),
             fetch_cache: BTreeMap::new(),
             font_cache: BTreeMap::new(),
-            cookies: Vec::new(),
+            cookies: NativeCookieJar::default(),
             document_policies: BTreeMap::new(),
             document_response_policy_headers: BTreeMap::new(),
             document_referrer_policies: BTreeMap::new(),
@@ -1265,6 +1265,74 @@ struct NativeCookie {
     expires_at: Option<Instant>,
     expires_at_unix_seconds: Option<u64>,
 }
+
+/// The browser parent owns this in-memory jar and may explicitly share its
+/// handle with sibling parent-side frame/target engines. Ordinary `Clone`
+/// snapshots it, keeping loader copies such as the SharedWorker coordinator
+/// isolated unless sharing is deliberately requested.
+#[derive(Debug, Default)]
+pub(crate) struct NativeCookieJar(Arc<Mutex<Vec<NativeCookie>>>);
+
+impl NativeCookieJar {
+    fn lock(&self) -> MutexGuard<'_, Vec<NativeCookie>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn snapshot(&self) -> Vec<NativeCookie> {
+        self.lock().clone()
+    }
+
+    fn shared_clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+
+    fn replace(&self, cookies: Vec<NativeCookie>) {
+        *self.lock() = cookies;
+    }
+
+    fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    fn apply_changes(&self, changes: &[NativeCookieChange]) -> Result<(), NativeEngineError> {
+        let mut state = NativeNetworkState {
+            cookies: self.shared_clone(),
+            ..NativeNetworkState::default()
+        };
+        for change in changes {
+            match &change.cookie {
+                Some(profile) => match NativeCookie::from_profile(profile.clone())? {
+                    Some(cookie) => {
+                        state.set_cookie_profile(cookie)?;
+                    }
+                    None => {
+                        state.remove_cookie(&change.name, &change.domain, &change.path);
+                    }
+                },
+                None => {
+                    state.remove_cookie(&change.name, &change.domain, &change.path);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Clone for NativeCookieJar {
+    fn clone(&self) -> Self {
+        Self(Arc::new(Mutex::new(self.snapshot())))
+    }
+}
+
+impl PartialEq for NativeCookieJar {
+    fn eq(&self, other: &Self) -> bool {
+        self.snapshot() == other.snapshot()
+    }
+}
+
+impl Eq for NativeCookieJar {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeCookieSameSite {
@@ -2963,6 +3031,20 @@ fn file_image_media_type(path: &Path) -> Option<&'static str> {
 
 impl NativeResourceLoader {
     pub(crate) fn new(config: &NativeEngineConfig) -> Result<Self, NativeEngineError> {
+        Self::new_with_cookie_jar(config, None)
+    }
+
+    pub(crate) fn new_with_shared_cookie_jar(
+        config: &NativeEngineConfig,
+        cookie_jar: NativeCookieJar,
+    ) -> Result<Self, NativeEngineError> {
+        Self::new_with_cookie_jar(config, Some(cookie_jar))
+    }
+
+    fn new_with_cookie_jar(
+        config: &NativeEngineConfig,
+        shared_cookie_jar: Option<NativeCookieJar>,
+    ) -> Result<Self, NativeEngineError> {
         config.validate()?;
         let fixtures = config
             .fixtures
@@ -2970,12 +3052,19 @@ impl NativeResourceLoader {
             .map(|fixture| (fixture.url.clone(), fixture.html.clone()))
             .collect();
         let allowed_file_roots = canonical_file_roots(&config.allowed_file_roots)?;
-        let cookies = load_cookie_profile(config.storage_path.as_deref())?;
+        let network = if let Some(cookie_jar) = shared_cookie_jar {
+            NativeNetworkState {
+                cookies: cookie_jar,
+                ..NativeNetworkState::default()
+            }
+        } else {
+            NativeNetworkState::from_profile(load_cookie_profile(config.storage_path.as_deref())?)?
+        };
         Ok(Self {
             fixtures,
             allowed_file_roots,
             max_document_bytes: config.limits.max_document_bytes,
-            network: NativeNetworkState::from_profile(cookies)?,
+            network,
             environment: NativeEnvironmentOverrides::default(),
             cookie_changes: Vec::new(),
             csp_violations: Vec::new(),
@@ -4324,6 +4413,37 @@ impl NativeResourceLoader {
         self.network.cookie_profile()
     }
 
+    pub(crate) fn shared_cookie_jar(&self) -> NativeCookieJar {
+        self.network.cookies.shared_clone()
+    }
+
+    pub(crate) fn cookie_change_checkpoint(&self) -> usize {
+        self.cookie_changes.len()
+    }
+
+    pub(crate) fn cookie_changes_since(&self, checkpoint: usize) -> Vec<NativeCookieChange> {
+        self.cookie_changes
+            .get(checkpoint..)
+            .unwrap_or_default()
+            .to_vec()
+    }
+
+    /// Commit an isolated loader transaction while retaining this browser
+    /// context's shared cookie authority and applying only the transaction's
+    /// cookie delta. Replacing the complete snapshot could erase sibling
+    /// frame/target updates made while the transaction awaited content IPC.
+    pub(crate) fn commit_staged_cookie_state(
+        &mut self,
+        mut staged: Self,
+        cookie_changes: &[NativeCookieChange],
+    ) -> Result<(), NativeEngineError> {
+        let cookie_jar = self.network.cookies.shared_clone();
+        cookie_jar.apply_changes(cookie_changes)?;
+        staged.network.cookies = cookie_jar;
+        *self = staged;
+        Ok(())
+    }
+
     pub(crate) fn cookies_for_document(
         &self,
         document_url: &str,
@@ -4342,7 +4462,7 @@ impl NativeResourceLoader {
             .network
             .matching_cookies(&document_url, true)
             .into_iter()
-            .filter_map(NativeCookie::to_profile)
+            .filter_map(|cookie| cookie.to_profile())
             .collect())
     }
 
@@ -4413,7 +4533,10 @@ impl NativeResourceLoader {
                 profiles.len(),
             ));
         }
-        self.network.cookies = NativeNetworkState::from_profile(profiles.to_vec())?.cookies;
+        let replacement = NativeNetworkState::from_profile(profiles.to_vec())?
+            .cookies
+            .snapshot();
+        self.network.cookies.replace(replacement);
         self.cookie_changes.clear();
         Ok(())
     }
@@ -9920,12 +10043,12 @@ fn document_cache_fresh_until(headers: &HeaderMap, now: Instant) -> Option<Insta
 
 impl NativeNetworkState {
     fn from_profile(profile: Vec<NativeCookieProfileEntry>) -> Result<Self, NativeEngineError> {
-        let mut state = Self::default();
+        let state = Self::default();
         for cookie in profile {
             let Some(cookie) = NativeCookie::from_profile(cookie)? else {
                 continue;
             };
-            state.cookies.push(cookie);
+            state.cookies.lock().push(cookie);
         }
         Ok(state)
     }
@@ -9935,8 +10058,9 @@ impl NativeNetworkState {
             return Vec::new();
         }
         self.cookies
-            .iter()
-            .filter_map(NativeCookie::to_profile)
+            .snapshot()
+            .into_iter()
+            .filter_map(|cookie| cookie.to_profile())
             .collect()
     }
 
@@ -9960,7 +10084,7 @@ impl NativeNetworkState {
         self.cookie_header_with_visibility(url, true, initiator_url, top_level_navigation, method)
     }
 
-    fn matching_cookies(&self, url: &Url, include_http_only: bool) -> Vec<&NativeCookie> {
+    fn matching_cookies(&self, url: &Url, include_http_only: bool) -> Vec<NativeCookie> {
         if !self.cookie_authority_enabled {
             return Vec::new();
         }
@@ -9976,7 +10100,8 @@ impl NativeNetworkState {
         let now = Instant::now();
         let mut matching = self
             .cookies
-            .iter()
+            .snapshot()
+            .into_iter()
             .filter(|cookie| {
                 domain_matches(cookie, &host)
                     && path_matches(request_path, &cookie.path)
@@ -10046,19 +10171,20 @@ impl NativeNetworkState {
                 && candidate.domain == cookie.domain
                 && candidate.path == cookie.path
         };
-        let had_existing = self.cookies.iter().any(same_cookie);
-        self.cookies.retain(|candidate| !same_cookie(candidate));
-        let evicted = if !had_existing && self.cookies.len() >= MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
-            self.cookies.remove(0).to_profile()
+        let mut cookies = self.cookies.lock();
+        let had_existing = cookies.iter().any(same_cookie);
+        cookies.retain(|candidate| !same_cookie(candidate));
+        let evicted = if !had_existing && cookies.len() >= MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
+            cookies.remove(0).to_profile()
         } else {
             None
         };
-        self.cookies.push(cookie);
-        if self.cookies.len() > MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
+        cookies.push(cookie);
+        if cookies.len() > MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
             return Err(NativeEngineError::limit(
                 "native cookie profile entries",
                 MAX_NATIVE_COOKIE_PROFILE_ENTRIES,
-                self.cookies.len(),
+                cookies.len(),
             ));
         }
         Ok(evicted)
@@ -10068,17 +10194,18 @@ impl NativeNetworkState {
         if !self.cookie_authority_enabled {
             return false;
         }
-        let before = self.cookies.len();
-        self.cookies
+        let mut cookies = self.cookies.lock();
+        let before = cookies.len();
+        cookies
             .retain(|cookie| cookie.name != name || cookie.domain != domain || cookie.path != path);
-        self.cookies.len() != before
+        cookies.len() != before
     }
 
     fn clear_cookies(&mut self, changes: &mut Vec<NativeCookieChange>) {
         if !self.cookie_authority_enabled {
             return;
         }
-        for cookie in self.cookies.drain(..) {
+        for cookie in self.cookies.lock().drain(..) {
             changes.push(NativeCookieChange {
                 name: cookie.name,
                 domain: cookie.domain,
@@ -10187,9 +10314,10 @@ impl NativeNetworkState {
             path: path.clone(),
             cookie: None,
         };
+        let mut cookies = self.cookies.lock();
         if max_age.is_some_and(|age| age <= 0) {
-            let removed = self.cookies.iter().any(same_cookie);
-            self.cookies.retain(|cookie| !same_cookie(cookie));
+            let removed = cookies.iter().any(same_cookie);
+            cookies.retain(|cookie| !same_cookie(cookie));
             return removed.then(change_key).into_iter().collect();
         }
         let expires_at_unix_seconds = max_age.map(|age| {
@@ -10213,11 +10341,11 @@ impl NativeNetworkState {
             priority: priority.clone(),
             expires_at_unix_seconds,
         };
-        let had_existing = self.cookies.iter().any(same_cookie);
-        self.cookies.retain(|cookie| !same_cookie(cookie));
+        let had_existing = cookies.iter().any(same_cookie);
+        cookies.retain(|cookie| !same_cookie(cookie));
         let mut changes = Vec::new();
-        if !had_existing && self.cookies.len() >= MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
-            let removed = self.cookies.remove(0);
+        if !had_existing && cookies.len() >= MAX_NATIVE_COOKIE_PROFILE_ENTRIES {
+            let removed = cookies.remove(0);
             changes.push(NativeCookieChange {
                 name: removed.name,
                 domain: removed.domain,
@@ -10225,7 +10353,7 @@ impl NativeNetworkState {
                 cookie: None,
             });
         }
-        self.cookies.push(NativeCookie {
+        cookies.push(NativeCookie {
             name: profile.name.clone(),
             value: profile.value.clone(),
             domain: profile.domain.clone(),

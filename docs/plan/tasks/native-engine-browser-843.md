@@ -750,5 +750,15 @@ projection and existing native Fetch behavior.
   URL-encoded POST body and content type. This closes only form-POST cookie
   coverage; other uncovered HTTP(S) classes still fail closed and Slice 843
   remains in progress.
+- The parent now explicitly shares the browser-context cookie jar with frame
+  and target engines. Ordinary resource-loader clones remain isolated, while
+  staged cookie transactions merge only their changes into the shared jar so
+  a sibling update made during an IPC wait is not overwritten. The
+  process-backed `native_cross_origin_parent_security_and_cookie_authority`
+  regression passed (1 passed; 30.73 seconds): a cross-origin child frame
+  receives the parent's HttpOnly cookie, its HttpOnly response cookie reaches
+  a later parent request, and the parent `document.cookie` projection remains
+  empty. The scoped check passed with existing dead-code warnings. This does
+  not close unbrokered request classes or full cookie-policy parity.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

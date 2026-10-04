@@ -2352,76 +2352,118 @@ impl NativeEngineBackend {
         Ok(order_native_frames(frames))
     }
 
+    fn active_frame_snapshot(
+        &self,
+        operation: BackendOperation,
+    ) -> Result<
+        Option<(
+            String,
+            Arc<tokio::sync::Mutex<NativeEngine>>,
+            NativeFrameState,
+        )>,
+        BrowserBackendError,
+    > {
+        let targets = self.lock_targets(operation)?;
+        let Some(target_id) = targets.active_target_id.clone() else {
+            return Ok(None);
+        };
+        let engine = self
+            .engine
+            .lock()
+            .map_err(|_| poisoned_lock_error(operation, "engine"))?
+            .clone();
+        Ok(Some((target_id, engine, targets.active_frames.clone())))
+    }
+
+    fn validate_active_frame_snapshot(
+        &self,
+        operation: BackendOperation,
+        target_id: &str,
+        engine_owner: &Arc<tokio::sync::Mutex<NativeEngine>>,
+    ) -> Result<(), BrowserBackendError> {
+        let targets = self.lock_targets(operation)?;
+        let current_engine = self
+            .engine
+            .lock()
+            .map_err(|_| poisoned_lock_error(operation, "engine"))?
+            .clone();
+        if targets.active_target_id.as_deref() != Some(target_id)
+            || !Arc::ptr_eq(&current_engine, engine_owner)
+        {
+            return Err(BrowserBackendError::SelectionFailed {
+                reason: "active native target changed during frame projection".into(),
+            });
+        }
+        Ok(())
+    }
+
     async fn frame_script_bindings(
         &self,
     ) -> Result<Vec<NativeFrameScriptBinding>, BrowserBackendError> {
-        let mut targets = self.lock_targets(BackendOperation::Script)?;
-        if targets.active_target_id.is_none() {
+        let Some((target_id, engine_owner, frames)) =
+            self.active_frame_snapshot(BackendOperation::Script)?
+        else {
             return Ok(Vec::new());
-        }
-        let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
-        reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
-        let active_frame_id = targets.active_frames.active_frame_id.clone();
+        };
+        // Dispatch synchronizes the frame tree before script preflight. Keep
+        // the registry unlocked while waiting for active and child engines;
+        // the async effect pump also needs that registry to route events.
+        let engine = engine_owner.clone().lock_owned().await;
+        let active_frame_id = frames.active_frame_id.clone();
         let parent_snapshot = engine.snapshot().map_err(native_error)?;
-        native_frame_script_children(
-            &targets.active_frames,
+        let bindings = native_frame_script_children(
+            &frames,
             &engine,
             &active_frame_id,
             &parent_snapshot.origin,
         )
-        .await
+        .await?;
+        drop(engine);
+        self.validate_active_frame_snapshot(BackendOperation::Script, &target_id, &engine_owner)?;
+        Ok(bindings)
     }
 
     async fn frame_script_context(
         &self,
     ) -> Result<Option<NativeFrameScriptContext>, BrowserBackendError> {
-        let mut targets = self.lock_targets(BackendOperation::Script)?;
-        let Some(target_id) = targets.active_target_id.clone() else {
+        let Some((target_id, engine_owner, frames)) =
+            self.active_frame_snapshot(BackendOperation::Script)?
+        else {
             return Ok(None);
         };
-        let mut engine = self.lock_engine_raw(BackendOperation::Script).await?;
-        reconcile_native_frames(&mut targets.active_frames, &mut engine).await?;
-        let Some(parent_id) = targets.active_frames.active_parent_id.clone() else {
-            return Ok(None);
-        };
-        let current_snapshot = engine.snapshot().map_err(native_error)?;
-        let parent_engine = native_frame_engine(&targets.active_frames, &engine, &parent_id)
-            .await
-            .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                reason: "native frame parent disappeared during script context projection".into(),
-            })?;
-        let parent_snapshot = parent_engine.snapshot().map_err(native_error)?;
-        let parent_same_origin = current_snapshot.origin != NativeOrigin::Opaque
-            && current_snapshot.origin == parent_snapshot.origin;
-        let parent_window = native_frame_script_window(
-            &targets.active_frames,
-            &engine,
-            &parent_id,
-            &parent_engine,
-            parent_same_origin,
-        )
-        .await?;
-        let top_id = native_main_frame_id(&target_id);
-        let top_engine = native_frame_engine(&targets.active_frames, &engine, &top_id)
-            .await
-            .ok_or_else(|| BrowserBackendError::SelectionFailed {
-                reason: "native top frame disappeared during script context projection".into(),
-            })?;
-        let top_snapshot = top_engine.snapshot().map_err(native_error)?;
-        let top_same_origin = current_snapshot.origin != NativeOrigin::Opaque
-            && current_snapshot.origin == top_snapshot.origin;
-        let top_window = native_frame_script_window(
-            &targets.active_frames,
-            &engine,
-            &top_id,
-            &top_engine,
-            top_same_origin,
-        )
-        .await?;
-        let frame_element = targets
-            .active_frames
-            .active_owner_node_index
-            .and_then(|node_index| {
+        let engine = engine_owner.clone().lock_owned().await;
+        let context = if let Some(parent_id) = frames.active_parent_id.clone() {
+            let current_snapshot = engine.snapshot().map_err(native_error)?;
+            let parent_engine = native_frame_engine(&frames, &engine, &parent_id)
+                .await
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native frame parent disappeared during script context projection"
+                        .into(),
+                })?;
+            let parent_snapshot = parent_engine.snapshot().map_err(native_error)?;
+            let parent_same_origin = current_snapshot.origin != NativeOrigin::Opaque
+                && current_snapshot.origin == parent_snapshot.origin;
+            let parent_window = native_frame_script_window(
+                &frames,
+                &engine,
+                &parent_id,
+                &parent_engine,
+                parent_same_origin,
+            )
+            .await?;
+            let top_id = native_main_frame_id(&target_id);
+            let top_engine = native_frame_engine(&frames, &engine, &top_id)
+                .await
+                .ok_or_else(|| BrowserBackendError::SelectionFailed {
+                    reason: "native top frame disappeared during script context projection".into(),
+                })?;
+            let top_snapshot = top_engine.snapshot().map_err(native_error)?;
+            let top_same_origin = current_snapshot.origin != NativeOrigin::Opaque
+                && current_snapshot.origin == top_snapshot.origin;
+            let top_window =
+                native_frame_script_window(&frames, &engine, &top_id, &top_engine, top_same_origin)
+                    .await?;
+            let frame_element = frames.active_owner_node_index.and_then(|node_index| {
                 parent_engine
                     .script_document_snapshot()
                     .ok()
@@ -2432,12 +2474,18 @@ impl NativeEngineBackend {
                             .find(|element| element.node_index == node_index)
                     })
             });
-        Ok(Some(NativeFrameScriptContext {
-            current_frame_id: targets.active_frames.active_frame_id.clone(),
-            parent: Some(parent_window),
-            top: Some(top_window),
-            frame_element,
-        }))
+            Some(NativeFrameScriptContext {
+                current_frame_id: frames.active_frame_id.clone(),
+                parent: Some(parent_window),
+                top: Some(top_window),
+                frame_element,
+            })
+        } else {
+            None
+        };
+        drop(engine);
+        self.validate_active_frame_snapshot(BackendOperation::Script, &target_id, &engine_owner)?;
+        Ok(context)
     }
 
     async fn frame_script_context_for_active_target_frame(
@@ -3757,11 +3805,12 @@ impl NativeEngineBackend {
             .lock()
             .map_err(|_| poisoned_lock_error(BackendOperation::Contexts, "engine"))?
             .clone();
-        let (base_config, active_url) = {
+        let (base_config, active_url, shared_cookie_jar) = {
             let engine = lock_native_engine_owner(&active_owner).await;
             (
                 engine.config().clone(),
                 engine.context().map_err(native_error)?.url,
+                engine.shared_cookie_jar(),
             )
         };
         let (target_id, opener_id, opener_window_name, opener_is_active, opener_owner) = {
@@ -3850,8 +3899,12 @@ impl NativeEngineBackend {
             nested_service_worker_client_messages,
             nested_page_message_port_commands,
         ) = tokio::spawn(async move {
-            let mut engine = NativeEngine::new_with_browser_shared_workers(config, dialog_control)
-                .map_err(native_error)?;
+            let mut engine = NativeEngine::new_with_browser_shared_workers_and_cookie_jar(
+                config,
+                dialog_control,
+                shared_cookie_jar,
+            )
+            .map_err(native_error)?;
             engine.set_content_process_event_notify(content_process_event_notify);
             if let Err(error) = engine.initialize_async().await {
                 let _ = engine.close_async().await;
@@ -9970,9 +10023,10 @@ async fn reconcile_native_frames(
             child_config
         };
         let frame_id = frames.next_frame_id(&target_id);
-        let mut child = NativeEngine::new_with_browser_shared_workers(
+        let mut child = NativeEngine::new_with_browser_shared_workers_and_cookie_jar(
             child_config,
             engine.dialog_control_plane(),
+            engine.shared_cookie_jar(),
         )
         .map_err(native_error)?;
         if let Some(notify) = engine.content_process_event_notify() {

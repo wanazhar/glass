@@ -65,10 +65,10 @@ use super::origin::NativeOrigin;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
-    NativeCspViolation, NativeFetchReferrerPolicy, NativeFetchResponse, NativeModuleResourceType,
-    NativeNavigationMethod, NativeNavigationPolicyKind, NativeNavigationRequest,
-    NativeObjectUrlTransfer, NativeResource, NativeResourceLoader, csp_sources_allow,
-    csp_sources_allow_for_redirect, validate_target_navigation_payload,
+    NativeCookieJar, NativeCspViolation, NativeFetchReferrerPolicy, NativeFetchResponse,
+    NativeModuleResourceType, NativeNavigationMethod, NativeNavigationPolicyKind,
+    NativeNavigationRequest, NativeObjectUrlTransfer, NativeResource, NativeResourceLoader,
+    csp_sources_allow, csp_sources_allow_for_redirect, validate_target_navigation_payload,
 };
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
@@ -499,12 +499,24 @@ impl NativeEngine {
         config: NativeEngineConfig,
         dialog_control: NativeDialogControlPlane,
     ) -> Result<Self, NativeEngineError> {
+        Self::new_with_dialog_control_and_cookie_jar(config, dialog_control, None)
+    }
+
+    fn new_with_dialog_control_and_cookie_jar(
+        config: NativeEngineConfig,
+        dialog_control: NativeDialogControlPlane,
+        shared_cookie_jar: Option<NativeCookieJar>,
+    ) -> Result<Self, NativeEngineError> {
         config.validate()?;
         let web_storage = load_web_storage_profile(config.storage_path.as_deref())?;
         let indexed_db = load_indexed_db_profile(config.storage_path.as_deref())?;
         let storage_event_offset = storage_event_cursor(config.storage_path.as_deref())?;
         let storage_writer_id = new_storage_writer_id()?;
-        let loader = NativeResourceLoader::new(&config)?;
+        let loader = if let Some(cookie_jar) = shared_cookie_jar {
+            NativeResourceLoader::new_with_shared_cookie_jar(&config, cookie_jar)?
+        } else {
+            NativeResourceLoader::new(&config)?
+        };
         if !is_network_url(&config.initial_url) {
             loader.load(&config.initial_url)?;
         }
@@ -607,6 +619,17 @@ impl NativeEngine {
         Ok(engine)
     }
 
+    pub(crate) fn new_with_browser_shared_workers_and_cookie_jar(
+        config: NativeEngineConfig,
+        dialog_control: NativeDialogControlPlane,
+        cookie_jar: NativeCookieJar,
+    ) -> Result<Self, NativeEngineError> {
+        let mut engine =
+            Self::new_with_dialog_control_and_cookie_jar(config, dialog_control, Some(cookie_jar))?;
+        engine.external_shared_worker_routing = true;
+        Ok(engine)
+    }
+
     pub(crate) fn dialog_control_plane(&self) -> NativeDialogControlPlane {
         self.dialog_control.clone()
     }
@@ -617,6 +640,10 @@ impl NativeEngine {
 
     pub(crate) fn clone_resource_loader(&self) -> NativeResourceLoader {
         self.loader.clone()
+    }
+
+    pub(crate) fn shared_cookie_jar(&self) -> NativeCookieJar {
+        self.loader.shared_cookie_jar()
     }
 
     /// Update the live CSS viewport and invalidate viewport-dependent
@@ -3197,14 +3224,17 @@ impl NativeEngine {
         self.reconcile_pending_content_cookie_changes("set parent cookie authority")?;
         self.persist_pending_loader_cookie_changes()?;
         let mut loader = self.loader.clone();
+        let cookie_change_checkpoint = loader.cookie_change_checkpoint();
         loader.set_cookie_profiles(&profiles)?;
+        let cookie_changes = loader.cookie_changes_since(cookie_change_checkpoint);
         let document_cookie = loader.document_cookie(&self.url)?;
         if let Some(process) = self.content_process.as_mut() {
             process
                 .sync_document_cookie_projection(&self.url, &document_cookie)
                 .await?;
         }
-        self.loader = loader;
+        self.loader
+            .commit_staged_cookie_state(loader, &cookie_changes)?;
         self.persist_local_web_storage()?;
         Ok(())
     }
@@ -3238,7 +3268,9 @@ impl NativeEngine {
     ) -> Result<(), NativeEngineError> {
         self.require_running("apply native cookie changes")?;
         let mut loader = self.loader.clone();
+        let cookie_change_checkpoint = loader.cookie_change_checkpoint();
         loader.apply_cookie_changes(changes)?;
+        let cookie_changes = loader.cookie_changes_since(cookie_change_checkpoint);
         if !persist_profile {
             loader.take_cookie_changes();
         }
@@ -3249,7 +3281,8 @@ impl NativeEngine {
                 .sync_document_cookie_projection(&document_url, &document_cookie)
                 .await?;
         }
-        self.loader = loader;
+        self.loader
+            .commit_staged_cookie_state(loader, &cookie_changes)?;
         Ok(())
     }
 
@@ -3261,14 +3294,17 @@ impl NativeEngine {
         self.reconcile_pending_content_cookie_changes("clear parent cookie authority")?;
         self.persist_pending_loader_cookie_changes()?;
         let mut loader = self.loader.clone();
+        let cookie_change_checkpoint = loader.cookie_change_checkpoint();
         loader.clear_cookies();
+        let cookie_changes = loader.cookie_changes_since(cookie_change_checkpoint);
         let document_cookie = loader.document_cookie(&self.url)?;
         if let Some(process) = self.content_process.as_mut() {
             process
                 .sync_document_cookie_projection(&self.url, &document_cookie)
                 .await?;
         }
-        self.loader = loader;
+        self.loader
+            .commit_staged_cookie_state(loader, &cookie_changes)?;
         let clear_changes = self.loader.take_cookie_changes();
         self.publish_external_cookie_changes(&clear_changes)?;
         let mut pending =

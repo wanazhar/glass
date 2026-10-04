@@ -10668,6 +10668,14 @@ ServiceWorker interception the parent Fetch broker, including nested requests.
 (1 passed; 905 filtered; 19.72 seconds), checking parent-selected HttpOnly
 cookies, response-cookie persistence, reuse by a later host request, and
 `document.cookie` filtering. The content-worker protocol is now version 33.
+The process-backed
+`native_cross_origin_parent_security_and_cookie_authority` regression passed
+(1 passed; 30.73 seconds). Frame and target engines in one browser context now
+receive the parent's explicitly shared cookie jar: the cross-origin child
+frame request carries the parent's HttpOnly cookie, and the child response's
+HttpOnly cookie is selected on a later parent request. The parent's
+`document.cookie` projection stays empty. This is targeted frame-sharing
+evidence only; Slice 843 remains in progress.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

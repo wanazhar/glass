@@ -263,6 +263,7 @@ impl<'a> Agent<'a> {
             body: String::new(),
             truncated: false,
             exit_code: None,
+            spill: None,
         };
         let mut display_bash: Option<(String, String)> = None;
 
@@ -304,6 +305,7 @@ impl<'a> Agent<'a> {
                 output: shown,
                 exit_code: outcome.exit_code,
                 truncated: outcome.truncated,
+                spill: outcome.spill.as_ref().map(|p| p.display().to_string()),
             });
         }
         if call.name == "state" && !self.state.items().is_empty() {

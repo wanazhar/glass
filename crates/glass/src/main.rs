@@ -331,30 +331,35 @@ fn view_transcript(session: &Session, loaded: &[Box<dyn glass_mod_api::Mod_>]) -
     tui.hide_cursor().ok();
 
     let res = (|| -> Result<(), String> {
+        use glass_tui::crossterm::event::{Event, KeyCode, KeyModifiers};
         loop {
-            tui.draw(|f| glass_tui::transcript::draw(f, &transcript, loaded, &session.id))
+            // Viewport height is needed to clamp paging against the real
+            // window, which can change between frames.
+            let height = tui.size().map(|r| r.height).unwrap_or(24);
+            tui.draw(|f| transcript.draw(f, loaded, &session.id))
                 .map_err(|e| e.to_string())?;
 
             match glass_tui::crossterm::event::read().map_err(|e| e.to_string())? {
-                glass_tui::crossterm::event::Event::Key(k) => {
-                    let page = 10isize;
+                Event::Key(k) => {
+                    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
                     match k.code {
-                        glass_tui::crossterm::event::KeyCode::Esc | glass_tui::crossterm::event::KeyCode::Char('q') => break,
-                        glass_tui::crossterm::event::KeyCode::Char('g') if k.modifiers.contains(glass_tui::crossterm::event::KeyModifiers::CONTROL) => {
-                            break;
-                        }
-                        glass_tui::crossterm::event::KeyCode::Up => transcript.step(-1),
-                        glass_tui::crossterm::event::KeyCode::Down => transcript.step(1),
-                        glass_tui::crossterm::event::KeyCode::PageUp => transcript.page(-page),
-                        glass_tui::crossterm::event::KeyCode::PageDown => transcript.page(page),
-                        glass_tui::crossterm::event::KeyCode::Home => transcript.jump_to_turn(1),
-                        glass_tui::crossterm::event::KeyCode::End => transcript.follow_tail(),
-                        glass_tui::crossterm::event::KeyCode::Enter => transcript.toggle_collapse(),
-                        glass_tui::crossterm::event::KeyCode::Char('f') => transcript.follow_tail(),
+                        KeyCode::Esc => break,
+                        KeyCode::Char('q') => break,
+                        KeyCode::Char('c') if ctrl => break,
+                        KeyCode::Char('g') if ctrl => break,
+                        KeyCode::Up => transcript.step(-1, height),
+                        KeyCode::Down => transcript.step(1, height),
+                        KeyCode::PageUp => transcript.page(-1, height),
+                        KeyCode::PageDown => transcript.page(1, height),
+                        KeyCode::Home => transcript.top(),
+                        KeyCode::End => transcript.follow_tail(height),
+                        KeyCode::Enter => transcript.toggle_collapse(),
+                        KeyCode::Char('f') => transcript.follow_tail(height),
+                        KeyCode::Char('t') => transcript.jump_to_turn(1, height),
                         _ => {}
                     }
                 }
-                glass_tui::crossterm::event::Event::Resize(_, _) => tui.autoresize().map_err(|e| e.to_string())?,
+                Event::Resize(_, _) => tui.autoresize().map_err(|e| e.to_string())?,
                 _ => {}
             }
         }

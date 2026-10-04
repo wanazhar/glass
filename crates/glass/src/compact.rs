@@ -373,7 +373,7 @@ mod tests {
         let recs = vec![
             Record::User("u".into()),
             Record::Reasoning("r".into()),
-            Record::Bash { command: "c".into(), output: "o".into(), exit_code: Some(0), truncated: false },
+            Record::Bash { command: "c".into(), output: "o".into(), exit_code: Some(0), truncated: false, spill: None },
             Record::Assistant("a".into()),
         ];
         let msgs = project(&recs);

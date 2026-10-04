@@ -20,7 +20,16 @@ pub enum Record {
     User(String),
     Assistant(String),
     Reasoning(String),
-    Bash { command: String, output: String, exit_code: Option<i32>, truncated: bool },
+    Bash {
+        command: String,
+        output: String,
+        exit_code: Option<i32>,
+        truncated: bool,
+        /// Where the full output went when it overran the inline cap, so the
+        /// pointer survives a resume instead of pointing at a temp file the
+        /// next session has never heard of.
+        spill: Option<String>,
+    },
     ToolResult { name: String, call_id: String, body: String },
     State(Vec<String>),
     System(String),
@@ -35,9 +44,9 @@ impl Record {
             Record::User(t) => json!({ "k": "user", "t": t }),
             Record::Assistant(t) => json!({ "k": "assistant", "t": t }),
             Record::Reasoning(t) => json!({ "k": "reasoning", "t": t }),
-            Record::Bash { command, output, exit_code, truncated } => json!({
+            Record::Bash { command, output, exit_code, truncated, spill } => json!({
                 "k": "bash", "cmd": command, "out": output,
-                "code": exit_code, "trunc": truncated
+                "code": exit_code, "trunc": truncated, "spill": spill
             }),
             Record::ToolResult { name, call_id, body } => {
                 json!({ "k": "tool", "name": name, "id": call_id, "t": body })
@@ -62,6 +71,7 @@ impl Record {
                 output: s("out").unwrap_or_default(),
                 exit_code: v.get("code").and_then(|x| x.as_i64()).map(|x| x as i32),
                 truncated: v.get("trunc").and_then(|x| x.as_bool()).unwrap_or(false),
+                spill: s("spill"),
             },
             "tool" => Record::ToolResult {
                 name: s("name").unwrap_or_default(),
@@ -274,7 +284,7 @@ mod tests {
             Record::User("u".into()),
             Record::Assistant("a".into()),
             Record::Reasoning("r".into()),
-            Record::Bash { command: "ls".into(), output: "x".into(), exit_code: Some(0), truncated: false },
+            Record::Bash { command: "ls".into(), output: "x".into(), exit_code: Some(0), truncated: false, spill: None },
             Record::ToolResult { name: "bash".into(), call_id: "c1".into(), body: "b".into() },
             Record::State(vec!["s1".into()]),
             Record::System("sy".into()),
@@ -290,7 +300,7 @@ mod tests {
 
     #[test]
     fn bash_record_preserves_exit_code_and_truncation() {
-        let r = Record::Bash { command: "c".into(), output: "o".into(), exit_code: Some(127), truncated: true };
+        let r = Record::Bash { command: "c".into(), output: "o".into(), exit_code: Some(127), truncated: true, spill: None };
         let back = Record::from_json(&r.to_json()).unwrap();
         match back {
             Record::Bash { exit_code, truncated, .. } => {
@@ -307,7 +317,7 @@ mod tests {
         s.records = vec![
             Record::User("hi".into()),
             Record::Reasoning("secret".into()),
-            Record::Bash { command: "ls".into(), output: "out".into(), exit_code: Some(0), truncated: false },
+            Record::Bash { command: "ls".into(), output: "out".into(), exit_code: Some(0), truncated: false, spill: None },
             Record::Assistant("hello".into()),
             Record::Meta("noise".into()),
             Record::ToolResult { name: "bash".into(), call_id: "c".into(), body: "res".into() },

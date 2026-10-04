@@ -1,6 +1,7 @@
 use clap::Parser;
 
 type MainResult = Result<(), Box<dyn std::error::Error>>;
+const RUNTIME_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024;
 
 fn main() -> MainResult {
     #[cfg(windows)]
@@ -26,6 +27,7 @@ fn run() -> MainResult {
         .init();
 
     tokio::runtime::Builder::new_multi_thread()
+        .thread_stack_size(RUNTIME_THREAD_STACK_SIZE)
         .enable_all()
         .build()?
         .block_on(glass_dev::dispatch(glass_browser::cli::args::Cli::parse()))

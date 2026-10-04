@@ -5,6 +5,12 @@ the current checkout has process-backed HTTP evidence through Slices 838 and
 843. Slice 832's corrected two-origin regression passed (1 passed; 905
 filtered; 19.33 seconds); Slices 833-836 also have recorded passing
 process-backed cases, while WPT and cross-platform conformance remain open.
+The latest local Slice 843 checkpoint routes browser-owned SharedWorker
+EventSource through the parent coordinator; its process-backed cookie and
+stream regression passed (1 passed; 910 filtered; 29.94 seconds). The shipped
+runtime entrypoints in both product packages now configure 4 MiB Tokio thread
+stacks after the default stack overflowed in this event-pump path. Scoped local
+checks pass; this unpushed checkpoint has no remote CI result yet.
 Slice 838's NavigationPreloadManager persistence regression passed (1 passed;
 906 filtered; 39.70 seconds), so that slice is complete. Slice 839 starts
 eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,
@@ -654,11 +660,13 @@ request classes remain unavailable until parent-brokered. Slice 842 removed the
 browser-coordinated SharedWorker create-message cookie profile. Slice 843 now
 binds its parent-side coordinator loader directly to the browser-context jar
 shared with frame and target engines, with no creation-time profile snapshot or
-cookie-override replay. The browser-owned registry uses its parent loader only
-for SharedWorker script entries, their import graph, and runtime Fetch. Direct
+cookie-override replay. The browser-owned registry uses its parent loader for
+SharedWorker script entries, their import graph, runtime Fetch, and EventSource
+opens. Direct
 Fetch responses are bounded and buffered inside the browser coordinator;
-content-process registries remain broker-only. WebSocket, EventSource, and
-other runtime network APIs remain separate coverage. The first Slice 843
+content-process registries remain broker-only. WebSocket and other runtime
+network APIs remain separate coverage; browser-owned SharedWorker EventSource
+is covered by the latest checkpoint below. The first Slice 843
 checkpoint also makes the public cookie-list API read from a
 parent-loader snapshot overlaid with the parent's pending content-cookie
 journal, and removes the content-process command that returned complete cookie
@@ -891,7 +899,23 @@ cookies on navigation while its `document.cookie` projection exposes only the
 non-HttpOnly value, verifying parent-side cookie-sidecar persistence across
 restart.
 These are targeted authority checks, not complete cookie-policy or
-uncovered-request parity.
+uncovered-request parity. Browser-owned SharedWorker EventSource open, streamed
+response delivery, reconnect, and close now run through the coordinator's
+parent resource loader and exact shared browser-context cookie jar. Bounded
+stream chunks are parsed and delivered to the worker realm; parent-accepted
+HttpOnly response cookies reach later page requests and survive profile reopen
+without entering `document.cookie`. The process-backed
+`native_runtime_shared_worker_event_source_uses_parent_cookie_authority`
+regression passed (1 passed; 910 filtered; 29.94 seconds), covering named
+multiline SSE delivery, request-cookie selection, later Fetch, and persistence
+across reopening the same profile. Its first run exposed a Tokio worker-thread
+stack overflow at the default stack; the focused regression passes with 4 MiB,
+the lowest size verified against the 2 MiB failure and CI's existing 4 MiB
+setting. Runtime entrypoints in both product packages now set a 4 MiB Tokio
+thread stack.
+This raises reserved stack space per runtime thread; 4 MiB is used rather than
+the 8 MiB test-thread stack contract to limit that increase. Local package
+checks pass; no remote CI result is claimed for this unpushed checkpoint.
 
 ## HTML parser ownership
 

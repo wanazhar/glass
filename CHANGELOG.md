@@ -55,6 +55,13 @@ and intends to use [Semantic Versioning](https://semver.org/).
   and other non-network resources stay local. The content loader now rejects
   every direct HTTP(S) request unless it reaches the parent broker; remaining
   request classes must be wired through that broker to restore availability.
+- Browser-owned SharedWorker EventSource open, streamed responses, reconnect,
+  and close now run through the parent coordinator and its shared context
+  cookie jar. Bounded SSE chunks are delivered to the owning worker; response
+  cookies remain parent-owned and persist for later page requests and profile
+  reopen. Glass runtime entrypoints use a 4 MiB Tokio thread stack after the
+  focused event-pump path overflowed at the default size; the regression passes
+  without a shell stack override.
 - A ServiceWorker FetchEvent resumed after `clients.openWindow()` now keeps the
   parent-owned cookie broker across its pending continuation. The resumed
   request carries the parent's captured document owner over IPC, which the

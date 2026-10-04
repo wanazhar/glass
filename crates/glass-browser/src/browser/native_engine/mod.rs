@@ -46,9 +46,13 @@ pub use config::{
     MAX_NATIVE_SCHEDULER_TASKS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeEngineConfig,
     NativeEngineLimits, NativeFixture, Viewport,
 };
-pub(crate) use content_process::NativeContentAsyncEffectNotification;
 #[doc(hidden)]
 pub use content_process::run_native_content_worker;
+pub(crate) use content_process::{
+    MAX_NATIVE_EVENTSOURCE_CONNECTIONS, MAX_NATIVE_EVENTSOURCE_RECONNECTS,
+    NATIVE_EVENTSOURCE_INITIAL_RETRY, NATIVE_EVENTSOURCE_MAX_RETRY,
+    NativeContentAsyncEffectNotification, NativeEventSourceParser, parse_event_source_chunk,
+};
 pub use css::NativeColor;
 pub use css::{
     NativeBorderRadius, NativeBorderStyle, NativeTextDecorationSkipInk,
@@ -82,15 +86,15 @@ pub use interaction::{
 #[cfg(test)]
 pub(crate) use javascript::{MAX_NATIVE_COOKIE_PROFILE_ENTRIES, NativeCookieProfileEntry};
 pub(crate) use javascript::{
-    MAX_NATIVE_DIALOG_TEXT_BYTES, NativeCookieChange, NativeFrameScriptBinding,
-    NativeFrameScriptContext, NativeFrameScriptRequest, NativeFrameScriptWindow,
-    NativeMessagePortTransfer, NativePageMessagePortCommand, NativePopupRequest,
-    NativePostMessageRequest, NativeScriptCommand, NativeServiceWorkerClientMessage,
-    NativeServiceWorkerOpenWindowRequest, NativeSharedWorkerCreateRequest,
-    NativeSharedWorkerStorageKey, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerMessage, NativeWorkerRegistry,
-    synchronize_service_worker_client_leases, validate_message_port_transfers,
-    validate_page_message_port_command,
+    MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_WORKER_MESSAGES, NativeCookieChange,
+    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
+    NativeFrameScriptWindow, NativeMessagePortTransfer, NativePageMessagePortCommand,
+    NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
+    NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
+    NativeSharedWorkerCreateRequest, NativeSharedWorkerStorageKey, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerEventSourceCommand,
+    NativeWorkerMessage, NativeWorkerRegistry, synchronize_service_worker_client_leases,
+    validate_message_port_transfers, validate_page_message_port_command,
 };
 pub use layout::{
     NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect, NativeSvgSubpath,
@@ -107,8 +111,8 @@ pub use raster::{
     NativeSurface,
 };
 pub(crate) use resource_loader::{
-    NativeCookieJar, NativeNavigationMethod, NativeNavigationRequest, NativeRequestBody,
-    validate_target_navigation_payload,
+    NativeCookieJar, NativeCspViolation, NativeNavigationMethod, NativeNavigationRequest,
+    NativeRequestBody, validate_target_navigation_payload,
 };
 pub use resource_loader::{NativeFetchResponse, NativeResource, NativeResourceLoader};
 pub use runtime::{

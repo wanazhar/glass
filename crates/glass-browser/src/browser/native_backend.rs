@@ -13,20 +13,24 @@
 #![allow(clippy::await_holding_lock)]
 
 use super::native_engine::{
-    MAX_NATIVE_EFFECTS, MAX_NATIVE_VIEWPORT_DIMENSION, NativeAction, NativeAsyncEffectTurn,
-    NativeContentAsyncEffectNotification, NativeCookieChange, NativeDialogControlPlane,
-    NativeDialogController, NativeEffect, NativeEngine, NativeEngineConfig, NativeEngineError,
-    NativeEventKind, NativeFile, NativeFrameScriptBinding, NativeFrameScriptContext,
-    NativeFrameScriptRequest, NativeFrameScriptWindow, NativeHistoryDirection,
-    NativeInspectionSnapshot, NativeLayoutSnapshot, NativeNavigationCancellation,
-    NativeNavigationMethod, NativeNavigationRequest, NativeNodeSubtreeTransfer, NativeOrigin,
-    NativePageMessagePortCommand, NativePendingDialog, NativePoint, NativePopupRequest,
-    NativePostMessageRequest, NativePreflightAction, NativeRequestBody, NativeScriptCommand,
+    MAX_NATIVE_EFFECTS, MAX_NATIVE_EVENTSOURCE_CONNECTIONS, MAX_NATIVE_EVENTSOURCE_RECONNECTS,
+    MAX_NATIVE_VIEWPORT_DIMENSION, MAX_NATIVE_WORKER_MESSAGES, NATIVE_EVENTSOURCE_INITIAL_RETRY,
+    NATIVE_EVENTSOURCE_MAX_RETRY, NativeAction, NativeAsyncEffectTurn,
+    NativeContentAsyncEffectNotification, NativeCookieChange, NativeCspViolation,
+    NativeDialogControlPlane, NativeDialogController, NativeEffect, NativeEngine,
+    NativeEngineConfig, NativeEngineError, NativeEventKind, NativeEventSourceParser, NativeFile,
+    NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
+    NativeFrameScriptWindow, NativeHistoryDirection, NativeInspectionSnapshot,
+    NativeLayoutSnapshot, NativeNavigationCancellation, NativeNavigationMethod,
+    NativeNavigationRequest, NativeNodeSubtreeTransfer, NativeOrigin, NativePageMessagePortCommand,
+    NativePendingDialog, NativePoint, NativePopupRequest, NativePostMessageRequest,
+    NativePreflightAction, NativeRequestBody, NativeScriptCommand,
     NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
     NativeSharedWorkerCreateRequest, NativeSharedWorkerStorageKey, NativeSurface,
     NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerMessage, NativeWorkerRegistry, Viewport,
-    parse_point_target, synchronize_service_worker_client_leases, validate_message_port_transfers,
+    NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
+    NativeWorkerRegistry, Viewport, parse_event_source_chunk, parse_point_target,
+    synchronize_service_worker_client_leases, validate_message_port_transfers,
     validate_page_message_port_command, validate_target_navigation_payload,
 };
 use super::native_engine::{NativeCookieJar, NativeResourceLoader};
@@ -127,20 +131,66 @@ enum NativeWorkerCoordinatorEffect {
     },
 }
 
+enum NativeSharedWorkerEventSourceStreamEvent {
+    Chunk {
+        worker_id: u32,
+        source_id: u32,
+        bytes: Vec<u8>,
+    },
+    End {
+        worker_id: u32,
+        source_id: u32,
+    },
+    Error {
+        worker_id: u32,
+        source_id: u32,
+        message: String,
+    },
+    Reconnect {
+        worker_id: u32,
+        source_id: u32,
+    },
+}
+
+struct NativeSharedWorkerEventSourceState {
+    worker_url: String,
+    href: String,
+    with_credentials: bool,
+    origin: String,
+    parser: NativeEventSourceParser,
+    reconnects: usize,
+    cancel: tokio::sync::watch::Sender<bool>,
+}
+
 struct NativeSharedWorkerCoordinator {
     registry: NativeWorkerRegistry,
     loader: NativeResourceLoader,
     page_ports: BTreeMap<String, NativeSharedWorkerPageRoute>,
+    event_sources: BTreeMap<(u32, u32), NativeSharedWorkerEventSourceState>,
+    event_source_stream_sender: tokio::sync::mpsc::Sender<NativeSharedWorkerEventSourceStreamEvent>,
+    event_source_stream_receiver:
+        tokio::sync::mpsc::Receiver<NativeSharedWorkerEventSourceStreamEvent>,
+    event_notify: Arc<tokio::sync::Notify>,
     next_connection_id: u64,
 }
 
 impl NativeSharedWorkerCoordinator {
-    fn new(mut loader: NativeResourceLoader, cookie_jar: NativeCookieJar) -> Self {
+    fn new(
+        mut loader: NativeResourceLoader,
+        cookie_jar: NativeCookieJar,
+        event_notify: Arc<tokio::sync::Notify>,
+    ) -> Self {
         loader.use_shared_cookie_jar(cookie_jar);
+        let (event_source_stream_sender, event_source_stream_receiver) =
+            tokio::sync::mpsc::channel(MAX_NATIVE_WORKER_MESSAGES);
         Self {
             registry: NativeWorkerRegistry::new_with_parent_network_authority(),
             loader,
             page_ports: BTreeMap::new(),
+            event_sources: BTreeMap::new(),
+            event_source_stream_sender,
+            event_source_stream_receiver,
+            event_notify,
             next_connection_id: 1,
         }
     }
@@ -158,6 +208,31 @@ impl NativeSharedWorkerCoordinator {
         // coordinator loader's change queue from replaying page changes.
         self.loader.take_cookie_changes();
         Ok(())
+    }
+
+    fn close_event_source(&mut self, worker_id: u32, source_id: u32) {
+        if let Some(source) = self.event_sources.remove(&(worker_id, source_id)) {
+            let _ = source.cancel.send(true);
+        }
+    }
+
+    fn close_event_sources_for_worker(&mut self, worker_id: u32) {
+        let source_ids = self
+            .event_sources
+            .keys()
+            .filter_map(|(candidate, source_id)| (*candidate == worker_id).then_some(*source_id))
+            .collect::<Vec<_>>();
+        for source_id in source_ids {
+            self.close_event_source(worker_id, source_id);
+        }
+    }
+
+    fn terminate_unowned_shared_worker(&mut self, worker_id: u32) -> bool {
+        let terminated = self.registry.terminate_unowned_shared_worker(worker_id);
+        if terminated {
+            self.close_event_sources_for_worker(worker_id);
+        }
+        terminated
     }
 }
 
@@ -740,6 +815,7 @@ impl NativeEngineBackend {
         let shared_workers = NativeSharedWorkerCoordinator::new(
             engine.clone_resource_loader(),
             engine.shared_cookie_jar(),
+            Arc::clone(&content_process_event_notify),
         );
         let active_name = native_window_name(&engine.config().window_name);
         Ok(Self {
@@ -916,7 +992,7 @@ impl NativeEngineBackend {
                 .front()
                 .cloned();
             let Some(notification) = notification else {
-                return Ok(());
+                break;
             };
 
             self.dispatch_async_effect_notification(&notification)
@@ -940,6 +1016,50 @@ impl NativeEngineBackend {
                     reason: "notification order changed before acknowledgement".into(),
                 });
             }
+        }
+        self.pump_shared_worker_event_source_stream_events().await
+    }
+
+    async fn pump_shared_worker_event_source_stream_events(
+        &self,
+    ) -> Result<(), BrowserBackendError> {
+        loop {
+            let event = {
+                let mut coordinator = self.shared_workers.lock().map_err(|_| {
+                    poisoned_lock_error(BackendOperation::Effects, "SharedWorker coordinator")
+                })?;
+                coordinator.event_source_stream_receiver.try_recv().ok()
+            };
+            let Some(event) = event else {
+                return Ok(());
+            };
+            let queued = {
+                let mut coordinator = self.shared_workers.lock().map_err(|_| {
+                    poisoned_lock_error(BackendOperation::Effects, "SharedWorker coordinator")
+                })?;
+                dispatch_shared_worker_event_source_stream_event(&mut coordinator, event)
+                    .await
+                    .map_err(native_error)?;
+                let cookie_changes = coordinator
+                    .remember_cookie_changes()
+                    .map_err(native_error)?;
+                let mut queued = NativeQueuedBrowserEffects::default();
+                if !cookie_changes.is_empty() {
+                    queued
+                        .6
+                        .push(NativeWorkerCoordinatorEffect::SharedWorkerCookieChanges {
+                            changes: cookie_changes,
+                        });
+                }
+                queued
+                    .6
+                    .extend(take_shared_worker_page_messages(&mut coordinator));
+                queued
+            };
+            self.process_pending_browser_effects(
+                queued.0, queued.1, queued.2, queued.3, queued.4, queued.5, queued.6,
+            )
+            .await?;
         }
     }
 
@@ -5157,9 +5277,7 @@ impl NativeEngineBackend {
                 .registry
                 .remove_shared_worker_owners_for_context(context_id);
             for worker_id in unowned {
-                coordinator
-                    .registry
-                    .terminate_unowned_shared_worker(worker_id);
+                coordinator.terminate_unowned_shared_worker(worker_id);
             }
             let NativeSharedWorkerCoordinator {
                 registry,
@@ -5738,7 +5856,7 @@ impl NativeEngineBackend {
                 return Err(error);
             }
         };
-        let result = {
+        let mut result = {
             let NativeSharedWorkerCoordinator {
                 registry, loader, ..
             } = &mut *coordinator;
@@ -5746,25 +5864,26 @@ impl NativeEngineBackend {
                 .apply_commands(vec![command], loader, &request.owner_url)
                 .await
         };
-        let mut cookie_changes = Vec::new();
-        let result = match (result, coordinator.remember_cookie_changes()) {
-            (Err(error), Ok(changes)) => {
-                cookie_changes = changes;
-                Err(error)
-            }
-            (Err(error), Err(_)) => Err(error),
-            (Ok(()), Ok(changes)) => {
-                cookie_changes = changes;
-                Ok(())
-            }
-            (Ok(()), Err(error)) => Err(error),
-        };
-        if let Err(error) = result {
-            drop(coordinator);
-            self.close_shared_worker_bridges(vec![request.transfer_port.bridge_key.clone()])
-                .await?;
-            return Err(native_error(error));
+        if result.is_ok() {
+            let commands = coordinator.registry.take_event_source_commands();
+            result = process_shared_worker_event_source_commands(&mut coordinator, commands).await;
         }
+        let cookie_changes = coordinator.remember_cookie_changes();
+        let cookie_changes = match (result, cookie_changes) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(changes)) => Ok(changes),
+        };
+        let early_effects = take_shared_worker_page_messages(&mut coordinator);
+        let cookie_changes = match cookie_changes {
+            Ok(changes) => changes,
+            Err(error) => {
+                drop(coordinator);
+                self.close_shared_worker_bridges(vec![request.transfer_port.bridge_key.clone()])
+                    .await?;
+                return Err(native_error(error));
+            }
+        };
         let worker_messages = coordinator.registry.take_messages_for_worker(connection_id);
         let mut queued = NativeQueuedBrowserEffects::default();
         if !cookie_changes.is_empty() {
@@ -5774,6 +5893,7 @@ impl NativeEngineBackend {
                     changes: cookie_changes,
                 });
         }
+        queued.6.extend(early_effects);
         if !worker_messages.is_empty() {
             queued
                 .6
@@ -6025,6 +6145,12 @@ impl NativeEngineBackend {
                 .apply_page_message_port_commands(vec![worker_command], loader)
                 .await
         };
+        let event_source_result = if result.is_ok() {
+            let commands = coordinator.registry.take_event_source_commands();
+            process_shared_worker_event_source_commands(&mut coordinator, commands).await
+        } else {
+            Ok(())
+        };
         let cookie_capture = coordinator.remember_cookie_changes();
         let effects = take_shared_worker_page_messages(&mut coordinator);
         drop(coordinator);
@@ -6032,6 +6158,7 @@ impl NativeEngineBackend {
             self.remove_page_message_port_route(&bridge_key)?;
         }
         result.map_err(native_error)?;
+        event_source_result.map_err(native_error)?;
         let cookie_changes = cookie_capture.map_err(native_error)?;
         let mut queued = NativeQueuedBrowserEffects::default();
         if !cookie_changes.is_empty() {
@@ -8847,6 +8974,479 @@ fn take_shared_worker_page_messages(
         ));
     }
     effects
+}
+
+const NATIVE_SHARED_WORKER_EVENTSOURCE_CHUNK_BYTES: usize = 16 * 1024;
+const NATIVE_SHARED_WORKER_EVENTSOURCE_MAX_RESPONSE_CHUNK_BYTES: usize = 1024 * 1024;
+const NATIVE_SHARED_WORKER_EVENTSOURCE_OPEN_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
+async fn send_shared_worker_event_source_stream_event(
+    sender: &tokio::sync::mpsc::Sender<NativeSharedWorkerEventSourceStreamEvent>,
+    notify: &tokio::sync::Notify,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    event: NativeSharedWorkerEventSourceStreamEvent,
+) -> bool {
+    if *cancel.borrow() {
+        return false;
+    }
+    let sent = tokio::select! {
+        _ = cancel.changed() => return false,
+        result = sender.send(event) => result.is_ok(),
+    };
+    if sent {
+        notify.notify_one();
+    }
+    sent
+}
+
+fn spawn_shared_worker_event_source_reader(
+    coordinator: &NativeSharedWorkerCoordinator,
+    worker_id: u32,
+    source_id: u32,
+    response: reqwest::Response,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) {
+    let sender = coordinator.event_source_stream_sender.clone();
+    let notify = Arc::clone(&coordinator.event_notify);
+    tokio::spawn(async move {
+        let mut response = response;
+        loop {
+            let chunk = tokio::select! {
+                _ = cancel.changed() => return,
+                result = response.chunk() => result,
+            };
+            match chunk {
+                Ok(Some(bytes)) => {
+                    if bytes.len() > NATIVE_SHARED_WORKER_EVENTSOURCE_MAX_RESPONSE_CHUNK_BYTES {
+                        let event = NativeSharedWorkerEventSourceStreamEvent::Error {
+                            worker_id,
+                            source_id,
+                            message: "EventSource response chunk exceeded its bounded limit".into(),
+                        };
+                        let _ = send_shared_worker_event_source_stream_event(
+                            &sender,
+                            &notify,
+                            &mut cancel,
+                            event,
+                        )
+                        .await;
+                        return;
+                    }
+                    for chunk in bytes.chunks(NATIVE_SHARED_WORKER_EVENTSOURCE_CHUNK_BYTES) {
+                        if !send_shared_worker_event_source_stream_event(
+                            &sender,
+                            &notify,
+                            &mut cancel,
+                            NativeSharedWorkerEventSourceStreamEvent::Chunk {
+                                worker_id,
+                                source_id,
+                                bytes: chunk.to_vec(),
+                            },
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    let _ = send_shared_worker_event_source_stream_event(
+                        &sender,
+                        &notify,
+                        &mut cancel,
+                        NativeSharedWorkerEventSourceStreamEvent::End {
+                            worker_id,
+                            source_id,
+                        },
+                    )
+                    .await;
+                    return;
+                }
+                Err(error) => {
+                    let message = error.to_string().chars().take(2048).collect();
+                    let _ = send_shared_worker_event_source_stream_event(
+                        &sender,
+                        &notify,
+                        &mut cancel,
+                        NativeSharedWorkerEventSourceStreamEvent::Error {
+                            worker_id,
+                            source_id,
+                            message,
+                        },
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+    });
+}
+
+fn schedule_shared_worker_event_source_reconnect(
+    coordinator: &mut NativeSharedWorkerCoordinator,
+    worker_id: u32,
+    source_id: u32,
+) -> bool {
+    let Some(source) = coordinator.event_sources.get_mut(&(worker_id, source_id)) else {
+        return false;
+    };
+    if source.reconnects >= MAX_NATIVE_EVENTSOURCE_RECONNECTS {
+        return false;
+    }
+    source.reconnects = source.reconnects.saturating_add(1);
+    let delay = source.parser.retry.min(NATIVE_EVENTSOURCE_MAX_RETRY);
+    let mut cancel = source.cancel.subscribe();
+    let sender = coordinator.event_source_stream_sender.clone();
+    let notify = Arc::clone(&coordinator.event_notify);
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {},
+            _ = cancel.changed() => return,
+        }
+        let _ = send_shared_worker_event_source_stream_event(
+            &sender,
+            &notify,
+            &mut cancel,
+            NativeSharedWorkerEventSourceStreamEvent::Reconnect {
+                worker_id,
+                source_id,
+            },
+        )
+        .await;
+    });
+    true
+}
+
+async fn dispatch_shared_worker_event_source_event(
+    coordinator: &mut NativeSharedWorkerCoordinator,
+    worker_id: u32,
+    source_id: u32,
+    payload: serde_json::Value,
+    csp_violations: &[NativeCspViolation],
+) -> Result<(), NativeEngineError> {
+    let NativeSharedWorkerCoordinator {
+        registry, loader, ..
+    } = coordinator;
+    registry
+        .dispatch_event_source_event(worker_id, source_id, &payload, csp_violations, loader)
+        .await
+}
+
+async fn open_shared_worker_event_source(
+    coordinator: &mut NativeSharedWorkerCoordinator,
+    worker_id: u32,
+    source_id: u32,
+) -> Result<(), NativeEngineError> {
+    let Some(source) = coordinator.event_sources.get(&(worker_id, source_id)) else {
+        return Ok(());
+    };
+    let worker_url = source.worker_url.clone();
+    let href = source.href.clone();
+    let with_credentials = source.with_credentials;
+    let last_event_id = source.parser.last_event_id.clone();
+    let retry = source.parser.retry;
+    let opened = match tokio::time::timeout(
+        NATIVE_SHARED_WORKER_EVENTSOURCE_OPEN_TIMEOUT,
+        coordinator.loader.open_event_source_async(
+            &worker_url,
+            &href,
+            with_credentials,
+            &last_event_id,
+        ),
+    )
+    .await
+    {
+        Ok(opened) => opened,
+        Err(_) => Err(NativeEngineError::Network {
+            operation: "SharedWorker EventSource open".into(),
+            reason: "EventSource connection timed out".into(),
+        }),
+    };
+    let csp_violations = coordinator.loader.take_csp_violations();
+    match opened {
+        Ok((url, response)) => {
+            let origin = url.origin().ascii_serialization();
+            let cancel =
+                if let Some(source) = coordinator.event_sources.get_mut(&(worker_id, source_id)) {
+                    source.origin = origin.clone();
+                    source.parser = NativeEventSourceParser::with_state(last_event_id, retry);
+                    source.reconnects = 0;
+                    Some(source.cancel.subscribe())
+                } else {
+                    None
+                };
+            if let Some(cancel) = cancel {
+                spawn_shared_worker_event_source_reader(
+                    coordinator,
+                    worker_id,
+                    source_id,
+                    response,
+                    cancel,
+                );
+            }
+            dispatch_shared_worker_event_source_event(
+                coordinator,
+                worker_id,
+                source_id,
+                serde_json::json!({"type": "open", "origin": origin}),
+                &csp_violations,
+            )
+            .await?;
+        }
+        Err(error) => {
+            let message = error.to_string().chars().take(2048).collect::<String>();
+            dispatch_shared_worker_event_source_event(
+                coordinator,
+                worker_id,
+                source_id,
+                serde_json::json!({"type": "error", "message": message}),
+                &csp_violations,
+            )
+            .await?;
+            if !schedule_shared_worker_event_source_reconnect(coordinator, worker_id, source_id) {
+                dispatch_shared_worker_event_source_event(
+                    coordinator,
+                    worker_id,
+                    source_id,
+                    serde_json::json!({"type": "close"}),
+                    &[],
+                )
+                .await?;
+                coordinator.close_event_source(worker_id, source_id);
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn process_shared_worker_event_source_commands(
+    coordinator: &mut NativeSharedWorkerCoordinator,
+    commands: Vec<NativeWorkerEventSourceCommand>,
+) -> Result<(), NativeEngineError> {
+    let mut pending = VecDeque::from(commands);
+    let mut processed = 0usize;
+    while let Some(request) = pending.pop_front() {
+        processed = processed.saturating_add(1);
+        if processed > MAX_NATIVE_WORKER_MESSAGES {
+            return Err(NativeEngineError::limit(
+                "native SharedWorker EventSource commands",
+                MAX_NATIVE_WORKER_MESSAGES,
+                processed,
+            ));
+        }
+        let NativeWorkerEventSourceCommand {
+            worker_id,
+            worker_url,
+            command,
+        } = request;
+        match command {
+            NativeScriptCommand::EventSourceOpen {
+                source_id,
+                href,
+                with_credentials,
+                worker_id: Some(command_worker_id),
+            } => {
+                if command_worker_id != worker_id {
+                    return Err(NativeEngineError::invalid(
+                        "native SharedWorker EventSource command",
+                        "EventSource command worker id does not match its owner",
+                    ));
+                }
+                if coordinator
+                    .event_sources
+                    .contains_key(&(worker_id, source_id))
+                {
+                    return Err(NativeEngineError::Network {
+                        operation: "SharedWorker EventSource open".into(),
+                        reason: "EventSource identifier is already active".into(),
+                    });
+                }
+                if coordinator.event_sources.len() >= MAX_NATIVE_EVENTSOURCE_CONNECTIONS {
+                    return Err(NativeEngineError::limit(
+                        "native SharedWorker EventSource connections",
+                        MAX_NATIVE_EVENTSOURCE_CONNECTIONS,
+                        coordinator.event_sources.len().saturating_add(1),
+                    ));
+                }
+                let (cancel, _) = tokio::sync::watch::channel(false);
+                coordinator.event_sources.insert(
+                    (worker_id, source_id),
+                    NativeSharedWorkerEventSourceState {
+                        worker_url,
+                        href,
+                        with_credentials,
+                        origin: String::new(),
+                        parser: NativeEventSourceParser::with_state(
+                            String::new(),
+                            NATIVE_EVENTSOURCE_INITIAL_RETRY,
+                        ),
+                        reconnects: 0,
+                        cancel,
+                    },
+                );
+                open_shared_worker_event_source(coordinator, worker_id, source_id).await?;
+            }
+            NativeScriptCommand::EventSourceClose {
+                source_id,
+                worker_id: Some(command_worker_id),
+            } => {
+                if command_worker_id != worker_id {
+                    return Err(NativeEngineError::invalid(
+                        "native SharedWorker EventSource command",
+                        "EventSource command worker id does not match its owner",
+                    ));
+                }
+                coordinator.close_event_source(worker_id, source_id);
+            }
+            _ => {
+                return Err(NativeEngineError::invalid(
+                    "native SharedWorker EventSource command",
+                    "command is not a worker-owned EventSource operation",
+                ));
+            }
+        }
+        pending.extend(coordinator.registry.take_event_source_commands());
+    }
+    Ok(())
+}
+
+async fn dispatch_shared_worker_event_source_error(
+    coordinator: &mut NativeSharedWorkerCoordinator,
+    worker_id: u32,
+    source_id: u32,
+    message: String,
+) -> Result<(), NativeEngineError> {
+    if !coordinator
+        .event_sources
+        .contains_key(&(worker_id, source_id))
+    {
+        return Ok(());
+    }
+    dispatch_shared_worker_event_source_event(
+        coordinator,
+        worker_id,
+        source_id,
+        serde_json::json!({"type": "error", "message": message}),
+        &[],
+    )
+    .await?;
+    let commands = coordinator.registry.take_event_source_commands();
+    process_shared_worker_event_source_commands(coordinator, commands).await?;
+    if coordinator
+        .event_sources
+        .contains_key(&(worker_id, source_id))
+        && !schedule_shared_worker_event_source_reconnect(coordinator, worker_id, source_id)
+    {
+        dispatch_shared_worker_event_source_event(
+            coordinator,
+            worker_id,
+            source_id,
+            serde_json::json!({"type": "close"}),
+            &[],
+        )
+        .await?;
+        let commands = coordinator.registry.take_event_source_commands();
+        process_shared_worker_event_source_commands(coordinator, commands).await?;
+        coordinator.close_event_source(worker_id, source_id);
+    }
+    Ok(())
+}
+
+async fn dispatch_shared_worker_event_source_stream_event(
+    coordinator: &mut NativeSharedWorkerCoordinator,
+    event: NativeSharedWorkerEventSourceStreamEvent,
+) -> Result<(), NativeEngineError> {
+    match event {
+        NativeSharedWorkerEventSourceStreamEvent::Chunk {
+            worker_id,
+            source_id,
+            bytes,
+        } => {
+            let parsed = {
+                let Some(source) = coordinator.event_sources.get_mut(&(worker_id, source_id))
+                else {
+                    return Ok(());
+                };
+                (
+                    parse_event_source_chunk(&mut source.parser, &bytes),
+                    source.origin.clone(),
+                )
+            };
+            let (messages, origin) = match parsed {
+                (Ok(messages), origin) => (messages, origin),
+                (Err(error), _) => {
+                    dispatch_shared_worker_event_source_error(
+                        coordinator,
+                        worker_id,
+                        source_id,
+                        error.to_string().chars().take(2048).collect(),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
+            if messages.len() > MAX_NATIVE_WORKER_MESSAGES {
+                return Err(NativeEngineError::limit(
+                    "native SharedWorker EventSource events per chunk",
+                    MAX_NATIVE_WORKER_MESSAGES,
+                    messages.len(),
+                ));
+            }
+            for message in messages {
+                dispatch_shared_worker_event_source_event(
+                    coordinator,
+                    worker_id,
+                    source_id,
+                    serde_json::json!({
+                        "type": "message",
+                        "event": message.event,
+                        "data": message.data,
+                        "lastEventId": message.last_event_id,
+                        "origin": origin.clone(),
+                    }),
+                    &[],
+                )
+                .await?;
+                let commands = coordinator.registry.take_event_source_commands();
+                process_shared_worker_event_source_commands(coordinator, commands).await?;
+            }
+        }
+        NativeSharedWorkerEventSourceStreamEvent::End {
+            worker_id,
+            source_id,
+        } => {
+            dispatch_shared_worker_event_source_error(
+                coordinator,
+                worker_id,
+                source_id,
+                "EventSource connection ended".into(),
+            )
+            .await?;
+        }
+        NativeSharedWorkerEventSourceStreamEvent::Error {
+            worker_id,
+            source_id,
+            message,
+        } => {
+            dispatch_shared_worker_event_source_error(coordinator, worker_id, source_id, message)
+                .await?;
+        }
+        NativeSharedWorkerEventSourceStreamEvent::Reconnect {
+            worker_id,
+            source_id,
+        } => {
+            if coordinator
+                .event_sources
+                .contains_key(&(worker_id, source_id))
+            {
+                open_shared_worker_event_source(coordinator, worker_id, source_id).await?;
+                let commands = coordinator.registry.take_event_source_commands();
+                process_shared_worker_event_source_commands(coordinator, commands).await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 struct NativeFrameRuntimeEffects {

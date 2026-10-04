@@ -110,8 +110,13 @@ The browser-owned SharedWorker registry may use its parent loader for worker
 entry scripts, their classic/module import graph, and runtime Fetch requests.
 Those direct Fetch responses are bounded and buffered within the browser
 coordinator; content-process registries remain broker-only and retain their
-parent-mediated response path. This does not imply parity for other runtime
-network APIs such as WebSocket or EventSource.
+parent-mediated response path. SharedWorker EventSource open, response
+streaming, reconnect, and close must also be driven by the parent coordinator:
+the parent selects request cookies, applies each response's `Set-Cookie`, and
+keeps the bounded event stream attached to the owning worker. The worker never
+opens a child-side network connection or stores authoritative cookies.
+WebSocket remains a separate unimplemented runtime-network path; this contract
+does not claim its parity.
 
 The parent must not send a cookie profile, an HttpOnly value, or raw
 `Cookie`/`Set-Cookie` headers to a content process. It gives a document only a

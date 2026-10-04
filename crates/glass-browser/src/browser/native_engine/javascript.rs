@@ -1740,6 +1740,7 @@ async fn load_worker_script_resource(
     credentials_mode: Option<&str>,
     referrer_policy: Option<NativeFetchReferrerPolicy>,
     shared_worker_module_entry: bool,
+    parent_loader_owns_network: bool,
 ) -> Result<Option<NativeScriptResource>, NativeEngineError> {
     let request_base = referrer_url.unwrap_or(document_url);
     let network_target = Url::parse(href)
@@ -1763,7 +1764,9 @@ async fn load_worker_script_resource(
                 .await
                 .map(|(resource, _)| resource);
         }
-        return Err(missing_parent_network_authority("Worker script load"));
+        if !parent_loader_owns_network {
+            return Err(missing_parent_network_authority("Worker script load"));
+        }
     }
     if shared_worker_module_entry {
         return loader
@@ -2100,12 +2103,13 @@ pub(crate) struct NativeWorkerRegistry {
     worker_fetch_stream_connections: BTreeMap<(u32, u32), NativeFetchStreamConnection>,
     worker_fetch_upload_connections: BTreeMap<(u32, u32), NativeFetchUploadConnection>,
     stream_worker_fetches: bool,
+    parent_loader_owns_network: bool,
     message_port_routes: BTreeMap<String, NativeMessagePortRoute>,
 }
 
 impl NativeWorkerRegistry {
     pub(crate) fn new() -> Self {
-        Self::new_inner(false)
+        Self::new_inner(false, false)
     }
 
     /// Construct a registry with worker response streams enabled. The
@@ -2113,10 +2117,17 @@ impl NativeWorkerRegistry {
     /// owner uses it for registered fixture responses; both feed the same
     /// demand-driven transport and serialized worker event pump.
     pub(crate) fn new_with_fetch_streams() -> Self {
-        Self::new_inner(true)
+        Self::new_inner(true, false)
     }
 
-    fn new_inner(stream_worker_fetches: bool) -> Self {
+    /// Construct the browser-parent SharedWorker registry. Only this owner
+    /// may use its own parent-side loader for worker scripts when no child IPC
+    /// broker exists; sandboxed content registries remain broker-only.
+    pub(crate) fn new_with_parent_network_authority() -> Self {
+        Self::new_inner(true, true)
+    }
+
+    fn new_inner(stream_worker_fetches: bool, parent_loader_owns_network: bool) -> Self {
         Self {
             workers: BTreeMap::new(),
             shared_worker_keys: BTreeMap::new(),
@@ -2130,6 +2141,7 @@ impl NativeWorkerRegistry {
             worker_fetch_stream_connections: BTreeMap::new(),
             worker_fetch_upload_connections: BTreeMap::new(),
             stream_worker_fetches,
+            parent_loader_owns_network,
             message_port_routes: BTreeMap::new(),
         }
     }
@@ -2626,6 +2638,7 @@ impl NativeWorkerRegistry {
             None,
             referrer_policy,
             false,
+            self.parent_loader_owns_network,
         )
         .await;
         let resource = match resource_result {
@@ -2667,6 +2680,7 @@ impl NativeWorkerRegistry {
                             .unwrap_or(NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin),
                     ),
                     parent_fetch_broker.as_deref_mut(),
+                    self.parent_loader_owns_network,
                 )
                 .await
             {
@@ -2695,6 +2709,7 @@ impl NativeWorkerRegistry {
                     worker_referrer_policy,
                     worker_id,
                     parent_fetch_broker.as_deref_mut(),
+                    self.parent_loader_owns_network,
                 )
                 .await
             {
@@ -2890,6 +2905,7 @@ impl NativeWorkerRegistry {
             is_module.then_some(credentials.as_str()),
             referrer_policy,
             is_module,
+            self.parent_loader_owns_network,
         )
         .await;
         let resource = match resource_result {
@@ -2935,6 +2951,7 @@ impl NativeWorkerRegistry {
                             .unwrap_or(NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin),
                     ),
                     parent_fetch_broker.as_deref_mut(),
+                    self.parent_loader_owns_network,
                 )
                 .await
             {
@@ -2963,6 +2980,7 @@ impl NativeWorkerRegistry {
                     worker_referrer_policy,
                     connection_id,
                     parent_fetch_broker.as_deref_mut(),
+                    self.parent_loader_owns_network,
                 )
                 .await
             {
@@ -5000,6 +5018,7 @@ impl NativeWorkerRegistry {
             worker_credentials_mode.as_deref(),
             Some(referrer_policy),
             false,
+            self.parent_loader_owns_network,
         )
         .await?
         .ok_or_else(|| NativeEngineError::Network {
@@ -5016,6 +5035,7 @@ impl NativeWorkerRegistry {
                 request_id,
                 Some(referrer_policy),
                 parent_fetch_broker.as_deref_mut(),
+                self.parent_loader_owns_network,
             )
             .await?;
         let new_sources = graph
@@ -5131,6 +5151,7 @@ impl NativeWorkerRegistry {
         worker_referrer_policy: NativeFetchReferrerPolicy,
         request_id: u32,
         mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+        parent_loader_owns_network: bool,
     ) -> Result<NativeWorkerClassicScriptGraph, NativeEngineError> {
         struct PendingWorkerScript {
             resource: NativeScriptResource,
@@ -5192,6 +5213,7 @@ impl NativeWorkerRegistry {
                     None,
                     Some(worker_referrer_policy),
                     false,
+                    parent_loader_owns_network,
                 )
                 .await?
                 .ok_or_else(|| NativeEngineError::Network {
@@ -5299,6 +5321,7 @@ impl NativeWorkerRegistry {
         request_id: u32,
         inherited_referrer_policy: Option<NativeFetchReferrerPolicy>,
         mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+        parent_loader_owns_network: bool,
     ) -> Result<NativeWorkerModuleGraph, NativeEngineError> {
         if root.body.is_empty() {
             return Err(NativeEngineError::invalid(
@@ -5373,6 +5396,7 @@ impl NativeWorkerRegistry {
                     credentials_mode,
                     module_referrer_policy,
                     false,
+                    parent_loader_owns_network,
                 )
                 .await?
                 .ok_or_else(|| NativeEngineError::Network {
@@ -5496,6 +5520,7 @@ pub(crate) async fn load_service_worker_source(
                 request_id,
                 Some(worker_referrer_policy),
                 parent_fetch_broker.as_deref_mut(),
+                registry.parent_loader_owns_network,
             )
             .await?;
         Ok((
@@ -5513,6 +5538,7 @@ pub(crate) async fn load_service_worker_source(
                 worker_referrer_policy,
                 request_id,
                 parent_fetch_broker.as_deref_mut(),
+                registry.parent_loader_owns_network,
             )
             .await?;
         Ok((

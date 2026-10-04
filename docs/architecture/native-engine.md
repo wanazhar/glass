@@ -651,10 +651,13 @@ network requests could create cookie changes that were journaled back to the
 parent. The latest hardening disables child cookie authority, rejects
 nonempty journals, and fails closed on direct HTTP(S) transport; uncovered
 request classes remain unavailable until parent-brokered. Slice 842 removed the
-browser-coordinated SharedWorker create-message cookie profile and seeds its
-loader from the parent-owned engine resolved by the exact source frame while
-holding that owner's lock, then replays its existing cookie overrides. The
-first Slice 843 checkpoint also makes the public cookie-list API read from a
+browser-coordinated SharedWorker create-message cookie profile. Slice 843 now
+binds its parent-side coordinator loader directly to the browser-context jar
+shared with frame and target engines, with no creation-time profile snapshot or
+cookie-override replay. The browser-owned registry uses its parent loader only
+for SharedWorker script entries and their import graph; content-process
+registries remain broker-only, and runtime Fetch still requires the parent
+broker. The first Slice 843 checkpoint also makes the public cookie-list API read from a
 parent-loader snapshot overlaid with the parent's pending content-cookie
 journal, and removes the content-process command that returned complete cookie
 profiles. The host applies child-reported network changes to the durable
@@ -869,13 +872,17 @@ guard now rejects every direct HTTP(S) request from the content loader; request
 classes not yet wired to the parent broker therefore fail closed instead of
 silently losing cookies. Their availability and response-cookie behavior
 remain incomplete, so Slice 843 is still in progress.
-The parent also shares its per-browser-context cookie jar explicitly with
-frame and target engines; ordinary loader clones remain isolated. The focused
+The parent explicitly shares each browser-context cookie jar with frame and
+target engines and the browser-owned SharedWorker coordinator; ordinary loader
+clones remain isolated. The focused
 `native_cross_origin_parent_security_and_cookie_authority` process-backed
-regression passed (1 test; 30.73 seconds): a cross-origin child frame receives
-the parent's HttpOnly cookie, its HttpOnly response cookie is sent on a later
-parent request, and the parent script projection remains empty. This verifies
-shared context authority for that frame path, not complete cookie-policy or
+regression passed (1 test; 31.22 seconds), retaining cross-origin security
+errors while verifying parent HttpOnly request/response cookie authority. The
+process-backed
+`native_runtime_shared_worker_cookie_changes_reach_all_live_profile_contexts`
+regression also passed (1 test; 52.14 seconds), verifying browser-owned
+SharedWorker script loading and cookie-change fanout to each live profile
+context. These are targeted authority checks, not complete cookie-policy or
 uncovered-request parity.
 
 ## HTML parser ownership

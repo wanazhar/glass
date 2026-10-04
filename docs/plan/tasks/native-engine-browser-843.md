@@ -31,6 +31,11 @@ projection and existing native Fetch behavior.
   expiration/deletion, profile persistence, and shared-profile journal
   publication. A content process or worker realm is not a cookie authority or
   durable writer.
+- Browser-context frames, targets, and the browser-owned SharedWorker
+  coordinator share the exact parent cookie jar. The coordinator must not seed
+  itself from a cookie-profile snapshot or replay cookie overrides. Its direct
+  parent-loader authority is limited to SharedWorker script entries and their
+  import graph; content-process registries remain broker-only.
 - Do not send a complete cookie profile, HttpOnly value, raw `Cookie` or
   `Set-Cookie` header, or cookie-bearing profile path into the content process.
   Remove content-process cookie-profile load/save and persistence paths.
@@ -750,15 +755,23 @@ projection and existing native Fetch behavior.
   URL-encoded POST body and content type. This closes only form-POST cookie
   coverage; other uncovered HTTP(S) classes still fail closed and Slice 843
   remains in progress.
-- The parent now explicitly shares the browser-context cookie jar with frame
-  and target engines. Ordinary resource-loader clones remain isolated, while
-  staged cookie transactions merge only their changes into the shared jar so
-  a sibling update made during an IPC wait is not overwritten. The
-  process-backed `native_cross_origin_parent_security_and_cookie_authority`
-  regression passed (1 passed; 30.73 seconds): a cross-origin child frame
-  receives the parent's HttpOnly cookie, its HttpOnly response cookie reaches
-  a later parent request, and the parent `document.cookie` projection remains
-  empty. The scoped check passed with existing dead-code warnings. This does
-  not close unbrokered request classes or full cookie-policy parity.
+- The parent explicitly shares the browser-context cookie jar with frame and
+  target engines and the browser-owned SharedWorker coordinator. Ordinary
+  resource-loader clones remain isolated, and staged cookie transactions merge
+  only their changes so a sibling update during IPC cannot be overwritten. The
+  coordinator's parent-loader authority covers worker script entries and their
+  import graph; content-process registries remain broker-only, and runtime
+  Fetch still requires the broker. The process-backed
+  `native_cross_origin_parent_security_and_cookie_authority` regression passed
+  (1 passed; 31.22 seconds), retaining the cross-origin SecurityError checks
+  while verifying parent HttpOnly cookies on the child request and a later
+  parent request. The process-backed
+  `native_runtime_shared_worker_cookie_changes_reach_all_live_profile_contexts`
+  regression passed (1 passed; 52.14 seconds), verifying that the parent-owned
+  SharedWorker entry response updates the shared jar and reaches all live
+  same-profile frames/targets without reaching an isolated profile. Scoped
+  `cargo check` and the companion worker build passed with existing dead-code
+  warnings. This does not close unbrokered request classes or full cookie-
+  policy parity.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

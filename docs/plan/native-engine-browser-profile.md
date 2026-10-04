@@ -98,13 +98,18 @@ persistence, and shared-profile journal publication. A content process or
 worker realm is never a cookie store or durable writer.
 
 Within one browser context, the parent owns one in-memory cookie jar shared
-explicitly with its frame and target engines. This lets a request from a
-cross-origin frame use the context's parent-selected cookies and makes cookies
-accepted from that frame's response visible to later requests in the context.
+explicitly with its frame and target engines and its browser-owned
+SharedWorker coordinator. This lets cross-origin frames and browser-owned
+SharedWorker script loads use the context's parent-selected cookies, and makes
+their accepted response cookies visible to later requests in the context.
 Ordinary resource-loader clones remain isolated snapshots; sharing is an
 explicit browser-context ownership decision. A staged cookie transaction
 commits only its cookie changes into the shared jar, so it cannot replace
 unrelated changes made by a sibling engine while the transaction awaited IPC.
+The browser-owned SharedWorker registry may use its parent loader for worker
+entry scripts and their classic/module import graph; content-process registries
+remain broker-only. This does not authorize unbrokered SharedWorker Fetch or
+other runtime network APIs.
 
 The parent must not send a cookie profile, an HttpOnly value, or raw
 `Cookie`/`Set-Cookie` headers to a content process. It gives a document only a
@@ -221,13 +226,15 @@ semantics. Page and dedicated Worker EventSource
 responses use bounded chunks addressed by opaque stream IDs, and WebSocket frames use
 bounded message records addressed by opaque stream IDs; cookie headers and the
 full profile never cross IPC. Other request classes still need parent-broker
-coverage and fail closed at the child transport boundary until then. Slice 842 has removed the child cookie-profile field from
-browser-coordinated SharedWorker
-creation and now seeds the shared coordinator from the parent engine resolved
-by the exact source frame, replaying coordinator cookie overrides afterward.
-This fixes only that SharedWorker creation path. Slice 843 continues to track
-the remaining unbrokered network paths; the profile is not parent-only until
-that work also passes. A
+coverage and fail closed at the child transport boundary until then. Slice 842
+removed the child cookie-profile field from browser-coordinated SharedWorker
+creation. Slice 843 now binds the browser-owned coordinator loader directly to
+the same context jar used by frames and targets, removing creation-time cookie
+profile snapshots and coordinator override replay. Its explicit parent-loader
+authority covers SharedWorker script entries and their import graph, not
+unbrokered runtime Fetch. Slice 843 continues to track the remaining
+unbrokered network paths; the profile is not parent-only until that work also
+passes. A
 process-backed checkpoint now brokers standard buffered Fetches emitted during
 dedicated-worker initialization and while handling an explicit page
 `Worker.postMessage`. The parent validates the captured page owner separately

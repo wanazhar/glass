@@ -161,7 +161,11 @@ request cookies, and accepts response-cookie changes. The worker's current
   cookie-specific regression. Parser-discovered HTTP(S) page scripts now use
   the parent broker during initial loading; a process-backed classic-script
   regression verifies request cookies, response-cookie acceptance, and
-  HttpOnly invisibility. Initial HTTP(S) stylesheets and their static CSS
+  HttpOnly invisibility. HTTP(S) classic/module scripts inserted by inline
+  scripts during initial loading now use that same parent broker; the
+  navigation regression verifies a classic insertion's HttpOnly request
+  cookie, response-cookie update, and visible-only projection. Initial HTTP(S)
+  stylesheets and their static CSS
   imports now use the same parent authority; the expanded process-backed
   regression verifies ordered cookie updates, HttpOnly retention, and the
   URL-scoped script-visible projection across navigation, stylesheet, CSS

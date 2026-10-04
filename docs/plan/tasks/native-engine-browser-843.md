@@ -79,6 +79,9 @@ projection and existing native Fetch behavior.
   HttpOnly invisibility, worker/page credentials modes, redirect hops,
   response-cookie update/deletion, import/clear, restart, same-profile
   synchronization, and separate-profile isolation.
+- Initial-load inline-script-created HTTP(S) classic/module scripts must use
+  the parent broker; verify parent-selected HttpOnly request cookies,
+  response-cookie updates, and the script-visible projection.
 - Verify a child shutdown/restart cannot mutate or lose the parent jar and
   that parent-broker failure cannot trigger a direct child request.
 - Run selected Fetch/Cookie/SharedWorker WPT cases and record exact selections
@@ -559,5 +562,14 @@ projection and existing native Fetch behavior.
   regression passed (1 passed; 903 filtered; 21.41 seconds), covering page and
   Worker XHR, a pending script setter, HttpOnly request/response cookies,
   same-name response-cookie rotation, and later requests. Formatting passed.
+- HTTP(S) scripts inserted by inline scripts during initial document loading
+  now use the owner-checked parent resource broker instead of the child loader.
+  The process-backed
+  `native_content_process_http_navigation_uses_parent_cookie_authority`
+  regression passed (1 passed; 903 filtered; 34.45 seconds), checking that the
+  inserted script request carries the parent's HttpOnly cookie, its response
+  cookie is committed by the parent for a later request, and script sees only
+  the visible projection. The code path also brokers module roots and their
+  dependencies; this regression directly covers a classic script.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

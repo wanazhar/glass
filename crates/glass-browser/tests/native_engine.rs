@@ -17511,7 +17511,7 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             .unwrap();
         let request = read_http_request(&mut stream).await;
         let body = format!(
-            "<!doctype html><html><head><meta http-equiv='Content-Security-Policy' content=\"img-src 'self'\"><link rel='stylesheet' href='/initial.css'></head><body><img src='/image.png'><img src='http://localhost:{}/blocked.png'><audio src='/media.wav'></audio><script src='/initial.js'></script><script>window.initialDocumentCookie = document.cookie;</script></body></html>",
+            "<!doctype html><html><head><meta http-equiv='Content-Security-Policy' content=\"img-src 'self'\"><link rel='stylesheet' href='/initial.css'></head><body><img src='/image.png'><img src='http://localhost:{}/blocked.png'><audio src='/media.wav'></audio><script src='/initial.js'></script><script>window.initialDocumentCookie = document.cookie; const dynamic = document.createElement('script'); dynamic.src = '/initial-dynamic.js'; document.head.appendChild(dynamic);</script></body></html>",
             address.port()
         );
         let response = format!(
@@ -17644,6 +17644,27 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
         stream.write_all(script_response.as_bytes()).await.unwrap();
         let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
             .await
+            .expect("parent-brokered initial dynamic script should reach the local server")
+            .unwrap();
+        let dynamic_script_request = read_http_request(&mut stream).await;
+        let dynamic_script = "window.initialDynamicScriptCookie = document.cookie;";
+        let dynamic_script_response = format!(
+            concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Set-Cookie: initial_dynamic_visible=present; Path=/; SameSite=Lax\r\n",
+                "Set-Cookie: initial_dynamic_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\n",
+                "Content-Type: application/javascript\r\n",
+                "Content-Length: {}\r\nConnection: close\r\n\r\n{}"
+            ),
+            dynamic_script.len(),
+            dynamic_script
+        );
+        stream
+            .write_all(dynamic_script_response.as_bytes())
+            .await
+            .unwrap();
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+            .await
             .expect("parent-brokered FontFace load should reach the local server")
             .unwrap();
         let runtime_font_request = read_http_request(&mut stream).await;
@@ -17679,6 +17700,7 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             image_request,
             media_request,
             script_request,
+            dynamic_script_request,
             runtime_font_request,
             font_cookie_followup_request,
         )
@@ -17772,6 +17794,13 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
         assert!(!cookies.contains("media_secret"), "{expression}: {cookies}");
         assert!(!cookies.contains("font_secret"), "{expression}: {cookies}");
     }
+    let dynamic_script_cookie = engine
+        .evaluate_async("window.initialDynamicScriptCookie")
+        .await
+        .unwrap();
+    let dynamic_script_cookie = dynamic_script_cookie.as_str().unwrap_or_default();
+    assert!(dynamic_script_cookie.contains("initial_dynamic_visible=present"));
+    assert!(!dynamic_script_cookie.contains("initial_dynamic_secret"));
     let cookies = engine.cookies_async().await.unwrap();
     assert!(cookies.iter().any(|cookie| {
         cookie.name == "navigation_visible" && cookie.value == "present" && !cookie.http_only
@@ -17784,6 +17813,12 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
     }));
     assert!(cookies.iter().any(|cookie| {
         cookie.name == "parser_secret" && cookie.value == "hidden" && cookie.http_only
+    }));
+    assert!(cookies.iter().any(|cookie| {
+        cookie.name == "initial_dynamic_visible" && cookie.value == "present" && !cookie.http_only
+    }));
+    assert!(cookies.iter().any(|cookie| {
+        cookie.name == "initial_dynamic_secret" && cookie.value == "hidden" && cookie.http_only
     }));
     for (name, value) in [
         ("stylesheet_visible", "present"),
@@ -17839,6 +17874,7 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
         image_request,
         media_request,
         script_request,
+        dynamic_script_request,
         runtime_font_request,
         font_cookie_followup_request,
     ) = server.await.unwrap();
@@ -17869,7 +17905,12 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
     assert!(script_request.contains("media_secret=hidden"));
     assert!(script_request.contains("font_visible=present"));
     assert!(script_request.contains("font_secret=hidden"));
+    assert!(dynamic_script_request.starts_with("GET /initial-dynamic.js HTTP/1.1\r\n"));
+    assert!(dynamic_script_request.contains("navigation_secret=hidden"));
+    assert!(dynamic_script_request.contains("parser_secret=hidden"));
     assert!(runtime_font_request.starts_with("GET /runtime-font.ttf HTTP/1.1\r\n"));
+    assert!(runtime_font_request.contains("initial_dynamic_visible=present"));
+    assert!(runtime_font_request.contains("initial_dynamic_secret=hidden"));
     assert!(runtime_font_request.contains("font_secret=hidden"));
     assert!(font_cookie_followup_request.starts_with("GET /font-cookie-followup HTTP/1.1\r\n"));
     assert!(font_cookie_followup_request.contains("runtime_font_visible=present"));

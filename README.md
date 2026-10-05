@@ -64,7 +64,28 @@ A new provider is a base URL and a model id, not a new implementation.
 | `ctrl-c` | interrupt |
 | `ctrl-d` | quit |
 | `up` / `down` | prompt history |
+| `enter` | steer the running turn |
+| `alt-enter` | queue for after the turn |
 | `/help` | help |
+| `/extensions` | loaded extensions, their tools and commands |
+
+### Steering
+
+While a turn is running you can still type. The two inputs mean different
+things and conflating them would be worse than having neither:
+
+- **Enter steers.** "Stop, use Postgres not MySQL." The turn ends at the next
+  safe point — *before* the next command runs, not after — and the correction
+  enters the conversation so the model reacts to it.
+- **Alt+Enter queues.** "Then update the docs." It runs automatically when the
+  current turn finishes, so a multi-step plan does not need re-submitting.
+
+A steer abandons the tool result it interrupted. Feeding output from a command
+you just cancelled back to the model would push it toward the plan you rejected.
+
+Both need the input thread: the loop must stay able to read keys while a model
+is streaming and a command is running, which is why `crates/glass/src/input.rs`
+owns stdin on its own thread and the loop drains it non-blockingly.
 
 ## Sessions
 

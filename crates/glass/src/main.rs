@@ -8,6 +8,8 @@ mod agents_md;
 mod compact;
 mod config;
 mod ext;
+mod input;
+mod queue;
 mod mods;
 mod provider;
 mod session;
@@ -170,17 +172,20 @@ fn repl(
 
     print_banner(&cfg, &loaded_mods, extensions, &session);
 
+    let keys = input::KeyReader::spawn();
+    let mut pending = queue::Queue::new();
+
     let (mut w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
     let mut prompt_row = h.saturating_sub(2);
 
     loop {
         editor.render(prompt_row, w, true);
 
-        let ev = match glass_tui::crossterm::event::read() {
-            Ok(e) => e,
-            Err(e) => {
+        let ev = match keys.try_next().or_else(|| keys.next_blocking()) {
+            Some(e) => e,
+            None => {
                 term::leave().ok();
-                return Err(format!("input error: {e}"));
+                return Err("input stream closed".into());
             }
         };
 
@@ -225,6 +230,7 @@ fn repl(
         if text.is_empty() {
             continue;
         }
+
         if text == "/help" {
             print!("{HELP}");
             continue;
@@ -267,49 +273,76 @@ fn repl(
         session.append(Record::User(text.clone()));
         println!("\n\x1b[90m❯\x1b[0m {text}");
 
-        let mut last_error: Option<String> = None;
-        let outcome = {
-            let mut agent = Agent::new(
-                provider.as_ref(),
-                &mut session,
-                &mut state,
-                &loaded_mods,
-                extensions,
-                &cfg.workspace,
-            )
-            .prime_extensions()
-            .with_prompt(cfg.system_prompt.clone(), catalogue.clone(), project_instructions.clone())
-            .with_limits(cfg.max_tokens, cfg.reasoning_budget, 24)
-            .with_progress(report);
+        // Dispatch this message, then anything the user queued while it ran.
+        // The queue is drained here so a follow-up is a single Enter away from
+        // being asked, which is the entire point of queuing it.
+        let mut next = Some(text);
+        while next.is_some() {
+            let mut last_error: Option<String> = None;
+            let outcome = {
+                let mut agent = Agent::new(
+                    provider.as_ref(),
+                    &mut session,
+                    &mut state,
+                    &loaded_mods,
+                    extensions,
+                    &cfg.workspace,
+                )
+                .prime_extensions()
+                .with_prompt(cfg.system_prompt.clone(), catalogue.clone(), project_instructions.clone())
+                .with_limits(cfg.max_tokens, cfg.reasoning_budget, 24)
+                .with_progress(report);
 
-            println!("\x1b[38;5;245m");
-            let result = agent.run_turn();
-            let _ = std::io::stdout().flush();
-            println!("\x1b[0m");
-            result
-        };
+                println!("\x1b[38;5;245m");
+                let mut draft = glass_tui::Editor::new();
+                let (_, nh) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+                let draft_row = nh.saturating_sub(2);
+                let result = agent.run_turn(&mut |steer_slot: &mut Option<String>| {
+                    if let Some(s) = drain_input(&keys, &mut draft, &mut pending, draft_row, 80)
+                        && !s.is_empty()
+                    {
+                        *steer_slot = Some(s);
+                    }
+                });
+                let _ = std::io::stdout().flush();
+                println!("\x1b[0m");
+                result
+            };
 
-        match outcome {
-            Ok((out, stop)) => {
-                if let Stop::ToolBudget = stop {
-                    println!("\x1b[33m⚠ stopped: reached the tool-call budget for this turn\x1b[0m");
+            match outcome {
+                Ok((out, stop)) => {
+                    match stop {
+                        Stop::ToolBudget => println!(
+                            "\x1b[33m⚠ stopped: reached the tool-call budget for this turn\x1b[0m"
+                        ),
+                        Stop::Steered => println!("\x1b[33m⚡ stopped to apply your correction\x1b[0m"),
+                        Stop::Finished => {}
+                    }
+                    for w in &out.warnings {
+                        println!("\x1b[33m⚠ {w}\x1b[0m");
+                    }
+                    if let Some((i, o)) = out.usage {
+                        println!("\x1b[90m  {i} in / {o} out\x1b[0m");
+                    }
                 }
-                for w in &out.warnings {
-                    println!("\x1b[33m⚠ {w}\x1b[0m");
-                }
-                if let Some((i, o)) = out.usage {
-                    println!("\x1b[90m  {i} in / {o} out\x1b[0m");
+                Err(e) => {
+                    println!("\x1b[31mprovider error: {e}\x1b[0m");
+                    last_error = Some(e.to_string());
                 }
             }
-            Err(e) => {
-                println!("\x1b[31mprovider error: {e}\x1b[0m");
-                // `agent` still borrows the session, so the error is recorded
-                // after it goes out of scope below.
-                last_error = Some(e.to_string());
+
+            if let Some(msg) = last_error {
+                session.append(Record::System(format!("error: {msg}")));
+                // A failed turn means the connection is probably gone; draining
+                // the queue would just burn the same failure repeatedly.
+                break;
             }
-        }
-        if let Some(msg) = last_error {
-            session.append(Record::System(format!("error: {msg}")));
+
+            next = pending.take_follow_up();
+            if let Some(q) = &next {
+                println!("\n\x1b[90m❯\x1b[0m {q}");
+                session.append(Record::User(q.clone()));
+            }
         }
         println!();
 
@@ -319,6 +352,68 @@ fn repl(
         prompt_row = nh.saturating_sub(2);
         back.push(String::new());
     }
+}
+
+/// Consume key events while the agent is busy.
+///
+/// Mid-turn input needs its own line editor: the REPL's editor has already been
+/// consumed by the turn that is running, and replaying into it would show the
+/// user characters in a buffer they are no longer looking at. So the drain path
+/// keeps its own editor and renders it below the streaming output.
+///
+/// Only the two submission intents are honoured. Navigation and editing keys go
+/// to this editor, so a message can be typed and corrected normally while the
+/// model works.
+fn drain_input(
+    keys: &input::KeyReader,
+    editor: &mut glass_tui::Editor,
+    pending: &mut queue::Queue,
+    row: u16,
+    width: u16,
+) -> Option<String> {
+    use glass_tui::crossterm::event::{Event, KeyCode, KeyModifiers};
+
+    let mut dirty = false;
+
+    while let Some(ev) = keys.try_next() {
+        let Event::Key(k) = ev else { continue };
+
+        if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
+            // Ctrl-C is an escape hatch: abandon the turn and drop the draft.
+            editor.clear();
+            println!("\r\x1b[33m⚡ interrupt\x1b[0m");
+            return Some(String::new());
+        }
+
+        let alt = k.modifiers.contains(KeyModifiers::ALT);
+        match editor.key(k) {
+            glass_tui::Edit::Continue => dirty = true,
+            glass_tui::Edit::Submit(text) => {
+                let Some(intent) = queue::classify(&text, alt, true) else {
+                    continue;
+                };
+                match intent {
+                    queue::Intent::Steer(s) => {
+                        println!("\r\x1b[33m⚡ steering: {s}\x1b[0m");
+                        // Returned so the caller owns the slot; taking it here
+                        // would borrow the same state the loop is holding.
+                        return Some(s);
+                    }
+                    queue::Intent::FollowUp(s) => {
+                        pending.push(queue::Intent::FollowUp(s));
+                        println!("\r\x1b[90m· queued\x1b[0m");
+                    }
+                }
+            }
+        }
+    }
+
+    if dirty {
+        // Repaint the draft line in place so a queued message is visible.
+        editor.render(row, width, true);
+        let _ = std::io::stdout().flush();
+    }
+    None
 }
 
 /// Paint one progress event.
@@ -345,6 +440,10 @@ fn report(p: Progress<'_>) {
         }
         Progress::ToolEnd { name, summary } => {
             let _ = writeln!(io, "\x1b[90m  {} → {}\x1b[0m", name, summary);
+            let _ = io.flush();
+        }
+        Progress::Steered(text) => {
+            let _ = writeln!(io, "\x1b[33m⚡ applying your correction: {text}\x1b[0m");
             let _ = io.flush();
         }
         Progress::Compacted { kept, dropped } => {

@@ -31,7 +31,17 @@ acceptance while the visible cookie projection remains empty; the adjacent
 Slice 846 regression also passes. These tests cover a narrow timer/resource
 path, not general event-loop, task-source fairness, rendering, WPT, or
 cross-platform conformance. This checkpoint is local and unpushed; no remote CI
-result is claimed.
+result is claimed. Slice 848 extends the tested handoff to script-created
+images and media. Listener and event-handler keys follow nodes when temporary
+IDs become native IDs; their event-owner identity follows the same binding.
+Mutation IPC carries the exact committed document owner, while request-cookie
+selection, response-cookie acceptance, and jar persistence remain exclusively
+parent-owned. Failed resource sources are marked as attempted so later callback
+settlement does not retry an unchanged CSP-blocked image and dispatch its error
+again. The process-backed regression verifies image/media events, ordered
+callback Fetches, HttpOnly cookie progression, an empty `document.cookie`
+projection, and that the denied URL never reaches transport. This checkpoint
+is local and unpushed; no remote CI result is claimed.
 Slice 838's NavigationPreloadManager persistence regression passed (1 passed;
 906 filtered; 39.70 seconds), so that slice is complete. Slice 839 starts
 eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,

@@ -10760,6 +10760,16 @@ parent broker with the ordered HttpOnly cookie jar, without an intervening
 BrowserSession operation. See the [Slice 847 task](tasks/native-engine-browser-847.md)
 and [review](reviews/native-engine-browser-847-01.md).
 
+Slice 848 completes image/media resource-event settlement for the tested
+process-backed timer path. Script-created node event keys and owner identities
+follow native node IDs; mutation requests carry the exact document owner; and
+callback Fetches stay within the parent cookie broker. Failed unchanged sources
+are not retried on later settlement turns. The regression verifies ordered
+image/error/media callback Fetches, parent-owned HttpOnly cookie rotation, an
+empty script-visible cookie projection, and no transport request for the
+CSP-denied image. See the [Slice 848 task](tasks/native-engine-browser-848.md)
+and [review](reviews/native-engine-browser-848-01.md).
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

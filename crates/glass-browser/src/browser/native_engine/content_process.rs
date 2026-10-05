@@ -92,6 +92,7 @@ use super::service_worker::{
 };
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
@@ -2766,6 +2767,132 @@ pub(crate) struct NativeContentMutation {
     pub(crate) window_name: String,
 }
 
+fn append_content_response_array<T: Serialize>(
+    response: &mut Value,
+    field: &str,
+    additions: &T,
+    limit: usize,
+    operation: &'static str,
+) -> Result<(), NativeEngineError> {
+    let additions = serde_json::to_value(additions).map_err(|_| NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: format!("content-process {field} effects could not be encoded"),
+    })?;
+    let additions = additions
+        .as_array()
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: format!("content-process {field} effects were not an array"),
+        })?;
+    if additions.is_empty() {
+        return Ok(());
+    }
+    let object = response
+        .as_object_mut()
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content-process mutation response was not an object".into(),
+        })?;
+    let values = object
+        .entry(field.to_owned())
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: format!("content-process {field} effects were malformed"),
+        })?;
+    let total = values.len().saturating_add(additions.len());
+    if total > limit {
+        return Err(NativeEngineError::limit(operation, limit, total));
+    }
+    values.extend(additions.iter().cloned());
+    Ok(())
+}
+
+fn append_content_mutation_response_effects(
+    response: &mut Value,
+    mutation: &NativeContentMutation,
+) -> Result<(), NativeEngineError> {
+    let events = mutation
+        .events
+        .iter()
+        .map(|event| {
+            json!({
+                "node_index": event.node_index,
+                "kind": event_kind_text(event.kind),
+            })
+        })
+        .collect::<Vec<_>>();
+    append_content_response_array(
+        response,
+        "events",
+        &events,
+        MAX_NATIVE_EFFECTS,
+        "encode parent-brokered mutation events",
+    )?;
+    append_content_response_array(
+        response,
+        "mutation_history",
+        &mutation.history,
+        MAX_NATIVE_EFFECTS,
+        "encode parent-brokered mutation history",
+    )?;
+    append_content_response_array(
+        response,
+        "scroll_commands",
+        &mutation.scroll_commands,
+        MAX_NATIVE_EFFECTS,
+        "encode parent-brokered mutation scroll commands",
+    )?;
+    append_content_response_array(
+        response,
+        "dialogs",
+        &mutation.dialogs,
+        MAX_NATIVE_DIALOGS,
+        "encode parent-brokered mutation dialogs",
+    )?;
+    append_content_response_array(
+        response,
+        "popups",
+        &mutation.popups,
+        MAX_NATIVE_EFFECTS,
+        "encode parent-brokered mutation popups",
+    )?;
+    append_content_response_array(
+        response,
+        "post_messages",
+        &mutation.post_messages,
+        MAX_NATIVE_EFFECTS,
+        "encode parent-brokered mutation postMessage requests",
+    )?;
+    append_content_response_array(
+        response,
+        "window_closes",
+        &mutation.window_closes,
+        MAX_NATIVE_EFFECTS,
+        "encode parent-brokered mutation window close requests",
+    )?;
+    append_content_response_array(
+        response,
+        "window_navigations",
+        &mutation.window_navigations,
+        MAX_NATIVE_EFFECTS,
+        "encode parent-brokered mutation window navigation requests",
+    )?;
+    if let Some(navigation) = mutation.navigation.as_ref() {
+        if response
+            .get("navigation")
+            .is_some_and(|value| !value.is_null())
+        {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "one parent-brokered mutation cannot activate multiple navigations".into(),
+            });
+        }
+        response["navigation"] = content_navigation_json(navigation);
+    }
+    Ok(())
+}
+
 pub(crate) struct NativeContentScriptResult {
     pub(crate) value: Value,
     pub(crate) mutation: Option<NativeContentMutation>,
@@ -4700,12 +4827,43 @@ impl NativeContentProcess {
         action: Value,
         parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentMutation, NativeEngineError> {
+        let owner = NativeContentCookieOwner {
+            context_id: self.context_id.clone().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process mutation owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no browser context identity",
+                )
+            })?,
+            frame_id: self.frame_id.clone().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process mutation owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no frame identity",
+                )
+            })?,
+            generation: self.current_document_generation.ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process mutation owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no committed document generation",
+                )
+            })?,
+            document_url: self.current_document_url.clone().ok_or_else(|| {
+                NativeEngineError::worker_failure(
+                    "content process mutation owner",
+                    NativeWorkerFailureKind::Protocol,
+                    "content process has no committed document URL",
+                )
+            })?,
+        };
         let response = self
             .exchange_with_parent_loader_timeout(
                 json!({
                 "kind": request_kind,
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
+                "owner": owner,
                 "action": action,
                 }),
                 "content process mutation",
@@ -14685,7 +14843,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
         };
         let is_action_mutation = response.get("kind").and_then(Value::as_str) == Some("mutated")
             && kind.starts_with("mutate_");
-        if is_action_mutation && let Some(current_document_url) = document_url.as_deref() {
+        if is_action_mutation && let Some(current_document_url) = document_url.clone() {
             let settlement = async {
                 let owner = active_cookie_owner.clone().ok_or_else(|| {
                     NativeEngineError::worker_failure(
@@ -14725,7 +14883,14 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                         "the active document has no resource loader",
                     )
                 })?;
-                let mut parent_fetch_broker = NativeContentFetchBroker {
+                let document_origin = document_origin.as_ref().ok_or_else(|| {
+                    NativeEngineError::worker_failure(
+                        "parent-brokered mutation resources",
+                        NativeWorkerFailureKind::Protocol,
+                        "the active document has no origin",
+                    )
+                })?;
+                let parent_fetch_broker = NativeContentFetchBroker {
                     captured_load_fetches: false,
                     request_id,
                     owner,
@@ -14736,21 +14901,36 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     document_cookie_projection: &mut parent_document_cookie_projection,
                     next_content_resource_fetch_id: 0,
                     page_meta_content_security_policies: loader
-                        .document_meta_content_security_policies(current_document_url)?,
+                        .document_meta_content_security_policies(&current_document_url)?,
                 };
-                load_mutation_external_resources(
+                let (next, mutation, _) = resolve_script_fetches(
                     current_document,
                     runtime,
-                    loader,
-                    current_document_url,
+                    Some(loader),
+                    Some(parent_fetch_broker),
+                    &mut service_workers,
+                    &mut websocket_connections,
+                    &mut fetch_stream_connections,
+                    &mut fetch_upload_connections,
+                    &mut event_source_connections,
+                    &current_document_url,
+                    document_origin,
                     viewport,
-                    &mut parent_fetch_broker,
+                    false,
+                    NativeScriptEvaluation {
+                        value: Value::Null,
+                        commands: Vec::new(),
+                        top_level_await_pending: false,
+                        worker_script_error: None,
+                    },
                 )
-                .await
+                .await?;
+                *current_document = next;
+                Ok(mutation)
             }
             .await;
             match settlement {
-                Ok(resource_events) => {
+                Ok(mutation) => {
                     let Some(current_document) = document.as_ref() else {
                         return Err(NativeEngineError::worker_failure(
                             "parent-brokered mutation resources",
@@ -14766,25 +14946,21 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     response["document_base64"] = Value::String(
                         base64::engine::general_purpose::STANDARD.encode(encoded_document),
                     );
-                    let events = response["events"].as_array_mut().ok_or_else(|| {
-                        NativeEngineError::Worker {
-                            operation: "encode parent-brokered mutation events".into(),
-                            reason: "the mutation response omitted its event list".into(),
-                        }
-                    })?;
-                    if events.len().saturating_add(resource_events.len()) > MAX_NATIVE_EFFECTS {
-                        return Err(NativeEngineError::limit(
-                            "parent-brokered mutation resource events",
-                            MAX_NATIVE_EFFECTS,
-                            events.len().saturating_add(resource_events.len()),
-                        ));
+                    append_content_mutation_response_effects(&mut response, &mutation)?;
+                    if !mutation.history.is_empty() {
+                        let document_origin = document_origin.as_ref().ok_or_else(|| {
+                            NativeEngineError::worker_failure(
+                                "parent-brokered mutation history",
+                                NativeWorkerFailureKind::Protocol,
+                                "the active document has no origin",
+                            )
+                        })?;
+                        document_url = Some(resolve_content_history_document_url(
+                            &mutation.history,
+                            &current_document_url,
+                            document_origin,
+                        )?);
                     }
-                    events.extend(resource_events.into_iter().map(|(node_index, kind)| {
-                        json!({
-                            "node_index": node_index,
-                            "kind": event_kind_text(kind),
-                        })
-                    }));
                 }
                 Err(error) => response = content_error_response(response_id, error),
             }
@@ -16672,7 +16848,7 @@ async fn load_external_images(
         .take(MAX_CONTENT_IMAGES)
     {
         let node_id = NativeNodeId::from_parts(document.generation(), node_index);
-        if document.image_resource_for_node(node_id).is_some() {
+        if document.image_load_attempted_for_node(node_id, viewport) {
             continue;
         }
         document.mark_image_load(node_index, source.clone(), viewport)?;
@@ -16778,7 +16954,7 @@ async fn load_external_media(
             .get(..5)
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("blob:"));
         let node_id = NativeNodeId::from_parts(document.generation(), node_index);
-        if document.has_media_resource_for_node(node_id) {
+        if document.media_load_attempted_for_node(node_id) {
             continue;
         }
         document.mark_media_load(node_index, source.clone())?;
@@ -17103,47 +17279,6 @@ async fn load_dynamic_external_stylesheets(
         .await?;
         document.refresh_background_image_sources();
     }
-    Ok(events)
-}
-
-async fn load_mutation_external_resources(
-    document: &mut NativeDocument,
-    runtime: &NativeJavaScriptRuntime,
-    loader: &mut NativeResourceLoader,
-    document_url: &str,
-    viewport: Viewport,
-    parent_fetch_broker: &mut NativeContentFetchBroker<'_>,
-) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
-    let mut events = load_dynamic_external_stylesheets(
-        document,
-        runtime,
-        loader,
-        document_url,
-        viewport,
-        Some(&mut *parent_fetch_broker),
-    )
-    .await?;
-    events.extend(
-        load_external_images(
-            document,
-            Some(runtime),
-            loader,
-            document_url,
-            viewport,
-            Some(&mut *parent_fetch_broker),
-        )
-        .await?,
-    );
-    events.extend(
-        load_external_media(
-            document,
-            Some(runtime),
-            loader,
-            document_url,
-            Some(&mut *parent_fetch_broker),
-        )
-        .await?,
-    );
     Ok(events)
 }
 
@@ -19434,6 +19569,55 @@ fn apply_content_event_history(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn apply_content_resource_event_evaluation(
+    document: &mut NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    document_url: &mut String,
+    document_origin: &NativeOrigin,
+    viewport: Viewport,
+    evaluation: NativeScriptEvaluation,
+    history: &mut Vec<NativeScriptCommand>,
+    events: &mut Vec<(NativeNodeId, NativeEventKind)>,
+    scroll_commands: &mut Vec<NativeScriptCommand>,
+    script_result: &mut NativePageScriptResult,
+    navigation: &mut Option<ScriptNavigationTarget>,
+) -> Result<(), NativeEngineError> {
+    apply_content_event_history(
+        &evaluation.commands,
+        document_url,
+        document_origin,
+        runtime,
+        history,
+    )?;
+    let effects = apply_page_script_evaluation(
+        document,
+        runtime,
+        document_url,
+        document_origin,
+        viewport,
+        evaluation,
+        &mut script_result.pending_fetches,
+        &mut script_result.websocket_commands,
+        &mut script_result.event_source_commands,
+        scroll_commands,
+        &mut script_result.navigation,
+    )?;
+    events.extend(effects.into_iter().map(|(node_index, kind)| {
+        (
+            NativeNodeId::from_parts(document.generation(), node_index),
+            kind,
+        )
+    }));
+    if let Some(page_navigation) = script_result.navigation.take() {
+        *navigation = Some(ScriptNavigationTarget::Location {
+            href: page_navigation.href,
+            replace_history: page_navigation.replace_history,
+        });
+    }
+    Ok(())
+}
+
 fn resolve_content_history_document_url(
     commands: &[NativeScriptCommand],
     base_url: &str,
@@ -20081,42 +20265,23 @@ async fn mutate_script_document(
             document_origin,
             viewport,
         )?;
-        apply_content_event_history(
-            &evaluation.commands,
-            &mut document_url,
-            document_origin,
-            runtime,
-            &mut history,
-        )?;
-        let effects = apply_page_script_evaluation(
+        apply_content_resource_event_evaluation(
             &mut next,
             runtime,
-            &document_url,
+            &mut document_url,
             document_origin,
             viewport,
             evaluation,
-            &mut dynamic_result.pending_fetches,
-            &mut dynamic_result.websocket_commands,
-            &mut dynamic_result.event_source_commands,
+            &mut history,
+            &mut events,
             &mut scroll_commands,
-            &mut dynamic_result.navigation,
+            &mut dynamic_result,
+            &mut dynamic_navigation,
         )?;
-        events.extend(effects.into_iter().map(|(node_index, kind)| {
-            (
-                NativeNodeId::from_parts(next.generation(), node_index),
-                kind,
-            )
-        }));
         events.push((
             NativeNodeId::from_parts(next.generation(), node_index),
             event_kind,
         ));
-        if let Some(page_navigation) = dynamic_result.navigation.take() {
-            dynamic_navigation = Some(ScriptNavigationTarget::Location {
-                href: page_navigation.href,
-                replace_history: page_navigation.replace_history,
-            });
-        }
     }
     let validation_ids = events
         .iter()
@@ -20187,30 +20352,19 @@ async fn mutate_script_document(
             document_origin,
             viewport,
         )?;
-        apply_content_event_history(
-            &evaluation.commands,
-            &mut document_url,
-            document_origin,
-            runtime,
-            &mut history,
-        )?;
-        scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
-        let (effects, follow_up_commands) = apply_document_commands_with_font_face_ack(
+        apply_content_resource_event_evaluation(
             &mut next,
             runtime,
-            &document_url,
+            &mut document_url,
             document_origin,
             viewport,
-            &evaluation.commands,
-            true,
-        )?;
-        events.extend(effects);
-        retain_font_face_follow_up_commands(
-            &mut effective_commands,
+            evaluation,
+            &mut history,
+            &mut events,
             &mut scroll_commands,
             &mut dynamic_result,
-            follow_up_commands,
-        );
+            &mut dynamic_navigation,
+        )?;
         events.push((
             NativeNodeId::from_parts(next.generation(), node_index),
             event_kind,
@@ -20240,30 +20394,19 @@ async fn mutate_script_document(
             document_origin,
             viewport,
         )?;
-        apply_content_event_history(
-            &evaluation.commands,
-            &mut document_url,
-            document_origin,
-            runtime,
-            &mut history,
-        )?;
-        scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
-        let (effects, follow_up_commands) = apply_document_commands_with_font_face_ack(
+        apply_content_resource_event_evaluation(
             &mut next,
             runtime,
-            &document_url,
+            &mut document_url,
             document_origin,
             viewport,
-            &evaluation.commands,
-            true,
-        )?;
-        events.extend(effects);
-        retain_font_face_follow_up_commands(
-            &mut effective_commands,
+            evaluation,
+            &mut history,
+            &mut events,
             &mut scroll_commands,
             &mut dynamic_result,
-            follow_up_commands,
-        );
+            &mut dynamic_navigation,
+        )?;
         events.push((
             NativeNodeId::from_parts(next.generation(), node_index),
             event_kind,

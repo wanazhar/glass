@@ -117,10 +117,14 @@ keeps the bounded event stream attached to the owning worker. The worker never
 opens a child-side network connection or stores authoritative cookies.
 Browser-owned SharedWorker WebSocket handshakes, frame sends/receives, close,
 and owner cancellation must likewise remain in the parent coordinator. The
-parent selects handshake cookies and accepts response `Set-Cookie` before
-later requests; the worker receives only bounded opaque connection IDs, frame
-data, and lifecycle events. Raw cookie headers and the authoritative jar never
-cross into the worker realm. Other unimplemented runtime-network paths remain
+parent selects handshake cookies and processes each HTTP handshake response's
+`Set-Cookie` before WebSocket upgrade validation, even when a non-101 response
+fails the connection. The worker receives only bounded opaque connection IDs,
+frame data, and lifecycle events; failure events do not carry response headers
+or cookie values. Raw cookie headers and the authoritative jar never cross
+into the worker realm. The process-backed [Slice 869 task](tasks/native-engine-browser-869.md)
+verifies a denied handshake's HttpOnly response cookie in the parent and its
+later authorized reuse. Other unimplemented runtime-network paths remain
 separate gaps; this contract does not claim their parity.
 
 The parent must not send a cookie profile, an HttpOnly value, or raw

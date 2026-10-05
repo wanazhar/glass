@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-861
 scope: glass-browser/native-engine/shared-worker-fetch-cors-error-cookies
-status: in-progress
+status: complete
 depends-on: [native-engine-browser-860]
 ---
 
@@ -31,7 +31,7 @@ cookie.
 | Request class | Current owner/evidence | Slice 861 treatment |
 |---|---|---|
 | Page and DedicatedWorker Fetch | Owner-checked parent broker; Slice 860 verifies CORS-error cookies and actual `TypeError` rejection. | No change. |
-| Browser-owned SharedWorker Fetch | `NativeWorkerRegistry::new_with_parent_network_authority` runs the coordinator with the parent loader and shared browser cookie jar. Existing runtime tests cover request credentials, redirects, response-cookie rotation, profile fan-out, and persistence. | No process-backed CORS-error response-cookie sequence was found; add that focused evidence. |
+| Browser-owned SharedWorker Fetch | `NativeWorkerRegistry::new_with_parent_network_authority` runs the coordinator with the parent loader and shared browser cookie jar. Existing runtime tests cover request credentials, redirects, response-cookie rotation, profile fan-out, and persistence. | The exact Slice 861 regression now covers the CORS-error response-cookie sequence. |
 | ServiceWorker Fetch | ServiceWorker registry and captured-load parent-broker routes are covered by Slice 843 follow-ups and dedicated process tests. | No change; keep ServiceWorker error-response evidence separate. |
 
 This crosswalk does not claim that every HTTP(S) request class or every
@@ -97,5 +97,26 @@ conformance.
 
 ## Results
 
-- In progress; the owner crosswalk selects browser-owned SharedWorker Fetch.
-  The process regression has not yet been implemented or run.
+- The browser-owned SharedWorker path required no runtime fix. The parent
+  loader accepts the actual-response cookie before returning its script-visible
+  CORS error; its shared cookie jar serves the later SharedWorker and page
+  requests.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p
+  glass-browser --features native-engine --test native_engine --locked
+  --quiet` passed with existing dead-code warnings.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p
+  glass-browser --features native-engine --test native_engine --locked
+  --quiet native_runtime_shared_worker_fetch_cors_errors_keep_parent_cookies
+  -- --exact` passed (1 passed; 925 filtered; 21.85 seconds).
+- The loopback fixture verified that the SharedWorker sent the parent-selected
+  seed and entry cookies on the credentialed request. The actual response
+  used wildcard `Access-Control-Allow-Origin`, credentials, and an HttpOnly
+  `Set-Cookie`; Fetch rejected with an actual `TypeError` instance. The next
+  authorized SharedWorker request and page request both carried the new cookie.
+  The parent cookie API retained all three cookies as HttpOnly, while
+  `document.cookie` remained empty. The fixture observed no preflight or extra
+  request.
+- Formatting and maintainer documentation gate evidence are recorded in the
+  Slice 861 review. This is local focused evidence only; it does not certify
+  complete SharedWorker, Fetch/CORS or WPT conformance, other platforms,
+  independent review, or remote CI. Issue #40 remains open.

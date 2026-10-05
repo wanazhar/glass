@@ -39190,6 +39190,271 @@ globalThis.startCookieFanout = () => {
 }
 
 #[test]
+fn native_runtime_shared_worker_fetch_cors_errors_keep_parent_cookies() {
+    fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header.eq_ignore_ascii_case(name).then_some(value.trim())
+            })
+        })
+    }
+
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let _guard = native_content_process_test_lock().lock().await;
+            let profile_path = std::env::temp_dir().join(format!(
+                "glass-native-shared-worker-fetch-cors-{}-profile.json",
+                std::process::id()
+            ));
+            let cookie_profile_path =
+                std::path::PathBuf::from(format!("{}.cookies", profile_path.display()));
+            let profile_lock_path = profile_path.with_extension("lock");
+            let cookie_profile_lock_path = cookie_profile_path.with_extension("lock");
+            let worker_clients_path = profile_path.with_extension("clients");
+            let worker_events_path = profile_path.with_extension("events");
+            let worker_readers_path = profile_path.with_extension("readers");
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+
+            let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let page_address = page_listener.local_addr().unwrap();
+            let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let api_address = api_listener.local_addr().unwrap();
+            let page_origin = format!("http://{page_address}");
+            let api_origin = format!("http://{api_address}");
+            let shared_worker_api_origin = api_origin.clone();
+            let expected_origin = page_origin.clone();
+            let response_origin = page_origin.clone();
+
+            let page_server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(45), async move {
+                    for expected_path in ["/page", "/shared-fetch-worker.js"] {
+                        let (mut stream, _) = page_listener.accept().await.unwrap();
+                        let request = read_http_request(&mut stream).await;
+                        assert_eq!(request.split_whitespace().next(), Some("GET"));
+                        assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+                        let cookie = header_value(&request, "cookie").unwrap_or_default();
+                        let (content_type, set_cookie, body) = if expected_path == "/page" {
+                            (
+                                "text/html",
+                                "Set-Cookie: root=seed; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                r#"<script>
+globalThis.sharedFetchMessages = [];
+globalThis.sharedFetchWorker = new SharedWorker('/shared-fetch-worker.js', {
+  name: 'parent-owned-cors-cookie', credentials: 'include',
+});
+sharedFetchWorker.port.addEventListener('message', event => sharedFetchMessages.push(event.data));
+sharedFetchWorker.port.start();
+</script>"#
+                                    .to_owned(),
+                            )
+                        } else {
+                            assert!(cookie.contains("root=seed"), "Worker script missed seed cookie: {cookie}");
+                            (
+                                "text/javascript",
+                                "Set-Cookie: worker_entry=shared; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                format!(
+                                    r#"const apiOrigin = "{shared_worker_api_origin}";
+globalThis.onconnect = event => {{
+  const port = event.ports[0];
+  port.postMessage(["ready"]);
+  port.onmessage = async message => {{
+    if (message.data !== "run") return;
+    try {{
+      const response = await fetch(apiOrigin + "/cors-failed", {{ credentials: "include" }});
+      port.postMessage(["unexpected-response", response.status, await response.text()]);
+    }} catch (error) {{
+      port.postMessage(["rejected", error.name, error instanceof TypeError]);
+    }}
+    try {{
+      const response = await fetch(apiOrigin + "/worker-verify", {{ credentials: "include" }});
+      port.postMessage(["worker-verified", await response.text()]);
+    }} catch (error) {{
+      port.postMessage(["worker-verify-error", error.name, error.message]);
+    }}
+  }};
+}};"#
+                                ),
+                            )
+                        };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\n{set_cookie}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                    }
+                })
+                .await
+                .expect("SharedWorker parent-owned script requests stay bounded")
+            });
+
+            let api_server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(45), async move {
+                    for (path, required_cookies) in [
+                        ("/cors-failed", vec!["root=seed", "worker_entry=shared"]),
+                        (
+                            "/worker-verify",
+                            vec!["root=seed", "worker_entry=shared", "shared_fetch_failed=accepted"],
+                        ),
+                        (
+                            "/page-verify",
+                            vec!["root=seed", "worker_entry=shared", "shared_fetch_failed=accepted"],
+                        ),
+                    ] {
+                        let (mut stream, _) = api_listener.accept().await.unwrap();
+                        let request = read_http_request(&mut stream).await;
+                        assert_eq!(request.split_whitespace().next(), Some("GET"));
+                        assert_eq!(request.split_whitespace().nth(1), Some(path));
+                        assert_eq!(header_value(&request, "origin"), Some(expected_origin.as_str()));
+                        assert!(header_value(&request, "access-control-request-method").is_none());
+                        let cookie = header_value(&request, "cookie").unwrap_or_default();
+                        for expected in required_cookies {
+                            assert!(cookie.contains(expected), "{path} missed {expected}: {cookie}");
+                        }
+                        let (cors_headers, set_cookie, body) = if path == "/cors-failed" {
+                            (
+                                "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Credentials: true\r\n",
+                                "Set-Cookie: shared_fetch_failed=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                "hidden",
+                            )
+                        } else {
+                            (
+                                "Access-Control-Allow-Credentials: true\r\n",
+                                "",
+                                if path == "/worker-verify" { "worker-ok" } else { "page-ok" },
+                            )
+                        };
+                        let origin_header = if path == "/cors-failed" {
+                            String::new()
+                        } else {
+                            format!("Access-Control-Allow-Origin: {response_origin}\r\n")
+                        };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\n{cors_headers}{origin_header}{set_cookie}Content-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                    }
+                    match tokio::time::timeout(Duration::from_secs(1), api_listener.accept()).await {
+                        Err(_) => {}
+                        Ok(Ok((mut stream, _))) => {
+                            let request = read_http_request(&mut stream).await;
+                            panic!("unexpected SharedWorker cookie request: {request}");
+                        }
+                        Ok(Err(error)) => panic!("unexpected API listener error: {error}"),
+                    }
+                })
+                .await
+                .expect("SharedWorker CORS-cookie requests stay bounded")
+            });
+
+            let session = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("{page_origin}/page")),
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    let ready = session
+                        .script("sharedFetchMessages.some(message => message[0] === 'ready')")
+                        .await
+                        .unwrap()
+                        .value;
+                    if ready == serde_json::Value::Bool(true) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("browser-owned SharedWorker is connected");
+            session
+                .script("sharedFetchWorker.port.postMessage('run'); true")
+                .await
+                .unwrap();
+            let messages = tokio::time::timeout(Duration::from_secs(25), async {
+                loop {
+                    let messages = session
+                        .script("sharedFetchMessages")
+                        .await
+                        .unwrap()
+                        .value;
+                    if messages.as_array().is_some_and(|values| values.len() == 3) {
+                        break messages;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("SharedWorker CORS failure and follow-up Fetch settle");
+            assert_eq!(
+                messages,
+                serde_json::json!([
+                    ["ready"],
+                    ["rejected", "TypeError", true],
+                    ["worker-verified", "worker-ok"],
+                ])
+            );
+            let page_verify_script = format!(
+                r#"await fetch("{api_origin}/page-verify", {{ credentials: "include" }})
+                    .then(response => response.text())"#
+            );
+            assert_eq!(
+                session
+                    .script(page_verify_script)
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("page-ok")
+            );
+            assert_eq!(
+                session.script("document.cookie").await.unwrap().value,
+                serde_json::json!("")
+            );
+            let cookies = session.native_cookies().await.unwrap();
+            session.close().await.unwrap();
+            page_server.await.unwrap();
+            api_server.await.unwrap();
+
+            for (name, value) in [
+                ("root", "seed"),
+                ("worker_entry", "shared"),
+                ("shared_fetch_failed", "accepted"),
+            ] {
+                assert!(
+                    cookies
+                        .iter()
+                        .any(|cookie| { cookie.name == name && cookie.value == value && cookie.http_only }),
+                    "parent cookie jar is missing {name}={value}"
+                );
+            }
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+        });
+    });
+}
+
+#[test]
 fn native_runtime_shared_worker_event_source_uses_parent_cookie_authority() {
     run_native_browser_worker_test(|runtime| {
         runtime.block_on(async {

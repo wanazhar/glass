@@ -10904,6 +10904,13 @@ remains ignored. The scoped check and exact regression passed locally. See the
 and [Fetch Standard CORS credentials rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
 Issue #40 remains open.
 
+Slice 860 is in progress: the request-authority crosswalk identifies a focused
+coverage gap for credentialed page and DedicatedWorker Fetch responses rejected
+by CORS. The process regression will verify that actual-response cookies remain
+parent-owned and reach later authorized requests while Fetch rejects and
+HttpOnly remains hidden. See the [Slice 860 task](tasks/native-engine-browser-860.md)
+and the [Fetch Standard CORS credentials rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

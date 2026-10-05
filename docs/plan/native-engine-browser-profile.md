@@ -518,12 +518,14 @@ and a later explicitly credentialed request that carries only the existing
 HttpOnly seed. The parent's cookie API excludes the uncredentialed response
 cookie, and `document.cookie` remains empty. This is targeted page EventSource
 credential evidence, not complete EventSource, Fetch/CORS WPT, or
-cross-platform conformance. See the [Slice 866 task](tasks/native-engine-browser-866.md)
-and the Fetch Standard's [CORS credentials rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
-The companion [Slice 868 task](tasks/native-engine-browser-868.md) covers the
-same-origin credentials mode across a cross-origin EventSource redirect,
-including rejection of the redirect response cookie and omission on the next
-hop; that additional process-backed evidence is in progress.
+cross-platform conformance. The Slice 868 process-backed regression extends
+the same-origin credentials check through a cross-origin redirect: the parent
+rejects its HttpOnly cookie, sends no cookies on the next hop, and keeps only
+the preexisting seed for a later explicitly credentialed Fetch. The parent's
+cookie API confirms the rejected value is absent, and `document.cookie` stays
+empty. See the [Slice 866 task](tasks/native-engine-browser-866.md),
+[Slice 868 task](tasks/native-engine-browser-868.md), and the Fetch Standard's
+[CORS credentials rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
 
 ### Page EventSource redirect response cookies
 

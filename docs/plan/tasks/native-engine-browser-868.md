@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-868
 scope: glass-browser/native-engine/eventsource-default-credentials-redirect-cookies
-status: in-progress
+status: done
 depends-on: [native-engine-browser-867]
 ---
 
@@ -86,4 +86,24 @@ reconnection, or full EventSource/WPT conformance.
 
 ## Results
 
-Implementation and focused verification are pending.
+- The parent already applied the EventSource credentials gate per URL, so no
+  runtime change was necessary. The process-backed regression verifies that
+  both cross-origin EventSource hops omit `Cookie`; the 302's HttpOnly
+  `Set-Cookie` is not accepted; the CORS-authorized stream still delivers
+  open/message events; and a later explicitly credentialed page Fetch sends
+  only the preexisting seed. The parent cookie API excludes the redirect
+  cookie and `document.cookie` remains empty. No preflight or reconnect occurs.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p
+  glass-browser --features native-engine --lib --test native_engine --locked
+  --quiet` passed; successful compiler output was suppressed.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p
+  glass-browser --features native-engine --test native_engine --locked
+  --quiet native_content_process_page_event_source_omits_redirect_cookies_by_default
+  -- --exact --nocapture` passed (1 passed; 931 filtered; 23.26 seconds).
+- Rust formatting, `git diff --check`, and all four maintainer documentation
+  gates passed after the final documentation edits; exact gate results are in
+  the review.
+- This is focused local evidence only. Cross-origin-to-cross-origin redirect
+  policy, redirect loops, EventSource reconnect behavior, full Fetch/CORS or
+  WPT conformance, other platforms, independent review, and remote CI remain
+  unverified. Issue #40 remains open.

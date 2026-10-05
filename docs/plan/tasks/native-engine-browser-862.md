@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-862
 scope: glass-browser/native-engine/service-worker-fetch-cors-error-cookies
-status: in-progress
+status: done
 depends-on: [native-engine-browser-861]
 ---
 
@@ -106,4 +106,27 @@ no production work when the existing contract is correct.
 
 ## Results
 
-Implementation and focused verification are pending.
+- The captured-navigation ServiceWorker Fetch route required no runtime fix.
+  Its nested request was admitted by the parent through the owner-checked
+  captured-load broker; no child cookie state or raw-cookie IPC was added.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p
+  glass-browser --features native-engine --test native_engine --locked
+  --quiet` passed with the existing legacy-parser/dead-code warnings.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p
+  glass-browser --features native-engine --test native_engine --locked
+  --quiet native_content_process_service_worker_fetch_cors_errors_keep_parent_cookies
+  -- --exact --nocapture` passed (1 passed; 926 filtered; 25.58 seconds).
+- The process-backed two-origin regression verified the navigation FetchEvent's
+  actual credentialed GET receives the parent-selected seed and ServiceWorker
+  entry cookies. Its response had wildcard `Access-Control-Allow-Origin`,
+  `Access-Control-Allow-Credentials: true`, and an HttpOnly `Set-Cookie`; the
+  worker caught an actual `TypeError` and exposed no response. The later
+  authorized ServiceWorker request and page request both carried all three
+  cookies. The parent API retained each as HttpOnly, while `document.cookie`
+  remained empty. The fixture rejected preflight and extra requests.
+- `rustfmt --edition 2024 --check crates/glass-browser/tests/native_engine.rs`
+  and `git diff --check` passed. The four maintainer documentation gate results
+  are recorded in the Slice 862 review.
+- This is local focused evidence only. It does not certify background
+  ServiceWorker Fetch, complete Fetch/CORS or WPT behavior, other platforms,
+  independent review, or remote CI. Issue #40 remains open.

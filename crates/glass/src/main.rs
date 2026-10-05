@@ -5,6 +5,7 @@
 
 mod agent;
 mod agents_md;
+mod btw;
 mod compact;
 mod concurrency;
 mod config;
@@ -40,6 +41,8 @@ In the prompt:
   ctrl-c      interrupt the current turn
   ctrl-d      quit
   up/down     prompt history
+  /btw <q>    ask a side question without recording it
+  /extensions loaded extensions, their tools and commands
   /help       show this text
 
 glass ships no permission system: bash runs what the model asks for. Run it
@@ -236,6 +239,32 @@ fn repl(
 
         if text == "/help" {
             print!("{HELP}");
+            continue;
+        }
+
+        // `/btw <question>` asks the model a side question against the current
+        // context and prints the answer without recording either. The main
+        // conversation is untouched, so the next turn costs what it would have
+        // anyway.
+        if let Some(question) = text.strip_prefix("/btw") {
+            let question = question.trim();
+            if question.is_empty() {
+                println!("\x1b[33musage: /btw <question>\x1b[0m");
+                continue;
+            }
+            print!("\x1b[90masking...\x1b[0m\r");
+            let _ = std::io::stdout().flush();
+            match btw::ask(
+                provider.as_ref(),
+                &cfg.system_prompt,
+                &session.messages(),
+                question,
+                provider.id(),
+            ) {
+                Ok(answer) if answer.is_empty() => println!("\x1b[33mbtw: no answer\x1b[0m"),
+                Ok(answer) => print!("{}", btw::render(question, &answer)),
+                Err(e) => println!("\x1b[31mbtw failed: {e}\x1b[0m"),
+            }
             continue;
         }
 

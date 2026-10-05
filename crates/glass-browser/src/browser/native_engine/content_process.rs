@@ -126,8 +126,10 @@ const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
     MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
 const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 33;
 const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
+// Async owner turns can await a parent-brokered Fetch, which uses the same network bound.
+pub(crate) const CONTENT_PROCESS_ASYNC_EFFECT_TIMEOUT: Duration = CONTENT_PROCESS_LOAD_TIMEOUT;
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
-const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CONTENT_EVENT_LOOP_TURNS: usize = MAX_NATIVE_EFFECTS;
 const MAX_NATIVE_COOKIE_CHANGE_BATCH: usize = MAX_NATIVE_EFFECTS;
 pub(crate) const NATIVE_WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -4098,6 +4100,22 @@ impl NativeContentProcess {
         page_events: &NativePageEventBatch,
         parent_loader: Option<&mut NativeResourceLoader>,
     ) -> Result<NativeContentScriptResult, NativeEngineError> {
+        self.evaluate_with_page_events_timeout(
+            source,
+            page_events,
+            parent_loader,
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+        )
+        .await
+    }
+
+    pub(crate) async fn evaluate_with_page_events_timeout(
+        &mut self,
+        source: &str,
+        page_events: &NativePageEventBatch,
+        parent_loader: Option<&mut NativeResourceLoader>,
+        deadline: Duration,
+    ) -> Result<NativeContentScriptResult, NativeEngineError> {
         let owner = NativeContentCookieOwner {
             context_id: self.context_id.clone().ok_or_else(|| {
                 NativeEngineError::worker_failure(
@@ -4153,7 +4171,7 @@ impl NativeContentProcess {
                 "document_cookie": document_cookie,
                 }),
                 "content process script",
-                CONTENT_PROCESS_SCRIPT_TIMEOUT,
+                deadline,
                 parent_loader,
             )
             .await

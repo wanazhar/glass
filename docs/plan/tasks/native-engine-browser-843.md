@@ -828,5 +828,10 @@ projection and existing native Fetch behavior.
   MCP tools). This source remains unpushed, so no remote CI result is claimed.
   Other unbrokered HTTP(S) classes remain open, so Slice 843 and Issue #40
   remain in progress.
+- Follow-up [Slice 845](native-engine-browser-845.md) verifies a controlled
+  navigation's non-awaited Service Worker Fetch uses parent-owned HttpOnly
+  request/response cookies and cannot delay the navigation that queued its
+  async owner turn. This does not close the remaining broker-coverage audit or
+  claim parallel page and Service Worker execution.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

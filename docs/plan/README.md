@@ -10741,6 +10741,12 @@ browser-wide event-loop or rendering-opportunity conformance.
 The committed [Slice 846 review](reviews/native-engine-browser-846-01.md)
 passed with no findings; the task is complete locally.
 
+Slice 847 is in progress to fix the timer-created stylesheet `load` handoff.
+Its process-backed target regression requires the callback Fetch to cross the
+parent broker with the ordered HttpOnly cookie jar, without an intervening
+BrowserSession operation. See the
+[Slice 847 task](tasks/native-engine-browser-847.md).
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

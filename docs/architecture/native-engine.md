@@ -97,6 +97,18 @@ authority, and jar owner. This focused case does not certify all redirect
 chains, full XHR/Web IDL or WPT behavior, remote CI, or cross-platform
 conformance. See the [Slice 853 task](../plan/tasks/native-engine-browser-853.md)
 and [review](../plan/reviews/native-engine-browser-853-01.md).
+Slice 854 adds a process-backed XHR preflight regression through the parent
+broker. It verifies that OPTIONS carries the origin, requested method, and
+header names but never Cookie, including for an eventual credentialed request.
+Default cross-origin XHR omits cookies and rejects its response cookie;
+credentialed preflights and actual requests require exact-origin CORS
+authorization, after which the parent selects matching cookies and accepts
+response cookies for later requests. Async page, synchronous parent-brokered
+page, and async DedicatedWorker paths are covered. HttpOnly values remain out
+of `document.cookie`; no cookie header or jar was added to IPC. This focused
+case is not complete CORS/XHR or WPT conformance, remote CI, or cross-platform
+certification. See the [Slice 854 task](../plan/tasks/native-engine-browser-854.md)
+and [review](../plan/reviews/native-engine-browser-854-01.md).
 Slice 838's NavigationPreloadManager persistence regression passed (1 passed;
 906 filtered; 39.70 seconds), so that slice is complete. Slice 839 starts
 eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,

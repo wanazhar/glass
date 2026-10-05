@@ -540,8 +540,10 @@ For process-backed HTTP(S) documents, each HTML `<video>` with a nonempty
 `poster` attribute initiates an image request when created and when the
 attribute is set, changed, or removed. The URL is resolved against the owner
 Document. For network URLs, the browser parent performs the request through
-its image broker with the video initiator's image policy, referrer policy, and
-parent-owned cookie authority; eligible response cookies remain in the parent.
+its image broker under image CSP policy and parent-owned cookie authority.
+The request uses credentials mode `include` with URL credentials; its client
+is the owner Document, which supplies the effective referrer policy. Eligible
+response cookies remain in the parent.
 Only bounded decoded image data and the URL-scoped script-visible cookie
 projection may enter the content process. A poster response must never fail
 Document navigation or expose a cookie header, jar, or HttpOnly value.

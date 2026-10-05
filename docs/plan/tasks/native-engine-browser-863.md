@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-863
 scope: glass-browser/native-engine/service-worker-fetch-cors-error-cookies
-status: in-progress
+status: done
 depends-on: [native-engine-browser-862]
 ---
 
@@ -101,4 +101,29 @@ behavior unless a defect is found.
 
 ## Results
 
-Implementation and focused verification are pending.
+- The ordinary ServiceWorker FetchEvent broker route required no runtime fix.
+  The test keeps captured-navigation requests and explicit-page FetchEvent
+  requests separate; the former uses the exact-owner captured-load broker,
+  while the latter uses the ordinary parent broker without the marker.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p
+  glass-browser --features native-engine --test native_engine --locked
+  --quiet` passed; successful compiler output was suppressed.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p
+  glass-browser --features native-engine --test native_engine --locked
+  --quiet native_content_process_service_worker_fetch_cors_errors_keep_parent_cookies
+  -- --exact --nocapture` passed (1 passed; 926 filtered; 25.58 seconds).
+- The process-backed test verified two distinct actual-response CORS failures:
+  one during an intercepted navigation and one from a ServiceWorker FetchEvent
+  triggered by an explicit page Fetch. Each credentialed GET received the
+  parent-selected cookies and returned wildcard `Access-Control-Allow-Origin`,
+  `Access-Control-Allow-Credentials: true`, and a distinct HttpOnly
+  `Set-Cookie`. Both failures became actual `TypeError` instances in the
+  ServiceWorker. A later authorized worker request and page request carried
+  both response cookies; the parent cookie API retained them as HttpOnly and
+  `document.cookie` remained empty. The fixture verified request order and no
+  preflight or extra requests.
+- Rust formatting, `git diff --check`, and all four maintainer documentation
+  gates passed; detailed outputs are recorded in the Slice 863 review.
+- This is focused local evidence only. Background ServiceWorker Fetch,
+  complete Fetch/CORS or WPT behavior, other platforms, independent review,
+  and remote CI remain unverified. Issue #40 remains open.

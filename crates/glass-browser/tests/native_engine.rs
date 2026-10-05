@@ -39546,6 +39546,19 @@ self.addEventListener('fetch', event => {{
     }})());
   }} else if (path === '/worker-probe') {{
     event.respondWith((async () => {{
+      try {{
+        const response = await fetch(apiOrigin + '/cors-failed-explicit', {{ credentials: 'include' }});
+        return new Response('unexpected:' + response.status, {{
+          headers: {{ 'Content-Type': 'text/plain' }}
+        }});
+      }} catch (error) {{
+        return new Response('handled-worker:' + error.name + ':' + (error instanceof TypeError), {{
+          headers: {{ 'Content-Type': 'text/plain' }}
+        }});
+      }}
+    }})());
+  }} else if (path === '/worker-verify-probe') {{
+    event.respondWith((async () => {{
       const response = await fetch(apiOrigin + '/worker-verify', {{ credentials: 'include' }});
       return new Response(await response.text(), {{
         headers: {{ 'Content-Type': 'text/plain' }}
@@ -39575,11 +39588,20 @@ self.addEventListener('fetch', event => {{
                             vec!["sw_cors_seed=initial", "sw_cors_entry=worker"],
                         ),
                         (
+                            "/cors-failed-explicit",
+                            vec![
+                                "sw_cors_seed=initial",
+                                "sw_cors_entry=worker",
+                                "sw_cors_rejected_navigation=accepted",
+                            ],
+                        ),
+                        (
                             "/worker-verify",
                             vec![
                                 "sw_cors_seed=initial",
                                 "sw_cors_entry=worker",
-                                "sw_cors_rejected=accepted",
+                                "sw_cors_rejected_navigation=accepted",
+                                "sw_cors_rejected_explicit=accepted",
                             ],
                         ),
                         (
@@ -39587,7 +39609,8 @@ self.addEventListener('fetch', event => {{
                             vec![
                                 "sw_cors_seed=initial",
                                 "sw_cors_entry=worker",
-                                "sw_cors_rejected=accepted",
+                                "sw_cors_rejected_navigation=accepted",
+                                "sw_cors_rejected_explicit=accepted",
                             ],
                         ),
                     ] {
@@ -39609,20 +39632,32 @@ self.addEventListener('fetch', event => {{
                             assert!(cookie.contains(expected), "{path} missed {expected}: {cookie}");
                         }
 
-                        let (cors_headers, set_cookie, body) = if path == "/cors-failed" {
-                            (
+                        let (cors_headers, set_cookie, body) = match path {
+                            "/cors-failed" => (
                                 "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Credentials: true\r\n".to_owned(),
-                                "Set-Cookie: sw_cors_rejected=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                "Set-Cookie: sw_cors_rejected_navigation=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
                                 "hidden",
-                            )
-                        } else {
-                            (
+                            ),
+                            "/cors-failed-explicit" => (
+                                "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Credentials: true\r\n".to_owned(),
+                                "Set-Cookie: sw_cors_rejected_explicit=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                "hidden",
+                            ),
+                            "/worker-verify" => (
                                 format!(
                                     "Access-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Credentials: true\r\n"
                                 ),
                                 "",
-                                if path == "/worker-verify" { "worker-ok" } else { "page-ok" },
-                            )
+                                "worker-ok",
+                            ),
+                            "/page-verify" => (
+                                format!(
+                                    "Access-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Credentials: true\r\n"
+                                ),
+                                "",
+                                "page-ok",
+                            ),
+                            _ => unreachable!("only the declared ServiceWorker cookie paths are served"),
                         };
                         let response = format!(
                             "HTTP/1.1 200 OK\r\n{cors_headers}{set_cookie}Content-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -39683,6 +39718,14 @@ self.addEventListener('fetch', event => {{
                     .await
                     .unwrap()
                     .value,
+                serde_json::json!("handled-worker:TypeError:true")
+            );
+            assert_eq!(
+                session
+                    .script("await fetch('/worker-verify-probe').then(response => response.text())")
+                    .await
+                    .unwrap()
+                    .value,
                 serde_json::json!("worker-ok")
             );
             assert_eq!(
@@ -39707,7 +39750,8 @@ self.addEventListener('fetch', event => {{
             for (name, value) in [
                 ("sw_cors_seed", "initial"),
                 ("sw_cors_entry", "worker"),
-                ("sw_cors_rejected", "accepted"),
+                ("sw_cors_rejected_navigation", "accepted"),
+                ("sw_cors_rejected_explicit", "accepted"),
             ] {
                 assert!(
                     cookies.iter().any(|cookie| {

@@ -10738,6 +10738,8 @@ that the stylesheet's `load` handler did not issue its follow-up Fetch. That
 event-delivery gap remains open and is not part of Slice 846. See the
 [Slice 846 task](tasks/native-engine-browser-846.md). This slice does not claim
 browser-wide event-loop or rendering-opportunity conformance.
+The committed [Slice 846 review](reviews/native-engine-browser-846-01.md)
+passed with no findings; the task is complete locally.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

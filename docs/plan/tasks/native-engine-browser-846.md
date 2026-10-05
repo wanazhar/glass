@@ -3,7 +3,7 @@
 ```yaml
 id: native-engine-browser-846
 scope: native-engine/content-process-event-loop
-status: in-progress
+status: done
 depends-on: [native-engine-browser-845]
 ```
 

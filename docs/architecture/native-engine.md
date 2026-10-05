@@ -42,6 +42,13 @@ again. The process-backed regression verifies image/media events, ordered
 callback Fetches, HttpOnly cookie progression, an empty `document.cookie`
 projection, and that the denied URL never reaches transport. This checkpoint
 is local and unpushed; no remote CI result is claimed.
+Slice 849 adds a process-backed DedicatedWorker `setTimeout` regression for a
+`ReadableStream` Fetch upload while the page is otherwise idle. It verifies the
+upload method, content type, body, request order, and parent-owned cookie
+rotation through the upload and a later Worker Fetch. The parent remains the
+only cookie matcher, `Set-Cookie` acceptor, and jar owner; the child receives
+only the URL-scoped script-visible projection. This is targeted local evidence,
+not general autonomous-worker or remote-CI certification.
 Slice 838's NavigationPreloadManager persistence regression passed (1 passed;
 906 filtered; 39.70 seconds), so that slice is complete. Slice 839 starts
 eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,
@@ -839,8 +846,15 @@ explicit page-script turn use the same bounded buffering path. The process-backe
 `native_content_process_worker_stream_upload_uses_parent_cookie_authority`
 regression verifies the request cookie and a same-turn follow-up after an
 HttpOnly response cookie. Brokered FetchEvent Service Worker-originated upload
-streams now use the same bounded parent-brokered path; worker streams from
-autonomous turns remain outside it. Content-side
+streams now use the same bounded parent-brokered path. Slice 849 also covers a
+DedicatedWorker stream upload created by an autonomous timer turn: upload pull
+chunks cross the bounded demand-driven IPC protocol and are collected before
+parent network dispatch. The parent applies/selects cookies and accepts
+`Set-Cookie`; the process-backed loopback regression verifies the HttpOnly
+rotation and visible-only cookie projection. As on the other buffered upload
+paths, this does not provide socket-level upload streaming or network
+backpressure. This does not establish autonomous ServiceWorker upload coverage
+or complete background-network parity. Content-side
 Service Worker interception remains in place; unhandled HTTP(S) top-level
 navigation is parent-brokered after that interception declines it. HTTP(S)
 parser-discovered page scripts, initial stylesheets, static CSS imports, page

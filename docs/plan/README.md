@@ -324,12 +324,11 @@ while rebuilding the integration target, leaving too little test runtime. A
 no-build run of the already-compiled binary then passed the exact regression
 (1 passed; 48.31-second test runtime, 48.37 seconds total). Independent review
 found no static lock/order defect; its initial timeout finding is resolved by
-that process-backed pass. Slice 842 is complete. The full-profile mirror has
-since been removed, but the overall parent-only cookie contract remains
-incomplete until Slice 843 routes every cookie-bearing network path through
-the parent. Current hardening has disabled child cookie state and rejects
-child-generated journals, but remaining direct requests still lack parent
-cookie semantics.
+that process-backed pass. Slice 842 is complete. The full-profile mirror and
+child cookie authority have since been removed. The broader parent-only
+network contract remains incomplete: covered requests use the parent broker,
+while uncovered HTTP(S) classes fail closed until they are wired through it.
+Issue #40 remains open.
 Separately, the content-process SharedWorker credentials/redirect regression
 `native_content_process_shared_worker_fetch_credentials_modes_follow_redirects`
 passed in an earlier run (1 passed; 24.64-second runtime), but two no-build
@@ -396,9 +395,11 @@ passed (1 test; 26.58-second runtime), proving parent-only page cookie writes
 reach the upload and its HttpOnly response cookie reaches the same-turn worker
 follow-up. The parent broker is retained while the worker consumes the buffered
 response stream. The Service Worker upload-stream fallback is separately
-covered below; autonomous worker turns remain outside these explicit-turn
-paths. The parent-only cookie contract is not complete until Slice 843 removes
-the remaining child authority and the required broader checks pass.
+covered below. At this checkpoint, autonomous worker turns were outside those
+explicit-turn upload regressions; Slice 849 now verifies a DedicatedWorker
+timer upload, but not every autonomous worker request class. The child cookie
+authority is disabled, and uncovered HTTP(S) classes fail closed; the broader
+parent-only network contract and Issue #40 remain incomplete.
 HTTP(S) dynamic page classic/module scripts and their static dependencies,
 discovered during explicit parent-brokered page script turns, now use the
 parent loader; runtime `import()` requests follow that route as well. The
@@ -10769,6 +10770,23 @@ image/error/media callback Fetches, parent-owned HttpOnly cookie rotation, an
 empty script-visible cookie projection, and no transport request for the
 CSP-denied image. See the [Slice 848 task](tasks/native-engine-browser-848.md)
 and [review](reviews/native-engine-browser-848-01.md).
+
+Slice 849 adds a process-backed DedicatedWorker autonomous-timer stream-upload
+case. While the page is idle, its due timer uploads a `ReadableStream` body via
+the exact page owner's parent broker; the bounded pull protocol collects the
+body before HTTP dispatch. The loopback regression verifies POST method,
+content type, exact body and request order, page-visible cookie writes,
+HttpOnly cookie rotation, parent `Set-Cookie` acceptance, and the next Worker
+Fetch. The parent remains the only cookie matcher and jar owner, and
+`document.cookie` excludes HttpOnly values. Uploads are buffered before
+network dispatch, so socket-level upload streaming/backpressure is not claimed.
+The local scoped check, content-worker build, and two focused timer-cookie tests
+pass (`2 passed; 1,692 filtered; 21.20 seconds`); documentation/review and
+commit evidence is recorded in the
+[Slice 849 task](tasks/native-engine-browser-849.md) and
+[review](reviews/native-engine-browser-849-01.md). This worktree has no remote
+CI result. It closes only the tested DedicatedWorker timer upload path; Issue
+#40 and the broader network-authority audit remain open.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

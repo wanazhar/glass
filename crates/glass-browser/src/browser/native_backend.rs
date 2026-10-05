@@ -11704,8 +11704,8 @@ where
 mod tests {
     use super::{
         BackendOperation, NativeBrowserEffectSource, NativeContentAsyncEffectNotification,
-        NativeCookieChange, NativeCookieChangesDeliveryTestHook, NativeCookieProfileEntry,
-        NativeEngineBackend, NativeFrameRoute, NativeFrameState, NativePageMessagePortCommand,
+        NativeCookieChange, NativeCookieChangesDeliveryTestHook, NativeEngineBackend,
+        NativeFrameRoute, NativeFrameState, NativePageMessagePortCommand,
         NativePageMessagePortDeliveryTestHook, NativePageMessagePortRoute, NativeParkedFrame,
         NativeServiceWorkerPublicationTestHook, NativeSharedWorkerCreateRequest,
         NativeSharedWorkerPageRoute, activate_parked_frame_for_navigation,
@@ -11713,8 +11713,8 @@ mod tests {
         next_ready_native_browser_effect_source,
     };
     use crate::browser::native_engine::{
-        NativeDialogControlPlane, NativeEngine, NativeEngineConfig, NativeMessagePortTransfer,
-        NativeNodeSubtreeTransfer, NativeOrigin,
+        NativeCookieProfileEntry, NativeDialogControlPlane, NativeEngine, NativeEngineConfig,
+        NativeMessagePortTransfer, NativeNodeSubtreeTransfer, NativeOrigin,
     };
     use std::sync::Arc;
 

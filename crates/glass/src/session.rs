@@ -34,7 +34,18 @@ pub enum Record {
     State(Vec<String>),
     System(String),
     Meta(String),
-    Compacted { kept: usize, dropped: usize, summary: Option<String> },
+    /// A compaction epoch.
+    ///
+    /// `tail_start` is the index into the log where the surviving tail begins.
+    /// Replay uses it to rebuild the projection, so a resumed session does not
+    /// silently revert to the history compaction was supposed to drop — and
+    /// then re-compact, and re-pay for a summary, on its first turn.
+    Compacted {
+        kept: usize,
+        dropped: usize,
+        summary: Option<String>,
+        tail_start: usize,
+    },
 }
 
 impl Record {
@@ -54,9 +65,10 @@ impl Record {
             Record::State(items) => json!({ "k": "state", "items": items }),
             Record::System(t) => json!({ "k": "system", "t": t }),
             Record::Meta(t) => json!({ "k": "meta", "t": t }),
-            Record::Compacted { kept, dropped, summary } => {
-                json!({ "k": "compacted", "kept": kept, "dropped": dropped, "sum": summary })
-            }
+            Record::Compacted { kept, dropped, summary, tail_start } => json!({
+                "k": "compacted", "kept": kept, "dropped": dropped,
+                "sum": summary, "tail": tail_start
+            }),
         }
     }
 
@@ -90,6 +102,7 @@ impl Record {
                 kept: v.get("kept").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
                 dropped: v.get("dropped").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
                 summary: s("sum"),
+                tail_start: v.get("tail").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
             },
             _ => return None,
         })
@@ -143,6 +156,15 @@ pub struct Session {
     file: Option<File>,
     /// Everything recorded this process, in order.
     pub records: Vec<Record>,
+    /// Total records ever appended, including compaction markers.
+    ///
+    /// This is the index space `Record::Compacted::tail_start` points
+    /// into. It must be tracked separately from `records.len()`:
+    /// compaction rewrites `records` in place while the log keeps
+    /// appending, so the two diverge permanently after the first
+    /// compaction and a projection-relative index would point at the
+    /// wrong slice of the log.
+    log_len: usize,
     /// Number of user turns replayed or started, used by jump-to-turn.
     #[allow(dead_code)]
     pub turn: usize,
@@ -155,7 +177,7 @@ impl Session {
         let id = new_id();
         let path = dir.join(format!("{id}.jsonl"));
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        Ok(Self { id, path, file: Some(file), records: Vec::new(), turn: 0 })
+        Ok(Self { id, path, file: Some(file), records: Vec::new(), turn: 0, log_len: 0 })
     }
 
     /// Reopen a session by id or path, replaying it into memory.
@@ -190,8 +212,19 @@ impl Session {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| target.to_string());
-        let turn = records.iter().filter(|r| matches!(r, Record::User(_))).count();
-        Ok(Self { id, path, file: Some(file), records, turn })
+
+        // Rebuild the compaction projection from the log.
+        //
+        // Without this, `open` replayed every raw record and the in-memory
+        // rewrite that compaction performed was thrown away — so a resumed
+        // session started with the full uncompacted history, immediately
+        // tripped the threshold again, and paid for another summary. The
+        // records on disk are the immutable log; `records` is the projection
+        // the model sees, and they are allowed to differ.
+        let log_len = records.len();
+        let (records, turn) = apply_projection(records);
+
+        Ok(Self { id, path, file: Some(file), records, turn, log_len })
     }
 
     /// Most recently modified session, if any.
@@ -210,6 +243,11 @@ impl Session {
         candidates.into_iter().next().map(|(_, p)| p)
     }
 
+    /// Number of records ever written to this session's log.
+    pub fn log_len(&self) -> usize {
+        self.log_len
+    }
+
     pub fn append(&mut self, record: Record) {
         if let Some(f) = self.file.as_mut()
             && let Ok(line) = serde_json::to_string(&record.to_json())
@@ -218,6 +256,7 @@ impl Session {
             let _ = f.flush();
         }
         self.records.push(record);
+        self.log_len += 1;
     }
 
     /// The conversation as the model should see it.
@@ -241,6 +280,75 @@ impl Session {
         }
         out
     }
+}
+
+/// Rebuild the model-facing projection from an append-only log.
+///
+/// The most recent compaction epoch wins. Its `tail_start` marks the first
+/// record of the surviving tail; everything before it is replaced by the
+/// opening task, the model's own recorded state, and the stored summary, which
+/// is exactly what the in-memory rebuild produces at compaction time. Applying
+/// it here makes compaction idempotent across a resume instead of something
+/// that only exists for the life of one process.
+fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
+    let Some(epoch) = records.iter().rposition(|r| matches!(r, Record::Compacted { .. })) else {
+        let turn = records.iter().filter(|r| matches!(r, Record::User(_))).count();
+        return (records, turn);
+    };
+
+    let (summary, mut tail_start) = match &records[epoch] {
+        Record::Compacted { summary, tail_start, .. } => (summary.clone(), *tail_start),
+        _ => unreachable!("position matched a Compacted record"),
+    };
+    // Logs written before the tail index existed record 0, which would
+    // drop the tail entirely. Keep the last few records instead.
+    if tail_start == 0 {
+        tail_start = epoch.saturating_sub(crate::compact::KEEP_RECENT);
+    }
+
+    let mut out: Vec<Record> = Vec::new();
+
+    // The opening task anchors everything that follows.
+    if let Some(first) = records.iter().find(|r| matches!(r, Record::User(_))) {
+        out.push(first.clone());
+    }
+    if let Some(text) = summary {
+        out.push(Record::System(format!("Summary of earlier work in this session:\n{text}")));
+    }
+    // The model's own durable notes, taken from the last one it wrote.
+    if let Some(state) = records.iter().rev().find_map(|r| match r {
+        Record::State(items) if !items.is_empty() => Some(items.clone()),
+        _ => None,
+    }) {
+        out.push(Record::State(state));
+    }
+
+    // Two regions survive: the tail that compaction kept (the
+    // records just before the marker), and every turn that happened
+    // after it. The marker itself, and any earlier markers, are log
+    // metadata — they are never content the model should see.
+    let from = tail_start.min(epoch);
+    out.extend(
+        records[from..epoch]
+            .iter()
+            .filter(|r| !matches!(r, Record::Compacted { .. }))
+            .cloned(),
+    );
+    out.extend(
+        records[epoch + 1..]
+            .iter()
+            .filter(|r| !matches!(r, Record::Compacted { .. }))
+            .cloned(),
+    );
+
+    // Never lead with an orphaned tool result: the assistant turn that
+    // requested it may have been dropped.
+    while matches!(out.first(), Some(Record::ToolResult { .. })) {
+        out.remove(0);
+    }
+
+    let turn = out.iter().filter(|r| matches!(r, Record::User(_))).count();
+    (out, turn)
 }
 
 /// Sortable, collision-resistant session id: base-36 millis plus a counter.
@@ -289,7 +397,7 @@ mod tests {
             Record::State(vec!["s1".into()]),
             Record::System("sy".into()),
             Record::Meta("m".into()),
-            Record::Compacted { kept: 3, dropped: 9, summary: Some("sum".into()) },
+            Record::Compacted { kept: 3, dropped: 9, summary: Some("sum".into()), tail_start: 0 },
         ];
         for c in cases {
             let j = c.to_json();
@@ -313,7 +421,7 @@ mod tests {
 
     #[test]
     fn messages_excludes_display_only_records() {
-        let mut s = Session { id: "t".into(), path: "t".into(), file: None, records: vec![], turn: 0 };
+        let mut s = Session { id: "t".into(), path: "t".into(), file: None, records: vec![], turn: 0, log_len: 0 };
         s.records = vec![
             Record::User("hi".into()),
             Record::Reasoning("secret".into()),
@@ -335,6 +443,7 @@ mod tests {
         s.append(Record::Assistant("two".into()));
         s.append(Record::User("three".into()));
         let id = s.id.clone();
+        let log_path = s.path.clone();
         drop(s);
 
         let reopened = Session::open(&dir, &id).unwrap();
@@ -343,6 +452,114 @@ mod tests {
         // user + assistant + user are all context-visible.
         assert_eq!(reopened.messages().len(), 3);
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Compaction must survive a resume.
+    ///
+    /// The log on disk is append-only and still holds every dropped
+    /// record. `open` is what rebuilds the projection, so a resumed
+    /// session has to end up looking compact — otherwise it starts the
+    /// first turn above the threshold, compacts again, and pays for a
+    /// second summary for work the model already summarized once.
+    #[test]
+    fn resume_rebuilds_the_compaction_projection() {
+        let dir = tmpdir("proj-resume");
+        let target = dir.join("p");
+        let mut s = Session::create(&dir).unwrap();
+        let id = s.id.clone();
+        let log_path = s.path.clone();
+
+        // A long history: the opening task, then enough turns to have
+        // a tail worth keeping.
+        s.append(Record::User("the original task".into()));
+        for i in 0..40 {
+            s.append(Record::Assistant(format!("answer {i}")));
+            s.append(Record::User(format!("question {i}")));
+        }
+        s.append(Record::State(vec!["task: migrate the parser".into()]));
+
+        // Compact: keep the opening task, the state, and the tail.
+        let total = s.records.len();
+        let tail_start = total.saturating_sub(crate::compact::KEEP_RECENT);
+        let rebuilt = crate::compact::rebuild(&s.records, &crate::tools::State::new());
+        let kept = rebuilt.len();
+        s.records = rebuilt;
+        s.append(Record::Compacted {
+            kept,
+            dropped: total.saturating_sub(kept),
+            tail_start,
+            summary: Some("did the migration".into()),
+        });
+        drop(s);
+
+        let reopened = Session::open(&dir, &id).unwrap();
+
+        // The projection is small: task + summary + state + tail.
+        assert!(
+            reopened.records.len() < total / 2,
+            "resume replayed the uncompacted history: {} of {} records",
+            reopened.records.len(),
+            total
+        );
+
+        // The opening task and the summary both survive.
+        assert!(matches!(reopened.records.first(), Some(Record::User(_))));
+        assert!(reopened.records.iter().any(|r| matches!(r, Record::System(t) if t.contains("did the migration"))));
+
+        // The tail is intact and in order.
+        let tail: Vec<_> = reopened.records.iter()
+            .filter_map(|r| match r { Record::User(t) => Some(t.clone()), _ => None })
+            .collect();
+        assert!(tail.contains(&"question 39".into()), "tail lost its last turn");
+
+        // The dropped middle is gone from the projection.
+        assert!(!reopened.records.iter().any(|r| matches!(r, Record::Assistant(t) if t == "answer 5")));
+
+        // The log itself is untouched — compaction is not destructive.
+        let raw = std::fs::read_to_string(&log_path).unwrap();
+        assert!(raw.contains("answer 5"), "the immutable log lost a dropped record");
+    }
+
+    #[test]
+    fn resume_is_idempotent_across_repeated_compaction() {
+        // Compacting, resuming, and compacting again must converge
+        // rather than growing.
+        let dir = tmpdir("proj-idem");
+        let mut s = Session::create(&dir).unwrap();
+        let id = s.id.clone();
+        let log_path = s.path.clone();
+        s.append(Record::User("task".into()));
+        for i in 0..60 {
+            s.append(Record::User(format!("q{i}")));
+            s.append(Record::Assistant(format!("a{i}")));
+        }
+        // Compact three times in a row.
+        for _ in 0..3 {
+            let total = s.records.len();
+            // Index by log position, exactly as the agent does.
+            // The log only grows, so this stays stable across
+            // compactions; the projection length does not.
+            let tail_start = s.log_len().saturating_sub(crate::compact::KEEP_RECENT);
+            let rebuilt = crate::compact::rebuild(&s.records, &crate::tools::State::new());
+            let kept = rebuilt.len();
+            s.records = rebuilt;
+            s.append(Record::Compacted {
+                kept,
+                dropped: total.saturating_sub(kept),
+                tail_start,
+                summary: None,
+            });
+        }
+        drop(s);
+
+        let reopened = Session::open(&dir, &id).unwrap();
+        // Only the most recent epoch applies, so the projection is a
+        // single compaction's worth — not three stacked summaries.
+        assert!(reopened.records.len() <= crate::compact::KEEP_RECENT + 4,
+            "projection grew to {}", reopened.records.len());
+        // Exactly one compaction epoch is reflected.
+        assert_eq!(reopened.records.iter().filter(|r| matches!(r, Record::Compacted{..})).count(), 0,
+            "the projection must not carry the marker itself");
     }
 
     #[test]
@@ -375,7 +592,7 @@ mod tests {
 
     #[test]
     fn entries_tag_roles_and_turns() {
-        let mut s = Session { id: "t".into(), path: "t".into(), file: None, records: vec![], turn: 0 };
+        let mut s = Session { id: "t".into(), path: "t".into(), file: None, records: vec![], turn: 0, log_len: 0 };
         s.records = vec![Record::User("q1".into()), Record::Assistant("a1".into()), Record::User("q2".into())];
         let entries = s.entries();
         assert_eq!(entries.len(), 3);
@@ -386,7 +603,7 @@ mod tests {
 
     #[test]
     fn compaction_marker_renders_a_summary_line() {
-        let (role, text) = Record::Compacted { kept: 2, dropped: 5, summary: None }.to_entry();
+        let (role, text) = Record::Compacted { kept: 2, dropped: 5, summary: None, tail_start: 0 }.to_entry();
         assert_eq!(role, Role::Meta);
         assert!(text.contains("dropped 5"));
     }

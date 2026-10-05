@@ -9,7 +9,7 @@ use std::io::Read;
 
 use serde_json::{json, Value};
 
-use super::{http_agent, read_lossy, Error, Event, Provider, Request};
+use super::{http_agent, read_lossy, Error, Event, Provider, Request, Usage};
 use crate::sse::SseDecoder;
 
 const DEFAULT_WINDOW: u32 = 128_000;
@@ -211,7 +211,7 @@ struct Accum {
     text: String,
     reasoning: String,
     tools: std::collections::BTreeMap<usize, Partial>,
-    usage: Option<(u32, u32)>,
+    usage: Option<Usage>,
     /// Guards `seal` against running twice.
     sealed: bool,
 }
@@ -259,8 +259,8 @@ impl<R: Read> StreamEvents<R> {
         }
         self.acc.sealed = true;
 
-        if let Some((input, output)) = self.acc.usage.take() {
-            self.outbox.push_back(Event::Usage { input, output });
+        if let Some(u) = self.acc.usage.take() {
+            self.outbox.push_back(Event::Usage(u));
         }
         let calls: Vec<_> = std::mem::take(&mut self.acc.tools)
             .into_iter()
@@ -370,10 +370,31 @@ impl<R: Read> StreamEvents<R> {
 
     fn read_usage(&mut self, v: &Value) {
         if let Some(usage) = v.get("usage").filter(|u| !u.is_null()) {
-            let input = usage.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let prompt = usage.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0) as u32;
             let output = usage.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0) as u32;
-            if input > 0 || output > 0 {
-                self.acc.usage = Some((input, output));
+
+            // Unlike Anthropic, OpenAI reports `cached_tokens` as a SUBSET of
+            // `prompt_tokens`, not in addition to it. Subtracting is what makes
+            // the buckets mean the same thing across both adapters, so a cost
+            // model does not have to special-case the provider.
+            let cached = usage
+                .get("prompt_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
+            let written = usage
+                .get("prompt_tokens_details")
+                .and_then(|d| d.get("cache_write_tokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
+
+            if prompt > 0 || output > 0 {
+                self.acc.usage = Some(Usage {
+                    input: prompt.saturating_sub(cached).saturating_sub(written),
+                    cache_read: cached,
+                    cache_write: written,
+                    output,
+                });
             }
         }
     }

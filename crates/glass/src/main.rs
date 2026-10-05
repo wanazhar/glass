@@ -353,8 +353,8 @@ fn repl(
                     for w in &out.warnings {
                         println!("\x1b[33m⚠ {w}\x1b[0m");
                     }
-                    if let Some((i, o)) = out.usage {
-                        println!("\x1b[90m  {i} in / {o} out\x1b[0m");
+                    if let Some(u) = out.usage {
+                        println!("{}", usage_line(&u));
                     }
                 }
                 Err(e) => {
@@ -446,6 +446,44 @@ fn drain_input(
         let _ = std::io::stdout().flush();
     }
     None
+}
+
+/// One line of token accounting, including how much of the prompt was cached.
+///
+/// Without this line a broken breakpoint layout is invisible: the request still
+/// succeeds, it just costs 1.25x more per turn forever. The hit rate is the
+/// only externally visible signal that the cache is doing anything.
+fn usage_line(u: &provider::Usage) -> String {
+    let total = u.prompt_total();
+    let pct = (u.hit_rate() * 100.0).round() as u32;
+    let cached = if u.cache_read > 0 || u.cache_write > 0 {
+        format!(
+            " · cache {pct}% ({} read / {} written)",
+            thousands(u.cache_read),
+            thousands(u.cache_write)
+        )
+    } else {
+        // Zero in both buckets means nothing was cached at all: either the
+        // prefix is under the model's minimum, or there is no breakpoint.
+        " · \x1b[33mno cache\x1b[90m".to_string()
+    };
+    format!(
+        "\x1b[90m  {total} in / {} out{cached}\x1b[0m",
+        thousands(u.output)
+    )
+}
+
+/// Group digits so long token counts stay readable at a glance.
+fn thousands(n: u32) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Paint one progress event.

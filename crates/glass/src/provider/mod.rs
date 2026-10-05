@@ -14,6 +14,42 @@ use std::io::{self, Read};
 
 use glass_mod_api::Message;
 
+/// Token accounting for one request.
+///
+/// Providers disagree about what "input tokens" means, so the parts are kept
+/// apart and summed only for display. Anthropic charges `cache_read` at 0.1x,
+/// `cache_write` at 1.25x, and `input` at 1.0x.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Usage {
+    /// Prompt tokens that were neither read from nor written to cache.
+    pub input: u32,
+    /// Prompt tokens served from an existing cache entry.
+    pub cache_read: u32,
+    /// Prompt tokens written to cache this request.
+    pub cache_write: u32,
+    pub output: u32,
+}
+
+impl Usage {
+    /// Total prompt tokens actually sent, however they were billed.
+    pub fn prompt_total(&self) -> u32 {
+        self.input + self.cache_read + self.cache_write
+    }
+
+    /// Fraction of prompt tokens served from cache, 0.0 to 1.0.
+    ///
+    /// This is the number that tells you whether the breakpoint layout is
+    /// working. A rate that sits near zero means either the prefix is below the
+    /// model's minimum or the breakpoint is on a block that changes.
+    pub fn hit_rate(&self) -> f32 {
+        let total = self.prompt_total();
+        if total == 0 {
+            return 0.0;
+        }
+        self.cache_read as f32 / total as f32
+    }
+}
+
 /// A piece of a streamed model response.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Event {
@@ -24,7 +60,13 @@ pub enum Event {
     /// The model wants a tool run.
     ToolCall { id: String, name: String, arguments: String },
     /// Token counts reported by the provider, when available.
-    Usage { input: u32, output: u32 },
+    ///
+    /// `input` is the *uncached* portion. On Anthropic that is only the
+    /// post-breakpoint remainder, so total prompt tokens is
+    /// `cache_read + cache_write + input`. Getting this wrong makes every cost
+    /// estimate wrong, which is why the fields are separate rather than
+    /// pre-summed.
+    Usage(Usage),
     /// Terminal event for this response.
     Done,
     /// Non-fatal problem worth surfacing.

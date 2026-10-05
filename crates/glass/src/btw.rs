@@ -86,9 +86,9 @@ pub fn ask(
     for ev in stream {
         match ev {
             Event::Text(t) => text.push_str(&t),
-            Event::Usage { input, output } => {
-                input_tokens = input;
-                output_tokens = output;
+            Event::Usage(u) => {
+                input_tokens = u.prompt_total();
+                output_tokens = u.output;
             }
             Event::Done => break,
             _ => {}

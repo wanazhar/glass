@@ -42,7 +42,7 @@ fn summarize_output(body: &str) -> String {
 pub struct TurnOutput {
     pub text: String,
     pub tool_calls: Vec<ToolCall>,
-    pub usage: Option<(u32, u32)>,
+    pub usage: Option<crate::provider::Usage>,
     pub warnings: Vec<String>,
 }
 
@@ -262,7 +262,7 @@ impl<'a> Agent<'a> {
                 Event::ToolCall { id, name, arguments } => {
                     out.tool_calls.push(ToolCall { id, name, arguments })
                 }
-                Event::Usage { input, output } => out.usage = Some((input, output)),
+                Event::Usage(u) => out.usage = Some(u),
                 Event::Warning(w) => out.warnings.push(w),
                 Event::Done => break,
             }
@@ -714,7 +714,7 @@ impl<'a> Agent<'a> {
                 let rebuilt = compact::rebuild(&self.session.records, self.state);
                 self.session.records = rebuilt;
                 self.emit(Progress::Compacted { kept, dropped });
-                self.session.append(Record::Compacted { kept, dropped, summary: None });
+                self.session.append(Record::Compacted { kept, dropped, summary: None, tail_start: 0 });
                 Ok(())
             }
             compact::Action::NeedsSummary { prompt } => self.summarize(&prompt),
@@ -732,11 +732,7 @@ impl<'a> Agent<'a> {
                 kept: self.session.records.len(),
                 dropped: shrunk,
             });
-            self.session.append(Record::Compacted {
-                kept: self.session.records.len(),
-                dropped: 0,
-                summary: Some(format!("{shrunk} tool outputs shrunk")),
-            });
+            self.session.append(Record::Compacted { kept: self.session.records.len(), dropped: 0, summary: Some(format!("{shrunk} tool outputs shrunk")), tail_start: 0 });
             let after = provider::pressure(self.provider, &compact::project(&self.session.records));
             if after < compact::COMPACT_AT {
                 return Ok(());
@@ -773,10 +769,15 @@ impl<'a> Agent<'a> {
         }
 
         let before = self.session.records.len();
+        // The surviving tail is the last KEEP_RECENT records; replay needs the
+        // index to rebuild this projection instead of reverting to raw history.
+        let tail_start = self.session.log_len().saturating_sub(compact::KEEP_RECENT);
         self.session.records = compact::apply_summary(&self.session.records, &summary);
+        let kept = self.session.records.len();
         self.session.append(Record::Compacted {
-            kept: self.session.records.len(),
-            dropped: before.saturating_sub(self.session.records.len()),
+            kept,
+            dropped: before.saturating_sub(kept),
+            tail_start,
             summary: Some(summary),
         });
         Ok(())

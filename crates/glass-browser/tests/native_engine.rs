@@ -75762,7 +75762,7 @@ async fn native_content_process_synchronous_xhr_uses_parent_cookie_authority() {
         let (mut page_stream, _) = listener.accept().await.unwrap();
         let page_request = read_http_request(&mut page_stream).await;
         assert_eq!(page_request.split_whitespace().nth(1), Some("/page"));
-        let body = "<script>try { document.cookie = 'before-xhr=visible; Path=/'; document.cookie = 'theme=before; Path=/'; const xhr = new XMLHttpRequest(); xhr.open('GET', '/sync', false); xhr.withCredentials = true; xhr.send(); globalThis.syncXhrSnapshot = [xhr.status, xhr.responseText, document.cookie]; } catch (error) { globalThis.syncXhrSnapshot = [0, String(error), document.cookie]; } globalThis.workerMessages = []; globalThis.worker = new Worker('/worker.js'); worker.onmessage = event => workerMessages.push(event.data);</script>".to_owned();
+        let body = "<script>try { document.cookie = 'before-xhr=visible; Path=/'; document.cookie = 'theme=before; Path=/'; const xhr = new XMLHttpRequest(); xhr.open('GET', '/sync', false); xhr.send(); globalThis.syncXhrSnapshot = [xhr.status, xhr.responseText, document.cookie]; } catch (error) { globalThis.syncXhrSnapshot = [0, String(error), document.cookie]; } globalThis.workerMessages = []; globalThis.worker = new Worker('/worker.js'); worker.onmessage = event => workerMessages.push(event.data);</script>".to_owned();
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: theme=initial; Path=/\r\nSet-Cookie: secret=parent-only; HttpOnly; Path=/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -75796,7 +75796,7 @@ async fn native_content_process_synchronous_xhr_uses_parent_cookie_authority() {
             worker_script_request.split_whitespace().nth(1),
             Some("/worker.js")
         );
-        let worker_script = "try { const xhr = new XMLHttpRequest(); xhr.open('GET', '/worker-sync', false); xhr.withCredentials = true; xhr.send(); self.postMessage([xhr.status, xhr.responseText]); } catch (error) { self.postMessage(['error', String(error)]); }";
+        let worker_script = "try { const xhr = new XMLHttpRequest(); xhr.open('GET', '/worker-sync', false); xhr.withCredentials = true; xhr.send(); const asyncXhr = new XMLHttpRequest(); asyncXhr.onload = () => self.postMessage([xhr.status, xhr.responseText, asyncXhr.status, asyncXhr.responseText]); asyncXhr.onerror = () => self.postMessage(['error', 'worker async XHR failed']); asyncXhr.open('GET', '/worker-async'); asyncXhr.send(); } catch (error) { self.postMessage(['error', String(error)]); }";
         let worker_script_response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{worker_script}",
             worker_script.len()
@@ -75829,6 +75829,59 @@ async fn native_content_process_synchronous_xhr_uses_parent_cookie_authority() {
         );
         worker_xhr_stream
             .write_all(worker_xhr_response.as_bytes())
+            .await
+            .unwrap();
+
+        let (mut worker_async_stream, _) = listener.accept().await.unwrap();
+        let worker_async_request = read_http_request(&mut worker_async_stream).await;
+        assert_eq!(
+            worker_async_request.split_whitespace().nth(1),
+            Some("/worker-async")
+        );
+        let worker_async_cookie = worker_async_request
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("cookie").then_some(value.trim())
+                })
+            })
+            .unwrap_or_default();
+        assert!(worker_async_cookie.contains("secret=parent-only"));
+        assert!(worker_async_cookie.contains("xhr-secret=parent-only"));
+        assert!(worker_async_cookie.contains("worker-secret=parent-only"));
+        let worker_async_body = "worker-async-parent-cookie-ok";
+        let worker_async_response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nSet-Cookie: worker-async-visible=updated; Path=/\r\nSet-Cookie: worker-async-secret=parent-only; HttpOnly; Path=/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{worker_async_body}",
+            worker_async_body.len()
+        );
+        worker_async_stream
+            .write_all(worker_async_response.as_bytes())
+            .await
+            .unwrap();
+
+        let (mut page_async_stream, _) = listener.accept().await.unwrap();
+        let page_async_request = read_http_request(&mut page_async_stream).await;
+        assert_eq!(
+            page_async_request.split_whitespace().nth(1),
+            Some("/page-async")
+        );
+        let page_async_cookie = page_async_request
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("cookie").then_some(value.trim())
+                })
+            })
+            .unwrap_or_default();
+        assert!(page_async_cookie.contains("secret=parent-only"));
+        assert!(page_async_cookie.contains("worker-async-secret=parent-only"));
+        let page_async_body = "page-async-parent-cookie-ok";
+        let page_async_response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nSet-Cookie: page-async-visible=updated; Path=/\r\nSet-Cookie: page-async-secret=parent-only; HttpOnly; Path=/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page_async_body}",
+            page_async_body.len()
+        );
+        page_async_stream
+            .write_all(page_async_response.as_bytes())
             .await
             .unwrap();
 
@@ -75879,7 +75932,33 @@ async fn native_content_process_synchronous_xhr_uses_parent_cookie_authority() {
     }
     assert_eq!(
         worker_messages,
-        serde_json::json!([[200, "worker-parent-cookie-ok"]])
+        serde_json::json!([[
+            200,
+            "worker-parent-cookie-ok",
+            200,
+            "worker-async-parent-cookie-ok"
+        ]])
+    );
+    let page_async = engine
+        .evaluate_async(
+            "await new Promise((resolve, reject) => { const xhr = new XMLHttpRequest(); xhr.onload = () => resolve({ status: xhr.status, responseText: xhr.responseText, cookie: document.cookie }); xhr.onerror = () => reject(new Error('page async XHR failed')); xhr.open('GET', '/page-async'); xhr.send(); })",
+        )
+        .await
+        .unwrap();
+    assert_eq!(page_async["status"], serde_json::json!(200));
+    assert_eq!(
+        page_async["responseText"],
+        serde_json::json!("page-async-parent-cookie-ok")
+    );
+    assert!(
+        page_async["cookie"]
+            .as_str()
+            .is_some_and(|cookie| cookie.contains("page-async-visible=updated"))
+    );
+    assert!(
+        !page_async["cookie"]
+            .as_str()
+            .is_some_and(|cookie| cookie.contains("page-async-secret="))
     );
     let followup = engine
         .evaluate_async("await fetch('/after').then(response => response.text())")
@@ -75915,6 +75994,16 @@ async fn native_content_process_synchronous_xhr_uses_parent_cookie_authority() {
             .as_str()
             .is_some_and(|cookie| cookie.contains("worker-secret=parent-only"))
     );
+    assert!(
+        followup
+            .as_str()
+            .is_some_and(|cookie| cookie.contains("worker-async-secret=parent-only"))
+    );
+    assert!(
+        followup
+            .as_str()
+            .is_some_and(|cookie| cookie.contains("page-async-secret=parent-only"))
+    );
     let cookies = engine.cookies_async().await.unwrap();
     assert!(
         cookies
@@ -75925,6 +76014,16 @@ async fn native_content_process_synchronous_xhr_uses_parent_cookie_authority() {
         cookies
             .iter()
             .any(|cookie| cookie.name == "worker-secret" && cookie.http_only)
+    );
+    assert!(
+        cookies
+            .iter()
+            .any(|cookie| cookie.name == "worker-async-secret" && cookie.http_only)
+    );
+    assert!(
+        cookies
+            .iter()
+            .any(|cookie| cookie.name == "page-async-secret" && cookie.http_only)
     );
     engine.close_async().await.unwrap();
     let _ = server.await.unwrap();

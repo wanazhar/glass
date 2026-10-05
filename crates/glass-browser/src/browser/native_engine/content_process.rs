@@ -6508,7 +6508,7 @@ impl NativeContentProcess {
                     "timeout_ms": xhr.get("timeoutMs"),
                     "referrer_url": null,
                     "referrer_policy": xhr.get("referrerPolicy"),
-                    "credentials_mode": null,
+                    "credentials_mode": NativeFetchCredentialsMode::for_xhr(credentials).as_str(),
                     "max_response_bytes": null,
                 });
                 let request =

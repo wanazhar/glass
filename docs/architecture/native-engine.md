@@ -62,6 +62,18 @@ streaming/backpressure is not claimed. This is targeted local evidence only;
 the wider network-authority audit, WPT, cross-platform conformance, and remote
 CI remain open. See the [Slice 850 task](../plan/tasks/native-engine-browser-850.md)
 and [review](../plan/reviews/native-engine-browser-850-01.md).
+Slice 851 corrects XMLHttpRequest's false/default `withCredentials` mapping to
+Fetch's `same-origin` mode (true remains `include`) for asynchronous page and
+Worker requests, synchronous parent-brokered XHR, and the local-owner loader.
+The process-backed regression checks same-origin cookies and response-cookie
+rotation on page and Worker paths while `HttpOnly` stays out of the child
+projection; the parent remains the sole cookie matcher, `Set-Cookie` acceptor,
+and jar owner. A loader unit test checks that `same-origin` is origin-sensitive
+and explicit `include` remains cross-origin credentialed. This is targeted
+evidence only: it does not certify cross-origin process/CORS behavior, full XHR
+conformance, remote CI, or cross-platform behavior. See the
+[Slice 851 task](../plan/tasks/native-engine-browser-851.md) and
+[review](../plan/reviews/native-engine-browser-851-01.md).
 Slice 838's NavigationPreloadManager persistence regression passed (1 passed;
 906 filtered; 39.70 seconds), so that slice is complete. Slice 839 starts
 eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,

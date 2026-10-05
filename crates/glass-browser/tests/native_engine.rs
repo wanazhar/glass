@@ -41449,6 +41449,206 @@ fn native_runtime_shared_worker_websocket_uses_parent_cookie_authority() {
 }
 
 #[test]
+fn native_runtime_shared_worker_websocket_failed_handshake_keeps_parent_cookies() {
+    fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header.eq_ignore_ascii_case(name).then_some(value.trim())
+            })
+        })
+    }
+
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let _guard = native_content_process_test_lock().lock().await;
+            let profile_path = std::env::temp_dir().join(format!(
+                "glass-native-shared-worker-websocket-failed-handshake-{}-profile.json",
+                std::process::id()
+            ));
+            let cookie_profile_path =
+                std::path::PathBuf::from(format!("{}.cookies", profile_path.display()));
+            let profile_lock_path = profile_path.with_extension("lock");
+            let cookie_profile_lock_path = cookie_profile_path.with_extension("lock");
+            let worker_clients_path = profile_path.with_extension("clients");
+            let worker_events_path = profile_path.with_extension("events");
+            let worker_readers_path = profile_path.with_extension("readers");
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let origin = format!("http://{address}");
+            let expected_origin = origin.clone();
+            let handshake_response_sent = Arc::new(AtomicBool::new(false));
+            let handshake_response_sent_by_server = Arc::clone(&handshake_response_sent);
+            let server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(60), async move {
+                    let (mut page_stream, _) = listener.accept().await.unwrap();
+                    let page_request = read_http_request(&mut page_stream).await;
+                    assert_eq!(page_request.split_whitespace().nth(1), Some("/page"));
+                    let page_body = "<script>globalThis.sharedWebSocketEvents=[]; globalThis.startSharedWebSocket=()=>{const worker=new SharedWorker('/shared-websocket.js',{name:'failed-handshake-parent-cookie',credentials:'include'}); worker.port.addEventListener('message',event=>sharedWebSocketEvents.push(event.data)); worker.port.start();};</script>";
+                    let page_response = format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: shared_parent_seed=page; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page_body}",
+                        page_body.len()
+                    );
+                    page_stream.write_all(page_response.as_bytes()).await.unwrap();
+
+                    let (mut worker_stream, _) = listener.accept().await.unwrap();
+                    let worker_request = read_http_request(&mut worker_stream).await;
+                    assert_eq!(worker_request.split_whitespace().nth(1), Some("/shared-websocket.js"));
+                    let worker_body = format!(
+                        r#"onconnect = event => {{ const port = event.ports[0]; const socket = new WebSocket("ws://{address}/reject"); socket.addEventListener("open", () => port.postMessage(["open"])); socket.addEventListener("error", () => port.postMessage(["error"])); socket.addEventListener("close", event => port.postMessage(["close", event.code, event.wasClean])); }};"#
+                    );
+                    let worker_response = format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: shared_worker_entry=worker; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: text/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{worker_body}",
+                        worker_body.len()
+                    );
+                    worker_stream.write_all(worker_response.as_bytes()).await.unwrap();
+
+                    let (mut handshake_stream, _) = listener.accept().await.unwrap();
+                    let handshake = read_http_request(&mut handshake_stream).await;
+                    assert_eq!(handshake.split_whitespace().next(), Some("GET"));
+                    assert_eq!(handshake.split_whitespace().nth(1), Some("/reject"));
+                    assert_eq!(header_value(&handshake, "origin"), Some(expected_origin.as_str()));
+                    assert!(header_value(&handshake, "upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket")));
+                    let handshake_cookie = header_value(&handshake, "cookie").unwrap_or_default();
+                    for expected in ["shared_parent_seed=page", "shared_worker_entry=worker"] {
+                        assert!(handshake_cookie.contains(expected), "SharedWorker handshake missed {expected}: {handshake_cookie}");
+                    }
+                    assert!(!handshake_cookie.contains("shared_rejected=accepted"));
+                    let rejected_body = "handshake denied";
+                    let rejected_response = format!(
+                        "HTTP/1.1 403 Forbidden\r\nSet-Cookie: shared_rejected=accepted; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{rejected_body}",
+                        rejected_body.len()
+                    );
+                    handshake_stream.write_all(rejected_response.as_bytes()).await.unwrap();
+                    handshake_response_sent_by_server.store(true, Ordering::SeqCst);
+
+                    let (mut verify_stream, _) = tokio::time::timeout(
+                        Duration::from_secs(30),
+                        listener.accept(),
+                    )
+                    .await
+                    .expect("later page Fetch reaches the API")
+                    .unwrap();
+                    let verify = read_http_request(&mut verify_stream).await;
+                    assert_eq!(verify.split_whitespace().next(), Some("GET"));
+                    assert_eq!(verify.split_whitespace().nth(1), Some("/verify"));
+                    let verify_cookie = header_value(&verify, "cookie").unwrap_or_default();
+                    for expected in [
+                        "shared_parent_seed=page",
+                        "shared_worker_entry=worker",
+                        "shared_rejected=accepted",
+                    ] {
+                        assert!(verify_cookie.contains(expected), "later page Fetch missed parent cookie {expected}: {verify_cookie}");
+                    }
+                    let body = "authorized";
+                    let verify_response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    verify_stream.write_all(verify_response.as_bytes()).await.unwrap();
+
+                    match tokio::time::timeout(Duration::from_millis(1000), listener.accept()).await {
+                        Err(_) => {}
+                        Ok(Ok((mut stream, _))) => {
+                            let request = read_http_request(&mut stream).await;
+                            panic!("unexpected SharedWorker WebSocket retry or redirect: {request}");
+                        }
+                        Ok(Err(error)) => panic!("unexpected API listener error: {error}"),
+                    }
+                })
+                .await
+                .expect("SharedWorker failed-handshake cookie flow stays bounded")
+            });
+
+            let session = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("http://{address}/page")),
+            )
+            .await
+            .unwrap();
+            session.script("startSharedWebSocket(); true").await.unwrap();
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    if handshake_response_sent.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("API sends the rejected SharedWorker WebSocket response");
+            let messages = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let messages = session
+                        .script("sharedWebSocketEvents")
+                        .await
+                        .unwrap()
+                        .value;
+                    if messages.as_array().is_some_and(|values| values.len() >= 2) {
+                        break messages;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("SharedWorker receives WebSocket error and close events");
+            let events = messages.as_array().expect("SharedWorker events are an array");
+            assert!(events.contains(&serde_json::json!(["error"])));
+            assert!(events.contains(&serde_json::json!(["close", 1006, false])));
+            assert!(!events.contains(&serde_json::json!(["open"])));
+            assert_eq!(
+                session
+                    .script("await fetch('/verify').then(response => response.text())")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("authorized")
+            );
+            assert_eq!(
+                session.script("document.cookie").await.unwrap().value,
+                serde_json::json!("")
+            );
+            let cookies = session.native_cookies().await.unwrap();
+            session.close().await.unwrap();
+            server.await.unwrap();
+            for (name, value) in [
+                ("shared_parent_seed", "page"),
+                ("shared_worker_entry", "worker"),
+                ("shared_rejected", "accepted"),
+            ] {
+                assert!(cookies.iter().any(|cookie| {
+                    cookie.name == name && cookie.value == value && cookie.http_only
+                }));
+            }
+
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+        });
+    });
+}
+
+#[test]
 fn native_content_process_page_websocket_failed_handshake_keeps_parent_cookies() {
     fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
         request.lines().find_map(|line| {

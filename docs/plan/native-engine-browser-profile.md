@@ -122,10 +122,13 @@ handshake response. The worker receives only bounded opaque connection IDs,
 frame data, and lifecycle events; failure events do not carry response headers
 or cookie values. Raw cookie headers and the authoritative jar never cross
 into the worker realm. The browser-owned coordinator's non-101 HTTP error path
-still drops response cookies and remains a separate gap; it is not covered by
-Slice 869. [Slice 870](tasks/native-engine-browser-870.md) records the bounded
-SharedWorker fix and process-backed regression; implementation and evidence
-are pending.
+now applies eligible response cookies through the shared parent loader before
+dispatching bounded error and abnormal-close events. The error event carries
+only HTTP status text; response headers and cookies remain in the parent. The
+process-backed [Slice 870 regression](tasks/native-engine-browser-870.md)
+verifies a denied-handshake cookie on a later authorized page Fetch, HttpOnly
+filtering, and no open/retry/redirect. This is a separate owner path from the
+process-backed page IPC case in Slice 869.
 
 The parent must not send a cookie profile, an HttpOnly value, or raw
 `Cookie`/`Set-Cookie` headers to a content process. It gives a document only a
@@ -264,8 +267,8 @@ reporting a non-101 failure. Only bounded failure/lifecycle data crosses IPC;
 timeouts and transport failures without an HTTP response do not create cookie
 updates. The process-backed page regression in the [Slice 869 task](tasks/native-engine-browser-869.md)
 verifies later authorized reuse and HttpOnly filtering. The browser-owned
-SharedWorker coordinator has a separate rejected-handshake path and remains
-unverified for this behavior.
+SharedWorker coordinator has a separate rejected-handshake path, now covered
+by the process-backed [Slice 870 task](tasks/native-engine-browser-870.md).
 ServiceWorker FetchEvent continuations resumed after `clients.openWindow()`
 also use the parent's Fetch broker. The parent attaches its captured document
 owner to the resolution IPC; the child verifies context, frame, generation,

@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-870
 scope: glass-browser/native-engine/shared-worker-websocket-failed-handshake-response-cookies
-status: in-progress
+status: done
 depends-on: [native-engine-browser-869]
 ---
 
@@ -94,4 +94,19 @@ conformance, or cross-platform parity.
 
 ## Results
 
-Implementation and focused verification are pending.
+The browser-owned SharedWorker coordinator now handles
+`tungstenite::Error::Http` separately. It applies eligible response cookies
+through the coordinator's parent loader before dispatching the existing
+bounded WebSocket error and abnormal-close events. The error message includes
+only the HTTP status; the raw response and cookie headers remain in the
+parent. Timeout and transport-error paths without an HTTP response are
+unchanged.
+
+The scoped `cargo check` passed, and the exact
+`native_runtime_shared_worker_websocket_failed_handshake_keeps_parent_cookies`
+regression passed. It verifies the seed and worker-entry cookies on the
+handshake, the 403 response cookie on a later page Fetch, all three as
+HttpOnly in the parent cookie API, an empty `document.cookie`, and no open,
+retry, or redirect. Rust formatting, `git diff --check`, and all four
+maintainer documentation gates passed after the final documentation edits.
+No remote CI or cross-platform certification is claimed.

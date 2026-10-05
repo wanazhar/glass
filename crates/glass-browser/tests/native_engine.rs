@@ -77660,6 +77660,227 @@ self.postMessage({{ kind: "ready" }});
 }
 
 #[tokio::test]
+async fn native_content_process_xhr_preflight_cache_separates_omit_and_include() {
+    fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header.eq_ignore_ascii_case(name).then_some(value.trim())
+            })
+        })
+    }
+
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_address = api_listener.local_addr().unwrap();
+    let page_origin = format!("http://{page_address}");
+    let api_origin = format!("http://{api_address}");
+    let expected_origin = page_origin.clone();
+    let response_origin = page_origin.clone();
+
+    let page_server = tokio::spawn(async move {
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(45), page_listener.accept())
+            .await
+            .expect("page request stays bounded")
+            .unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<title>Preflight cache owner</title>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: connect-src *\r\nSet-Cookie: root=seed; HttpOnly; Path=/; SameSite=Lax\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let api_server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async move {
+            let (mut stream, _) = api_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().next(), Some("OPTIONS"));
+            assert_eq!(request.split_whitespace().nth(1), Some("/cache"));
+            assert_eq!(header_value(&request, "origin"), Some(expected_origin.as_str()));
+            assert_eq!(header_value(&request, "access-control-request-method"), Some("POST"));
+            assert_eq!(
+                header_value(&request, "access-control-request-headers")
+                    .map(str::to_ascii_lowercase)
+                    .as_deref(),
+                Some("content-type, x-glass-cache")
+            );
+            assert!(header_value(&request, "cookie").is_none());
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST\r\nAccess-Control-Allow-Headers: content-type, x-glass-cache\r\nAccess-Control-Max-Age: 600\r\nSet-Cookie: omit_preflight=must-not-stick; HttpOnly; Path=/; SameSite=Lax\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+
+            let (mut stream, _) = api_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().next(), Some("POST"));
+            assert_eq!(request.split_whitespace().nth(1), Some("/cache"));
+            assert!(header_value(&request, "cookie").is_none());
+            assert_eq!(header_value(&request, "x-glass-cache"), Some("cache-token"));
+            assert_eq!(
+                request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default(),
+                r#"{"source":"default"}"#
+            );
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nSet-Cookie: omit_actual=must-not-stick; HttpOnly; Path=/; SameSite=Lax\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+
+            let (mut stream, _) = api_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().next(), Some("OPTIONS"));
+            assert_eq!(request.split_whitespace().nth(1), Some("/cache"));
+            assert_eq!(header_value(&request, "origin"), Some(expected_origin.as_str()));
+            assert_eq!(header_value(&request, "access-control-request-method"), Some("POST"));
+            assert_eq!(
+                header_value(&request, "access-control-request-headers")
+                    .map(str::to_ascii_lowercase)
+                    .as_deref(),
+                Some("content-type, x-glass-cache")
+            );
+            assert!(
+                header_value(&request, "cookie").is_none(),
+                "credentialed preflight must not carry Cookie"
+            );
+            let preflight_response = format!(
+                "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Credentials: true\r\nAccess-Control-Allow-Methods: POST\r\nAccess-Control-Allow-Headers: content-type, x-glass-cache\r\nAccess-Control-Max-Age: 600\r\nSet-Cookie: include_preflight=must-not-stick; HttpOnly; Path=/; SameSite=Lax\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream
+                .write_all(preflight_response.as_bytes())
+                .await
+                .unwrap();
+
+            let (mut stream, _) = api_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().next(), Some("POST"));
+            assert_eq!(request.split_whitespace().nth(1), Some("/cache"));
+            let cookie = header_value(&request, "cookie").unwrap_or_default();
+            assert!(cookie.contains("root=seed"), "parent cookie missing: {cookie}");
+            assert!(!cookie.contains("omit_preflight"));
+            assert!(!cookie.contains("omit_actual"));
+            assert!(!cookie.contains("include_preflight"));
+            assert_eq!(header_value(&request, "x-glass-cache"), Some("cache-token"));
+            assert_eq!(
+                request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default(),
+                r#"{"source":"include"}"#
+            );
+            let include_response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Credentials: true\r\nSet-Cookie: include_actual=accepted; HttpOnly; Path=/; SameSite=Lax\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+            );
+            stream
+                .write_all(include_response.as_bytes())
+                .await
+                .unwrap();
+
+            let (mut stream, _) = api_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(
+                request.split_whitespace().next(),
+                Some("POST"),
+                "a cached credentialed entry should avoid another OPTIONS request"
+            );
+            assert_eq!(request.split_whitespace().nth(1), Some("/cache"));
+            let cookie = header_value(&request, "cookie").unwrap_or_default();
+            assert!(cookie.contains("root=seed"), "parent cookie missing: {cookie}");
+            assert!(
+                cookie.contains("include_actual=accepted"),
+                "parent response cookie missing: {cookie}"
+            );
+            assert!(!cookie.contains("omit_preflight"));
+            assert!(!cookie.contains("omit_actual"));
+            assert!(!cookie.contains("include_preflight"));
+            assert_eq!(header_value(&request, "x-glass-cache"), Some("cache-token"));
+            assert_eq!(
+                request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default(),
+                r#"{"source":"include-again"}"#
+            );
+            let final_response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Credentials: true\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+            );
+            stream
+                .write_all(final_response.as_bytes())
+                .await
+                .unwrap();
+
+            match tokio::time::timeout(Duration::from_secs(1), api_listener.accept()).await {
+                Err(_) => {}
+                Ok(Ok((mut stream, _))) => {
+                    let request = read_http_request(&mut stream).await;
+                    panic!("unexpected extra preflight-cache request: {request}");
+                }
+                Ok(Err(error)) => panic!("unexpected API listener error: {error}"),
+            }
+        })
+        .await
+        .expect("preflight cache request sequence stays bounded")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("{page_origin}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let results = tokio::time::timeout(
+        Duration::from_secs(30),
+        engine.evaluate_async(format!(
+            r#"await (async () => {{
+              const send = (include, source) => new Promise(resolve => {{
+                const xhr = new XMLHttpRequest();
+                if (include) xhr.withCredentials = true;
+                xhr.onload = () => resolve(["load", xhr.status]);
+                xhr.onerror = () => resolve(["error", xhr.status]);
+                xhr.open("POST", "{api_origin}/cache");
+                xhr.setRequestHeader("Content-Type", "application/json");
+                xhr.setRequestHeader("X-Glass-Cache", "cache-token");
+                xhr.send(JSON.stringify({{source}}));
+              }});
+              return [await send(false, "default"), await send(true, "include"), await send(true, "include-again")];
+            }})()"#
+        )),
+    )
+    .await
+    .expect("all XHRs complete through the parent broker")
+    .unwrap();
+    assert_eq!(
+        results,
+        serde_json::json!([["load", 200], ["load", 200], ["load", 200]])
+    );
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("")
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    engine.close_async().await.unwrap();
+    page_server.await.unwrap();
+    api_server.await.unwrap();
+    for (name, value) in [("root", "seed"), ("include_actual", "accepted")] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| { cookie.name == name && cookie.value == value && cookie.http_only })
+        );
+    }
+    for name in ["omit_preflight", "omit_actual", "include_preflight"] {
+        assert!(
+            !cookies.iter().any(|cookie| cookie.name == name),
+            "cookie from an unauthenticated or preflight response was accepted: {name}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_cookie_profile_survives_native_process_restart() {
     let _guard = native_content_process_test_lock().lock().await;
     let profile_path = std::env::temp_dir().join(format!(

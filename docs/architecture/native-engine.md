@@ -128,6 +128,16 @@ no raw cookie material crosses IPC. This focused local regression is not
 complete CORS/XHR or WPT conformance, remote CI, or cross-platform
 certification. See the [Slice 856 task](../plan/tasks/native-engine-browser-856.md)
 and [review](../plan/reviews/native-engine-browser-856-01.md).
+Slice 857 verifies that a default-credentials XHR preflight-cache entry cannot
+authorize a later `include` request to skip OPTIONS. The parent receives a new
+cookie-free preflight, then sends only parent-matched cookies on the authorized
+actual request; the credentialed cache entry is reused by a subsequent
+`include` request. Preflight and default-mode response cookies are rejected,
+while the authorized actual response cookie is retained in the parent jar.
+The exact-mode cache key is conservative and may cause extra preflights when
+credentials are reduced. No raw cookie material crosses IPC and the parent
+remains the sole cookie authority. See the [Slice 857 task](../plan/tasks/native-engine-browser-857.md)
+and [review](../plan/reviews/native-engine-browser-857-01.md).
 Slice 838's NavigationPreloadManager persistence regression passed (1 passed;
 906 filtered; 39.70 seconds), so that slice is complete. Slice 839 starts
 eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,

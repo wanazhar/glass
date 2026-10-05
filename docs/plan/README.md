@@ -10918,6 +10918,13 @@ CI. See the [Slice 860 task](tasks/native-engine-browser-860.md),
 [Fetch Standard CORS credentials rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
 Issue #40 remains open.
 
+Slice 861 is in progress. The owner crosswalk distinguishes SharedWorker's
+browser-parent registry and loader from ServiceWorker's parent-brokered
+request paths. The selected gap is process evidence for a browser-owned
+SharedWorker Fetch that rejects on credentialed CORS while its actual-response
+HttpOnly cookie remains parent-owned and reaches later authorized requests.
+See the [Slice 861 task](tasks/native-engine-browser-861.md).
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

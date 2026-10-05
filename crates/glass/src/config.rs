@@ -20,6 +20,8 @@ pub struct Config {
     pub skills_dir: Option<PathBuf>,
     /// Mods to load, by name.
     pub mods: Vec<String>,
+    /// External extension executables to spawn, by path or PATH name.
+    pub extensions: Vec<String>,
     pub system_prompt: String,
 }
 
@@ -35,6 +37,7 @@ impl Default for Config {
             reasoning_budget: None,
             skills_dir: None,
             mods: Vec::new(),
+            extensions: Vec::new(),
             system_prompt: BASE_SYSTEM_PROMPT.to_string(),
         }
     }
@@ -144,6 +147,7 @@ struct Raw {
     reasoning_budget: Option<u32>,
     system_prompt: Option<String>,
     mods: Option<Vec<String>>,
+    extensions: Option<Vec<String>>,
 
     skills_dir: Option<String>,
     skills: Option<Vec<String>>,
@@ -202,6 +206,9 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
     }
     if let Some(v) = raw.mods {
         cfg.mods = v;
+    }
+    if let Some(v) = raw.extensions {
+        cfg.extensions = v;
     }
 
     // `skills = [...]` in the default location narrows the set, so an empty

@@ -9,6 +9,7 @@ use std::path::Path;
 use glass_mod_api::{Message, Mod_, ToolCall, ToolOutput, TurnContext};
 
 use crate::compact;
+use crate::ext;
 use crate::provider::{self, Event, Provider, Request};
 use crate::session::{Record, Session};
 use crate::tools::{self, State};
@@ -78,6 +79,9 @@ pub struct Agent<'a> {
     pub session: &'a mut Session,
     pub state: &'a mut State,
     pub mods: &'a [Box<dyn Mod_>],
+    /// External extensions. Separate from `mods` because they are child
+    /// processes on a pipe rather than in-process trait objects.
+    pub extensions: &'a mut ext::Registry,
     pub workspace: &'a Path,
     pub max_tokens: u32,
     pub reasoning: Option<u32>,
@@ -89,6 +93,8 @@ pub struct Agent<'a> {
     catalogue: Option<String>,
     /// Called as the loop makes progress. `None` disables reporting entirely.
     pub on_progress: Option<ProgressSink<'a>>,
+    /// Cached system-prompt contribution from extensions.
+    ext_prompt: String,
 }
 
 /// A progress callback.
@@ -107,6 +113,7 @@ impl<'a> Agent<'a> {
         session: &'a mut Session,
         state: &'a mut State,
         mods: &'a [Box<dyn Mod_>],
+        extensions: &'a mut ext::Registry,
         workspace: &'a Path,
     ) -> Self {
         Self {
@@ -114,6 +121,7 @@ impl<'a> Agent<'a> {
             session,
             state,
             mods,
+            extensions,
             workspace,
             max_tokens: 16_000,
             reasoning: None,
@@ -121,7 +129,18 @@ impl<'a> Agent<'a> {
             base_prompt: String::new(),
             catalogue: None,
             on_progress: None,
+            ext_prompt: String::new(),
         }
+    }
+
+    /// Fetch extension prompt text once and cache it.
+    ///
+    /// Called before the first request; afterwards the cache is reused, because
+    /// a pipe round-trip per turn would be latency for a value that does not
+    /// change.
+    pub fn prime_extensions(mut self) -> Self {
+        self.ext_prompt = self.extensions.system_prompt();
+        self
     }
 
     /// Attach a progress observer.
@@ -151,7 +170,15 @@ impl<'a> Agent<'a> {
         let messages = self.session.messages();
         self.ensure_context_fits(&messages)?;
 
-        let tools = provider::collect_tools(self.mods);
+        let mut tools = provider::collect_tools(self.mods);
+        // Extension tools are appended and can never shadow a builtin, so a
+        // prompt written against `bash` and `state` keeps working with any
+        // extension set loaded.
+        for (n, d, s) in self.extensions.tools() {
+            if !tools.iter().any(|(existing, _, _)| *existing == n) {
+                tools.push((n, d, s));
+            }
+        }
         let system = self.system_prompt();
         let model = self.provider.id().to_string();
 
@@ -229,6 +256,7 @@ impl<'a> Agent<'a> {
             for m in self.mods {
                 m.on_turn_end(&ctx, &out.text);
             }
+            self.extensions.turn_end(&out.text);
 
             if !out.wants_tools() {
                 return Ok((last, Stop::Finished));
@@ -255,9 +283,10 @@ impl<'a> Agent<'a> {
 
         // Mods may add tools and may block them; the two built-ins are always
         // present but a mod can still refuse to run one.
-        let known = call.name == "bash" || call.name == "state" || self.mods.iter().any(|m| {
-            m.tools().iter().any(|(n, _, _)| *n == call.name)
-        });
+        let known = call.name == "bash"
+            || call.name == "state"
+            || self.extensions.has_tool(&call.name)
+            || self.mods.iter().any(|m| m.tools().iter().any(|(n, _, _)| *n == call.name));
 
         let mut outcome = tools::Outcome {
             body: String::new(),
@@ -274,6 +303,8 @@ impl<'a> Agent<'a> {
             avail.extend(extra);
             outcome.body =
                 format!("error: no tool named `{}`. Available tools: {}.", call.name, avail.join(", "));
+        } else if let Err(denied) = self.extensions.authorize(&call.id, &call.name, &call.arguments) {
+            outcome.body = format!("blocked by extension: {denied}");
         } else if let Some(denied) = self.mods.iter().find_map(|m| m.authorize(call).err()) {
             outcome.body = format!("blocked: {denied}");
         } else if call.name == "bash" {
@@ -282,13 +313,20 @@ impl<'a> Agent<'a> {
             outcome = r;
         } else if call.name == "state" {
             outcome = self.state.apply(call);
+        } else if let Some(out) = self.extensions.run_tool(&call.name, &call.arguments) {
+            outcome.body = out;
         } else {
-            // A mod-supplied tool has no built-in implementation; the mod is
-            // expected to handle it through its own hooks.
-            outcome.body = format!("`{}` is not implemented by the loaded mods", call.name);
+            // A tool was declared but nothing answered: report that honestly
+            // rather than returning a silent empty success.
+            outcome.body = format!("`{}` did not return a result", call.name);
         }
 
-        let mut output = ToolOutput::new(outcome.body);
+        let mut body = outcome.body;
+        let rewritten = self.extensions.rewrite_tool_result(&call.id, &call.name, &mut body);
+        let mut output = ToolOutput::new(body);
+        if rewritten {
+            output.rewritten = true;
+        }
         for m in self.mods {
             m.on_tool_result(call, &mut output);
         }
@@ -329,6 +367,13 @@ impl<'a> Agent<'a> {
                 p.push_str("\n\n");
                 p.push_str(&extra);
             }
+        }
+        // Extension prompt text is fetched once per session, not per request:
+        // it is static config in practice and a pipe round-trip per turn would
+        // be pure latency.
+        let ext_prompt = self.ext_prompt.clone();
+        if !ext_prompt.is_empty() {
+            p.push_str(&ext_prompt);
         }
         if let Some(c) = &self.catalogue {
             p.push_str("\n\n");

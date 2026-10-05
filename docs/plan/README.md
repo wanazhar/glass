@@ -10886,6 +10886,13 @@ filtered; 19.11 seconds). The exact-mode key is conservative and may cause
 extra preflights when credentials are reduced. See the [Slice 857 task](tasks/native-engine-browser-857.md)
 and [review](reviews/native-engine-browser-857-01.md). Issue #40 remains open.
 
+Slice 858 is in progress: process-backed denial of wildcard
+`Access-Control-Allow-Methods` for credentialed page XHR and wildcard
+`Access-Control-Allow-Headers` for credentialed DedicatedWorker XHR. Both
+preflights must carry no cookies and stop before POST; rejected preflight
+cookies must not alter the parent jar. See the
+[Slice 858 task](tasks/native-engine-browser-858.md).
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

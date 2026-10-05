@@ -3983,6 +3983,22 @@ impl NativeResourceLoader {
             current_url = next_url;
             redirects += 1;
         };
+        // Cookie processing belongs to the network owner, not the CORS-visible
+        // response path. A credentialed CORS failure still processes the
+        // actual response's Set-Cookie headers before EventSource reports an
+        // error to its caller.
+        if with_credentials || current_url.origin() == document_url.origin() {
+            for value in response
+                .headers()
+                .get_all(reqwest::header::SET_COOKIE)
+                .iter()
+            {
+                if let Ok(cookie) = value.to_str() {
+                    self.cookie_changes
+                        .extend(self.network.store_cookie(&current_url, cookie));
+                }
+            }
+        }
         if response.status() != reqwest::StatusCode::OK {
             return Err(NativeEngineError::Network {
                 operation: "EventSource request".into(),
@@ -4008,16 +4024,6 @@ impl NativeResourceLoader {
                 operation: "EventSource CORS policy".into(),
                 reason: "EventSource response did not authorize the document origin".into(),
             });
-        }
-        for value in response
-            .headers()
-            .get_all(reqwest::header::SET_COOKIE)
-            .iter()
-        {
-            if let Ok(cookie) = value.to_str() {
-                self.cookie_changes
-                    .extend(self.network.store_cookie(&current_url, cookie));
-            }
         }
         Ok((current_url, response))
     }

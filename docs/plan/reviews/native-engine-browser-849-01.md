@@ -30,8 +30,10 @@ None. No blocking contract mismatch was found.
 - Upload pull data crosses the existing bounded demand-driven upload protocol
   and is collected before parent dispatch (`content_process.rs:23190-23290`).
   The task and design docs explicitly avoid claiming socket-level upload
-  streaming or network backpressure. Autonomous ServiceWorker upload coverage,
-  stale-owner/cancellation-specific tests, WPT, and remote CI remain open.
+  streaming or network backpressure. At this Slice 849 review checkpoint,
+  autonomous ServiceWorker upload coverage, stale-owner/cancellation-specific
+  tests, WPT, and remote CI remained open. Follow-up Slice 850 adds the narrow
+  autonomous ServiceWorker timer-upload case; the other gaps remain open.
 - The initial scoped check exposed a pre-existing unit-test import error for
   `NativeCookieProfileEntry`; the test-only import now comes from its defining
   `native_engine` re-export (`native_backend.rs:11703-11718`). No production

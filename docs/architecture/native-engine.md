@@ -1,8 +1,10 @@
 # Native browser engine
 
 Status: issue #40 remains open. The earlier loopback-listener denial is stale:
-the current checkout has process-backed HTTP evidence through Slices 838 and
-843. Slice 832's corrected two-origin regression passed (1 passed; 905
+the current checkout has targeted process-backed HTTP evidence through Slices
+849 and 850, alongside the earlier cases below; this is not a claim that all
+HTTP request classes are covered. WPT and cross-platform conformance remain
+open. Slice 832's corrected two-origin regression passed (1 passed; 905
 filtered; 19.33 seconds); Slices 833-836 also have recorded passing
 process-backed cases, while WPT and cross-platform conformance remain open.
 Slice 843's latest recorded checkpoint routes browser-owned SharedWorker
@@ -49,6 +51,17 @@ rotation through the upload and a later Worker Fetch. The parent remains the
 only cookie matcher, `Set-Cookie` acceptor, and jar owner; the child receives
 only the URL-scoped script-visible projection. This is targeted local evidence,
 not general autonomous-worker or remote-CI certification.
+Slice 850 extends this case to an autonomous ServiceWorker timer Fetch with a
+`ReadableStream` request body. The page's owner-tagged visible-cookie write is
+made before ServiceWorker registration; the loopback regression then verifies
+the timer's first Fetch, buffered POST body, response-cookie rotation, and a
+later Worker Fetch. Exact document-owner checks remain in force, and the
+parent alone matches request cookies, accepts `Set-Cookie`, and persists the
+jar. Upload collection completes before HTTP dispatch, so socket-level upload
+streaming/backpressure is not claimed. This is targeted local evidence only;
+the wider network-authority audit, WPT, cross-platform conformance, and remote
+CI remain open. See the [Slice 850 task](../plan/tasks/native-engine-browser-850.md)
+and [review](../plan/reviews/native-engine-browser-850-01.md).
 Slice 838's NavigationPreloadManager persistence regression passed (1 passed;
 906 filtered; 39.70 seconds), so that slice is complete. Slice 839 starts
 eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,
@@ -853,8 +866,9 @@ parent network dispatch. The parent applies/selects cookies and accepts
 `Set-Cookie`; the process-backed loopback regression verifies the HttpOnly
 rotation and visible-only cookie projection. As on the other buffered upload
 paths, this does not provide socket-level upload streaming or network
-backpressure. This does not establish autonomous ServiceWorker upload coverage
-or complete background-network parity. Content-side
+backpressure. The Slice 849 checkpoint did not establish autonomous
+ServiceWorker timer-upload coverage; Slice 850 now verifies that narrow case
+without establishing complete background-network parity. Content-side
 Service Worker interception remains in place; unhandled HTTP(S) top-level
 navigation is parent-brokered after that interception declines it. HTTP(S)
 parser-discovered page scripts, initial stylesheets, static CSS imports, page

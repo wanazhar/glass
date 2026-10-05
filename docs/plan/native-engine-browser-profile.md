@@ -200,9 +200,19 @@ checks a page cookie write, HttpOnly cookies from Worker scripts, parent cookie
 rotation before the upload, the upload response cookie on a later Fetch, and
 the visible-only `document.cookie` projection. HTTP starts after the source
 closes, so this path does not provide socket-level upload streaming or network
-backpressure. This does not claim autonomous ServiceWorker upload coverage or
-close the wider network-authority audit. See the
-[Slice 849 task](tasks/native-engine-browser-849.md).
+backpressure. See the [Slice 849 task](tasks/native-engine-browser-849.md).
+Slice 850 adds process-backed coverage for an autonomous ServiceWorker timer
+Fetch with a `ReadableStream` body. The visible page-cookie write is journaled
+before ServiceWorker registration and remains owner-tagged; the parent applies
+it before selecting cookies for the timer's first request. The loopback case
+checks the first Fetch, buffered POST method/content type/body, HttpOnly
+response-cookie rotation, and a later Worker Fetch, while `document.cookie`
+contains only the URL-scoped script-visible projection. The parent continues
+to own request matching, `Set-Cookie` acceptance, and jar persistence. Upload
+data is collected before HTTP dispatch, so socket-level upload streaming and
+network backpressure are not claimed. This is targeted local evidence, not
+closure of the wider network-authority audit, WPT, cross-platform, or remote-CI
+coverage. See the [Slice 850 task](tasks/native-engine-browser-850.md).
 The process-backed
 `native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
 regression also verifies the module SharedWorker entry and static dependency

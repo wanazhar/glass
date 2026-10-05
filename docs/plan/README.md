@@ -10788,6 +10788,21 @@ commit evidence is recorded in the
 CI result. It closes only the tested DedicatedWorker timer upload path; Issue
 #40 and the broader network-authority audit remain open.
 
+Slice 850 adds process-backed coverage for an autonomous ServiceWorker timer
+`ReadableStream` upload. The page's owner-tagged visible-cookie write precedes
+ServiceWorker registration; the parent then matches cookies and accepts each
+response's `Set-Cookie` before the following request. The regression verifies
+the timer's first Fetch, buffered POST method/content type/body, and later
+Worker Fetch while HttpOnly values remain absent from `document.cookie`.
+Upload collection finishes before HTTP dispatch, so socket-level streaming
+and network backpressure are not claimed. The scoped check, content-worker
+build, and focused timer-cookie tests pass (`2 passed; 1,692 filtered; 25.35
+seconds`). Documentation/review evidence is recorded in the [Slice 850
+task](tasks/native-engine-browser-850.md) and
+[review](reviews/native-engine-browser-850-01.md). This local checkpoint has
+no remote-CI result; Issue #40 and the broader network-authority audit remain
+open.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

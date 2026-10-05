@@ -536,10 +536,11 @@ establish WPT conformance or remote CI status. See the [direct self-review](revi
 
 Required GCWP behavior, not current runtime support; Slice 874 is in progress.
 
-For process-backed HTTP(S) documents, each HTML `<video>` with a nonempty
-`poster` attribute initiates an image request when created and when the
-attribute is set, changed, or removed. The URL is resolved against the owner
-Document. For network URLs, the browser parent performs the request through
+For process-backed HTTP(S) documents, each HTML `<video>` evaluates its
+`poster` URL when created and whenever the attribute is set, changed, or
+removed. An absent or empty value clears the poster without a request; a
+nonempty value is resolved against the owner Document and fetched. For network
+URLs, the browser parent performs the request through
 its image broker under image CSP policy and parent-owned cookie authority.
 The request uses credentials mode `include` with URL credentials; its client
 is the owner Document, which supplies the effective referrer policy. Eligible

@@ -10877,6 +10877,14 @@ regression passed (1 passed; 920 filtered; 21.84 seconds). See the
 [Slice 856 task](tasks/native-engine-browser-856.md) and
 [review](reviews/native-engine-browser-856-01.md). Issue #40 remains open.
 
+Slice 857 is in progress: process-backed XHR preflight-cache isolation across
+default and `include` credentials. A cached noncredentialed preflight must not
+authorize the later credentialed POST to skip OPTIONS; after an exact
+credentialed authorization, that cache entry may be reused by another
+`include` request. Verify cookie-free preflights, parent-selected cookies on
+actual requests, and parent-owned response-cookie acceptance. See the
+[Slice 857 task](tasks/native-engine-browser-857.md).
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

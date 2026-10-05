@@ -11015,6 +11015,14 @@ Slice 867's credentialed redirect-cookie acceptance without expanding
 cross-origin redirect policy. See the [Slice 868 task](tasks/native-engine-browser-868.md)
 and [review](reviews/native-engine-browser-868-01.md). Issue #40 remains open.
 
+Slice 869 is in progress to cover rejected WebSocket handshake responses. The
+parent must accept a credentialed non-101 response's HttpOnly `Set-Cookie`
+before reporting the failed connection, keep the value out of child IPC, and
+reuse it on a later authorized request. A source audit found that
+`tokio-tungstenite` returns the HTTP error response with headers, but Glass
+currently discards it on the early error path. See the [Slice 869 task](tasks/native-engine-browser-869.md).
+Issue #40 remains open.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -1365,6 +1365,18 @@ a less-privileged mode. This is focused cache-boundary evidence, not full
 Fetch/CORS/XHR or WPT conformance. See the [Slice 857 task](tasks/native-engine-browser-857.md)
 and [review](reviews/native-engine-browser-857-01.md).
 
+Slice 858 adds separate credentialed page and DedicatedWorker XHR preflight
+wildcard denials. Even with exact-origin CORS and
+`Access-Control-Allow-Credentials: true`, `*` in
+`Access-Control-Allow-Methods` does not authorize the page's POST, and `*` in
+`Access-Control-Allow-Headers` does not authorize the Worker's requested
+custom header. Neither actual POST is dispatched, both OPTIONS requests remain
+cookie-free, and the rejected responses' `Set-Cookie` values do not alter the
+parent jar. HttpOnly stays absent from `document.cookie`; the parent remains
+the sole cookie authority. This is focused wildcard-denial evidence, not full
+CORS/XHR, Web IDL, or WPT conformance. See the [Slice 858 task](tasks/native-engine-browser-858.md)
+and [review](reviews/native-engine-browser-858-01.md).
+
 ### XHR document responses
 
 For a Window `XMLHttpRequest` whose response type is `document`, only an HTML

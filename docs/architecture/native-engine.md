@@ -74,6 +74,17 @@ evidence only: it does not certify cross-origin process/CORS behavior, full XHR
 conformance, remote CI, or cross-platform behavior. See the
 [Slice 851 task](../plan/tasks/native-engine-browser-851.md) and
 [review](../plan/reviews/native-engine-browser-851-01.md).
+Slice 852 adds a two-origin process regression for async page XHR, synchronous
+parent-brokered page XHR, and async DedicatedWorker XHR. Default `same-origin`
+mode omits cross-origin cookies and rejects `Set-Cookie`; explicit `include`
+uses exact-origin credentialed CORS and allows the parent to accept response
+cookies. Follow-up requests verify that only accepted HttpOnly cookies are
+sent, while the script-visible projection remains empty. Cookie matching,
+`Set-Cookie` acceptance, and jar ownership stay exclusively in the parent; no
+raw cookie headers or jar are sent over IPC. This focused regression does not
+cover XHR redirect chains, full Web IDL/WPT behavior, remote CI, or
+cross-platform certification. See the [Slice 852 task](../plan/tasks/native-engine-browser-852.md)
+and [review](../plan/reviews/native-engine-browser-852-01.md).
 Slice 838's NavigationPreloadManager persistence regression passed (1 passed;
 906 filtered; 39.70 seconds), so that slice is complete. Slice 839 starts
 eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,

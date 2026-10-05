@@ -1296,9 +1296,16 @@ and [Fetch credentials modes](https://fetch.spec.whatwg.org/#concept-request-cre
 Slice 851 adds process-backed verification for same-origin defaults and
 cookie rotation on page and Worker XHR while preserving parent cookie
 authority. A resource-loader unit test checks same-origin mode against a
-cross-origin target and explicit `include`; this is not process-backed CORS
-coverage. The slice does not claim full XHR/Web IDL or WPT conformance. See the
-[Slice 851 task](tasks/native-engine-browser-851.md).
+cross-origin target and explicit `include`. Slice 852 adds process-backed
+cross-origin requests for async page, synchronous parent-brokered page, and
+async DedicatedWorker XHR: default mode omits cross-origin credentials and
+rejects response cookies, while `include` uses credentialed CORS and accepts
+parent-owned response cookies. The test keeps all cookies HttpOnly and checks
+that they remain absent from `document.cookie`. These are focused local
+regressions, not complete XHR/Web IDL, redirect-chain, or WPT conformance. See
+the [Slice 851 task](tasks/native-engine-browser-851.md), [Slice 852
+task](tasks/native-engine-browser-852.md), and [Slice 852
+review](reviews/native-engine-browser-852-01.md).
 
 ### XHR document responses
 

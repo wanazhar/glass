@@ -10981,13 +10981,16 @@ Fetch/CORS or WPT behavior, other platforms, or remote CI. See the
 [Slice 865 task](tasks/native-engine-browser-865.md) and
 [review](reviews/native-engine-browser-865-01.md). Issue #40 remains open.
 
-Slice 866 is planned to verify the opposite credentials branch for page
-EventSource: its default `withCredentials: false` permits a CORS-readable
-cross-origin stream but must not send cross-origin cookies or accept that
-response's `Set-Cookie` into the parent jar. A later explicitly credentialed
-page Fetch will distinguish the retained seed from the ignored response
-cookie. See the [Slice 866 task](tasks/native-engine-browser-866.md). Issue #40
-remains open.
+The completed Slice 866 verifies default page EventSource credentials on a
+cross-origin but same-site loopback response. The CORS-authorized event stream
+delivers open/message events, while its GET carries no Cookie and its HttpOnly
+Set-Cookie is not accepted. A later explicitly credentialed page Fetch carries
+only the original HttpOnly seed; the parent cookie API excludes the EventSource
+cookie and `document.cookie` remains empty. Its exact regression passed (1
+passed; 929 filtered; 23.24 seconds). No runtime change was required. This
+does not establish full EventSource redirects/reconnects, Fetch/CORS or WPT
+conformance, other platforms, or remote CI. See the [Slice 866 task](tasks/native-engine-browser-866.md)
+and [review](reviews/native-engine-browser-866-01.md). Issue #40 remains open.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

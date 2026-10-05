@@ -506,6 +506,21 @@ redirect/reconnect, full EventSource, Fetch/CORS WPT, or cross-platform
 conformance. See the [Slice 865 task](tasks/native-engine-browser-865.md) and
 the Fetch Standard's [CORS credentials rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
 
+### Page EventSource default credentials
+
+Page EventSource created without `withCredentials: true` uses same-origin
+credentials. A cross-origin stream may pass CORS and deliver events, but the
+parent must neither attach cross-origin cookies nor apply that response's
+`Set-Cookie` to its jar. The process-backed
+`native_content_process_page_event_source_omits_cross_origin_cookies_by_default`
+regression verifies the cookie-free request, successful open/message events,
+and a later explicitly credentialed request that carries only the existing
+HttpOnly seed. The parent's cookie API excludes the uncredentialed response
+cookie, and `document.cookie` remains empty. This is targeted page EventSource
+credential evidence, not complete EventSource, Fetch/CORS WPT, or
+cross-platform conformance. See the [Slice 866 task](tasks/native-engine-browser-866.md)
+and the Fetch Standard's [CORS credentials rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
+
 ### Shared-profile cookie synchronization
 
 When separately created native sessions use the same explicit profile path,

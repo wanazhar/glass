@@ -10,6 +10,7 @@ use glass_mod_api::{Message, Mod_, ToolCall, ToolOutput, TurnContext};
 
 use crate::compact;
 use crate::ext;
+use crate::verify;
 use crate::provider::{self, Event, Provider, Request};
 use crate::session::{Record, Session};
 use crate::tools::{self, State};
@@ -107,6 +108,13 @@ pub struct Agent<'a> {
     /// A correction the user typed mid-turn, applied before the next request.
     steer: Option<String>,
 }
+
+/// Lines of a written file echoed back to the model.
+///
+/// Bounded because a generated file can be thousands of lines; the model can
+/// always read more with `bash`, and the point is to show that the write
+/// landed, not to replace the file in the context.
+const VERIFY_TAIL_LINES: usize = 40;
 
 /// A progress callback.
 pub type ProgressSink<'a> = Box<dyn Fn(Progress<'_>) + 'a>;
@@ -381,6 +389,18 @@ impl<'a> Agent<'a> {
     fn apply_bash_result(&mut self, call: &ToolCall, outcome: tools::Outcome) {
         let command = call.arg_str("command").unwrap_or_default();
         let mut body = outcome.body.clone();
+
+        // Verification belongs here, not at the call site: this is the single
+        // place every bash result passes through, whether it ran inline or on a
+        // worker thread.
+        let touched = verify::written_paths(&command, self.workspace);
+        if !touched.is_empty() {
+            let note = verify::report(&touched, self.workspace, VERIFY_TAIL_LINES);
+            if !note.is_empty() {
+                body.push_str(&note);
+            }
+        }
+
         let rewritten = self.extensions.rewrite_tool_result(&call.id, &call.name, &mut body);
         let mut output = ToolOutput::new(body);
         if rewritten {
@@ -439,6 +459,9 @@ impl<'a> Agent<'a> {
             outcome.body = format!("blocked: {denied}");
         } else if call.name == "bash" {
             let r = tools::bash(call, self.workspace);
+
+            // Verification happens in apply_bash_result, which every bash
+            // result passes through.
             display_bash = Some((command.clone(), r.body.clone()));
             outcome = r;
         } else if call.name == "state" {

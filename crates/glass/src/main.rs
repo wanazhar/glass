@@ -16,6 +16,7 @@ mod session;
 mod skills;
 mod sse;
 mod tools;
+mod verify;
 
 use std::io::Write;
 

@@ -175,7 +175,20 @@ pub fn bash(call: &ToolCall, workspace: &std::path::Path) -> Outcome {
         body.push_str("(no output)");
     }
 
-    Outcome { truncated: spill.is_some(), body, exit_code: status.and_then(|s| s.code()), spill }
+    // Exit code first, always. Interface research is unambiguous that a model
+    // without it will re-run commands "to determine the effect of the prior
+    // action" — the retry loops show up as duplicated commands in transcripts.
+    let code = status.and_then(|s| s.code());
+    let mut prefix = match code {
+        Some(0) => "[exit 0]\n".to_string(),
+        Some(c) => format!("[exit {c}]\n"),
+        // Killed by a signal rather than exiting: name it, since the model
+        // cannot infer it from output alone.
+        None => "[killed by signal]\n".to_string(),
+    };
+    prefix.push_str(&body);
+
+    Outcome { truncated: spill.is_some(), body: prefix, exit_code: code, spill }
 }
 
 /// Signal the child's entire process group.
@@ -351,9 +364,26 @@ mod tests {
     #[test]
     fn runs_a_simple_command() {
         let out = bash(&call(r#"{"command":"echo hello"}"#), std::path::Path::new("."));
-        assert_eq!(out.body.trim(), "hello");
+        // The result always leads with the exit code so the model never has to
+        // guess whether a command worked.
+        assert_eq!(out.body, "[exit 0]\nhello\n");
         assert_eq!(out.exit_code, Some(0));
         assert!(!out.truncated);
+    }
+
+    #[test]
+    fn nonzero_exit_is_reported_in_the_body() {
+        let out = bash(&call(r#"{"command":"echo bad >&2; exit 2"}"#), std::path::Path::new("."));
+        assert!(out.body.starts_with("[exit 2]"), "{}", out.body);
+        assert_eq!(out.exit_code, Some(2));
+    }
+
+    #[test]
+    fn successful_command_with_no_output_is_unambiguous() {
+        // A silent success previously read identically to "nothing happened",
+        // which is what makes models re-run commands to find out.
+        let out = bash(&call(r#"{"command":"true"}"#), std::path::Path::new("."));
+        assert_eq!(out.body, "[exit 0]\n(no output)");
     }
 
     #[test]
@@ -426,7 +456,7 @@ mod tests {
             &call(r#"{"command":"echo ok","timeout_ms":"soon"}"#),
             std::path::Path::new("."),
         );
-        assert_eq!(out.body.trim(), "ok");
+        assert_eq!(out.body, "[exit 0]\nok\n");
         assert!(!out.body.contains("killed"));
     }
 
@@ -449,7 +479,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let out = bash(&call(r#"{"command":"pwd","cwd":"."}"#), &dir);
         // Compare canonically: macOS temp dirs are symlinked via /private.
-        let got = std::fs::canonicalize(out.body.trim()).unwrap_or_else(|_| out.body.trim().into());
+        let path = out.body.trim().strip_prefix("[exit 0]").unwrap_or(out.body.trim());
+        let got = std::fs::canonicalize(path.trim()).unwrap_or_else(|_| path.trim().into());
         let want = std::fs::canonicalize(&dir).unwrap();
         assert_eq!(got, want);
         std::fs::remove_dir_all(&dir).ok();

@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-859
 scope: glass-browser/native-engine/xhr-cors-error-response-cookies
-status: in-progress
+status: complete
 depends-on: [native-engine-browser-858]
 ---
 
@@ -80,5 +80,25 @@ cookies remain ignored.
 
 ## Results
 
-- In progress; the process regression and parent-owned error-path handling are
-  not yet implemented or verified.
+- The CORS-error branch now commits pending response cookies to the
+  `NativeResourceLoader` parent-owned jar before returning the script-visible
+  network error. The normal successful-response path is unchanged.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p
+  glass-browser --features native-engine --test native_engine --locked
+  --quiet` passed with existing dead-code warnings.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p
+  glass-browser --features native-engine --test native_engine --locked
+  --quiet native_content_process_xhr_keeps_parent_cookie_on_cors_error --
+  --exact` passed (1 passed; 923 filtered; 20.42 seconds).
+- The process fixture observed one cookie-free valid OPTIONS preflight with a
+  rejected preflight `Set-Cookie`; the first POST carried only the seeded
+  parent cookie and received a wildcard-origin response cookie. Script saw
+  `error`, status 0, and an empty body; the next POST carried the seed and
+  `cors_failed=accepted`. The parent cookie API retained both as HttpOnly,
+  while `document.cookie` remained empty.
+- Cookie storage and matching stayed in the parent. No raw cookie header or
+  jar was added to IPC, and no child-side request retry was enabled.
+- Formatting and maintainer documentation gates are recorded in the Slice
+  859 review. This is local focused evidence only; it does not certify full
+  CORS/XHR or WPT conformance, other platforms, independent review, or remote
+  CI. Issue #40 remains open.

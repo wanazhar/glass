@@ -10895,11 +10895,14 @@ passed (1 passed; 922 filtered; 23.37 seconds). See the
 [Slice 858 task](tasks/native-engine-browser-858.md) and
 [review](reviews/native-engine-browser-858-01.md). Issue #40 remains open.
 
-Slice 859 is in progress: a process-backed credentialed XHR will verify that
-an actual response's parent-owned HttpOnly cookie is retained even when CORS
-denies script access, while cookies from a rejected preflight remain ignored.
-The parent process remains the only cookie authority. See the [Slice 859 task](tasks/native-engine-browser-859.md)
-and the [Fetch Standard's CORS credentials rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
+The completed Slice 859 verifies the Fetch CORS-error cookie boundary with a
+process-backed credentialed XHR. Script receives a network error with no
+response visibility, yet the parent's cookie jar retains the actual-response
+HttpOnly cookie for a later authorized request; the rejected preflight cookie
+remains ignored. The scoped check and exact regression passed locally. See the
+[Slice 859 task](tasks/native-engine-browser-859.md), [review](reviews/native-engine-browser-859-01.md),
+and [Fetch Standard CORS credentials rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
+Issue #40 remains open.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

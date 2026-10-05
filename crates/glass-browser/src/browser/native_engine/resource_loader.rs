@@ -5918,6 +5918,10 @@ impl NativeResourceLoader {
                 final_credentials,
             )
         {
+            for (cookie_url, cookie) in pending_cookies {
+                self.cookie_changes
+                    .extend(self.network.store_cookie(&cookie_url, &cookie));
+            }
             return Err(NativeEngineError::Network {
                 operation: "fetch CORS policy".into(),
                 reason: "cross-origin fetch response did not authorize the document origin".into(),

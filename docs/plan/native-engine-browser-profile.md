@@ -123,7 +123,9 @@ frame data, and lifecycle events; failure events do not carry response headers
 or cookie values. Raw cookie headers and the authoritative jar never cross
 into the worker realm. The browser-owned coordinator's non-101 HTTP error path
 still drops response cookies and remains a separate gap; it is not covered by
-Slice 869.
+Slice 869. [Slice 870](tasks/native-engine-browser-870.md) records the bounded
+SharedWorker fix and process-backed regression; implementation and evidence
+are pending.
 
 The parent must not send a cookie profile, an HttpOnly value, or raw
 `Cookie`/`Set-Cookie` headers to a content process. It gives a document only a

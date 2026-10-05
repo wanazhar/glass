@@ -979,7 +979,9 @@ parent applies eligible response cookies before returning bounded failure
 events; the [Slice 869 process-backed page regression](../plan/tasks/native-engine-browser-869.md)
 verifies later authorized reuse and HttpOnly filtering. Browser-owned
 SharedWorker WebSockets use a separate coordinator path whose rejected
-handshake response-cookie behavior remains open.
+handshake response-cookie behavior remains open. The in-progress
+[Slice 870 task](../plan/tasks/native-engine-browser-870.md) records its
+parent-owned cookie and failure-event contract.
 Synchronous page and Worker XHR block on a parent IPC round trip: pending
 script cookie writes are applied before the request, response cookies remain
 in the parent jar, and the child receives only the visible cookie projection.

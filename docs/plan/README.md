@@ -11003,6 +11003,14 @@ scoped check passed; no remote CI or cross-platform certification is claimed.
 See the [Slice 867 task](tasks/native-engine-browser-867.md) and
 [review](reviews/native-engine-browser-867-01.md). Issue #40 remains open.
 
+Slice 868 is in progress to verify the inverse credentials boundary across a
+page EventSource redirect. With default credentials and a cross-origin API,
+the parent must omit cookies on both hops and reject an HttpOnly cookie set by
+the redirect response; a later explicitly credentialed page Fetch must see
+only the preexisting seed. This complements Slice 867's credentialed redirect
+cookie acceptance without expanding cross-origin redirect policy. See the
+[Slice 868 task](tasks/native-engine-browser-868.md). Issue #40 remains open.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

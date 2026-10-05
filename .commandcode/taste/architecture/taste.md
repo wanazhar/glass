@@ -11,3 +11,5 @@
 - Native TUI/CLI is a hard requirement — no GUI, no web wrapper. Confidence: 0.75
 - Wants one codebase reaching all frontier model providers (a base URL + model id) rather than per-provider forks. Confidence: 0.65
 - Comfortable shipping without permission/safety gating in a single-user local tool, preferring to document the risk instead of gate it. Confidence: 0.5
+- **The user reasons in a two-bucket triage: core vs. extension.** Their own framing for new work is "what else can we ship as core or as mods/extensions", so every proposal should arrive pre-classified into one of the two, with the core/extension call made explicitly rather than left implicit. Confidence: 0.8
+- **Add new behavior at the single choke point every code path funnels through, not at a call site.** Caught a real bug where post-write verification was attached to the inline bash call site, so it ran on one path and silently never on the pumped path — the unit tests passed because they exercised only one. When a path is duplicated, the fix is to consolidate into one function rather than remember to patch both. Confidence: 0.8

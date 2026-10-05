@@ -99,13 +99,35 @@ pub fn written_paths(command: &str, workspace: &Path) -> Vec<PathBuf> {
     }
 
     // Whole-file mutation tools that never name a redirect.
-    // `sed -i` names its file as the trailing quoted argument rather than via a
-    // redirect, so it needs its own rule.
-    if let Some(rest) = cmd.strip_prefix("sed -i")
-        && let Some(idx) = rest.rfind('\'')
-        && let Some(end) = rest[idx + 1..].find('\'').map(|i| idx + i + 2)
-    {
-        out.push(resolve(&rest[idx + 1..end], workspace));
+    // `sed -i` names its file as an argument rather than via a redirect, so it
+    // needs its own rule. The script is quoted and the path is not, so the file
+    // is the first argument after the closing quote — taking the last token
+    // instead misses the common `sed -i 's/x/y/' file` form entirely.
+    if let Some(rest) = cmd.strip_prefix("sed -i") {
+        let mut after_script = rest.trim_start();
+        // `-e`/`-f` put the script behind a flag, so skip flags first, then the
+        // script, then read the path.
+        for flag in ["-e", "-f"] {
+            if let Some(r) = after_script.strip_prefix(flag) {
+                after_script = r.trim_start();
+                break;
+            }
+        }
+        if after_script.starts_with('\'') || after_script.starts_with('"') {
+            let quote = after_script.as_bytes()[0] as char;
+            if let Some(end) = after_script[1..].find(quote) {
+                after_script = after_script[end + 2..].trim_start();
+            }
+        }
+        // Skip any remaining flags such as `-e` or a backup suffix.
+        for tok in after_script.split_whitespace() {
+            let t = tok.trim_matches(TRIM);
+            if t.is_empty() || t.starts_with('-') {
+                continue;
+            }
+            out.push(resolve(t, workspace));
+            break;
+        }
     }
 
     out.sort();
@@ -430,5 +452,36 @@ mod integration {
         assert!(note.contains("syntax ok"), "{note}");
 
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod sed_tests {
+    use super::*;
+
+    #[test]
+    fn sed_i_finds_unquoted_trailing_path() {
+        // The common form: script quoted, path bare. This is the one a
+        // "last token" heuristic gets wrong.
+        let got = written_paths("sed -i 's/old/new/' src/a.rs", Path::new("/w"));
+        assert_eq!(got, vec![PathBuf::from("/w/src/a.rs")]);
+    }
+
+    #[test]
+    fn sed_i_finds_quoted_trailing_path() {
+        let got = written_paths("sed -i 's/a/b/' 'src/a.rs'", Path::new("/w"));
+        assert_eq!(got, vec![PathBuf::from("/w/src/a.rs")]);
+    }
+
+    #[test]
+    fn sed_i_skips_extra_flags() {
+        let got = written_paths("sed -i -e 's/a/b/' src/a.rs", Path::new("/w"));
+        assert_eq!(got, vec![PathBuf::from("/w/src/a.rs")]);
+    }
+
+    #[test]
+    fn plain_sed_is_not_a_write() {
+        // Without -i, sed prints and does not modify.
+        assert!(written_paths("sed 's/a/b/' src/a.rs", Path::new("/w")).is_empty());
     }
 }

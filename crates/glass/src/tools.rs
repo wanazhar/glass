@@ -47,8 +47,9 @@ impl Outcome {
         Self { body, truncated: false, exit_code: Some(0), spill: None }
     }
 
-    fn err(msg: String) -> Self {
-        Self { body: msg, truncated: false, exit_code: None, spill: None }
+    /// A tool that did not run, with a message for the model.
+    pub fn err(msg: impl Into<String>) -> Self {
+        Self { body: msg.into(), truncated: false, exit_code: None, spill: None }
     }
 }
 

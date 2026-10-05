@@ -10,6 +10,8 @@ use glass_mod_api::{Message, Mod_, ToolCall, ToolOutput, TurnContext};
 
 use crate::compact;
 use crate::ext;
+use crate::concurrency;
+use crate::readguard;
 use crate::verify;
 use crate::provider::{self, Event, Provider, Request};
 use crate::session::{Record, Session};
@@ -78,6 +80,8 @@ pub enum Progress<'a> {
     Compacted { kept: usize, dropped: usize },
     /// The user interrupted the turn with a correction.
     Steered(&'a str),
+    /// A write was refused because the file had not been read.
+    BlockedByGuard(&'a str),
 }
 
 pub struct Agent<'a> {
@@ -107,6 +111,8 @@ pub struct Agent<'a> {
     prefix_bytes: usize,
     /// A correction the user typed mid-turn, applied before the next request.
     steer: Option<String>,
+    /// Files the model has demonstrably read. Feeds the read-before-write guard.
+    reads: readguard::ReadSet,
 }
 
 /// Lines of a written file echoed back to the model.
@@ -152,6 +158,7 @@ impl<'a> Agent<'a> {
             ext_prompt: String::new(),
             prefix_bytes: 0,
             steer: None,
+            reads: readguard::ReadSet::new(),
         }
     }
 
@@ -324,17 +331,102 @@ impl<'a> Agent<'a> {
                 return Ok((last, Stop::Steered));
             }
 
-            for call in &out.tool_calls {
-                // A tool can run for minutes; the user must be able to steer
-                // out of it, so the wait is pumped rather than blocking.
-                self.run_tool_pumped(call, &mut |slot| pump(slot));
-            }
+            // Independent calls run together. Correctness comes from the
+            // plan, not from hope: same-path writes are serialized, destructive
+            // commands run alone, and results are reassembled in call order so
+            // the transcript is identical to a sequential run.
+            self.run_tool_batch(&out.tool_calls, &mut |slot| pump(slot));
 
             if round + 1 == self.max_tool_rounds {
                 return Ok((last, Stop::ToolBudget));
             }
         }
         Ok((last, Stop::ToolBudget))
+    }
+
+    /// Execute a batch of tool calls, fanning out where it is safe.
+    ///
+    /// Results are re-inserted in call order, so the model sees the same
+    /// transcript it would have seen one call at a time. A `bash` call still
+    /// runs on a worker thread so the UI stays live and a steer can land.
+    fn run_tool_batch(&mut self, calls: &[ToolCall], pump: &mut impl FnMut(&mut Option<String>)) {
+        if calls.is_empty() {
+            return;
+        }
+
+        let bash_indices: Vec<usize> = calls
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.name == "bash")
+            .map(|(i, _)| i)
+            .collect();
+
+        if calls.len() == 1 || bash_indices.len() == calls.len() {
+            // Nothing to overlap: run in order.
+            for call in calls {
+                self.run_tool_pumped_or_inline(call, pump);
+            }
+            return;
+        }
+
+        // Plan only the bash calls; the rest are microseconds and run inline.
+        let cmds: Vec<(usize, String)> = bash_indices
+            .iter()
+            .filter_map(|&i| calls.get(i).and_then(|c| c.arg_str("command")).map(|cmd| (i, cmd)))
+            .collect();
+        let plan = concurrency::plan_bash(&cmds, self.workspace);
+
+        if !plan.needs_parallelism() {
+            for call in calls {
+                self.run_tool_pumped_or_inline(call, pump);
+            }
+            return;
+        }
+
+        let workspace = self.workspace.to_path_buf();
+        let by_index: std::collections::HashMap<usize, String> =
+            cmds.iter().cloned().collect();
+
+        // The closure must be Sync to fan out, so it captures only immutable
+        // data; the workspace path is copied in.
+        let results: Vec<(usize, tools::Outcome)> = concurrency::execute(
+            &plan,
+            concurrency::MAX_PARALLEL,
+            |i| {
+                let args = by_index.get(&i).cloned().unwrap_or_default();
+                let inner = ToolCall {
+                    id: calls.get(i).map(|c| c.id.clone()).unwrap_or_default(),
+                    name: "bash".to_string(),
+                    arguments: serde_json::json!({ "command": args }).to_string(),
+                };
+                tools::bash(&inner, &workspace)
+            },
+        );
+
+        // Report in call order. `_` is the batch index; the results are already
+        // sorted, so this is the same order the model would have seen inline.
+        let mut by_batch: std::collections::HashMap<usize, tools::Outcome> = results.into_iter().collect();
+        for (i, call) in calls.iter().enumerate() {
+            if let Some(out) = by_batch.remove(&i) {
+                self.apply_bash_result(call, out);
+            } else {
+                self.run_tool_pumped_or_inline(call, pump);
+            }
+        }
+    }
+
+    /// Run one call, on a worker thread when it is a bash command that could
+    /// block, inline otherwise.
+    fn run_tool_pumped_or_inline(
+        &mut self,
+        call: &ToolCall,
+        pump: &mut impl FnMut(&mut Option<String>),
+    ) {
+        if call.name == "bash" {
+            self.run_tool_pumped(call, pump);
+        } else {
+            self.run_tool(call);
+        }
     }
 
     /// Run a tool while continuing to service input.
@@ -348,6 +440,16 @@ impl<'a> Agent<'a> {
         // `bash` is worth a worker thread. Everything else is microseconds.
         if call.name != "bash" {
             self.run_tool(call);
+            return;
+        }
+
+        // Read-before-write is checked here rather than in `run_tool`, because a
+        // bash call on this path never passes through `run_tool`: it goes
+        // straight to a worker thread. Checking in one place and dispatching
+        // from another is how a guard ends up silently not applying.
+        if let Some(refusal) = self.read_before_write_refusal(call) {
+            self.emit(Progress::BlockedByGuard(&refusal));
+            self.finish_tool(call, tools::Outcome::err(refusal));
             return;
         }
 
@@ -400,6 +502,8 @@ impl<'a> Agent<'a> {
                 body.push_str(&note);
             }
         }
+        // Record what the command read, so a later write can be allowed.
+        self.reads.observe(&command, &outcome.body, self.workspace);
 
         let rewritten = self.extensions.rewrite_tool_result(&call.id, &call.name, &mut body);
         let mut output = ToolOutput::new(body);
@@ -423,6 +527,27 @@ impl<'a> Agent<'a> {
         });
     }
 
+    /// Refuse a write to a file the model has not read.
+    ///
+    /// A `sed -i` against an unseen file succeeds silently, and the damage only
+    /// surfaces turns later at build time, when the cause is no longer obvious.
+    /// Creating a new file is never blocked, so this only ever gets in the way
+    /// of a genuinely blind overwrite.
+    fn read_before_write_refusal(&self, call: &ToolCall) -> Option<String> {
+        let command = call.arg_str("command")?;
+        let targets = verify::written_paths(&command, self.workspace);
+        let blocked = self.reads.blocked(&targets);
+        if blocked.is_empty() {
+            return None;
+        }
+        let names: Vec<String> = blocked.iter().map(|p| p.display().to_string()).collect();
+        Some(format!(
+            "refused: {} has not been read. Read it first (cat, or rg with the path), \
+             then retry. Overwriting a file you have not looked at is how changes get lost.",
+            names.join(", ")
+        ))
+    }
+
     /// Execute one tool call, letting mods veto or rewrite the result.
     fn run_tool(&mut self, call: &ToolCall) {
         let command = call.arg_str("command").unwrap_or_default();
@@ -444,7 +569,6 @@ impl<'a> Agent<'a> {
             exit_code: None,
             spill: None,
         };
-        let mut display_bash: Option<(String, String)> = None;
 
         if !known {
             let extra: Vec<String> =
@@ -458,11 +582,14 @@ impl<'a> Agent<'a> {
         } else if let Some(denied) = self.mods.iter().find_map(|m| m.authorize(call).err()) {
             outcome.body = format!("blocked: {denied}");
         } else if call.name == "bash" {
+            if let Some(refusal) = self.read_before_write_refusal(call) {
+                self.emit(Progress::BlockedByGuard(&refusal));
+                return self.finish_tool(call, tools::Outcome::err(refusal));
+            }
             let r = tools::bash(call, self.workspace);
 
             // Verification happens in apply_bash_result, which every bash
             // result passes through.
-            display_bash = Some((command.clone(), r.body.clone()));
             outcome = r;
         } else if call.name == "state" {
             outcome = self.state.apply(call);
@@ -493,10 +620,14 @@ impl<'a> Agent<'a> {
 
         let mut body = outcome.body;
         let rewritten = self.extensions.rewrite_tool_result(&call.id, &call.name, &mut body);
-        let mut output = ToolOutput::new(body);
-        if rewritten {
-            output.rewritten = true;
-        }
+        self.finish_tool(call, tools::Outcome { body, truncated: outcome.truncated, exit_code: outcome.exit_code, spill: outcome.spill });
+        let _ = rewritten;
+    }
+
+    /// Record a tool result and notify mods. The single path every tool
+    /// outcome takes, including the ones blocked by a guard.
+    fn finish_tool(&mut self, call: &ToolCall, outcome: tools::Outcome) {
+        let mut output = ToolOutput::new(outcome.body);
         for m in self.mods {
             m.on_tool_result(call, &mut output);
         }
@@ -505,6 +636,12 @@ impl<'a> Agent<'a> {
             name: &call.name,
             summary: summarize_output(&output.body),
         });
+
+        let display_bash = if call.name == "bash" {
+            Some((call.arg_str("command").unwrap_or_default(), output.body.clone()))
+        } else {
+            None
+        };
 
         // Log before the result so the transcript reads in causal order.
         if let Some((cmd, shown)) = display_bash {

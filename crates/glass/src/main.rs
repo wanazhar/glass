@@ -6,12 +6,14 @@
 mod agent;
 mod agents_md;
 mod compact;
+mod concurrency;
 mod config;
 mod ext;
 mod input;
 mod queue;
 mod mods;
 mod provider;
+mod readguard;
 mod session;
 mod skills;
 mod sse;
@@ -441,6 +443,10 @@ fn report(p: Progress<'_>) {
         }
         Progress::ToolEnd { name, summary } => {
             let _ = writeln!(io, "\x1b[90m  {} → {}\x1b[0m", name, summary);
+            let _ = io.flush();
+        }
+        Progress::BlockedByGuard(paths) => {
+            let _ = writeln!(io, "[31m⛔ refused to write unread file(s): {paths}[0m");
             let _ = io.flush();
         }
         Progress::Steered(text) => {

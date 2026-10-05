@@ -53,6 +53,29 @@ model pays for on every single request. `state` exists because with only `bash`
 there is no durable place for the model to record what it is doing, and that is
 exactly what context compaction needs to survive a long task.
 
+## Prompt caching
+
+glass caches aggressively and shows you the hit rate after every turn:
+
+    12350 in / 3 out · cache 97% (12,000 read / 300 written)
+
+Three breakpoints, matching Anthropic's documented layout:
+
+1. **system block** — the prompt plus tool schemas. This is the
+   part that survives compaction, because the cache hierarchy is
+   tools → system → messages and compaction only edits messages.
+2. **tail** — the newest message, so turn N+1 reuses turn N
+   verbatim. Verified end-to-end: the turn-1 prefix is preserved
+   byte-for-byte into turn 2.
+3. **lookback anchor** — a second marker placed periodically from
+   the start, because the read lookback is only 20 positions and
+   a run of tool blocks counts as one. Without it the tail marker
+   falls off after ~6 turns and you pay a full rewrite.
+
+The log is append-only, so compaction rebuilds the projection on
+resume rather than reverting to raw history — a resumed session
+does not re-compact and re-pay for a summary it already wrote.
+
 Compare: Codex CLI — the only serious Rust harness in existence — reports ~100MB
 idle RSS and ships an 80MB binary. glass is roughly 50x smaller because it does
 not do the things that make it big: no syntax highlighting, no image codecs, no
@@ -304,7 +327,7 @@ crates/glass-tui       terminal rendering, input, virtualized transcript
 crates/glass           loop, providers, tools, session, compaction, config,
                        extension protocol, AGENTS.md, concurrency, read guard,
                        post-write verification, /btw
-extensions/            hello.py (reference), codemode, cache-warmer, hashline
+extensions/            hello.py (reference), codemode, hashline
 ```
 
 `glass-mod-api` is the stability boundary. If a hook ever needs a new type, the

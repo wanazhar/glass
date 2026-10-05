@@ -3028,7 +3028,7 @@ impl<'a> LayoutBuilder<'a> {
                 .and_then(|value| value.trim().parse::<u32>().ok())
                 .unwrap_or(0)
         };
-        if !transform.is_identity() {
+        if !transform.is_identity() || node.element_name() == Some("image") {
             let points = if node.element_name() == Some("path") {
                 svg_transformed_subpaths(node, transform)?
                     .into_iter()
@@ -6155,7 +6155,9 @@ fn svg_length(value: &str) -> Option<u32> {
         .filter(|value| *value > 0)
 }
 
-fn svg_preserve_aspect_ratio(node: &NativeNode) -> Option<(Option<f64>, Option<f64>, bool)> {
+pub(crate) fn svg_preserve_aspect_ratio(
+    node: &NativeNode,
+) -> Option<(Option<f64>, Option<f64>, bool)> {
     let value = node
         .attribute("preserveAspectRatio")
         .unwrap_or("xMidYMid meet");
@@ -6193,6 +6195,33 @@ fn svg_preserve_aspect_ratio(node: &NativeNode) -> Option<(Option<f64>, Option<f
         .next()
         .is_none()
         .then_some((Some(align_x), Some(align_y), slice))
+}
+
+pub(crate) fn svg_image_viewport(node: &NativeNode) -> Option<(f64, f64, f64, f64)> {
+    let length = |name: &str, default: Option<f64>| {
+        let Some(value) = node.attribute(name) else {
+            return default;
+        };
+        let value = value
+            .trim()
+            .strip_suffix("px")
+            .map(str::trim)
+            .unwrap_or(value.trim());
+        if value.is_empty() || value.ends_with('%') {
+            return None;
+        }
+        let value = value.parse::<f64>().ok()?;
+        (value.is_finite() && value >= 0.0 && value <= f64::from(u32::MAX)).then_some(value)
+    };
+    let x = length("x", Some(0.0))?;
+    let y = length("y", Some(0.0))?;
+    let width = length("width", None)?;
+    let height = length("height", None)?;
+    (width > 0.0
+        && height > 0.0
+        && width <= f64::from(MAX_NATIVE_CANVAS_DIMENSION)
+        && height <= f64::from(MAX_NATIVE_CANVAS_DIMENSION))
+    .then_some((x, y, width, height))
 }
 
 pub(crate) fn svg_transformed_points(
@@ -6248,9 +6277,18 @@ pub(crate) fn svg_transformed_points(
             .into_iter()
             .map(|point| (f64::from(point.x), f64::from(point.y)))
             .collect(),
+        "image" => {
+            let (x, y, width, height) = svg_image_viewport(node)?;
+            vec![
+                (x, y),
+                (x + width, y),
+                (x + width, y + height),
+                (x, y + height),
+            ]
+        }
         _ => return None,
     };
-    transform_points(&points, transform)
+    svg_transform_points(&points, transform)
 }
 
 pub(crate) fn svg_transformed_subpaths(
@@ -6261,7 +6299,7 @@ pub(crate) fn svg_transformed_subpaths(
         .into_iter()
         .map(|subpath| {
             Some(NativeSvgSubpath {
-                points: transform_points(
+                points: svg_transform_points(
                     &subpath
                         .points
                         .iter()
@@ -6294,7 +6332,7 @@ fn sampled_ellipse_points(
         .collect()
 }
 
-fn transform_points(
+pub(crate) fn svg_transform_points(
     points: &[(f64, f64)],
     transform: NativeSvgTransform,
 ) -> Option<Vec<NativePoint>> {

@@ -7678,6 +7678,18 @@ transfer, and recursive data-SVG limits remain enforced before publication.
 Exact evidence is recorded in
 [native-engine-browser-228](tasks/native-engine-browser-228.md).
 
+The completed native-engine-browser-844 slice extends image-resource handling to
+`<image href>` and legacy `<image xlink:href>` subresources in a live inline
+SVG. These requests reuse the parent fetch broker: the parent selects profile
+cookies and applies response `Set-Cookie`, while the content process sees only
+bounded decoded image data over the typed boundary. SVG image geometry feeds
+the existing clipped display-list and raster path. This does not enable
+external subresources inside an SVG decoded as an image; those remain blocked.
+Focused witnesses verify parent cookie selection/persistence, HttpOnly
+invisibility, local data images, transformed/aspect-preserving paint, live
+source replacement, and CSP denial before request dispatch. Exact evidence is
+in [native-engine-browser-844](tasks/native-engine-browser-844.md).
+
 The completed native-engine-browser-229 slice adds bounded CSS background
 geometry to the existing single background-image layer. Repeat/repeat-x/
 repeat-y/no-repeat, keyword/pixel/percentage position, auto/pixel/percentage

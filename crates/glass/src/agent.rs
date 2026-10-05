@@ -44,11 +44,14 @@ pub struct TurnOutput {
 }
 
 /// Why the loop stopped.
+#[derive(Debug, PartialEq, Eq)]
 pub enum Stop {
     /// The model finished without asking for tools.
     Finished,
     /// The tool-call budget for this turn was exhausted.
     ToolBudget,
+    /// The user steered, so the turn stopped early to take the correction.
+    Steered,
 }
 
 impl TurnOutput {
@@ -72,6 +75,8 @@ pub enum Progress<'a> {
     ToolEnd { name: &'a str, summary: String },
     /// Context was compacted.
     Compacted { kept: usize, dropped: usize },
+    /// The user interrupted the turn with a correction.
+    Steered(&'a str),
 }
 
 pub struct Agent<'a> {
@@ -99,6 +104,8 @@ pub struct Agent<'a> {
     ext_prompt: String,
     /// Size of the cacheable prefix, recomputed each request.
     prefix_bytes: usize,
+    /// A correction the user typed mid-turn, applied before the next request.
+    steer: Option<String>,
 }
 
 /// A progress callback.
@@ -136,6 +143,7 @@ impl<'a> Agent<'a> {
             on_progress: None,
             ext_prompt: String::new(),
             prefix_bytes: 0,
+            steer: None,
         }
     }
 
@@ -178,7 +186,10 @@ impl<'a> Agent<'a> {
     ///
     /// Takes `&mut self` because context compaction rewrites the session,
     /// which is not something a read-only borrow can express.
-    pub fn turn(&mut self) -> Result<TurnOutput, provider::Error> {
+    pub fn turn(
+        &mut self,
+        mut pump: impl FnMut(&mut Option<String>),
+    ) -> Result<TurnOutput, provider::Error> {
         let messages = self.session.messages();
         self.ensure_context_fits(&messages)?;
 
@@ -219,6 +230,10 @@ impl<'a> Agent<'a> {
         };
 
         for ev in stream {
+            // Drain input on every event: streaming is the one place the loop
+            // is busy but not blocked, so it is the right place to notice a
+            // steer without spinning when there is nothing to read.
+            pump(&mut self.steer);
             match ev {
                 Event::Text(t) => {
                     // Emit before accumulating so the UI can paint the delta
@@ -241,8 +256,16 @@ impl<'a> Agent<'a> {
     }
 
     /// Run a full turn: stream, execute tools, repeat until the model stops
-    /// asking for them or the round budget runs out.
-    pub fn run_turn(&mut self) -> Result<(TurnOutput, Stop), provider::Error> {
+    /// asking for them, the round budget runs out, or the user steers.
+    ///
+    /// `steer` receives a correction the user typed mid-turn, and `pump` is
+    /// called repeatedly while waiting so the caller can drain pending input.
+    /// Without `pump` the loop blocks and a steer can never arrive, because the
+    /// key event just sits in the channel while we are busy.
+    pub fn run_turn(
+        &mut self,
+        mut pump: impl FnMut(&mut Option<String>),
+    ) -> Result<(TurnOutput, Stop), provider::Error> {
         let mut last = TurnOutput {
             text: String::new(),
             tool_calls: Vec::new(),
@@ -251,7 +274,7 @@ impl<'a> Agent<'a> {
         };
 
         for round in 0..self.max_tool_rounds {
-            let out = self.turn()?;
+            let out = self.turn(&mut pump)?;
             last.text.clone_from(&out.text);
             last.usage = out.usage;
             last.warnings.clone_from(&out.warnings);
@@ -281,8 +304,22 @@ impl<'a> Agent<'a> {
                 return Ok((last, Stop::Finished));
             }
 
+            // A steer typed while this turn was running lands here. Checking
+            // *before* the tools run is the whole point: the user is objecting
+            // to what the model is about to do, so the correction has to arrive
+            // before the command executes rather than after it finishes.
+            if let Some(steer) = self.steer.take() {
+                self.session.append(Record::System(format!(
+                    "user correction, interrupting before the requested actions: {steer}"
+                )));
+                self.emit(Progress::Steered(&steer));
+                return Ok((last, Stop::Steered));
+            }
+
             for call in &out.tool_calls {
-                self.run_tool(call);
+                // A tool can run for minutes; the user must be able to steer
+                // out of it, so the wait is pumped rather than blocking.
+                self.run_tool_pumped(call, &mut |slot| pump(slot));
             }
 
             if round + 1 == self.max_tool_rounds {
@@ -290,6 +327,80 @@ impl<'a> Agent<'a> {
             }
         }
         Ok((last, Stop::ToolBudget))
+    }
+
+    /// Run a tool while continuing to service input.
+    ///
+    /// The tool itself is blocking — a `cargo build` can take minutes — so it
+    /// runs on a worker thread and the main thread pumps input meanwhile. That
+    /// keeps the UI live and lets a steer be observed, though it does not
+    /// preempt the command itself: `bash` has its own timeout for that.
+    fn run_tool_pumped(&mut self, call: &ToolCall, pump: &mut impl FnMut(&mut Option<String>)) {
+        // `bash` and `state` are the only built-ins that can block, and only
+        // `bash` is worth a worker thread. Everything else is microseconds.
+        if call.name != "bash" {
+            self.run_tool(call);
+            return;
+        }
+
+        let args = call.arguments.clone();
+        let workspace = self.workspace.to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let flag = std::sync::Arc::clone(&done);
+        std::thread::spawn(move || {
+            let inner = ToolCall { id: "worker".into(), name: "bash".into(), arguments: args };
+            let _ = tx.send(tools::bash(&inner, &workspace));
+            flag.store(true, std::sync::atomic::Ordering::Release);
+        });
+
+        loop {
+            if let Ok(result) = rx.try_recv() {
+                self.apply_bash_result(call, result);
+                return;
+            }
+            if done.load(std::sync::atomic::Ordering::Acquire)
+                && rx.try_recv().is_err()
+            {
+                return;
+            }
+            pump(&mut self.steer);
+            // The user corrected course while this command was running. Its
+            // output is now irrelevant to what they asked for, and feeding it
+            // back would push the model toward the plan they just rejected, so
+            // the result is dropped and the loop moves on to the correction.
+            if self.steer.is_some() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Record a bash result produced on a worker thread.
+    fn apply_bash_result(&mut self, call: &ToolCall, outcome: tools::Outcome) {
+        let command = call.arg_str("command").unwrap_or_default();
+        let mut body = outcome.body.clone();
+        let rewritten = self.extensions.rewrite_tool_result(&call.id, &call.name, &mut body);
+        let mut output = ToolOutput::new(body);
+        if rewritten {
+            output.rewritten = true;
+        }
+        for m in self.mods {
+            m.on_tool_result(call, &mut output);
+        }
+        self.session.append(Record::Bash {
+            command,
+            output: output.body.clone(),
+            exit_code: outcome.exit_code,
+            truncated: outcome.truncated,
+            spill: outcome.spill.as_ref().map(|p| p.display().to_string()),
+        });
+        self.session.append(Record::ToolResult {
+            name: call.name.clone(),
+            call_id: call.id.clone(),
+            body: output.body,
+        });
     }
 
     /// Execute one tool call, letting mods veto or rewrite the result.

@@ -39990,6 +39990,250 @@ eventSource.addEventListener('error', () => {{
 }
 
 #[test]
+fn native_runtime_shared_worker_event_source_cors_errors_keep_parent_cookies() {
+    fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header.eq_ignore_ascii_case(name).then_some(value.trim())
+            })
+        })
+    }
+
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let _guard = native_content_process_test_lock().lock().await;
+            let profile_path = std::env::temp_dir().join(format!(
+                "glass-native-shared-worker-eventsource-cors-{}-profile.json",
+                std::process::id()
+            ));
+            let cookie_profile_path =
+                std::path::PathBuf::from(format!("{}.cookies", profile_path.display()));
+            let profile_lock_path = profile_path.with_extension("lock");
+            let cookie_profile_lock_path = cookie_profile_path.with_extension("lock");
+            let worker_clients_path = profile_path.with_extension("clients");
+            let worker_events_path = profile_path.with_extension("events");
+            let worker_readers_path = profile_path.with_extension("readers");
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+
+            let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let page_address = page_listener.local_addr().unwrap();
+            let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let api_address = api_listener.local_addr().unwrap();
+            let page_origin = format!("http://{page_address}");
+            let api_origin = format!("http://{api_address}");
+            let page_api_origin = api_origin.clone();
+            let expected_origin = page_origin.clone();
+            let response_origin = page_origin.clone();
+
+            let page_server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(40), async move {
+                    for expected_path in ["/page", "/shared-eventsource.js"] {
+                        let (mut stream, _) = page_listener.accept().await.unwrap();
+                        let request = read_http_request(&mut stream).await;
+                        assert_eq!(request.split_whitespace().next(), Some("GET"));
+                        assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+                        let (set_cookie, content_type, body) = if expected_path == "/page" {
+                            (
+                                "Set-Cookie: event_seed=page; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                "text/html",
+                                r#"<script>
+globalThis.sharedEventSourceMessages = [];
+globalThis.startSharedEventSource = () => {
+  const worker = new SharedWorker('/shared-eventsource.js', {
+    name: 'shared-eventsource-cors', credentials: 'include',
+  });
+  worker.port.addEventListener('message', event => sharedEventSourceMessages.push(event.data));
+  worker.port.start();
+};
+</script>"#
+                                    .to_owned(),
+                            )
+                        } else {
+                            let body = format!(
+                                r#"onconnect = event => {{
+  const port = event.ports[0];
+  const source = new EventSource("{page_api_origin}/events", {{ withCredentials: true }});
+  source.addEventListener('open', () => port.postMessage('open'));
+  source.addEventListener('message', message => port.postMessage(['message', message.data]));
+  source.addEventListener('error', () => {{ port.postMessage('error'); source.close(); }});
+}};"#
+                            );
+                            (
+                                "Set-Cookie: shared_entry=worker; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                "text/javascript",
+                                body,
+                            )
+                        };
+                        if expected_path == "/shared-eventsource.js" {
+                            assert!(header_value(&request, "cookie")
+                                .unwrap_or_default()
+                                .contains("event_seed=page"));
+                        }
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\n{set_cookie}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                    }
+                })
+                .await
+                .expect("SharedWorker page and entry requests stay bounded")
+            });
+
+            let api_server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(45), async move {
+                    for (path, expected_cookie) in [
+                        ("/events", "event_seed=page"),
+                        ("/verify", "cors_event_cookie=accepted"),
+                    ] {
+                        let (mut stream, _) = tokio::time::timeout(
+                            Duration::from_secs(30),
+                            api_listener.accept(),
+                        )
+                        .await
+                        .expect("SharedWorker EventSource and authorized page Fetch arrive")
+                        .unwrap();
+                        let request = read_http_request(&mut stream).await;
+                        assert_eq!(request.split_whitespace().next(), Some("GET"));
+                        assert_eq!(request.split_whitespace().nth(1), Some(path));
+                        assert_eq!(header_value(&request, "origin"), Some(expected_origin.as_str()));
+                        assert!(header_value(&request, "access-control-request-method").is_none());
+                        let cookie = header_value(&request, "cookie").unwrap_or_default();
+                        assert!(cookie.contains(expected_cookie), "{path} missed {expected_cookie}: {cookie}");
+
+                        let (cors_headers, set_cookie, content_type, body) = if path == "/events" {
+                            assert!(cookie.contains("shared_entry=worker"));
+                            assert_eq!(header_value(&request, "accept"), Some("text/event-stream"));
+                            (
+                                "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Credentials: true\r\n",
+                                "Set-Cookie: cors_event_cookie=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                "text/event-stream",
+                                "retry: 30000\r\ndata: hidden\r\n\r\n",
+                            )
+                        } else {
+                            assert!(cookie.contains("event_seed=page"));
+                            assert!(cookie.contains("shared_entry=worker"));
+                            assert!(cookie.contains("cors_event_cookie=accepted"));
+                            (
+                                "",
+                                "",
+                                "text/plain",
+                                "authorized",
+                            )
+                        };
+                        let cors_headers = if path == "/events" {
+                            cors_headers.to_owned()
+                        } else {
+                            format!(
+                                "Access-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Credentials: true\r\n"
+                            )
+                        };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\n{cors_headers}{set_cookie}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                    }
+
+                    match tokio::time::timeout(Duration::from_millis(1500), api_listener.accept())
+                        .await
+                    {
+                        Err(_) => {}
+                        Ok(Ok((mut stream, _))) => {
+                            let request = read_http_request(&mut stream).await;
+                            panic!("unexpected SharedWorker EventSource reconnect: {request}");
+                        }
+                        Ok(Err(error)) => panic!("unexpected API listener error: {error}"),
+                    }
+                })
+                .await
+                .expect("SharedWorker EventSource CORS-cookie requests stay bounded")
+            });
+
+            let session = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("{page_origin}/page")),
+            )
+            .await
+            .unwrap();
+            session
+                .script("startSharedEventSource(); true")
+                .await
+                .unwrap();
+            let messages = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let messages = session
+                        .script("sharedEventSourceMessages")
+                        .await
+                        .unwrap()
+                        .value;
+                    if messages == serde_json::json!(["error"]) {
+                        break messages;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("CORS failure reaches SharedWorker without open or message data");
+            assert_eq!(messages, serde_json::json!(["error"]));
+            assert_eq!(
+                session
+                    .script(&format!(
+                        "await fetch('{api_origin}/verify', {{ credentials: 'include' }}).then(response => response.text())"
+                    ))
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("authorized")
+            );
+            assert_eq!(
+                session.script("document.cookie").await.unwrap().value,
+                serde_json::json!("")
+            );
+            let cookies = session.native_cookies().await.unwrap();
+            session.close().await.unwrap();
+            page_server.await.unwrap();
+            api_server.await.unwrap();
+            for (name, value) in [
+                ("event_seed", "page"),
+                ("shared_entry", "worker"),
+                ("cors_event_cookie", "accepted"),
+            ] {
+                assert!(
+                    cookies.iter().any(|cookie| {
+                        cookie.name == name && cookie.value == value && cookie.http_only
+                    }),
+                    "parent cookie jar is missing HttpOnly {name}={value}"
+                );
+            }
+
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+        });
+    });
+}
+
+#[test]
 fn native_runtime_shared_worker_event_source_uses_parent_cookie_authority() {
     run_native_browser_worker_test(|runtime| {
         runtime.block_on(async {

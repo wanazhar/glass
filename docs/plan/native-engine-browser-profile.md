@@ -491,6 +491,21 @@ complete EventSource redirect/reconnect or Fetch/CORS WPT conformance. See the
 [Slice 864 task](tasks/native-engine-browser-864.md) and the Fetch Standard's
 [CORS credentials rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
 
+### Browser-owned SharedWorker EventSource CORS-error response cookies
+
+The browser-owned SharedWorker coordinator opens EventSource through its
+parent loader while sharing the exact browser-context cookie jar. It uses the
+same parent response-cookie ordering as page EventSource: for a response whose
+URL is credentialed, the parent applies `Set-Cookie` before determining
+whether CORS permits stream exposure. The process-backed
+`native_runtime_shared_worker_event_source_cors_errors_keep_parent_cookies`
+regression verifies that the worker receives an error without open/message
+data, while the parent retains all HttpOnly cookies for a later authorized
+page request. This covers the coordinator owner path only; it does not add
+redirect/reconnect, full EventSource, Fetch/CORS WPT, or cross-platform
+conformance. See the [Slice 865 task](tasks/native-engine-browser-865.md) and
+the Fetch Standard's [CORS credentials rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
+
 ### Shared-profile cookie synchronization
 
 When separately created native sessions use the same explicit profile path,

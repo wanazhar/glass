@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-865
 scope: glass-browser/native-engine/shared-worker-eventsource-cors-error-cookies
-status: in-progress
+status: done
 depends-on: [native-engine-browser-864]
 ---
 
@@ -104,4 +104,25 @@ error intentionally excludes those lifecycle costs.
 
 ## Results
 
-Implementation and focused verification are pending.
+- The browser-owned coordinator already called the parent
+  `open_event_source_async` loader and shared the browser context's parent jar.
+  The Slice 864 loader fix therefore applied without another runtime change.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p
+  glass-browser --features native-engine --lib --test native_engine --locked
+  --quiet` passed; successful compiler output was suppressed.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p
+  glass-browser --features native-engine --test native_engine --locked
+  --quiet native_runtime_shared_worker_event_source_cors_errors_keep_parent_cookies
+  -- --exact --nocapture` passed (1 passed; 928 filtered; 22.94 seconds).
+- The process-backed regression verifies the actual EventSource GET, Origin,
+  parent-selected seed and SharedWorker-entry cookies, no preflight, rejected
+  credentialed CORS response, error without open/message events, parent
+  acceptance of the actual-response cookie, and later authorized page Fetch
+  reuse. The parent cookie API retains all three as HttpOnly and
+  `document.cookie` remains empty. EventSource closes on the first error so
+  reconnect behavior remains outside this evidence.
+- Rust formatting, `git diff --check`, and all four maintainer documentation
+  gates passed; detailed outputs are recorded in the Slice 865 review.
+- This is focused local evidence only. EventSource redirects/reconnects, full
+  Fetch/CORS or WPT conformance, other platforms, independent review, and
+  remote CI remain unverified. Issue #40 remains open.

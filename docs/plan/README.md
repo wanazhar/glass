@@ -10968,14 +10968,18 @@ EventSource redirects/reconnects, Fetch/CORS or WPT conformance, other
 platforms, or remote CI. See the [Slice 864 task](tasks/native-engine-browser-864.md)
 and [review](reviews/native-engine-browser-864-01.md). Issue #40 remains open.
 
-Slice 865 isolates the browser-owned SharedWorker EventSource coordinator,
-which shares the parent context jar and loader but does not use the page's
-content-process EventSource IPC route. Its existing regression covers
-successful stream events and cookie reuse; process-backed evidence for an
-actual credentialed CORS failure carrying HttpOnly Set-Cookie is not yet
-recorded. The planned case requires the worker to receive only error behavior,
-while the parent accepts and later reuses the cookie. See the
-[Slice 865 task](tasks/native-engine-browser-865.md). Issue #40 remains open.
+The completed Slice 865 verifies the browser-owned SharedWorker EventSource
+coordinator, a distinct owner path from Slice 864's content-process page
+EventSource IPC. Its process-backed two-origin test passes (1 passed; 928
+filtered; 22.94 seconds): the coordinator sends its parent-selected seed and
+worker-entry HttpOnly cookies, credentialed CORS rejects the actual stream,
+and the worker receives an error without open/message data. The parent retains
+the actual-response HttpOnly cookie and a later authorized page Fetch sends all
+three; `document.cookie` remains empty. No runtime change or cookie-data IPC
+was needed. This does not certify EventSource redirects/reconnects, complete
+Fetch/CORS or WPT behavior, other platforms, or remote CI. See the
+[Slice 865 task](tasks/native-engine-browser-865.md) and
+[review](reviews/native-engine-browser-865-01.md). Issue #40 remains open.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

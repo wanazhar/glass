@@ -527,7 +527,10 @@ script/style/font/module preloads, `modulepreload`, and fetch-priority
 scheduling remain open. A preload that exceeds the document's decoded-image
 budget still makes its parent request, but is not retained for a later image;
 that image follows the ordinary parent-broker path. See the
-[Slice 873 task](tasks/native-engine-browser-873.md).
+[Slice 873 task](tasks/native-engine-browser-873.md). The process-backed HTTP
+regression, 11 focused preload unit tests, exact capability-profile test,
+scoped package check, and documentation gates passed locally; this does not
+establish WPT conformance or remote CI status. See the [direct self-review](reviews/native-engine-browser-873-01.md).
 
 ### Page EventSource CORS-error response cookies
 

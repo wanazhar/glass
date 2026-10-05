@@ -7742,6 +7742,8 @@ impl NativeEngineBackend {
                 BrowserCapability::Navigation => {
                     vec![
                         "bounded local/HTTP(S) document/form navigation, validation, parser/lifecycle script ordering, and selected parent-brokered stylesheet/CSS import/font, image/media, and classic/module resources".into(),
+                        "bounded parent-brokered HTML image preloads with document-local URL-matched reuse".into(),
+                        "complete preload destination/CORS/integrity matching and fetch-priority scheduling remain open".into(),
                         "full browser-wide page-loading parity, all resource initiators, and standards-complete parser timing remain open".into(),
                     ]
                 }
@@ -11768,6 +11770,8 @@ mod tests {
             .join("; ");
         assert!(navigation.contains("selected parent-brokered stylesheet/CSS import/font"));
         assert!(navigation.contains("image/media"));
+        assert!(navigation.contains("bounded parent-brokered HTML image preloads"));
+        assert!(navigation.contains("fetch-priority scheduling remain open"));
         assert!(navigation.contains("full browser-wide page-loading parity"));
         assert!(navigation.contains("remain open"));
         assert!(!navigation.contains("broad subresources remain open"));

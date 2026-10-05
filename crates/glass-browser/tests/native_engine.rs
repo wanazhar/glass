@@ -74599,6 +74599,186 @@ async fn native_content_process_reuses_cacheable_external_png_for_duplicate_imag
 }
 
 #[tokio::test]
+async fn native_content_process_parent_owns_html_image_preloads_and_reuses_them() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let png = native_test_solid_png_bytes([40, 120, 220, 255]);
+    let server = tokio::spawn(async move {
+        for expected_path in [
+            "/page",
+            "/reuse.png",
+            "/cookie.png",
+            "/cookie-check",
+            "/dynamic-a.png",
+            "/dynamic-b.png",
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let cookie_header = request.lines().find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("cookie").then_some(value.trim())
+                })
+            });
+            let has_cookie = |name: &str, value: &str| {
+                cookie_header.is_some_and(|cookies| {
+                    cookies
+                        .split(';')
+                        .any(|cookie| cookie.trim().split_once('=') == Some((name, value)))
+                })
+            };
+            match expected_path {
+                "/page" => {
+                    let body = "<!doctype html><head>\
+                        <link rel='preload' as='image' href='/reuse.png'>\
+                        <link rel='preload' as='image' href='/reuse.png'>\
+                        <link rel='preload' as='image' href='/cookie.png'>\
+                        <link rel='preload' as='image' crossorigin='anonymous' href='/unsupported.png'>\
+                        </head><body><img id='preloaded' src='/reuse.png'></body>";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: seed=parent; HttpOnly; Path=/; SameSite=Lax\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+                "/reuse.png" => {
+                    assert!(has_cookie("seed", "parent"));
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        png.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    stream.write_all(&png).await.unwrap();
+                }
+                "/cookie.png" => {
+                    assert!(has_cookie("seed", "parent"));
+                    assert!(!has_cookie("preload_secret", "hidden"));
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nCache-Control: no-store\r\nSet-Cookie: preload_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        png.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    stream.write_all(&png).await.unwrap();
+                }
+                "/cookie-check" => {
+                    assert!(has_cookie("seed", "parent"));
+                    assert!(has_cookie("preload_secret", "hidden"));
+                    let body = "parent-cookie-ok";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+                "/dynamic-a.png" => {
+                    assert!(has_cookie("seed", "parent"));
+                    assert!(has_cookie("preload_secret", "hidden"));
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        png.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    stream.write_all(&png).await.unwrap();
+                }
+                "/dynamic-b.png" => {
+                    assert!(has_cookie("seed", "parent"));
+                    assert!(has_cookie("preload_secret", "hidden"));
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('preloaded'); \
+                 return [image.complete, image.naturalWidth, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 2, format!("http://{address}/reuse.png")])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/cookie-check').then(response => response.text())")
+            .await
+            .unwrap(),
+        serde_json::json!("parent-cookie-ok")
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    for name in ["seed", "preload_secret"] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == name && cookie.http_only),
+            "parent cookie jar is missing HttpOnly cookie {name}"
+        );
+    }
+
+    engine
+        .evaluate_async(
+            "globalThis.preloadEvents = []; \
+             const link = document.createElement('link'); \
+             link.setAttribute('rel', 'preload'); link.setAttribute('as', 'image'); \
+             link.addEventListener('load', () => { \
+               preloadEvents.push('load'); \
+               const image = document.createElement('img'); \
+               image.setAttribute('id', 'dynamic-preloaded'); \
+               image.setAttribute('src', '/dynamic-a.png'); \
+               document.body.appendChild(image); \
+             }); \
+             link.addEventListener('error', () => preloadEvents.push('error')); \
+             globalThis.imagePreloadLink = link; \
+             link.setAttribute('href', '/dynamic-a.png'); \
+             document.head.appendChild(link); true",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("preloadEvents").await.unwrap(),
+        serde_json::json!(["load"])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('dynamic-preloaded'); \
+                 return [image.complete, image.naturalWidth, image.currentSrc]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([true, 2, format!("http://{address}/dynamic-a.png")])
+    );
+    engine
+        .evaluate_async("imagePreloadLink.setAttribute('href', '/dynamic-b.png'); true")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("preloadEvents").await.unwrap(),
+        serde_json::json!(["load", "error"])
+    );
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_revalidates_no_cache_external_png_with_etag() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

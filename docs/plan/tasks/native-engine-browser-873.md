@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-873
 scope: glass-browser/native-engine/parent-owned-html-image-preload
-status: in-progress
+status: done
 depends-on: [native-engine-browser-872]
 ---
 
@@ -72,21 +72,26 @@ parser or concurrent priority scheduler.
 
 ## Verification
 
-- Add a process-backed HTTP regression that serves an initial preload and a
-  dynamic preload, verifies request ordering and matching-image reuse, and
-  proves an HttpOnly cookie set by a preload is selected by a later
-  parent-brokered request while `document.cookie` remains filtered.
-- Cover document URL resolution, duplicate discovery, `href` replacement,
-  unsupported metadata, load/error event delivery, and aggregate cache bounds
-  with focused deterministic tests where the existing owners make them cheap.
-- Run one scoped `cargo check` for the touched `glass-browser` targets after
-  the coherent implementation batch, then only the exact integration and
-  focused unit regressions. Reuse `/home/ubuntu/work/glass/target`, suppress
-  successful Cargo output, and avoid unrelated/full workspace tests.
-- Run Rust formatting, `git diff --check`, and the four maintainer
-  documentation gates after final docs edits. Reuse explicit existing CLI
-  binaries for documentation coverage.
-- Commit the design checkpoint before implementation, then locally commit the
-  completed slice with a focused Conventional Commit. Do not push or claim
-  remote CI. Update Issue #40 after the local implementation checkpoint and
-  keep the epic open.
+- Exact process-backed HTTP regression passed (1 passed; 934 filtered;
+  24.81 seconds). It covers initial and dynamic discovery, duplicate request
+  suppression, matching-image reuse despite `no-store`, unsupported CORS
+  metadata, load/error delivery and `href` replacement, plus parent-owned
+  HttpOnly cookie reuse while `document.cookie` stays filtered.
+- Eleven focused preload unit tests and the exact native capability-profile
+  unit test passed. The scoped `glass-browser` check completed without new
+  diagnostics; existing dead-code warnings remain.
+- Rust formatting, `git diff --check`, and all four maintainer documentation
+  gates passed. Documentation coverage used existing shared-target binaries.
+- A design checkpoint was committed before implementation. The completed
+  slice is locally committed with a focused Conventional Commit. No push or
+  remote-CI result is claimed. Issue #40 remains open.
+
+## Results
+
+Initial and dynamic HTTP(S) `as=image` preloads use the owner-checked parent
+image broker. The parent alone applies image CSP and cookie policy, processes
+response cookies, and returns image data plus the URL-scoped script-visible
+cookie projection. The document-local decoded-image cache is capped at 2 MiB
+and 64 entries. Unsupported preload metadata remains inactive; complete
+destination/CORS/integrity matching, responsive selection, other destinations,
+priority scheduling, WPT coverage, and cross-platform/remote CI remain open.

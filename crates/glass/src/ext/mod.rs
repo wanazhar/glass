@@ -119,9 +119,18 @@ impl Registry {
     }
 
     /// Run a tool that an extension owns.
-    pub fn run_tool(&mut self, name: &str, arguments: &str) -> Option<String> {
+    ///
+    /// `host_tools` is the bridge the extension uses to call back into the
+    /// harness while it runs. Codemode depends on this: its whole value is that
+    /// one script can drive many tools without the model seeing each result.
+    pub fn run_tool(
+        &mut self,
+        name: &str,
+        arguments: &str,
+        host_tools: &mut dyn FnMut(&str, &str) -> String,
+    ) -> Option<String> {
         let idx = self.tool_owner(name)?;
-        self.exts[idx].run_tool(name, arguments)
+        self.exts[idx].run_tool(name, arguments, host_tools)
     }
 
     /// Give every extension a chance to rewrite a tool result.

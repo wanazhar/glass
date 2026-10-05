@@ -91,6 +91,8 @@ pub struct Agent<'a> {
     base_prompt: String,
     /// Skill catalogue, appended after the prompt.
     catalogue: Option<String>,
+    /// Project instructions from AGENTS.md / CLAUDE.md.
+    project_instructions: Option<String>,
     /// Called as the loop makes progress. `None` disables reporting entirely.
     pub on_progress: Option<ProgressSink<'a>>,
     /// Cached system-prompt contribution from extensions.
@@ -128,6 +130,7 @@ impl<'a> Agent<'a> {
             max_tool_rounds: 24,
             base_prompt: String::new(),
             catalogue: None,
+            project_instructions: None,
             on_progress: None,
             ext_prompt: String::new(),
         }
@@ -149,9 +152,15 @@ impl<'a> Agent<'a> {
         self
     }
 
-    pub fn with_prompt(mut self, base: String, catalogue: Option<String>) -> Self {
+    pub fn with_prompt(
+        mut self,
+        base: String,
+        catalogue: Option<String>,
+        project_instructions: Option<String>,
+    ) -> Self {
         self.base_prompt = base;
         self.catalogue = catalogue;
+        self.project_instructions = project_instructions;
         self
     }
 
@@ -313,8 +322,25 @@ impl<'a> Agent<'a> {
             outcome = r;
         } else if call.name == "state" {
             outcome = self.state.apply(call);
-        } else if let Some(out) = self.extensions.run_tool(&call.name, &call.arguments) {
-            outcome.body = out;
+        } else if self.extensions.has_tool(&call.name) {
+            // The bridge lets an extension call tools on the host while it
+            // runs. Only `bash` and `state` are exposed: those are the tools
+            // the model already has, so an extension cannot widen its own
+            // reach by nesting something deeper.
+            let workspace = self.workspace.to_path_buf();
+            let state = &mut *self.state;
+            let mut bridge = |tool: &str, args: &str| -> String {
+                let inner = ToolCall { id: format!("{}-nested", call.id), name: tool.to_string(), arguments: args.to_string() };
+                match tool {
+                    "bash" => tools::bash(&inner, &workspace).body,
+                    "state" => state.apply(&inner).body,
+                    other => format!("error: extensions may only call bash or state, not `{other}`"),
+                }
+            };
+            match self.extensions.run_tool(&call.name, &call.arguments, &mut bridge) {
+                Some(out) => outcome.body = out,
+                None => outcome.body = format!("`{}` did not return a result", call.name),
+            }
         } else {
             // A tool was declared but nothing answered: report that honestly
             // rather than returning a silent empty success.
@@ -374,6 +400,9 @@ impl<'a> Agent<'a> {
         let ext_prompt = self.ext_prompt.clone();
         if !ext_prompt.is_empty() {
             p.push_str(&ext_prompt);
+        }
+        if let Some(c) = &self.project_instructions {
+            p.push_str(c);
         }
         if let Some(c) = &self.catalogue {
             p.push_str("\n\n");

@@ -20088,27 +20088,35 @@ async fn mutate_script_document(
             runtime,
             &mut history,
         )?;
-        scroll_commands.extend(extract_scroll_commands(&evaluation.commands));
-        let (effects, follow_up_commands) = apply_document_commands_with_font_face_ack(
+        let effects = apply_page_script_evaluation(
             &mut next,
             runtime,
             &document_url,
             document_origin,
             viewport,
-            &evaluation.commands,
-            true,
-        )?;
-        events.extend(effects);
-        retain_font_face_follow_up_commands(
-            &mut effective_commands,
+            evaluation,
+            &mut dynamic_result.pending_fetches,
+            &mut dynamic_result.websocket_commands,
+            &mut dynamic_result.event_source_commands,
             &mut scroll_commands,
-            &mut dynamic_result,
-            follow_up_commands,
-        );
+            &mut dynamic_result.navigation,
+        )?;
+        events.extend(effects.into_iter().map(|(node_index, kind)| {
+            (
+                NativeNodeId::from_parts(next.generation(), node_index),
+                kind,
+            )
+        }));
         events.push((
             NativeNodeId::from_parts(next.generation(), node_index),
             event_kind,
         ));
+        if let Some(page_navigation) = dynamic_result.navigation.take() {
+            dynamic_navigation = Some(ScriptNavigationTarget::Location {
+                href: page_navigation.href,
+                replace_history: page_navigation.replace_history,
+            });
+        }
     }
     let validation_ids = events
         .iter()

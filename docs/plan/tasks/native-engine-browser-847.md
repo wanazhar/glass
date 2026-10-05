@@ -63,14 +63,36 @@ parent broker and authoritative cookie jar.
 
 ## Verification
 
-- Scoped `cargo check` for the native-engine integration test target before
-  running the focused process-backed regression.
-- Explicitly build `glass-native-content-worker` after the scoped check.
+- Stylesheet host-event commands now pass through `apply_page_script_evaluation`
+  so callback Fetch and other network effects remain queued for the existing
+  parent-brokered resolver instead of being treated as document-only commands.
 - The focused regression verifies one successful load callback, no error
-  callback, and its parent-brokered Fetch/cookie chain after navigation
-  returns.
+  callback for the loaded stylesheet, one error callback and no load callback
+  for a CSP-blocked stylesheet, and both parent-brokered Fetch chains after
+  navigation returns. It verifies the page, stylesheet, CSS import, and
+  callback requests in order; parent-accepted HttpOnly cookies reach each next
+  request, and `document.cookie` stays empty.
 - Re-run the Slice 846 idle-timer stylesheet/import regression as the adjacent
-  regression.
-- `cargo fmt --all -- --check`
-- `git diff --check`
-- Run the documentation release-truth, depth, shortcut, and coverage checks.
+  regression — passed (1 passed; 914 filtered; 32.41 seconds).
+- `cargo check -p glass-browser --features native-engine --test native_engine
+  --locked --quiet` — passed.
+- `cargo build -p glass-browser --features native-engine --bin
+  glass-native-content-worker --locked --quiet` — passed.
+- `cargo test -p glass-browser --features native-engine --test native_engine
+  --locked native_content_process_idle_timer_stylesheet_events_broker_callback_fetches
+  -- --exact --nocapture` — passed (1 passed; 914 filtered; 44.68 seconds).
+- `cargo fmt --all -- --check` — passed.
+- `git diff --check` — passed.
+- `python3 scripts/check-release-documentation.py --require-previous-version`
+  — passed (1,476 Markdown documents; zero current-claim failures).
+- `python3 scripts/check-documentation-depth.py` — passed (93 current guides,
+  19 substantive contracts).
+- `python3 scripts/check-tui-shortcuts.py` — passed (15 implementation keys,
+  63 documentation markers).
+- `python3 scripts/check-documentation-coverage.py --glass
+  /home/ubuntu/work/glass/target/debug/glass --glass-browser
+  /home/ubuntu/work/glass/target/debug/glass-browser` — passed (1,476 Markdown
+  files; 346 full-product MCP tools; 101 browser-only tools; 17 examples;
+  22 public modules).
+- This is local evidence only. The checkpoint is unpushed and has no remote CI
+  result; WPT and cross-platform conformance remain unverified.

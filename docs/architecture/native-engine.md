@@ -3,7 +3,9 @@
 Status: issue #40 remains open. The earlier loopback-listener denial is stale.
 The current checkout has targeted process-backed HTTP evidence through Slice
 873, including parent-owned image preloads; this does not cover every request
-class or establish browser conformance. WPT, remote CI for unpushed changes,
+class or establish browser conformance. Slice 874 tracks parent-owned video
+poster requests and rendering as the next uncovered media initiator. WPT,
+remote CI for unpushed changes,
 and cross-platform certification remain open. Slice 832's corrected two-origin
 regression passed (1 passed; 905 filtered; 19.33 seconds); Slices 833-836 also
 have recorded passing process-backed cases. Slice 843 records browser-owned

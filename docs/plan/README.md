@@ -11073,6 +11073,13 @@ preload matching, and priority scheduling remain open. See the [Slice 873
 task](tasks/native-engine-browser-873.md) and [direct self-review](reviews/native-engine-browser-873-01.md).
 Issue #40 remains open; no remote CI result is claimed.
 
+Slice 874 is in progress to close a separate common media resource gap:
+parent-owned `<video poster>` image fetching and aspect-preserving poster
+painting. The contract requires URL and attribute mutation handling, parent
+cookie/network authority, and static poster rendering while no decoded video
+frame is available; it does not claim video playback. See the
+[Slice 874 task](tasks/native-engine-browser-874.md). Issue #40 remains open.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

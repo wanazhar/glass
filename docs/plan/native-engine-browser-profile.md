@@ -532,6 +532,34 @@ regression, 11 focused preload unit tests, exact capability-profile test,
 scoped package check, and documentation gates passed locally; this does not
 establish WPT conformance or remote CI status. See the [direct self-review](reviews/native-engine-browser-873-01.md).
 
+### Parent-owned video posters
+
+Required GCWP behavior, not current runtime support; Slice 874 is in progress.
+
+For process-backed HTTP(S) documents, each HTML `<video>` with a nonempty
+`poster` attribute initiates an image request when created and when the
+attribute is set, changed, or removed. The URL is resolved against the owner
+Document. For network URLs, the browser parent performs the request through
+its image broker with the video initiator's image policy, referrer policy, and
+parent-owned cookie authority; eligible response cookies remain in the parent.
+Only bounded decoded image data and the URL-scoped script-visible cookie
+projection may enter the content process. A poster response must never fail
+Document navigation or expose a cookie header, jar, or HttpOnly value.
+
+The poster paints within the video's replaced-element box while no decoded
+video frame is available, preserving the image aspect ratio and centering it.
+Changing/removing `poster` replaces/clears only the poster resource; it does
+not restart the media resource. An unavailable, blocked, or undecodable poster
+leaves the video without a poster frame. The poster request participates in
+the Document load delay but does not dispatch image-element `load`/`error`
+events on the `<video>`.
+
+This contract covers the poster resource and its static rendering, not video
+frame decoding/playback, lazy poster resumption, complete media/referrer/CSP
+conformance, or general network-resource parity. See the
+[Slice 874 task](tasks/native-engine-browser-874.md) and the
+[HTML Standard's video poster algorithm](https://html.spec.whatwg.org/multipage/media.html#the-video-element).
+
 ### Page EventSource CORS-error response cookies
 
 Page and content-process EventSource requests travel through the parent

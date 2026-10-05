@@ -521,6 +521,23 @@ credential evidence, not complete EventSource, Fetch/CORS WPT, or
 cross-platform conformance. See the [Slice 866 task](tasks/native-engine-browser-866.md)
 and the Fetch Standard's [CORS credentials rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
 
+### Page EventSource redirect response cookies
+
+The parent processes eligible `Set-Cookie` headers for each EventSource
+network response before following its redirect or validating final response
+exposure. A redirect response's cookie is therefore available for matching
+the next hop, subject to that hop's credentials mode, and final response
+cookies remain parent-owned even when CORS rejects the stream. The
+process-backed
+`native_content_process_page_event_source_redirect_cookies_use_parent_authority`
+regression verifies the cookie on the redirect response, the next EventSource
+request, and a later authorized page Fetch. HttpOnly stays out of
+`document.cookie`; raw cookie headers and the jar remain in the parent. This
+bounded case does not certify cross-origin redirect combinations, redirect
+loops, reconnection, full EventSource, or WPT behavior. See the [Slice 867
+task](tasks/native-engine-browser-867.md) and Fetch Standard [CORS credentials
+rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
+
 ### Shared-profile cookie synchronization
 
 When separately created native sessions use the same explicit profile path,

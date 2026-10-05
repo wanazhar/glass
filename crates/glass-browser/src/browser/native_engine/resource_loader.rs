@@ -3931,6 +3931,22 @@ impl NativeResourceLoader {
                 .send()
                 .await
                 .map_err(|error| network_error("EventSource request", error))?;
+            // Process each network response before following a redirect or
+            // returning an EventSource error. This keeps redirect cookies
+            // visible to the next parent-owned hop and processes final
+            // response cookies independently of CORS exposure.
+            if with_credentials || current_url.origin() == document_url.origin() {
+                for value in response
+                    .headers()
+                    .get_all(reqwest::header::SET_COOKIE)
+                    .iter()
+                {
+                    if let Ok(cookie) = value.to_str() {
+                        self.cookie_changes
+                            .extend(self.network.store_cookie(&current_url, cookie));
+                    }
+                }
+            }
             if !is_http_redirect(response.status()) {
                 break response;
             }
@@ -3983,22 +3999,6 @@ impl NativeResourceLoader {
             current_url = next_url;
             redirects += 1;
         };
-        // Cookie processing belongs to the network owner, not the CORS-visible
-        // response path. A credentialed CORS failure still processes the
-        // actual response's Set-Cookie headers before EventSource reports an
-        // error to its caller.
-        if with_credentials || current_url.origin() == document_url.origin() {
-            for value in response
-                .headers()
-                .get_all(reqwest::header::SET_COOKIE)
-                .iter()
-            {
-                if let Ok(cookie) = value.to_str() {
-                    self.cookie_changes
-                        .extend(self.network.store_cookie(&current_url, cookie));
-                }
-            }
-        }
         if response.status() != reqwest::StatusCode::OK {
             return Err(NativeEngineError::Network {
                 operation: "EventSource request".into(),

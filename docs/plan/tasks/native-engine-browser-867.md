@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-867
 scope: glass-browser/native-engine/eventsource-redirect-response-cookie-order
-status: in-progress
+status: done
 depends-on: [native-engine-browser-866]
 ---
 
@@ -89,4 +89,27 @@ policy, redirect loops, reconnects, or full EventSource/WPT conformance.
 
 ## Results
 
-Implementation and focused verification are pending.
+- The first source audit found that `open_event_source_async` accepted
+  `Set-Cookie` only after its manual redirect loop. The parent now processes
+  each response's eligible cookies immediately after receiving it and before
+  following a redirect, preserving the credentials-mode gate at every URL.
+  No cookie headers or jar data cross into the content process.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p
+  glass-browser --features native-engine --lib --test native_engine --locked
+  --quiet` passed; successful compiler output was suppressed.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p
+  glass-browser --features native-engine --test native_engine --locked
+  --quiet native_content_process_page_event_source_redirect_cookies_use_parent_authority
+  -- --exact --nocapture` passed (1 passed; 930 filtered; 21.04 seconds).
+- The regression verifies the initial parent seed on `/redirect`, the
+  redirect response's HttpOnly cookie on `/events` before stream delivery,
+  successful CORS/open/message behavior, reuse of both cookies by a later
+  authorized page Fetch, parent API visibility, and an empty
+  `document.cookie`. It also checks the origin, EventSource Accept header, no
+  preflight, and absence of reconnect requests.
+- Rust formatting, `git diff --check`, and all four maintainer documentation
+  gates passed; detailed commands/results are recorded in the Slice 867 review.
+- This is focused local evidence only. Cross-origin redirect combinations,
+  redirect loops, EventSource reconnect behavior, full Fetch/CORS or WPT
+  conformance, other platforms, independent review, and remote CI remain
+  unverified. Issue #40 remains open.

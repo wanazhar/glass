@@ -215,6 +215,18 @@ fn native_test_png_bytes() -> Vec<u8> {
     encoded
 }
 
+fn native_test_solid_png_bytes(color: [u8; 4]) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut encoded, 2, 2);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&color.repeat(4)).unwrap();
+    }
+    encoded
+}
+
 fn native_test_wav_bytes() -> Vec<u8> {
     let mut wav = vec![0_u8; 44 + 320];
     wav[0..4].copy_from_slice(b"RIFF");
@@ -43555,6 +43567,7 @@ fn native_display_list_is_revisioned_deterministic_and_visibility_aware() {
         | NativeDisplayCommand::SvgPathStroke { node_id, .. }
         | NativeDisplayCommand::BorderRect { node_id, .. }
         | NativeDisplayCommand::Image { node_id, .. }
+        | NativeDisplayCommand::SvgImage { node_id, .. }
         | NativeDisplayCommand::TextRun { node_id, .. }
         | NativeDisplayCommand::GlyphRun { node_id, .. } => *node_id == hidden,
         NativeDisplayCommand::BeginOpacityGroup { .. }
@@ -43599,6 +43612,7 @@ fn native_real_font_metrics_feed_layout_and_glyph_paint_when_available() {
                 | NativeDisplayCommand::FillRect { .. }
                 | NativeDisplayCommand::SetNestedScrollOffset { .. }
                 | NativeDisplayCommand::Image { .. }
+                | NativeDisplayCommand::SvgImage { .. }
                 | NativeDisplayCommand::SvgStroke { .. }
                 | NativeDisplayCommand::SvgPolygonFill { .. }
                 | NativeDisplayCommand::SvgPolyline { .. }
@@ -43660,6 +43674,7 @@ fn native_css_direction_reaches_real_font_raster_coordinates() {
                 | NativeDisplayCommand::FillRect { .. }
                 | NativeDisplayCommand::SetNestedScrollOffset { .. }
                 | NativeDisplayCommand::Image { .. }
+                | NativeDisplayCommand::SvgImage { .. }
                 | NativeDisplayCommand::SvgStroke { .. }
                 | NativeDisplayCommand::SvgPolygonFill { .. }
                 | NativeDisplayCommand::SvgPolyline { .. }
@@ -48273,6 +48288,10 @@ fn native_local_presentation_important_priority_reaches_hidden_and_opacity_owner
                 ..
             }
             | NativeDisplayCommand::Image {
+                node_id: command_node,
+                ..
+            }
+            | NativeDisplayCommand::SvgImage {
                 node_id: command_node,
                 ..
             }
@@ -62215,6 +62234,7 @@ fn native_br_elements_create_bounded_hard_breaks_without_layout_nodes() {
         | NativeDisplayCommand::SvgPathStroke { node_id, .. }
         | NativeDisplayCommand::BorderRect { node_id, .. }
         | NativeDisplayCommand::Image { node_id, .. }
+        | NativeDisplayCommand::SvgImage { node_id, .. }
         | NativeDisplayCommand::TextRun { node_id, .. }
         | NativeDisplayCommand::GlyphRun { node_id, .. } => {
             *node_id != leading
@@ -69322,6 +69342,144 @@ async fn native_content_process_loads_svg_picture_source() {
 }
 
 #[tokio::test]
+async fn native_content_process_loads_live_svg_images_through_parent_cookie_authority() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let first_png = native_test_solid_png_bytes([255, 0, 0, 255]);
+    let second_png = native_test_solid_png_bytes([0, 255, 0, 255]);
+    let replacement_png = native_test_solid_png_bytes([0, 0, 255, 255]);
+    let local_data_url = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD
+            .encode(native_test_solid_png_bytes([255, 255, 0, 255]))
+    );
+    let server = tokio::spawn(async move {
+        for expected_path in ["/page", "/first.png", "/second.png", "/replacement.png"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let cookie_header = request.lines().find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("cookie").then_some(value.trim())
+                })
+            });
+            let has_cookie = |name: &str, value: &str| {
+                cookie_header.is_some_and(|cookies| {
+                    cookies
+                        .split(';')
+                        .any(|cookie| cookie.trim().split_once('=') == Some((name, value)))
+                })
+            };
+
+            let (png, set_cookie) = match expected_path {
+                "/page" => {
+                    let body = format!(
+                        "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='8px' height='8px' viewBox='0 0 8 8'><image id='first' href='/first.png' x='0' y='0' width='4' height='4'/><image id='second' xlink:href='/second.png' x='4' y='0' width='4' height='2'/><image id='local' href='{local_data_url}' x='0' y='4' width='4' height='4' transform='translate(1 0)'/></svg>"
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: seed=parent; HttpOnly; Path=/; SameSite=Lax\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    continue;
+                }
+                "/first.png" => {
+                    assert!(has_cookie("seed", "parent"));
+                    (
+                        &first_png,
+                        Some("Set-Cookie: from_first=parent; HttpOnly; Path=/; SameSite=Lax\r\n"),
+                    )
+                }
+                "/second.png" => {
+                    assert!(has_cookie("seed", "parent"));
+                    assert!(has_cookie("from_first", "parent"));
+                    (
+                        &second_png,
+                        Some("Set-Cookie: from_second=parent; HttpOnly; Path=/; SameSite=Lax\r\n"),
+                    )
+                }
+                "/replacement.png" => {
+                    assert!(has_cookie("seed", "parent"));
+                    assert!(has_cookie("from_first", "parent"));
+                    assert!(has_cookie("from_second", "parent"));
+                    (&replacement_png, None)
+                }
+                _ => unreachable!(),
+            };
+            let set_cookie = set_cookie.unwrap_or_default();
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n{set_cookie}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                png.len()
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stream.write_all(png).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 8,
+                height: 8,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let list = engine.display_list().unwrap();
+    assert_eq!(
+        list.commands
+            .iter()
+            .filter(|command| matches!(command, NativeDisplayCommand::SvgImage { .. }))
+            .count(),
+        3
+    );
+    let surface = list.rasterize().unwrap();
+    assert_eq!(surface.pixel(1, 1), Some([255, 0, 0, 255]));
+    assert_eq!(surface.pixel(6, 1), Some([0, 255, 0, 255]));
+    assert_eq!(surface.pixel(4, 1), Some([255, 255, 255, 255]));
+    assert_eq!(surface.pixel(2, 6), Some([255, 255, 0, 255]));
+    assert_eq!(surface.pixel(0, 6), Some([255, 255, 255, 255]));
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("")
+    );
+    engine
+        .evaluate_async(
+            "document.getElementById('first').setAttribute('href', '/replacement.png'); true",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .display_list()
+            .unwrap()
+            .rasterize()
+            .unwrap()
+            .pixel(1, 1),
+        Some([0, 0, 255, 255])
+    );
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("")
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    for expected_name in ["seed", "from_first", "from_second"] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| { cookie.name == expected_name && cookie.http_only })
+        );
+    }
+
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_paints_animated_gif_frames() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -71580,7 +71738,9 @@ async fn native_content_process_blocks_csp_disallowed_image_before_request() {
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let _ = read_http_request(&mut stream).await;
-        let body = format!("<img id='blocked' src='http://{target_address}/image.png' width='8'>");
+        let body = format!(
+            "<img id='blocked' src='http://{target_address}/image.png' width='8'><svg xmlns='http://www.w3.org/2000/svg'><image href='http://{target_address}/image.png' width='8' height='8'/></svg>"
+        );
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src 'none'; img-src 'none'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -71606,7 +71766,12 @@ async fn native_content_process_blocks_csp_disallowed_image_before_request() {
             .unwrap()
             .commands
             .iter()
-            .any(|command| matches!(command, NativeDisplayCommand::Image { .. }))
+            .any(|command| {
+                matches!(
+                    command,
+                    NativeDisplayCommand::Image { .. } | NativeDisplayCommand::SvgImage { .. }
+                )
+            })
     );
 
     engine.close_async().await.unwrap();

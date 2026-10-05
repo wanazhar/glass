@@ -11938,6 +11938,17 @@ image lifecycle, typed wire, transfer budget, clipping, capture, and load/error
 owners remain shared; recursive data-SVG graphs are rejected before nested
 decode. Exact evidence is in `docs/plan/tasks/native-engine-browser-228.md`.
 
+The completed native-engine-browser-844 slice handles image subresources in a
+live inline SVG. `<image href>` and `<image xlink:href>` reuse the existing
+bounded image loader and typed resource owner; HTTP(S) requests go through the
+parent broker, which alone selects profile cookies and persists response
+`Set-Cookie`. `HttpOnly` remains unavailable to page script. Decoded pixels
+feed SVG viewport geometry, clipping, display-list replay, and capture. This
+does not permit recursive network fetches from a standalone SVG decoded as an
+image. Parent-cookie persistence/source-replacement and CSP-denial integration
+witnesses pass locally. See `docs/plan/tasks/native-engine-browser-844.md`;
+Issue #40 remains open.
+
 The completed native-engine-browser-229 slice adds the first geometry-aware
 CSS background layer. Repeat modes, keyword/pixel/percentage placement,
 explicit and aspect-ratio-preserving sizes, and partial edge-tile source

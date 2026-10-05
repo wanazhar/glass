@@ -11,7 +11,8 @@ use super::font::NativeFontRun;
 use super::image::decode_data_image;
 use super::layout::{
     MAX_NATIVE_SVG_POINTS, NativeLayoutPaintOrder, NativeLayoutSnapshot, NativePoint, NativeRect,
-    NativeSvgSubpath, svg_line_points, svg_path_subpaths, svg_points, svg_transform_for_node,
+    NativeSvgSubpath, svg_image_viewport, svg_line_points, svg_path_subpaths, svg_points,
+    svg_preserve_aspect_ratio, svg_transform_for_node, svg_transform_points,
     svg_transformed_points, svg_transformed_subpaths,
 };
 use std::sync::Arc;
@@ -89,6 +90,16 @@ pub enum NativeDisplayCommand {
     Image {
         node_id: NativeNodeId,
         rect: NativeRect,
+        source_rect: NativeRect,
+        source_width: u32,
+        source_height: u32,
+        pixels: Arc<[u8]>,
+        clip: Option<NativeRect>,
+    },
+    SvgImage {
+        node_id: NativeNodeId,
+        rect: NativeRect,
+        points: [NativePoint; 4],
         source_rect: NativeRect,
         source_width: u32,
         source_height: u32,
@@ -916,6 +927,11 @@ fn svg_paint_commands(
     let Some(shape) = node.element_name() else {
         return Vec::new();
     };
+    if shape == "image" {
+        return svg_image_paint_command(document, node_id, clip)
+            .into_iter()
+            .collect();
+    }
     if !matches!(
         shape,
         "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "path"
@@ -1130,6 +1146,109 @@ fn svg_paint_commands(
         });
     }
     commands
+}
+
+fn svg_image_paint_command(
+    document: &NativeDocument,
+    node_id: NativeNodeId,
+    clip: Option<NativeRect>,
+) -> Option<NativeDisplayCommand> {
+    if !document.is_svg_image_node(node_id) {
+        return None;
+    }
+    let node = document.node(node_id)?;
+    let image = document
+        .image_resource_for_node(node_id)
+        .cloned()
+        .or_else(|| {
+            document
+                .svg_image_source_for_node(node_id)
+                .and_then(decode_data_image)
+        })?;
+    let (x, y, width, height) = svg_image_viewport(node)?;
+    let transform = svg_transform_for_node(document, node_id)?;
+    let (align_x, align_y, slice) = svg_preserve_aspect_ratio(node)?;
+    let mut destination = (x, y, width, height);
+    let mut source_rect = NativeRect {
+        x: 0,
+        y: 0,
+        width: image.width,
+        height: image.height,
+    };
+
+    if let (Some(align_x), Some(align_y)) = (align_x, align_y) {
+        let scale_x = width / f64::from(image.width);
+        let scale_y = height / f64::from(image.height);
+        let scale = if slice {
+            scale_x.max(scale_y)
+        } else {
+            scale_x.min(scale_y)
+        };
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        if slice {
+            let source_width = (width / scale).clamp(1.0, f64::from(image.width));
+            let source_height = (height / scale).clamp(1.0, f64::from(image.height));
+            let source_x = align_x * (f64::from(image.width) - source_width);
+            let source_y = align_y * (f64::from(image.height) - source_height);
+            let left = source_x.floor().clamp(0.0, f64::from(image.width - 1)) as u32;
+            let top = source_y.floor().clamp(0.0, f64::from(image.height - 1)) as u32;
+            let right = (source_x + source_width)
+                .ceil()
+                .clamp(f64::from(left + 1), f64::from(image.width)) as u32;
+            let bottom = (source_y + source_height)
+                .ceil()
+                .clamp(f64::from(top + 1), f64::from(image.height)) as u32;
+            source_rect = NativeRect {
+                x: left,
+                y: top,
+                width: right.saturating_sub(left),
+                height: bottom.saturating_sub(top),
+            };
+        } else {
+            let rendered_width = f64::from(image.width) * scale;
+            let rendered_height = f64::from(image.height) * scale;
+            destination = (
+                x + (width - rendered_width) * align_x,
+                y + (height - rendered_height) * align_y,
+                rendered_width,
+                rendered_height,
+            );
+        }
+    }
+
+    let (x, y, width, height) = destination;
+    let points = svg_transform_points(
+        &[
+            (x, y),
+            (x + width, y),
+            (x + width, y + height),
+            (x, y + height),
+        ],
+        transform,
+    )?;
+    let points: [NativePoint; 4] = points.try_into().ok()?;
+    let min_x = points.iter().map(|point| point.x).min()?;
+    let min_y = points.iter().map(|point| point.y).min()?;
+    let max_x = points.iter().map(|point| point.x).max()?;
+    let max_y = points.iter().map(|point| point.y).max()?;
+    let rect = NativeRect {
+        x: min_x,
+        y: min_y,
+        width: max_x.saturating_sub(min_x).saturating_add(1),
+        height: max_y.saturating_sub(min_y).saturating_add(1),
+    };
+    Some(NativeDisplayCommand::SvgImage {
+        node_id,
+        rect,
+        points,
+        source_rect,
+        source_width: image.width,
+        source_height: image.height,
+        pixels: Arc::from(image.current_pixels()),
+        clip,
+    })
 }
 
 fn svg_paint_color(

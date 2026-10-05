@@ -2695,7 +2695,8 @@ impl NativeDocument {
                 {
                     return None;
                 }
-                (node.element_name() == Some("img")).then_some((node.id().index(), source))
+                is_image_resource_node_in(&self.nodes, node.id().index() as usize)
+                    .then_some((node.id().index(), source))
             })
             .collect()
     }
@@ -2905,6 +2906,9 @@ impl NativeDocument {
 
     fn selected_image_source(&self, node_id: NativeNodeId, viewport: Viewport) -> Option<String> {
         let node = self.node(node_id)?;
+        if self.is_svg_image_node(node_id) {
+            return svg_image_href(node).map(str::to_owned);
+        }
         if node.element_name() != Some("img") {
             return None;
         }
@@ -2921,6 +2925,16 @@ impl NativeDocument {
             return Some(source);
         }
         fallback
+    }
+
+    pub(crate) fn is_svg_image_node(&self, node_id: NativeNodeId) -> bool {
+        is_svg_image_node_in(&self.nodes, node_id.index() as usize)
+    }
+
+    pub(crate) fn svg_image_source_for_node(&self, node_id: NativeNodeId) -> Option<&str> {
+        self.is_svg_image_node(node_id)
+            .then(|| self.node(node_id).and_then(svg_image_href))
+            .flatten()
     }
 
     fn picture_image_source_set(
@@ -3005,7 +3019,7 @@ impl NativeDocument {
         let node = self
             .node(node_id)
             .ok_or(NativeEngineError::DetachedTarget)?;
-        if node.element_name() != Some("img")
+        if (node.element_name() != Some("img") && !self.is_svg_image_node(node_id))
             || self.selected_image_source(node_id, viewport).as_deref() != Some(source.as_str())
         {
             return Err(NativeEngineError::TargetNotActionable {
@@ -3022,8 +3036,8 @@ impl NativeDocument {
             .iter()
             .filter_map(|(node_index, source)| {
                 let node_id = NativeNodeId::from_parts(self.generation, *node_index);
-                let node = self.node(node_id)?;
-                (node.element_name() == Some("img")
+                let _node = self.node(node_id)?;
+                (is_image_resource_node_in(&self.nodes, *node_index as usize)
                     && self.selected_image_source(node_id, viewport).as_deref()
                         == Some(source.as_str()))
                 .then(|| (*node_index, source.clone()))
@@ -3061,7 +3075,7 @@ impl NativeDocument {
     pub(crate) fn image_resource_for_node(&self, node_id: NativeNodeId) -> Option<&NativeImage> {
         let resource = self.image_resources.get(&node_id.index())?;
         let node = self.node(node_id)?;
-        (node.element_name() == Some("img")
+        ((node.element_name() == Some("img") || self.is_svg_image_node(node_id))
             && self.image_loads.get(&node_id.index()) == Some(&resource.source))
         .then_some(&resource.image)
     }
@@ -3115,7 +3129,8 @@ impl NativeDocument {
         let node = self
             .node(node_id)
             .ok_or(NativeEngineError::DetachedTarget)?;
-        if node.element_name() != Some("img") || self.image_loads.get(&node_index) != Some(&source)
+        if (node.element_name() != Some("img") && !self.is_svg_image_node(node_id))
+            || self.image_loads.get(&node_index) != Some(&source)
         {
             return Err(NativeEngineError::TargetNotActionable {
                 reason: "external image resource does not match its image element".into(),
@@ -3269,8 +3284,8 @@ impl NativeDocument {
             .image_resources
             .iter()
             .filter_map(|(node_index, resource)| {
-                let node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
-                (node.element_name() == Some("img")
+                let _node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
+                (is_image_resource_node_in(&self.nodes, *node_index as usize)
                     && self.image_loads.get(node_index) == Some(&resource.source))
                 .then(|| NativeImageResourceWire {
                     node_index: *node_index,
@@ -3297,10 +3312,12 @@ impl NativeDocument {
             .image_loads
             .iter()
             .filter_map(|(node_index, source)| {
-                let node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
-                (node.element_name() == Some("img")).then(|| NativeImageLoadWire {
-                    node_index: *node_index,
-                    source: source.clone(),
+                let _node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
+                is_image_resource_node_in(&self.nodes, *node_index as usize).then(|| {
+                    NativeImageLoadWire {
+                        node_index: *node_index,
+                        source: source.clone(),
+                    }
                 })
             })
             .collect();
@@ -3915,13 +3932,13 @@ impl NativeDocument {
                     offset: 0,
                     reason: "content process returned an invalid image node index".into(),
                 })?;
-            let node = nodes
+            let _node = nodes
                 .get(node_index)
                 .ok_or_else(|| NativeEngineError::Parse {
                     offset: 0,
                     reason: "content process returned an out-of-range image node index".into(),
                 })?;
-            if node.element_name() != Some("img")
+            if !is_image_resource_node_in(&nodes, node_index)
                 || !image_source_is_declared(&nodes, node_index, &resource.source)
             {
                 return Err(NativeEngineError::Parse {
@@ -4051,13 +4068,13 @@ impl NativeDocument {
                     offset: 0,
                     reason: "content process returned an invalid image load node index".into(),
                 })?;
-            let node = nodes
+            let _node = nodes
                 .get(node_index)
                 .ok_or_else(|| NativeEngineError::Parse {
                     offset: 0,
                     reason: "content process returned an out-of-range image load node index".into(),
                 })?;
-            if node.element_name() != Some("img")
+            if !is_image_resource_node_in(&nodes, node_index)
                 || !image_source_is_declared(&nodes, node_index, &load.source)
             {
                 return Err(NativeEngineError::Parse {
@@ -4608,8 +4625,9 @@ impl NativeDocument {
         let element_policy = self
             .node(node_id)
             .filter(|node| {
-                node.element_name() == Some("img")
+                (node.element_name() == Some("img")
                     && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI)
+                    || self.is_svg_image_node(node_id))
                     && self.is_attached(node_id)
             })
             .and_then(|node| node.attribute("referrerpolicy"))
@@ -5178,10 +5196,10 @@ impl NativeDocument {
         let mut included = BTreeSet::new();
         for (node_index, resource) in &self.image_resources {
             let node_id = NativeNodeId::from_parts(self.generation, *node_index);
-            let Some(node) = self.node(node_id) else {
+            let Some(_node) = self.node(node_id) else {
                 continue;
             };
-            if node.element_name() != Some("img")
+            if !is_image_resource_node_in(&self.nodes, *node_index as usize)
                 || self.image_loads.get(node_index) != Some(&resource.source)
             {
                 continue;
@@ -5195,7 +5213,9 @@ impl NativeDocument {
         }
         for node in &self.nodes {
             let node_index = node.id().index();
-            if included.contains(&node_index) || node.element_name() != Some("img") {
+            if included.contains(&node_index)
+                || !is_image_resource_node_in(&self.nodes, node_index as usize)
+            {
                 continue;
             }
             let source = self.image_current_src(node.id(), viewport);
@@ -13321,6 +13341,9 @@ fn image_source_is_declared(nodes: &[NativeNode], node_index: usize, source: &st
     let Some(node) = nodes.get(node_index) else {
         return false;
     };
+    if is_svg_image_node_in(nodes, node_index) {
+        return svg_image_href(node) == Some(source);
+    }
     if node.attribute("src") == Some(source)
         || node.attribute("srcset").is_some_and(|srcset| {
             parse_image_srcset(srcset)
@@ -13364,6 +13387,45 @@ fn image_source_is_declared(nodes: &[NativeNode], node_index: usize, source: &st
         }
     }
     false
+}
+
+fn is_image_resource_node_in(nodes: &[NativeNode], node_index: usize) -> bool {
+    nodes.get(node_index).is_some_and(|node| {
+        node.element_name() == Some("img") || is_svg_image_node_in(nodes, node_index)
+    })
+}
+
+fn is_svg_image_node_in(nodes: &[NativeNode], node_index: usize) -> bool {
+    let Some(node) = nodes.get(node_index) else {
+        return false;
+    };
+    if node.element_name() != Some("image") || node.namespace_uri() != Some(SVG_NAMESPACE_URI) {
+        return false;
+    }
+    let mut parent_id = node.parent();
+    while let Some(id) = parent_id {
+        let Some(parent) = usize::try_from(id.index())
+            .ok()
+            .and_then(|parent_index| nodes.get(parent_index))
+        else {
+            return false;
+        };
+        if parent.element_name() == Some("svg") && parent.namespace_uri() == Some(SVG_NAMESPACE_URI)
+        {
+            return true;
+        }
+        if parent.namespace_uri() == Some(HTML_NAMESPACE_URI) {
+            return false;
+        }
+        parent_id = parent.parent();
+    }
+    false
+}
+
+fn svg_image_href(node: &NativeNode) -> Option<&str> {
+    node.attribute("href")
+        .or_else(|| node.attribute_in_namespace(Some(XLINK_NAMESPACE_URI), "href"))
+        .or_else(|| node.attribute("xlink:href"))
 }
 
 fn media_source_is_declared(nodes: &[NativeNode], node_index: usize, source: &str) -> bool {

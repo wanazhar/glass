@@ -195,6 +195,34 @@ impl NativeSurface {
                         render_scroll_offset,
                     )?;
                 }
+                NativeDisplayCommand::SvgImage {
+                    rect,
+                    points,
+                    source_rect,
+                    source_width,
+                    source_height,
+                    pixels,
+                    clip,
+                    ..
+                } => {
+                    let Some(viewport_rect) = Self::translate_rect(*rect, render_scroll_offset)
+                    else {
+                        continue;
+                    };
+                    let Some(clip) = Self::translate_clip(*clip, scroll_offset) else {
+                        continue;
+                    };
+                    Self::current_surface_mut(&mut surfaces)?.draw_svg_image(
+                        viewport_rect,
+                        *points,
+                        *source_rect,
+                        *source_width,
+                        *source_height,
+                        pixels,
+                        clip,
+                        render_scroll_offset,
+                    )?;
+                }
                 NativeDisplayCommand::SvgStroke {
                     shape,
                     rect,
@@ -1032,6 +1060,102 @@ impl NativeSurface {
                     .min(u64::from(source_rect.right().saturating_sub(1)))
                     as usize;
                 let index = (source_y * usize::try_from(source_width).unwrap_or(0) + source_x) * 4;
+                self.blend_pixel(
+                    x,
+                    y,
+                    super::css::NativeColor {
+                        red: pixels[index],
+                        green: pixels[index + 1],
+                        blue: pixels[index + 2],
+                        alpha: pixels[index + 3],
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_svg_image(
+        &mut self,
+        viewport_rect: NativeRect,
+        points: [NativePoint; 4],
+        source_rect: NativeRect,
+        source_width: u32,
+        source_height: u32,
+        pixels: &[u8],
+        clip: Option<NativeRect>,
+        scroll_offset: NativePoint,
+    ) -> Result<(), NativeEngineError> {
+        if source_width == 0
+            || source_height == 0
+            || source_rect.width == 0
+            || source_rect.height == 0
+        {
+            return Ok(());
+        }
+        if source_rect.right() > source_width || source_rect.bottom() > source_height {
+            return Err(NativeEngineError::invalid(
+                "native SVG image",
+                "source rectangle exceeds RGBA pixel payload dimensions",
+            ));
+        }
+        let expected_len = usize::try_from(source_width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(source_height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| {
+                NativeEngineError::invalid(
+                    "native SVG image",
+                    "RGBA pixel payload dimensions exceed host bounds",
+                )
+            })?;
+        if pixels.len() != expected_len {
+            return Err(NativeEngineError::invalid(
+                "native SVG image",
+                "RGBA pixel payload does not match dimensions",
+            ));
+        }
+
+        let origin_x = f64::from(points[0].x);
+        let origin_y = f64::from(points[0].y);
+        let axis_x_x = f64::from(points[1].x) - origin_x;
+        let axis_x_y = f64::from(points[1].y) - origin_y;
+        let axis_y_x = f64::from(points[3].x) - origin_x;
+        let axis_y_y = f64::from(points[3].y) - origin_y;
+        let determinant = axis_x_x * axis_y_y - axis_y_x * axis_x_y;
+        if !determinant.is_finite() || determinant.abs() < f64::EPSILON {
+            return Ok(());
+        }
+
+        let Some((left, top, right, bottom)) = self.clipped_bounds(viewport_rect, clip) else {
+            return Ok(());
+        };
+        for y in top..bottom {
+            let document_y = f64::from(y) + f64::from(scroll_offset.y) + 0.5 - origin_y;
+            for x in left..right {
+                let document_x = f64::from(x) + f64::from(scroll_offset.x) + 0.5 - origin_x;
+                let u = (document_x * axis_y_y - document_y * axis_y_x) / determinant;
+                let v = (axis_x_x * document_y - axis_x_y * document_x) / determinant;
+                if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
+                    continue;
+                }
+                let source_x = source_rect
+                    .x
+                    .saturating_add((u * f64::from(source_rect.width)).floor() as u32)
+                    .min(source_rect.right().saturating_sub(1));
+                let source_y = source_rect
+                    .y
+                    .saturating_add((v * f64::from(source_rect.height)).floor() as u32)
+                    .min(source_rect.bottom().saturating_sub(1));
+                let index = (usize::try_from(source_y).unwrap_or(0)
+                    * usize::try_from(source_width).unwrap_or(0)
+                    + usize::try_from(source_x).unwrap_or(0))
+                    * 4;
                 self.blend_pixel(
                     x,
                     y,

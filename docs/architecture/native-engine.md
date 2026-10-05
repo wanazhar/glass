@@ -119,6 +119,15 @@ cookie matcher, response-cookie authority, and jar owner. This focused local
 regression is not complete CORS/XHR or WPT conformance, remote CI, or
 cross-platform certification. See the [Slice 855 task](../plan/tasks/native-engine-browser-855.md)
 and [review](../plan/reviews/native-engine-browser-855-01.md).
+Slice 856 verifies that the parent broker rejects credentialed page/Worker XHR
+preflights when an otherwise authorized exact-origin response omits either the
+requested method or a requested header. OPTIONS carries no Cookie, no actual
+POST is sent, and rejected response cookies do not change the parent jar. The
+parent remains the sole cookie matcher, `Set-Cookie` authority, and jar owner;
+no raw cookie material crosses IPC. This focused local regression is not
+complete CORS/XHR or WPT conformance, remote CI, or cross-platform
+certification. See the [Slice 856 task](../plan/tasks/native-engine-browser-856.md)
+and [review](../plan/reviews/native-engine-browser-856-01.md).
 Slice 838's NavigationPreloadManager persistence regression passed (1 passed;
 906 filtered; 39.70 seconds), so that slice is complete. Slice 839 starts
 eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,

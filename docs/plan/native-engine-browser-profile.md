@@ -1341,6 +1341,17 @@ focused denial regression, not full CORS/XHR, Web IDL, or WPT conformance. See
 the [Slice 855 task](tasks/native-engine-browser-855.md) and
 [review](reviews/native-engine-browser-855-01.md).
 
+Slice 856 adds separate process-backed credentialed-preflight denials for
+page and DedicatedWorker XHR: an exact-origin response that omits POST from
+`Access-Control-Allow-Methods`, and one that omits a requested custom header
+from `Access-Control-Allow-Headers`. Neither actual POST is dispatched, and
+neither rejected preflight's `Set-Cookie` alters the parent jar. OPTIONS
+remains cookie-free; HttpOnly stays absent from `document.cookie`, and the
+parent remains the sole cookie matcher, response-cookie authority, and jar
+owner. This is focused method/header denial coverage, not full CORS/XHR,
+Web IDL, or WPT conformance. See the [Slice 856 task](tasks/native-engine-browser-856.md)
+and [review](reviews/native-engine-browser-856-01.md).
+
 ### XHR document responses
 
 For a Window `XMLHttpRequest` whose response type is `document`, only an HTML

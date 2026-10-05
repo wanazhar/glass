@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-856
 scope: glass-browser/native-engine/xhr-denied-preflight-method-and-header
-status: in-progress
+status: complete
 depends-on: [native-engine-browser-855]
 ---
 
@@ -72,3 +72,34 @@ actual request while preserving parent-owned cookie authority.
   ownership; no independent agent review is used.
 - Record local-only evidence. No remote CI or broad conformance claim is
   implied.
+
+## Results
+
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p glass-browser
+  --features native-engine --test native_engine --locked --quiet` passed with
+  the existing legacy-parser/dead-code warnings.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-browser
+  --features native-engine --test native_engine --locked --quiet
+  native_content_process_xhr_method_and_header_denied_preflights_send_no_post
+  -- --exact` passed (1 passed; 920 filtered; 21.84 seconds).
+- The process fixture observed two credentialed OPTIONS requests. The page
+  preflight granted the exact origin, credentials, and requested headers but
+  denied POST; the DedicatedWorker preflight granted the exact origin,
+  credentials, and POST but omitted the requested custom header. Both OPTIONS
+  requests carried no Cookie; both XHRs reported a network error, and no
+  actual POST reached the listener. Neither rejected preflight's HttpOnly
+  `Set-Cookie` was accepted; the seeded parent cookie remained and
+  `document.cookie` stayed empty.
+- No production Rust code changed. Cookie matching, response-cookie
+  acceptance, and jar ownership remain exclusively parent-owned; no raw cookie
+  headers or jar were added to IPC, and no child network retry was enabled.
+- `cargo fmt --all -- --check` and `git diff --check` passed. Documentation
+  gates passed: release-truth scanned 1,495 Markdown files (83 current, zero
+  current-claim failures); depth validated 93 guides and 19 contracts;
+  shortcuts validated 15 keys and 63 markers; coverage validated 346 MCP
+  tools (101 browser-only), 17 examples, and 22 public modules. Coverage used
+  the existing shared-target binaries via explicit `--glass` and
+  `--glass-browser` paths.
+- This is focused process coverage, not complete CORS, XHR/Web IDL or WPT
+  conformance, cross-platform certification, independent review, or remote CI.
+  Issue #40 remains open.

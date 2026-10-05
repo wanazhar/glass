@@ -78051,6 +78051,230 @@ async fn native_content_process_xhr_keeps_parent_cookie_on_cors_error() {
 }
 
 #[tokio::test]
+async fn native_content_process_fetch_cors_errors_keep_parent_cookies() {
+    fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header.eq_ignore_ascii_case(name).then_some(value.trim())
+            })
+        })
+    }
+
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_address = api_listener.local_addr().unwrap();
+    let page_origin = format!("http://{page_address}");
+    let api_origin = format!("http://{api_address}");
+    let expected_origin = page_origin.clone();
+    let worker_api_origin = api_origin.clone();
+    let response_origin = page_origin.clone();
+    let worker_script = format!(
+        r#"self.onmessage = async event => {{
+  if (event.data !== "run") return;
+  try {{
+    await fetch("{worker_api_origin}/worker-failed", {{ credentials: "include" }});
+    self.postMessage(["fulfilled"]);
+  }} catch (error) {{
+    self.postMessage(["rejected", error.name, error instanceof TypeError]);
+  }}
+}};
+self.postMessage(["ready"]);"#
+    );
+
+    let page_server = tokio::spawn(async move {
+        for expected_path in ["/page", "/fetch-cookie-worker.js"] {
+            let (mut stream, _) =
+                tokio::time::timeout(Duration::from_secs(45), page_listener.accept())
+                    .await
+                    .expect("page and Worker requests stay bounded")
+                    .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().next(), Some("GET"));
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            let (content_type, set_cookie, body) = if expected_path == "/page" {
+                (
+                    "text/html",
+                    "Set-Cookie: root=seed; HttpOnly; Path=/; SameSite=Lax\r\n".to_owned(),
+                    "<title>Fetch CORS cookie owner</title>".to_owned(),
+                )
+            } else {
+                assert!(
+                    header_value(&request, "cookie")
+                        .unwrap_or_default()
+                        .contains("root=seed"),
+                    "same-origin Worker script request should use the parent cookie"
+                );
+                (
+                    "application/javascript",
+                    String::new(),
+                    worker_script.clone(),
+                )
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{set_cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let api_server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async move {
+            for (path, required_cookies, set_cookie) in [
+                (
+                    "/page-failed",
+                    vec!["root=seed"],
+                    "page_fetch_failed=accepted",
+                ),
+                (
+                    "/worker-failed",
+                    vec!["root=seed", "page_fetch_failed=accepted"],
+                    "worker_fetch_failed=accepted",
+                ),
+            ] {
+                let (mut stream, _) = api_listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                assert_eq!(request.split_whitespace().next(), Some("GET"));
+                assert_eq!(request.split_whitespace().nth(1), Some(path));
+                assert_eq!(header_value(&request, "origin"), Some(expected_origin.as_str()));
+                assert!(header_value(&request, "access-control-request-method").is_none());
+                let cookie = header_value(&request, "cookie").unwrap_or_default();
+                for expected in required_cookies {
+                    assert!(cookie.contains(expected), "missing {expected}: {cookie}");
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Credentials: true\r\nSet-Cookie: {set_cookie}; HttpOnly; Path=/; SameSite=Lax\r\nContent-Length: 6\r\nConnection: close\r\n\r\nhidden"
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+
+            let (mut stream, _) = api_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().next(), Some("GET"));
+            assert_eq!(request.split_whitespace().nth(1), Some("/verify"));
+            assert_eq!(header_value(&request, "origin"), Some(expected_origin.as_str()));
+            let cookie = header_value(&request, "cookie").unwrap_or_default();
+            for expected in [
+                "root=seed",
+                "page_fetch_failed=accepted",
+                "worker_fetch_failed=accepted",
+            ] {
+                assert!(cookie.contains(expected), "missing {expected}: {cookie}");
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Credentials: true\r\nContent-Length: 8\r\nConnection: close\r\n\r\nverified"
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+
+            match tokio::time::timeout(Duration::from_secs(1), api_listener.accept()).await {
+                Err(_) => {}
+                Ok(Ok((mut stream, _))) => {
+                    let request = read_http_request(&mut stream).await;
+                    panic!("unexpected extra Fetch cookie request: {request}");
+                }
+                Ok(Err(error)) => panic!("unexpected API listener error: {error}"),
+            }
+        })
+        .await
+        .expect("Fetch CORS-cookie request sequence stays bounded")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("{page_origin}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let page_failure = tokio::time::timeout(
+        Duration::from_secs(30),
+        engine.evaluate_async(format!(
+            r#"await (async () => {{
+              const pageFailure = await fetch("{api_origin}/page-failed", {{ credentials: "include" }})
+                .then(() => ["fulfilled"], error => ["rejected", error.name, error instanceof TypeError]);
+              globalThis.fetchCookieWorkerMessages = [];
+              globalThis.fetchCookieWorker = new Worker("/fetch-cookie-worker.js");
+              fetchCookieWorker.onmessage = event => fetchCookieWorkerMessages.push(event.data);
+              return pageFailure;
+            }})()"#
+        )),
+    )
+    .await
+    .expect("page Fetch CORS failure settles through the parent broker")
+    .unwrap();
+    assert_eq!(
+        page_failure,
+        serde_json::json!(["rejected", "TypeError", true])
+    );
+
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let ready = engine
+                .evaluate_async("fetchCookieWorkerMessages.some(message => message[0] === 'ready')")
+                .await
+                .unwrap();
+            if ready == serde_json::Value::Bool(true) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("DedicatedWorker Fetch fixture is ready");
+    engine
+        .evaluate_async("fetchCookieWorker.postMessage('run'); true")
+        .await
+        .unwrap();
+    let worker_failure = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let message = engine
+                .evaluate_async(
+                    "fetchCookieWorkerMessages.find(message => message[0] === 'rejected')",
+                )
+                .await
+                .unwrap();
+            if !message.is_null() {
+                break message;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("DedicatedWorker Fetch CORS failure settles through the parent broker");
+    assert_eq!(
+        worker_failure,
+        serde_json::json!(["rejected", "TypeError", true])
+    );
+    let verified = engine
+        .evaluate_async(format!(
+            r#"await fetch("{api_origin}/verify", {{ credentials: "include" }}).then(response => response.text())"#
+        ))
+        .await
+        .unwrap();
+    assert_eq!(verified, serde_json::json!("verified"));
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("")
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    engine.close_async().await.unwrap();
+    page_server.await.unwrap();
+    api_server.await.unwrap();
+    for (name, value) in [
+        ("root", "seed"),
+        ("page_fetch_failed", "accepted"),
+        ("worker_fetch_failed", "accepted"),
+    ] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| { cookie.name == name && cookie.value == value && cookie.http_only }),
+            "parent cookie jar is missing {name}={value}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_content_process_xhr_credentialed_preflight_wildcards_send_no_post() {
     fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
         request.lines().find_map(|line| {

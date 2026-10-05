@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-860
 scope: glass-browser/native-engine/fetch-cors-error-cookie-ownership
-status: in-progress
+status: complete
 depends-on: [native-engine-browser-859]
 ---
 
@@ -70,11 +70,8 @@ Fetch/CORS, Web IDL/WPT, platform, or remote-CI conformance.
 
 ## Path
 
+- `crates/glass-browser/src/browser/native_engine/javascript.rs`
 - `crates/glass-browser/tests/native_engine.rs`
-- `crates/glass-browser/src/browser/native_engine/resource_loader.rs` (only if
-  the regression exposes a parent-side gap)
-- `crates/glass-browser/src/browser/native_engine/content_process.rs` (only if
-  Fetch-route cookie propagation needs correction)
 - `docs/plan/README.md`
 - `docs/plan/tasks/native-engine-browser-860.md`
 - `docs/plan/reviews/native-engine-browser-860-01.md`
@@ -87,12 +84,34 @@ Fetch/CORS, Web IDL/WPT, platform, or remote-CI conformance.
 - Run scoped `cargo check` for `glass-browser` and the affected integration
   target before running the exact test, using shared
   `/home/ubuntu/work/glass/target`. Do not run workspace-wide tests.
-- Run the exact process-backed regression once; repeat only if production
-  request or cookie-owner code changes.
+- Run the exact process-backed regression. If a run exposes a fixture or
+  contract failure, correct it and rerun this same regression; do not broaden
+  validation to unrelated tests.
 - Run formatting, `git diff --check`, and all four maintainer documentation
   gates after final docs edits.
 - Record local-only evidence; no push, remote CI, or browser-completion claim.
 
 ## Results
 
-- In progress; the process regression has not yet been implemented or run.
+- Page and DedicatedWorker Fetch now reject parent-brokered network failures
+  with actual `TypeError` instances. Timeout failures retain their existing
+  `TimeoutError` behavior. Cookie storage and matching remain parent-owned.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p
+  glass-browser --features native-engine --test native_engine --locked
+  --quiet` passed with existing dead-code warnings.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p
+  glass-browser --features native-engine --test native_engine --locked
+  --quiet native_content_process_fetch_cors_errors_keep_parent_cookies --
+  --exact` passed (1 passed; 924 filtered; 20.20 seconds).
+- The process fixture verifies page and DedicatedWorker CORS failures are
+  rejected as `TypeError` instances. The page's HttpOnly response cookie is
+  sent on the Worker request; both response cookies and the HttpOnly seed are
+  sent on the later authorized page request. The parent cookie API retains all
+  three as HttpOnly, and `document.cookie` remains empty.
+- The first test run exposed a fixture mistake: the final Fetch Promise was not
+  awaited, so the test evaluator returned an empty object instead of its body.
+  The fixture now awaits the response body, and the exact regression passes.
+- No cookie jar, matcher, or raw Cookie header crosses IPC; the content
+  process does not retry requests. This is local focused evidence only, not
+  complete Fetch/CORS or WPT conformance, cross-platform certification, or
+  remote CI. Issue #40 remains open.

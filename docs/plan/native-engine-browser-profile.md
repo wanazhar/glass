@@ -498,6 +498,37 @@ Later backend requests still serialize behind an owner turn once it has
 started, so this is not a claim of parallel page and Service Worker execution.
 See the [Slice 845 task](tasks/native-engine-browser-845.md).
 
+### Parent-owned image preloads
+
+For process-backed HTTP(S) documents, the content process recognizes an HTML
+`<link>` when its `rel` token list contains `preload`, `as` is `image`, and
+`href` is nonempty. Initial links are fetched before ordinary page images;
+script-inserted links and `href` changes are discovered in the owning content
+turn. A completed bounded image response is retained only in that document's
+preload cache and can satisfy an image request whose resolved URL matches.
+The document cache is bounded to 2 MiB decoded pixels and the existing
+64-resource image limit. Unsupported preload metadata (`media`, `type`,
+`crossorigin`, `integrity`, `imagesrcset`, or `imagesizes`) leaves the preload
+inactive rather than silently applying a different request contract.
+
+Every HTTP(S) preload is sent through the owner-checked parent image broker.
+The parent applies image CSP, request cookies, redirects, `Set-Cookie`, and
+response policy; its response returns only the image representation, bounded
+status, and the current URL-scoped script-visible cookie projection. The child
+never receives the cookie jar, HttpOnly values, or cookie headers. A matching
+later `<img>` consumes the decoded image from its document cache, including
+when the HTTP response is not reusable in the ordinary HTTP cache. Failed or
+blocked preloads produce the existing bounded link `error` event; successful
+preloads produce `load`.
+
+This is not the full HTML preload contract. `imagesrcset`/`imagesizes`, media
+and type selection, CORS/credential-mode matching, integrity metadata,
+script/style/font/module preloads, `modulepreload`, and fetch-priority
+scheduling remain open. A preload that exceeds the document's decoded-image
+budget still makes its parent request, but is not retained for a later image;
+that image follows the ordinary parent-broker path. See the
+[Slice 873 task](tasks/native-engine-browser-873.md).
+
 ### Page EventSource CORS-error response cookies
 
 Page and content-process EventSource requests travel through the parent

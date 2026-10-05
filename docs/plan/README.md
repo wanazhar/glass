@@ -10895,6 +10895,12 @@ passed (1 passed; 922 filtered; 23.37 seconds). See the
 [Slice 858 task](tasks/native-engine-browser-858.md) and
 [review](reviews/native-engine-browser-858-01.md). Issue #40 remains open.
 
+Slice 859 is in progress: a process-backed credentialed XHR will verify that
+an actual response's parent-owned HttpOnly cookie is retained even when CORS
+denies script access, while cookies from a rejected preflight remain ignored.
+The parent process remains the only cookie authority. See the [Slice 859 task](tasks/native-engine-browser-859.md)
+and the [Fetch Standard's CORS credentials rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

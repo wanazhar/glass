@@ -10868,11 +10868,14 @@ jar. Its exact process regression passed (1 passed; 919 filtered; 19.94
 seconds). See the [Slice 855 task](tasks/native-engine-browser-855.md) and
 [review](reviews/native-engine-browser-855-01.md). Issue #40 remains open.
 
-Slice 856 is in progress: process-backed credentialed XHR preflight denials
-for an unauthorized method and requested header. Both paths must use exact
-origin/credentials authorization, send cookie-free OPTIONS, stop before the
-actual POST, and reject the preflight response cookies under parent-owned
-cookie authority. See the [Slice 856 task](tasks/native-engine-browser-856.md).
+The completed Slice 856 adds process-backed credentialed XHR preflight
+denials for an unauthorized method and requested header. Exact-origin,
+credentials-enabled preflights are separately denied for page POST and Worker
+custom-header requests; neither actual POST is dispatched, OPTIONS carries no
+Cookie, and rejected response cookies do not enter the parent jar. Its exact
+regression passed (1 passed; 920 filtered; 21.84 seconds). See the
+[Slice 856 task](tasks/native-engine-browser-856.md) and
+[review](reviews/native-engine-browser-856-01.md). Issue #40 remains open.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

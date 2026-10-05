@@ -7,8 +7,12 @@
 use std::io::{BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use super::protocol::{is_nested_call, Manifest, Request, MAX_REPLY_BYTES, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS};
+use super::protocol::{self, is_nested_call, Manifest, Request, MAX_REPLY_BYTES, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS};
 use super::protocol::parse_manifest;
+
+/// Callback the host uses to run a tool an extension asked for.
+pub type HostToolBridge<'a> = dyn FnMut(&str, &str) -> String + 'a;
+
 
 /// A running extension process.
 pub struct Extension {
@@ -53,7 +57,7 @@ impl Extension {
             .spawn()
             .map_err(|e| format!("cannot start extension `{cmd}`: {e}"))?;
 
-        let raw_fd = child.stdout.as_ref().map(|s| fd_of(s)).unwrap_or(-1);
+        let raw_fd = child.stdout.as_ref().map(fd_of).unwrap_or(-1);
         let mut ext = Self {
             manifest: Manifest::default(),
             stdin: child.stdin.take(),
@@ -85,7 +89,7 @@ impl Extension {
         &mut self,
         req: &Request,
         timeout_ms: u64,
-        mut host_tools: Option<&mut dyn FnMut(&str, &str) -> String>,
+        mut host_tools: Option<&mut HostToolBridge<'_>>,
     ) -> Option<serde_json::Value> {
         self.next_id += 1;
         let id = self.next_id;
@@ -102,29 +106,23 @@ impl Extension {
         // and its result written back, and only a non-nested message is the
         // answer we were waiting for.
         loop {
-            let Some(v) = self.read_reply(timeout_ms) else { return None };
+            let v = self.read_reply(timeout_ms)?;
             if is_nested_call(&v) {
-                let Some(bridge) = host_tools.as_deref_mut() else {
-                    // No bridge available, which means this extension tried to
-                    // use a capability the caller did not grant it.
-                    return None;
-                };
-                let Some(bridge) = Some(bridge) else { return None };
+                // No bridge means this extension tried to use a capability
+                // the caller did not grant it, which is a refusal, not a retry.
+                let bridge = host_tools.as_deref_mut()?;
                 let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
                 let args = v.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}").to_string();
                 let out = bridge(&name, &args);
 
                 self.next_id += 1;
                 let id = self.next_id;
-                let reply = serde_json::json!({
-                    "type": "call_tool_result",
-                    "id": id,
-                    "call_id": v.get("call_id").cloned().unwrap_or(serde_json::Value::Null),
-                    "body": out
-                });
-                let Some(mut line) = serde_json::to_string(&reply).ok() else { return None };
+                let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
+                let mut reply = protocol::nested_call_result_json(&call_id, &out);
+                reply["id"] = serde_json::json!(id);
+                let mut line = serde_json::to_string(&reply).ok()?;
                 line.push('\n');
-                let Some(stdin) = self.stdin.as_mut() else { return None };
+                let stdin = self.stdin.as_mut()?;
                 stdin.write_all(line.as_bytes()).ok()?;
                 stdin.flush().ok()?;
                 continue;
@@ -226,8 +224,15 @@ impl Extension {
     }
 
     /// Tell the extension a turn finished. Best-effort.
-    pub fn turn_end(&mut self, text: &str) {
-        let _ = self.request(&Request::TurnEnd { text: text.to_string() }, REQUEST_TIMEOUT_MS, None);
+    ///
+    /// `cacheable_prefix_bytes` is the size of the prefix a provider would
+    /// cache, which is what lets a warmer decide if a refresh is worth a write.
+    pub fn turn_end(&mut self, text: &str, cacheable_prefix_bytes: usize) {
+        let _ = self.request(
+            &Request::TurnEnd { text: text.to_string(), cacheable_prefix_bytes },
+            REQUEST_TIMEOUT_MS,
+            None,
+        );
     }
 
     /// Run a slash command. Returns the extension's output.
@@ -247,7 +252,7 @@ impl Extension {
         &mut self,
         name: &str,
         arguments: &str,
-        host_tools: &mut dyn FnMut(&str, &str) -> String,
+        host_tools: &mut HostToolBridge,
     ) -> Option<String> {
         if !self.manifest.tools.iter().any(|t| t.name == name) {
             return None;

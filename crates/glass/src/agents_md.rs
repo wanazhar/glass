@@ -33,6 +33,14 @@ pub const MAX_FILE_BYTES: usize = 8_000;
 /// directories cannot crowd out the conversation.
 pub const MAX_TOTAL_BYTES: usize = 12_000;
 
+/// Compile-time guard on the budget. Raising `MAX_TOTAL_BYTES` past this should
+/// be a deliberate act with a deliberate justification, not an accident that
+/// only shows up as a slower first request.
+const _: () = assert!(
+    MAX_TOTAL_BYTES <= 16_000,
+    "project instructions are now costing more than the tool schemas"
+);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Instruction {
     pub path: PathBuf,
@@ -229,9 +237,4 @@ mod tests {
         assert!(render_all(&[]).is_none());
     }
 
-    #[test]
-    fn instructions_stay_small_enough_to_matter() {
-        // The whole feature must not cost more than the tools do.
-        assert!(MAX_TOTAL_BYTES / 4 < 4000, "budget is ~{} tokens", MAX_TOTAL_BYTES / 4);
-    }
 }

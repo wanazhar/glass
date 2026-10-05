@@ -146,7 +146,11 @@ fn run(args: &[String]) -> Result<(), String> {
     }
 
     term::enter().map_err(|e| format!("cannot set up terminal: {e}"))?;
-    let result = repl(cfg, provider, loaded_mods, extensions, catalogue, project_instructions, session);
+    let mut extensions = extensions;
+    let result = repl(cfg, provider, loaded_mods, &mut extensions, catalogue, project_instructions, session);
+    // Extensions are child processes: they must be reaped on every exit path,
+    // or they outlive the session holding the workspace open.
+    extensions.shutdown();
     term::leave().ok();
     result
 }
@@ -155,7 +159,7 @@ fn repl(
     cfg: config::Config,
     provider: Box<dyn provider::Provider>,
     loaded_mods: Vec<Box<dyn glass_mod_api::Mod_>>,
-    mut extensions: ext::Registry,
+    extensions: &mut ext::Registry,
     catalogue: Option<String>,
     project_instructions: Option<String>,
     mut session: Session,
@@ -164,7 +168,7 @@ fn repl(
     let mut editor = Editor::new();
     let mut back = glass_tui::term::BackBuffer::new();
 
-    print_banner(&cfg, &loaded_mods, &session);
+    print_banner(&cfg, &loaded_mods, extensions, &session);
 
     let (mut w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
     let mut prompt_row = h.saturating_sub(2);
@@ -226,6 +230,40 @@ fn repl(
             continue;
         }
 
+        if text == "/extensions" {
+            if extensions.is_empty() {
+                println!("no extensions loaded. add them under `extensions` in config.toml.");
+            } else {
+                for line in extensions.describe() {
+                    println!("  {line}");
+                }
+                let cmds = extensions.commands();
+                if !cmds.is_empty() {
+                    println!("  commands:");
+                    for (name, desc) in cmds {
+                        println!("    /{name:<14} {desc}");
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Anything else beginning with `/` may be an extension command. If no
+        // extension claims it, say so rather than sending it to the model as a
+        // prompt, where it would read as confused text.
+        if let Some(rest) = text.strip_prefix('/') {
+            let (cmd, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            if extensions.has_command(cmd) {
+                match extensions.run_command(cmd, args.trim()) {
+                    Some(out) => println!("{}", out.trim_end()),
+                    None => println!("\x1b[33m/{cmd} did not return a result\x1b[0m"),
+                }
+                continue;
+            }
+            println!("\x1b[31munknown command /{cmd}\x1b[0m — try /help");
+            continue;
+        }
+
         session.append(Record::User(text.clone()));
         println!("\n\x1b[90m❯\x1b[0m {text}");
 
@@ -236,7 +274,7 @@ fn repl(
                 &mut session,
                 &mut state,
                 &loaded_mods,
-                &mut extensions,
+                extensions,
                 &cfg.workspace,
             )
             .prime_extensions()
@@ -328,13 +366,26 @@ fn first_line(s: &str, max: usize) -> String {
     out
 }
 
-fn print_banner(cfg: &config::Config, loaded: &[Box<dyn glass_mod_api::Mod_>], session: &Session) {
+fn print_banner(
+    cfg: &config::Config,
+    loaded: &[Box<dyn glass_mod_api::Mod_>],
+    exts: &ext::Registry,
+    session: &Session,
+) {
     let mods = if loaded.is_empty() {
         String::new()
     } else {
-        format!(" · {}", loaded.iter().map(|m| m.name()).collect::<Vec<_>>().join(", "))
+        format!(" · mod {}", loaded.iter().map(|m| m.name()).collect::<Vec<_>>().join(", "))
     };
-    println!("\x1b[1mglass\x1b[0m \x1b[90m{} · {}{mods}\x1b[0m", cfg.model, session.id);
+    let extensions = if exts.is_empty() {
+        String::new()
+    } else {
+        format!(" · ext {}", exts.names().join(", "))
+    };
+    println!(
+        "\x1b[1mglass\x1b[0m \x1b[90m{} · {}{mods}{extensions}\x1b[0m",
+        cfg.model, session.id
+    );
     println!("\x1b[90m  bash + state · ctrl-g transcript · ctrl-d quit\x1b[0m");
     println!("\x1b[90m  no permission gate: commands run as asked\x1b[0m\n");
 }

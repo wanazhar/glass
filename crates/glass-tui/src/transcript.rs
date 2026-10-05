@@ -104,7 +104,7 @@ impl Transcript {
             .enumerate()
             .map(|(i, (text, role, turn))| {
                 if self.collapsed.get(i).copied().unwrap_or(false) {
-                    (format!("{text}"), role, turn)
+                    (text.to_string(), role, turn)
                 } else {
                     (text, role, turn)
                 }

@@ -5498,6 +5498,31 @@ impl NativeContentProcess {
                     timeout(NATIVE_WEBSOCKET_CONNECT_TIMEOUT, connect_async(request)).await;
                 let (socket, handshake) = match connected {
                     Ok(Ok(connected)) => connected,
+                    Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response))) => {
+                        let set_cookie_headers = response
+                            .headers()
+                            .get_all(tokio_tungstenite::tungstenite::http::header::SET_COOKIE)
+                            .iter()
+                            .filter_map(|value| value.to_str().ok().map(str::to_owned))
+                            .collect::<Vec<_>>();
+                        // Fetch processes cookies from an HTTP response before
+                        // WebSocket rejects a non-101 handshake. Keep this
+                        // response and the cookie values in the parent.
+                        loader
+                            .apply_websocket_response_cookies(&target_url, &set_cookie_headers)?;
+                        return Ok(json!({
+                            "kind": "parent_websocket_error",
+                            "id": request_id,
+                            "source_id": source_id,
+                            "worker_id": worker_id,
+                            "reason": bounded_websocket_text(
+                                format!("HTTP error: {}", response.status()),
+                                MAX_NATIVE_SCRIPT_BYTES,
+                            ),
+                            "document_cookie": loader.document_cookie(&owner.document_url)?,
+                            "csp_violations": csp_violations,
+                        }));
+                    }
                     Ok(Err(error)) => {
                         return Ok(json!({
                             "kind": "parent_websocket_error",

@@ -41449,6 +41449,223 @@ fn native_runtime_shared_worker_websocket_uses_parent_cookie_authority() {
 }
 
 #[test]
+fn native_content_process_page_websocket_failed_handshake_keeps_parent_cookies() {
+    fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header.eq_ignore_ascii_case(name).then_some(value.trim())
+            })
+        })
+    }
+
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let _guard = native_content_process_test_lock().lock().await;
+            let profile_path = std::env::temp_dir().join(format!(
+                "glass-native-websocket-failed-handshake-cookies-{}-profile.json",
+                std::process::id()
+            ));
+            let cookie_profile_path =
+                std::path::PathBuf::from(format!("{}.cookies", profile_path.display()));
+            let profile_lock_path = profile_path.with_extension("lock");
+            let cookie_profile_lock_path = cookie_profile_path.with_extension("lock");
+            let worker_clients_path = profile_path.with_extension("clients");
+            let worker_events_path = profile_path.with_extension("events");
+            let worker_readers_path = profile_path.with_extension("readers");
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+
+            let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let page_address = page_listener.local_addr().unwrap();
+            let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let api_address = api_listener.local_addr().unwrap();
+            let page_origin = format!("http://{page_address}");
+            let api_origin = format!("http://{api_address}");
+            let page_api_origin = api_origin.replacen("http://", "ws://", 1);
+            let expected_origin = page_origin.clone();
+            let response_origin = page_origin.clone();
+            let handshake_response_sent = Arc::new(AtomicBool::new(false));
+            let handshake_response_sent_by_server = Arc::clone(&handshake_response_sent);
+
+            let page_server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(30), async move {
+                    let (mut stream, _) = page_listener.accept().await.unwrap();
+                    let request = read_http_request(&mut stream).await;
+                    assert_eq!(request.split_whitespace().next(), Some("GET"));
+                    assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+                    let body = format!(
+                        r#"<script>
+globalThis.websocketEvents = [];
+globalThis.socket = new WebSocket("{page_api_origin}/reject");
+socket.addEventListener('open', () => websocketEvents.push('open'));
+socket.addEventListener('error', () => websocketEvents.push('error'));
+</script>"#
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: websocket_seed=initial; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                })
+                .await
+                .expect("page response and rejected WebSocket stay bounded")
+            });
+
+            let api_server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(45), async move {
+                    let (mut handshake_stream, _) = tokio::time::timeout(
+                        Duration::from_secs(30),
+                        api_listener.accept(),
+                    )
+                    .await
+                    .expect("parent WebSocket handshake reaches API")
+                    .unwrap();
+                    let handshake = read_http_request(&mut handshake_stream).await;
+                    assert_eq!(handshake.split_whitespace().next(), Some("GET"));
+                    assert_eq!(handshake.split_whitespace().nth(1), Some("/reject"));
+                    assert_eq!(header_value(&handshake, "origin"), Some(expected_origin.as_str()));
+                    assert!(header_value(&handshake, "upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket")));
+                    assert!(header_value(&handshake, "sec-websocket-key").is_some());
+                    let handshake_cookie = header_value(&handshake, "cookie").unwrap_or_default();
+                    assert!(handshake_cookie.contains("websocket_seed=initial"), "WebSocket handshake missed parent seed: {handshake_cookie}");
+                    assert!(!handshake_cookie.contains("websocket_rejected=retained"));
+                    let rejected_body = "handshake denied";
+                    let rejected_response = format!(
+                        "HTTP/1.1 403 Forbidden\r\nSet-Cookie: websocket_rejected=retained; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{rejected_body}",
+                        rejected_body.len()
+                    );
+                    handshake_stream
+                        .write_all(rejected_response.as_bytes())
+                        .await
+                        .unwrap();
+                    handshake_response_sent_by_server.store(true, Ordering::SeqCst);
+
+                    let (mut verify_stream, _) = tokio::time::timeout(
+                        Duration::from_secs(30),
+                        api_listener.accept(),
+                    )
+                    .await
+                    .expect("later authorized page Fetch reaches API")
+                    .unwrap();
+                    let verify = read_http_request(&mut verify_stream).await;
+                    assert_eq!(verify.split_whitespace().next(), Some("GET"));
+                    assert_eq!(verify.split_whitespace().nth(1), Some("/verify"));
+                    assert_eq!(header_value(&verify, "origin"), Some(expected_origin.as_str()));
+                    let verify_cookie = header_value(&verify, "cookie").unwrap_or_default();
+                    for name in ["websocket_seed=initial", "websocket_rejected=retained"] {
+                        assert!(verify_cookie.contains(name), "authorized Fetch missed parent cookie {name}: {verify_cookie}");
+                    }
+                    let body = "authorized";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Credentials: true\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    verify_stream.write_all(response.as_bytes()).await.unwrap();
+
+                    match tokio::time::timeout(Duration::from_millis(1000), api_listener.accept())
+                        .await
+                    {
+                        Err(_) => {}
+                        Ok(Ok((mut stream, _))) => {
+                            let request = read_http_request(&mut stream).await;
+                            panic!("unexpected WebSocket retry or redirect: {request}");
+                        }
+                        Ok(Err(error)) => panic!("unexpected API listener error: {error}"),
+                    }
+                })
+                .await
+                .expect("failed WebSocket handshake cookie flow stays bounded")
+            });
+
+            let session = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("{page_origin}/page")),
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    if handshake_response_sent.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("API sends the rejected WebSocket response");
+            let socket_state = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let state = session
+                        .script("({readyState: socket.readyState, events: websocketEvents})")
+                        .await
+                        .unwrap()
+                        .value;
+                    if state["readyState"] == serde_json::json!(3) {
+                        break state;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("HTTP rejection closes the page WebSocket");
+            let events = socket_state["events"]
+                .as_array()
+                .expect("WebSocket events are an array");
+            assert!(events.iter().any(|event| event == "error"));
+            assert!(!events.iter().any(|event| event == "open"));
+            assert_eq!(
+                session
+                    .script(&format!(
+                        "await fetch('{api_origin}/verify', {{ credentials: 'include' }}).then(response => response.text())"
+                    ))
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("authorized")
+            );
+            assert_eq!(
+                session.script("document.cookie").await.unwrap().value,
+                serde_json::json!("")
+            );
+            let cookies = session.native_cookies().await.unwrap();
+            session.close().await.unwrap();
+            page_server.await.unwrap();
+            api_server.await.unwrap();
+            for (name, value) in [
+                ("websocket_seed", "initial"),
+                ("websocket_rejected", "retained"),
+            ] {
+                assert!(cookies.iter().any(|cookie| {
+                    cookie.name == name && cookie.value == value && cookie.http_only
+                }));
+            }
+
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+        });
+    });
+}
+
+#[test]
 fn native_runtime_page_response_cookie_changes_reach_all_live_profile_contexts() {
     run_native_browser_worker_test(|runtime| {
         runtime.block_on(async {

@@ -542,8 +542,9 @@ removed. An absent or empty value clears the poster without a request; a
 nonempty value is resolved against the owner Document and fetched. For network
 URLs, the browser parent performs the request through
 its image broker under image CSP policy and parent-owned cookie authority.
-The request uses credentials mode `include` with URL credentials; its client
-is the owner Document, which supplies the effective referrer policy. Eligible
+The request has destination `image` and initiator type `video`, uses
+credentials mode `include` with URL credentials, and has the owner Document as
+its client; that Document supplies the effective referrer policy. Eligible
 response cookies remain in the parent.
 Only bounded decoded image data and the URL-scoped script-visible cookie
 projection may enter the content process. A poster response must never fail

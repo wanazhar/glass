@@ -43,12 +43,14 @@ the video's media-source state.
   removing the attribute replaces or clears the poster without restarting the
   media `src`.
 - HTTP(S) poster requests use the parent image broker and image CSP policy.
-  Match the HTML request's `include` credentials mode and use-URL-credentials
-  flag; the owner Document supplies the effective referrer policy. The parent
-  selects request cookies and accepts eligible response cookies. The content
-  process receives only bounded image data and its URL-scoped script-visible
-  cookie projection; it never receives cookie headers, the complete jar, or
-  HttpOnly values.
+  Preserve the HTML request's `image` destination, `video` initiator type,
+  `include` credentials mode, and use-URL-credentials flag; the owner Document
+  is the request client and supplies its effective referrer policy. These are
+  parent-selected request semantics, not child-supplied overrides. The parent
+  selects cookies and accepts eligible response cookies. The content process
+  receives only bounded image data and its URL-scoped script-visible cookie
+  projection; it never receives cookie headers, the complete jar, or HttpOnly
+  values.
 - Poster decode/network/CSP failure leaves no poster and does not fail
   navigation or dispatch `<img>` load/error events on the `<video>`. The
   poster request participates in the owner Document's load delay. An unchanged

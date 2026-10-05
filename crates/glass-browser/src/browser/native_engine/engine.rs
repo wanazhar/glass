@@ -11851,8 +11851,9 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            let mut requests = Vec::new();
-            for _ in 0..4 {
+            let mut requests: Vec<(String, Option<String>, String, Option<String>, Vec<u8>)> =
+                Vec::new();
+            for _ in 0..5 {
                 let accepted =
                     tokio::time::timeout(std::time::Duration::from_secs(45), listener.accept())
                         .await
@@ -11861,7 +11862,7 @@ mod tests {
                                 "Service Worker timer requests timed out after paths {:?}",
                                 requests
                                     .iter()
-                                    .map(|(path, _): &(String, Option<String>)| path)
+                                    .map(|(path, _, _, _, _)| path)
                                     .collect::<Vec<_>>()
                             )
                         })
@@ -11869,55 +11870,109 @@ mod tests {
                 let (mut stream, _) = accepted;
                 let mut request = Vec::new();
                 let mut buffer = [0_u8; 2048];
-                loop {
+                let header_end = loop {
                     let read = stream.read(&mut buffer).await.unwrap();
-                    if read == 0 {
-                        break;
-                    }
+                    assert_ne!(read, 0, "Service Worker timer request ended before headers");
                     request.extend_from_slice(&buffer[..read]);
-                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                        break;
+                    if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                    {
+                        break index + 4;
                     }
+                };
+                let request_headers = String::from_utf8_lossy(&request[..header_end]).into_owned();
+                let content_length = request_headers
+                    .lines()
+                    .find_map(|line| {
+                        line.split_once(':').and_then(|(name, value)| {
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                    })
+                    .unwrap_or_default();
+                while request.len() < header_end + content_length {
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    assert_ne!(read, 0, "Service Worker timer request body ended early");
+                    request.extend_from_slice(&buffer[..read]);
                 }
-                let request = String::from_utf8_lossy(&request).into_owned();
-                let path = request
+                let method = request_headers
+                    .split_whitespace()
+                    .next()
+                    .expect("Service Worker timer request includes a method")
+                    .to_owned();
+                let path = request_headers
                     .split_whitespace()
                     .nth(1)
                     .expect("Service Worker timer request includes a path")
                     .to_owned();
-                let cookie = request
+                let cookie = request_headers
                     .lines()
                     .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
                     .and_then(|line| line.split_once(':'))
                     .map(|(_, value)| value.trim().to_owned());
-                let (headers, content_type, body) = match path.as_str() {
+                let content_type_header = request_headers
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("content-type:"))
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim().to_owned());
+                let request_body = request[header_end..header_end + content_length].to_vec();
+                if path == "/timer-upload" {
+                    assert_eq!(method, "POST");
+                    assert_eq!(content_type_header.as_deref(), Some("text/plain"));
+                    assert_eq!(request_body, b"service-worker-timer-body");
+                }
+                let (response_headers, response_content_type, response_body) = match path.as_str() {
                     "/page" => (
                         concat!(
                             "Set-Cookie: timer_session=visible; Path=/; SameSite=Lax\r\n",
                             "Set-Cookie: timer_secret=before; HttpOnly; Path=/; SameSite=Lax\r\n",
                         ),
                         "text/html",
-                        "<script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>Service Worker timer cookie broker</main>",
+                        "<main>Service Worker timer cookie broker</main>",
                     ),
                     "/sw.js" => (
                         "Set-Cookie: timer_script=loaded; HttpOnly; Path=/; SameSite=Lax\r\n",
                         "application/javascript",
-                        "self.addEventListener('install', event => event.waitUntil(self.skipWaiting())); setTimeout(async () => { try { const first = await fetch('/timer-first'); await first.text(); const second = await fetch('/timer-second'); await second.text(); } catch (_) {} }, 0);",
+                        r#"self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+setTimeout(async () => {
+  try {
+    const first = await fetch('/timer-first');
+    await first.text();
+    const upload = new ReadableStream({
+      pull(controller) {
+        controller.enqueue(new TextEncoder().encode('service-worker-timer-body'));
+        controller.close();
+      },
+    });
+    const posted = await fetch('/timer-upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: upload,
+    });
+    await posted.text();
+    const second = await fetch('/timer-second');
+    await second.text();
+  } catch (_) {}
+}, 0);"#,
                     ),
                     "/timer-first" => (
                         "Set-Cookie: timer_secret=after; HttpOnly; Path=/; SameSite=Lax\r\n",
                         "text/plain",
                         "first",
                     ),
+                    "/timer-upload" => (
+                        "Set-Cookie: timer_upload=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                        "text/plain",
+                        "uploaded",
+                    ),
                     "/timer-second" => ("", "text/plain", "second"),
                     other => panic!("unexpected Service Worker timer request: {other}"),
                 };
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\n{headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
+                    "HTTP/1.1 200 OK\r\n{response_headers}Content-Type: {response_content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
                 );
                 stream.write_all(response.as_bytes()).await.unwrap();
-                requests.push((path, cookie));
+                requests.push((path, cookie, method, content_type_header, request_body));
             }
             requests
         });
@@ -11926,6 +11981,10 @@ mod tests {
             NativeEngineConfig::default().with_initial_url(format!("http://{address}/page"));
         let mut engine = NativeEngine::new(config).unwrap();
         engine.initialize_async().await.unwrap();
+        engine
+            .evaluate_async("document.cookie = 'timer_turn=present; Path=/'; globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' }); true")
+            .await
+            .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
             while !server.is_finished() {
                 for notification in engine.take_async_effect_notifications().unwrap() {
@@ -11949,15 +12008,21 @@ mod tests {
         assert_eq!(
             requests
                 .iter()
-                .map(|(path, _)| path.as_str())
+                .map(|(path, _, _, _, _)| path.as_str())
                 .collect::<Vec<_>>(),
-            ["/page", "/sw.js", "/timer-first", "/timer-second"]
+            [
+                "/page",
+                "/sw.js",
+                "/timer-first",
+                "/timer-upload",
+                "/timer-second"
+            ]
         );
         let cookie_for = |path: &str| {
             requests
                 .iter()
-                .find(|(request_path, _)| request_path == path)
-                .and_then(|(_, cookie)| cookie.as_deref())
+                .find(|(request_path, _, _, _, _)| request_path == path)
+                .and_then(|(_, cookie, _, _, _)| cookie.as_deref())
                 .unwrap_or_default()
         };
         assert!(cookie_for("/sw.js").contains("timer_secret=before"));
@@ -11971,11 +12036,21 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(cookie_for("/timer-first").contains("timer_secret=before"));
+        assert!(cookie_for("/timer-first").contains("timer_turn=present"));
+        assert!(cookie_for("/timer-upload").contains("timer_script=loaded"));
+        assert!(cookie_for("/timer-upload").contains("timer_secret=after"));
+        assert!(cookie_for("/timer-upload").contains("timer_turn=present"));
         assert!(cookie_for("/timer-second").contains("timer_secret=after"));
+        assert!(cookie_for("/timer-second").contains("timer_upload=accepted"));
         assert!(
             visible_cookies
                 .as_str()
                 .is_some_and(|value| value.contains("timer_session=visible"))
+        );
+        assert!(
+            visible_cookies
+                .as_str()
+                .is_some_and(|value| value.contains("timer_turn=present"))
         );
         assert!(
             !visible_cookies
@@ -11988,9 +12063,19 @@ mod tests {
                 .is_some_and(|value| value.contains("timer_script="))
         );
         assert!(
+            !visible_cookies
+                .as_str()
+                .is_some_and(|value| value.contains("timer_upload="))
+        );
+        assert!(
             cookies
                 .iter()
                 .any(|cookie| cookie.name == "timer_secret" && cookie.value == "after")
+        );
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| { cookie.name == "timer_upload" && cookie.value == "accepted" })
         );
     }
 

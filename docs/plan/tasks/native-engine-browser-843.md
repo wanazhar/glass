@@ -840,8 +840,17 @@ projection and existing native Fetch behavior.
   collected before parent network dispatch. The parent still exclusively
   selects request cookies, accepts `Set-Cookie`, and owns persistence; the
   process-backed loopback regression verifies the ordered cookie rotation,
-  POST body, and script-visible projection. This does not cover autonomous
-  ServiceWorker-originated uploads or the remaining cookie-bearing request
-  audit. Slice 843 and Issue #40 remain in progress.
+  POST body, and script-visible projection. At that checkpoint autonomous
+  ServiceWorker timer uploads were not yet covered; Slice 850 adds that narrow
+  case without closing the remaining cookie-bearing request audit. Slice 843
+  and Issue #40 remain in progress.
+- Follow-up [Slice 850](native-engine-browser-850.md) adds the corresponding
+  autonomous ServiceWorker timer upload case. Its process-backed regression
+  verifies that a page's owner-tagged visible-cookie write precedes
+  ServiceWorker registration, then checks the timer's parent-brokered first
+  Fetch, buffered POST upload, response-cookie rotation, and later Worker
+  Fetch. The parent remains the only cookie matcher, `Set-Cookie` acceptor,
+  and jar owner. Other request classes and the wider conformance audit remain
+  open; Slice 843 and Issue #40 are not complete.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

@@ -10844,6 +10844,13 @@ conformance, cross-platform certification, and remote CI remain open; Issue
 #40 remains open. See the [Slice 853 task](tasks/native-engine-browser-853.md)
 and [review](reviews/native-engine-browser-853-01.md).
 
+Slice 854 is in progress: process-backed XHR CORS-preflight coverage. It will
+verify that page and DedicatedWorker OPTIONS requests carry no cookies even
+when the actual XHR uses `include`, while checking parent-selected credentials
+and response-cookie acceptance on the actual request. The slice also covers
+default credentials and synchronous parent-brokered page XHR. See the
+[Slice 854 task](tasks/native-engine-browser-854.md).
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

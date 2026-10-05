@@ -10941,14 +10941,18 @@ This does not claim background ServiceWorker or full Fetch/CORS, WPT,
 cross-platform, or remote-CI conformance. See the [Slice 862 task](tasks/native-engine-browser-862.md)
 and [review](reviews/native-engine-browser-862-01.md). Issue #40 remains open.
 
-Slice 863 extends that regression to a controlled-page FetchEvent dispatched
-by an explicit page Fetch. This takes the ordinary parent broker path without
-the captured-load marker, so it remains distinct from Slice 862's
-navigation-owned path. A credentialed actual-response CORS failure must reject
-with a real `TypeError`, while its HttpOnly cookie remains parent-owned and is
-reused by later worker and page requests. No child cookie state or raw
-cookie-header IPC is allowed. See the [Slice 863 task](tasks/native-engine-browser-863.md).
-Issue #40 remains open.
+The completed Slice 863 extends the same process-backed regression to a
+controlled-page FetchEvent dispatched by an explicit page Fetch. This takes
+the ordinary parent broker path without the captured-load marker, distinct
+from Slice 862's navigation-owned path. Both actual credentialed CORS failures
+reject in the ServiceWorker with real `TypeError` instances, while both
+HttpOnly response cookies stay in the parent jar and are reused by a later
+ServiceWorker request and page request. The scoped check and exact regression
+passed (1 passed; 926 filtered; 25.58 seconds). No runtime or child-cookie
+authority change was needed. This does not certify background ServiceWorker,
+complete Fetch/CORS or WPT behavior, cross-platform support, or remote CI. See
+the [Slice 863 task](tasks/native-engine-browser-863.md) and
+[review](reviews/native-engine-browser-863-01.md). Issue #40 remains open.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

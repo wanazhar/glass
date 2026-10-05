@@ -10,7 +10,7 @@ pub mod protocol;
 use std::path::Path;
 
 use host::{Extension, HostToolBridge};
-use protocol::{tool_triple, ToolSpec};
+use protocol::{tool_triple, ExtConcurrency, ToolSpec};
 
 /// Every loaded extension.
 pub struct Registry {
@@ -72,6 +72,13 @@ impl Registry {
                 line
             })
             .collect()
+    }
+
+    /// Scheduling class an extension declared for one of its tools.
+    pub fn tool_concurrency(&self, name: &str) -> Option<ExtConcurrency> {
+        self.exts.iter().find_map(|e| {
+            e.manifest.tools.iter().find(|t| t.name == name).map(|t| t.concurrency)
+        })
     }
 
     /// Every tool contributed by every extension.

@@ -39777,6 +39777,222 @@ self.addEventListener('fetch', event => {{
 }
 
 #[test]
+fn native_content_process_page_event_source_omits_cross_origin_cookies_by_default() {
+    fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header.eq_ignore_ascii_case(name).then_some(value.trim())
+            })
+        })
+    }
+
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let _guard = native_content_process_test_lock().lock().await;
+            let profile_path = std::env::temp_dir().join(format!(
+                "glass-native-eventsource-default-credentials-{}-profile.json",
+                std::process::id()
+            ));
+            let cookie_profile_path =
+                std::path::PathBuf::from(format!("{}.cookies", profile_path.display()));
+            let profile_lock_path = profile_path.with_extension("lock");
+            let cookie_profile_lock_path = cookie_profile_path.with_extension("lock");
+            let worker_clients_path = profile_path.with_extension("clients");
+            let worker_events_path = profile_path.with_extension("events");
+            let worker_readers_path = profile_path.with_extension("readers");
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+
+            let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let page_address = page_listener.local_addr().unwrap();
+            let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let api_address = api_listener.local_addr().unwrap();
+            let page_origin = format!("http://{page_address}");
+            let api_origin = format!("http://{api_address}");
+            let page_api_origin = api_origin.clone();
+            let expected_origin = page_origin.clone();
+            let response_origin = page_origin.clone();
+
+            let page_server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(30), async move {
+                    let (mut stream, _) = page_listener.accept().await.unwrap();
+                    let request = read_http_request(&mut stream).await;
+                    assert_eq!(request.split_whitespace().next(), Some("GET"));
+                    assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+                    let body = format!(
+                        r#"<script>
+globalThis.eventSourceMessages = [];
+globalThis.eventSource = new EventSource("{page_api_origin}/events");
+globalThis.eventSourceCredentials = eventSource.withCredentials;
+eventSource.addEventListener('open', () => eventSourceMessages.push('open'));
+eventSource.addEventListener('message', event => {{
+  eventSourceMessages.push(['message', event.data]);
+  eventSource.close();
+}});
+eventSource.addEventListener('error', () => eventSourceMessages.push('error'));
+</script>"#
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: event_seed=initial; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                })
+                .await
+                .expect("page response and default EventSource stay bounded")
+            });
+
+            let api_server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(45), async move {
+                    for (path, expected_cookie) in [
+                        ("/events", None),
+                        ("/verify", Some("event_seed=initial")),
+                    ] {
+                        let (mut stream, _) = tokio::time::timeout(
+                            Duration::from_secs(30),
+                            api_listener.accept(),
+                        )
+                        .await
+                        .expect("EventSource and authorized page requests reach parent network")
+                        .unwrap();
+                        let request = read_http_request(&mut stream).await;
+                        assert_eq!(request.split_whitespace().next(), Some("GET"));
+                        assert_eq!(request.split_whitespace().nth(1), Some(path));
+                        assert_eq!(header_value(&request, "origin"), Some(expected_origin.as_str()));
+                        assert!(header_value(&request, "access-control-request-method").is_none());
+                        let cookie = header_value(&request, "cookie");
+                        match expected_cookie {
+                            None => assert!(cookie.is_none(), "default cross-origin EventSource sent cookies: {cookie:?}"),
+                            Some(expected) => {
+                                let cookie = cookie.unwrap_or_default();
+                                assert!(cookie.contains(expected), "authorized Fetch missed {expected}: {cookie}");
+                                assert!(!cookie.contains("eventsource_uncredentialed=accepted"), "unauthorized EventSource cookie reached parent request: {cookie}");
+                            }
+                        }
+
+                        let (cors_headers, set_cookie, content_type, body) = if path == "/events" {
+                            assert_eq!(header_value(&request, "accept"), Some("text/event-stream"));
+                            (
+                                "Access-Control-Allow-Origin: *\r\n",
+                                "Set-Cookie: eventsource_uncredentialed=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                "text/event-stream",
+                                "data: public\r\n\r\n",
+                            )
+                        } else {
+                            assert_eq!(cookie, Some("event_seed=initial"));
+                            (
+                                "",
+                                "",
+                                "text/plain",
+                                "authorized",
+                            )
+                        };
+                        let cors_headers = if path == "/events" {
+                            cors_headers.to_owned()
+                        } else {
+                            format!(
+                                "Access-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Credentials: true\r\n"
+                            )
+                        };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\n{cors_headers}{set_cookie}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                    }
+
+                    match tokio::time::timeout(Duration::from_millis(1500), api_listener.accept())
+                        .await
+                    {
+                        Err(_) => {}
+                        Ok(Ok((mut stream, _))) => {
+                            let request = read_http_request(&mut stream).await;
+                            panic!("unexpected default EventSource reconnect: {request}");
+                        }
+                        Ok(Err(error)) => panic!("unexpected API listener error: {error}"),
+                    }
+                })
+                .await
+                .expect("default EventSource credential checks stay bounded")
+            });
+
+            let session = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("{page_origin}/page")),
+            )
+            .await
+            .unwrap();
+            let messages = tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    let messages = session
+                        .script("eventSourceMessages")
+                        .await
+                        .unwrap()
+                        .value;
+                    if messages == serde_json::json!(["open", ["message", "public"]]) {
+                        break messages;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("CORS permits the default-credential EventSource stream");
+            assert_eq!(messages, serde_json::json!(["open", ["message", "public"]]));
+            assert_eq!(
+                session.script("eventSourceCredentials").await.unwrap().value,
+                serde_json::json!(false)
+            );
+            assert_eq!(
+                session
+                    .script(&format!(
+                        "await fetch('{api_origin}/verify', {{ credentials: 'include' }}).then(response => response.text())"
+                    ))
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("authorized")
+            );
+            assert_eq!(
+                session.script("document.cookie").await.unwrap().value,
+                serde_json::json!("")
+            );
+            let cookies = session.native_cookies().await.unwrap();
+            session.close().await.unwrap();
+            page_server.await.unwrap();
+            api_server.await.unwrap();
+            assert!(cookies.iter().any(|cookie| {
+                cookie.name == "event_seed" && cookie.value == "initial" && cookie.http_only
+            }));
+            assert!(!cookies
+                .iter()
+                .any(|cookie| cookie.name == "eventsource_uncredentialed"));
+
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+        });
+    });
+}
+
+#[test]
 fn native_content_process_page_event_source_cors_errors_keep_parent_cookies() {
     fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
         request.lines().find_map(|line| {

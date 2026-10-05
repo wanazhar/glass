@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-866
 scope: glass-browser/native-engine/eventsource-same-origin-credentials-cookie-omission
-status: in-progress
+status: done
 depends-on: [native-engine-browser-865]
 ---
 
@@ -93,4 +93,23 @@ conformance.
 
 ## Results
 
-Implementation and focused verification are pending.
+- The existing parent ResourceLoader credentials gate already excludes
+  cross-origin cookies when `withCredentials` is false; no runtime change was
+  required.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p
+  glass-browser --features native-engine --lib --test native_engine --locked
+  --quiet` passed; successful compiler output was suppressed.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p
+  glass-browser --features native-engine --test native_engine --locked
+  --quiet native_content_process_page_event_source_omits_cross_origin_cookies_by_default
+  -- --exact --nocapture` passed (1 passed; 929 filtered; 23.24 seconds).
+- The process-backed regression verifies `withCredentials` defaults to false,
+  the cross-origin GET carries no Cookie and triggers no preflight, CORS allows
+  open/message delivery, the response cookie is absent from a later explicitly
+  credentialed request and from the parent cookie API, and the HttpOnly seed
+  remains out of `document.cookie`.
+- Rust formatting, `git diff --check`, and all four maintainer documentation
+  gates passed; detailed commands/results are recorded in the Slice 866 review.
+- This is focused local evidence only. EventSource redirects/reconnects, full
+  Fetch/CORS or WPT conformance, other platforms, independent review, and
+  remote CI remain unverified. Issue #40 remains open.

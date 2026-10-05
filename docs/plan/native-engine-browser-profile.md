@@ -115,8 +115,13 @@ streaming, reconnect, and close must also be driven by the parent coordinator:
 the parent selects request cookies, applies each response's `Set-Cookie`, and
 keeps the bounded event stream attached to the owning worker. The worker never
 opens a child-side network connection or stores authoritative cookies.
-WebSocket remains a separate unimplemented runtime-network path; this contract
-does not claim its parity.
+Browser-owned SharedWorker WebSocket handshakes, frame sends/receives, close,
+and owner cancellation must likewise remain in the parent coordinator. The
+parent selects handshake cookies and accepts response `Set-Cookie` before
+later requests; the worker receives only bounded opaque connection IDs, frame
+data, and lifecycle events. Raw cookie headers and the authoritative jar never
+cross into the worker realm. Other unimplemented runtime-network paths remain
+separate gaps; this contract does not claim their parity.
 
 The parent must not send a cookie profile, an HttpOnly value, or raw
 `Cookie`/`Set-Cookie` headers to a content process. It gives a document only a

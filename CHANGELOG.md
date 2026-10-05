@@ -62,6 +62,13 @@ and intends to use [Semantic Versioning](https://semver.org/).
   reopen. Glass runtime entrypoints use a 4 MiB Tokio thread stack after the
   focused event-pump path overflowed at the default size; the regression passes
   without a shell stack override.
+- Browser-owned SharedWorker WebSocket handshakes, text/binary frame sends and
+  receives, explicit close, and last-owner cancellation now run through the
+  parent coordinator. The parent selects HttpOnly handshake cookies and applies
+  response cookies to the shared profile; bounded channels carry frames and
+  lifecycle events to the worker. A process-backed regression verifies
+  protocol negotiation, cookie persistence, profile isolation, and both close
+  paths.
 - A ServiceWorker FetchEvent resumed after `clients.openWindow()` now keeps the
   parent-owned cookie broker across its pending continuation. The resumed
   request carries the parent's captured document owner over IPC, which the

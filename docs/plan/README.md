@@ -10683,8 +10683,13 @@ The process-backed
 regression passed (1 passed; 51.95 seconds), verifying the worker uses its
 parent-selected HttpOnly cookie, accepts an HttpOnly response cookie, and
 propagates it to same-profile frames/targets without exposing it to script or
-leaking it into an isolated profile. Other uncovered HTTP(S) classes and
-WebSocket requests remain open. Browser-owned SharedWorker EventSource now
+leaking it into an isolated profile. Browser-owned SharedWorker WebSocket now
+routes handshakes, text/binary frames, explicit close, and last-owner
+cancellation through the parent coordinator. Its process-backed regression
+passed (1 passed; 911 filtered; 70.75 seconds), verifying HttpOnly handshake
+cookies, response-cookie persistence, profile isolation, protocol negotiation,
+and both close paths. Other uncovered HTTP(S) classes remain open. Browser-owned
+SharedWorker EventSource now
 opens, streams, reconnects, and closes through the coordinator's parent loader;
 the parent selects request cookies and accepts response cookies before later
 requests. The process-backed

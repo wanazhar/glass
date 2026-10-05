@@ -50,8 +50,11 @@ pub use config::{
 pub use content_process::run_native_content_worker;
 pub(crate) use content_process::{
     MAX_NATIVE_EVENTSOURCE_CONNECTIONS, MAX_NATIVE_EVENTSOURCE_RECONNECTS,
-    NATIVE_EVENTSOURCE_INITIAL_RETRY, NATIVE_EVENTSOURCE_MAX_RETRY,
-    NativeContentAsyncEffectNotification, NativeEventSourceParser, parse_event_source_chunk,
+    MAX_NATIVE_WEBSOCKET_EVENTS, NATIVE_EVENTSOURCE_INITIAL_RETRY, NATIVE_EVENTSOURCE_MAX_RETRY,
+    NATIVE_WEBSOCKET_CONNECT_TIMEOUT, NativeContentAsyncEffectNotification,
+    NativeEventSourceParser, NativeWebSocketEvent, native_websocket_request,
+    parse_event_source_chunk, validate_websocket_protocols, websocket_event_csp_violations,
+    websocket_event_payload,
 };
 pub use css::NativeColor;
 pub use css::{
@@ -86,15 +89,17 @@ pub use interaction::{
 #[cfg(test)]
 pub(crate) use javascript::{MAX_NATIVE_COOKIE_PROFILE_ENTRIES, NativeCookieProfileEntry};
 pub(crate) use javascript::{
-    MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_WORKER_MESSAGES, NativeCookieChange,
+    MAX_NATIVE_DIALOG_TEXT_BYTES, MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
+    MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES, MAX_NATIVE_WORKER_MESSAGES, NativeCookieChange,
     NativeFrameScriptBinding, NativeFrameScriptContext, NativeFrameScriptRequest,
     NativeFrameScriptWindow, NativeMessagePortTransfer, NativePageMessagePortCommand,
     NativePopupRequest, NativePostMessageRequest, NativeScriptCommand,
     NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
     NativeSharedWorkerCreateRequest, NativeSharedWorkerStorageKey, NativeWindowCloseRequest,
     NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerEventSourceCommand,
-    NativeWorkerMessage, NativeWorkerRegistry, synchronize_service_worker_client_leases,
-    validate_message_port_transfers, validate_page_message_port_command,
+    NativeWorkerMessage, NativeWorkerRegistry, NativeWorkerWebSocketCommand,
+    synchronize_service_worker_client_leases, validate_message_port_transfers,
+    validate_page_message_port_command,
 };
 pub use layout::{
     NativeLayoutBox, NativeLayoutSnapshot, NativePoint, NativeRect, NativeSvgSubpath,
@@ -112,7 +117,7 @@ pub use raster::{
 };
 pub(crate) use resource_loader::{
     NativeCookieJar, NativeCspViolation, NativeNavigationMethod, NativeNavigationRequest,
-    NativeRequestBody, validate_target_navigation_payload,
+    NativeRequestBody, schedule_native_csp_report_deliveries, validate_target_navigation_payload,
 };
 pub use resource_loader::{NativeFetchResponse, NativeResource, NativeResourceLoader};
 pub use runtime::{

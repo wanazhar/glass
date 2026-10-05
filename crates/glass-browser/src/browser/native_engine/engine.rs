@@ -6,6 +6,7 @@ use super::config::{
     validate_url_text, validate_window_name, without_fragment,
 };
 use super::content_process::{
+    CONTENT_PROCESS_ASYNC_EFFECT_TIMEOUT, CONTENT_PROCESS_SCRIPT_TIMEOUT,
     NativeContentAsyncEffectNotification, NativeContentLoad, NativeContentLoadResult,
     NativeContentMutation, NativeContentNavigation, NativeContentProcess,
     NativeContentScriptResult, merge_dynamic_page_script_result,
@@ -832,7 +833,12 @@ impl NativeEngine {
         }
 
         let previous_revision = self.revision;
-        self.evaluate_async("void 0").await?;
+        self.evaluate_page_with_events_async_timeout(
+            "void 0".into(),
+            NativePageEventBatch::default(),
+            CONTENT_PROCESS_ASYNC_EFFECT_TIMEOUT,
+        )
+        .await?;
         let event_effects = self.effects_since(previous_revision)?.effects;
         let frame_scripts = self.take_pending_frame_scripts();
 
@@ -2762,7 +2768,21 @@ impl NativeEngine {
     async fn evaluate_page_with_events_async(
         &mut self,
         source: String,
+        page_events: NativePageEventBatch,
+    ) -> Result<serde_json::Value, NativeEngineError> {
+        self.evaluate_page_with_events_async_timeout(
+            source,
+            page_events,
+            CONTENT_PROCESS_SCRIPT_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn evaluate_page_with_events_async_timeout(
+        &mut self,
+        source: String,
         mut page_events: NativePageEventBatch,
+        content_process_timeout: Duration,
     ) -> Result<serde_json::Value, NativeEngineError> {
         self.require_running("script")?;
         self.sync_external_storage_events()?;
@@ -2799,7 +2819,12 @@ impl NativeEngine {
                 }
                 self.request_ledger.begin()?;
                 let result = process
-                    .evaluate_with_page_events(&source, &page_events, Some(&mut self.loader))
+                    .evaluate_with_page_events_timeout(
+                        &source,
+                        &page_events,
+                        Some(&mut self.loader),
+                        content_process_timeout,
+                    )
                     .await;
                 self.request_ledger.finish();
                 result

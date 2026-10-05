@@ -396,7 +396,7 @@ before dispatch.
 See the [Slice 842 task](tasks/native-engine-browser-842.md) and [Slice 843
 task](tasks/native-engine-browser-843.md).
 
-The latest Slice 843 checkpoint makes covered HTTP(S) targets initiated by the
+Slice 843 makes covered HTTP(S) targets initiated by the
 sandboxed content process use the owner-bound parent broker regardless of the
 owner URL's scheme. A missing broker fails closed instead of retrying through
 the content loader. Local-owner documents execute in the browser engine and
@@ -411,6 +411,17 @@ authority disabled, rejects nonempty journals, and fails closed on direct
 HTTP(S) transport. Remaining request classes still need broker wiring for
 parent request-cookie matching and response-cookie acceptance, so behavioral
 parity is incomplete.
+
+The process-backed `native_service_worker_wait_until_fetch_does_not_delay_response`
+regression now holds a Service Worker lifetime Fetch response for six seconds:
+the independent `respondWith()` navigation commits first, then the parent
+accepts the response's HttpOnly cookie and reuses it on a later request. The
+backend operation gate prevents that queued owner turn from overtaking the
+request that produced it, and the owner turn uses the same 30-second bound as
+parent network Fetches; ordinary page scripts retain their five-second bound.
+Later backend requests still serialize behind an owner turn once it has
+started, so this is not a claim of parallel page and Service Worker execution.
+See the [Slice 845 task](tasks/native-engine-browser-845.md).
 
 ### Shared-profile cookie synchronization
 

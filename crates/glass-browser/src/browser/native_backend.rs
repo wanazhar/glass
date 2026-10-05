@@ -785,6 +785,8 @@ pub struct NativeEngineBackendInner {
     async_effect_pump_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     async_effect_pump_error: Mutex<Option<BrowserBackendError>>,
     pending_async_effect_notifications: Mutex<VecDeque<NativeContentAsyncEffectNotification>>,
+    // An owner-turn notification must not overtake the browser request that created it.
+    backend_operation_gate: Arc<tokio::sync::Mutex<()>>,
     dialog_control: NativeDialogControlPlane,
     targets: Mutex<NativeTargetState>,
     shared_workers: Mutex<NativeSharedWorkerCoordinator>,
@@ -880,6 +882,7 @@ impl NativeEngineBackend {
                 async_effect_pump_task: Mutex::new(None),
                 async_effect_pump_error: Mutex::new(None),
                 pending_async_effect_notifications: Mutex::new(VecDeque::new()),
+                backend_operation_gate: Arc::new(tokio::sync::Mutex::new(())),
                 dialog_control,
                 targets: Mutex::new(NativeTargetState::new(active_target_id, active_name)),
                 shared_workers: Mutex::new(shared_workers),
@@ -944,10 +947,25 @@ impl NativeEngineBackend {
                     return;
                 }
 
+                let Some(pump_inner) = inner.upgrade() else {
+                    return;
+                };
+                let operation_gate = Arc::clone(&pump_inner.backend_operation_gate);
+                drop(pump_inner);
+                let operation_guard = tokio::select! {
+                    biased;
+                    _ = task_stop_notify.notified() => return,
+                    guard = operation_gate.lock_owned() => guard,
+                };
+                if task_stopped.load(Ordering::Acquire) {
+                    return;
+                }
+
                 let weak_inner = inner.clone();
                 let blocking_handle = handle.clone();
                 let pump_cancel_notify = Arc::clone(&task_stop_notify);
                 let pump_result = tokio::task::spawn_blocking(move || {
+                    let _operation_guard = operation_guard;
                     let Some(inner) = weak_inner.upgrade() else {
                         return None;
                     };
@@ -8222,6 +8240,7 @@ impl BrowserBackend for NativeEngineBackend {
                 request.validate()?;
                 self.profile
                     .require_operation(operation, SupportLevel::Available)?;
+                let _operation_guard = Arc::clone(&self.backend_operation_gate).lock_owned().await;
                 self.check_async_effect_pump_error()?;
                 self.initialize_backend().await
             });
@@ -8241,6 +8260,7 @@ impl BrowserBackend for NativeEngineBackend {
                 pump_result?;
                 return Ok(BackendResponse::Unit);
             }
+            let _operation_guard = Arc::clone(&self.backend_operation_gate).lock_owned().await;
             self.check_async_effect_pump_error()?;
             if !matches!(operation, BackendOperation::Initialize) {
                 self.synchronize_native_service_worker_clients().await?;

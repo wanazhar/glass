@@ -13164,12 +13164,32 @@ self.addEventListener('fetch', event => {
     );
 }
 
-#[tokio::test]
-async fn native_service_worker_wait_until_fetch_does_not_delay_response() {
+#[test]
+fn native_service_worker_wait_until_fetch_does_not_delay_response() {
+    std::thread::Builder::new()
+        .name("native-service-worker-lifetime-test".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(4 * 1024 * 1024)
+                .enable_all()
+                .build()
+                .expect("Service Worker lifetime test runtime should build");
+            runtime
+                .block_on(native_service_worker_wait_until_fetch_does_not_delay_response_inner());
+        })
+        .expect("Service Worker lifetime test thread should start")
+        .join()
+        .expect("Service Worker lifetime test thread should complete");
+}
+
+async fn native_service_worker_wait_until_fetch_does_not_delay_response_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (lifetime_seen_tx, lifetime_seen_rx) = oneshot::channel();
+    let (cookie_check_tx, cookie_check_rx) = oneshot::channel();
     let (release_lifetime_tx, release_lifetime_rx) = oneshot::channel();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let registration_page = "<!doctype html><html><body><script>globalThis.registrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });</script><main>waitUntil fetch</main></body></html>";
@@ -13181,23 +13201,16 @@ self.addEventListener('fetch', event => {
     event.waitUntil(fetch('/lifetime').then(response => response.text()).then(text => {
       globalThis.__nativeLifetimeResult = text;
     }));
-    event.respondWith(new Response(
-      '<!doctype html><html><body>fast response</body></html>',
-      { headers: { 'Content-Type': 'text/html' } },
-    ));
-  } else if (path === '/verify') {
-    event.respondWith(new Response(
-      '<!doctype html><html><body>' +
-        (globalThis.__nativeLifetimeResult || 'pending') +
-        '</body></html>',
-      { headers: { 'Content-Type': 'text/html' } },
-    ));
+    event.respondWith(new Response('fast response', {
+      headers: { 'Content-Type': 'text/plain' },
+    }));
   }
 });"#;
     let server = tokio::spawn(async move {
         let mut shutdown_rx = shutdown_rx;
         let mut release_lifetime_rx = release_lifetime_rx;
         let mut lifetime_seen_tx = Some(lifetime_seen_tx);
+        let mut cookie_check_tx = Some(cookie_check_tx);
         loop {
             let accepted = tokio::select! {
                 biased;
@@ -13207,24 +13220,38 @@ self.addEventListener('fetch', event => {
             let (mut stream, _) = accepted;
             let request = read_http_request(&mut stream).await;
             let path = request.split_whitespace().nth(1).unwrap_or_default();
-            let (content_type, body) = match path {
-                "/register" => ("text/html", registration_page),
-                "/sw.js" => ("application/javascript", worker_script),
+            let (content_type, body, response_headers) = match path {
+                "/register" => (
+                    "text/html",
+                    registration_page,
+                    "Set-Cookie: lifetime_seed=secret; Path=/; HttpOnly; SameSite=Lax\r\n",
+                ),
+                "/sw.js" => ("application/javascript", worker_script, ""),
                 "/lifetime" => {
                     if let Some(sender) = lifetime_seen_tx.take() {
-                        let _ = sender.send(());
+                        let _ = sender.send(request.clone());
                     }
                     tokio::select! {
                         biased;
                         _ = &mut shutdown_rx => return,
                         _ = &mut release_lifetime_rx => {}
                     }
-                    ("text/plain", "lifetime finished")
+                    (
+                        "text/plain",
+                        "lifetime finished",
+                        "Set-Cookie: lifetime_rotated=complete; Path=/; HttpOnly; SameSite=Lax\r\n",
+                    )
                 }
-                _ => ("text/plain", "unexpected network request"),
+                "/cookie-check" => {
+                    if let Some(sender) = cookie_check_tx.take() {
+                        let _ = sender.send(request.clone());
+                    }
+                    ("text/plain", "cookie check", "")
+                }
+                _ => ("text/plain", "unexpected network request", ""),
             };
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\n{response_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = stream.write_all(response.as_bytes()).await;
@@ -13241,36 +13268,41 @@ self.addEventListener('fetch', event => {
         .await
         .unwrap();
 
-    let mut navigation = Box::pin(session.navigate(format!("http://{address}/start")));
+    let start_url = format!("http://{address}/start");
+    let mut navigation = Box::pin(session.navigate(start_url.clone()));
     let mut lifetime_seen = Box::pin(lifetime_seen_rx);
     let mut navigation_result = None;
     let first_event = tokio::time::timeout(Duration::from_secs(10), async {
         tokio::select! {
             biased;
             seen = lifetime_seen.as_mut() => {
-                seen.expect("server observed the waitUntil fetch");
-                true
+                Ok(seen.expect("server observed the waitUntil fetch"))
             },
             result = navigation.as_mut() => {
                 navigation_result = Some(result);
-                false
+                Err(())
             },
         }
     })
     .await
-    .unwrap_or(false);
-    let lifetime_fetch_reached_server = first_event
-        || (navigation_result.is_some()
-            && tokio::time::timeout(Duration::from_secs(5), lifetime_seen.as_mut())
-                .await
-                .is_ok());
-    let completed_before_lifetime_response = if navigation_result.is_some() {
-        true
+    .ok()
+    .and_then(Result::ok);
+    let mut lifetime_request = first_event;
+    if lifetime_request.is_none() && navigation_result.is_some() {
+        lifetime_request = tokio::time::timeout(Duration::from_secs(5), lifetime_seen.as_mut())
+            .await
+            .ok()
+            .and_then(Result::ok);
+    }
+    let lifetime_fetch_reached_server = lifetime_request.is_some();
+    let navigation_before_lifetime_release = if let Some(result) = navigation_result.as_ref() {
+        result.as_ref().is_ok_and(|result| result.url == start_url)
     } else if lifetime_fetch_reached_server {
         match tokio::time::timeout(Duration::from_secs(5), navigation.as_mut()).await {
             Ok(result) => {
+                let completed = result.as_ref().is_ok_and(|result| result.url == start_url);
                 navigation_result = Some(result);
-                true
+                completed
             }
             Err(_) => false,
         }
@@ -13278,13 +13310,86 @@ self.addEventListener('fetch', event => {
         false
     };
 
-    let _ = release_lifetime_tx.send(());
     if navigation_result.is_none() {
         navigation_result = tokio::time::timeout(Duration::from_secs(5), navigation.as_mut())
             .await
             .ok();
     }
+    if navigation_result
+        .as_ref()
+        .is_some_and(|result| result.is_ok())
+    {
+        // The asynchronous owner turn must outlive the ordinary 5-second page-script deadline.
+        tokio::time::sleep(Duration::from_secs(6)).await;
+    }
+    let _ = release_lifetime_tx.send(());
     drop(navigation);
+    if let Some(error) = navigation_result
+        .as_ref()
+        .and_then(|result| result.as_ref().err())
+        .map(ToString::to_string)
+    {
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), session.close()).await;
+        server.await.unwrap();
+        panic!(
+            "navigation failed: {error}; lifetime Fetch reached server: {lifetime_fetch_reached_server}; independent response completed before release: {navigation_before_lifetime_release}; lifetime request: {lifetime_request:?}"
+        );
+    }
+    let navigation_result = navigation_result
+        .expect("navigation settles after the lifetime request is released")
+        .expect("navigation succeeds");
+    assert_eq!(navigation_result.url, start_url);
+
+    let cookies = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let cookies = session
+                .native_cookies()
+                .await
+                .expect("read parent cookie jar");
+            if cookies
+                .iter()
+                .any(|cookie| cookie.name == "lifetime_rotated" && cookie.value == "complete")
+            {
+                break cookies;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("parent accepts the lifetime response cookie");
+    for name in ["lifetime_seed", "lifetime_rotated"] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == name && cookie.http_only)
+        );
+    }
+
+    assert_eq!(
+        session
+            .script("await fetch('/cookie-check').then(response => response.status)")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(200)
+    );
+    let cookie_check_request = tokio::time::timeout(Duration::from_secs(5), cookie_check_rx)
+        .await
+        .expect("follow-up request reaches the server")
+        .expect("server records the follow-up request");
+    assert!(
+        cookie_check_request.contains("lifetime_seed=secret"),
+        "parent omitted the original HttpOnly cookie from the follow-up request"
+    );
+    assert!(
+        cookie_check_request.contains("lifetime_rotated=complete"),
+        "parent did not retain the lifetime response cookie"
+    );
+    let visible_cookies = session.script("document.cookie").await.unwrap().value;
+    let visible_cookies = visible_cookies.as_str().unwrap_or_default();
+    assert!(!visible_cookies.contains("lifetime_seed"));
+    assert!(!visible_cookies.contains("lifetime_rotated"));
     let _ = shutdown_tx.send(());
     session.close().await.unwrap();
     server.await.unwrap();
@@ -13294,12 +13399,15 @@ self.addEventListener('fetch', event => {
         "the worker lifetime fetch must reach the HTTP server"
     );
     assert!(
-        completed_before_lifetime_response,
-        "an independent response must commit before the waitUntil fetch is released"
+        lifetime_request
+            .as_deref()
+            .is_some_and(|request| request.contains("lifetime_seed=secret")),
+        "parent must select the HttpOnly cookie for the waitUntil Fetch"
     );
-    navigation_result
-        .expect("navigation settles after the lifetime fetch is released")
-        .expect("navigation succeeds");
+    assert!(
+        navigation_before_lifetime_release,
+        "the FetchEvent navigation response must commit before the waitUntil fetch is released"
+    );
 }
 
 #[tokio::test]

@@ -10712,8 +10712,16 @@ page Fetch, and persistence after reopening the profile while the script cookie
 projection stays empty. A default Tokio stack overflow led to configuring
 4 MiB thread stacks in both products' runtime entrypoints and the test helper;
 the regression passes without a shell environment override. This increases
-reserved stack space per Tokio thread. Scoped package checks pass; remote CI for
-this unpushed checkpoint is not yet available. Slice 843 remains in progress.
+reserved stack space per Tokio thread. Slice 845 now process-tests a controlled
+top-level navigation whose `waitUntil(fetch())` response is held for six
+seconds: the independent navigation commits first, and the parent later accepts
+and reuses the HttpOnly response cookie without exposing either cookie to page
+script. The backend operation gate queues the async-effect pump behind the
+operation that produced its notification; a started owner turn still
+serializes later backend operations. Scoped check, explicit content-worker
+build, and the focused regression pass locally. This unpushed checkpoint has
+no remote CI result. See the [Slice 845 task](tasks/native-engine-browser-845.md).
+Slice 843 and Issue #40 remain in progress.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

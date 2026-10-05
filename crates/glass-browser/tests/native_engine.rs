@@ -13410,6 +13410,142 @@ self.addEventListener('fetch', event => {
     );
 }
 
+#[test]
+fn native_content_process_idle_page_timer_brokers_dynamic_stylesheet_cookies() {
+    std::thread::Builder::new()
+        .name("native-idle-page-timer-test".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(4 * 1024 * 1024)
+                .enable_all()
+                .build()
+                .expect("idle page timer test runtime should build");
+            runtime.block_on(
+                native_content_process_idle_page_timer_brokers_dynamic_stylesheet_cookies_inner(),
+            );
+        })
+        .expect("idle page timer test thread should start")
+        .join()
+        .expect("idle page timer test thread should complete");
+}
+
+async fn native_content_process_idle_page_timer_brokers_dynamic_stylesheet_cookies_inner() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (stylesheet_seen_tx, stylesheet_seen_rx) = oneshot::channel();
+    let (import_seen_tx, import_seen_rx) = oneshot::channel();
+    let observed_paths = Arc::new(Mutex::new(Vec::new()));
+    let server_observed_paths = Arc::clone(&observed_paths);
+    let server = tokio::spawn(async move {
+        let mut stylesheet_seen_tx = Some(stylesheet_seen_tx);
+        let mut import_seen_tx = Some(import_seen_tx);
+        let mut requests = Vec::new();
+        for _ in 0..3 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
+                .await
+                .expect("idle page timer's parent-brokered request should reach the server")
+                .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            server_observed_paths.lock().await.push(path.to_owned());
+            let response = match path {
+                "/page" => {
+                    let body = "<!doctype html><html><head></head><body><script>setTimeout(() => { globalThis.timerCallbackRan = true; const link = document.createElement('link'); link.rel = 'stylesheet'; link.href = '/timer.css'; document.head.appendChild(link); }, 25);</script><main>idle timer</main></body></html>";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: timer_seed=secret; Path=/; HttpOnly; SameSite=Lax\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                "/timer.css" => {
+                    if let Some(sender) = stylesheet_seen_tx.take() {
+                        let _ = sender.send(request.clone());
+                    }
+                    let body = "@import url('/timer-import.css');";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: timer_root=accepted; Path=/; HttpOnly; SameSite=Lax\r\nContent-Type: text/css\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                "/timer-import.css" => {
+                    if let Some(sender) = import_seen_tx.take() {
+                        let _ = sender.send(request.clone());
+                    }
+                    let body = "body { color: rgb(1, 2, 3); }";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: timer_import=accepted; Path=/; HttpOnly; SameSite=Lax\r\nContent-Type: text/css\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                other => panic!("unexpected idle timer request: {other}"),
+            };
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push(request);
+        }
+        requests
+    });
+
+    let session = BrowserSession::start_default().await.unwrap();
+    session
+        .navigate(format!("http://{address}/page"))
+        .await
+        .unwrap();
+    let timer_requests = tokio::time::timeout(Duration::from_secs(15), async {
+        let stylesheet = stylesheet_seen_rx
+            .await
+            .expect("timer-created stylesheet request should be observed");
+        let import = import_seen_rx
+            .await
+            .expect("timer-created CSS import should be observed");
+        (stylesheet, import)
+    })
+    .await;
+    let (stylesheet_request, import_request) = match timer_requests {
+        Ok(requests) => requests,
+        Err(error) => {
+            let paths_before_manual_turn = observed_paths.lock().await.clone();
+            let manual_timer_turn = tokio::time::timeout(
+                Duration::from_secs(10),
+                session.script(
+                    "globalThis.__glassRunTimers(performance.now()); globalThis.timerCallbackRan",
+                ),
+            )
+            .await
+            .map(|result| result.map(|result| result.value));
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let paths_after_manual_turn = observed_paths.lock().await.clone();
+            let _ = tokio::time::timeout(Duration::from_secs(2), session.close()).await;
+            panic!(
+                "idle page timer did not complete without another session call ({error}); paths before manual turn: {paths_before_manual_turn:?}; manual timer turn: {manual_timer_turn:?}; paths after manual turn: {paths_after_manual_turn:?}"
+            );
+        }
+    };
+
+    assert!(stylesheet_request.starts_with("GET /timer.css HTTP/1.1\r\n"));
+    assert!(stylesheet_request.contains("timer_seed=secret"));
+    assert!(import_request.starts_with("GET /timer-import.css HTTP/1.1\r\n"));
+    assert!(import_request.contains("timer_seed=secret"));
+    assert!(import_request.contains("timer_root=accepted"));
+    assert_eq!(
+        session.script("document.cookie").await.unwrap().value,
+        serde_json::json!("")
+    );
+    let cookies = session.native_cookies().await.unwrap();
+    for name in ["timer_seed", "timer_root", "timer_import"] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == name && cookie.http_only)
+        );
+    }
+
+    session.close().await.unwrap();
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), 3);
+}
+
 #[tokio::test]
 async fn native_service_worker_navigation_preload_is_cancelled_with_navigation() {
     let _guard = native_content_process_test_lock().lock().await;

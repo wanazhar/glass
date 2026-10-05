@@ -150,6 +150,16 @@ processing are connected.
 User action mutations also carry the parent loader into the content-process
 turn, so newly created HTTP(S) stylesheets and their CSS imports/fonts, images,
 and media use the same owner-checked broker and response-cookie authority.
+Slice 846 extends that path to a due page `setTimeout` while a process-backed
+HTTP(S) document is idle. The regression waits until after navigation returns,
+then verifies the timer-created stylesheet and its CSS import without another
+BrowserSession operation in between. The parent sends the initial HttpOnly
+cookie on both requests, accepts the stylesheet response cookie before the
+import, retains the response cookies, and keeps `document.cookie` empty. This
+proves the tested timer/resource path only; it does not certify general event
+loop or rendering behavior. A separate probe found that the stylesheet
+`load` handler did not issue its follow-up Fetch, so that event path remains
+open. See the [Slice 846 task](tasks/native-engine-browser-846.md).
 Initial document-load DedicatedWorker creation and startup Fetch use the same
 parent authority. Their Fetch IPC carries a captured-load marker that the
 parent accepts only for the exact in-flight context, frame, generation, and
@@ -722,11 +732,13 @@ on IPC, runs a bounded timer turn through the existing host-command queues,
 and persists its loader/cache and cookie effects. The native runtime now has a
 bounded effect-ready notification and owner-pump path that routes later
 browser-facing lifetime effects to their exact target and frame without waiting
-for a user request; process-backed delivery is not yet verified. Other
-page-facing worker messages remain queued until a parent response can carry
-them. Streaming upload commands, network Fetch commands, and other
-non-CacheStorage host commands encountered while the `respondWith()` response
-is still pending can still delay settlement.
+for a user request. Slice 845 verifies the process-backed held
+`waitUntil(fetch())` path: navigation commits before the response arrives, and
+the parent accepts and reuses its HttpOnly cookie. Other lifetime command
+paths remain open. Other page-facing worker messages remain queued until a
+parent response can carry them. Streaming upload commands, network Fetch
+commands, and other non-CacheStorage host commands encountered while the
+`respondWith()` response is still pending can still delay settlement.
 Process-backed HTTP evidence, those remaining command paths, WPT, CI, and
 cross-platform validation remain completion gates for Slice 839.
 

@@ -11257,10 +11257,14 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
     let dialog_handler: NativeDialogHandler =
         Arc::new(move |dialog, url| dialog_rpc_for_handler.request_dialog(dialog, url));
     loop {
-        let worker_timer_delay_ms = if resource_loader.is_some() {
-            service_workers
-                .next_timer_delay_ms()?
+        let timer_delay_ms = if resource_loader.is_some() {
+            javascript_runtime
+                .as_ref()
+                .map(|runtime| runtime.next_timer_delay_ms())
+                .transpose()?
+                .flatten()
                 .into_iter()
+                .chain(service_workers.next_timer_delay_ms()?)
                 .chain(workers.next_timer_delay_ms()?)
                 .min()
         } else {
@@ -11280,8 +11284,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             {
                 NativeContentProcessInput::ServiceWorkerLifetimeFetch(completion?)
             }
-            _ = tokio::time::sleep(Duration::from_millis(worker_timer_delay_ms.unwrap_or_default())),
-                if !async_effect_notification_pending && worker_timer_delay_ms.is_some() =>
+            _ = tokio::time::sleep(Duration::from_millis(timer_delay_ms.unwrap_or_default())),
+                if !async_effect_notification_pending && timer_delay_ms.is_some() =>
             {
                 NativeContentProcessInput::WorkerTimer
             }
@@ -11355,10 +11359,16 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             }
             NativeContentProcessInput::ServiceWorkerLifetimeFetch(None) => continue,
             NativeContentProcessInput::WorkerTimer => {
-                // Every autonomous worker timer runs only in the exact
-                // page-owner turn, where Fetch has the parent's cookie broker.
-                // A standalone content process must not fall back to its local
-                // loader just because it has no browser-level worker router.
+                // Autonomous page, DedicatedWorker, and ServiceWorker timers
+                // run only in the exact page-owner turn, where Fetch and
+                // resource loads have the parent's broker. A standalone
+                // content process must not fall back to its local loader.
+                let defer_page_timer = javascript_runtime
+                    .as_ref()
+                    .map(|runtime| runtime.next_timer_delay_ms())
+                    .transpose()?
+                    .flatten()
+                    .is_some_and(|delay| delay == 0);
                 let service_worker_timer_delay = service_workers.next_timer_delay_ms()?;
                 let defer_service_worker_timer = service_worker_timer_delay.is_some();
                 let defer_worker_timer = workers.next_timer_delay_ms()?.is_some();
@@ -11392,7 +11402,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     cookie_changes,
                     "worker timer cookie changes",
                 )?;
-                let has_pending_effects = defer_service_worker_timer
+                let has_pending_effects = defer_page_timer
+                    || defer_service_worker_timer
                     || defer_worker_timer
                     || content_worker_effects_pending(
                         &pending_worker_messages,

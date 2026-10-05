@@ -6146,9 +6146,11 @@ The completed bounded due-time timer-turn slice is
 [native-engine-browser-047](tasks/native-engine-browser-047.md). Local and
 child realms now retain normalized `setTimeout` due times, drain only timers
 that are due on a later host turn, preserve due-time/ID ordering, and honor
-`clearTimeout`. There is still no background page event loop; intervals,
-animation/idle callbacks, task-source fairness, and full wall-clock scheduling
-remain open.
+`clearTimeout`. At that historical checkpoint, there was no background page
+event loop. Slice 846 later adds and process-tests a bounded autonomous owner
+turn for a due page `setTimeout` that creates a parent-brokered stylesheet and
+CSS import. General task-source fairness, rendering opportunities, and full
+wall-clock scheduling remain open.
 
 The completed bounded submitter-override slice is
 [native-engine-browser-048](tasks/native-engine-browser-048.md). Local and
@@ -10722,6 +10724,20 @@ serializes later backend operations. Scoped check, explicit content-worker
 build, and the focused regression pass locally. This unpushed checkpoint has
 no remote CI result. See the [Slice 845 task](tasks/native-engine-browser-845.md).
 Slice 843 and Issue #40 remain in progress.
+
+Slice 846 now advances due process-backed page timers while the document is
+otherwise idle. Its BrowserSession regression passed (1 passed; 913 filtered;
+20.76 seconds): after navigation returns, a page `setTimeout` creates an HTTP
+stylesheet and CSS import without another BrowserSession operation. The parent
+selects the HttpOnly page cookie for both requests, accepts the stylesheet's
+HttpOnly response cookie before the import, retains the cookie changes, and
+keeps `document.cookie` empty. The scoped native-engine test-target check,
+content-worker build, formatting, and diff checks passed locally. This
+checkpoint is unpushed; no remote CI result is claimed. A separate probe found
+that the stylesheet's `load` handler did not issue its follow-up Fetch. That
+event-delivery gap remains open and is not part of Slice 846. See the
+[Slice 846 task](tasks/native-engine-browser-846.md). This slice does not claim
+browser-wide event-loop or rendering-opportunity conformance.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

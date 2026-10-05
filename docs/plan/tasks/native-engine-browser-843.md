@@ -37,9 +37,12 @@ projection and existing native Fetch behavior.
   parent-loader authority covers SharedWorker script entries, their import
   graph, runtime Fetch, and SharedWorker EventSource open/stream/reconnect/close.
   Parent-owned Fetch responses are bounded and buffered; EventSource delivery
-  remains incremental and bounded inside the coordinator. Content-process
-  registries remain broker-only. WebSocket and other network API gaps remain
-  separate follow-up work.
+  remains incremental and bounded inside the coordinator. Browser-owned
+  SharedWorker WebSocket handshake, frames, close, and owner cancellation must
+  also use the parent coordinator; it selects handshake cookies and applies
+  response cookies before later requests, while only bounded connection IDs,
+  frame data, and lifecycle events reach the worker. Content-process registries
+  remain broker-only. Other network API gaps remain separate follow-up work.
 - Do not send a complete cookie profile, HttpOnly value, raw `Cookie` or
   `Set-Cookie` header, or cookie-bearing profile path into the content process.
   Remove content-process cookie-profile load/save and persistence paths.
@@ -112,6 +115,8 @@ projection and existing native Fetch behavior.
   `RUST_MIN_STACK` override.
 - Run
   `cargo test --quiet -p glass-browser --features native-engine --test native_engine --locked native_runtime_shared_worker_event_source_uses_parent_cookie_authority -- --exact`
+- Run
+  `cargo test --quiet -p glass-browser --features native-engine --test native_engine --locked native_runtime_shared_worker_websocket_uses_parent_cookie_authority -- --exact`
 - Run focused process-backed cookie tests after the check; reserve workspace
   and all-feature validation for the final issue #40 gate.
 - `cargo fmt --all -- --check`
@@ -803,8 +808,25 @@ projection and existing native Fetch behavior.
   product packages now set 4 MiB; this reserves more stack per runtime thread,
   using the lowest size verified here. Scoped checks pass for both packages,
   and the focused test passes without a `RUST_MIN_STACK` override. No remote CI
-  result is claimed for this unpushed checkpoint. WebSocket and other
-  unbrokered request classes remain open; full cookie-policy parity is not
-  claimed.
+  result is claimed for this unpushed checkpoint. Other unbrokered request
+  classes remain open; full cookie-policy parity is not claimed.
+- Browser-owned SharedWorker WebSocket handshakes, text/binary frames, explicit
+  close, and last-owner cancellation now run through the parent coordinator.
+  The parent selects request cookies and applies handshake response cookies to
+  the exact shared context jar. A process-backed
+  `native_runtime_shared_worker_websocket_uses_parent_cookie_authority`
+  regression passed (1 passed; 911 filtered; 70.75 seconds), verifying
+  protocol negotiation, two consecutive outbound frames with bounded queue
+  backpressure, text/binary inbound frames, HttpOnly invisibility, response
+  cookie use on later Fetch and profile reopen, isolated-profile separation,
+  explicit clean close, and owner teardown. Scoped `cargo check` passed with
+  existing dead-code warnings. The per-socket outbound queue has one pending
+  slot and fails explicitly after a 10-second blocked send/close; the event
+  queue is bounded. Formatting, release-truth, documentation-depth, shortcut,
+  and documentation-coverage checks also pass (1,471 Markdown files, zero
+  current-claim failures, 93 current guides, 19 contracts, and 346 full-product
+  MCP tools). This source remains unpushed, so no remote CI result is claimed.
+  Other unbrokered HTTP(S) classes remain open, so Slice 843 and Issue #40
+  remain in progress.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

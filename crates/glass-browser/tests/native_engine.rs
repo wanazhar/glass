@@ -38616,6 +38616,377 @@ globalThis.startSharedWorkerEventSource = () => {
 }
 
 #[test]
+fn native_runtime_shared_worker_websocket_uses_parent_cookie_authority() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let _guard = native_content_process_test_lock().lock().await;
+            let profile_path = std::env::temp_dir().join(format!(
+                "glass-native-shared-worker-websocket-{}-profile.json",
+                std::process::id()
+            ));
+            let isolated_profile_path = std::env::temp_dir().join(format!(
+                "glass-native-shared-worker-websocket-{}-isolated.json",
+                std::process::id()
+            ));
+            let cookie_profile_path =
+                std::path::PathBuf::from(format!("{}.cookies", profile_path.display()));
+            let isolated_cookie_profile_path = std::path::PathBuf::from(format!(
+                "{}.cookies",
+                isolated_profile_path.display()
+            ));
+            let profile_lock_path = profile_path.with_extension("lock");
+            let cookie_profile_lock_path = cookie_profile_path.with_extension("lock");
+            let isolated_lock_path = isolated_profile_path.with_extension("lock");
+            let isolated_cookie_profile_lock_path =
+                isolated_cookie_profile_path.with_extension("lock");
+            let worker_clients_path = profile_path.with_extension("clients");
+            let worker_events_path = profile_path.with_extension("events");
+            let worker_readers_path = profile_path.with_extension("readers");
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &isolated_profile_path,
+                &isolated_cookie_profile_path,
+                &isolated_lock_path,
+                &isolated_cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let handshake_cookie_valid = Arc::new(AtomicBool::new(false));
+            let handshake_cookie_valid_by_server = Arc::clone(&handshake_cookie_valid);
+            let explicit_close_seen = Arc::new(AtomicBool::new(false));
+            let explicit_close_seen_by_server = Arc::clone(&explicit_close_seen);
+            let teardown_close_seen = Arc::new(AtomicBool::new(false));
+            let teardown_close_seen_by_server = Arc::clone(&teardown_close_seen);
+            let server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(60), async move {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let request = read_http_request(&mut stream).await;
+                    assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+                    let body = format!(
+                        "<script>globalThis.websocketMessages=[]; globalThis.startSharedWorkerWebSocket=()=>{{const worker=new SharedWorker('/shared-websocket.js',{{name:'parent-cookie-shared-websocket',credentials:'include'}}); worker.port.addEventListener('message',event=>websocketMessages.push(event.data)); worker.port.start();}};</script>"
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: parent_seed=page; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let request = read_http_request(&mut stream).await;
+                    assert_eq!(
+                        request.split_whitespace().nth(1),
+                        Some("/shared-websocket.js")
+                    );
+                    let body = format!("onconnect=event=>{{const port=event.ports[0]; const socket=new WebSocket('ws://{address}/socket','glass-protocol'); const held=new WebSocket('ws://{address}/held'); socket.binaryType='arraybuffer'; socket.addEventListener('open',()=>{{port.postMessage(['open',socket.protocol]); socket.send('client-frame'); socket.send(new Uint8Array([4,5,6]));}}); socket.addEventListener('message',event=>{{if(typeof event.data==='string') port.postMessage(['message',event.data,event.origin]); else {{port.postMessage(['binary',Array.from(new Uint8Array(event.data)),event.origin]); socket.close(3001,'worker-close');}}}}); socket.addEventListener('close',event=>port.postMessage(['close',event.code,event.reason,event.wasClean])); socket.addEventListener('error',()=>port.postMessage(['error'])); held.addEventListener('open',()=>port.postMessage(['held-open'])); held.addEventListener('error',()=>port.postMessage(['held-error']));}};");
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: worker_entry=shared; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: text/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let handshake_cookie_valid =
+                        Arc::clone(&handshake_cookie_valid_by_server);
+                    let websocket = accept_hdr_async(
+                        stream,
+                        move |request: &WebSocketRequest, mut response: WebSocketResponse| {
+                            let cookie = request
+                                .headers()
+                                .get(COOKIE)
+                                .and_then(|value| value.to_str().ok())
+                                .unwrap_or_default();
+                            handshake_cookie_valid.store(
+                                cookie.contains("parent_seed=page")
+                                    && cookie.contains("worker_entry=shared"),
+                                Ordering::SeqCst,
+                            );
+                            response.headers_mut().insert(
+                                SET_COOKIE,
+                                HeaderValue::from_static(
+                                    "socket_cookie=from-handshake; HttpOnly; Path=/; SameSite=Lax",
+                                ),
+                            );
+                            response.headers_mut().insert(
+                                tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL,
+                                HeaderValue::from_static("glass-protocol"),
+                            );
+                            Ok(response)
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    let explicit_close_seen = Arc::clone(&explicit_close_seen_by_server);
+                    let explicit_websocket_task = tokio::spawn(async move {
+                        let (mut writer, mut reader) = websocket.split();
+                        match tokio::time::timeout(Duration::from_secs(15), reader.next())
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .unwrap()
+                        {
+                            Message::Text(data) => assert_eq!(data, "client-frame"),
+                            other => panic!("unexpected SharedWorker WebSocket frame: {other:?}"),
+                        }
+                        match tokio::time::timeout(Duration::from_secs(15), reader.next())
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .unwrap()
+                        {
+                            Message::Binary(data) => assert_eq!(data.as_ref(), &[4, 5, 6]),
+                            other => panic!("unexpected SharedWorker WebSocket frame: {other:?}"),
+                        }
+                        writer
+                            .send(Message::Text("parent-response".into()))
+                            .await
+                            .unwrap();
+                        writer
+                            .send(Message::Binary(vec![1_u8, 2, 255].into()))
+                            .await
+                            .unwrap();
+                        let close = tokio::time::timeout(Duration::from_secs(15), reader.next())
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .unwrap();
+                        match close {
+                            Message::Close(Some(frame)) => {
+                                explicit_close_seen.store(
+                                    u16::from(frame.code) == 3001
+                                        && frame.reason == "worker-close",
+                                    Ordering::SeqCst,
+                                );
+                                writer.flush().await.unwrap();
+                            }
+                            other => panic!("expected explicit SharedWorker close, got {other:?}"),
+                        }
+                    });
+
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let handshake_cookie_valid = Arc::clone(&handshake_cookie_valid_by_server);
+                    let held_websocket = accept_hdr_async(
+                        stream,
+                        move |request: &WebSocketRequest, mut response: WebSocketResponse| {
+                            let cookie = request
+                                .headers()
+                                .get(COOKIE)
+                                .and_then(|value| value.to_str().ok())
+                                .unwrap_or_default();
+                            handshake_cookie_valid.store(
+                                cookie.contains("parent_seed=page")
+                                    && cookie.contains("worker_entry=shared"),
+                                Ordering::SeqCst,
+                            );
+                            response.headers_mut().insert(
+                                SET_COOKIE,
+                                HeaderValue::from_static(
+                                    "socket_cookie=from-handshake; HttpOnly; Path=/; SameSite=Lax",
+                                ),
+                            );
+                            Ok(response)
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    let teardown_close_seen = Arc::clone(&teardown_close_seen_by_server);
+                    let held_websocket_task = tokio::spawn(async move {
+                        let (mut writer, mut reader) = held_websocket.split();
+                        match tokio::time::timeout(Duration::from_secs(30), reader.next()).await {
+                            Ok(Some(Ok(Message::Close(Some(frame))))) => {
+                                teardown_close_seen.store(
+                                    u16::from(frame.code) == 1001,
+                                    Ordering::SeqCst,
+                                );
+                                let _ = writer.send(Message::Close(Some(frame))).await;
+                            }
+                            Ok(Some(Ok(Message::Close(None)))) => {
+                                teardown_close_seen.store(true, Ordering::SeqCst);
+                            }
+                            Ok(None) => teardown_close_seen.store(true, Ordering::SeqCst),
+                            other => panic!("SharedWorker teardown did not close WebSocket: {other:?}"),
+                        }
+                    });
+
+                    let mut requests = Vec::new();
+                    for _ in 0..5 {
+                        let (mut stream, _) = listener.accept().await.unwrap();
+                        let request = read_http_request(&mut stream).await;
+                        let path = request
+                            .split_whitespace()
+                            .nth(1)
+                            .expect("SharedWorker WebSocket test request has a path")
+                            .to_owned();
+                        let cookie = request
+                            .lines()
+                            .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                            .and_then(|line| line.split_once(':'))
+                            .map(|(_, value)| value.trim().to_owned());
+                        let (content_type, body) = match path.as_str() {
+                            "/after" | "/reopened-profile" | "/isolated-observe" => {
+                                ("text/plain", "observed")
+                            }
+                            "/reopen" => ("text/html", "<script>globalThis.reopenResult=fetch('/reopened-profile').then(r=>r.text());</script>"),
+                            "/isolated" => ("text/html", "<script>globalThis.isolatedResult=fetch('/isolated-observe').then(r=>r.text());</script>"),
+                            other => panic!("unexpected SharedWorker WebSocket HTTP request: {other}"),
+                        };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                        requests.push((path, cookie));
+                    }
+                    explicit_websocket_task.await.unwrap();
+                    held_websocket_task.await.unwrap();
+                    requests
+                })
+                .await
+                .expect("SharedWorker WebSocket requests and teardown stay bounded")
+            });
+
+            let session = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("http://{address}/page")),
+            )
+            .await
+            .unwrap();
+            session
+                .script("startSharedWorkerWebSocket(); true")
+                .await
+                .unwrap();
+            let messages = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let messages = session
+                        .script("websocketMessages")
+                        .await
+                        .unwrap()
+                        .value;
+                    if messages.as_array().is_some_and(|values| values.len() >= 5) {
+                        break messages;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("parent WebSocket open, message, and explicit close reach the SharedWorker");
+            let events = messages.as_array().expect("worker messages should be an array");
+            for expected in [
+                serde_json::json!(["open", "glass-protocol"]),
+                serde_json::json!(["held-open"]),
+                serde_json::json!([
+                    "message",
+                    "parent-response",
+                    format!("http://{address}")
+                ]),
+                serde_json::json!(["binary", [1, 2, 255], format!("http://{address}")]),
+                serde_json::json!(["close", 3001, "worker-close", true]),
+            ] {
+                assert!(events.contains(&expected), "missing worker event {expected}: {events:?}");
+            }
+            assert_eq!(
+                session.script("document.cookie").await.unwrap().value,
+                serde_json::json!("")
+            );
+            assert_eq!(
+                session
+                    .script("await fetch('/after').then(response => response.text())")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("observed")
+            );
+            session.close().await.unwrap();
+
+            let reopened = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("http://{address}/reopen")),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                reopened
+                    .script("await reopenResult")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("observed")
+            );
+            reopened.close().await.unwrap();
+
+            let isolated = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(isolated_profile_path.clone())
+                    .with_initial_url(format!("http://{address}/isolated")),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                isolated
+                    .script("await isolatedResult")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("observed")
+            );
+            isolated.close().await.unwrap();
+
+            let requests = server.await.unwrap();
+            let cookie_for = |path: &str| {
+                requests
+                    .iter()
+                    .find(|(request_path, _)| request_path == path)
+                    .unwrap_or_else(|| panic!("missing SharedWorker WebSocket request {path}"))
+                    .1
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            assert!(handshake_cookie_valid.load(Ordering::SeqCst));
+            assert!(explicit_close_seen.load(Ordering::SeqCst));
+            assert!(teardown_close_seen.load(Ordering::SeqCst));
+            for path in ["/after", "/reopened-profile"] {
+                let cookie = cookie_for(path);
+                for name in [
+                    "parent_seed=page",
+                    "worker_entry=shared",
+                    "socket_cookie=from-handshake",
+                ] {
+                    assert!(cookie.contains(name), "{path} must send parent cookie {name}");
+                }
+            }
+            assert!(!cookie_for("/isolated-observe").contains("socket_cookie="));
+
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &isolated_profile_path,
+                &isolated_cookie_profile_path,
+                &isolated_lock_path,
+                &isolated_cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+        });
+    });
+}
+
+#[test]
 fn native_runtime_page_response_cookie_changes_reach_all_live_profile_contexts() {
     run_native_browser_worker_test(|runtime| {
         runtime.block_on(async {

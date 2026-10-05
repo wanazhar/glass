@@ -14,8 +14,10 @@
 
 use super::native_engine::{
     MAX_NATIVE_EFFECTS, MAX_NATIVE_EVENTSOURCE_CONNECTIONS, MAX_NATIVE_EVENTSOURCE_RECONNECTS,
-    MAX_NATIVE_VIEWPORT_DIMENSION, MAX_NATIVE_WORKER_MESSAGES, NATIVE_EVENTSOURCE_INITIAL_RETRY,
-    NATIVE_EVENTSOURCE_MAX_RETRY, NativeAction, NativeAsyncEffectTurn,
+    MAX_NATIVE_VIEWPORT_DIMENSION, MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
+    MAX_NATIVE_WEBSOCKET_EVENTS, MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES, MAX_NATIVE_WORKER_MESSAGES,
+    NATIVE_EVENTSOURCE_INITIAL_RETRY, NATIVE_EVENTSOURCE_MAX_RETRY,
+    NATIVE_WEBSOCKET_CONNECT_TIMEOUT, NativeAction, NativeAsyncEffectTurn,
     NativeContentAsyncEffectNotification, NativeCookieChange, NativeCspViolation,
     NativeDialogControlPlane, NativeDialogController, NativeEffect, NativeEngine,
     NativeEngineConfig, NativeEngineError, NativeEventKind, NativeEventSourceParser, NativeFile,
@@ -27,11 +29,14 @@ use super::native_engine::{
     NativePreflightAction, NativeRequestBody, NativeScriptCommand,
     NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
     NativeSharedWorkerCreateRequest, NativeSharedWorkerStorageKey, NativeSurface,
-    NativeTargetPreflight, NativeWindowCloseRequest, NativeWindowNavigationRequest,
-    NativeWindowProxyUpdate, NativeWorkerEventSourceCommand, NativeWorkerMessage,
-    NativeWorkerRegistry, Viewport, parse_event_source_chunk, parse_point_target,
-    synchronize_service_worker_client_leases, validate_message_port_transfers,
-    validate_page_message_port_command, validate_target_navigation_payload,
+    NativeTargetPreflight, NativeWebSocketEvent, NativeWindowCloseRequest,
+    NativeWindowNavigationRequest, NativeWindowProxyUpdate, NativeWorkerEventSourceCommand,
+    NativeWorkerMessage, NativeWorkerRegistry, NativeWorkerWebSocketCommand, Viewport,
+    native_websocket_request, parse_event_source_chunk, parse_point_target,
+    schedule_native_csp_report_deliveries, synchronize_service_worker_client_leases,
+    validate_message_port_transfers, validate_page_message_port_command,
+    validate_target_navigation_payload, validate_websocket_protocols,
+    websocket_event_csp_violations, websocket_event_payload,
 };
 use super::native_engine::{NativeCookieJar, NativeResourceLoader};
 use crate::browser::session::{
@@ -49,11 +54,13 @@ use crate::browser_backend::{
     SemanticAction, StorageResult, SupportLevel,
 };
 use base64::Engine as _;
+use futures_util::{SinkExt, StreamExt};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 /// Stable backend ID for the Glass-owned native engine.
 pub const NATIVE_ENGINE_BACKEND_ID: &str = "native-engine";
@@ -152,6 +159,19 @@ enum NativeSharedWorkerEventSourceStreamEvent {
     },
 }
 
+enum NativeSharedWorkerWebSocketCommand {
+    Send(Message),
+    Close { code: u16, reason: String },
+}
+
+enum NativeSharedWorkerWebSocketStreamEvent {
+    Event {
+        worker_id: u32,
+        socket_id: u32,
+        event: NativeWebSocketEvent,
+    },
+}
+
 struct NativeSharedWorkerEventSourceState {
     worker_url: String,
     href: String,
@@ -162,14 +182,22 @@ struct NativeSharedWorkerEventSourceState {
     cancel: tokio::sync::watch::Sender<bool>,
 }
 
+struct NativeSharedWorkerWebSocketState {
+    command_sender: tokio::sync::mpsc::Sender<NativeSharedWorkerWebSocketCommand>,
+    cancel: tokio::sync::watch::Sender<bool>,
+}
+
 struct NativeSharedWorkerCoordinator {
     registry: NativeWorkerRegistry,
     loader: NativeResourceLoader,
     page_ports: BTreeMap<String, NativeSharedWorkerPageRoute>,
     event_sources: BTreeMap<(u32, u32), NativeSharedWorkerEventSourceState>,
+    web_sockets: BTreeMap<(u32, u32), NativeSharedWorkerWebSocketState>,
     event_source_stream_sender: tokio::sync::mpsc::Sender<NativeSharedWorkerEventSourceStreamEvent>,
     event_source_stream_receiver:
         tokio::sync::mpsc::Receiver<NativeSharedWorkerEventSourceStreamEvent>,
+    websocket_stream_sender: tokio::sync::mpsc::Sender<NativeSharedWorkerWebSocketStreamEvent>,
+    websocket_stream_receiver: tokio::sync::mpsc::Receiver<NativeSharedWorkerWebSocketStreamEvent>,
     event_notify: Arc<tokio::sync::Notify>,
     next_connection_id: u64,
 }
@@ -183,13 +211,18 @@ impl NativeSharedWorkerCoordinator {
         loader.use_shared_cookie_jar(cookie_jar);
         let (event_source_stream_sender, event_source_stream_receiver) =
             tokio::sync::mpsc::channel(MAX_NATIVE_WORKER_MESSAGES);
+        let (websocket_stream_sender, websocket_stream_receiver) =
+            tokio::sync::mpsc::channel(NATIVE_SHARED_WORKER_WEBSOCKET_EVENT_QUEUE);
         Self {
             registry: NativeWorkerRegistry::new_with_parent_network_authority(),
             loader,
             page_ports: BTreeMap::new(),
             event_sources: BTreeMap::new(),
+            web_sockets: BTreeMap::new(),
             event_source_stream_sender,
             event_source_stream_receiver,
+            websocket_stream_sender,
+            websocket_stream_receiver,
             event_notify,
             next_connection_id: 1,
         }
@@ -227,10 +260,28 @@ impl NativeSharedWorkerCoordinator {
         }
     }
 
+    fn close_websocket(&mut self, worker_id: u32, socket_id: u32) {
+        if let Some(socket) = self.web_sockets.remove(&(worker_id, socket_id)) {
+            let _ = socket.cancel.send(true);
+        }
+    }
+
+    fn close_websockets_for_worker(&mut self, worker_id: u32) {
+        let socket_ids = self
+            .web_sockets
+            .keys()
+            .filter_map(|(candidate, socket_id)| (*candidate == worker_id).then_some(*socket_id))
+            .collect::<Vec<_>>();
+        for socket_id in socket_ids {
+            self.close_websocket(worker_id, socket_id);
+        }
+    }
+
     fn terminate_unowned_shared_worker(&mut self, worker_id: u32) -> bool {
         let terminated = self.registry.terminate_unowned_shared_worker(worker_id);
         if terminated {
             self.close_event_sources_for_worker(worker_id);
+            self.close_websockets_for_worker(worker_id);
         }
         terminated
     }
@@ -1017,7 +1068,8 @@ impl NativeEngineBackend {
                 });
             }
         }
-        self.pump_shared_worker_event_source_stream_events().await
+        self.pump_shared_worker_event_source_stream_events().await?;
+        self.pump_shared_worker_websocket_stream_events().await
     }
 
     async fn pump_shared_worker_event_source_stream_events(
@@ -1038,6 +1090,47 @@ impl NativeEngineBackend {
                     poisoned_lock_error(BackendOperation::Effects, "SharedWorker coordinator")
                 })?;
                 dispatch_shared_worker_event_source_stream_event(&mut coordinator, event)
+                    .await
+                    .map_err(native_error)?;
+                let cookie_changes = coordinator
+                    .remember_cookie_changes()
+                    .map_err(native_error)?;
+                let mut queued = NativeQueuedBrowserEffects::default();
+                if !cookie_changes.is_empty() {
+                    queued
+                        .6
+                        .push(NativeWorkerCoordinatorEffect::SharedWorkerCookieChanges {
+                            changes: cookie_changes,
+                        });
+                }
+                queued
+                    .6
+                    .extend(take_shared_worker_page_messages(&mut coordinator));
+                queued
+            };
+            self.process_pending_browser_effects(
+                queued.0, queued.1, queued.2, queued.3, queued.4, queued.5, queued.6,
+            )
+            .await?;
+        }
+    }
+
+    async fn pump_shared_worker_websocket_stream_events(&self) -> Result<(), BrowserBackendError> {
+        loop {
+            let event = {
+                let mut coordinator = self.shared_workers.lock().map_err(|_| {
+                    poisoned_lock_error(BackendOperation::Effects, "SharedWorker coordinator")
+                })?;
+                coordinator.websocket_stream_receiver.try_recv().ok()
+            };
+            let Some(event) = event else {
+                return Ok(());
+            };
+            let queued = {
+                let mut coordinator = self.shared_workers.lock().map_err(|_| {
+                    poisoned_lock_error(BackendOperation::Effects, "SharedWorker coordinator")
+                })?;
+                dispatch_shared_worker_websocket_stream_event(&mut coordinator, event)
                     .await
                     .map_err(native_error)?;
                 let cookie_changes = coordinator
@@ -5865,8 +5958,7 @@ impl NativeEngineBackend {
                 .await
         };
         if result.is_ok() {
-            let commands = coordinator.registry.take_event_source_commands();
-            result = process_shared_worker_event_source_commands(&mut coordinator, commands).await;
+            result = process_shared_worker_network_commands(&mut coordinator).await;
         }
         let cookie_changes = coordinator.remember_cookie_changes();
         let cookie_changes = match (result, cookie_changes) {
@@ -6146,8 +6238,7 @@ impl NativeEngineBackend {
                 .await
         };
         let event_source_result = if result.is_ok() {
-            let commands = coordinator.registry.take_event_source_commands();
-            process_shared_worker_event_source_commands(&mut coordinator, commands).await
+            process_shared_worker_network_commands(&mut coordinator).await
         } else {
             Ok(())
         };
@@ -8980,6 +9071,10 @@ const NATIVE_SHARED_WORKER_EVENTSOURCE_CHUNK_BYTES: usize = 16 * 1024;
 const NATIVE_SHARED_WORKER_EVENTSOURCE_MAX_RESPONSE_CHUNK_BYTES: usize = 1024 * 1024;
 const NATIVE_SHARED_WORKER_EVENTSOURCE_OPEN_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(30);
+const NATIVE_SHARED_WORKER_WEBSOCKET_EVENT_QUEUE: usize = 16;
+const NATIVE_SHARED_WORKER_WEBSOCKET_COMMAND_QUEUE: usize = 1;
+const NATIVE_SHARED_WORKER_WEBSOCKET_COMMAND_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(10);
 
 async fn send_shared_worker_event_source_stream_event(
     sender: &tokio::sync::mpsc::Sender<NativeSharedWorkerEventSourceStreamEvent>,
@@ -9220,93 +9315,741 @@ async fn open_shared_worker_event_source(
     Ok(())
 }
 
-async fn process_shared_worker_event_source_commands(
+async fn process_shared_worker_network_commands(
     coordinator: &mut NativeSharedWorkerCoordinator,
-    commands: Vec<NativeWorkerEventSourceCommand>,
 ) -> Result<(), NativeEngineError> {
-    let mut pending = VecDeque::from(commands);
+    let mut event_source_pending =
+        VecDeque::from(coordinator.registry.take_event_source_commands());
+    let mut websocket_pending = VecDeque::from(coordinator.registry.take_websocket_commands());
     let mut processed = 0usize;
-    while let Some(request) = pending.pop_front() {
+    loop {
+        let process_event_source = !event_source_pending.is_empty();
+        if !process_event_source && websocket_pending.is_empty() {
+            break;
+        }
         processed = processed.saturating_add(1);
         if processed > MAX_NATIVE_WORKER_MESSAGES {
             return Err(NativeEngineError::limit(
-                "native SharedWorker EventSource commands",
+                "native SharedWorker network commands",
                 MAX_NATIVE_WORKER_MESSAGES,
                 processed,
             ));
         }
-        let NativeWorkerEventSourceCommand {
-            worker_id,
-            worker_url,
-            command,
-        } = request;
-        match command {
-            NativeScriptCommand::EventSourceOpen {
-                source_id,
-                href,
-                with_credentials,
-                worker_id: Some(command_worker_id),
-            } => {
-                if command_worker_id != worker_id {
-                    return Err(NativeEngineError::invalid(
-                        "native SharedWorker EventSource command",
-                        "EventSource command worker id does not match its owner",
-                    ));
-                }
-                if coordinator
-                    .event_sources
-                    .contains_key(&(worker_id, source_id))
-                {
-                    return Err(NativeEngineError::Network {
-                        operation: "SharedWorker EventSource open".into(),
-                        reason: "EventSource identifier is already active".into(),
-                    });
-                }
-                if coordinator.event_sources.len() >= MAX_NATIVE_EVENTSOURCE_CONNECTIONS {
-                    return Err(NativeEngineError::limit(
-                        "native SharedWorker EventSource connections",
-                        MAX_NATIVE_EVENTSOURCE_CONNECTIONS,
-                        coordinator.event_sources.len().saturating_add(1),
-                    ));
-                }
-                let (cancel, _) = tokio::sync::watch::channel(false);
-                coordinator.event_sources.insert(
-                    (worker_id, source_id),
-                    NativeSharedWorkerEventSourceState {
-                        worker_url,
-                        href,
-                        with_credentials,
-                        origin: String::new(),
-                        parser: NativeEventSourceParser::with_state(
-                            String::new(),
-                            NATIVE_EVENTSOURCE_INITIAL_RETRY,
-                        ),
-                        reconnects: 0,
-                        cancel,
-                    },
-                );
-                open_shared_worker_event_source(coordinator, worker_id, source_id).await?;
-            }
-            NativeScriptCommand::EventSourceClose {
-                source_id,
-                worker_id: Some(command_worker_id),
-            } => {
-                if command_worker_id != worker_id {
-                    return Err(NativeEngineError::invalid(
-                        "native SharedWorker EventSource command",
-                        "EventSource command worker id does not match its owner",
-                    ));
-                }
-                coordinator.close_event_source(worker_id, source_id);
-            }
-            _ => {
+        if process_event_source {
+            process_one_shared_worker_event_source_command(
+                coordinator,
+                event_source_pending
+                    .pop_front()
+                    .expect("pending EventSource command"),
+            )
+            .await?;
+        } else {
+            process_one_shared_worker_websocket_command(
+                coordinator,
+                websocket_pending
+                    .pop_front()
+                    .expect("pending WebSocket command"),
+            )
+            .await?;
+        }
+        event_source_pending.extend(coordinator.registry.take_event_source_commands());
+        websocket_pending.extend(coordinator.registry.take_websocket_commands());
+    }
+    Ok(())
+}
+
+async fn process_one_shared_worker_event_source_command(
+    coordinator: &mut NativeSharedWorkerCoordinator,
+    request: NativeWorkerEventSourceCommand,
+) -> Result<(), NativeEngineError> {
+    let NativeWorkerEventSourceCommand {
+        worker_id,
+        worker_url,
+        command,
+    } = request;
+    match command {
+        NativeScriptCommand::EventSourceOpen {
+            source_id,
+            href,
+            with_credentials,
+            worker_id: Some(command_worker_id),
+        } => {
+            if command_worker_id != worker_id {
                 return Err(NativeEngineError::invalid(
                     "native SharedWorker EventSource command",
-                    "command is not a worker-owned EventSource operation",
+                    "EventSource command worker id does not match its owner",
                 ));
             }
+            if coordinator
+                .event_sources
+                .contains_key(&(worker_id, source_id))
+            {
+                return Err(NativeEngineError::Network {
+                    operation: "SharedWorker EventSource open".into(),
+                    reason: "EventSource identifier is already active".into(),
+                });
+            }
+            if coordinator.event_sources.len() >= MAX_NATIVE_EVENTSOURCE_CONNECTIONS {
+                return Err(NativeEngineError::limit(
+                    "native SharedWorker EventSource connections",
+                    MAX_NATIVE_EVENTSOURCE_CONNECTIONS,
+                    coordinator.event_sources.len().saturating_add(1),
+                ));
+            }
+            let (cancel, _) = tokio::sync::watch::channel(false);
+            coordinator.event_sources.insert(
+                (worker_id, source_id),
+                NativeSharedWorkerEventSourceState {
+                    worker_url,
+                    href,
+                    with_credentials,
+                    origin: String::new(),
+                    parser: NativeEventSourceParser::with_state(
+                        String::new(),
+                        NATIVE_EVENTSOURCE_INITIAL_RETRY,
+                    ),
+                    reconnects: 0,
+                    cancel,
+                },
+            );
+            open_shared_worker_event_source(coordinator, worker_id, source_id).await?;
         }
-        pending.extend(coordinator.registry.take_event_source_commands());
+        NativeScriptCommand::EventSourceClose {
+            source_id,
+            worker_id: Some(command_worker_id),
+        } => {
+            if command_worker_id != worker_id {
+                return Err(NativeEngineError::invalid(
+                    "native SharedWorker EventSource command",
+                    "EventSource command worker id does not match its owner",
+                ));
+            }
+            coordinator.close_event_source(worker_id, source_id);
+        }
+        _ => {
+            return Err(NativeEngineError::invalid(
+                "native SharedWorker EventSource command",
+                "command is not a worker-owned EventSource operation",
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn process_one_shared_worker_websocket_command(
+    coordinator: &mut NativeSharedWorkerCoordinator,
+    request: NativeWorkerWebSocketCommand,
+) -> Result<(), NativeEngineError> {
+    let NativeWorkerWebSocketCommand {
+        worker_id,
+        worker_url,
+        command,
+    } = request;
+    match command {
+        NativeScriptCommand::WebSocketOpen {
+            socket_id,
+            href,
+            protocols,
+            worker_id: Some(command_worker_id),
+        } => {
+            if command_worker_id != worker_id {
+                return Err(NativeEngineError::invalid(
+                    "native SharedWorker WebSocket command",
+                    "WebSocket command worker id does not match its owner",
+                ));
+            }
+            if coordinator
+                .web_sockets
+                .contains_key(&(worker_id, socket_id))
+            {
+                return Err(NativeEngineError::Network {
+                    operation: "SharedWorker WebSocket open".into(),
+                    reason: "WebSocket identifier is already active".into(),
+                });
+            }
+            if coordinator.web_sockets.len() >= MAX_NATIVE_WEBSOCKET_EVENTS {
+                return Err(NativeEngineError::limit(
+                    "native SharedWorker WebSocket connections",
+                    MAX_NATIVE_WEBSOCKET_EVENTS,
+                    coordinator.web_sockets.len().saturating_add(1),
+                ));
+            }
+            validate_websocket_protocols(&protocols)?;
+            open_shared_worker_websocket(
+                coordinator,
+                worker_id,
+                socket_id,
+                &worker_url,
+                &href,
+                &protocols,
+            )
+            .await?;
+        }
+        NativeScriptCommand::WebSocketSend {
+            socket_id,
+            data,
+            data_base64,
+            worker_id: Some(command_worker_id),
+        } => {
+            if command_worker_id != worker_id {
+                return Err(NativeEngineError::invalid(
+                    "native SharedWorker WebSocket command",
+                    "WebSocket command worker id does not match its owner",
+                ));
+            }
+            let message = match (data, data_base64) {
+                (Some(data), None) => {
+                    if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "native SharedWorker WebSocket text message",
+                            MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+                            data.len(),
+                        ));
+                    }
+                    Message::Text(data.into())
+                }
+                (None, Some(data_base64)) => {
+                    let data = base64::engine::general_purpose::STANDARD
+                        .decode(data_base64)
+                        .map_err(|_| {
+                            NativeEngineError::invalid(
+                                "native SharedWorker WebSocket binary message",
+                                "must be valid base64",
+                            )
+                        })?;
+                    if data.len() > MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES {
+                        return Err(NativeEngineError::limit(
+                            "native SharedWorker WebSocket binary message",
+                            MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES,
+                            data.len(),
+                        ));
+                    }
+                    Message::Binary(data.into())
+                }
+                _ => {
+                    return Err(NativeEngineError::invalid(
+                        "native SharedWorker WebSocket message",
+                        "must contain exactly one text or binary payload",
+                    ));
+                }
+            };
+            let connection = coordinator
+                .web_sockets
+                .get(&(worker_id, socket_id))
+                .ok_or_else(|| NativeEngineError::Network {
+                    operation: "SharedWorker WebSocket send".into(),
+                    reason: "WebSocket is not open".into(),
+                })?;
+            match tokio::time::timeout(
+                NATIVE_SHARED_WORKER_WEBSOCKET_COMMAND_TIMEOUT,
+                connection
+                    .command_sender
+                    .send(NativeSharedWorkerWebSocketCommand::Send(message)),
+            )
+            .await
+            {
+                Ok(Ok(())) | Ok(Err(_)) => {}
+                Err(_) => {
+                    return Err(NativeEngineError::Network {
+                        operation: "SharedWorker WebSocket send".into(),
+                        reason: "outgoing WebSocket queue remained blocked".into(),
+                    });
+                }
+            }
+        }
+        NativeScriptCommand::WebSocketClose {
+            socket_id,
+            code,
+            reason,
+            worker_id: Some(command_worker_id),
+        } => {
+            if command_worker_id != worker_id {
+                return Err(NativeEngineError::invalid(
+                    "native SharedWorker WebSocket command",
+                    "WebSocket command worker id does not match its owner",
+                ));
+            }
+            if code != 1000 && !(3000..=4999).contains(&code) {
+                return Err(NativeEngineError::invalid(
+                    "native SharedWorker WebSocket close code",
+                    "must be 1000 or in the 3000-4999 range",
+                ));
+            }
+            if reason.len() > MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES {
+                return Err(NativeEngineError::limit(
+                    "native SharedWorker WebSocket close reason",
+                    MAX_NATIVE_WEBSOCKET_CLOSE_REASON_BYTES,
+                    reason.len(),
+                ));
+            }
+            let connection = coordinator
+                .web_sockets
+                .get(&(worker_id, socket_id))
+                .ok_or_else(|| NativeEngineError::Network {
+                    operation: "SharedWorker WebSocket close".into(),
+                    reason: "WebSocket identifier is not active".into(),
+                })?;
+            match tokio::time::timeout(
+                NATIVE_SHARED_WORKER_WEBSOCKET_COMMAND_TIMEOUT,
+                connection
+                    .command_sender
+                    .send(NativeSharedWorkerWebSocketCommand::Close { code, reason }),
+            )
+            .await
+            {
+                Ok(Ok(())) | Ok(Err(_)) => {}
+                Err(_) => {
+                    return Err(NativeEngineError::Network {
+                        operation: "SharedWorker WebSocket close".into(),
+                        reason: "outgoing WebSocket queue remained blocked".into(),
+                    });
+                }
+            }
+        }
+        _ => {
+            return Err(NativeEngineError::invalid(
+                "native SharedWorker WebSocket command",
+                "command is not a worker-owned WebSocket operation",
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn dispatch_shared_worker_websocket_event(
+    coordinator: &mut NativeSharedWorkerCoordinator,
+    worker_id: u32,
+    socket_id: u32,
+    event: &NativeWebSocketEvent,
+) -> Result<(), NativeEngineError> {
+    let NativeSharedWorkerCoordinator {
+        registry, loader, ..
+    } = coordinator;
+    registry
+        .dispatch_websocket_event(
+            worker_id,
+            socket_id,
+            &websocket_event_payload(event),
+            websocket_event_csp_violations(event),
+            loader,
+        )
+        .await
+}
+
+async fn open_shared_worker_websocket(
+    coordinator: &mut NativeSharedWorkerCoordinator,
+    worker_id: u32,
+    socket_id: u32,
+    worker_url: &str,
+    href: &str,
+    protocols: &[String],
+) -> Result<(), NativeEngineError> {
+    let target = match coordinator.loader.websocket_target(worker_url, href) {
+        Ok(target) => target,
+        Err(error) => {
+            let csp_violations = coordinator.loader.take_csp_violations();
+            dispatch_shared_worker_websocket_event(
+                coordinator,
+                worker_id,
+                socket_id,
+                &NativeWebSocketEvent::Error {
+                    message: error.to_string().chars().take(2048).collect(),
+                    csp_violations,
+                },
+            )
+            .await?;
+            dispatch_shared_worker_websocket_event(
+                coordinator,
+                worker_id,
+                socket_id,
+                &NativeWebSocketEvent::Close {
+                    code: 1006,
+                    reason: String::new(),
+                    was_clean: false,
+                },
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+    schedule_native_csp_report_deliveries(target.csp_report_deliveries.clone());
+    let origin_url =
+        url::Url::parse(worker_url).map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "SharedWorker WebSocket initiator URL is invalid".into(),
+        })?;
+    let origin = NativeOrigin::from_url(&origin_url)?;
+    let request = match native_websocket_request(&target, &origin, protocols) {
+        Ok(request) => request,
+        Err(error) => {
+            dispatch_shared_worker_websocket_event(
+                coordinator,
+                worker_id,
+                socket_id,
+                &NativeWebSocketEvent::Error {
+                    message: error.to_string().chars().take(2048).collect(),
+                    csp_violations: target.csp_violations.clone(),
+                },
+            )
+            .await?;
+            dispatch_shared_worker_websocket_event(
+                coordinator,
+                worker_id,
+                socket_id,
+                &NativeWebSocketEvent::Close {
+                    code: 1006,
+                    reason: String::new(),
+                    was_clean: false,
+                },
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+    let websocket_url = target.url.clone();
+    let message_origin = origin.serialized();
+    let csp_violations = target.csp_violations.clone();
+    let connected =
+        tokio::time::timeout(NATIVE_WEBSOCKET_CONNECT_TIMEOUT, connect_async(request)).await;
+    let (socket, response) = match connected {
+        Ok(Ok(connected)) => connected,
+        Ok(Err(error)) => {
+            dispatch_shared_worker_websocket_event(
+                coordinator,
+                worker_id,
+                socket_id,
+                &NativeWebSocketEvent::Error {
+                    message: error.to_string().chars().take(2048).collect(),
+                    csp_violations,
+                },
+            )
+            .await?;
+            dispatch_shared_worker_websocket_event(
+                coordinator,
+                worker_id,
+                socket_id,
+                &NativeWebSocketEvent::Close {
+                    code: 1006,
+                    reason: String::new(),
+                    was_clean: false,
+                },
+            )
+            .await?;
+            return Ok(());
+        }
+        Err(_) => {
+            dispatch_shared_worker_websocket_event(
+                coordinator,
+                worker_id,
+                socket_id,
+                &NativeWebSocketEvent::Error {
+                    message: "SharedWorker WebSocket handshake timed out".into(),
+                    csp_violations,
+                },
+            )
+            .await?;
+            dispatch_shared_worker_websocket_event(
+                coordinator,
+                worker_id,
+                socket_id,
+                &NativeWebSocketEvent::Close {
+                    code: 1006,
+                    reason: String::new(),
+                    was_clean: false,
+                },
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+    let selected_protocol = response
+        .headers()
+        .get(tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let set_cookie_headers = response
+        .headers()
+        .get_all(tokio_tungstenite::tungstenite::http::header::SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok().map(str::to_owned))
+        .collect::<Vec<_>>();
+    coordinator
+        .loader
+        .apply_websocket_response_cookies(&websocket_url, &set_cookie_headers)?;
+
+    let (command_sender, command_receiver) =
+        tokio::sync::mpsc::channel(NATIVE_SHARED_WORKER_WEBSOCKET_COMMAND_QUEUE);
+    let (cancel, cancel_receiver) = tokio::sync::watch::channel(false);
+    coordinator.web_sockets.insert(
+        (worker_id, socket_id),
+        NativeSharedWorkerWebSocketState {
+            command_sender,
+            cancel,
+        },
+    );
+    spawn_shared_worker_websocket_stream(
+        coordinator,
+        worker_id,
+        socket_id,
+        socket,
+        command_receiver,
+        cancel_receiver,
+        message_origin,
+    );
+    dispatch_shared_worker_websocket_event(
+        coordinator,
+        worker_id,
+        socket_id,
+        &NativeWebSocketEvent::Open {
+            protocol: selected_protocol,
+            csp_violations,
+        },
+    )
+    .await
+}
+
+fn spawn_shared_worker_websocket_stream<S>(
+    coordinator: &NativeSharedWorkerCoordinator,
+    worker_id: u32,
+    socket_id: u32,
+    socket: tokio_tungstenite::WebSocketStream<S>,
+    mut commands: tokio::sync::mpsc::Receiver<NativeSharedWorkerWebSocketCommand>,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+    message_origin: String,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let sender = coordinator.websocket_stream_sender.clone();
+    let notify = Arc::clone(&coordinator.event_notify);
+    tokio::spawn(async move {
+        let (mut sink, mut stream) = socket.split();
+        loop {
+            tokio::select! {
+                _ = cancel.changed() => {
+                    let close = shared_worker_websocket_close_frame(1001, "SharedWorker terminated");
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), sink.send(close)).await;
+                    break;
+                }
+                command = commands.recv() => {
+                    match command {
+                        Some(NativeSharedWorkerWebSocketCommand::Send(message)) => {
+                            if let Err(error) = sink.send(message).await {
+                                if !send_shared_worker_websocket_stream_event(
+                                    &sender,
+                                    &notify,
+                                    &mut cancel,
+                                    worker_id,
+                                    socket_id,
+                                    NativeWebSocketEvent::Error {
+                                        message: error.to_string().chars().take(2048).collect(),
+                                        csp_violations: Vec::new(),
+                                    },
+                                ).await {
+                                    break;
+                                }
+                                let _ = send_shared_worker_websocket_stream_event(
+                                    &sender,
+                                    &notify,
+                                    &mut cancel,
+                                    worker_id,
+                                    socket_id,
+                                    NativeWebSocketEvent::Close {
+                                        code: 1006,
+                                        reason: String::new(),
+                                        was_clean: false,
+                                    },
+                                ).await;
+                                break;
+                            }
+                        }
+                        Some(NativeSharedWorkerWebSocketCommand::Close { code, reason }) => {
+                            if let Err(error) = sink.send(shared_worker_websocket_close_frame(code, &reason)).await {
+                                if !send_shared_worker_websocket_stream_event(
+                                    &sender,
+                                    &notify,
+                                    &mut cancel,
+                                    worker_id,
+                                    socket_id,
+                                    NativeWebSocketEvent::Error {
+                                        message: error.to_string().chars().take(2048).collect(),
+                                        csp_violations: Vec::new(),
+                                    },
+                                ).await {
+                                    break;
+                                }
+                                let _ = send_shared_worker_websocket_stream_event(
+                                    &sender,
+                                    &notify,
+                                    &mut cancel,
+                                    worker_id,
+                                    socket_id,
+                                    NativeWebSocketEvent::Close {
+                                        code: 1006,
+                                        reason: String::new(),
+                                        was_clean: false,
+                                    },
+                                ).await;
+                                break;
+                            }
+                        }
+                        None => {
+                            let close = shared_worker_websocket_close_frame(1001, "SharedWorker terminated");
+                            let _ = sink.send(close).await;
+                            break;
+                        }
+                    }
+                }
+                frame = stream.next() => {
+                    match frame {
+                        Some(Ok(Message::Text(data))) if data.len() <= MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES => {
+                            if !send_shared_worker_websocket_stream_event(
+                                &sender, &notify, &mut cancel, worker_id, socket_id,
+                                NativeWebSocketEvent::MessageText {
+                                    data: data.to_string(),
+                                    origin: message_origin.clone(),
+                                },
+                            ).await { break; }
+                        }
+                        Some(Ok(Message::Binary(data))) if data.len() <= MAX_NATIVE_WEBSOCKET_MESSAGE_BYTES => {
+                            if !send_shared_worker_websocket_stream_event(
+                                &sender, &notify, &mut cancel, worker_id, socket_id,
+                                NativeWebSocketEvent::MessageBinary {
+                                    data: data.to_vec(),
+                                    origin: message_origin.clone(),
+                                },
+                            ).await { break; }
+                        }
+                        Some(Ok(Message::Text(_))) | Some(Ok(Message::Binary(_))) => {
+                            let _ = send_shared_worker_websocket_stream_event(
+                                &sender, &notify, &mut cancel, worker_id, socket_id,
+                                NativeWebSocketEvent::Error {
+                                    message: "SharedWorker WebSocket message exceeds its limit".into(),
+                                    csp_violations: Vec::new(),
+                                },
+                            ).await;
+                            let _ = send_shared_worker_websocket_stream_event(
+                                &sender, &notify, &mut cancel, worker_id, socket_id,
+                                NativeWebSocketEvent::Close {
+                                    code: 1006, reason: String::new(), was_clean: false,
+                                },
+                            ).await;
+                            break;
+                        }
+                        Some(Ok(Message::Ping(data))) => {
+                            if let Err(error) = sink.send(Message::Pong(data)).await {
+                                let _ = send_shared_worker_websocket_stream_event(
+                                    &sender, &notify, &mut cancel, worker_id, socket_id,
+                                    NativeWebSocketEvent::Error {
+                                        message: error.to_string().chars().take(2048).collect(),
+                                        csp_violations: Vec::new(),
+                                    },
+                                ).await;
+                                let _ = send_shared_worker_websocket_stream_event(
+                                    &sender, &notify, &mut cancel, worker_id, socket_id,
+                                    NativeWebSocketEvent::Close {
+                                        code: 1006, reason: String::new(), was_clean: false,
+                                    },
+                                ).await;
+                                break;
+                            }
+                        }
+                        Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => {}
+                        Some(Ok(Message::Close(frame))) => {
+                            let (code, reason) = frame.map(|frame| {
+                                (u16::from(frame.code), frame.reason.to_string())
+                            }).unwrap_or((1005, String::new()));
+                            let response = if code == 1005 {
+                                Message::Close(None)
+                            } else {
+                                shared_worker_websocket_close_frame(code, &reason)
+                            };
+                            let _ = sink.send(response).await;
+                            let _ = send_shared_worker_websocket_stream_event(
+                                &sender, &notify, &mut cancel, worker_id, socket_id,
+                                NativeWebSocketEvent::Close {
+                                    code, reason, was_clean: true,
+                                },
+                            ).await;
+                            break;
+                        }
+                        Some(Err(error)) => {
+                            let _ = send_shared_worker_websocket_stream_event(
+                                &sender, &notify, &mut cancel, worker_id, socket_id,
+                                NativeWebSocketEvent::Error {
+                                    message: error.to_string().chars().take(2048).collect(),
+                                    csp_violations: Vec::new(),
+                                },
+                            ).await;
+                            let _ = send_shared_worker_websocket_stream_event(
+                                &sender, &notify, &mut cancel, worker_id, socket_id,
+                                NativeWebSocketEvent::Close {
+                                    code: 1006, reason: String::new(), was_clean: false,
+                                },
+                            ).await;
+                            break;
+                        }
+                        None => {
+                            let _ = send_shared_worker_websocket_stream_event(
+                                &sender, &notify, &mut cancel, worker_id, socket_id,
+                                NativeWebSocketEvent::Close {
+                                    code: 1006, reason: String::new(), was_clean: false,
+                                },
+                            ).await;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn shared_worker_websocket_close_frame(code: u16, reason: &str) -> Message {
+    Message::Close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+        code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::from(code),
+        reason: reason.to_owned().into(),
+    }))
+}
+
+async fn send_shared_worker_websocket_stream_event(
+    sender: &tokio::sync::mpsc::Sender<NativeSharedWorkerWebSocketStreamEvent>,
+    notify: &tokio::sync::Notify,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    worker_id: u32,
+    socket_id: u32,
+    event: NativeWebSocketEvent,
+) -> bool {
+    if *cancel.borrow() {
+        return false;
+    }
+    let sent = tokio::select! {
+        _ = cancel.changed() => return false,
+        result = sender.send(NativeSharedWorkerWebSocketStreamEvent::Event {
+            worker_id,
+            socket_id,
+            event,
+        }) => result.is_ok(),
+    };
+    if sent {
+        notify.notify_one();
+    }
+    sent
+}
+
+async fn dispatch_shared_worker_websocket_stream_event(
+    coordinator: &mut NativeSharedWorkerCoordinator,
+    stream_event: NativeSharedWorkerWebSocketStreamEvent,
+) -> Result<(), NativeEngineError> {
+    let NativeSharedWorkerWebSocketStreamEvent::Event {
+        worker_id,
+        socket_id,
+        event,
+    } = stream_event;
+    let terminal = matches!(&event, NativeWebSocketEvent::Close { .. });
+    dispatch_shared_worker_websocket_event(coordinator, worker_id, socket_id, &event).await?;
+    process_shared_worker_network_commands(coordinator).await?;
+    if terminal {
+        coordinator.close_websocket(worker_id, socket_id);
     }
     Ok(())
 }
@@ -9331,8 +10074,7 @@ async fn dispatch_shared_worker_event_source_error(
         &[],
     )
     .await?;
-    let commands = coordinator.registry.take_event_source_commands();
-    process_shared_worker_event_source_commands(coordinator, commands).await?;
+    process_shared_worker_network_commands(coordinator).await?;
     if coordinator
         .event_sources
         .contains_key(&(worker_id, source_id))
@@ -9346,8 +10088,7 @@ async fn dispatch_shared_worker_event_source_error(
             &[],
         )
         .await?;
-        let commands = coordinator.registry.take_event_source_commands();
-        process_shared_worker_event_source_commands(coordinator, commands).await?;
+        process_shared_worker_network_commands(coordinator).await?;
         coordinator.close_event_source(worker_id, source_id);
     }
     Ok(())
@@ -9408,8 +10149,7 @@ async fn dispatch_shared_worker_event_source_stream_event(
                     &[],
                 )
                 .await?;
-                let commands = coordinator.registry.take_event_source_commands();
-                process_shared_worker_event_source_commands(coordinator, commands).await?;
+                process_shared_worker_network_commands(coordinator).await?;
             }
         }
         NativeSharedWorkerEventSourceStreamEvent::End {
@@ -9441,8 +10181,7 @@ async fn dispatch_shared_worker_event_source_stream_event(
                 .contains_key(&(worker_id, source_id))
             {
                 open_shared_worker_event_source(coordinator, worker_id, source_id).await?;
-                let commands = coordinator.registry.take_event_source_commands();
-                process_shared_worker_event_source_commands(coordinator, commands).await?;
+                process_shared_worker_network_commands(coordinator).await?;
             }
         }
     }

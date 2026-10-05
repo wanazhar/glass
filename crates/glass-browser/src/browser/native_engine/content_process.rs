@@ -130,9 +130,9 @@ const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CONTENT_EVENT_LOOP_TURNS: usize = MAX_NATIVE_EFFECTS;
 const MAX_NATIVE_COOKIE_CHANGE_BATCH: usize = MAX_NATIVE_EFFECTS;
-const NATIVE_WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const NATIVE_WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const NATIVE_WEBSOCKET_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const MAX_NATIVE_WEBSOCKET_EVENTS: usize = MAX_NATIVE_EFFECTS;
+pub(crate) const MAX_NATIVE_WEBSOCKET_EVENTS: usize = MAX_NATIVE_EFFECTS;
 pub(crate) const NATIVE_EVENTSOURCE_INITIAL_RETRY: Duration = Duration::from_secs(3);
 pub(crate) const NATIVE_EVENTSOURCE_MAX_RETRY: Duration = Duration::from_secs(30);
 pub(crate) const MAX_NATIVE_EVENTSOURCE_RECONNECTS: usize = MAX_NATIVE_EFFECTS;
@@ -2124,7 +2124,7 @@ pub(crate) struct NativeContentEvent {
     pub(crate) kind: NativeEventKind,
 }
 
-enum NativeWebSocketEvent {
+pub(crate) enum NativeWebSocketEvent {
     Open {
         protocol: String,
         csp_violations: Vec<NativeCspViolation>,
@@ -2368,7 +2368,7 @@ fn bounded_websocket_text(value: impl AsRef<str>, limit: usize) -> String {
     value[..end].to_owned()
 }
 
-fn validate_websocket_protocols(protocols: &[String]) -> Result<(), NativeEngineError> {
+pub(crate) fn validate_websocket_protocols(protocols: &[String]) -> Result<(), NativeEngineError> {
     if protocols.len() > MAX_NATIVE_WEBSOCKET_PROTOCOLS {
         return Err(NativeEngineError::limit(
             "native WebSocket protocols",
@@ -2411,7 +2411,7 @@ fn validate_websocket_protocols(protocols: &[String]) -> Result<(), NativeEngine
     Ok(())
 }
 
-fn native_websocket_request(
+pub(crate) fn native_websocket_request(
     target: &NativeWebSocketTarget,
     origin: &NativeOrigin,
     protocols: &[String],
@@ -21906,7 +21906,7 @@ fn take_fetch_upload_event(
     None
 }
 
-fn websocket_event_payload(event: &NativeWebSocketEvent) -> Value {
+pub(crate) fn websocket_event_payload(event: &NativeWebSocketEvent) -> Value {
     match event {
         NativeWebSocketEvent::Open { protocol, .. } => {
             json!({"type": "open", "protocol": protocol})
@@ -21937,7 +21937,9 @@ fn websocket_event_payload(event: &NativeWebSocketEvent) -> Value {
     }
 }
 
-fn websocket_event_csp_violations(event: &NativeWebSocketEvent) -> &[NativeCspViolation] {
+pub(crate) fn websocket_event_csp_violations(
+    event: &NativeWebSocketEvent,
+) -> &[NativeCspViolation] {
     match event {
         NativeWebSocketEvent::Open { csp_violations, .. }
         | NativeWebSocketEvent::Error { csp_violations, .. } => csp_violations,

@@ -664,9 +664,11 @@ cookie-override replay. The browser-owned registry uses its parent loader for
 SharedWorker script entries, their import graph, runtime Fetch, and EventSource
 opens. Direct
 Fetch responses are bounded and buffered inside the browser coordinator;
-content-process registries remain broker-only. WebSocket and other runtime
-network APIs remain separate coverage; browser-owned SharedWorker EventSource
-is covered by the latest checkpoint below. The first Slice 843
+content-process registries remain broker-only. Browser-owned SharedWorker
+WebSocket handshakes, text/binary frames, close, and owner cancellation now use
+the parent coordinator; its process-backed regression verifies handshake
+cookies and response-cookie persistence. Other runtime network APIs remain
+separate coverage. The first Slice 843
 checkpoint also makes the public cookie-list API read from a
 parent-loader snapshot overlaid with the parent's pending content-cookie
 journal, and removes the content-process command that returned complete cookie

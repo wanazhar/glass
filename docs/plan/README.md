@@ -11037,14 +11037,19 @@ separate from Slice 869's process-backed page IPC path. See the
 [Slice 870 task](tasks/native-engine-browser-870.md) and [direct self-review](reviews/native-engine-browser-870-01.md).
 Issue #40 remains open.
 
-Slice 871 is the next bounded owner-proof task: extend the process-backed
-rejected-handshake regression to a DedicatedWorker WebSocket after the page
-handshake has committed its HttpOnly response cookie. The parent IPC handler
-already serves both owners, but current failure-cookie evidence covers only a
-page. The test will verify the Worker receives the page cookie, the parent
-accepts the Worker response cookie, and a later authorized page Fetch reuses
-both without exposing either to script. See the
-[Slice 871 task](tasks/native-engine-browser-871.md). Issue #40 remains open.
+The completed Slice 871 extends the process-backed rejected-handshake
+regression to a DedicatedWorker WebSocket after the page handshake commits its
+HttpOnly response cookie. The Worker handshake sends the seed and page cookie;
+the parent accepts its 403 response cookie; and a later authorized page Fetch
+reuses all three without exposing them to `document.cookie`. Both owners
+report failure without `open`, retry, or redirect. The first attempt exposed a
+test-harness ordering issue: the queued page error event needed a browser owner
+turn before the server could observe the Worker handshake. Polling page and
+Worker state now advances that turn. No runtime fix was needed. The exact
+regression passed (1 passed; 933 filtered; 20.52 seconds); the scoped check and
+format/diff checks passed. See the [Slice 871 task](tasks/native-engine-browser-871.md)
+and [direct self-review](reviews/native-engine-browser-871-01.md). Issue #40
+remains open.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

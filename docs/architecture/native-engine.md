@@ -982,7 +982,11 @@ SharedWorker WebSockets use a separate coordinator path whose rejected
 handshake response cookies are now accepted in the parent before bounded
 failure events. The process-backed [Slice 870 regression](../plan/tasks/native-engine-browser-870.md)
 verifies later authorized reuse and HttpOnly filtering without exposing the
-response or cookie values to the worker.
+response or cookie values to the worker. The process-backed [Slice 871
+regression](../plan/tasks/native-engine-browser-871.md) extends the page IPC
+failure-cookie evidence to a DedicatedWorker: after the page's rejected
+handshake cookie is committed, the Worker sends it, its own rejected-response
+cookie is accepted in the parent, and a later page request reuses both.
 Synchronous page and Worker XHR block on a parent IPC round trip: pending
 script cookie writes are applied before the request, response cookies remain
 in the parent jar, and the child receives only the visible cookie projection.

@@ -11022,10 +11022,10 @@ failure events; a later credentialed page Fetch carries both the seed and
 response cookie. The process-backed regression passed (1 passed; 932
 filtered), confirms both cookies remain HttpOnly in the parent while
 `document.cookie` stays empty, and rules out open/retry/redirect behavior. The
-browser-owned SharedWorker coordinator is a separate path and still lacks
-rejected-handshake response-cookie handling. See the [Slice 869 task](tasks/native-engine-browser-869.md)
-and [direct self-review](reviews/native-engine-browser-869-01.md). Issue #40
-remains open.
+browser-owned SharedWorker coordinator was a separate path not covered by
+Slice 869; Slice 870 below verifies its rejected-handshake handling. See the
+[Slice 869 task](tasks/native-engine-browser-869.md) and [direct self-review](reviews/native-engine-browser-869-01.md).
+Issue #40 remains open.
 
 The completed Slice 870 closes the distinct browser-owned SharedWorker
 WebSocket coordinator's non-101 HTTP error path. The parent applies eligible
@@ -11036,6 +11036,15 @@ in the parent, empty `document.cookie`, and no open/retry/redirect. This is
 separate from Slice 869's process-backed page IPC path. See the
 [Slice 870 task](tasks/native-engine-browser-870.md) and [direct self-review](reviews/native-engine-browser-870-01.md).
 Issue #40 remains open.
+
+Slice 871 is the next bounded owner-proof task: extend the process-backed
+rejected-handshake regression to a DedicatedWorker WebSocket after the page
+handshake has committed its HttpOnly response cookie. The parent IPC handler
+already serves both owners, but current failure-cookie evidence covers only a
+page. The test will verify the Worker receives the page cookie, the parent
+accepts the Worker response cookie, and a later authorized page Fetch reuses
+both without exposing either to script. See the
+[Slice 871 task](tasks/native-engine-browser-871.md). Issue #40 remains open.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

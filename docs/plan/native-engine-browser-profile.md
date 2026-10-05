@@ -128,7 +128,11 @@ only HTTP status text; response headers and cookies remain in the parent. The
 process-backed [Slice 870 regression](tasks/native-engine-browser-870.md)
 verifies a denied-handshake cookie on a later authorized page Fetch, HttpOnly
 filtering, and no open/retry/redirect. This is a separate owner path from the
-process-backed page IPC case in Slice 869.
+process-backed page IPC case in Slice 869. The process-backed page IPC handler
+also serves DedicatedWorker WebSockets; existing Worker coverage exercises
+successful socket events, but the rejected-handshake cookie contract has not
+yet been exercised from a DedicatedWorker. Slice 871 closes that test gap
+while preserving the parent-only cookie authority.
 
 The parent must not send a cookie profile, an HttpOnly value, or raw
 `Cookie`/`Set-Cookie` headers to a content process. It gives a document only a

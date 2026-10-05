@@ -39455,6 +39455,284 @@ globalThis.onconnect = event => {{
 }
 
 #[test]
+fn native_content_process_service_worker_fetch_cors_errors_keep_parent_cookies() {
+    fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header.eq_ignore_ascii_case(name).then_some(value.trim())
+            })
+        })
+    }
+
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let _guard = native_content_process_test_lock().lock().await;
+            let profile_path = std::env::temp_dir().join(format!(
+                "glass-native-service-worker-fetch-cors-{}-profile.json",
+                std::process::id()
+            ));
+            let cookie_profile_path =
+                std::path::PathBuf::from(format!("{}.cookies", profile_path.display()));
+            let profile_lock_path = profile_path.with_extension("lock");
+            let cookie_profile_lock_path = cookie_profile_path.with_extension("lock");
+            let worker_clients_path = profile_path.with_extension("clients");
+            let worker_events_path = profile_path.with_extension("events");
+            let worker_readers_path = profile_path.with_extension("readers");
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+
+            let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let page_address = page_listener.local_addr().unwrap();
+            let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let api_address = api_listener.local_addr().unwrap();
+            let page_origin = format!("http://{page_address}");
+            let api_origin = format!("http://{api_address}");
+            let service_worker_api_origin = api_origin.clone();
+            let expected_origin = page_origin.clone();
+            let response_origin = page_origin.clone();
+
+            let page_server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(45), async move {
+                    for expected_path in ["/page", "/sw.js"] {
+                        let (mut stream, _) = page_listener.accept().await.unwrap();
+                        let request = read_http_request(&mut stream).await;
+                        assert_eq!(request.split_whitespace().next(), Some("GET"));
+                        assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+                        let cookie = header_value(&request, "cookie").unwrap_or_default();
+                        let (content_type, set_cookie, body) = if expected_path == "/page" {
+                            (
+                                "text/html",
+                                "Set-Cookie: sw_cors_seed=initial; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                r#"<script>
+globalThis.serviceWorkerRegistrationPromise = navigator.serviceWorker.register('/sw.js', { scope: '/' });
+</script>"#
+                                    .to_owned(),
+                            )
+                        } else {
+                            assert!(
+                                cookie.contains("sw_cors_seed=initial"),
+                                "ServiceWorker script missed parent seed cookie: {cookie}"
+                            );
+                            (
+                                "text/javascript",
+                                "Set-Cookie: sw_cors_entry=worker; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                format!(
+                                    r#"const apiOrigin = "{service_worker_api_origin}";
+self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', event => {{
+  const path = new URL(event.request.url).pathname;
+  if (path === '/cors-failed-navigation') {{
+    event.respondWith((async () => {{
+      try {{
+        const response = await fetch(apiOrigin + '/cors-failed', {{ credentials: 'include' }});
+        return new Response('unexpected:' + response.status, {{
+          headers: {{ 'Content-Type': 'text/html' }}
+        }});
+      }} catch (error) {{
+        return new Response('<!doctype html><body>handled:' + error.name + ':' + (error instanceof TypeError) + '</body>', {{
+          headers: {{ 'Content-Type': 'text/html' }}
+        }});
+      }}
+    }})());
+  }} else if (path === '/worker-probe') {{
+    event.respondWith((async () => {{
+      const response = await fetch(apiOrigin + '/worker-verify', {{ credentials: 'include' }});
+      return new Response(await response.text(), {{
+        headers: {{ 'Content-Type': 'text/plain' }}
+      }});
+    }})());
+  }}
+}});"#
+                                ),
+                            )
+                        };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\n{set_cookie}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                    }
+                })
+                .await
+                .expect("ServiceWorker page and script requests stay bounded")
+            });
+
+            let api_server = tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(45), async move {
+                    for (path, required_cookies) in [
+                        (
+                            "/cors-failed",
+                            vec!["sw_cors_seed=initial", "sw_cors_entry=worker"],
+                        ),
+                        (
+                            "/worker-verify",
+                            vec![
+                                "sw_cors_seed=initial",
+                                "sw_cors_entry=worker",
+                                "sw_cors_rejected=accepted",
+                            ],
+                        ),
+                        (
+                            "/page-verify",
+                            vec![
+                                "sw_cors_seed=initial",
+                                "sw_cors_entry=worker",
+                                "sw_cors_rejected=accepted",
+                            ],
+                        ),
+                    ] {
+                        let (mut stream, _) = tokio::time::timeout(
+                            Duration::from_secs(30),
+                            api_listener.accept(),
+                        )
+                        .await
+                        .expect("authorized ServiceWorker cookie request reaches the parent")
+                        .unwrap();
+                        let request = read_http_request(&mut stream).await;
+                        assert_eq!(request.split_whitespace().next(), Some("GET"));
+                        assert_eq!(request.split_whitespace().nth(1), Some(path));
+                        assert_eq!(header_value(&request, "origin"), Some(expected_origin.as_str()));
+                        assert!(header_value(&request, "access-control-request-method").is_none());
+                        assert!(header_value(&request, "access-control-request-headers").is_none());
+                        let cookie = header_value(&request, "cookie").unwrap_or_default();
+                        for expected in required_cookies {
+                            assert!(cookie.contains(expected), "{path} missed {expected}: {cookie}");
+                        }
+
+                        let (cors_headers, set_cookie, body) = if path == "/cors-failed" {
+                            (
+                                "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Credentials: true\r\n".to_owned(),
+                                "Set-Cookie: sw_cors_rejected=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                                "hidden",
+                            )
+                        } else {
+                            (
+                                format!(
+                                    "Access-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Credentials: true\r\n"
+                                ),
+                                "",
+                                if path == "/worker-verify" { "worker-ok" } else { "page-ok" },
+                            )
+                        };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\n{cors_headers}{set_cookie}Content-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        stream.write_all(response.as_bytes()).await.unwrap();
+                    }
+
+                    match tokio::time::timeout(Duration::from_secs(1), api_listener.accept()).await {
+                        Err(_) => {}
+                        Ok(Ok((mut stream, _))) => {
+                            let request = read_http_request(&mut stream).await;
+                            panic!("unexpected ServiceWorker cookie request: {request}");
+                        }
+                        Ok(Err(error)) => panic!("unexpected API listener error: {error}"),
+                    }
+                })
+                .await
+                .expect("ServiceWorker CORS-cookie requests stay bounded")
+            });
+
+            let session = BrowserRuntimeSession::connect_native(
+                NativeEngineConfig::default()
+                    .with_storage_path(profile_path.clone())
+                    .with_initial_url(format!("{page_origin}/page")),
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    let state = session
+                        .script(
+                            "await serviceWorkerRegistrationPromise.then(registration => [registration.active && registration.active.state, navigator.serviceWorker.controller !== null])",
+                        )
+                        .await
+                        .unwrap()
+                        .value;
+                    if state == serde_json::json!(["activated", true]) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("ServiceWorker activates and controls the page");
+
+            session
+                .navigate(format!("{page_origin}/cors-failed-navigation"))
+                .await
+                .unwrap();
+            assert_eq!(
+                session.script("document.body.textContent").await.unwrap().value,
+                serde_json::json!("handled:TypeError:true")
+            );
+            assert_eq!(
+                session
+                    .script("await fetch('/worker-probe').then(response => response.text())")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("worker-ok")
+            );
+            assert_eq!(
+                session
+                    .script(&format!(
+                        "await fetch('{api_origin}/page-verify', {{ credentials: 'include' }}).then(response => response.text())"
+                    ))
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!("page-ok")
+            );
+            assert_eq!(
+                session.script("document.cookie").await.unwrap().value,
+                serde_json::json!("")
+            );
+            let cookies = session.native_cookies().await.unwrap();
+            session.close().await.unwrap();
+            page_server.await.unwrap();
+            api_server.await.unwrap();
+
+            for (name, value) in [
+                ("sw_cors_seed", "initial"),
+                ("sw_cors_entry", "worker"),
+                ("sw_cors_rejected", "accepted"),
+            ] {
+                assert!(
+                    cookies.iter().any(|cookie| {
+                        cookie.name == name && cookie.value == value && cookie.http_only
+                    }),
+                    "parent cookie jar is missing HttpOnly {name}={value}"
+                );
+            }
+
+            for path in [
+                &profile_path,
+                &cookie_profile_path,
+                &profile_lock_path,
+                &cookie_profile_lock_path,
+                &worker_clients_path,
+                &worker_events_path,
+                &worker_readers_path,
+            ] {
+                let _ = fs::remove_file(path);
+            }
+        });
+    });
+}
+
+#[test]
 fn native_runtime_shared_worker_event_source_uses_parent_cookie_authority() {
     run_native_browser_worker_test(|runtime| {
         runtime.block_on(async {

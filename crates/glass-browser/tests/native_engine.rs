@@ -76823,6 +76823,415 @@ self.postMessage({{ kind: "ready" }});
 }
 
 #[tokio::test]
+async fn native_content_process_xhr_cors_preflight_never_carries_cookies() {
+    fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header.eq_ignore_ascii_case(name).then_some(value.trim())
+            })
+        })
+    }
+
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_address = api_listener.local_addr().unwrap();
+    let page_origin = format!("http://{page_address}");
+    let api_origin = format!("http://{api_address}");
+    let worker_api_origin = api_origin.clone();
+    let expected_origin = page_origin.clone();
+    let worker_script = format!(
+        r#"
+const apiOrigin = "{worker_api_origin}";
+self.onmessage = async event => {{
+  if (event.data !== "run") return;
+  const send = (method, path, withCredentials, headerName, headerValue, body) =>
+    new Promise(resolve => {{
+      const xhr = new XMLHttpRequest();
+      xhr.withCredentials = withCredentials;
+      xhr.onload = () => resolve([xhr.status, xhr.responseText, xhr.responseURL]);
+      xhr.onerror = () => resolve([0, "error", xhr.responseURL]);
+      xhr.open(method, apiOrigin + path);
+      if (headerName) {{
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.setRequestHeader(headerName, headerValue);
+      }}
+      xhr.send(body);
+    }});
+  try {{
+    const post = await send("POST", "/worker-include", true,
+      "X-Glass-Worker", "worker-token", JSON.stringify({{source: "worker"}}));
+    const after = await send("GET", "/worker-include-after", true, null, null, null);
+    self.postMessage({{ kind: "complete", results: [post, after] }});
+  }} catch (error) {{
+    self.postMessage({{ kind: "error", message: String(error) }});
+  }}
+}};
+self.postMessage({{ kind: "ready" }});
+"#
+    );
+
+    let page_server = tokio::spawn(async move {
+        for expected_path in ["/page", "/xhr-preflight-worker.js"] {
+            let (mut stream, _) =
+                tokio::time::timeout(Duration::from_secs(45), page_listener.accept())
+                    .await
+                    .expect("page and Worker bootstrap requests stay bounded")
+                    .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/xhr-preflight-worker.js" {
+                assert!(
+                    header_value(&request, "cookie")
+                        .unwrap_or_default()
+                        .contains("root=seed")
+                );
+            }
+            let (content_type, headers, body) = if expected_path == "/page" {
+                (
+                    "text/html",
+                    "Set-Cookie: root=seed; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "<script>globalThis.xhrPreflightMessages = []; globalThis.xhrPreflightWorker = new Worker('/xhr-preflight-worker.js'); xhrPreflightWorker.onmessage = event => xhrPreflightMessages.push(event.data);</script>".to_owned(),
+                )
+            } else {
+                ("text/javascript", "", worker_script.clone())
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let api_server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(60), async move {
+            let expectations: [
+                (
+                    &str,
+                    &str,
+                    bool,
+                    &[&str],
+                    Option<(&str, &str)>,
+                    Option<&str>,
+                    Option<&str>,
+                );
+                8
+            ] = [
+                (
+                    "/page-default",
+                    "OPTIONS",
+                    false,
+                    &[],
+                    Some(("x-glass-default", "default-token")),
+                    None,
+                    None,
+                ),
+                (
+                    "/page-default",
+                    "POST",
+                    false,
+                    &[],
+                    Some(("x-glass-default", "default-token")),
+                    Some("{\"source\":\"page-default\"}"),
+                    Some("default_cross=blocked"),
+                ),
+                (
+                    "/page-sync-include",
+                    "OPTIONS",
+                    true,
+                    &[],
+                    Some(("x-glass-sync", "sync-token")),
+                    None,
+                    None,
+                ),
+                (
+                    "/page-sync-include",
+                    "POST",
+                    true,
+                    &["root=seed"],
+                    Some(("x-glass-sync", "sync-token")),
+                    Some("{\"source\":\"page-sync\"}"),
+                    Some("page_sync=accepted"),
+                ),
+                (
+                    "/page-sync-include-after",
+                    "GET",
+                    true,
+                    &["page_sync=accepted"],
+                    None,
+                    None,
+                    None,
+                ),
+                (
+                    "/worker-include",
+                    "OPTIONS",
+                    true,
+                    &[],
+                    Some(("x-glass-worker", "worker-token")),
+                    None,
+                    None,
+                ),
+                (
+                    "/worker-include",
+                    "POST",
+                    true,
+                    &["root=seed", "page_sync=accepted"],
+                    Some(("x-glass-worker", "worker-token")),
+                    Some("{\"source\":\"worker\"}"),
+                    Some("worker_include=accepted"),
+                ),
+                (
+                    "/worker-include-after",
+                    "GET",
+                    true,
+                    &["page_sync=accepted", "worker_include=accepted"],
+                    None,
+                    None,
+                    None,
+                ),
+            ];
+            let mut requests = Vec::new();
+            for (path, method, include, expected_cookies, custom_header, body, set_cookie) in
+                expectations
+            {
+                let (mut stream, _) = api_listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                assert_eq!(request.split_whitespace().next(), Some(method));
+                assert_eq!(request.split_whitespace().nth(1), Some(path));
+                assert_eq!(header_value(&request, "origin"), Some(expected_origin.as_str()));
+                let cookie = header_value(&request, "cookie")
+                    .unwrap_or_default()
+                    .to_owned();
+                if method == "OPTIONS" {
+                    assert!(
+                        cookie.is_empty(),
+                        "preflight for {path} must never carry cookies; got {cookie:?}"
+                    );
+                    assert_eq!(header_value(&request, "access-control-request-method"), Some("POST"));
+                    let (header_name, _) = custom_header.expect("preflight case has a custom header");
+                    let expected_headers = format!("content-type, {header_name}");
+                    assert_eq!(
+                        header_value(&request, "access-control-request-headers")
+                            .map(str::to_ascii_lowercase),
+                        Some(expected_headers)
+                    );
+                } else {
+                    for expected_cookie in expected_cookies {
+                        assert!(
+                            cookie.contains(expected_cookie),
+                            "{method} {path} must carry {expected_cookie}; got {cookie:?}"
+                        );
+                    }
+                    if include {
+                        assert!(!cookie.is_empty(), "credentialed {method} {path} needs cookies");
+                    } else {
+                        assert!(cookie.is_empty(), "default XHR {path} must omit cross-origin cookies");
+                    }
+                    if let Some((header_name, header_value_expected)) = custom_header {
+                        assert_eq!(header_value(&request, header_name), Some(header_value_expected));
+                        assert_eq!(header_value(&request, "content-type"), Some("application/json"));
+                    }
+                    if let Some(expected_body) = body {
+                        assert_eq!(
+                            request.split_once("\r\n\r\n").map(|(_, value)| value),
+                            Some(expected_body)
+                        );
+                    }
+                }
+
+                let allow_origin = if include { expected_origin.as_str() } else { "*" };
+                let allow_credentials = if include {
+                    "Access-Control-Allow-Credentials: true\r\n"
+                } else {
+                    ""
+                };
+                let preflight_headers = if method == "OPTIONS" {
+                    let (header_name, _) = custom_header.unwrap();
+                    format!(
+                        "Access-Control-Allow-Methods: POST\r\nAccess-Control-Allow-Headers: content-type, {header_name}\r\n"
+                    )
+                } else {
+                    String::new()
+                };
+                let cookie_header = set_cookie
+                    .map(|value| {
+                        format!("Set-Cookie: {value}; HttpOnly; Path=/; SameSite=Lax\r\n")
+                    })
+                    .unwrap_or_default();
+                let response_body = if method == "OPTIONS" { "" } else { path };
+                let status = if method == "OPTIONS" {
+                    "204 No Content"
+                } else {
+                    "200 OK"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nAccess-Control-Allow-Origin: {allow_origin}\r\n{allow_credentials}{preflight_headers}{cookie_header}Content-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push((method.to_owned(), path.to_owned(), cookie));
+            }
+            requests
+        })
+        .await
+        .expect("XHR preflight and actual requests stay bounded")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("{page_origin}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let messages = engine.evaluate_async("xhrPreflightMessages").await.unwrap();
+            if messages
+                .as_array()
+                .is_some_and(|messages| messages.iter().any(|message| message["kind"] == "ready"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("DedicatedWorker preflight fixture is ready");
+
+    let page_default = tokio::time::timeout(
+        Duration::from_secs(30),
+        engine.evaluate_async(format!(
+            r#"await new Promise(resolve => {{
+              const xhr = new XMLHttpRequest();
+              xhr.withCredentials = false;
+              xhr.onload = () => resolve([xhr.status, xhr.responseText, xhr.responseURL]);
+              xhr.onerror = () => resolve([0, "error", xhr.responseURL]);
+              xhr.open("POST", "{api_origin}/page-default");
+              xhr.setRequestHeader("Content-Type", "application/json");
+              xhr.setRequestHeader("X-Glass-Default", "default-token");
+              xhr.send(JSON.stringify({{source: "page-default"}}));
+            }})"#
+        )),
+    )
+    .await
+    .expect("default page XHR preflight stays bounded")
+    .unwrap();
+    assert_eq!(
+        page_default,
+        serde_json::json!([200, "/page-default", format!("{api_origin}/page-default")])
+    );
+
+    let page_sync = engine
+        .evaluate_async(format!(
+            r#"(() => {{
+              const send = (path, method, headerName, headerValue, body) => {{
+                const xhr = new XMLHttpRequest();
+                xhr.withCredentials = true;
+                xhr.open(method, "{api_origin}" + path, false);
+                if (headerName) {{
+                  xhr.setRequestHeader("Content-Type", "application/json");
+                  xhr.setRequestHeader(headerName, headerValue);
+                }}
+                xhr.send(body);
+                return [xhr.status, xhr.responseText, xhr.responseURL];
+              }};
+              return [
+                send("/page-sync-include", "POST", "X-Glass-Sync", "sync-token", JSON.stringify({{source: "page-sync"}})),
+                send("/page-sync-include-after", "GET", null, null, null),
+              ];
+            }})()"#
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        page_sync,
+        serde_json::json!([
+            [
+                200,
+                "/page-sync-include",
+                format!("{api_origin}/page-sync-include")
+            ],
+            [
+                200,
+                "/page-sync-include-after",
+                format!("{api_origin}/page-sync-include-after")
+            ],
+        ])
+    );
+
+    engine
+        .evaluate_async("xhrPreflightWorker.postMessage('run'); true")
+        .await
+        .unwrap();
+    let worker_messages = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let messages = engine.evaluate_async("xhrPreflightMessages").await.unwrap();
+            if messages.as_array().is_some_and(|messages| {
+                messages
+                    .iter()
+                    .any(|message| message["kind"] == "complete" || message["kind"] == "error")
+            }) {
+                break messages;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("DedicatedWorker XHR preflight requests settle");
+    assert_eq!(
+        worker_messages,
+        serde_json::json!([{"kind": "ready"}, {
+            "kind": "complete",
+            "results": [
+                [200, "/worker-include", format!("{api_origin}/worker-include")],
+                [200, "/worker-include-after", format!("{api_origin}/worker-include-after")],
+            ]
+        }])
+    );
+
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("")
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    engine.close_async().await.unwrap();
+    page_server.await.unwrap();
+    let requests = api_server.await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|(method, path, _)| (method.as_str(), path.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("OPTIONS", "/page-default"),
+            ("POST", "/page-default"),
+            ("OPTIONS", "/page-sync-include"),
+            ("POST", "/page-sync-include"),
+            ("GET", "/page-sync-include-after"),
+            ("OPTIONS", "/worker-include"),
+            ("POST", "/worker-include"),
+            ("GET", "/worker-include-after"),
+        ]
+    );
+    for (name, value) in [
+        ("root", "seed"),
+        ("page_sync", "accepted"),
+        ("worker_include", "accepted"),
+    ] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| { cookie.name == name && cookie.value == value && cookie.http_only })
+        );
+    }
+    assert!(
+        !cookies.iter().any(|cookie| cookie.name == "default_cross"),
+        "default cross-origin XHR must reject its response cookie"
+    );
+}
+
+#[tokio::test]
 async fn native_cookie_profile_survives_native_process_restart() {
     let _guard = native_content_process_test_lock().lock().await;
     let profile_path = std::env::temp_dir().join(format!(

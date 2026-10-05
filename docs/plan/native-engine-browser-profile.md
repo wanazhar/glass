@@ -1317,6 +1317,19 @@ the only cookie authority. This is focused redirect coverage, not full XHR
 redirect, Web IDL, or WPT conformance. See the [Slice 853 task](tasks/native-engine-browser-853.md)
 and [review](reviews/native-engine-browser-853-01.md).
 
+Slice 854 adds process-backed cross-origin XHR preflight evidence. It verifies
+that OPTIONS contains the origin, method, and normalized requested-header
+names but no Cookie, including when the eventual page or Worker XHR uses
+`include`. The actual default-credentials request omits cookies and its
+response cookie is rejected; credentialed requests use parent-matched cookies
+only after exact-origin CORS authorization, and accepted HttpOnly response
+cookies reach later requests. Coverage includes async page XHR, synchronous
+parent-brokered page XHR, and async DedicatedWorker XHR. The parent remains the
+sole cookie authority and `document.cookie` stays filtered. This is focused
+preflight coverage, not full CORS, XHR/Web IDL, or WPT conformance. See the
+[Slice 854 task](tasks/native-engine-browser-854.md) and
+[review](reviews/native-engine-browser-854-01.md).
+
 ### XHR document responses
 
 For a Window `XMLHttpRequest` whose response type is `document`, only an HTML

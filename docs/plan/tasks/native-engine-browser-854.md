@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-854
 scope: glass-browser/native-engine/xhr-cors-preflight-credentials
-status: in-progress
+status: complete
 depends-on: [native-engine-browser-853]
 ---
 
@@ -77,3 +77,35 @@ cookie matching and response-cookie acceptance for the actual request.
   cookie ownership; no independent agent review is used.
 - Record local-only evidence. No remote CI or broad conformance claim is
   implied.
+
+## Results
+
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p glass-browser
+  --features native-engine --test native_engine --locked --quiet` passed with
+  the existing legacy-parser/dead-code warnings. It also identified one unused
+  fixture variable, removed before the final test build.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-browser
+  --features native-engine --test native_engine --locked --quiet
+  native_content_process_xhr_cors_preflight_never_carries_cookies -- --exact`
+  passed (1 passed; 918 filtered; 24.91 seconds).
+- The fixture observed three OPTIONS requests (default page, synchronous
+  credentialed page, and credentialed DedicatedWorker), each with Origin,
+  requested method/header names, and no Cookie. The actual default page POST
+  also omitted cookies and its HttpOnly response cookie was not accepted.
+  Credentialed actual requests carried parent-matched cookies under exact
+  origin/credentials CORS authorization; their HttpOnly response cookies were
+  visible on later requests but absent from `document.cookie`.
+- No production Rust source changed. The parent remains the only cookie
+  matcher, `Set-Cookie` authority, and jar owner; no cookie header or jar was
+  added to IPC. The scoped check and focused process test reused the shared
+  target directory.
+- `cargo fmt --all -- --check`, `git diff --check`, and all four documentation
+  gates passed after the final edits: release-truth scanned 1,491 Markdown
+  files (83 current; zero current-claim failures); depth validated 93 guides
+  and 19 contracts; shortcut inventory validated 15 keys and 63 markers;
+  coverage validated 346 MCP tools (101 browser-only), 17 examples, and 22
+  public modules.
+- Direct self-review found no preflight credential, CORS, cookie-ownership, or
+  IPC-boundary mismatch. This does not claim full CORS, XHR/Web IDL or WPT
+  conformance, cross-platform certification, independent review, or remote CI.
+  Issue #40 remains open.

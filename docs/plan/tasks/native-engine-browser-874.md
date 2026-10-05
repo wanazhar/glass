@@ -41,11 +41,13 @@ the video's media-source state.
   documents and runtime-created/updated elements. Reflect the `poster`
   attribute through `HTMLVideoElement.poster`. Replacing or removing the
   attribute replaces or clears the poster without restarting the media `src`.
-- HTTP(S) poster requests use the parent image broker, image CSP policy,
-  video-element referrer policy, and parent request-cookie selection. The
-  parent accepts eligible response cookies. The content process receives only
-  bounded image data and its URL-scoped script-visible cookie projection; it
-  never receives cookie headers, the complete jar, or HttpOnly values.
+- HTTP(S) poster requests use the parent image broker and image CSP policy.
+  Match the HTML request's `include` credentials mode and use-URL-credentials
+  flag; the owner Document supplies the effective referrer policy. The parent
+  selects request cookies and accepts eligible response cookies. The content
+  process receives only bounded image data and its URL-scoped script-visible
+  cookie projection; it never receives cookie headers, the complete jar, or
+  HttpOnly values.
 - Poster decode/network/CSP failure leaves no poster and does not fail
   navigation or dispatch `<img>` load/error events on the `<video>`. The
   poster request participates in the owner Document's load delay. An unchanged
@@ -86,9 +88,11 @@ image request to media-source readiness or playback state.
 ## Verification
 
 - Add a process-backed HTTP regression for an initial poster and a runtime
-  `video.poster` change. Verify relative URL resolution, request ordering,
-  matching image paint/aspect ratio, no duplicate unchanged request, removal
-  or replacement behavior, and that poster failure does not fail navigation.
+  `video.poster` change. Use separate loopback ports to verify the parent
+  includes the eligible cookie on the cross-origin poster request. Verify
+  relative URL resolution, request ordering, matching image paint/aspect
+  ratio, no duplicate unchanged request, removal or replacement behavior,
+  and that poster failure does not fail navigation.
 - Prove cookie ownership in the same real-HTTP path: the parent selects an
   HttpOnly request cookie and accepts an HttpOnly poster response cookie for
   a later authorized request, while `document.cookie` stays filtered.

@@ -77881,6 +77881,228 @@ async fn native_content_process_xhr_preflight_cache_separates_omit_and_include()
 }
 
 #[tokio::test]
+async fn native_content_process_xhr_credentialed_preflight_wildcards_send_no_post() {
+    fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header.eq_ignore_ascii_case(name).then_some(value.trim())
+            })
+        })
+    }
+
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_address = api_listener.local_addr().unwrap();
+    let page_origin = format!("http://{page_address}");
+    let api_origin = format!("http://{api_address}");
+    let worker_api_origin = api_origin.clone();
+    let expected_origin = page_origin.clone();
+    let response_origin = page_origin.clone();
+    let worker_script = format!(
+        r#"
+const apiOrigin = "{worker_api_origin}";
+self.onmessage = async event => {{
+  if (event.data !== "run") return;
+  try {{
+    const result = await new Promise(resolve => {{
+      const xhr = new XMLHttpRequest();
+      xhr.withCredentials = true;
+      xhr.onload = () => resolve(["load", xhr.status]);
+      xhr.onerror = () => resolve(["error", xhr.status]);
+      xhr.open("POST", apiOrigin + "/worker-wildcard-header");
+      xhr.setRequestHeader("Content-Type", "application/json");
+      xhr.setRequestHeader("X-Glass-Wildcard", "worker-token");
+      xhr.send(JSON.stringify({{source: "worker"}}));
+    }});
+    self.postMessage({{ kind: "complete", result }});
+  }} catch (error) {{
+    self.postMessage({{ kind: "error", message: String(error) }});
+  }}
+}};
+self.postMessage({{ kind: "ready" }});
+"#
+    );
+
+    let page_server = tokio::spawn(async move {
+        for expected_path in ["/page", "/xhr-wildcard-preflight-worker.js"] {
+            let (mut stream, _) =
+                tokio::time::timeout(Duration::from_secs(45), page_listener.accept())
+                    .await
+                    .expect("page and Worker bootstrap requests stay bounded")
+                    .unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
+            if expected_path == "/xhr-wildcard-preflight-worker.js" {
+                assert!(
+                    header_value(&request, "cookie")
+                        .unwrap_or_default()
+                        .contains("root=seed")
+                );
+            }
+            let (content_type, headers, body) = if expected_path == "/page" {
+                (
+                    "text/html",
+                    "Set-Cookie: root=seed; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "<script>globalThis.wildcardPreflightMessages = []; globalThis.wildcardPreflightWorker = new Worker('/xhr-wildcard-preflight-worker.js'); wildcardPreflightWorker.onmessage = event => wildcardPreflightMessages.push(event.data);</script>".to_owned(),
+                )
+            } else {
+                ("text/javascript", "", worker_script.clone())
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let api_server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async move {
+            for (path, allowed_methods, allowed_headers, rejected_cookie) in [
+                (
+                    "/page-wildcard-method",
+                    "*",
+                    "content-type, x-glass-wildcard",
+                    "wildcard_method",
+                ),
+                (
+                    "/worker-wildcard-header",
+                    "POST",
+                    "*",
+                    "wildcard_header",
+                ),
+            ] {
+                let (mut stream, _) = api_listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                assert_eq!(request.split_whitespace().next(), Some("OPTIONS"));
+                assert_eq!(request.split_whitespace().nth(1), Some(path));
+                assert_eq!(header_value(&request, "origin"), Some(expected_origin.as_str()));
+                assert_eq!(header_value(&request, "access-control-request-method"), Some("POST"));
+                assert_eq!(
+                    header_value(&request, "access-control-request-headers")
+                        .map(str::to_ascii_lowercase)
+                        .as_deref(),
+                    Some("content-type, x-glass-wildcard")
+                );
+                assert!(
+                    header_value(&request, "cookie").is_none(),
+                    "credentialed preflight for {path} must not carry Cookie"
+                );
+                let response = format!(
+                    "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Credentials: true\r\nAccess-Control-Allow-Methods: {allowed_methods}\r\nAccess-Control-Allow-Headers: {allowed_headers}\r\nSet-Cookie: {rejected_cookie}=must-not-stick; HttpOnly; Path=/; SameSite=Lax\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+
+            match tokio::time::timeout(Duration::from_secs(1), api_listener.accept()).await {
+                Err(_) => {}
+                Ok(Ok((mut stream, _))) => {
+                    let request = read_http_request(&mut stream).await;
+                    panic!("credentialed wildcard preflight dispatched an actual request: {request}");
+                }
+                Ok(Err(error)) => panic!("unexpected API listener error: {error}"),
+            }
+        })
+        .await
+        .expect("credentialed wildcard preflights do not dispatch actual requests")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("{page_origin}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let messages = engine
+                .evaluate_async("wildcardPreflightMessages")
+                .await
+                .unwrap();
+            if messages
+                .as_array()
+                .is_some_and(|messages| messages.iter().any(|message| message["kind"] == "ready"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("DedicatedWorker wildcard fixture is ready");
+
+    let page_result = tokio::time::timeout(
+        Duration::from_secs(20),
+        engine.evaluate_async(format!(
+            r#"await new Promise(resolve => {{
+              const xhr = new XMLHttpRequest();
+              xhr.withCredentials = true;
+              xhr.onload = () => resolve(["load", xhr.status]);
+              xhr.onerror = () => resolve(["error", xhr.status]);
+              xhr.open("POST", "{api_origin}/page-wildcard-method");
+              xhr.setRequestHeader("Content-Type", "application/json");
+              xhr.setRequestHeader("X-Glass-Wildcard", "page-token");
+              xhr.send(JSON.stringify({{source: "page"}}));
+            }})"#
+        )),
+    )
+    .await
+    .expect("page XHR rejects wildcard credentialed method preflight")
+    .unwrap();
+    assert_eq!(page_result, serde_json::json!(["error", 0]));
+
+    engine
+        .evaluate_async("wildcardPreflightWorker.postMessage('run'); true")
+        .await
+        .unwrap();
+    let worker_messages = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let messages = engine
+                .evaluate_async("wildcardPreflightMessages")
+                .await
+                .unwrap();
+            if messages.as_array().is_some_and(|messages| {
+                messages
+                    .iter()
+                    .any(|message| message["kind"] == "complete" || message["kind"] == "error")
+            }) {
+                break messages;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Worker XHR rejects wildcard credentialed header preflight");
+    assert_eq!(
+        worker_messages,
+        serde_json::json!([{"kind": "ready"}, {
+            "kind": "complete",
+            "result": ["error", 0]
+        }])
+    );
+
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("")
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    engine.close_async().await.unwrap();
+    page_server.await.unwrap();
+    api_server.await.unwrap();
+    assert!(
+        cookies
+            .iter()
+            .any(|cookie| { cookie.name == "root" && cookie.value == "seed" && cookie.http_only })
+    );
+    assert!(
+        !cookies
+            .iter()
+            .any(|cookie| { cookie.name == "wildcard_method" || cookie.name == "wildcard_header" })
+    );
+}
+
+#[tokio::test]
 async fn native_cookie_profile_survives_native_process_restart() {
     let _guard = native_content_process_test_lock().lock().await;
     let profile_path = std::env::temp_dir().join(format!(

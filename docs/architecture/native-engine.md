@@ -138,6 +138,15 @@ The exact-mode cache key is conservative and may cause extra preflights when
 credentials are reduced. No raw cookie material crosses IPC and the parent
 remains the sole cookie authority. See the [Slice 857 task](../plan/tasks/native-engine-browser-857.md)
 and [review](../plan/reviews/native-engine-browser-857-01.md).
+Slice 858 verifies the parent broker denies credentialed XHR preflights when
+the page's allowed-method value or the DedicatedWorker's allowed-header value
+is `*`, even though exact-origin CORS and credentials are otherwise authorized.
+Both OPTIONS requests carry no Cookie, neither actual POST is sent, and
+rejected preflight cookies do not change the parent jar. The parent remains
+the sole cookie matcher, `Set-Cookie` authority, and jar owner. This is focused
+local evidence, not complete CORS/XHR or WPT conformance, remote CI, or
+cross-platform certification. See the [Slice 858 task](../plan/tasks/native-engine-browser-858.md)
+and [review](../plan/reviews/native-engine-browser-858-01.md).
 Slice 838's NavigationPreloadManager persistence regression passed (1 passed;
 906 filtered; 39.70 seconds), so that slice is complete. Slice 839 starts
 eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,

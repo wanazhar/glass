@@ -6,6 +6,7 @@
 mod agent;
 mod compact;
 mod config;
+mod ext;
 mod mods;
 mod provider;
 mod session;
@@ -100,6 +101,14 @@ fn run(args: &[String]) -> Result<(), String> {
 
     let loaded_mods = mods::load(&cfg.mods)?;
 
+    // Extensions are opt-in: nothing is spawned unless config names it, so a
+    // default install pays nothing for the mechanism.
+    let extensions = if cfg.extensions.is_empty() {
+        ext::Registry::empty()
+    } else {
+        ext::Registry::load(&cfg.extensions, &cfg.workspace, &cfg.model)
+    };
+
     let skills = cfg.skills_dir.as_deref().map(skills::load_dir).unwrap_or_default();
     let catalogue = skills::catalogue(&skills);
 
@@ -126,7 +135,7 @@ fn run(args: &[String]) -> Result<(), String> {
     }
 
     term::enter().map_err(|e| format!("cannot set up terminal: {e}"))?;
-    let result = repl(cfg, provider, loaded_mods, catalogue, session);
+    let result = repl(cfg, provider, loaded_mods, extensions, catalogue, session);
     term::leave().ok();
     result
 }
@@ -135,6 +144,7 @@ fn repl(
     cfg: config::Config,
     provider: Box<dyn provider::Provider>,
     loaded_mods: Vec<Box<dyn glass_mod_api::Mod_>>,
+    mut extensions: ext::Registry,
     catalogue: Option<String>,
     mut session: Session,
 ) -> Result<(), String> {
@@ -214,8 +224,10 @@ fn repl(
                 &mut session,
                 &mut state,
                 &loaded_mods,
+                &mut extensions,
                 &cfg.workspace,
             )
+            .prime_extensions()
             .with_prompt(cfg.system_prompt.clone(), catalogue.clone())
             .with_limits(cfg.max_tokens, cfg.reasoning_budget, 24)
             .with_progress(report);

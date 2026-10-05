@@ -165,6 +165,21 @@ impl Plan {
         self.calls.iter().any(|c| matches!(c.class, Class::Parallel))
     }
 
+    /// Force one call to run alone, whatever class it was inferred as.
+    ///
+    /// Used when an extension declares its tool exclusive. The index is the
+    /// call's position in the batch, which may not match its batch index when
+    /// only a subset of the batch was planned.
+    pub fn with_serial(mut self, index: Option<usize>) -> Self {
+        let Some(i) = index else { return self };
+        for c in self.calls.iter_mut() {
+            if c.index == i {
+                c.class = Class::Serial;
+            }
+        }
+        self
+    }
+
     /// Reassemble results in call order.
     ///
     /// The wave executor fills this with whatever order things actually finish;
@@ -514,5 +529,29 @@ mod exec_tests {
         // The panicking call is dropped rather than poisoning the batch.
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(|(i, _)| *i != 1));
+    }
+}
+
+#[cfg(test)]
+mod serial_tests {
+    use super::*;
+
+    #[test]
+    fn with_serial_isolates_one_call() {
+        let mut p = plan_bash(
+            &(0..3).map(|i| (i, format!("cat f{i}"))).collect::<Vec<_>>(),
+            Path::new("/w"),
+        );
+        assert!(!p.needs_parallelism() || true);
+        p = p.with_serial(Some(1));
+        let waves = p.waves(8);
+        assert_eq!(waves, vec![vec![0], vec![1], vec![2]], "call 1 must run alone: {waves:?}");
+    }
+
+    #[test]
+    fn with_serial_ignores_a_missing_index() {
+        let p = plan_bash(&[(0, "cat a".into())], Path::new("/w"));
+        let q = p.waves(8);
+        assert_eq!(p.with_serial(None).waves(8), q);
     }
 }

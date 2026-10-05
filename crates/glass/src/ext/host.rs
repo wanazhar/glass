@@ -127,6 +127,14 @@ impl Extension {
                 stdin.flush().ok()?;
                 continue;
             }
+            // A reply to an earlier fire-and-forget event. It is not the answer
+            // we asked for, so hold it and keep reading rather than returning
+            // it as if it were.
+            if let Some(want) = v.get("id").and_then(serde_json::Value::as_u64)
+                && want != id
+            {
+                continue;
+            }
             return Some(v);
         }
     }
@@ -227,12 +235,29 @@ impl Extension {
     ///
     /// `cacheable_prefix_bytes` is the size of the prefix a provider would
     /// cache, which is what lets a warmer decide if a refresh is worth a write.
+    /// Fire-and-forget: send the event and do not wait for a reply.
+    ///
+    /// The protocol permits a reply, but an extension that stays silent must
+    /// not be able to stall the loop. Blocking here for the timeout meant every
+    /// turn paid a fixed penalty against whichever extension declined to
+    /// answer, which is exactly the bug that made the agent appear to stop
+    /// after one tool call.
     pub fn turn_end(&mut self, text: &str, cacheable_prefix_bytes: usize) {
-        let _ = self.request(
+        self.send_only(
             &Request::TurnEnd { text: text.to_string(), cacheable_prefix_bytes },
-            REQUEST_TIMEOUT_MS,
-            None,
         );
+    }
+
+    /// Write a request without reading a reply, so a silent extension costs
+    /// nothing. Any late reply is drained by the next request that does wait.
+    fn send_only(&mut self, req: &Request) {
+        self.next_id += 1;
+        let id = self.next_id;
+        let Ok(mut line) = serde_json::to_string(&req.to_json(id)) else { return };
+        line.push('\n');
+        let Some(stdin) = self.stdin.as_mut() else { return };
+        let _ = stdin.write_all(line.as_bytes());
+        let _ = stdin.flush();
     }
 
     /// Run a slash command. Returns the extension's output.

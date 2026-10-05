@@ -35,6 +35,32 @@ pub const MAX_REPLY_BYTES: usize = 4 * 1024 * 1024;
 /// Default time we wait for an extension to answer one request.
 pub const REQUEST_TIMEOUT_MS: u64 = 5_000;
 
+/// How an extension's tool may be scheduled alongside others.
+///
+/// This is the same three-way choice the built-in tools get, exposed so an
+/// extension author does not have to guess. A tool that writes must say so, or
+/// it will be serialised and quietly cost wall-clock time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ExtConcurrency {
+    /// Safe to run alongside anything.
+    #[default]
+    Parallel,
+    /// Serialized against other calls touching the same key.
+    Keyed,
+    /// Runs alone, after everything queued before it.
+    Serial,
+}
+
+impl ExtConcurrency {
+    fn parse(s: &str) -> Self {
+        match s {
+            "keyed" | "Keyed" => ExtConcurrency::Keyed,
+            "serial" | "Serial" => ExtConcurrency::Serial,
+            _ => ExtConcurrency::Parallel,
+        }
+    }
+}
+
 /// A tool an extension contributes.
 #[derive(Clone, Debug)]
 pub struct ToolSpec {
@@ -42,6 +68,10 @@ pub struct ToolSpec {
     pub description: String,
     /// JSON Schema for the arguments, as an object.
     pub schema: Value,
+    /// Scheduling class. Defaults to `Parallel`, which is wrong for a tool that
+    /// writes — so a tool that mutates state should declare `serial` or
+    /// `keyed`.
+    pub concurrency: ExtConcurrency,
 }
 
 /// A slash command an extension contributes.
@@ -144,6 +174,11 @@ pub fn parse_manifest(v: &Value) -> Result<Manifest, String> {
                     Some(ToolSpec {
                         description: t.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
                         schema: t.get("schema").cloned().unwrap_or_else(|| json!({ "type": "object" })),
+                        concurrency: t
+                            .get("concurrency")
+                            .and_then(Value::as_str)
+                            .map(ExtConcurrency::parse)
+                            .unwrap_or_default(),
                         name: n,
                     })
                 })
@@ -212,6 +247,29 @@ mod tests {
             ],
             "commands": [ { "name": "cache", "description": "show cache stats" } ]
         })
+    }
+
+    #[test]
+    fn concurrency_defaults_to_parallel() {
+        let m = parse_manifest(&reply()).unwrap();
+        assert_eq!(m.tools[0].concurrency, ExtConcurrency::Parallel);
+    }
+
+    #[test]
+    fn concurrency_is_read_from_the_manifest() {
+        let mut v = reply();
+        v["tools"][0]["concurrency"] = json!("serial");
+        assert_eq!(parse_manifest(&v).unwrap().tools[0].concurrency, ExtConcurrency::Serial);
+
+        v["tools"][0]["concurrency"] = json!("keyed");
+        assert_eq!(parse_manifest(&v).unwrap().tools[0].concurrency, ExtConcurrency::Keyed);
+    }
+
+    #[test]
+    fn unknown_concurrency_falls_back_to_parallel() {
+        let mut v = reply();
+        v["tools"][0]["concurrency"] = json!("nonsense");
+        assert_eq!(parse_manifest(&v).unwrap().tools[0].concurrency, ExtConcurrency::Parallel);
     }
 
     #[test]
@@ -307,6 +365,7 @@ mod tests {
             name: "warm".into(),
             description: "d".into(),
             schema: json!({ "type": "object" }),
+            concurrency: ExtConcurrency::default(),
         };
         let (n, d, s) = tool_triple(&t);
         assert_eq!(n, "warm");

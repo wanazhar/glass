@@ -374,7 +374,16 @@ impl<'a> Agent<'a> {
             .iter()
             .filter_map(|&i| calls.get(i).and_then(|c| c.arg_str("command")).map(|cmd| (i, cmd)))
             .collect();
-        let plan = concurrency::plan_bash(&cmds, self.workspace);
+        let mut plan = concurrency::plan_bash(&cmds, self.workspace);
+
+        // An extension can declare that its own tool must not overlap, which is
+        // the only way it can protect shared state without knowing about the
+        // built-in tools. Everything else keeps the class we inferred.
+        for call in calls.iter().filter(|c| c.name != "bash") {
+            if self.extensions.tool_concurrency(&call.name) == Some(ext::protocol::ExtConcurrency::Serial) {
+                plan = plan.with_serial(calls.iter().position(|c| std::ptr::eq(c, call)));
+            }
+        }
 
         if !plan.needs_parallelism() {
             for call in calls {

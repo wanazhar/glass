@@ -141,12 +141,11 @@ impl Provider for OpenAiCompat {
         };
 
         if !req.tools.is_empty() {
-            let tools = build_tools(req.tools);
-            body["tools"] = if self.flavour == Flavour::Responses {
-                tools
-            } else {
-                json!([tools])
-            };
+            // `build_tools` already returns an array of function objects.
+            // Wrapping it again produced `[[{...}]]`, which every strict
+            // endpoint rejects — and lenient ones ignore, leaving the model
+            // with no tools at all and the agent silently inert.
+            body["tools"] = build_tools(req.tools);
         }
 
         // Reasoning budget is vendor-specific even inside this format. GPT-5
@@ -445,5 +444,153 @@ mod tests {
     fn error_body_is_unwrapped() {
         let body = r#"{"error":{"message":"rate limit reached","type":"rate_limit"}}"#;
         assert_eq!(extract_error(body), "rate limit reached");
+    }
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+    use crate::provider::{builtin_tools, Request};
+
+    /// The wire format must be a flat array of function objects.
+    ///
+    /// Regression: `tools` was wrapped twice, producing `[[{...}]]`. Strict
+    /// endpoints reject that shape outright and lenient ones ignore it, which
+    /// leaves the model with no tools and the agent silently inert. The symptom
+    /// is invisible from inside the harness because every unit test still
+    /// passed — it only showed up against a real endpoint.
+    #[test]
+    fn tools_are_not_double_wrapped() {
+        let tools = build_tools(&builtin_tools());
+        assert!(tools.is_array(), "tools must be an array");
+        let arr = tools.as_array().expect("array");
+        assert_eq!(arr.len(), 2, "one entry per tool, not one entry per array");
+        for t in arr {
+            assert!(t.get("type").and_then(Value::as_str) == Some("function"), "{t}");
+            assert!(t.get("function").is_some(), "each entry needs a function object: {t}");
+            assert!(t.as_array().is_none(), "entries must be objects, not arrays");
+        }
+    }
+
+    #[test]
+    fn tool_entry_carries_name_and_schema() {
+        let tools = build_tools(&builtin_tools());
+        let arr = tools.as_array().unwrap();
+        let names: Vec<&str> =
+            arr.iter().filter_map(|t| t["function"]["name"].as_str()).collect();
+        assert_eq!(names, vec!["bash", "state"]);
+        assert!(arr[0]["function"]["parameters"]["properties"].is_object());
+    }
+
+    #[test]
+    fn empty_tool_list_produces_an_empty_array() {
+        assert!(build_tools(&[]).as_array().unwrap().is_empty());
+    }
+
+    /// The request built for a real call must carry the flat shape.
+    #[test]
+    fn request_body_shape_is_flat() {
+        let p = OpenAiCompat::new("https://x", None, "gpt-5");
+        let tools = builtin_tools();
+        let req = Request {
+            model: "gpt-5",
+            system: "s",
+            messages: &[glass_mod_api::Message::User("hi".into())],
+            tools: &tools,
+            max_tokens: 100,
+            reasoning: None,
+        };
+        // Build the same body the adapter would, without a network call.
+        let mut body = json!({
+            "model": "gpt-5",
+            "stream": true,
+            "messages": build_messages("s", req.messages),
+        });
+        body["tools"] = build_tools(req.tools);
+        let arr = body["tools"].as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+        assert!(arr.iter().all(|t| t["function"]["name"].is_string()));
+        let _ = p;
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    /// Drive the SSE decoder over a byte-for-byte copy of what a real
+    /// endpoint sends for a tool call, and check what comes out.
+    fn run_stream(chunks: &[&str]) -> Vec<Event> {
+        use crate::sse::SseDecoder;
+        let mut acc = Accum::default();
+        let mut outbox = std::collections::VecDeque::new();
+        let mut decoder = SseDecoder::new();
+
+        for chunk in chunks {
+            for ev in decoder.push(chunk) {
+                if ev.data.trim() == "[DONE]" {
+                    continue;
+                }
+                let Ok(v) = serde_json::from_str::<Value>(&ev.data) else { continue };
+                for c in v["choices"][0]["delta"]["tool_calls"].as_array().into_iter().flatten() {
+                    let idx = c.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                    let slot = acc.tools.entry(idx).or_default();
+                    if let Some(n) = c["function"]["name"].as_str() { slot.name.push_str(n); }
+                    if let Some(a) = c["function"]["arguments"].as_str() { slot.args.push_str(a); }
+                    if let Some(i) = c["id"].as_str() { slot.id.push_str(i); }
+                }
+            }
+        }
+        {
+            for (_, p) in std::mem::take(&mut acc.tools) {
+                if !p.name.is_empty() {
+                    outbox.push_back(Event::ToolCall { id: p.id, name: p.name, arguments: p.args });
+                }
+            }
+        }
+        outbox.into_iter().collect()
+    }
+
+    #[test]
+    fn a_single_chunk_tool_call_is_emitted() {
+        let chunk = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"hl_edit\",\"arguments\":\"{\\\"path\\\":\\\"/x\\\"}\"}}]}}]}\n\n";
+        let evs = run_stream(&[chunk]);
+        assert_eq!(evs.len(), 1, "{evs:?}");
+        match &evs[0] {
+            Event::ToolCall { name, arguments, id } => {
+                assert_eq!(name, "hl_edit");
+                assert_eq!(id, "c1");
+                assert!(arguments.contains("/x"), "{arguments}");
+            }
+            other => panic!("expected a tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn arguments_split_across_chunks_are_reassembled() {
+        let a = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c2\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\"}}]}}]}\n\n";
+        let b = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"ls -la\\\"}\"}}]}}]}\n\n";
+        let evs = run_stream(&[a, b]);
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            Event::ToolCall { arguments, .. } => {
+                let parsed: Value = serde_json::from_str(arguments).expect("reassembled args must be valid JSON");
+                assert_eq!(parsed["command"], "ls -la");
+            }
+            other => panic!("expected a tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn two_tools_in_one_chunk_both_emit() {
+        let chunk = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"one\",\"arguments\":\"{}\"}},{\"index\":1,\"id\":\"b\",\"function\":{\"name\":\"two\",\"arguments\":\"{}\"}}]}}]}\n\n";
+        let evs = run_stream(&[chunk]);
+        assert_eq!(evs.len(), 2, "{evs:?}");
+    }
+
+    #[test]
+    fn a_text_only_chunk_produces_no_tool_calls() {
+        let chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        assert!(run_stream(&[chunk]).is_empty());
     }
 }

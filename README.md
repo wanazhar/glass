@@ -3,11 +3,47 @@
 A minimal coding harness. Two tools, one loop, native terminal.
 
 ```
-binary   2.2 MB   (stripped, lto=fat, codegen-units=1)
+binary   2.4 MB   (stripped, lto=fat, codegen-units=1)
 RSS      ~2 MB    idle
 startup  <10 ms
 tools    bash + state
 ```
+
+### Why two tools
+
+Measured, not assumed. Microsoft's *Is Bash All You Need?*
+([arXiv:2609.11999](https://arxiv.org/abs/2609.11999), Opus-4.8 and GPT-5.5, two
+benchmarks, 1,308 paired runs) found bash alone beats a typed tool catalogue by
+**+24.6pp** on TheAgentCompany and **+6.2pp** on APEX-Agents, while using
+**19–72% fewer tokens**. Adding typed tools on top of bash produced no
+detectable gain. Separately, frontier models pick the right tool 93.1% of the
+time at K=2 versus 87.1% at K=5 — the curve slopes down with tool count.
+
+What bash-only does cost is edit-format reliability, and that is handled in the
+harness rather than with a third tool: see below.
+
+### What the research said to build instead
+
+The same literature is clear that the win is a *harness-side guardrail*, not a
+better tool. SWE-agent measured its lint-and-revert guardrail at ~3pp, worth more
+than its edit tool. So:
+
+- **Every tool result leads with its exit code.** A model without one re-runs
+  commands to find out what happened, and those retries show up as duplicated
+  commands in transcripts.
+- **Writes are verified.** The harness detects what a command wrote (heredoc,
+  redirect, append, tee, `sed -i`), reads the region back to the model, and runs
+  the language's parser if one is already required by the project. A heredoc
+  that wrote broken Python now returns the `SyntaxError` with line and column,
+  instead of the model finding out three turns later at build time.
+- **Read-before-write.** Overwriting a file the model has not read is refused.
+  A blind `sed -i` succeeds silently and the damage surfaces later, when the
+  cause is no longer obvious. Creating a new file is never blocked, and any
+  read counts.
+- **Independent tool calls run in parallel**, with same-path writes serialized
+  and results reassembled in call order. A chat-completions endpoint rejects
+  out-of-order tool results, and a transcript whose results appear in completion
+  order is impossible to debug.
 
 ## Why two tools
 
@@ -112,6 +148,30 @@ average is 10–40MB, which is a harness's entire memory budget before it starts
 `ctrl-g` opens a fullscreen ratatui transcript for people who want a scrollbar,
 jump-to-turn, and per-turn collapse. It is opt-in, so you only pay for it when
 you actually scroll back.
+
+## Side questions
+
+`/btw <question>` asks the model something mid-task and prints the answer
+without recording either. The side request forks the last ten turns, runs with
+no tools and an explicit instruction not to write, and costs are printed rather
+than hidden.
+
+Verified: after a side question the session log is zero records, so the next
+turn costs exactly what it would have anyway.
+
+## Better edits, opt-in
+
+`extensions/hashline` adds `hl_read` / `hl_edit`, which refer to lines by a
+short content anchor rather than by re-typed text:
+
+```
+1:37f9b8e4|fn main() {
+2:aa5282df|    println!("hi");
+```
+
+A stale anchor is rejected before anything is written, and a batch of edits is
+all-or-nothing. See `extensions/hashline/README.md` for why this is an extension
+and not a third core tool.
 
 ## Context management
 
@@ -242,8 +302,9 @@ startup.
 crates/glass-mod-api   the in-process hook surface, zero dependencies
 crates/glass-tui       terminal rendering, input, virtualized transcript
 crates/glass           loop, providers, tools, session, compaction, config,
-                       extension protocol, AGENTS.md
-extensions/            hello.py (reference), codemode, cache-warmer
+                       extension protocol, AGENTS.md, concurrency, read guard,
+                       post-write verification, /btw
+extensions/            hello.py (reference), codemode, cache-warmer, hashline
 ```
 
 `glass-mod-api` is the stability boundary. If a hook ever needs a new type, the

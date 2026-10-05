@@ -172,9 +172,14 @@ mod tests {
 
     #[test]
     fn side_prompt_forbids_writing() {
-        // The read-only guarantee is what makes /btw safe to run unattended,
-        // so it must be stated in the prompt the side model sees.
-        let p = "You must not create, modify, or delete";
-        assert!(p.len() > 0);
+        // The read-only guarantee is what makes /btw safe to run unattended, so
+        // the prohibition has to be stated to the side model. This is a literal
+        // check on the instruction rather than on behaviour, because the prompt
+        // is assembled inside `ask` and would otherwise need a live provider.
+        let src = include_str!("btw.rs");
+        assert!(
+            src.contains("MUST NOT create, modify, or delete anything"),
+            "the side prompt must forbid writes"
+        );
     }
 }

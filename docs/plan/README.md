@@ -10929,6 +10929,16 @@ ServiceWorker CORS-error response-cookie evidence remains a separate gap. See
 the [Slice 861 task](tasks/native-engine-browser-861.md) and
 [review](reviews/native-engine-browser-861-01.md). Issue #40 remains open.
 
+Slice 862 maps ServiceWorker Fetch CORS-error cookie handling across the
+registry and captured-load broker, then adds process-backed evidence for a
+credentialed cross-origin Fetch emitted while intercepting a navigation. The
+actual response must reject with a real `TypeError` while its HttpOnly cookie
+is accepted by the parent and reused by a later ServiceWorker Fetch. Keep the
+parent as the only cookie matcher, `Set-Cookie` acceptor, and jar owner; do not
+add child cookie state or raw cookie-header IPC. This focused route does not
+claim background ServiceWorker or full Fetch/CORS conformance. See the
+[Slice 862 task](tasks/native-engine-browser-862.md). Issue #40 remains open.
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

@@ -77881,6 +77881,176 @@ async fn native_content_process_xhr_preflight_cache_separates_omit_and_include()
 }
 
 #[tokio::test]
+async fn native_content_process_xhr_keeps_parent_cookie_on_cors_error() {
+    fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+        request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(header, value)| {
+                header.eq_ignore_ascii_case(name).then_some(value.trim())
+            })
+        })
+    }
+
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_address = api_listener.local_addr().unwrap();
+    let page_origin = format!("http://{page_address}");
+    let api_origin = format!("http://{api_address}");
+    let expected_origin = page_origin.clone();
+    let response_origin = page_origin.clone();
+
+    let page_server = tokio::spawn(async move {
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(45), page_listener.accept())
+            .await
+            .expect("page request stays bounded")
+            .unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let body = "<title>CORS response cookie owner</title>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: connect-src *\r\nSet-Cookie: root=seed; HttpOnly; Path=/; SameSite=Lax\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let api_server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async move {
+            let (mut stream, _) = api_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().next(), Some("OPTIONS"));
+            assert_eq!(request.split_whitespace().nth(1), Some("/cors-cookie"));
+            assert_eq!(header_value(&request, "origin"), Some(expected_origin.as_str()));
+            assert_eq!(header_value(&request, "access-control-request-method"), Some("POST"));
+            assert_eq!(
+                header_value(&request, "access-control-request-headers")
+                    .map(str::to_ascii_lowercase)
+                    .as_deref(),
+                Some("content-type, x-glass-cookie")
+            );
+            assert!(header_value(&request, "cookie").is_none());
+            let preflight_response = format!(
+                "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Credentials: true\r\nAccess-Control-Allow-Methods: POST\r\nAccess-Control-Allow-Headers: content-type, x-glass-cookie\r\nAccess-Control-Max-Age: 600\r\nSet-Cookie: preflight_cookie=must-not-stick; HttpOnly; Path=/; SameSite=Lax\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream
+                .write_all(preflight_response.as_bytes())
+                .await
+                .unwrap();
+
+            let (mut stream, _) = api_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(request.split_whitespace().next(), Some("POST"));
+            assert_eq!(request.split_whitespace().nth(1), Some("/cors-cookie"));
+            let cookie = header_value(&request, "cookie").unwrap_or_default();
+            assert!(cookie.contains("root=seed"), "parent seed cookie missing: {cookie}");
+            assert!(!cookie.contains("preflight_cookie"));
+            assert!(!cookie.contains("cors_failed"));
+            assert_eq!(header_value(&request, "x-glass-cookie"), Some("parent-owned"));
+            assert_eq!(
+                request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default(),
+                r#"{"attempt":"blocked"}"#
+            );
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Credentials: true\r\nSet-Cookie: cors_failed=accepted; HttpOnly; Path=/; SameSite=Lax\r\nContent-Length: 7\r\nConnection: close\r\n\r\nblocked")
+                .await
+                .unwrap();
+
+            let (mut stream, _) = api_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            assert_eq!(
+                request.split_whitespace().next(),
+                Some("POST"),
+                "the successful credentialed preflight should be cached"
+            );
+            assert_eq!(request.split_whitespace().nth(1), Some("/cors-cookie"));
+            let cookie = header_value(&request, "cookie").unwrap_or_default();
+            assert!(cookie.contains("root=seed"), "parent seed cookie missing: {cookie}");
+            assert!(
+                cookie.contains("cors_failed=accepted"),
+                "actual response cookie was not retained by parent: {cookie}"
+            );
+            assert!(!cookie.contains("preflight_cookie"));
+            assert_eq!(header_value(&request, "x-glass-cookie"), Some("parent-owned"));
+            assert_eq!(
+                request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .unwrap_or_default(),
+                r#"{"attempt":"visible"}"#
+            );
+            let final_response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: {response_origin}\r\nAccess-Control-Allow-Credentials: true\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+            );
+            stream.write_all(final_response.as_bytes()).await.unwrap();
+
+            match tokio::time::timeout(Duration::from_secs(1), api_listener.accept()).await {
+                Err(_) => {}
+                Ok(Ok((mut stream, _))) => {
+                    let request = read_http_request(&mut stream).await;
+                    panic!("unexpected extra CORS-cookie request: {request}");
+                }
+                Ok(Err(error)) => panic!("unexpected API listener error: {error}"),
+            }
+        })
+        .await
+        .expect("CORS-cookie request sequence stays bounded")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("{page_origin}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let results = tokio::time::timeout(
+        Duration::from_secs(30),
+        engine.evaluate_async(format!(
+            r#"await (async () => {{
+              const send = attempt => new Promise(resolve => {{
+                const xhr = new XMLHttpRequest();
+                xhr.withCredentials = true;
+                xhr.onload = () => resolve(["load", xhr.status, xhr.responseText]);
+                xhr.onerror = () => resolve(["error", xhr.status, xhr.responseText]);
+                xhr.open("POST", "{api_origin}/cors-cookie");
+                xhr.setRequestHeader("Content-Type", "application/json");
+                xhr.setRequestHeader("X-Glass-Cookie", "parent-owned");
+                xhr.send(JSON.stringify({{attempt}}));
+              }});
+              return [await send("blocked"), await send("visible"), document.cookie];
+            }})()"#
+        )),
+    )
+    .await
+    .expect("credentialed XHRs complete through the parent broker")
+    .unwrap();
+    assert_eq!(
+        results,
+        serde_json::json!([["error", 0, ""], ["load", 200, "ok"], ""])
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    engine.close_async().await.unwrap();
+    page_server.await.unwrap();
+    api_server.await.unwrap();
+    for (name, value) in [("root", "seed"), ("cors_failed", "accepted")] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| { cookie.name == name && cookie.value == value && cookie.http_only }),
+            "parent cookie jar is missing {name}={value}"
+        );
+    }
+    assert!(
+        !cookies
+            .iter()
+            .any(|cookie| cookie.name == "preflight_cookie"),
+        "Set-Cookie from the credential-free preflight must be ignored"
+    );
+}
+
+#[tokio::test]
 async fn native_content_process_xhr_credentialed_preflight_wildcards_send_no_post() {
     fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
         request.lines().find_map(|line| {

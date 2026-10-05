@@ -520,6 +520,10 @@ cookie, and `document.cookie` remains empty. This is targeted page EventSource
 credential evidence, not complete EventSource, Fetch/CORS WPT, or
 cross-platform conformance. See the [Slice 866 task](tasks/native-engine-browser-866.md)
 and the Fetch Standard's [CORS credentials rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
+The companion [Slice 868 task](tasks/native-engine-browser-868.md) covers the
+same-origin credentials mode across a cross-origin EventSource redirect,
+including rejection of the redirect response cookie and omission on the next
+hop; that additional process-backed evidence is in progress.
 
 ### Page EventSource redirect response cookies
 

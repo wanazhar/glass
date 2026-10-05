@@ -43763,6 +43763,18 @@ fn document_bootstrap(
           : null);
       installUrlAttributeProperty(element, "src", "src", baseUrl, reset);
     }}
+    if (element.tagName === "VIDEO") {{
+      Object.defineProperty(element, "poster", {{
+        enumerable: true,
+        configurable: false,
+        get() {{
+          const value = element.getAttribute("poster");
+          if (value === null || value === "") return "";
+          try {{ return new URLNative(value, baseUrl).href; }} catch (_error) {{ return ""; }}
+        }},
+        set(next) {{ element.setAttribute("poster", String(next)); }},
+      }});
+    }}
     if (["LINK", "SCRIPT", "AUDIO", "VIDEO"].includes(element.tagName)) {{
       installStringAttributeProperty(element, "integrity", "integrity");
       installStringAttributeProperty(element, "crossOrigin", "crossorigin");

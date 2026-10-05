@@ -333,6 +333,11 @@ impl NativeDisplayList {
                         push_command(&mut commands, command)?;
                     }
                     if let Some(command) =
+                        video_poster_paint_command(document, layout_box.node_id, rect, clip)
+                    {
+                        push_command(&mut commands, command)?;
+                    }
+                    if let Some(command) =
                         canvas_paint_command(document, layout_box.node_id, rect, clip)
                     {
                         push_command(&mut commands, command)?;
@@ -539,6 +544,78 @@ fn image_paint_command(
         source_height: image.height,
         pixels: Arc::from(image.current_pixels()),
         clip,
+    })
+}
+
+fn video_poster_paint_command(
+    document: &NativeDocument,
+    node_id: NativeNodeId,
+    bounds: NativeRect,
+    clip: Option<NativeRect>,
+) -> Option<NativeDisplayCommand> {
+    let node = document.node(node_id)?;
+    if node.element_name() != Some("video") || bounds.width == 0 || bounds.height == 0 {
+        return None;
+    }
+    let image = document
+        .video_poster_resource_for_node(node_id)
+        .cloned()
+        .or_else(|| node.attribute("poster").and_then(decode_data_image))?;
+    let rect = centered_contain_rect(bounds, image.width, image.height)?;
+    Some(NativeDisplayCommand::Image {
+        node_id,
+        rect,
+        source_rect: NativeRect {
+            x: 0,
+            y: 0,
+            width: image.width,
+            height: image.height,
+        },
+        source_width: image.width,
+        source_height: image.height,
+        pixels: Arc::from(image.current_pixels()),
+        clip,
+    })
+}
+
+fn centered_contain_rect(
+    bounds: NativeRect,
+    source_width: u32,
+    source_height: u32,
+) -> Option<NativeRect> {
+    if bounds.width == 0 || bounds.height == 0 || source_width == 0 || source_height == 0 {
+        return None;
+    }
+    let width_limited = u64::from(bounds.width) * u64::from(source_height)
+        <= u64::from(bounds.height) * u64::from(source_width);
+    let (width, height) = if width_limited {
+        (
+            bounds.width,
+            u32::try_from(
+                u64::from(bounds.width) * u64::from(source_height) / u64::from(source_width),
+            )
+            .ok()?
+            .clamp(1, bounds.height),
+        )
+    } else {
+        (
+            u32::try_from(
+                u64::from(bounds.height) * u64::from(source_width) / u64::from(source_height),
+            )
+            .ok()?
+            .clamp(1, bounds.width),
+            bounds.height,
+        )
+    };
+    Some(NativeRect {
+        x: bounds
+            .x
+            .saturating_add(bounds.width.saturating_sub(width) / 2),
+        y: bounds
+            .y
+            .saturating_add(bounds.height.saturating_sub(height) / 2),
+        width,
+        height,
     })
 }
 

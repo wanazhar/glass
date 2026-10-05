@@ -68,6 +68,7 @@ use super::font::{
 };
 
 const MAX_ATTRIBUTE_BYTES: usize = 1024;
+pub(crate) const MAX_NATIVE_VIDEO_POSTERS: usize = 64;
 const MAX_LOCATOR_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
 const MAX_FORM_CONTROLS: usize = 128;
 const MAX_IMAGE_SRCSET_CANDIDATES: usize = 32;
@@ -290,6 +291,10 @@ pub(crate) struct NativeDocumentWire {
     pub(crate) background_image_resources: Vec<NativeImageResourceWire>,
     #[serde(default)]
     pub(crate) image_loads: Vec<NativeImageLoadWire>,
+    #[serde(default)]
+    pub(crate) video_poster_resources: Vec<NativeImageResourceWire>,
+    #[serde(default)]
+    pub(crate) video_poster_loads: Vec<NativeImageLoadWire>,
     #[serde(default)]
     pub(crate) canvas_resources: Vec<NativeCanvasResourceWire>,
     #[serde(default)]
@@ -971,6 +976,8 @@ pub struct NativeDocument {
     next_embedded_frame_owner_removal_sequence: u64,
     image_resources: BTreeMap<u32, NativeImageResource>,
     image_loads: BTreeMap<u32, String>,
+    video_poster_resources: BTreeMap<u32, NativeImageResource>,
+    video_poster_loads: BTreeMap<u32, String>,
     media_resources: BTreeMap<u32, NativeMediaResource>,
     media_loads: BTreeMap<u32, String>,
     media_errors: BTreeMap<u32, String>,
@@ -1539,6 +1546,8 @@ impl NativeDocument {
             next_embedded_frame_owner_removal_sequence: 0,
             image_resources: BTreeMap::new(),
             image_loads: BTreeMap::new(),
+            video_poster_resources: BTreeMap::new(),
+            video_poster_loads: BTreeMap::new(),
             media_resources: BTreeMap::new(),
             media_loads: BTreeMap::new(),
             media_errors: BTreeMap::new(),
@@ -2835,6 +2844,25 @@ impl NativeDocument {
             .collect()
     }
 
+    pub(crate) fn external_video_poster_links(&self) -> Vec<(u32, String)> {
+        self.nodes
+            .iter()
+            .filter_map(|node| {
+                let node_id = node.id();
+                let source = node.attribute("poster")?;
+                (node.element_name() == Some("video")
+                    && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI)
+                    && self.is_attached(node_id)
+                    && !source.trim().is_empty()
+                    && !source
+                        .trim()
+                        .get(..5)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:")))
+                .then(|| (node_id.index(), source.to_owned()))
+            })
+            .collect()
+    }
+
     fn selected_media_source(&self, node_id: NativeNodeId) -> Option<String> {
         let node = self.node(node_id)?;
         if node.element_name() != Some("audio") && node.element_name() != Some("video") {
@@ -3171,6 +3199,123 @@ impl NativeDocument {
         self.image_loads = retained;
     }
 
+    fn selected_video_poster_source(&self, node_id: NativeNodeId) -> Option<String> {
+        let node = self.node(node_id)?;
+        (node.element_name() == Some("video")
+            && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI)
+            && self.is_attached(node_id))
+        .then(|| {
+            node.attribute("poster")
+                .filter(|source| !source.trim().is_empty())
+        })
+        .flatten()
+        .map(str::to_owned)
+    }
+
+    pub(crate) fn mark_video_poster_load(
+        &mut self,
+        node_index: u32,
+        source: String,
+    ) -> Result<bool, NativeEngineError> {
+        let node_id = NativeNodeId::from_parts(self.generation, node_index);
+        if self.selected_video_poster_source(node_id).as_deref() != Some(source.as_str()) {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "poster load state does not match its attached video element".into(),
+            });
+        }
+        if !self.video_poster_loads.contains_key(&node_index)
+            && self.video_poster_loads.len() >= MAX_NATIVE_VIDEO_POSTERS
+        {
+            return Ok(false);
+        }
+        self.video_poster_resources.remove(&node_index);
+        self.video_poster_loads.insert(node_index, source);
+        Ok(true)
+    }
+
+    pub(crate) fn refresh_video_poster_loads(&mut self) {
+        let retained = self
+            .video_poster_loads
+            .iter()
+            .filter_map(|(node_index, source)| {
+                let node_id = NativeNodeId::from_parts(self.generation, *node_index);
+                (self.selected_video_poster_source(node_id).as_deref() == Some(source.as_str()))
+                    .then(|| (*node_index, source.clone()))
+            })
+            .collect();
+        self.video_poster_loads = retained;
+        self.video_poster_resources.retain(|node_index, resource| {
+            self.video_poster_loads.get(node_index) == Some(&resource.source)
+        });
+    }
+
+    pub(crate) fn video_poster_resource_for_node(
+        &self,
+        node_id: NativeNodeId,
+    ) -> Option<&NativeImage> {
+        let source = self.selected_video_poster_source(node_id)?;
+        let resource = self.video_poster_resources.get(&node_id.index())?;
+        (self.video_poster_loads.get(&node_id.index()) == Some(&source)
+            && resource.source == source)
+            .then_some(&resource.image)
+    }
+
+    pub(crate) fn video_poster_load_attempted_for_node(&self, node_id: NativeNodeId) -> bool {
+        self.video_poster_loads
+            .get(&node_id.index())
+            .is_some_and(|source| {
+                self.selected_video_poster_source(node_id).as_deref() == Some(source.as_str())
+            })
+    }
+
+    pub(crate) fn set_video_poster_resource(
+        &mut self,
+        node_index: u32,
+        source: String,
+        image: NativeImage,
+    ) -> Result<(), NativeEngineError> {
+        if source.is_empty()
+            || source.len() > MAX_ATTRIBUTE_BYTES
+            || source.bytes().any(|byte| byte.is_ascii_control())
+        {
+            return Err(NativeEngineError::invalid(
+                "video poster source",
+                "must be a bounded printable URL attribute",
+            ));
+        }
+        let expected_bytes = usize::try_from(image.width)
+            .ok()
+            .and_then(|width| width.checked_mul(usize::try_from(image.height).ok()?))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| NativeEngineError::limit("video poster pixels", 0, usize::MAX))?;
+        let decoded_bytes = image
+            .decoded_bytes()
+            .ok_or_else(|| NativeEngineError::limit("video poster frames", 0, usize::MAX))?;
+        if image.width == 0
+            || image.height == 0
+            || expected_bytes != image.pixels.len()
+            || decoded_bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES
+            || expected_bytes / 4 > MAX_NATIVE_IMAGE_TRANSFER_PIXELS
+        {
+            return Err(NativeEngineError::limit(
+                "video poster pixels",
+                MAX_NATIVE_IMAGE_TRANSFER_BYTES,
+                decoded_bytes,
+            ));
+        }
+        let node_id = NativeNodeId::from_parts(self.generation, node_index);
+        if self.video_poster_loads.get(&node_index) != Some(&source)
+            || self.selected_video_poster_source(node_id).as_deref() != Some(source.as_str())
+        {
+            // An attribute mutation or detach can make an in-flight response
+            // stale. It must not replace the current poster or fail navigation.
+            return Ok(());
+        }
+        self.video_poster_resources
+            .insert(node_index, NativeImageResource { source, image });
+        Ok(())
+    }
+
     pub(crate) fn background_image_source_for_node(&self, node_id: NativeNodeId) -> Option<&str> {
         let source_id = self.computed_style_for_layout(node_id).background_image()?;
         self.background_image_sources
@@ -3458,6 +3603,47 @@ impl NativeDocument {
                 })
             })
             .collect();
+        let video_poster_resources = self
+            .video_poster_resources
+            .iter()
+            .filter_map(|(node_index, resource)| {
+                let node_id = NativeNodeId::from_parts(self.generation, *node_index);
+                (self.selected_video_poster_source(node_id).as_deref()
+                    == Some(resource.source.as_str())
+                    && self.video_poster_loads.get(node_index) == Some(&resource.source))
+                .then(|| NativeImageResourceWire {
+                    node_index: *node_index,
+                    source: resource.source.clone(),
+                    width: resource.image.width,
+                    height: resource.image.height,
+                    pixels_base64: base64::engine::general_purpose::STANDARD
+                        .encode(&resource.image.pixels),
+                    frames: resource
+                        .image
+                        .frames
+                        .iter()
+                        .map(|frame| NativeImageFrameWire {
+                            delay_ms: frame.delay_ms,
+                            pixels_base64: base64::engine::general_purpose::STANDARD
+                                .encode(&frame.pixels),
+                        })
+                        .collect(),
+                    loop_count: resource.image.loop_count,
+                })
+            })
+            .collect();
+        let video_poster_loads = self
+            .video_poster_loads
+            .iter()
+            .filter_map(|(node_index, source)| {
+                let node_id = NativeNodeId::from_parts(self.generation, *node_index);
+                (self.selected_video_poster_source(node_id).as_deref() == Some(source.as_str()))
+                    .then(|| NativeImageLoadWire {
+                        node_index: *node_index,
+                        source: source.clone(),
+                    })
+            })
+            .collect();
         let media_resources = self
             .media_resources
             .iter()
@@ -3605,6 +3791,8 @@ impl NativeDocument {
             background_image_sources,
             background_image_resources,
             image_loads,
+            video_poster_resources,
+            video_poster_loads,
             canvas_resources,
             media_resources,
             media_loads,
@@ -4101,6 +4289,67 @@ impl NativeDocument {
                 });
             }
         }
+        if wire.video_poster_resources.len() > MAX_NATIVE_VIDEO_POSTERS {
+            return Err(NativeEngineError::limit(
+                "content-process video poster resources",
+                MAX_NATIVE_VIDEO_POSTERS,
+                wire.video_poster_resources.len(),
+            ));
+        }
+        let mut video_poster_resources = BTreeMap::new();
+        for resource in wire.video_poster_resources {
+            if resource.source.is_empty()
+                || resource.source.len() > MAX_ATTRIBUTE_BYTES
+                || resource.source.bytes().any(|byte| byte.is_ascii_control())
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid video poster source".into(),
+                });
+            }
+            if resource.pixels_base64.len() > max_encoded_pixels {
+                return Err(NativeEngineError::limit(
+                    "content-process video poster pixels",
+                    max_encoded_pixels,
+                    resource.pixels_base64.len(),
+                ));
+            }
+            let node_index =
+                usize::try_from(resource.node_index).map_err(|_| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid video poster node index".into(),
+                })?;
+            let _node = nodes
+                .get(node_index)
+                .ok_or_else(|| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an out-of-range video poster node index"
+                        .into(),
+                })?;
+            if !video_poster_source_is_declared(&nodes, node_index, &resource.source) {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned a poster resource for a different video"
+                        .into(),
+                });
+            }
+            let image = image_from_wire(&resource, max_encoded_pixels)?;
+            if video_poster_resources
+                .insert(
+                    resource.node_index,
+                    NativeImageResource {
+                        source: resource.source,
+                        image,
+                    },
+                )
+                .is_some()
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned duplicate video poster resources".into(),
+                });
+            }
+        }
         if wire.background_image_resources.len() > limits.max_nodes {
             return Err(NativeEngineError::limit(
                 "content-process background image resources",
@@ -4225,6 +4474,56 @@ impl NativeDocument {
                     reason: "content process returned duplicate image load states".into(),
                 });
             }
+        }
+        if wire.video_poster_loads.len() > MAX_NATIVE_VIDEO_POSTERS {
+            return Err(NativeEngineError::limit(
+                "content-process video poster load states",
+                MAX_NATIVE_VIDEO_POSTERS,
+                wire.video_poster_loads.len(),
+            ));
+        }
+        let mut video_poster_loads = BTreeMap::new();
+        for load in wire.video_poster_loads {
+            if load.source.is_empty()
+                || load.source.len() > MAX_ATTRIBUTE_BYTES
+                || load.source.bytes().any(|byte| byte.is_ascii_control())
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid video poster load source".into(),
+                });
+            }
+            let node_index =
+                usize::try_from(load.node_index).map_err(|_| NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an invalid video poster load node index"
+                        .into(),
+                })?;
+            if !video_poster_source_is_declared(&nodes, node_index, &load.source) {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned a video poster load for a different node"
+                        .into(),
+                });
+            }
+            if video_poster_loads
+                .insert(load.node_index, load.source)
+                .is_some()
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned duplicate video poster load states".into(),
+                });
+            }
+        }
+        if video_poster_resources.iter().any(|(node_index, resource)| {
+            video_poster_loads.get(node_index) != Some(&resource.source)
+        }) {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "content process returned video poster resources without matching loads"
+                    .into(),
+            });
         }
         if wire.media_resources.len() > limits.max_nodes {
             return Err(NativeEngineError::limit(
@@ -4561,6 +4860,8 @@ impl NativeDocument {
             next_embedded_frame_owner_removal_sequence,
             image_resources,
             image_loads,
+            video_poster_resources,
+            video_poster_loads,
             media_resources,
             media_loads,
             media_errors,
@@ -4735,6 +5036,8 @@ impl NativeDocument {
             next_embedded_frame_owner_removal_sequence: 0,
             image_resources: BTreeMap::new(),
             image_loads: BTreeMap::new(),
+            video_poster_resources: BTreeMap::new(),
+            video_poster_loads: BTreeMap::new(),
             media_resources: BTreeMap::new(),
             media_loads: BTreeMap::new(),
             media_errors: BTreeMap::new(),
@@ -4769,6 +5072,22 @@ impl NativeDocument {
                 (node.element_name() == Some("img")
                     && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI)
                     || self.is_svg_image_node(node_id))
+                    && self.is_attached(node_id)
+            })
+            .and_then(|node| node.attribute("referrerpolicy"))
+            .and_then(parse_element_referrer_policy);
+        element_policy.unwrap_or(self.document_referrer_policy)
+    }
+
+    pub(crate) fn video_poster_referrer_policy_for_node(
+        &self,
+        node_id: NativeNodeId,
+    ) -> NativeFetchReferrerPolicy {
+        let element_policy = self
+            .node(node_id)
+            .filter(|node| {
+                node.element_name() == Some("video")
+                    && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI)
                     && self.is_attached(node_id)
             })
             .and_then(|node| node.attribute("referrerpolicy"))
@@ -5183,6 +5502,16 @@ impl NativeDocument {
         move_node_indexed_entries(
             &mut self.image_loads,
             &mut destination.image_loads,
+            &native_index_map,
+        );
+        move_node_indexed_entries(
+            &mut self.video_poster_resources,
+            &mut destination.video_poster_resources,
+            &native_index_map,
+        );
+        move_node_indexed_entries(
+            &mut self.video_poster_loads,
+            &mut destination.video_poster_loads,
             &native_index_map,
         );
         move_node_indexed_entries(
@@ -13528,6 +13857,14 @@ fn image_source_is_declared(nodes: &[NativeNode], node_index: usize, source: &st
         }
     }
     false
+}
+
+fn video_poster_source_is_declared(nodes: &[NativeNode], node_index: usize, source: &str) -> bool {
+    nodes.get(node_index).is_some_and(|node| {
+        node.element_name() == Some("video")
+            && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI)
+            && node.attribute("poster") == Some(source)
+    })
 }
 
 fn is_image_resource_node_in(nodes: &[NativeNode], node_index: usize) -> bool {

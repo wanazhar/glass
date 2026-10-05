@@ -5788,6 +5788,10 @@ impl<'a> LayoutBuilder<'a> {
                 .image_dimensions(id)
                 .map(|(width, _)| width)
                 .unwrap_or(CHARACTER_WIDTH),
+            Some("video") => self
+                .video_poster_dimensions(id)
+                .map(|(width, _)| width)
+                .unwrap_or_else(|| self.intrinsic_text_width(id, style).max(CHARACTER_WIDTH)),
             Some("button") => self
                 .intrinsic_text_width(id, style)
                 .saturating_add(24)
@@ -5844,6 +5848,10 @@ impl<'a> LayoutBuilder<'a> {
                 .image_dimensions(id)
                 .map(|(_, height)| height)
                 .unwrap_or(DEFAULT_LINE_HEIGHT),
+            Some("video") => self
+                .video_poster_dimensions(id)
+                .map(|(_, height)| height)
+                .unwrap_or(DEFAULT_LINE_HEIGHT),
             _ => DEFAULT_LINE_HEIGHT,
         }
     }
@@ -5893,6 +5901,57 @@ impl<'a> LayoutBuilder<'a> {
             .image_resource_for_node(id)
             .map(|image| (image.width, image.height))
             .or_else(|| node.attribute("src").and_then(image_dimensions_from_source));
+        match (declared_width, declared_height, intrinsic) {
+            (Some(width), Some(height), _) => Some((width, height)),
+            (Some(width), None, Some((intrinsic_width, intrinsic_height)))
+                if intrinsic_width > 0 =>
+            {
+                Some((
+                    width,
+                    u32::try_from(
+                        u64::from(intrinsic_height) * u64::from(width) / u64::from(intrinsic_width),
+                    )
+                    .unwrap_or(u32::MAX)
+                    .max(1),
+                ))
+            }
+            (None, Some(height), Some((intrinsic_width, intrinsic_height)))
+                if intrinsic_height > 0 =>
+            {
+                Some((
+                    u32::try_from(
+                        u64::from(intrinsic_width) * u64::from(height)
+                            / u64::from(intrinsic_height),
+                    )
+                    .unwrap_or(u32::MAX)
+                    .max(1),
+                    height,
+                ))
+            }
+            (Some(width), None, _) => Some((width, DEFAULT_LINE_HEIGHT)),
+            (None, Some(height), _) => Some((CHARACTER_WIDTH, height)),
+            (None, None, intrinsic) => intrinsic,
+        }
+    }
+
+    fn video_poster_dimensions(&self, id: NativeNodeId) -> Option<(u32, u32)> {
+        let node = self.document.node(id)?;
+        let declared_width = node
+            .attribute("width")
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .filter(|value| *value > 0);
+        let declared_height = node
+            .attribute("height")
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .filter(|value| *value > 0);
+        let intrinsic = self
+            .document
+            .video_poster_resource_for_node(id)
+            .map(|image| (image.width, image.height))
+            .or_else(|| {
+                node.attribute("poster")
+                    .and_then(image_dimensions_from_source)
+            });
         match (declared_width, declared_height, intrinsic) {
             (Some(width), Some(height), _) => Some((width, height)),
             (Some(width), None, Some((intrinsic_width, intrinsic_height)))

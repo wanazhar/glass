@@ -74854,6 +74854,355 @@ async fn native_content_process_revalidates_no_cache_external_png_with_etag() {
 }
 
 #[tokio::test]
+async fn native_content_process_video_posters_use_parent_cookie_authority_and_paint() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let owner_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let owner_address = owner_listener.local_addr().unwrap();
+    let poster_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let poster_address = poster_listener.local_addr().unwrap();
+    assert_ne!(owner_address.port(), poster_address.port());
+    let page = format!(
+        "<!doctype html><style>body{{margin:0}} video{{position:absolute;left:0;top:0;width:80px;height:40px}}</style><video id='poster' poster='/initial.png'></video>"
+    );
+    let owner_server = tokio::spawn(async move {
+        let (mut stream, _) = owner_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/page"));
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nSet-Cookie: owner_visible=visible; Path=/; SameSite=Lax\r\nSet-Cookie: owner_secret=hidden; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+            page.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = owner_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/initial.png"));
+        assert!(
+            request.contains("owner_visible=visible"),
+            "missing owner cookie: {request}"
+        );
+        assert!(
+            request.contains("owner_secret=hidden"),
+            "missing HttpOnly owner cookie: {request}"
+        );
+        let image = native_test_solid_png_bytes([220, 20, 20, 255]);
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nSet-Cookie: poster_initial=stored; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            image.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(&image);
+        stream.write_all(&response).await.unwrap();
+    });
+
+    let observed_poster_requests = Arc::new(Mutex::new(Vec::new()));
+    let server_observed_poster_requests = Arc::clone(&observed_poster_requests);
+    let (poster_server_shutdown_tx, mut poster_server_shutdown_rx) = oneshot::channel();
+    let poster_server = tokio::spawn(async move {
+        loop {
+            let accepted = tokio::select! {
+                _ = &mut poster_server_shutdown_rx => break,
+                accepted = poster_listener.accept() => accepted,
+            };
+            let Ok((mut stream, _)) = accepted else {
+                break;
+            };
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            server_observed_poster_requests
+                .lock()
+                .await
+                .push(request.clone());
+            let cookie_header = request.lines().find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("cookie").then_some(value.trim())
+                })
+            });
+            let has_cookie = |expected: &str| {
+                cookie_header.is_some_and(|cookies| {
+                    cookies.split(';').any(|cookie| cookie.trim() == expected)
+                })
+            };
+            let response = match path {
+                "/first.png" => {
+                    assert!(
+                        request.lines().any(|line| {
+                            line.eq_ignore_ascii_case("Authorization: Basic dXNlcjpwYXNz")
+                        }),
+                        "poster URL credentials were not applied to the request: {request}"
+                    );
+                    for cookie in [
+                        "owner_visible=visible",
+                        "owner_secret=hidden",
+                        "poster_initial=stored",
+                    ] {
+                        assert!(has_cookie(cookie), "missing {cookie} in {request}");
+                    }
+                    let image = native_test_solid_png_bytes([20, 180, 40, 255]);
+                    let mut response = format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: poster_secret=accepted; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        image.len()
+                    )
+                    .into_bytes();
+                    response.extend_from_slice(&image);
+                    response
+                }
+                "/second.png" => {
+                    for cookie in [
+                        "owner_visible=visible",
+                        "owner_secret=hidden",
+                        "poster_initial=stored",
+                        "poster_secret=accepted",
+                    ] {
+                        assert!(has_cookie(cookie), "missing {cookie} in {request}");
+                    }
+                    let image = native_test_solid_png_bytes([20, 40, 220, 255]);
+                    let mut response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        image.len()
+                    )
+                    .into_bytes();
+                    response.extend_from_slice(&image);
+                    response
+                }
+                "/missing.png" => {
+                    for cookie in [
+                        "owner_secret=hidden",
+                        "poster_initial=stored",
+                        "poster_secret=accepted",
+                    ] {
+                        assert!(has_cookie(cookie), "missing {cookie} in {request}");
+                    }
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_vec()
+                }
+                other => panic!("unexpected video poster request {other}: {request}"),
+            };
+            stream.write_all(&response).await.unwrap();
+        }
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default()
+            .with_viewport(Viewport {
+                width: 100,
+                height: 60,
+                device_scale_factor_milli: 1000,
+            })
+            .with_initial_url(format!("http://{owner_address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    owner_server.await.unwrap();
+
+    let initial_poster = engine
+        .evaluate_async("document.getElementById('poster').poster")
+        .await
+        .unwrap();
+    assert_eq!(
+        initial_poster,
+        serde_json::json!(format!("http://{owner_address}/initial.png"))
+    );
+    let initial_images = engine
+        .display_list()
+        .unwrap()
+        .commands
+        .into_iter()
+        .filter_map(|command| match command {
+            NativeDisplayCommand::Image {
+                rect,
+                source_width,
+                source_height,
+                pixels,
+                ..
+            } => Some((rect, source_width, source_height, pixels)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(initial_images.len(), 1);
+    assert_eq!(
+        initial_images[0].0,
+        NativeRect {
+            x: 20,
+            y: 0,
+            width: 40,
+            height: 40,
+        }
+    );
+    assert_eq!((initial_images[0].1, initial_images[0].2), (2, 2));
+    assert!(
+        initial_images[0]
+            .3
+            .chunks_exact(4)
+            .all(|pixel| pixel == [220, 20, 20, 255])
+    );
+
+    let setup_state = engine
+        .evaluate_async(
+            "(() => { const video = document.getElementById('poster'); globalThis.posterEvents = []; video.addEventListener('load', () => posterEvents.push('load')); video.addEventListener('error', () => posterEvents.push('error')); return [video.currentSrc, video.networkState, video.readyState, video.error && video.error.code]; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(setup_state, serde_json::json!(["", 0, 0, null]));
+    engine
+        .evaluate_async(
+            "(() => { const video = document.getElementById('poster'); video.poster = video.poster; return video.poster; })()",
+        )
+        .await
+        .unwrap();
+
+    let first_poster_url = format!("http://user:pass@{poster_address}/first.png");
+    assert_eq!(
+        engine
+            .evaluate_async(&format!(
+                "(() => {{ const video = document.getElementById('poster'); video.poster = {first_poster_url:?}; return video.poster; }})()"
+            ))
+            .await
+            .unwrap(),
+        serde_json::json!(first_poster_url)
+    );
+    let first_poster_pixels = engine
+        .display_list()
+        .unwrap()
+        .commands
+        .into_iter()
+        .find_map(|command| match command {
+            NativeDisplayCommand::Image { pixels, .. } => Some(pixels),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        first_poster_pixels
+            .chunks_exact(4)
+            .all(|pixel| pixel == [20, 180, 40, 255])
+    );
+
+    let second_poster_url = format!("http://{poster_address}/second.png");
+    engine
+        .evaluate_async(&format!(
+            "document.getElementById('poster').poster = {second_poster_url:?}; true"
+        ))
+        .await
+        .unwrap();
+    let second_poster_pixels = engine
+        .display_list()
+        .unwrap()
+        .commands
+        .into_iter()
+        .find_map(|command| match command {
+            NativeDisplayCommand::Image { pixels, .. } => Some(pixels),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        second_poster_pixels
+            .chunks_exact(4)
+            .all(|pixel| pixel == [20, 40, 220, 255])
+    );
+
+    engine
+        .evaluate_async("document.getElementById('poster').removeAttribute('poster'); true")
+        .await
+        .unwrap();
+    assert!(
+        !engine
+            .display_list()
+            .unwrap()
+            .commands
+            .iter()
+            .any(|command| matches!(command, NativeDisplayCommand::Image { .. })),
+        "clearing poster should remove its painted image"
+    );
+
+    let missing_poster_url = format!("http://{poster_address}/missing.png");
+    engine
+        .evaluate_async(&format!(
+            "document.getElementById('poster').poster = {missing_poster_url:?}; true"
+        ))
+        .await
+        .unwrap();
+    assert!(
+        !engine
+            .display_list()
+            .unwrap()
+            .commands
+            .iter()
+            .any(|command| matches!(command, NativeDisplayCommand::Image { .. })),
+        "failed poster must not retain or paint the previous image"
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const video = document.getElementById('poster'); return [posterEvents, video.currentSrc, video.networkState, video.readyState, video.error && video.error.code, document.cookie]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!([[], "", 0, 0, null, "owner_visible=visible"])
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    for name in ["owner_secret", "poster_initial", "poster_secret"] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == name && cookie.http_only),
+            "parent cookie jar did not persist HttpOnly cookie {name}"
+        );
+    }
+
+    let requests = observed_poster_requests.lock().await.clone();
+    let paths = requests
+        .iter()
+        .map(|request| request.split_whitespace().nth(1).unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(paths, ["/first.png", "/second.png", "/missing.png"]);
+    engine.close_async().await.unwrap();
+    poster_server_shutdown_tx.send(()).unwrap();
+    poster_server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_blocks_csp_disallowed_video_poster_before_request() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let poster_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let poster_address = poster_listener.local_addr().unwrap();
+    let owner_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let owner_address = owner_listener.local_addr().unwrap();
+    let owner_server = tokio::spawn(async move {
+        let (mut stream, _) = owner_listener.accept().await.unwrap();
+        let _ = read_http_request(&mut stream).await;
+        let page = format!(
+            "<!doctype html><video poster='http://{poster_address}/blocked.png' style='width:80px;height:40px'></video>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Security-Policy: default-src 'none'; img-src 'self'\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+            page.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{owner_address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    owner_server.await.unwrap();
+    assert!(
+        !engine
+            .display_list()
+            .unwrap()
+            .commands
+            .iter()
+            .any(|command| matches!(command, NativeDisplayCommand::Image { .. }))
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), poster_listener.accept())
+            .await
+            .is_err(),
+        "CSP-disallowed video poster reached the network"
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_blocks_csp_disallowed_image_before_request() {
     let _guard = native_content_process_test_lock().lock().await;
     let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-852
 scope: glass-browser/native-engine/xhr-cross-origin-credentials-cors
-status: in-progress
+status: complete
 depends-on: [native-engine-browser-851]
 ---
 
@@ -72,3 +72,35 @@ cookie host/path matching eligible while making request origins distinct.
   agent review is used.
 - Record local-only evidence. No remote CI or broad conformance claim is
   implied.
+
+## Results
+
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p glass-browser
+  --features native-engine --lib --tests --locked --quiet` passed with existing
+  warnings.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-browser
+  --features native-engine --test native_engine --locked --quiet
+  native_content_process_xhr_cross_origin_credentials_remain_parent_owned`
+  passed (1 passed; 916 filtered; 24.23 seconds). It covered async page XHR,
+  synchronous page XHR through the parent broker, and async DedicatedWorker
+  XHR across distinct loopback origins.
+- The test observed that default `same-origin` mode sent no cross-origin
+  cookies and rejected response cookies; explicit `include` sent parent-matched
+  cookies and accepted response cookies under exact-origin credentialed CORS.
+  Subsequent requests observed only accepted cookies, all HttpOnly, while
+  `document.cookie` stayed empty. The parent remained the only cookie matcher,
+  response-cookie authority, and jar owner; no cookie headers or jar crossed
+  IPC.
+- The scoped check and focused process test used the shared target directory;
+  the process test reused the unchanged Slice 851 content-worker binary. No
+  production Rust source changed in this slice.
+- `cargo fmt --all -- --check`, `git diff --check`, and all four documentation
+  gates passed after the final edits: release-truth scanned 1,487 Markdown
+  files (83 current; zero current-claim failures); depth validated 93 guides
+  and 19 contracts; shortcut inventory validated 15 keys and 63 markers;
+  coverage validated 346 MCP tools (101 browser-only), 17 examples, and 22
+  public modules.
+- Direct self-review found no credential-mode, CORS, cookie-ownership, or
+  IPC-boundary mismatch. This does not claim XHR redirect-chain behavior, full
+  XHR/Web IDL or WPT conformance, cross-platform certification, independent
+  review, or remote CI. Issue #40 remains open.

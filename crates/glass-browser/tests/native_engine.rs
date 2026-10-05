@@ -76030,6 +76030,373 @@ async fn native_content_process_synchronous_xhr_uses_parent_cookie_authority() {
 }
 
 #[tokio::test]
+async fn native_content_process_xhr_cross_origin_credentials_remain_parent_owned() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let cross_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let cross_address = cross_listener.local_addr().unwrap();
+    let page_origin = format!("http://{page_address}");
+    let cross_origin = format!("http://{cross_address}");
+    let worker_cross_origin = cross_origin.clone();
+    let worker_script = format!(
+        r#"
+const crossOrigin = "{worker_cross_origin}";
+self.onmessage = async event => {{
+  if (event.data !== "run") return;
+  const send = (path, withCredentials) => new Promise(resolve => {{
+    const xhr = new XMLHttpRequest();
+    xhr.withCredentials = withCredentials;
+    xhr.onload = () => resolve([xhr.status, xhr.responseText]);
+    xhr.onerror = () => resolve([0, "error"]);
+    xhr.open("GET", crossOrigin + path);
+    xhr.send();
+  }});
+  try {{
+    const results = [];
+    results.push(await send("/worker-default", false));
+    results.push(await send("/worker-include", true));
+    results.push(await send("/worker-include-after", true));
+    results.push(await send("/worker-default-after", false));
+    self.postMessage({{ kind: "complete", results }});
+  }} catch (error) {{
+    self.postMessage({{ kind: "error", message: String(error) }});
+  }}
+}};
+"#
+    );
+
+    let page_server = tokio::spawn(async move {
+        for expected_path in ["/page", "/xhr-cross-origin-worker.js"] {
+            let (mut stream, _) =
+                tokio::time::timeout(Duration::from_secs(45), page_listener.accept())
+                    .await
+                    .expect("page and worker script requests stay bounded")
+                    .unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            assert_eq!(path, expected_path);
+            if expected_path == "/xhr-cross-origin-worker.js" {
+                let cookie = request
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim())
+                    .unwrap_or_default();
+                assert!(cookie.contains("root=seed"));
+            }
+            let (content_type, headers, body) = if expected_path == "/page" {
+                (
+                    "text/html",
+                    "Set-Cookie: root=seed; HttpOnly; Path=/; SameSite=Lax\r\n",
+                    "<main>cross-origin XHR cookie owner</main>".to_owned(),
+                )
+            } else {
+                ("text/javascript", "", worker_script.clone())
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let cross_server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(45), async move {
+            let expectations: [(&str, bool, &[&str], Option<&str>); 10] = [
+                (
+                    "/page-default",
+                    false,
+                    &[],
+                    Some("page_default=blocked"),
+                ),
+                (
+                    "/page-include",
+                    true,
+                    &["root=seed"],
+                    Some("page_include=accepted"),
+                ),
+                (
+                    "/page-include-after",
+                    true,
+                    &["root=seed", "page_include=accepted"],
+                    None,
+                ),
+                (
+                    "/page-default-after",
+                    false,
+                    &[],
+                    Some("page_default_after=blocked"),
+                ),
+                (
+                    "/page-sync-default",
+                    false,
+                    &[],
+                    Some("page_sync_default=blocked"),
+                ),
+                (
+                    "/page-sync-include",
+                    true,
+                    &["root=seed", "page_include=accepted"],
+                    Some("page_sync_include=accepted"),
+                ),
+                (
+                    "/worker-default",
+                    false,
+                    &[],
+                    Some("worker_default=blocked"),
+                ),
+                (
+                    "/worker-include",
+                    true,
+                    &[
+                        "root=seed",
+                        "page_include=accepted",
+                        "page_sync_include=accepted",
+                    ],
+                    Some("worker_include=accepted"),
+                ),
+                (
+                    "/worker-include-after",
+                    true,
+                    &[
+                        "root=seed",
+                        "page_include=accepted",
+                        "page_sync_include=accepted",
+                        "worker_include=accepted",
+                    ],
+                    None,
+                ),
+                (
+                    "/worker-default-after",
+                    false,
+                    &[],
+                    Some("worker_default_after=blocked"),
+                ),
+            ];
+            let mut requests = Vec::new();
+            for (path, include, expected_cookies, set_cookie) in expectations {
+                let (mut stream, _) = cross_listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                assert_eq!(request.split_whitespace().next(), Some("GET"));
+                assert_eq!(request.split_whitespace().nth(1), Some(path));
+                let origin = request.lines().find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("origin").then_some(value.trim())
+                    })
+                });
+                assert_eq!(origin, Some(page_origin.as_str()));
+                let cookie = request
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim().to_owned())
+                    .unwrap_or_default();
+                if include {
+                    for expected_cookie in expected_cookies {
+                        assert!(
+                            cookie.contains(expected_cookie),
+                            "{path} must carry {expected_cookie}; received {cookie:?}"
+                        );
+                    }
+                } else {
+                    assert!(
+                        cookie.is_empty(),
+                        "{path} must omit cross-origin cookies; received {cookie:?}"
+                    );
+                }
+                let cors_headers = if include {
+                    format!(
+                        "Access-Control-Allow-Origin: {page_origin}\r\nAccess-Control-Allow-Credentials: true\r\n"
+                    )
+                } else {
+                    "Access-Control-Allow-Origin: *\r\n".to_owned()
+                };
+                let cookie_header = set_cookie
+                    .map(|cookie| {
+                        format!(
+                            "Set-Cookie: {cookie}; HttpOnly; Path=/; SameSite=Lax\r\n"
+                        )
+                    })
+                    .unwrap_or_default();
+                let body = path;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n{cors_headers}{cookie_header}Content-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push((path.to_owned(), cookie));
+            }
+            requests
+        })
+        .await
+        .expect("cross-origin XHR requests stay bounded")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{page_address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    let page_async = tokio::time::timeout(
+        Duration::from_secs(30),
+        engine.evaluate_async(format!(
+            r#"await (async () => {{
+              const crossOrigin = "{cross_origin}";
+              const send = (path, withCredentials) => new Promise(resolve => {{
+                const xhr = new XMLHttpRequest();
+                xhr.withCredentials = withCredentials;
+                xhr.onload = () => resolve([xhr.status, xhr.responseText]);
+                xhr.onerror = () => resolve([0, "error"]);
+                xhr.open("GET", crossOrigin + path);
+                xhr.send();
+              }});
+              const results = [];
+              results.push(await send("/page-default", false));
+              results.push(await send("/page-include", true));
+              results.push(await send("/page-include-after", true));
+              results.push(await send("/page-default-after", false));
+              return results;
+            }})()"#
+        )),
+    )
+    .await
+    .expect("page async credentialed XHRs stay bounded")
+    .unwrap();
+    assert_eq!(
+        page_async,
+        serde_json::json!([
+            [200, "/page-default"],
+            [200, "/page-include"],
+            [200, "/page-include-after"],
+            [200, "/page-default-after"],
+        ])
+    );
+
+    let page_sync = engine
+        .evaluate_async(format!(
+            r#"(() => {{
+              const crossOrigin = "{cross_origin}";
+              const send = (path, withCredentials) => {{
+                const xhr = new XMLHttpRequest();
+                xhr.withCredentials = withCredentials;
+                xhr.open("GET", crossOrigin + path, false);
+                xhr.send();
+                return [xhr.status, xhr.responseText];
+              }};
+              return [
+                send("/page-sync-default", false),
+                send("/page-sync-include", true),
+              ];
+            }})()"#
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        page_sync,
+        serde_json::json!([[200, "/page-sync-default"], [200, "/page-sync-include"],])
+    );
+
+    engine
+        .evaluate_async(
+            "globalThis.crossOriginXhrWorkerMessages = []; globalThis.crossOriginXhrWorker = new Worker('/xhr-cross-origin-worker.js'); crossOriginXhrWorker.onmessage = event => crossOriginXhrWorkerMessages.push(event.data); crossOriginXhrWorker.postMessage('run'); true",
+        )
+        .await
+        .unwrap();
+    let worker_messages = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let messages = engine
+                .evaluate_async("crossOriginXhrWorkerMessages")
+                .await
+                .unwrap();
+            if messages.as_array().is_some_and(|messages| {
+                messages
+                    .iter()
+                    .any(|message| message["kind"] == "complete" || message["kind"] == "error")
+            }) {
+                break messages;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cross-origin Worker XHR requests settle");
+    assert_eq!(
+        worker_messages,
+        serde_json::json!([{
+            "kind": "complete",
+            "results": [
+                [200, "/worker-default"],
+                [200, "/worker-include"],
+                [200, "/worker-include-after"],
+                [200, "/worker-default-after"],
+            ]
+        }])
+    );
+
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("")
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    engine.close_async().await.unwrap();
+    page_server.await.unwrap();
+    let requests = cross_server.await.unwrap();
+
+    assert_eq!(
+        requests
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "/page-default",
+            "/page-include",
+            "/page-include-after",
+            "/page-default-after",
+            "/page-sync-default",
+            "/page-sync-include",
+            "/worker-default",
+            "/worker-include",
+            "/worker-include-after",
+            "/worker-default-after",
+        ]
+    );
+    for (path, cookie) in &requests {
+        if path.ends_with("default") || path.ends_with("default-after") {
+            assert!(
+                cookie.is_empty(),
+                "{path} unexpectedly received credentials: {cookie:?}"
+            );
+        }
+    }
+    for (name, value) in [
+        ("root", "seed"),
+        ("page_include", "accepted"),
+        ("page_sync_include", "accepted"),
+        ("worker_include", "accepted"),
+    ] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == name && cookie.value == value && cookie.http_only)
+        );
+    }
+    for name in [
+        "page_default",
+        "page_default_after",
+        "page_sync_default",
+        "worker_default",
+        "worker_default_after",
+    ] {
+        assert!(
+            !cookies.iter().any(|cookie| cookie.name == name),
+            "cross-origin default credentials must reject {name}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_cookie_profile_survives_native_process_restart() {
     let _guard = native_content_process_test_lock().lock().await;
     let profile_path = std::env::temp_dir().join(format!(

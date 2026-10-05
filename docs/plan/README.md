@@ -10817,12 +10817,19 @@ remote CI remain open; Issue #40 remains open. See the [Slice 851
 task](tasks/native-engine-browser-851.md) and
 [review](reviews/native-engine-browser-851-01.md).
 
-Slice 852 is in progress: process-test cross-origin XHR credential behavior for
-the parent-owned cookie path. The loopback case will distinguish two origins
-by port, checking default `same-origin` exclusion, explicit `include` under
-credentialed CORS, response-cookie acceptance/rejection, and page/Worker plus
-synchronous parent-broker coverage. No cookie jar or raw cookie header may
-cross IPC. See the [Slice 852 task](tasks/native-engine-browser-852.md).
+Slice 852 completes a process-backed, two-origin XHR credential regression
+through the parent-owned cookie path. Async page, synchronous parent-brokered
+page, and async DedicatedWorker XHR all distinguish origins by port. The test
+checks default `same-origin` exclusion and response-cookie rejection, explicit
+`include` under exact-origin credentialed CORS, and subsequent visibility of
+only accepted HttpOnly cookies. `document.cookie` remains empty; cookie
+matching, response-cookie acceptance, and jar ownership stay in the parent,
+with no raw cookie headers or jar crossing IPC. The scoped check and focused
+integration test passed locally, along with formatting and all four
+documentation gates. XHR redirect chains, full Web IDL/WPT conformance,
+cross-platform certification, and remote CI remain open; Issue #40 remains
+open. See the [Slice 852 task](tasks/native-engine-browser-852.md) and
+[review](reviews/native-engine-browser-852-01.md).
 
 ## Historical plan: Glass v0.3.6 issue #36
 

@@ -130,9 +130,13 @@ verifies a denied-handshake cookie on a later authorized page Fetch, HttpOnly
 filtering, and no open/retry/redirect. This is a separate owner path from the
 process-backed page IPC case in Slice 869. The process-backed page IPC handler
 also serves DedicatedWorker WebSockets; existing Worker coverage exercises
-successful socket events, but the rejected-handshake cookie contract has not
-yet been exercised from a DedicatedWorker. Slice 871 closes that test gap
-while preserving the parent-only cookie authority.
+successful socket events. The process-backed [Slice 871 regression](tasks/native-engine-browser-871.md)
+now verifies a page's rejected-handshake cookie is selected by a subsequent
+DedicatedWorker WebSocket, that the Worker response cookie is committed in the
+parent before its error event, and that a later authorized page Fetch reuses
+both. All three cookies remain HttpOnly in the parent and absent from
+`document.cookie`. Cookie matching, response processing, and persistence stay
+parent-owned.
 
 The parent must not send a cookie profile, an HttpOnly value, or raw
 `Cookie`/`Set-Cookie` headers to a content process. It gives a document only a

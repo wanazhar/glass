@@ -41649,7 +41649,7 @@ fn native_runtime_shared_worker_websocket_failed_handshake_keeps_parent_cookies(
 }
 
 #[test]
-fn native_content_process_page_websocket_failed_handshake_keeps_parent_cookies() {
+fn native_content_process_page_and_worker_websocket_failed_handshakes_keep_parent_cookies() {
     fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
         request.lines().find_map(|line| {
             line.split_once(':').and_then(|(header, value)| {
@@ -41695,6 +41695,11 @@ fn native_content_process_page_websocket_failed_handshake_keeps_parent_cookies()
             let response_origin = page_origin.clone();
             let handshake_response_sent = Arc::new(AtomicBool::new(false));
             let handshake_response_sent_by_server = Arc::clone(&handshake_response_sent);
+            let worker_handshake_response_sent = Arc::new(AtomicBool::new(false));
+            let worker_handshake_response_sent_by_server =
+                Arc::clone(&worker_handshake_response_sent);
+            let worker_script_served = Arc::new(AtomicBool::new(false));
+            let worker_script_served_by_server = Arc::clone(&worker_script_served);
 
             let page_server = tokio::spawn(async move {
                 tokio::time::timeout(Duration::from_secs(30), async move {
@@ -41705,9 +41710,15 @@ fn native_content_process_page_websocket_failed_handshake_keeps_parent_cookies()
                     let body = format!(
                         r#"<script>
 globalThis.websocketEvents = [];
+globalThis.workerEvents = [];
 globalThis.socket = new WebSocket("{page_api_origin}/reject");
 socket.addEventListener('open', () => websocketEvents.push('open'));
-socket.addEventListener('error', () => websocketEvents.push('error'));
+socket.addEventListener('error', () => {{
+  websocketEvents.push('error');
+globalThis.worker = new Worker('/worker.js');
+  worker.addEventListener('message', event => workerEvents.push(event.data));
+  worker.addEventListener('error', () => workerEvents.push('worker-error'));
+}});
 </script>"#
                     );
                     let response = format!(
@@ -41715,9 +41726,32 @@ socket.addEventListener('error', () => websocketEvents.push('error'));
                         body.len()
                     );
                     stream.write_all(response.as_bytes()).await.unwrap();
+
+                    let (mut worker_script_stream, _) = tokio::time::timeout(
+                        Duration::from_secs(20),
+                        page_listener.accept(),
+                    )
+                    .await
+                    .expect("DedicatedWorker script request reaches page origin")
+                    .unwrap();
+                    let worker_script_request = read_http_request(&mut worker_script_stream).await;
+                    assert_eq!(worker_script_request.split_whitespace().next(), Some("GET"));
+                    assert_eq!(worker_script_request.split_whitespace().nth(1), Some("/worker.js"));
+                    let worker_script = format!(
+                        "const socket = new WebSocket('{page_api_origin}/reject-worker'); socket.addEventListener('open', () => postMessage('open')); socket.addEventListener('error', () => postMessage('error'));"
+                    );
+                    let worker_script_response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{worker_script}",
+                        worker_script.len()
+                    );
+                    worker_script_stream
+                        .write_all(worker_script_response.as_bytes())
+                        .await
+                        .unwrap();
+                    worker_script_served_by_server.store(true, Ordering::SeqCst);
                 })
                 .await
-                .expect("page response and rejected WebSocket stay bounded")
+                .expect("page and DedicatedWorker script responses stay bounded")
             });
 
             let api_server = tokio::spawn(async move {
@@ -41737,10 +41771,11 @@ socket.addEventListener('error', () => websocketEvents.push('error'));
                     assert!(header_value(&handshake, "sec-websocket-key").is_some());
                     let handshake_cookie = header_value(&handshake, "cookie").unwrap_or_default();
                     assert!(handshake_cookie.contains("websocket_seed=initial"), "WebSocket handshake missed parent seed: {handshake_cookie}");
-                    assert!(!handshake_cookie.contains("websocket_rejected=retained"));
+                    assert!(!handshake_cookie.contains("websocket_page_rejected=retained"));
+                    assert!(!handshake_cookie.contains("websocket_worker_rejected=retained"));
                     let rejected_body = "handshake denied";
                     let rejected_response = format!(
-                        "HTTP/1.1 403 Forbidden\r\nSet-Cookie: websocket_rejected=retained; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{rejected_body}",
+                        "HTTP/1.1 403 Forbidden\r\nSet-Cookie: websocket_page_rejected=retained; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{rejected_body}",
                         rejected_body.len()
                     );
                     handshake_stream
@@ -41748,6 +41783,39 @@ socket.addEventListener('error', () => websocketEvents.push('error'));
                         .await
                         .unwrap();
                     handshake_response_sent_by_server.store(true, Ordering::SeqCst);
+
+                    let (mut worker_handshake_stream, _) = tokio::time::timeout(
+                        Duration::from_secs(30),
+                        api_listener.accept(),
+                    )
+                    .await
+                    .expect("DedicatedWorker WebSocket handshake reaches API")
+                    .unwrap();
+                    let worker_handshake = read_http_request(&mut worker_handshake_stream).await;
+                    assert_eq!(worker_handshake.split_whitespace().next(), Some("GET"));
+                    assert_eq!(worker_handshake.split_whitespace().nth(1), Some("/reject-worker"));
+                    assert_eq!(header_value(&worker_handshake, "origin"), Some(expected_origin.as_str()));
+                    assert!(header_value(&worker_handshake, "upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket")));
+                    assert!(header_value(&worker_handshake, "sec-websocket-key").is_some());
+                    let worker_handshake_cookie =
+                        header_value(&worker_handshake, "cookie").unwrap_or_default();
+                    for name in [
+                        "websocket_seed=initial",
+                        "websocket_page_rejected=retained",
+                    ] {
+                        assert!(worker_handshake_cookie.contains(name), "DedicatedWorker handshake missed parent cookie {name}: {worker_handshake_cookie}");
+                    }
+                    assert!(!worker_handshake_cookie.contains("websocket_worker_rejected=retained"));
+                    let rejected_body = "worker handshake denied";
+                    let rejected_response = format!(
+                        "HTTP/1.1 403 Forbidden\r\nSet-Cookie: websocket_worker_rejected=retained; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{rejected_body}",
+                        rejected_body.len()
+                    );
+                    worker_handshake_stream
+                        .write_all(rejected_response.as_bytes())
+                        .await
+                        .unwrap();
+                    worker_handshake_response_sent_by_server.store(true, Ordering::SeqCst);
 
                     let (mut verify_stream, _) = tokio::time::timeout(
                         Duration::from_secs(30),
@@ -41761,7 +41829,11 @@ socket.addEventListener('error', () => websocketEvents.push('error'));
                     assert_eq!(verify.split_whitespace().nth(1), Some("/verify"));
                     assert_eq!(header_value(&verify, "origin"), Some(expected_origin.as_str()));
                     let verify_cookie = header_value(&verify, "cookie").unwrap_or_default();
-                    for name in ["websocket_seed=initial", "websocket_rejected=retained"] {
+                    for name in [
+                        "websocket_seed=initial",
+                        "websocket_page_rejected=retained",
+                        "websocket_worker_rejected=retained",
+                    ] {
                         assert!(verify_cookie.contains(name), "authorized Fetch missed parent cookie {name}: {verify_cookie}");
                     }
                     let body = "authorized";
@@ -41783,7 +41855,7 @@ socket.addEventListener('error', () => websocketEvents.push('error'));
                     }
                 })
                 .await
-                .expect("failed WebSocket handshake cookie flow stays bounded")
+                .expect("page and Worker failed WebSocket handshake cookie flow stays bounded")
             });
 
             let session = BrowserRuntimeSession::connect_native(
@@ -41802,27 +41874,47 @@ socket.addEventListener('error', () => websocketEvents.push('error'));
                 }
             })
             .await
-            .expect("API sends the rejected WebSocket response");
-            let socket_state = tokio::time::timeout(Duration::from_secs(10), async {
+            .expect("API sends the rejected page WebSocket response");
+            let mut socket_state = serde_json::Value::Null;
+            let worker_event_result = tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
-                    let state = session
-                        .script("({readyState: socket.readyState, events: websocketEvents})")
+                    socket_state = session
+                        .script("({readyState: socket.readyState, events: websocketEvents, workerEvents})")
                         .await
                         .unwrap()
                         .value;
-                    if state["readyState"] == serde_json::json!(3) {
-                        break state;
+                    if socket_state["readyState"] == serde_json::json!(3)
+                        && socket_state["workerEvents"]
+                            .as_array()
+                            .is_some_and(|events| events.contains(&serde_json::json!("error")))
+                    {
+                        break;
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             })
-            .await
-            .expect("HTTP rejection closes the page WebSocket");
+            .await;
+            assert!(
+                worker_event_result.is_ok(),
+                "page/Worker WebSocket failure events timed out: state={socket_state:?}, worker_script_served={}, worker_response_sent={}, api_server_finished={}",
+                worker_script_served.load(Ordering::SeqCst),
+                worker_handshake_response_sent.load(Ordering::SeqCst),
+                api_server.is_finished()
+            );
+            assert!(
+                worker_handshake_response_sent.load(Ordering::SeqCst),
+                "DedicatedWorker error arrived without an HTTP handshake response"
+            );
             let events = socket_state["events"]
                 .as_array()
                 .expect("WebSocket events are an array");
             assert!(events.iter().any(|event| event == "error"));
             assert!(!events.iter().any(|event| event == "open"));
+            let worker_events = socket_state["workerEvents"]
+                .as_array()
+                .expect("DedicatedWorker WebSocket events are an array");
+            assert!(worker_events.contains(&serde_json::json!("error")));
+            assert!(!worker_events.contains(&serde_json::json!("open")));
             assert_eq!(
                 session
                     .script(&format!(
@@ -41843,7 +41935,8 @@ socket.addEventListener('error', () => websocketEvents.push('error'));
             api_server.await.unwrap();
             for (name, value) in [
                 ("websocket_seed", "initial"),
-                ("websocket_rejected", "retained"),
+                ("websocket_page_rejected", "retained"),
+                ("websocket_worker_rejected", "retained"),
             ] {
                 assert!(cookies.iter().any(|cookie| {
                     cookie.name == name && cookie.value == value && cookie.http_only

@@ -117,15 +117,13 @@ keeps the bounded event stream attached to the owning worker. The worker never
 opens a child-side network connection or stores authoritative cookies.
 Browser-owned SharedWorker WebSocket handshakes, frame sends/receives, close,
 and owner cancellation must likewise remain in the parent coordinator. The
-parent selects handshake cookies and processes each HTTP handshake response's
-`Set-Cookie` before WebSocket upgrade validation, even when a non-101 response
-fails the connection. The worker receives only bounded opaque connection IDs,
+parent selects handshake cookies and processes `Set-Cookie` from a successful
+handshake response. The worker receives only bounded opaque connection IDs,
 frame data, and lifecycle events; failure events do not carry response headers
 or cookie values. Raw cookie headers and the authoritative jar never cross
-into the worker realm. The process-backed [Slice 869 task](tasks/native-engine-browser-869.md)
-verifies a denied handshake's HttpOnly response cookie in the parent and its
-later authorized reuse. Other unimplemented runtime-network paths remain
-separate gaps; this contract does not claim their parity.
+into the worker realm. The browser-owned coordinator's non-101 HTTP error path
+still drops response cookies and remains a separate gap; it is not covered by
+Slice 869.
 
 The parent must not send a cookie profile, an HttpOnly value, or raw
 `Cookie`/`Set-Cookie` headers to a content process. It gives a document only a
@@ -258,6 +256,14 @@ URL-scoped script-visible cookie projection. Worker requests retain the worker
 script URL as their network initiator, while the captured page owner scopes IPC
 streams and cookie-write journals. No child-loader fallback is permitted for
 these transports.
+For process-backed page and DedicatedWorker WebSockets, the parent also
+processes eligible `Set-Cookie` headers from an HTTP handshake response before
+reporting a non-101 failure. Only bounded failure/lifecycle data crosses IPC;
+timeouts and transport failures without an HTTP response do not create cookie
+updates. The process-backed page regression in the [Slice 869 task](tasks/native-engine-browser-869.md)
+verifies later authorized reuse and HttpOnly filtering. The browser-owned
+SharedWorker coordinator has a separate rejected-handshake path and remains
+unverified for this behavior.
 ServiceWorker FetchEvent continuations resumed after `clients.openWindow()`
 also use the parent's Fetch broker. The parent attaches its captured document
 owner to the resolution IPC; the child verifies context, frame, generation,

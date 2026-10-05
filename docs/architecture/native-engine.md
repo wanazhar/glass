@@ -974,7 +974,12 @@ also use the parent broker. The parent owns the live socket and keeps both the
 handshake `Cookie` and response `Set-Cookie` inside its cookie authority; the
 child receives only an opaque stream ID, bounded frames, and lifecycle events.
 Worker requests retain their worker-script initiator URL, with the captured
-page owner scoping each IPC stream.
+page owner scoping each IPC stream. For a rejected non-101 HTTP handshake, the
+parent applies eligible response cookies before returning bounded failure
+events; the [Slice 869 process-backed page regression](../plan/tasks/native-engine-browser-869.md)
+verifies later authorized reuse and HttpOnly filtering. Browser-owned
+SharedWorker WebSockets use a separate coordinator path whose rejected
+handshake response-cookie behavior remains open.
 Synchronous page and Worker XHR block on a parent IPC round trip: pending
 script cookie writes are applied before the request, response cookies remain
 in the parent jar, and the child receives only the visible cookie projection.

@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-869
 scope: glass-browser/native-engine/websocket-failed-handshake-response-cookies
-status: in-progress
+status: done
 depends-on: [native-engine-browser-868]
 ---
 
@@ -27,8 +27,9 @@ connection, and that a later authorized request reuses the parent-owned cookie.
 
 | Request class | Owner and existing evidence | Slice 869 treatment |
 |---|---|---|
-| Successful SharedWorker WebSocket handshake | Parent coordinator; Slice 843 verifies request and 101 response cookies, frames, and lifecycle. | Preserve the successful-upgrade path. |
-| Rejected WebSocket handshake | Same parent `connect_async` path; no process-backed non-101 response-cookie evidence was found. | Preserve the HTTP error response headers long enough to apply eligible cookies before returning the socket error. |
+| Successful browser-owned SharedWorker WebSocket handshake | Separate parent coordinator; Slice 843 verifies request and 101 response cookies, frames, and lifecycle. | Preserve this successful-upgrade path; it is not the process-backed route changed here. |
+| Rejected process-backed page WebSocket handshake | Parent IPC handler in `content_process.rs`; its generic error path previously discarded `tungstenite::Error::Http` response headers. | Apply eligible response cookies in the parent before returning a bounded socket error. |
+| Rejected browser-owned SharedWorker WebSocket handshake | Separate coordinator in `native_backend.rs`; its `Error` path still emits failure without applying response cookies. | Explicitly out of scope; retain as a separate parent-authority gap. |
 | Later page request and script surface | Parent matcher/jar; page receives only a URL-scoped visible projection. | Verify later reuse and HttpOnly filtering without exposing the rejected response. |
 
 ## Contract
@@ -63,15 +64,17 @@ IPC.
 
 ## Tradeoff
 
-This slice covers a real HTTP 403 response to one page WebSocket handshake. It
-does not claim WebSocket redirect support, TLS/network-failure cookies,
-invalid-101 handshake-header behavior, full WebSocket/WPT conformance, or
-cross-platform parity.
+This slice covers a real HTTP 403 response to one process-backed page
+WebSocket handshake. It does not close the browser-owned SharedWorker
+coordinator's separate non-101 response-cookie gap, or claim WebSocket
+redirect support, TLS/network-failure cookies, invalid-101 handshake-header
+behavior, full WebSocket/WPT conformance, or cross-platform parity.
 
 ## Path
 
 - `crates/glass-browser/src/browser/native_engine/content_process.rs`
 - `crates/glass-browser/tests/native_engine.rs`
+- `docs/architecture/native-engine.md`
 - `docs/plan/native-engine-browser-profile.md`
 - `docs/plan/README.md`
 - `docs/plan/tasks/native-engine-browser-869.md`
@@ -96,4 +99,22 @@ cross-platform parity.
 
 ## Results
 
-Implementation and focused verification are pending.
+The process-backed page WebSocket handler now matches the HTTP-response error
+variant separately, applies its eligible `Set-Cookie` headers through the
+parent loader, and returns only bounded status/error and lifecycle data to the
+content process. Transport failures and timeouts still follow their original
+no-response error paths.
+
+The scoped `cargo check` passed. The exact
+`native_content_process_page_websocket_failed_handshake_keeps_parent_cookies`
+regression passed (1 passed; 932 filtered). It confirms the seed on the
+handshake, the API's 403 response cookie on a later credentialed Fetch, both
+cookies as HttpOnly in the parent API, an empty `document.cookie`, no WebSocket
+open, and no retry or redirect. The SharedWorker coordinator's separate
+rejected-handshake behavior remains open. Rust formatting and `git diff
+--check` passed. All four maintainer documentation gates passed after the
+final edits: release-truth audit (1,521 Markdown files, zero current-claim
+failures), documentation depth (93 guides and 19 contracts), TUI shortcut
+inventory (15 keys and 63 markers), and documentation coverage (346 MCP tools,
+17 examples, 22 public modules). No remote CI or cross-platform certification
+is claimed.

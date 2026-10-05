@@ -109,6 +109,16 @@ of `document.cookie`; no cookie header or jar was added to IPC. This focused
 case is not complete CORS/XHR or WPT conformance, remote CI, or cross-platform
 certification. See the [Slice 854 task](../plan/tasks/native-engine-browser-854.md)
 and [review](../plan/reviews/native-engine-browser-854-01.md).
+Slice 855 adds the negative credentialed-preflight case for async page and
+DedicatedWorker XHR. The parent broker sends credential-free OPTIONS, rejects
+wildcard `Access-Control-Allow-Origin` for the original request's `include`
+mode even when `Access-Control-Allow-Credentials: true` is present, and sends
+no actual POST. A `Set-Cookie` on that rejected response does not alter the
+parent jar. No raw cookie material crosses IPC and the parent remains the sole
+cookie matcher, response-cookie authority, and jar owner. This focused local
+regression is not complete CORS/XHR or WPT conformance, remote CI, or
+cross-platform certification. See the [Slice 855 task](../plan/tasks/native-engine-browser-855.md)
+and [review](../plan/reviews/native-engine-browser-855-01.md).
 Slice 838's NavigationPreloadManager persistence regression passed (1 passed;
 906 filtered; 39.70 seconds), so that slice is complete. Slice 839 starts
 eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,

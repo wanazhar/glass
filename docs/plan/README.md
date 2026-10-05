@@ -10859,12 +10859,14 @@ CORS/XHR/WPT conformance, cross-platform certification, and remote CI remain
 open; Issue #40 remains open. See the [Slice 854 task](tasks/native-engine-browser-854.md)
 and [review](reviews/native-engine-browser-854-01.md).
 
-Slice 855 is in progress: negative credentialed XHR CORS-preflight coverage.
-The process regression will verify that OPTIONS carries no cookies and that
+The completed Slice 855 adds negative credentialed XHR CORS-preflight
+coverage. The page and DedicatedWorker both send credential-free OPTIONS;
 wildcard `Access-Control-Allow-Origin` is rejected for `include` even when
-`Access-Control-Allow-Credentials: true` is present. Neither page nor Worker
-may dispatch the actual POST after that denial, and the preflight response
-cookie must not enter the parent jar. See the [Slice 855 task](tasks/native-engine-browser-855.md).
+`Access-Control-Allow-Credentials: true` is present, so neither actual POST is
+dispatched and the rejected preflight's `Set-Cookie` does not enter the parent
+jar. Its exact process regression passed (1 passed; 919 filtered; 19.94
+seconds). See the [Slice 855 task](tasks/native-engine-browser-855.md) and
+[review](reviews/native-engine-browser-855-01.md). Issue #40 remains open.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

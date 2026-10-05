@@ -5,3 +5,7 @@
 - Writes tersely and informally (lowercase, no punctuation, blunt phrasing). Match that register; skip preamble and ceremony. Confidence: 0.65
 - Wants to be challenged, not managed: welcome to push back on their picks with reasoning and alternatives, but state it once, up front, then proceed. Do not re-litigate a settled decision. Confidence: 0.7
 - Tolerates/expects candid reporting of what is unverified or untested; a short honest limitations note at the end is appreciated. Confidence: 0.7
+- **Volunteer corrections to your own earlier claims, prominently and numerically.** Numbered "Correction 1 / Correction 2" sections leading a report, quoting measured deltas and confidence intervals, land well. This is treated as valuable, not as failure — quietly shipping on a premise now known to be wrong is what would be a problem. Confidence: 0.8
+- When new evidence undercuts a settled design decision, **state the correction, then surface it as an explicit question for the user to rule on** rather than unilaterally flipping course or silently proceeding. Ending a report by naming the one decision that is genuinely the user's call — with both options laid out — is the expected shape. Confidence: 0.8
+- Accepts and rewards ranked recommendations ordered by measured value per byte of cost, with a short named owner for each idea (which harness it came from). Confidence: 0.75
+- Discloses bugs found in your own just-shipped work in the same breath as the fixes, including the fact that tests missed it. Confidence: 0.8

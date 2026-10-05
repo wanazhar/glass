@@ -2840,6 +2840,14 @@ impl NativeDocument {
             })
     }
 
+    pub(crate) fn media_load_attempted_for_node(&self, node_id: NativeNodeId) -> bool {
+        self.media_loads
+            .get(&node_id.index())
+            .is_some_and(|source| {
+                self.selected_media_source(node_id).as_deref() == Some(source.as_str())
+            })
+    }
+
     pub(crate) fn set_media_resource(
         &mut self,
         node_index: u32,
@@ -3078,6 +3086,18 @@ impl NativeDocument {
         ((node.element_name() == Some("img") || self.is_svg_image_node(node_id))
             && self.image_loads.get(&node_id.index()) == Some(&resource.source))
         .then_some(&resource.image)
+    }
+
+    pub(crate) fn image_load_attempted_for_node(
+        &self,
+        node_id: NativeNodeId,
+        viewport: Viewport,
+    ) -> bool {
+        self.image_loads
+            .get(&node_id.index())
+            .is_some_and(|source| {
+                self.selected_image_source(node_id, viewport).as_deref() == Some(source.as_str())
+            })
     }
 
     pub(crate) fn canvas_resource_for_node(

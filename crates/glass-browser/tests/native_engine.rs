@@ -13724,7 +13724,7 @@ setTimeout(() => {
             let callback_state = tokio::time::timeout(
                 Duration::from_secs(5),
                 session.script(
-                    "(() => { const links = Array.from(document.querySelectorAll('link')).map(link => [link.href, link.nodeIndex]); const listeners = globalThis.__glassHostListeners; const scriptNodes = globalThis.__glassScriptNodeIndexesByTemporary; return [[globalThis.stylesheetLoadEventCount, globalThis.stylesheetErrorEventCount, globalThis.blockedLoadEventCount, globalThis.blockedErrorEventCount], globalThis.resourceEventTrace, globalThis.__glassLastHostEventResults, links, listeners instanceof Map ? Array.from(listeners.keys()) : null, scriptNodes instanceof Map ? Array.from(scriptNodes.entries()) : null]; })()",
+                    "[[globalThis.stylesheetLoadEventCount, globalThis.stylesheetErrorEventCount, globalThis.blockedLoadEventCount, globalThis.blockedErrorEventCount], globalThis.resourceEventTrace, globalThis.__glassLastHostEventResults]",
                 ),
             )
             .await
@@ -13789,6 +13789,269 @@ setTimeout(() => {
         "timer_import",
         "timer_load",
         "timer_error",
+    ] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == name && cookie.http_only),
+            "parent cookie jar should retain HttpOnly {name}"
+        );
+    }
+    session.close().await.unwrap();
+}
+
+#[test]
+fn native_content_process_idle_timer_image_media_events_broker_callback_fetches() {
+    std::thread::Builder::new()
+        .name("native-timer-image-media-events-test".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(4 * 1024 * 1024)
+                .enable_all()
+                .build()
+                .expect("timer image/media event test runtime should build");
+            runtime.block_on(
+                native_content_process_idle_timer_image_media_events_broker_callback_fetches_inner(
+                ),
+            );
+        })
+        .expect("timer image/media event test thread should start")
+        .join()
+        .expect("timer image/media event test thread should complete");
+}
+
+async fn native_content_process_idle_timer_image_media_events_broker_callback_fetches_inner() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let blocked_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    blocked_listener.set_nonblocking(true).unwrap();
+    let blocked_address = blocked_listener.local_addr().unwrap();
+    let png = native_test_png_bytes();
+    let page = r#"<!doctype html><html><head><script>
+globalThis.resourceEventTrace = [];
+document.addEventListener('load', event => resourceEventTrace.push(event.type + ':' + event.target.tagName), true);
+document.addEventListener('error', event => resourceEventTrace.push(event.type + ':' + event.target.tagName), true);
+setTimeout(() => {
+  globalThis.imageLoadEventCount = 0;
+  globalThis.imageErrorEventCount = 0;
+  globalThis.blockedImageLoadEventCount = 0;
+  globalThis.blockedImageErrorEventCount = 0;
+  globalThis.mediaLoadEventCount = 0;
+  let resolveImageFetch;
+  let resolveErrorFetch;
+  globalThis.imageFetchSettled = new Promise(resolve => { resolveImageFetch = resolve; });
+  globalThis.errorFetchSettled = new Promise(resolve => { resolveErrorFetch = resolve; });
+
+  const image = document.createElement('img');
+  image.width = 2;
+  image.height = 2;
+  image.addEventListener('load', () => {
+    imageLoadEventCount += 1;
+    fetch('/image-check').then(response => response.text()).then(value => {
+      globalThis.imageCallback = value;
+      resolveImageFetch();
+    });
+  });
+  image.addEventListener('error', () => { imageErrorEventCount += 1; });
+  image.src = '/timer.png';
+  document.body.appendChild(image);
+
+  const blocked = document.createElement('img');
+  blocked.width = 2;
+  blocked.height = 2;
+  blocked.onload = () => { blockedImageLoadEventCount += 1; };
+  blocked.onerror = () => {
+    blockedImageErrorEventCount += 1;
+    imageFetchSettled.then(() => fetch('/error-check')).then(response => response.text()).then(value => {
+      globalThis.errorCallback = value;
+      resolveErrorFetch();
+    });
+  };
+  blocked.src = 'http://127.0.0.1:BLOCKED_PORT/blocked.png';
+  document.body.appendChild(blocked);
+
+  const audio = document.createElement('audio');
+  audio.addEventListener('load', () => {
+    mediaLoadEventCount += 1;
+    errorFetchSettled.then(() => fetch('/media-check')).then(response => response.text()).then(value => {
+      globalThis.mediaCallback = value;
+    });
+  });
+  audio.addEventListener('error', () => {});
+  audio.src = '/timer.webm';
+  document.body.appendChild(audio);
+}, 25);
+</script></head><body><main>timer image and media event handoff</main></body></html>"#
+        .replace("BLOCKED_PORT", &blocked_address.port().to_string());
+    let observed_requests = Arc::new(Mutex::new(Vec::new()));
+    let server_observed_requests = Arc::clone(&observed_requests);
+    let mut server = tokio::spawn(async move {
+        for _ in 0..6 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            server_observed_requests.lock().await.push(request.clone());
+            let response = match path {
+                "/page" => format!(
+                    "HTTP/1.1 200 OK\r\nSet-Cookie: event_seed=secret; Path=/; HttpOnly; SameSite=Lax\r\nContent-Security-Policy: script-src 'unsafe-inline'; img-src 'self'; media-src 'self'; connect-src 'self'\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+                    page.len()
+                )
+                .into_bytes(),
+                "/timer.png" => {
+                    assert!(request.contains("event_seed=secret"));
+                    let mut response = format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: event_image=accepted; Path=/; HttpOnly; SameSite=Lax\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        png.len()
+                    )
+                    .into_bytes();
+                    response.extend_from_slice(&png);
+                    response
+                }
+                "/timer.webm" => {
+                    assert!(request.contains("event_seed=secret"));
+                    assert!(request.contains("event_image=accepted"));
+                    let body = b"\x1a\x45\xdf\xa3";
+                    let mut response = format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: event_media=accepted; Path=/; HttpOnly; SameSite=Lax\r\nContent-Type: audio/webm\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .into_bytes();
+                    response.extend_from_slice(body);
+                    response
+                }
+                "/image-check" => {
+                    for cookie in ["event_seed=secret", "event_image=accepted", "event_media=accepted"] {
+                        assert!(request.contains(cookie), "missing {cookie} in {request:?}");
+                    }
+                    let body = "image-ok";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: event_image_callback=accepted; Path=/; HttpOnly; SameSite=Lax\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .into_bytes()
+                }
+                "/error-check" => {
+                    for cookie in ["event_seed=secret", "event_image=accepted", "event_media=accepted", "event_image_callback=accepted"] {
+                        assert!(request.contains(cookie), "missing {cookie} in {request:?}");
+                    }
+                    let body = "error-ok";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: event_error_callback=accepted; Path=/; HttpOnly; SameSite=Lax\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .into_bytes()
+                }
+                "/media-check" => {
+                    for cookie in ["event_seed=secret", "event_image=accepted", "event_media=accepted", "event_image_callback=accepted", "event_error_callback=accepted"] {
+                        assert!(request.contains(cookie), "missing {cookie} in {request:?}");
+                    }
+                    let body = "media-ok";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: event_media_callback=accepted; Path=/; HttpOnly; SameSite=Lax\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .into_bytes()
+                }
+                other => panic!("unexpected resource-event request: {other}: {request}"),
+            };
+            stream.write_all(&response).await.unwrap();
+        }
+    });
+
+    let session = BrowserSession::start_default().await.unwrap();
+    if let Err(error) = session.navigate(format!("http://{address}/page")).await {
+        let observed = observed_requests.lock().await.clone();
+        let paths = observed
+            .iter()
+            .map(|request| request.split_whitespace().nth(1).unwrap_or_default())
+            .collect::<Vec<_>>();
+        server.abort();
+        let _ = server.await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), session.close()).await;
+        panic!("image/media event navigation failed: {error}; observed paths: {paths:?}");
+    }
+
+    let server_result = tokio::time::timeout(Duration::from_secs(20), &mut server).await;
+    match server_result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => panic!("image/media event fixture server failed: {error}"),
+        Err(error) => {
+            let observed = observed_requests.lock().await.clone();
+            server.abort();
+            let _ = server.await;
+            let callback_state = tokio::time::timeout(
+                Duration::from_secs(5),
+                session.script(
+                    "[[globalThis.imageLoadEventCount, globalThis.blockedImageErrorEventCount, globalThis.mediaLoadEventCount, globalThis.imageCallback, globalThis.errorCallback, globalThis.mediaCallback, globalThis.resourceEventTrace], globalThis.__glassLastHostEventResults]",
+                ),
+            )
+            .await
+            .map(|result| result.map(|result| result.value));
+            let blocked_request_accepted = blocked_listener.accept().is_ok();
+            let _ = tokio::time::timeout(Duration::from_secs(2), session.close()).await;
+            panic!(
+                "image/media event callbacks did not complete their parent-brokered Fetches ({error}); observed requests: {observed:?}; callback state: {callback_state:?}; blocked image reached transport: {blocked_request_accepted}"
+            );
+        }
+    }
+
+    let requests = observed_requests.lock().await.clone();
+    let paths = requests
+        .iter()
+        .map(|request| request.split_whitespace().nth(1).unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        [
+            "/page",
+            "/timer.png",
+            "/timer.webm",
+            "/image-check",
+            "/error-check",
+            "/media-check",
+        ]
+    );
+    assert!(
+        matches!(
+            blocked_listener.accept(),
+            Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ),
+        "CSP-blocked image must not reach child or parent network transport"
+    );
+
+    let event_state = session
+        .script(
+            "[globalThis.imageLoadEventCount, globalThis.imageErrorEventCount, globalThis.blockedImageLoadEventCount, globalThis.blockedImageErrorEventCount, globalThis.mediaLoadEventCount, globalThis.imageCallback, globalThis.errorCallback, globalThis.mediaCallback, document.cookie, globalThis.resourceEventTrace]",
+        )
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(
+        event_state,
+        serde_json::json!([
+            1,
+            0,
+            0,
+            1,
+            1,
+            "image-ok",
+            "error-ok",
+            "media-ok",
+            "",
+            ["load:IMG", "error:IMG", "load:AUDIO"]
+        ])
+    );
+    let cookies = session.native_cookies().await.unwrap();
+    for name in [
+        "event_seed",
+        "event_image",
+        "event_media",
+        "event_image_callback",
+        "event_error_callback",
+        "event_media_callback",
     ] {
         assert!(
             cookies

@@ -169,6 +169,16 @@ HttpOnly values do not cross IPC. This is targeted process-backed evidence,
 not general event-loop, WPT, or cross-platform certification. See the
 [Slice 846 task](tasks/native-engine-browser-846.md) and
 [Slice 847 task](tasks/native-engine-browser-847.md).
+Slice 848 implements the same effect handoff for image and media `load`/`error`
+events. Script-created resource nodes rebind listener and event-handler keys
+when assigned native IDs, and their event-owner identity follows that ID.
+Mutation IPC carries the exact committed owner; callback Fetches continue
+through the owner-checked parent broker, which alone selects request cookies,
+accepts response cookies, and persists the jar. Failed unchanged sources are
+not retried during later settlement turns. The process-backed regression covers
+successful image/media events, one CSP-denied image error, ordered callback
+Fetches, HttpOnly cookie reuse, and the URL-scoped `document.cookie`
+projection. See the [Slice 848 task](tasks/native-engine-browser-848.md).
 Initial document-load DedicatedWorker creation and startup Fetch use the same
 parent authority. Their Fetch IPC carries a captured-load marker that the
 parent accepts only for the exact in-flight context, frame, generation, and

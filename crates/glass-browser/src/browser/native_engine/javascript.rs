@@ -43019,10 +43019,27 @@ fn document_bootstrap(
     : new Map();
   globalThis.__glassPendingTransferredNodeOwners = pendingTransferredNodeOwnerRegistry;
   const currentNativeOwnerId = String(host.frame_id || host.context_id || "");
-  globalThis.__glassRebindTransferredNodeIndex = (temporaryIndex, nodeIndex) => {{
+  globalThis.__glassRebindTransferredNodeIndex = (temporaryIndex, nodeIndex, eventOwnerPrefix = "node:") => {{
     const temporary = Number(temporaryIndex);
     const next = Number(nodeIndex);
     if (!Number.isSafeInteger(temporary) || !Number.isSafeInteger(next)) return;
+    if (temporary !== next) {{
+      const previousPrefix = String(eventOwnerPrefix) + String(temporary) + ":";
+      const nextPrefix = String(eventOwnerPrefix) + String(next) + ":";
+      const rebindEventOwnerKeys = registry => {{
+        for (const [key, value] of Array.from(registry.entries())) {{
+          if (!key.startsWith(previousPrefix)) continue;
+          const reboundKey = nextPrefix + key.slice(previousPrefix.length);
+          if (registry.has(reboundKey)) {{
+            throw new Error("native event owner identity collision");
+          }}
+          registry.set(reboundKey, value);
+          registry.delete(key);
+        }}
+      }};
+      rebindEventOwnerKeys(listeners);
+      rebindEventOwnerKeys(eventHandlers);
+    }}
     const owner = transferredNodeOwnerRegistry.get(temporary);
     if (!owner) return;
     const wasPending = pendingTransferredNodeOwnerRegistry.has(temporary);
@@ -45173,7 +45190,7 @@ fn document_bootstrap(
     Object.defineProperty(element, "__glassEventOwner", {{
       enumerable: false,
       configurable: false,
-      value: "node:" + entry.nodeIndex,
+      get() {{ return "node:" + element.nodeIndex; }},
     }});
     Object.defineProperty(element, "__glassCustomElementIs", {{
       enumerable: false,
@@ -53387,7 +53404,11 @@ fn document_bootstrap(
       const object = frameScriptNodeObjects.get(temporaryIndex);
       if (!object || !Number.isSafeInteger(nodeIndex) || nodeIndex < 0) continue;
       if (typeof globalThis.__glassRebindTransferredNodeIndex === "function") {{
-        globalThis.__glassRebindTransferredNodeIndex(temporaryIndex, nodeIndex);
+        globalThis.__glassRebindTransferredNodeIndex(
+          temporaryIndex,
+          nodeIndex,
+          "frame:" + currentFrameId + ":node:",
+        );
       }}
       object.nodeIndex = nodeIndex;
       frameScriptNodeAliasesByIndex.set(nodeIndex, object);
@@ -53903,7 +53924,7 @@ fn document_bootstrap(
       Object.defineProperty(projected, "__glassEventOwner", {{
         enumerable: false,
         configurable: false,
-        value: "frame:" + currentFrameId + ":node:" + entry.nodeIndex,
+        get() {{ return "frame:" + currentFrameId + ":node:" + projected.nodeIndex; }},
       }});
       Object.defineProperty(projected, "__glassParent", {{
         enumerable: false,
@@ -54717,7 +54738,7 @@ fn document_bootstrap(
       Object.defineProperty(projected, "__glassEventOwner", {{
         enumerable: false,
         configurable: false,
-        value: "frame:" + currentFrameId + ":node:" + nodeIndex,
+        get() {{ return "frame:" + currentFrameId + ":node:" + projected.nodeIndex; }},
       }});
       Object.defineProperty(projected, "__glassParent", {{ enumerable: false, configurable: false, writable: true, value: null }});
       Object.defineProperty(projected, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: true }});

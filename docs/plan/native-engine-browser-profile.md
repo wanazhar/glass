@@ -1352,6 +1352,19 @@ owner. This is focused method/header denial coverage, not full CORS/XHR,
 Web IDL, or WPT conformance. See the [Slice 856 task](tasks/native-engine-browser-856.md)
 and [review](reviews/native-engine-browser-856-01.md).
 
+Slice 857 adds process-backed XHR preflight-cache coverage at one exact
+cross-origin URL/method/header key. A successful default-credentials preflight
+is not reused for a later `include` request: the parent receives a fresh
+cookie-free OPTIONS before sending its parent-matched cookie on the actual
+POST. A subsequent `include` request reuses that authorized cache entry and
+receives the parent-accepted HttpOnly response cookie. Preflight
+`Set-Cookie` values and the default-mode response cookie do not enter the jar;
+`document.cookie` remains filtered. The current exact-mode cache key is
+conservative and may perform extra preflights when switching from `include` to
+a less-privileged mode. This is focused cache-boundary evidence, not full
+Fetch/CORS/XHR or WPT conformance. See the [Slice 857 task](tasks/native-engine-browser-857.md)
+and [review](reviews/native-engine-browser-857-01.md).
+
 ### XHR document responses
 
 For a Window `XMLHttpRequest` whose response type is `document`, only an HTML

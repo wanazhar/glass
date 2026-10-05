@@ -10725,26 +10725,38 @@ build, and the focused regression pass locally. This unpushed checkpoint has
 no remote CI result. See the [Slice 845 task](tasks/native-engine-browser-845.md).
 Slice 843 and Issue #40 remain in progress.
 
-Slice 846 now advances due process-backed page timers while the document is
+Slice 846 advances due process-backed page timers while the document is
 otherwise idle. Its BrowserSession regression passed (1 passed; 913 filtered;
 20.76 seconds): after navigation returns, a page `setTimeout` creates an HTTP
 stylesheet and CSS import without another BrowserSession operation. The parent
 selects the HttpOnly page cookie for both requests, accepts the stylesheet's
 HttpOnly response cookie before the import, retains the cookie changes, and
-keeps `document.cookie` empty. The scoped native-engine test-target check,
-content-worker build, formatting, and diff checks passed locally. This
-checkpoint is unpushed; no remote CI result is claimed. A separate probe found
-that the stylesheet's `load` handler did not issue its follow-up Fetch. That
-event-delivery gap remains open and is not part of Slice 846. See the
-[Slice 846 task](tasks/native-engine-browser-846.md). This slice does not claim
-browser-wide event-loop or rendering-opportunity conformance.
+keeps `document.cookie` empty. A probe at that checkpoint found that the
+stylesheet's `load` handler did not issue its follow-up Fetch; Slice 847
+addresses that separate handoff.
+
+Slice 847 completes the timer-created stylesheet event handoff. Its
+process-backed regression passed (1 passed; 914 filtered; 44.68 seconds): the
+successful stylesheet dispatched one `load` after its CSS import, the
+CSP-blocked stylesheet dispatched one `error` and no `load`, and both handler
+Fetch chains completed through the parent broker. The loopback server verified
+ordered HttpOnly cookie acceptance from the page through both stylesheets and
+the callback Fetches; `document.cookie` remained empty, with no BrowserSession
+operation between navigation and completion. The adjacent Slice 846 regression
+also passed (1 passed; 914 filtered; 32.41 seconds). Scoped check, explicit
+worker build, formatting, and diff checks pass locally. This checkpoint is
+local and unpushed; no remote CI result is claimed. General event-loop
+fairness, rendering, WPT, and cross-platform conformance remain open. See the
+[Slice 846 task](tasks/native-engine-browser-846.md) and the
+[Slice 847 task](tasks/native-engine-browser-847.md).
 The committed [Slice 846 review](reviews/native-engine-browser-846-01.md)
 passed with no findings; the task is complete locally.
 
-Slice 847 is in progress to fix the timer-created stylesheet `load` handoff.
-Its process-backed target regression requires the callback Fetch to cross the
-parent broker with the ordered HttpOnly cookie jar, without an intervening
-BrowserSession operation. See the
+Slice 847's implementation and local verification are complete; its task
+remains in progress until the review record is committed. The regression
+verifies the successful `load` and blocked `error` event handoff and confirms
+that callback Fetches cross the parent broker with the ordered HttpOnly cookie
+jar, without an intervening BrowserSession operation. See the
 [Slice 847 task](tasks/native-engine-browser-847.md).
 
 ## Historical plan: Glass v0.3.6 issue #36

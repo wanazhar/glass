@@ -17,18 +17,21 @@ six seconds. An operation gate keeps the async-effect pump behind the backend
 operation that produced it; once a pump turn starts, later operations still
 serialize behind it. Scoped local checks and the focused test pass. This
 checkpoint is unpushed, so no remote CI result is claimed.
-The latest local Slice 846 adds a bounded owner turn for due page timers while
-a process-backed document is idle. Its BrowserSession regression passes: after
+Local Slice 846 adds a bounded owner turn for due page timers while a
+process-backed document is idle. Its BrowserSession regression passes: after
 navigation returns, `setTimeout` inserts an HTTP stylesheet and its CSS
 `@import` without another session operation. The parent sends the page's
 HttpOnly cookie on both requests, accepts the stylesheet response cookie
 before the import, retains all cookies in its jar, and keeps `document.cookie`
-empty. The async-effect pump advances the exact page owner and sends resulting
-network effects through the parent broker. This verifies a narrow timer path,
-not general event-loop or rendering conformance. A probe also found that the
-dynamic stylesheet's `load` handler did not issue its follow-up Fetch; that
-event-delivery gap remains separate and is not covered by Slice 846. This
-checkpoint is local and unpushed; no remote CI result is claimed.
+empty. Slice 847 completes that path's stylesheet event handoff: after CSS
+imports settle, the owning page receives one `load` or `error`, and commands
+from the handler remain in the same parent-brokered script turn. Its
+process-backed regression verifies callback Fetches and ordered HttpOnly cookie
+acceptance while the visible cookie projection remains empty; the adjacent
+Slice 846 regression also passes. These tests cover a narrow timer/resource
+path, not general event-loop, task-source fairness, rendering, WPT, or
+cross-platform conformance. This checkpoint is local and unpushed; no remote CI
+result is claimed.
 Slice 838's NavigationPreloadManager persistence regression passed (1 passed;
 906 filtered; 39.70 seconds), so that slice is complete. Slice 839 starts
 eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,

@@ -157,9 +157,18 @@ BrowserSession operation in between. The parent sends the initial HttpOnly
 cookie on both requests, accepts the stylesheet response cookie before the
 import, retains the response cookies, and keeps `document.cookie` empty. This
 proves the tested timer/resource path only; it does not certify general event
-loop or rendering behavior. A separate probe found that the stylesheet
-`load` handler did not issue its follow-up Fetch, so that event path remains
-open. See the [Slice 846 task](tasks/native-engine-browser-846.md).
+loop or rendering behavior. Slice 847 completes the tested resource-event
+handoff: after stylesheet imports settle, a successful link receives one
+`load`, while a CSP-blocked link receives one `error` and no `load`. Handler
+Fetches stay in the exact content-process script turn and use the parent's
+normal request broker. The regression verifies ordered parent acceptance and
+reuse of HttpOnly cookies from the page, stylesheet, import, and callback
+Fetches while `document.cookie` remains empty. The parent remains the sole
+cookie matcher, `Set-Cookie` acceptor, and jar owner; raw cookie headers and
+HttpOnly values do not cross IPC. This is targeted process-backed evidence,
+not general event-loop, WPT, or cross-platform certification. See the
+[Slice 846 task](tasks/native-engine-browser-846.md) and
+[Slice 847 task](tasks/native-engine-browser-847.md).
 Initial document-load DedicatedWorker creation and startup Fetch use the same
 parent authority. Their Fetch IPC carries a captured-load marker that the
 parent accepts only for the exact in-flight context, frame, generation, and

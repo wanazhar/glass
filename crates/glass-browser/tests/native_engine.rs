@@ -13546,6 +13546,260 @@ async fn native_content_process_idle_page_timer_brokers_dynamic_stylesheet_cooki
     assert_eq!(requests.len(), 3);
 }
 
+#[test]
+fn native_content_process_idle_timer_stylesheet_events_broker_callback_fetches() {
+    std::thread::Builder::new()
+        .name("native-timer-stylesheet-events-test".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(4 * 1024 * 1024)
+                .enable_all()
+                .build()
+                .expect("timer stylesheet event test runtime should build");
+            runtime.block_on(
+                native_content_process_idle_timer_stylesheet_events_broker_callback_fetches_inner(),
+            );
+        })
+        .expect("timer stylesheet event test thread should start")
+        .join()
+        .expect("timer stylesheet event test thread should complete");
+}
+
+async fn native_content_process_idle_timer_stylesheet_events_broker_callback_fetches_inner() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let blocked_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    blocked_listener.set_nonblocking(true).unwrap();
+    let blocked_address = blocked_listener.local_addr().unwrap();
+    let page = r#"<!doctype html><html><head><script>
+globalThis.resourceEventTrace = [];
+document.addEventListener('load', event => {
+  resourceEventTrace.push(event.type + ':' + event.target.tagName);
+}, true);
+document.addEventListener('error', event => {
+  resourceEventTrace.push(event.type + ':' + event.target.tagName);
+}, true);
+setTimeout(() => {
+  globalThis.stylesheetLoadEventCount = 0;
+  globalThis.stylesheetErrorEventCount = 0;
+  globalThis.blockedLoadEventCount = 0;
+  globalThis.blockedErrorEventCount = 0;
+  let resolveStylesheetLoadFetch;
+  globalThis.stylesheetLoadFetchSettled = new Promise(resolve => {
+    resolveStylesheetLoadFetch = resolve;
+  });
+  const stylesheet = document.createElement('link');
+  stylesheet.rel = 'stylesheet';
+  stylesheet.href = '/timer.css';
+  stylesheet.addEventListener('load', () => {
+    globalThis.stylesheetLoadEventCount += 1;
+    fetch('/load-check').then(response => response.text()).then(value => {
+      globalThis.stylesheetLoadFetch = value;
+      resolveStylesheetLoadFetch();
+    });
+  });
+  stylesheet.addEventListener('error', () => { globalThis.stylesheetErrorEventCount += 1; });
+  document.head.appendChild(stylesheet);
+
+  const blocked = document.createElement('link');
+  blocked.rel = 'stylesheet';
+  blocked.href = 'http://127.0.0.1:BLOCKED_PORT/blocked.css';
+  blocked.addEventListener('load', () => { globalThis.blockedLoadEventCount += 1; });
+  blocked.addEventListener('error', () => {
+    globalThis.blockedErrorEventCount += 1;
+    globalThis.stylesheetLoadFetchSettled
+      .then(() => fetch('/error-check'))
+      .then(response => response.text())
+      .then(value => {
+        globalThis.stylesheetErrorFetch = value;
+        return fetch('/chain-complete');
+      })
+      .then(response => response.text())
+      .then(value => {
+        globalThis.stylesheetChainComplete = value;
+      });
+  });
+  document.head.appendChild(blocked);
+}, 25);
+</script></head><body><main>timer stylesheet event handoff</main></body></html>"#
+        .replace("BLOCKED_PORT", &blocked_address.port().to_string());
+    let observed_requests = Arc::new(Mutex::new(Vec::new()));
+    let server_observed_requests = Arc::clone(&observed_requests);
+    let mut server = tokio::spawn(async move {
+        for _ in 0..6 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            server_observed_requests.lock().await.push(request.clone());
+            let response = match path {
+                "/page" => format!(
+                    "HTTP/1.1 200 OK\r\nSet-Cookie: timer_seed=secret; Path=/; HttpOnly; SameSite=Lax\r\nContent-Security-Policy: style-src 'self'\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+                    page.len()
+                ),
+                "/timer.css" => {
+                    assert!(request.contains("timer_seed=secret"));
+                    let body = "@import url('/timer-import.css');";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: timer_root=accepted; Path=/; HttpOnly; SameSite=Lax\r\nContent-Type: text/css\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                "/timer-import.css" => {
+                    assert!(request.contains("timer_seed=secret"));
+                    assert!(request.contains("timer_root=accepted"));
+                    let body = "body { color: rgb(1, 2, 3); }";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: timer_import=accepted; Path=/; HttpOnly; SameSite=Lax\r\nContent-Type: text/css\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                "/load-check" => {
+                    for cookie in [
+                        "timer_seed=secret",
+                        "timer_root=accepted",
+                        "timer_import=accepted",
+                    ] {
+                        assert!(request.contains(cookie), "missing {cookie} in {request:?}");
+                    }
+                    let body = "load-ok";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: timer_load=accepted; Path=/; HttpOnly; SameSite=Lax\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                "/error-check" => {
+                    for cookie in [
+                        "timer_seed=secret",
+                        "timer_root=accepted",
+                        "timer_import=accepted",
+                        "timer_load=accepted",
+                    ] {
+                        assert!(request.contains(cookie), "missing {cookie} in {request:?}");
+                    }
+                    let body = "error-ok";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: timer_error=accepted; Path=/; HttpOnly; SameSite=Lax\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                "/chain-complete" => {
+                    for cookie in [
+                        "timer_seed=secret",
+                        "timer_root=accepted",
+                        "timer_import=accepted",
+                        "timer_load=accepted",
+                        "timer_error=accepted",
+                    ] {
+                        assert!(request.contains(cookie), "missing {cookie} in {request:?}");
+                    }
+                    let body = "chain-ok";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                other => panic!("unexpected stylesheet event request: {other}: {request}"),
+            };
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let session = BrowserSession::start_default().await.unwrap();
+    session
+        .navigate(format!("http://{address}/page"))
+        .await
+        .unwrap();
+
+    let server_result = tokio::time::timeout(Duration::from_secs(20), &mut server).await;
+    match server_result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => panic!("stylesheet event fixture server failed: {error}"),
+        Err(error) => {
+            let observed = observed_requests.lock().await.clone();
+            server.abort();
+            let _ = server.await;
+            let callback_state = tokio::time::timeout(
+                Duration::from_secs(5),
+                session.script(
+                    "(() => { const links = Array.from(document.querySelectorAll('link')).map(link => [link.href, link.nodeIndex]); const listeners = globalThis.__glassHostListeners; const scriptNodes = globalThis.__glassScriptNodeIndexesByTemporary; return [[globalThis.stylesheetLoadEventCount, globalThis.stylesheetErrorEventCount, globalThis.blockedLoadEventCount, globalThis.blockedErrorEventCount], globalThis.resourceEventTrace, globalThis.__glassLastHostEventResults, links, listeners instanceof Map ? Array.from(listeners.keys()) : null, scriptNodes instanceof Map ? Array.from(scriptNodes.entries()) : null]; })()",
+                ),
+            )
+            .await
+            .map(|result| result.map(|result| result.value));
+            let blocked_request_accepted = blocked_listener.accept().is_ok();
+            let _ = tokio::time::timeout(Duration::from_secs(2), session.close()).await;
+            panic!(
+                "timer stylesheet event callbacks did not complete their parent-brokered Fetches ({error}); observed requests: {observed:?}; callback state: {callback_state:?}; blocked stylesheet reached transport: {blocked_request_accepted}"
+            );
+        }
+    }
+
+    let requests = observed_requests.lock().await.clone();
+    let paths = requests
+        .iter()
+        .map(|request| request.split_whitespace().nth(1).unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        [
+            "/page",
+            "/timer.css",
+            "/timer-import.css",
+            "/load-check",
+            "/error-check",
+            "/chain-complete",
+        ]
+    );
+    assert!(
+        matches!(
+            blocked_listener.accept(),
+            Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ),
+        "CSP-blocked stylesheet must not reach child or parent network transport"
+    );
+
+    let event_state = session
+        .script(
+            "[globalThis.stylesheetLoadEventCount, globalThis.stylesheetErrorEventCount, globalThis.blockedLoadEventCount, globalThis.blockedErrorEventCount, globalThis.stylesheetLoadFetch, globalThis.stylesheetErrorFetch, globalThis.stylesheetChainComplete, document.cookie, globalThis.resourceEventTrace]",
+        )
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(
+        event_state,
+        serde_json::json!([
+            1,
+            0,
+            0,
+            1,
+            "load-ok",
+            "error-ok",
+            "chain-ok",
+            "",
+            ["load:LINK", "error:LINK"]
+        ])
+    );
+    let cookies = session.native_cookies().await.unwrap();
+    for name in [
+        "timer_seed",
+        "timer_root",
+        "timer_import",
+        "timer_load",
+        "timer_error",
+    ] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.name == name && cookie.http_only),
+            "parent cookie jar should retain HttpOnly {name}"
+        );
+    }
+    session.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn native_service_worker_navigation_preload_is_cancelled_with_navigation() {
     let _guard = native_content_process_test_lock().lock().await;

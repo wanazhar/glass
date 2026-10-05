@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-864
 scope: glass-browser/native-engine/eventsource-cors-error-cookies
-status: in-progress
+status: done
 depends-on: [native-engine-browser-863]
 ---
 
@@ -37,6 +37,9 @@ accepted HttpOnly cookie.
 EventSource has an error-event/reconnect lifecycle rather than Fetch's rejected
 Promise. This slice proves the response-cookie ownership boundary without
 claiming complete EventSource, redirect, reconnection, or WPT behavior.
+The Fetch Standard specifies that credentialed CORS failures still respect
+`Set-Cookie` response headers; the CORS error controls response access, not the
+parent's network-owned cookie processing ([CORS and credentials](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials)).
 
 ## Contract
 
@@ -53,6 +56,9 @@ claiming complete EventSource, redirect, reconnection, or WPT behavior.
 - A later authorized page Fetch carries both the seed and the actual-response
   cookie. The parent's cookie API retains both as HttpOnly and
   `document.cookie` remains empty.
+- Accept the actual response's cookie in the parent before applying EventSource
+  CORS exposure checks, and only when the EventSource credentials mode permits
+  cookies for that response URL.
 - Preserve the parent as the sole request-cookie matcher, `Set-Cookie`
   acceptor, persistence owner, and EventSource transport owner. Do not expose
   raw cookie headers, cookie profiles, or the complete jar to the content
@@ -63,17 +69,16 @@ claiming complete EventSource, redirect, reconnection, or WPT behavior.
 ## Tradeoff
 
 This adds one process-backed two-origin negative case to the EventSource
-cookie path. Closing on the first error intentionally avoids spending time on
-automatic reconnect semantics, which remain a separate contract. A passing
-test adds no production behavior and does not expand the event-stream or cookie
-authority boundary.
+cookie path. It exposed that the parent loader checked CORS before accepting
+the final response's cookie, so the bounded runtime fix now processes eligible
+response cookies first. Closing on the first error avoids spending time on
+automatic reconnect semantics, which remain a separate contract. The parent
+remains the only cookie authority; no response cookie data is sent to the
+content process.
 
 ## Path
 
-- `crates/glass-browser/src/browser/native_engine/content_process.rs` (only if
-  the EventSource IPC response propagation is defective)
-- `crates/glass-browser/src/browser/native_engine/resource_loader.rs` (only if
-  parent response-cookie acceptance is missing on this path)
+- `crates/glass-browser/src/browser/native_engine/resource_loader.rs`
 - `crates/glass-browser/tests/native_engine.rs`
 - `docs/plan/native-engine-browser-profile.md`
 - `docs/plan/README.md`
@@ -100,4 +105,30 @@ authority boundary.
 
 ## Results
 
-Implementation and focused verification are pending.
+- The first process-backed run reproduced the gap: the credentialed
+  cross-origin EventSource received a parent-selected seed cookie and returned
+  a real response with wildcard `Access-Control-Allow-Origin`,
+  `Access-Control-Allow-Credentials: true`, and HttpOnly `Set-Cookie`; script
+  received only an error, but the later page request carried only the seed.
+- `open_event_source_async` now applies final-response `Set-Cookie` values in
+  the parent before status, MIME, and CORS exposure failures are returned, and
+  only when the EventSource's credentials mode permits cookies for that URL.
+  The page still receives no response headers, cookies, or stream data. No
+  content-process cookie state or IPC cookie-header transfer was added.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p
+  glass-browser --features native-engine --lib --test native_engine --locked
+  --quiet` passed; successful compiler output was suppressed.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p
+  glass-browser --features native-engine --test native_engine --locked
+  --quiet native_content_process_page_event_source_cors_errors_keep_parent_cookies
+  -- --exact --nocapture` passed (1 passed; 927 filtered; 29.08 seconds).
+- The regression verifies the actual GET, origin, seed cookie, no preflight,
+  error without `open`/message data, acceptance of both HttpOnly cookies by
+  the parent, reuse on a later authorized page Fetch, and an empty
+  `document.cookie`. Closing EventSource on its first error keeps automatic
+  reconnect behavior outside this result.
+- Rust formatting, `git diff --check`, and all four maintainer documentation
+  gates passed; detailed outputs are recorded in the Slice 864 review.
+- This is focused local evidence only. EventSource redirect/reconnect
+  behavior, complete Fetch/CORS or WPT conformance, other platforms,
+  independent review, and remote CI remain unverified. Issue #40 remains open.

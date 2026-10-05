@@ -475,6 +475,22 @@ Later backend requests still serialize behind an owner turn once it has
 started, so this is not a claim of parallel page and Service Worker execution.
 See the [Slice 845 task](tasks/native-engine-browser-845.md).
 
+### Page EventSource CORS-error response cookies
+
+Page and content-process EventSource requests travel through the parent
+network owner. For a response whose URL is credentialed by the EventSource
+request, the parent applies its `Set-Cookie` headers before checking whether
+the stream may be exposed through CORS. A credentialed CORS failure therefore
+still reports an EventSource error to script while the parent retains an
+HttpOnly response cookie for later authorized requests; neither the cookie
+header nor the complete cookie jar enters the content process. The
+process-backed `native_content_process_page_event_source_cors_errors_keep_parent_cookies`
+regression covers a rejected actual response, no successful stream events,
+and later parent-cookie reuse. This is bounded response-cookie evidence, not
+complete EventSource redirect/reconnect or Fetch/CORS WPT conformance. See the
+[Slice 864 task](tasks/native-engine-browser-864.md) and the Fetch Standard's
+[CORS credentials rules](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
+
 ### Shared-profile cookie synchronization
 
 When separately created native sessions use the same explicit profile path,

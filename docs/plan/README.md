@@ -10954,13 +10954,19 @@ complete Fetch/CORS or WPT behavior, cross-platform support, or remote CI. See
 the [Slice 863 task](tasks/native-engine-browser-863.md) and
 [review](reviews/native-engine-browser-863-01.md). Issue #40 remains open.
 
-Slice 864 covers the separate page EventSource path: a credentialed
-cross-origin event stream whose actual response fails CORS but carries an
-HttpOnly `Set-Cookie`. The page should receive an `error` without `open` or
-message data, while the parent accepts and reuses the cookie on a later
-authorized request. The test closes EventSource at the first error to prevent
-automatic reconnects from obscuring the owner boundary. See the
-[Slice 864 task](tasks/native-engine-browser-864.md). Issue #40 remains open.
+The completed Slice 864 verifies the separate page EventSource path. Its
+process-backed regression initially exposed that the parent loader returned on
+CORS failure before accepting the actual response's HttpOnly cookie. The
+parent now processes eligible response cookies before CORS exposure checks;
+the page receives an error without `open` or message data, and a later
+authorized page Fetch carries both cookies. The parent cookie API retains
+both as HttpOnly, while `document.cookie` stays empty. The exact regression
+passed (1 passed; 927 filtered; 29.08 seconds). The test closes EventSource
+at its first error to bound reconnect behavior. No cookie state or raw cookie
+headers cross into the content process. This does not establish full
+EventSource redirects/reconnects, Fetch/CORS or WPT conformance, other
+platforms, or remote CI. See the [Slice 864 task](tasks/native-engine-browser-864.md)
+and [review](reviews/native-engine-browser-864-01.md). Issue #40 remains open.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

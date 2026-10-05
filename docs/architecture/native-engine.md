@@ -85,6 +85,18 @@ raw cookie headers or jar are sent over IPC. This focused regression does not
 cover XHR redirect chains, full Web IDL/WPT behavior, remote CI, or
 cross-platform certification. See the [Slice 852 task](../plan/tasks/native-engine-browser-852.md)
 and [review](../plan/reviews/native-engine-browser-852-01.md).
+Slice 853 adds a process-backed XHR redirect regression through the same
+parent-owned loader. It covers async page XHR, synchronous page XHR through
+the parent broker, and async DedicatedWorker XHR as requests redirect from the
+page origin to a different port. At the cross-origin hop, default
+`same-origin` mode sends no matching parent cookies and rejects response
+cookies; `include` sends parent-matched cookies and accepts an authorized
+response cookie for later requests. HttpOnly values remain absent from
+`document.cookie`; the parent remains the only cookie matcher, response-cookie
+authority, and jar owner. This focused case does not certify all redirect
+chains, full XHR/Web IDL or WPT behavior, remote CI, or cross-platform
+conformance. See the [Slice 853 task](../plan/tasks/native-engine-browser-853.md)
+and [review](../plan/reviews/native-engine-browser-853-01.md).
 Slice 838's NavigationPreloadManager persistence regression passed (1 passed;
 906 filtered; 39.70 seconds), so that slice is complete. Slice 839 starts
 eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,

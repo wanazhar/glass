@@ -76397,6 +76397,432 @@ self.onmessage = async event => {{
 }
 
 #[tokio::test]
+async fn native_content_process_xhr_redirect_credentials_are_parent_owned_per_hop() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let page_address = page_listener.local_addr().unwrap();
+    let cross_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let cross_address = cross_listener.local_addr().unwrap();
+    let page_origin = format!("http://{page_address}");
+    let cross_origin = format!("http://{cross_address}");
+    let worker_cross_origin = cross_origin.clone();
+    let page_server_cross_origin = cross_origin.clone();
+    let cross_server_page_origin = page_origin.clone();
+    let worker_script = format!(
+        r#"
+const crossOrigin = "{worker_cross_origin}";
+self.onmessage = async event => {{
+  if (event.data !== "run") return;
+  const send = (path, withCredentials) => new Promise(resolve => {{
+    const xhr = new XMLHttpRequest();
+    xhr.withCredentials = withCredentials;
+    xhr.onload = () => resolve([xhr.status, xhr.responseText, xhr.responseURL]);
+    xhr.onerror = () => resolve([0, "error", xhr.responseURL]);
+    xhr.open("GET", path);
+    xhr.send();
+  }});
+  try {{
+    const results = [];
+    results.push(await send("/worker-default-redirect", false));
+    results.push(await send("/worker-default-after", false));
+    results.push(await send("/worker-include-redirect", true));
+    results.push(await send(crossOrigin + "/worker-include-after", true));
+    self.postMessage({{ kind: "complete", results }});
+  }} catch (error) {{
+    self.postMessage({{ kind: "error", message: String(error) }});
+  }}
+}};
+self.postMessage({{ kind: "ready" }});
+"#
+    );
+
+    let page_server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(60), async move {
+            let mut requests = Vec::new();
+            for _ in 0..8 {
+                let (mut stream, _) = page_listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .expect("page and Worker requests have a path")
+                    .to_owned();
+                let cookie = request
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim().to_owned())
+                    .unwrap_or_default();
+                match path.as_str() {
+                    "/page" => assert!(cookie.is_empty()),
+                    "/xhr-redirect-worker.js" | "/page-default-redirect" => {
+                        assert!(cookie.contains("root=seed"), "{path}: {cookie:?}");
+                    }
+                    "/page-default-after" => {
+                        assert!(cookie.contains("page_default_hop=accepted"));
+                        assert!(!cookie.contains("page_default_cross="));
+                    }
+                    "/page-sync-include-redirect" => {
+                        assert!(cookie.contains("page_default_hop=accepted"));
+                    }
+                    "/worker-default-redirect" | "/worker-include-redirect" => {
+                        assert!(cookie.contains("page_sync_cross=accepted"));
+                    }
+                    "/worker-default-after" => {
+                        assert!(cookie.contains("worker_default_hop=accepted"));
+                        assert!(!cookie.contains("worker_default_cross="));
+                    }
+                    other => panic!("unexpected page-origin XHR request: {other}"),
+                }
+
+                let (status, extra_headers, content_type, body) = match path.as_str() {
+                    "/page" => (
+                        "200 OK",
+                        "Set-Cookie: root=seed; HttpOnly; Path=/; SameSite=Lax\r\n".to_owned(),
+                        "text/html",
+                        "<script>globalThis.xhrRedirectMessages = []; globalThis.xhrRedirectWorker = new Worker('/xhr-redirect-worker.js'); xhrRedirectWorker.onmessage = event => xhrRedirectMessages.push(event.data);</script>".to_owned(),
+                    ),
+                    "/xhr-redirect-worker.js" => {
+                        ("200 OK", String::new(), "text/javascript", worker_script.clone())
+                    }
+                    "/page-default-redirect" => (
+                        "302 Found",
+                        format!(
+                            "Location: {}/page-default-final\r\nSet-Cookie: page_default_hop=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                            page_server_cross_origin
+                        ),
+                        "text/plain",
+                        String::new(),
+                    ),
+                    "/page-default-after" => (
+                        "200 OK",
+                        String::new(),
+                        "text/plain",
+                        "page-default-after".to_owned(),
+                    ),
+                    "/page-sync-include-redirect" => (
+                        "302 Found",
+                        format!(
+                            "Location: {}/page-sync-include-final\r\nSet-Cookie: page_sync_hop=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                            page_server_cross_origin
+                        ),
+                        "text/plain",
+                        String::new(),
+                    ),
+                    "/worker-default-redirect" => (
+                        "302 Found",
+                        format!(
+                            "Location: {}/worker-default-final\r\nSet-Cookie: worker_default_hop=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                            page_server_cross_origin
+                        ),
+                        "text/plain",
+                        String::new(),
+                    ),
+                    "/worker-default-after" => (
+                        "200 OK",
+                        String::new(),
+                        "text/plain",
+                        "worker-default-after".to_owned(),
+                    ),
+                    "/worker-include-redirect" => (
+                        "302 Found",
+                        format!(
+                            "Location: {}/worker-include-final\r\nSet-Cookie: worker_include_hop=accepted; HttpOnly; Path=/; SameSite=Lax\r\n",
+                            page_server_cross_origin
+                        ),
+                        "text/plain",
+                        String::new(),
+                    ),
+                    other => panic!("unexpected page-origin XHR route: {other}"),
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push((path, cookie));
+            }
+            requests
+        })
+        .await
+        .expect("page and Worker redirect requests stay bounded")
+    });
+
+    let cross_server = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(60), async move {
+            let expectations: [(&str, bool, &[&str], Option<&str>); 6] = [
+                (
+                    "/page-default-final",
+                    false,
+                    &[],
+                    Some("page_default_cross=blocked"),
+                ),
+                (
+                    "/page-sync-include-final",
+                    true,
+                    &["root=seed", "page_default_hop=accepted"],
+                    Some("page_sync_cross=accepted"),
+                ),
+                (
+                    "/page-sync-include-after",
+                    true,
+                    &["page_sync_hop=accepted", "page_sync_cross=accepted"],
+                    None,
+                ),
+                (
+                    "/worker-default-final",
+                    false,
+                    &[],
+                    Some("worker_default_cross=blocked"),
+                ),
+                (
+                    "/worker-include-final",
+                    true,
+                    &[
+                        "root=seed",
+                        "page_sync_cross=accepted",
+                        "worker_default_hop=accepted",
+                    ],
+                    Some("worker_include_cross=accepted"),
+                ),
+                (
+                    "/worker-include-after",
+                    true,
+                    &["worker_include_hop=accepted", "worker_include_cross=accepted"],
+                    None,
+                ),
+            ];
+            let mut requests = Vec::new();
+            for (path, include, expected_cookies, set_cookie) in expectations {
+                let (mut stream, _) = cross_listener.accept().await.unwrap();
+                let request = read_http_request(&mut stream).await;
+                assert_eq!(request.split_whitespace().next(), Some("GET"));
+                assert_eq!(request.split_whitespace().nth(1), Some(path));
+                let origin = request.lines().find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("origin").then_some(value.trim())
+                    })
+                });
+                assert_eq!(origin, Some(cross_server_page_origin.as_str()));
+                let cookie = request
+                    .lines()
+                    .find(|line| line.to_ascii_lowercase().starts_with("cookie:"))
+                    .and_then(|line| line.split_once(':'))
+                    .map(|(_, value)| value.trim().to_owned())
+                    .unwrap_or_default();
+                if include {
+                    for expected_cookie in expected_cookies {
+                        assert!(
+                            cookie.contains(expected_cookie),
+                            "{path} must carry {expected_cookie}; received {cookie:?}"
+                        );
+                    }
+                } else {
+                    assert!(
+                        cookie.is_empty(),
+                        "{path} must omit cross-origin cookies; received {cookie:?}"
+                    );
+                }
+                let cors_headers = if include {
+                    format!(
+                        "Access-Control-Allow-Origin: {cross_server_page_origin}\r\nAccess-Control-Allow-Credentials: true\r\n"
+                    )
+                } else {
+                    "Access-Control-Allow-Origin: *\r\n".to_owned()
+                };
+                let cookie_header = set_cookie
+                    .map(|cookie| {
+                        format!(
+                            "Set-Cookie: {cookie}; HttpOnly; Path=/; SameSite=Lax\r\n"
+                        )
+                    })
+                    .unwrap_or_default();
+                let body = path;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n{cors_headers}{cookie_header}Content-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push((path.to_owned(), cookie));
+            }
+            requests
+        })
+        .await
+        .expect("cross-origin XHR redirect hops stay bounded")
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{page_address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let messages = engine.evaluate_async("xhrRedirectMessages").await.unwrap();
+            if messages
+                .as_array()
+                .is_some_and(|messages| messages.iter().any(|message| message["kind"] == "ready"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("DedicatedWorker loads before XHR redirect coverage");
+
+    let page_async = tokio::time::timeout(
+        Duration::from_secs(30),
+        engine.evaluate_async(
+            r#"await (async () => {
+              const send = (path, withCredentials) => new Promise(resolve => {
+                const xhr = new XMLHttpRequest();
+                xhr.withCredentials = withCredentials;
+                xhr.onload = () => resolve([xhr.status, xhr.responseText, xhr.responseURL]);
+                xhr.onerror = () => resolve([0, "error", xhr.responseURL]);
+                xhr.open("GET", path);
+                xhr.send();
+              });
+              return [
+                await send("/page-default-redirect", false),
+                await send("/page-default-after", false),
+              ];
+            })()"#,
+        ),
+    )
+    .await
+    .expect("page asynchronous redirect XHRs stay bounded")
+    .unwrap();
+    assert_eq!(
+        page_async,
+        serde_json::json!([
+            [
+                200,
+                "/page-default-final",
+                format!("{cross_origin}/page-default-final")
+            ],
+            [
+                200,
+                "page-default-after",
+                format!("{page_origin}/page-default-after")
+            ],
+        ])
+    );
+
+    let page_sync = engine
+        .evaluate_async(format!(
+            r#"(() => {{
+              const send = path => {{
+                const xhr = new XMLHttpRequest();
+                xhr.withCredentials = true;
+                xhr.open("GET", path, false);
+                xhr.send();
+                return [xhr.status, xhr.responseText, xhr.responseURL];
+              }};
+              return [
+                send("/page-sync-include-redirect"),
+                send("{cross_origin}/page-sync-include-after"),
+              ];
+            }})()"#
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        page_sync,
+        serde_json::json!([
+            [
+                200,
+                "/page-sync-include-final",
+                format!("{cross_origin}/page-sync-include-final")
+            ],
+            [
+                200,
+                "/page-sync-include-after",
+                format!("{cross_origin}/page-sync-include-after")
+            ],
+        ])
+    );
+
+    engine
+        .evaluate_async("xhrRedirectWorker.postMessage('run'); true")
+        .await
+        .unwrap();
+    let worker_messages = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let messages = engine.evaluate_async("xhrRedirectMessages").await.unwrap();
+            if messages.as_array().is_some_and(|messages| {
+                messages
+                    .iter()
+                    .any(|message| message["kind"] == "complete" || message["kind"] == "error")
+            }) {
+                break messages;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Worker redirect XHR requests settle");
+    assert_eq!(
+        worker_messages,
+        serde_json::json!([{"kind": "ready"}, {
+            "kind": "complete",
+            "results": [
+                [200, "/worker-default-final", format!("{cross_origin}/worker-default-final")],
+                [200, "worker-default-after", format!("{page_origin}/worker-default-after")],
+                [200, "/worker-include-final", format!("{cross_origin}/worker-include-final")],
+                [200, "/worker-include-after", format!("{cross_origin}/worker-include-after")],
+            ]
+        }])
+    );
+
+    assert_eq!(
+        engine.evaluate_async("document.cookie").await.unwrap(),
+        serde_json::json!("")
+    );
+    let cookies = engine.cookies_async().await.unwrap();
+    engine.close_async().await.unwrap();
+    let page_requests = page_server.await.unwrap();
+    let cross_requests = cross_server.await.unwrap();
+
+    assert_eq!(page_requests.len(), 8);
+    assert_eq!(
+        cross_requests
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "/page-default-final",
+            "/page-sync-include-final",
+            "/page-sync-include-after",
+            "/worker-default-final",
+            "/worker-include-final",
+            "/worker-include-after",
+        ]
+    );
+    for (name, value) in [
+        ("root", "seed"),
+        ("page_default_hop", "accepted"),
+        ("page_sync_hop", "accepted"),
+        ("page_sync_cross", "accepted"),
+        ("worker_default_hop", "accepted"),
+        ("worker_include_hop", "accepted"),
+        ("worker_include_cross", "accepted"),
+    ] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| { cookie.name == name && cookie.value == value && cookie.http_only })
+        );
+    }
+    for name in ["page_default_cross", "worker_default_cross"] {
+        assert!(
+            !cookies.iter().any(|cookie| cookie.name == name),
+            "default same-origin mode must reject cross-origin redirect cookie {name}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_cookie_profile_survives_native_process_restart() {
     let _guard = native_content_process_test_lock().lock().await;
     let profile_path = std::env::temp_dir().join(format!(

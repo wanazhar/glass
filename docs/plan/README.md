@@ -10831,13 +10831,18 @@ cross-platform certification, and remote CI remain open; Issue #40 remains
 open. See the [Slice 852 task](tasks/native-engine-browser-852.md) and
 [review](reviews/native-engine-browser-852-01.md).
 
-Slice 853 is in progress: process-backed XHR coverage for credentials across
-redirect hops. The regression will start at one loopback origin and redirect
-to another, exercising async page, synchronous parent-brokered page, and async
-DedicatedWorker requests. Default mode must omit cross-origin cookies and
-reject that hop's response cookies; `include` must use the parent's matching
-and only accept response cookies under credentialed CORS. The parent remains
-the sole cookie authority. See the [Slice 853 task](tasks/native-engine-browser-853.md).
+Slice 853 completes process-backed XHR redirect coverage across two loopback
+origins. It exercises async page, synchronous parent-brokered page, and async
+DedicatedWorker requests. At the cross-origin redirect target, default
+`same-origin` mode omits parent-matched cookies and rejects response cookies;
+`include` sends parent-matched cookies and accepts authorized response cookies
+for later requests. The parent remains the sole cookie matcher, response-cookie
+authority, and jar owner, while HttpOnly values remain absent from
+`document.cookie`. The scoped check and focused process test passed locally,
+along with formatting and all four documentation gates. Complete redirect/WPT
+conformance, cross-platform certification, and remote CI remain open; Issue
+#40 remains open. See the [Slice 853 task](tasks/native-engine-browser-853.md)
+and [review](reviews/native-engine-browser-853-01.md).
 
 ## Historical plan: Glass v0.3.6 issue #36
 

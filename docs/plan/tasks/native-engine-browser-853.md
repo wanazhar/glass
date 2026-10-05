@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-853
 scope: glass-browser/native-engine/xhr-redirect-hop-credentials
-status: in-progress
+status: complete
 depends-on: [native-engine-browser-852]
 ---
 
@@ -74,3 +74,32 @@ XHR.
   independent agent review is used.
 - Record local-only evidence. No remote CI or broad conformance claim is
   implied.
+
+## Results
+
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p glass-browser
+  --features native-engine --test native_engine --locked --quiet` passed with
+  existing legacy-parser/dead-code warnings.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-browser
+  --features native-engine --test native_engine --locked --quiet
+  native_content_process_xhr_redirect_credentials_are_parent_owned_per_hop
+  -- --exact` passed (1 passed; 917 filtered; 21.65 seconds).
+- The process fixture observed async page, synchronous parent-brokered page,
+  and async DedicatedWorker XHR redirect from origin A to origin B. Default
+  mode omitted cookies at B and rejected B's response cookie. Explicit
+  `include` sent parent-matched cookies under exact-origin credentialed CORS;
+  accepted HttpOnly response cookies appeared on later requests. The
+  script-visible projection remained empty.
+- No production Rust source changed. The parent remains the only cookie
+  matcher, `Set-Cookie` authority, and jar owner; no cookie header or jar was
+  added to IPC. The test and scoped check reused the shared target directory.
+- `cargo fmt --all -- --check`, `git diff --check`, and all four documentation
+  gates passed after the final edits: release-truth scanned 1,489 Markdown
+  files (83 current; zero current-claim failures); depth validated 93 guides
+  and 19 contracts; shortcut inventory validated 15 keys and 63 markers;
+  coverage validated 346 MCP tools (101 browser-only), 17 examples, and 22
+  public modules.
+- Direct self-review found no per-hop credentials, CORS, cookie-ownership, or
+  IPC-boundary mismatch. This does not claim full redirect semantics, XHR/Web
+  IDL or WPT conformance, cross-platform certification, independent review,
+  or remote CI. Issue #40 remains open.

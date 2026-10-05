@@ -1306,6 +1306,16 @@ regressions, not complete XHR/Web IDL, redirect-chain, or WPT conformance. See
 the [Slice 851 task](tasks/native-engine-browser-851.md), [Slice 852
 task](tasks/native-engine-browser-852.md), and [Slice 852
 review](reviews/native-engine-browser-852-01.md).
+Slice 853 adds a process-backed redirect regression for async page XHR,
+synchronous parent-brokered page XHR, and async DedicatedWorker XHR. The
+same-origin starting request and cross-origin redirect target are observed at
+the HTTP fixtures: default mode sends no cookies to the target and rejects its
+response cookie, while `include` sends parent-matched cookies and accepts an
+authorized response cookie for later requests. The test confirms that
+HttpOnly values remain absent from `document.cookie` and the parent remains
+the only cookie authority. This is focused redirect coverage, not full XHR
+redirect, Web IDL, or WPT conformance. See the [Slice 853 task](tasks/native-engine-browser-853.md)
+and [review](reviews/native-engine-browser-853-01.md).
 
 ### XHR document responses
 

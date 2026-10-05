@@ -17,6 +17,18 @@ six seconds. An operation gate keeps the async-effect pump behind the backend
 operation that produced it; once a pump turn starts, later operations still
 serialize behind it. Scoped local checks and the focused test pass. This
 checkpoint is unpushed, so no remote CI result is claimed.
+The latest local Slice 846 adds a bounded owner turn for due page timers while
+a process-backed document is idle. Its BrowserSession regression passes: after
+navigation returns, `setTimeout` inserts an HTTP stylesheet and its CSS
+`@import` without another session operation. The parent sends the page's
+HttpOnly cookie on both requests, accepts the stylesheet response cookie
+before the import, retains all cookies in its jar, and keeps `document.cookie`
+empty. The async-effect pump advances the exact page owner and sends resulting
+network effects through the parent broker. This verifies a narrow timer path,
+not general event-loop or rendering conformance. A probe also found that the
+dynamic stylesheet's `load` handler did not issue its follow-up Fetch; that
+event-delivery gap remains separate and is not covered by Slice 846. This
+checkpoint is local and unpushed; no remote CI result is claimed.
 Slice 838's NavigationPreloadManager persistence regression passed (1 passed;
 906 filtered; 39.70 seconds), so that slice is complete. Slice 839 starts
 eligible GET preloads alongside FetchEvent dispatch, exposes `preloadResponse`,
@@ -213,14 +225,17 @@ the prior list before the retry finishes, so atomic publication across owners
 is not guaranteed. Socket-free regressions cover both drift while waiting for a
 parked owner and drift after the first owner has received its replacement list;
 the latter confirms the sync retries and preserves the changed topology.
-Process-backed timer/lifetime delivery, independent owner ordering, stale-owner
-teardown, queue overflow, relevant WPT cases, and remote cross-platform CI
-remain open.
+Slice 845 now verifies one process-backed lifetime path: a held
+`waitUntil(fetch())` response settles after the independent navigation has
+committed. Other lifetime command paths, independent owner ordering, stale-
+owner teardown, queue overflow, relevant WPT cases, and remote cross-platform
+CI remain open.
 Streaming upload fetches, network Fetch commands, and other non-CacheStorage
 host commands encountered while the `respondWith()` response is still pending
-can still delay settlement. Browser-
-facing effects from later lifetime callbacks now have an owner-pump delivery
-path, but its process-backed timer/lifetime behavior remains unverified. The first
+can still delay settlement. Browser-facing effects from later lifetime
+callbacks now have an owner-pump delivery path. Slice 845 verifies the held
+`waitUntil(fetch())` path through that pump; it does not certify every lifetime
+command or worker task source. The first
 `respondWith()` now suppresses later registered FetchEvent listeners, with a
 socket-free regression. `onfetch` now participates in that same ordered
 sequence: replacement preserves its registration position, while
@@ -6873,9 +6888,11 @@ semantics remain open. Slice 743 adds the bounded descendant-frame
 The completed native-engine-browser-047 batch makes timer turns honor due
 times. Local and child realms normalize bounded `setTimeout` delays, drain only
 due callbacks on a later host turn in due-time/ID order, and remove canceled
-timers through `clearTimeout`. There is no background page event loop yet;
-intervals, animation/idle callbacks, task-source fairness, and full wall-clock
-scheduling remain open.
+timers through `clearTimeout`. At that historical checkpoint, there was no
+background page event loop. Slice 846 later adds and process-tests a bounded
+autonomous owner turn for a due page `setTimeout` that creates a parent-brokered
+stylesheet and CSS import. General task-source fairness, rendering
+opportunities, and full wall-clock scheduling remain open.
 
 The completed native-engine-browser-048 batch applies bounded submitter
 overrides. Local and child-owned submissions now resolve `formaction`,

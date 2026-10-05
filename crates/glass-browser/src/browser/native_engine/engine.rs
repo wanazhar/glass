@@ -834,7 +834,7 @@ impl NativeEngine {
 
         let previous_revision = self.revision;
         self.evaluate_page_with_events_async_timeout(
-            "void 0".into(),
+            "globalThis.__glassRunTimers(performance.now());".into(),
             NativePageEventBatch::default(),
             CONTENT_PROCESS_ASYNC_EFFECT_TIMEOUT,
         )

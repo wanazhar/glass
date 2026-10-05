@@ -272,8 +272,8 @@ projection and existing native Fetch behavior.
   the upload request cookie, an HttpOnly response cookie, a same-turn follow-up
   worker Fetch, and the public parent cookie view. As on page uploads, HTTP
   starts only after the source closes, so socket-level upload streaming and
-  backpressure are lost. Service Worker-originated upload streams and
-  autonomous worker turns remain outside this broker path.
+  backpressure are lost. At that checkpoint, Service Worker-originated uploads
+  and autonomous worker turns were not covered by this explicit-turn regression.
 - Page-originated Fetch `ReadableStream` uploads to a controlled Service Worker
   are collected under the existing body limit, offered to the Service Worker,
   and sent through the parent broker only if the handler declines them. A
@@ -288,9 +288,10 @@ projection and existing native Fetch behavior.
   path also exposed that the Service Worker dispatcher returned a plain object
   when `respondWith()` was not called even though its host always awaited a
   promise; it now returns a resolved promise, allowing the existing network
-  fallback to run. Service Worker-originated upload streams, background work
-  outside intercepted FetchEvents, and autonomous worker turns remain outside
-  this broker path.
+  fallback to run. At that checkpoint, Service Worker-originated upload
+  streams, background work outside intercepted FetchEvents, and autonomous
+  worker turns had not been verified on this path. Follow-up Slice 849 now
+  covers the DedicatedWorker timer-upload case only.
 - Slice 842 is complete: browser-coordinated SharedWorker creation derives
   cookies from the exact parent source owner. Its parent snapshot/override/
   deletion process regression passed (1 passed; 48.31-second test runtime),
@@ -833,5 +834,14 @@ projection and existing native Fetch behavior.
   request/response cookies and cannot delay the navigation that queued its
   async owner turn. This does not close the remaining broker-coverage audit or
   claim parallel page and Service Worker execution.
+- Follow-up [Slice 849](native-engine-browser-849.md) closes the previously
+  unverified DedicatedWorker autonomous-timer upload case: a due timer's
+  `ReadableStream` Fetch body crosses the bounded demand-driven IPC path and is
+  collected before parent network dispatch. The parent still exclusively
+  selects request cookies, accepts `Set-Cookie`, and owns persistence; the
+  process-backed loopback regression verifies the ordered cookie rotation,
+  POST body, and script-visible projection. This does not cover autonomous
+  ServiceWorker-originated uploads or the remaining cookie-bearing request
+  audit. Slice 843 and Issue #40 remain in progress.
 - Implementation is in progress on `task/native-engine-browser-843`.
 - Issue #40 remains open.

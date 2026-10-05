@@ -190,6 +190,19 @@ empty `document.cookie` projection. A later Worker message also performs a
 runtime import and nested import, with parent-owned cookies available on the
 next request. This is targeted graph coverage only; the
 broader parent-only contract remains in progress.
+Slice 849 extends the exact-owner timer path to a DedicatedWorker Fetch whose
+request body is a `ReadableStream`. The content process exchanges bounded,
+demand-driven upload chunks, collects the request body within its existing
+limits, and dispatches it through the parent broker. Only the parent selects
+request cookies, accepts response `Set-Cookie`, and persists the jar; the
+Worker receives no cookie jar or HttpOnly values. The loopback regression
+checks a page cookie write, HttpOnly cookies from Worker scripts, parent cookie
+rotation before the upload, the upload response cookie on a later Fetch, and
+the visible-only `document.cookie` projection. HTTP starts after the source
+closes, so this path does not provide socket-level upload streaming or network
+backpressure. This does not claim autonomous ServiceWorker upload coverage or
+close the wider network-authority audit. See the
+[Slice 849 task](tasks/native-engine-browser-849.md).
 The process-backed
 `native_content_process_shared_worker_fetch_uses_parent_cookie_authority`
 regression also verifies the module SharedWorker entry and static dependency

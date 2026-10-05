@@ -70,7 +70,12 @@ def main():
             reply(rid, output=f"Hello, {who}! (from the hello extension)")
 
         elif kind == "command":
-            reply(rid, output=f"hello extension v1.0.0, args={req.get('args', '')!r}")
+            if req.get("name") == "hello":
+                reply(rid, output=f"hello extension v1.0.0, args={req.get('args', '')!r}")
+            else:
+                # Always answer, even for a command we do not own. Staying
+                # silent would make the host wait out its timeout.
+                reply(rid, output="")
 
         elif kind == "system_prompt":
             reply(rid, text="An extension named `hello` is loaded.")
@@ -89,7 +94,10 @@ def main():
             reply(rid, body=body.replace("SECRET", "[redacted by hello ext]"))
 
         elif kind == "turn_end":
-            pass  # fire and forget
+            reply(rid)
+
+        elif kind == "call_tool_result":
+            pass  # the host answering one of our own requests
 
         elif kind == "goodbye":
             break

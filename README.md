@@ -119,7 +119,47 @@ If you want gating, the `Mod_::authorize` hook is where it goes. The shipped
 
 ## Extending
 
-Two mechanisms, both deliberately minimal.
+Three mechanisms, in increasing order of power.
+
+**Project instructions** are read automatically. If the workspace has an
+`AGENTS.md`, `AGENTS.override.md`, or `CLAUDE.md`, it goes into the system
+prompt. One file per directory (first match wins), 8KB per file, 12KB total,
+truncated with a visible marker rather than silently filling the prompt. No
+ancestor walking, because that is what makes the feature unpredictable. A
+compile-time assertion fails the build if the budget is raised past 16KB.
+
+**Extensions** are external processes that speak newline-delimited JSON on
+stdio. This is the important design decision: an extension's dependencies never
+enter our address space. pi ships 40 MiB because its extensions run in-process
+and it bundles QuickJS, a TypeScript loader, and an image worker. Ours ships
+2.4 MiB because `codemode` is a Node script you already have Node for.
+
+```toml
+extensions = [
+  "node ~/.config/glass/ext/mine.js",
+  "python3 ~/tools/my-ext.py",
+]
+```
+
+Hooks: `system_prompt`, `run_tool`, `tool_result` (rewriting), `authorize`,
+`turn_end`, slash commands, and a nested `call_tool` that lets an extension ask
+the host to run a tool while it executes. That last one is what makes codemode
+possible.
+
+Every exchange is bounded by a timeout and a byte cap. A wedged, hostile, or
+crashed extension degrades into a warning, never a hung session. A failed
+extension is skipped, never fatal. Nothing spawns unless config names it.
+
+Copy `extensions/hello.py` — it implements the entire protocol in 100 lines.
+
+```sh
+/extensions      # what is loaded, what tools it adds, what commands
+/codemode        # extension-provided commands appear here
+```
+
+**In-process mods** implement `glass-mod-api::Mod_`, which has zero dependencies
+and defines the hook surface. They stay for anything that needs to be in the
+hot path, and they cannot segfault the harness.
 
 **Skills** are markdown files in `~/.config/glass/skills/`:
 
@@ -155,12 +195,34 @@ Mods are loaded by name from a registry rather than as dynamic libraries.
 Owning a stable C ABI forever, and accepting that a user mod can segfault the
 harness, is not a trade worth making when hooks and skills cover the same ground.
 
+## Performance notes
+
+Two measurements that shaped the design.
+
+**The transcript viewer is virtualized.** The obvious implementation wraps every
+entry on every frame, which at 10k messages builds ~200,000 wrapped lines to
+fill a 30-row viewport — 38 MiB of heap churn per frame. Instead each entry is
+laid out once, cached with a bounded LRU, and only the visible window is built.
+Frame cost tracks the viewport, not the history. This was the same bug class as
+pi's #9807 ("typing lag at 800+ messages"), so it is a place we beat pi rather
+than match.
+
+**Output past 60KB spills to a temp file** and the model is pointed at it, so it
+can `tail` or `rg` the rest instead of the tail being discarded. pi does the
+same thing; losing the end of a build log is losing the part that says what went
+wrong.
+
+Measured on a 2006-era toolchain: 2.4 MB binary, ~2 MB idle RSS, sub-10ms
+startup.
+
 ## Layout
 
 ```
-crates/glass-mod-api   the whole extension surface, zero dependencies
-crates/glass-tui       terminal rendering, input, transcript viewer
-crates/glass           loop, providers, tools, session, compaction, config
+crates/glass-mod-api   the in-process hook surface, zero dependencies
+crates/glass-tui       terminal rendering, input, virtualized transcript
+crates/glass           loop, providers, tools, session, compaction, config,
+                       extension protocol, AGENTS.md
+extensions/            hello.py (reference), codemode, cache-warmer
 ```
 
 `glass-mod-api` is the stability boundary. If a hook ever needs a new type, the

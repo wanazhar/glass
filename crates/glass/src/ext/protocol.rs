@@ -73,15 +73,16 @@ pub enum Request {
     ToolResult { call_id: String, name: String, body: String },
     /// Decide whether a tool call may run. Replies `{ "allow": bool, "reason": ... }`.
     Authorize { call_id: String, name: String, arguments: String },
-    /// A turn finished. Fire-and-forget.
-    TurnEnd { text: String },
+    /// A turn finished. Replies are ignored.
+    ///
+    /// `cacheable_prefix_bytes` tells the extension how large the stable
+    /// prompt prefix is, which is what a cache warmer needs to decide whether
+    /// a refresh write is worth its cost.
+    TurnEnd { text: String, cacheable_prefix_bytes: usize },
     /// A slash command was invoked. Replies with `{ "output": ... }`.
     Command { name: String, args: String },
     /// Execute a tool the extension contributed. Replies with `{ "output": ... }`.
     RunTool { name: String, arguments: String },
-    /// An extension needs a tool run on its behalf (codemode's whole purpose).
-    /// The host answers with `{ "type": "call_tool_result", "body": ... }`.
-    CallTool { call_id: String, name: String, arguments: String },
     /// Shutdown notice before the process exits.
     Goodbye,
 }
@@ -103,33 +104,18 @@ impl Request {
                 "type": "authorize", "id": id,
                 "call_id": call_id, "name": name, "arguments": arguments
             }),
-            Request::TurnEnd { text } => json!({ "type": "turn_end", "id": id, "text": text }),
+            Request::TurnEnd { text, cacheable_prefix_bytes } => json!({
+                "type": "turn_end", "id": id, "text": text,
+                "cacheable_prefix_bytes": cacheable_prefix_bytes
+            }),
             Request::Command { name, args } => json!({ "type": "command", "id": id, "name": name, "args": args }),
             Request::RunTool { name, arguments } => json!({
                 "type": "run_tool", "id": id, "name": name, "arguments": arguments
-            }),
-            Request::CallTool { call_id, name, arguments } => json!({
-                "type": "call_tool", "id": id, "call_id": call_id,
-                "name": name, "arguments": arguments
             }),
             Request::Goodbye => json!({ "type": "goodbye", "id": id }),
         }
     }
 
-    /// The hook name, used in log and error messages.
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Request::Hello { .. } => "hello",
-            Request::SystemPrompt => "system_prompt",
-            Request::ToolResult { .. } => "tool_result",
-            Request::Authorize { .. } => "authorize",
-            Request::TurnEnd { .. } => "turn_end",
-            Request::Command { .. } => "command",
-            Request::RunTool { .. } => "run_tool",
-            Request::CallTool { .. } => "call_tool",
-            Request::Goodbye => "goodbye",
-        }
-    }
 }
 
 /// Parse a handshake reply into a [`Manifest`].
@@ -188,6 +174,11 @@ pub fn parse_manifest(v: &Value) -> Result<Manifest, String> {
         tools,
         commands,
     })
+}
+
+/// Wire form of the host's answer to a nested `call_tool` request.
+pub fn nested_call_result_json(call_id: &Value, body: &str) -> Value {
+    json!({ "type": "call_tool_result", "call_id": call_id, "body": body })
 }
 
 /// True when `v` is a nested `call_tool` request rather than a reply.
@@ -287,12 +278,19 @@ mod tests {
     }
 
     #[test]
+    fn turn_end_reports_the_prefix_size() {
+        let j = Request::TurnEnd { text: "x".into(), cacheable_prefix_bytes: 4200 }.to_json(2);
+        assert_eq!(j["cacheable_prefix_bytes"], 4200);
+    }
+
+    #[test]
     fn nested_call_is_distinguishable_from_a_reply() {
-        let j = Request::CallTool { call_id: "c9".into(), name: "bash".into(), arguments: "{}".into() }
-            .to_json(4);
+        let j = json!({ "type": "call_tool", "call_id": "c9", "name": "bash" });
         assert!(is_nested_call(&j));
-        // A plain reply must not be mistaken for a nested request.
+        // A plain reply, and the host's answer to a nested call, must both be
+        // treated as ordinary replies rather than triggering a nested dispatch.
         assert!(!is_nested_call(&json!({ "id": 4, "output": "x" })));
+        assert!(!is_nested_call(&nested_call_result_json(&json!("c9"), "out")));
     }
 
     #[test]

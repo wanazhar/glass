@@ -7,9 +7,9 @@
 pub mod host;
 pub mod protocol;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use host::Extension;
+use host::{Extension, HostToolBridge};
 use protocol::{tool_triple, ToolSpec};
 
 /// Every loaded extension.
@@ -22,6 +22,7 @@ impl Registry {
         Self { exts: Vec::new() }
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.exts.len()
     }
@@ -50,28 +51,27 @@ impl Registry {
         reg
     }
 
-    /// Load every executable in a directory (used for `~/.config/glass/ext`).
-    pub fn load_dir(dir: &Path, workspace: &Path, model: &str) -> Self {
-        let mut reg = Self::empty();
-        let Ok(entries) = std::fs::read_dir(dir) else { return reg };
-        let mut paths: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.is_file())
-            .collect();
-        paths.sort();
-
-        for p in paths {
-            match spawn_one(&p.to_string_lossy(), workspace, model) {
-                Ok(ext) => reg.exts.push(ext),
-                Err(e) => eprintln!("\x1b[33mglass: {e}, skipping\x1b[0m"),
-            }
-        }
-        reg
-    }
-
     pub fn names(&self) -> Vec<&str> {
         self.exts.iter().map(|e| e.manifest.name.as_str()).collect()
+    }
+
+    /// One line per loaded extension, with version and contributed tools, for
+    /// `/extensions`.
+    pub fn describe(&self) -> Vec<String> {
+        self.exts
+            .iter()
+            .map(|e| {
+                let tools: Vec<&str> = e.manifest.tools.iter().map(|t| t.name.as_str()).collect();
+                let mut line = format!("{} v{}", e.manifest.name, e.manifest.version);
+                if !tools.is_empty() {
+                    line.push_str(&format!(" · tools: {}", tools.join(", ")));
+                }
+                if !e.manifest.system_prompt.trim().is_empty() {
+                    line.push_str(" · contributes prompt text");
+                }
+                line
+            })
+            .collect()
     }
 
     /// Every tool contributed by every extension.
@@ -127,7 +127,7 @@ impl Registry {
         &mut self,
         name: &str,
         arguments: &str,
-        host_tools: &mut dyn FnMut(&str, &str) -> String,
+        host_tools: &mut HostToolBridge<'_>,
     ) -> Option<String> {
         let idx = self.tool_owner(name)?;
         self.exts[idx].run_tool(name, arguments, host_tools)
@@ -156,22 +156,21 @@ impl Registry {
         Ok(())
     }
 
-    pub fn turn_end(&mut self, text: &str) {
+    pub fn turn_end(&mut self, text: &str, cacheable_prefix_bytes: usize) {
         for e in &mut self.exts {
-            e.turn_end(text);
+            e.turn_end(text, cacheable_prefix_bytes);
         }
     }
 
     /// Invoke an extension slash command by name.
+    /// Invoke the extension that owns `name`.
+    ///
+    /// Routed by owner rather than by asking every extension in turn: an
+    /// extension that does not recognise the command must not be able to stall
+    /// the dispatch until its timeout.
     pub fn run_command(&mut self, name: &str, args: &str) -> Option<String> {
-        for e in &mut self.exts {
-            if e.has_command(name)
-                && let Some(out) = e.run_command(name, args)
-            {
-                return Some(out);
-            }
-        }
-        None
+        let idx = self.exts.iter().position(|e| e.has_command(name))?;
+        self.exts[idx].run_command(name, args)
     }
 
     /// Shut every extension down cleanly.
@@ -215,8 +214,16 @@ mod tests {
 
     /// An extension that answers correctly, used to prove the host speaks the
     /// protocol rather than only proving the types compile.
+    /// Write a throwaway extension script to a unique temp dir.
+    ///
+    /// Tests run in parallel, so a shared path would let one test's cleanup
+    /// delete another's script mid-handshake.
     fn echo_ext(body: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("glass-ext-test-{}-{}", std::process::id(), body.len()));
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir()
+            .join(format!("glass-ext-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("ext.py");
         std::fs::write(&p, body).unwrap();
@@ -240,7 +247,7 @@ for line in sys.stdin:
     elif t=="system_prompt": send({"id":i,"text":"from ext"})
     elif t=="authorize": send({"id":i,"allow":False,"reason":"nope"})
     elif t=="tool_result": send({"id":i,"body":"REWRITTEN"})
-    elif t=="turn_end": pass
+    elif t=="turn_end": send({"id":i})
     elif t=="goodbye": break
 "#;
 
@@ -276,14 +283,15 @@ for line in sys.stdin:
         assert_eq!(e.manifest.version, "1");
         assert!(e.has_command("tcmd"));
         assert_eq!(e.system_prompt().as_deref(), Some("from ext"));
-        assert_eq!(e.run_tool("ping", "{}").as_deref(), Some("pong"));
+        let mut nohost = |_n: &str, _a: &str| String::new();
+        assert_eq!(e.run_tool("ping", "{}", &mut nohost).as_deref(), Some("pong"));
         assert_eq!(e.run_command("tcmd", "x").as_deref(), Some("cmd out"));
         assert_eq!(
             e.rewrite_tool_result("c1", "bash", "original").as_deref(),
             Some("REWRITTEN")
         );
         assert_eq!(e.authorize("c1", "bash", "rm"), Err("nope".to_string()));
-        e.turn_end("done");
+        e.turn_end("done", 1234);
         e.shutdown();
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }

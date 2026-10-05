@@ -97,6 +97,8 @@ pub struct Agent<'a> {
     pub on_progress: Option<ProgressSink<'a>>,
     /// Cached system-prompt contribution from extensions.
     ext_prompt: String,
+    /// Size of the cacheable prefix, recomputed each request.
+    prefix_bytes: usize,
 }
 
 /// A progress callback.
@@ -133,6 +135,7 @@ impl<'a> Agent<'a> {
             project_instructions: None,
             on_progress: None,
             ext_prompt: String::new(),
+            prefix_bytes: 0,
         }
     }
 
@@ -188,8 +191,15 @@ impl<'a> Agent<'a> {
                 tools.push((n, d, s));
             }
         }
+
         let system = self.system_prompt();
         let model = self.provider.id().to_string();
+
+        // Size of the prefix a provider would cache: system prompt plus tool
+        // schemas. Reported to extensions so a cache warmer knows whether a
+        // refresh write is worth its cost.
+        self.prefix_bytes =
+            system.len() + tools.iter().map(|(_, d, s)| d.len() + s.len()).sum::<usize>();
 
         let req = Request {
             model: &model,
@@ -265,7 +275,7 @@ impl<'a> Agent<'a> {
             for m in self.mods {
                 m.on_turn_end(&ctx, &out.text);
             }
-            self.extensions.turn_end(&out.text);
+            self.extensions.turn_end(&out.text, self.prefix_bytes);
 
             if !out.wants_tools() {
                 return Ok((last, Stop::Finished));

@@ -36,11 +36,12 @@ the video's media-source state.
 
 ## Contract
 
-- For each attached HTML `<video>` with a nonempty `poster`, resolve the URL
-  against its owner Document and initiate a poster request for initial
-  documents and runtime-created/updated elements. Reflect the `poster`
-  attribute through `HTMLVideoElement.poster`. Replacing or removing the
-  attribute replaces or clears the poster without restarting the media `src`.
+- For each attached HTML `<video>`, evaluate the `poster` URL on initial
+  discovery and runtime attribute mutation. Resolve/fetch only a nonempty
+  value; an absent or empty value clears the poster without a request. Reflect
+  the `poster` attribute through `HTMLVideoElement.poster`. Replacing or
+  removing the attribute replaces or clears the poster without restarting the
+  media `src`.
 - HTTP(S) poster requests use the parent image broker and image CSP policy.
   Match the HTML request's `include` credentials mode and use-URL-credentials
   flag; the owner Document supplies the effective referrer policy. The parent

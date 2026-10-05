@@ -19641,7 +19641,7 @@ fn run_native_sync_xhr(
         content_type: request.content_type,
         request_headers: request.headers,
         credentials: request.credentials,
-        credentials_mode: None,
+        credentials_mode: Some(NativeFetchCredentialsMode::for_xhr(request.credentials)),
         cors_mode: NativeCorsMode::Cors,
         redirect_mode: NativeFetchRedirectMode::Follow,
         cache_mode: NativeFetchCacheMode::Default,
@@ -31531,7 +31531,7 @@ fn worker_bootstrap(
       method: this._method,
       body: requestBody,
       headers: this._headers,
-      credentials: this.withCredentials ? "include" : "omit",
+      credentials: this.withCredentials ? "include" : "same-origin",
       signal: controller.signal,
       __glassTimeoutMs: this._timeout,
     }}).then(response => {{
@@ -42004,7 +42004,7 @@ fn document_bootstrap(
       method: this._method,
       body: requestBody,
       headers: this._headers,
-      credentials: this.withCredentials ? "include" : "omit",
+      credentials: this.withCredentials ? "include" : "same-origin",
       signal: controller.signal,
       __glassTimeoutMs: this._timeout,
     }});

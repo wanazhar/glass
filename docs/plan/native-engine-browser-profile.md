@@ -1280,6 +1280,26 @@ conformance remain separate profile requirements. See the
 [slice 776 task](tasks/native-engine-browser-776.md) for local evidence and
 exact remaining boundaries.
 
+### XMLHttpRequest credentials
+
+XMLHttpRequest constructs its Fetch request with credentials mode `same-origin`
+when `withCredentials` is false (the default), and `include` when it is true.
+Therefore a false/default value does not suppress cookies on same-origin
+requests: the parent may send matching cookies and accept response cookies
+there, while cross-origin hops omit credentials and ignore response cookies.
+The `same-origin` decision applies at every redirect hop. With
+`withCredentials == true`, normal parent cookie policy and CORS requirements
+still apply. Page and Worker XHR use this same mode; content-process network
+and cookie authority remains exclusively parent-owned. See the
+[XMLHttpRequest Standard](https://xhr.spec.whatwg.org/#the-withcredentials-attribute)
+and [Fetch credentials modes](https://fetch.spec.whatwg.org/#concept-request-credentials-mode).
+Slice 851 adds process-backed verification for same-origin defaults and
+cookie rotation on page and Worker XHR while preserving parent cookie
+authority. A resource-loader unit test checks same-origin mode against a
+cross-origin target and explicit `include`; this is not process-backed CORS
+coverage. The slice does not claim full XHR/Web IDL or WPT conformance. See the
+[Slice 851 task](tasks/native-engine-browser-851.md).
+
 ### XHR document responses
 
 For a Window `XMLHttpRequest` whose response type is `document`, only an HTML

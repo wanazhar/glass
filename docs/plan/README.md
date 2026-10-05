@@ -10803,6 +10803,20 @@ task](tasks/native-engine-browser-850.md) and
 no remote-CI result; Issue #40 and the broader network-authority audit remain
 open.
 
+Slice 851 completes the XHR default-mode correction from `omit` to
+`same-origin` across asynchronous page/Worker requests, synchronous
+parent-brokered requests, and the local-owner loader. The parent-cookie
+process regression passed (1 passed; 915 filtered; 28.80 seconds), checking
+same-origin cookie selection/rotation across page and Worker XHR while
+HttpOnly values remain absent from `document.cookie`. The loader mode test
+passed (1 passed; 1,694 filtered; 0.01 seconds), checking same-origin
+eligibility and explicit cross-origin `include`. The scoped check, worker
+build, formatting, and all four documentation gates passed. Cross-origin
+process/CORS, WPT, full XHR conformance, cross-platform certification, and
+remote CI remain open; Issue #40 remains open. See the [Slice 851
+task](tasks/native-engine-browser-851.md) and
+[review](reviews/native-engine-browser-851-01.md).
+
 ## Historical plan: Glass v0.3.6 issue #36
 
 Status: Historical/superseded — this 0.3.6 audit body is retained for issue and

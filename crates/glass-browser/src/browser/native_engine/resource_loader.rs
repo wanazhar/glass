@@ -548,6 +548,14 @@ pub(crate) enum NativeFetchCredentialsMode {
 }
 
 impl NativeFetchCredentialsMode {
+    pub(crate) const fn for_xhr(with_credentials: bool) -> Self {
+        if with_credentials {
+            Self::Include
+        } else {
+            Self::SameOrigin
+        }
+    }
+
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Omit => "omit",
@@ -10874,18 +10882,19 @@ mod tests {
         JAVASCRIPT_MIME_TYPE_ESSENCES, MAX_NATIVE_CACHE_ENTRIES,
         MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES, MAX_NATIVE_MEDIA_BYTES, NativeCookieProfileEntry,
         NativeCorsMode, NativeCspDirectives, NativeCspPolicy, NativeEngineConfig,
-        NativeEngineError, NativeFetchMethod, NativeFetchReferrerPolicy, NativeInlineCspKind,
-        NativeModuleResourceType, NativeNavigationMethod, NativeNavigationPolicyKind,
-        NativeNetworkState, NativeObjectUrlResource, NativeRequestBody, NativeResource,
-        NativeResourceLoader, NativeSubresourceKind, NativeTextCacheEntry, cache_control_max_age,
+        NativeEngineError, NativeFetchCredentialsMode, NativeFetchMethod,
+        NativeFetchReferrerPolicy, NativeInlineCspKind, NativeModuleResourceType,
+        NativeNavigationMethod, NativeNavigationPolicyKind, NativeNetworkState,
+        NativeObjectUrlResource, NativeRequestBody, NativeResource, NativeResourceLoader,
+        NativeSubresourceKind, NativeTextCacheEntry, cache_control_max_age,
         cache_control_requires_revalidation, cached_resource_content_type_text_allowed,
         content_security_policy, cors_origin_header, cors_preflight_response_allowed,
         cors_response_allowed, csp_report_deliveries_for_declaration,
         csp_script_sources_allow_for_rooted_file, csp_sources_allow,
         csp_sources_allow_for_redirect, csp_sources_allow_for_rooted_file, data_font_bytes,
         data_media_metadata, decode_html_body, document_cache_fresh_until,
-        document_cache_storage_allowed, fetch_referrer_for_target, fetch_referrer_source,
-        javascript_mime_essence_allowed, javascript_mime_type_essence_match,
+        document_cache_storage_allowed, fetch_credentials_for_url, fetch_referrer_for_target,
+        fetch_referrer_source, javascript_mime_essence_allowed, javascript_mime_type_essence_match,
         media_metadata_from_bytes, mixed_content_allowed, module_content_type_text_allowed,
         referrer_for_navigation, referrer_for_navigation_with_policy, resolve_subresource_url,
         subresource_integrity_matches, supported_media_type_text,
@@ -10903,6 +10912,37 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use url::Url;
+
+    #[test]
+    fn xhr_credentials_modes_match_same_origin_and_include_contracts() {
+        let initiator = Url::parse("https://page.example.test/document").unwrap();
+        let same_origin_target = Url::parse("https://page.example.test/xhr").unwrap();
+        let cross_origin_target = Url::parse("https://api.example.test/xhr").unwrap();
+
+        let default_mode = NativeFetchCredentialsMode::for_xhr(false);
+        assert_eq!(default_mode, NativeFetchCredentialsMode::SameOrigin);
+        assert!(fetch_credentials_for_url(
+            Some(default_mode),
+            false,
+            &initiator,
+            &same_origin_target,
+        ));
+        assert!(!fetch_credentials_for_url(
+            Some(default_mode),
+            false,
+            &initiator,
+            &cross_origin_target,
+        ));
+
+        let explicit_mode = NativeFetchCredentialsMode::for_xhr(true);
+        assert_eq!(explicit_mode, NativeFetchCredentialsMode::Include);
+        assert!(fetch_credentials_for_url(
+            Some(explicit_mode),
+            true,
+            &initiator,
+            &cross_origin_target,
+        ));
+    }
 
     #[test]
     fn javascript_mime_type_attributes_and_response_headers_treat_parameters_differently() {

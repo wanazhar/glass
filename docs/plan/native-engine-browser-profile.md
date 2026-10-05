@@ -1330,6 +1330,17 @@ preflight coverage, not full CORS, XHR/Web IDL, or WPT conformance. See the
 [Slice 854 task](tasks/native-engine-browser-854.md) and
 [review](reviews/native-engine-browser-854-01.md).
 
+Slice 855 adds the negative credentialed-preflight case: both asynchronous
+page and DedicatedWorker XHR send OPTIONS without cookies, and a response with
+wildcard `Access-Control-Allow-Origin` is rejected for `include` even when
+`Access-Control-Allow-Credentials: true` is present. Neither actual POST is
+dispatched, and the rejected preflight's `Set-Cookie` does not alter the
+parent's jar. HttpOnly remains absent from `document.cookie`; cookie selection,
+response-cookie acceptance, and jar ownership remain parent-only. This is a
+focused denial regression, not full CORS/XHR, Web IDL, or WPT conformance. See
+the [Slice 855 task](tasks/native-engine-browser-855.md) and
+[review](reviews/native-engine-browser-855-01.md).
+
 ### XHR document responses
 
 For a Window `XMLHttpRequest` whose response type is `document`, only an HTML

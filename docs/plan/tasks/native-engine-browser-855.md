@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-855
 scope: glass-browser/native-engine/xhr-denied-credentialed-preflight
-status: in-progress
+status: complete
 depends-on: [native-engine-browser-854]
 ---
 
@@ -69,3 +69,35 @@ parent.
   agent review is used.
 - Record local-only evidence. No remote CI or broad conformance claim is
   implied.
+
+## Results
+
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p glass-browser
+  --features native-engine --test native_engine --locked --quiet` passed with
+  the existing legacy-parser/dead-code warnings.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-browser
+  --features native-engine --test native_engine --locked --quiet
+  native_content_process_xhr_denied_credentialed_preflight_sends_no_post
+  -- --exact` passed (1 passed; 919 filtered; 19.94 seconds).
+- The process fixture observed the page and DedicatedWorker credentialed
+  OPTIONS requests with their origin, method, requested-header names, and no
+  Cookie. Both responses used wildcard `Access-Control-Allow-Origin` with
+  `Access-Control-Allow-Credentials: true`; both XHRs reported a network error
+  and no actual POST reached the listener. The rejected preflight
+  `Set-Cookie` was not accepted; the seeded HttpOnly parent cookie remained,
+  and `document.cookie` stayed empty.
+- No production Rust code changed. The parent remains the sole cookie matcher,
+  `Set-Cookie` authority, and jar owner; no cookie header or jar was added to
+  IPC. The exact-source Fetch CORS check uses the original request's
+  credentials mode for the preflight response, so wildcard origin cannot
+  authorize `include`.
+- `cargo fmt --all -- --check` and `git diff --check` passed. Documentation
+  gates passed: release-truth scanned 1,493 Markdown files (83 current, zero
+  current-claim failures); depth validated 93 guides and 19 contracts;
+  shortcuts validated 15 keys and 63 markers; coverage validated 346 MCP
+  tools (101 browser-only), 17 examples, and 22 public modules. Coverage used
+  the existing shared-target binaries via explicit `--glass` and
+  `--glass-browser` paths.
+- This targeted negative case is not complete CORS, XHR/Web IDL or WPT
+  conformance, cross-platform certification, independent review, or remote CI.
+  Issue #40 remains open.

@@ -79,6 +79,9 @@ pub enum Request {
     Command { name: String, args: String },
     /// Execute a tool the extension contributed. Replies with `{ "output": ... }`.
     RunTool { name: String, arguments: String },
+    /// An extension needs a tool run on its behalf (codemode's whole purpose).
+    /// The host answers with `{ "type": "call_tool_result", "body": ... }`.
+    CallTool { call_id: String, name: String, arguments: String },
     /// Shutdown notice before the process exits.
     Goodbye,
 }
@@ -105,6 +108,10 @@ impl Request {
             Request::RunTool { name, arguments } => json!({
                 "type": "run_tool", "id": id, "name": name, "arguments": arguments
             }),
+            Request::CallTool { call_id, name, arguments } => json!({
+                "type": "call_tool", "id": id, "call_id": call_id,
+                "name": name, "arguments": arguments
+            }),
             Request::Goodbye => json!({ "type": "goodbye", "id": id }),
         }
     }
@@ -119,6 +126,7 @@ impl Request {
             Request::TurnEnd { .. } => "turn_end",
             Request::Command { .. } => "command",
             Request::RunTool { .. } => "run_tool",
+            Request::CallTool { .. } => "call_tool",
             Request::Goodbye => "goodbye",
         }
     }
@@ -180,6 +188,16 @@ pub fn parse_manifest(v: &Value) -> Result<Manifest, String> {
         tools,
         commands,
     })
+}
+
+/// True when `v` is a nested `call_tool` request rather than a reply.
+///
+/// While a `run_tool` is executing, the extension may ask the host to run a
+/// tool on its behalf. The reply to that arrives before the reply to the
+/// original request, so the host has to demultiplex on the message type
+/// instead of assuming one reply per request.
+pub fn is_nested_call(v: &Value) -> bool {
+    v.get("type").and_then(Value::as_str) == Some("call_tool")
 }
 
 /// Render a tool spec into the `(name, description, schema)` triple the
@@ -266,6 +284,15 @@ mod tests {
             .to_json(1);
         assert_eq!(j["workspace"], "/tmp");
         assert_eq!(j["model"], "gpt-5");
+    }
+
+    #[test]
+    fn nested_call_is_distinguishable_from_a_reply() {
+        let j = Request::CallTool { call_id: "c9".into(), name: "bash".into(), arguments: "{}".into() }
+            .to_json(4);
+        assert!(is_nested_call(&j));
+        // A plain reply must not be mistaken for a nested request.
+        assert!(!is_nested_call(&json!({ "id": 4, "output": "x" })));
     }
 
     #[test]

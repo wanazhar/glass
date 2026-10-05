@@ -7,7 +7,7 @@
 use std::io::{BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use super::protocol::{Manifest, Request, MAX_REPLY_BYTES, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS};
+use super::protocol::{is_nested_call, Manifest, Request, MAX_REPLY_BYTES, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS};
 use super::protocol::parse_manifest;
 
 /// A running extension process.
@@ -69,7 +69,7 @@ impl Extension {
             model: model.to_string(),
         };
         let reply = ext
-            .request(&hello, REQUEST_TIMEOUT_MS * 3)
+            .request(&hello, REQUEST_TIMEOUT_MS * 3, None)
             .ok_or_else(|| format!("extension `{cmd}` closed before the handshake"))?;
         ext.manifest = parse_manifest(&reply)
             .map_err(|e| format!("extension `{cmd}`: {e}"))?;
@@ -81,7 +81,12 @@ impl Extension {
     /// Returns `None` if the extension closed the pipe, exceeded the byte cap,
     /// or did not answer in time. Every failure is recoverable: the caller
     /// falls back to the default behaviour rather than aborting the turn.
-    fn request(&mut self, req: &Request, timeout_ms: u64) -> Option<serde_json::Value> {
+    fn request(
+        &mut self,
+        req: &Request,
+        timeout_ms: u64,
+        mut host_tools: Option<&mut dyn FnMut(&str, &str) -> String>,
+    ) -> Option<serde_json::Value> {
         self.next_id += 1;
         let id = self.next_id;
         let mut line = serde_json::to_string(&req.to_json(id)).ok()?;
@@ -91,7 +96,41 @@ impl Extension {
         stdin.write_all(line.as_bytes()).ok()?;
         stdin.flush().ok()?;
 
-        self.read_reply(timeout_ms)
+        // While a tool runs, the extension may ask the host to run a tool on
+        // its behalf. Those requests are interleaved with the reply, so the
+        // read loop has to demultiplex: anything tagged `call_tool` is served
+        // and its result written back, and only a non-nested message is the
+        // answer we were waiting for.
+        loop {
+            let Some(v) = self.read_reply(timeout_ms) else { return None };
+            if is_nested_call(&v) {
+                let Some(bridge) = host_tools.as_deref_mut() else {
+                    // No bridge available, which means this extension tried to
+                    // use a capability the caller did not grant it.
+                    return None;
+                };
+                let Some(bridge) = Some(bridge) else { return None };
+                let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                let args = v.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}").to_string();
+                let out = bridge(&name, &args);
+
+                self.next_id += 1;
+                let id = self.next_id;
+                let reply = serde_json::json!({
+                    "type": "call_tool_result",
+                    "id": id,
+                    "call_id": v.get("call_id").cloned().unwrap_or(serde_json::Value::Null),
+                    "body": out
+                });
+                let Some(mut line) = serde_json::to_string(&reply).ok() else { return None };
+                line.push('\n');
+                let Some(stdin) = self.stdin.as_mut() else { return None };
+                stdin.write_all(line.as_bytes()).ok()?;
+                stdin.flush().ok()?;
+                continue;
+            }
+            return Some(v);
+        }
     }
 
     /// Read one line, capped in both size and time.
@@ -140,7 +179,7 @@ impl Extension {
 
     /// Ask for the extension's system-prompt contribution.
     pub fn system_prompt(&mut self) -> Option<String> {
-        let v = self.request(&Request::SystemPrompt, REQUEST_TIMEOUT_MS)?;
+        let v = self.request(&Request::SystemPrompt, REQUEST_TIMEOUT_MS, None)?;
         v.get("text").and_then(|t| t.as_str()).map(str::to_string).filter(|s| !s.trim().is_empty())
     }
 
@@ -157,7 +196,7 @@ impl Extension {
             name: name.to_string(),
             body: body.to_string(),
         };
-        let v = self.request(&req, REQUEST_TIMEOUT_MS)?;
+        let v = self.request(&req, REQUEST_TIMEOUT_MS, None)?;
         let new = v.get("body")?.as_str()?;
         (!new.is_empty() && new != body).then(|| new.to_string())
     }
@@ -169,7 +208,7 @@ impl Extension {
             name: name.to_string(),
             arguments: arguments.to_string(),
         };
-        match self.request(&req, REQUEST_TIMEOUT_MS) {
+        match self.request(&req, REQUEST_TIMEOUT_MS, None) {
             // No answer means no opinion, which must not block the tool.
             None => Ok(()),
             Some(v) => {
@@ -188,29 +227,35 @@ impl Extension {
 
     /// Tell the extension a turn finished. Best-effort.
     pub fn turn_end(&mut self, text: &str) {
-        let _ = self.request(&Request::TurnEnd { text: text.to_string() }, REQUEST_TIMEOUT_MS);
+        let _ = self.request(&Request::TurnEnd { text: text.to_string() }, REQUEST_TIMEOUT_MS, None);
     }
 
     /// Run a slash command. Returns the extension's output.
     pub fn run_command(&mut self, name: &str, args: &str) -> Option<String> {
         let req = Request::Command { name: name.to_string(), args: args.to_string() };
-        let v = self.request(&req, REQUEST_TIMEOUT_MS)?;
+        let v = self.request(&req, REQUEST_TIMEOUT_MS, None)?;
         v.get("output").and_then(|o| o.as_str()).map(str::to_string)
     }
 
-    /// Execute one of this extension's tools.
+    /// Execute one of this extension's tools, servicing any nested tool calls
+    /// it makes while it runs.
     ///
-    /// Returns `None` when the extension does not offer it or does not answer,
-    /// so the caller can report the tool as unavailable rather than inventing
-    /// an empty success.
-    pub fn run_tool(&mut self, name: &str, arguments: &str) -> Option<String> {
+    /// Returns `None` when the extension does not offer the tool or does not
+    /// answer, so the caller reports it as unavailable rather than inventing an
+    /// empty success.
+    pub fn run_tool(
+        &mut self,
+        name: &str,
+        arguments: &str,
+        host_tools: &mut dyn FnMut(&str, &str) -> String,
+    ) -> Option<String> {
         if !self.manifest.tools.iter().any(|t| t.name == name) {
             return None;
         }
         let req = Request::RunTool { name: name.to_string(), arguments: arguments.to_string() };
-        let v = self.request(&req, REQUEST_TIMEOUT_MS * 3)?;
-        let out = v.get("output")?.as_str()?;
-        (!out.is_empty()).then(|| out.to_string())
+        self.request(&req, REQUEST_TIMEOUT_MS * 10, Some(host_tools))
+            .and_then(|v| v.get("output").and_then(|o| o.as_str()).map(str::to_string))
+            .filter(|s| !s.is_empty())
     }
 
     pub fn has_command(&self, name: &str) -> bool {
@@ -219,7 +264,7 @@ impl Extension {
 
     /// Shut the extension down, escalating to a kill if it ignores the request.
     pub fn shutdown(&mut self) {
-        let _ = self.request(&Request::Goodbye, 200);
+        let _ = self.request(&Request::Goodbye, 200, None);
         // Dropping stdin should let a well-behaved extension exit on EOF.
         self.stdin = None;
         for _ in 0..20 {

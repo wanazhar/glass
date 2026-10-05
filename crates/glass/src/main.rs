@@ -4,6 +4,7 @@
 //! `glass-mod-api`; everything the model can call is in `provider::builtin_tools`.
 
 mod agent;
+mod agents_md;
 mod compact;
 mod config;
 mod ext;
@@ -112,6 +113,16 @@ fn run(args: &[String]) -> Result<(), String> {
     let skills = cfg.skills_dir.as_deref().map(skills::load_dir).unwrap_or_default();
     let catalogue = skills::catalogue(&skills);
 
+    // Project instructions are pure prompt text and cost no code path, but they
+    // are the one thing that can be large, so they are capped hard.
+    let instructions = agents_md::load(&cfg.workspace);
+    for i in &instructions {
+        if !i.truncated {
+            println!("\x1b[90m  reading {}\x1b[0m", i.path.display());
+        }
+    }
+    let project_instructions = agents_md::render_all(&instructions);
+
     // Resume or create the session before touching the terminal so a bad path
     // produces a clean error instead of a mangled screen.
     let dir = config::data_dir();
@@ -135,7 +146,7 @@ fn run(args: &[String]) -> Result<(), String> {
     }
 
     term::enter().map_err(|e| format!("cannot set up terminal: {e}"))?;
-    let result = repl(cfg, provider, loaded_mods, extensions, catalogue, session);
+    let result = repl(cfg, provider, loaded_mods, extensions, catalogue, project_instructions, session);
     term::leave().ok();
     result
 }
@@ -146,6 +157,7 @@ fn repl(
     loaded_mods: Vec<Box<dyn glass_mod_api::Mod_>>,
     mut extensions: ext::Registry,
     catalogue: Option<String>,
+    project_instructions: Option<String>,
     mut session: Session,
 ) -> Result<(), String> {
     let mut state = tools::State::new();
@@ -228,7 +240,7 @@ fn repl(
                 &cfg.workspace,
             )
             .prime_extensions()
-            .with_prompt(cfg.system_prompt.clone(), catalogue.clone())
+            .with_prompt(cfg.system_prompt.clone(), catalogue.clone(), project_instructions.clone())
             .with_limits(cfg.max_tokens, cfg.reasoning_budget, 24)
             .with_progress(report);
 

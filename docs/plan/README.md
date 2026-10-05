@@ -11027,13 +11027,15 @@ rejected-handshake response-cookie handling. See the [Slice 869 task](tasks/nati
 and [direct self-review](reviews/native-engine-browser-869-01.md). Issue #40
 remains open.
 
-Slice 870 is in progress for the distinct browser-owned SharedWorker WebSocket
-coordinator. Its non-101 HTTP error path currently dispatches failure events
-without processing response `Set-Cookie`; the slice will accept eligible
-cookies in the parent before bounded error/close events and verify later
-authorized reuse without exposing cookie data to the worker. This is separate
-from Slice 869's process-backed page IPC path. See the
-[Slice 870 task](tasks/native-engine-browser-870.md). Issue #40 remains open.
+The completed Slice 870 closes the distinct browser-owned SharedWorker
+WebSocket coordinator's non-101 HTTP error path. The parent applies eligible
+response `Set-Cookie` before dispatching bounded error/close events; the exact
+process-backed regression verifies the seed and worker-entry cookies on the
+handshake, later authorized reuse of the 403 response cookie, HttpOnly state
+in the parent, empty `document.cookie`, and no open/retry/redirect. This is
+separate from Slice 869's process-backed page IPC path. See the
+[Slice 870 task](tasks/native-engine-browser-870.md) and [direct self-review](reviews/native-engine-browser-870-01.md).
+Issue #40 remains open.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

@@ -9732,6 +9732,39 @@ async fn open_shared_worker_websocket(
         tokio::time::timeout(NATIVE_WEBSOCKET_CONNECT_TIMEOUT, connect_async(request)).await;
     let (socket, response) = match connected {
         Ok(Ok(connected)) => connected,
+        Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response))) => {
+            let set_cookie_headers = response
+                .headers()
+                .get_all(tokio_tungstenite::tungstenite::http::header::SET_COOKIE)
+                .iter()
+                .filter_map(|value| value.to_str().ok().map(str::to_owned))
+                .collect::<Vec<_>>();
+            coordinator
+                .loader
+                .apply_websocket_response_cookies(&websocket_url, &set_cookie_headers)?;
+            dispatch_shared_worker_websocket_event(
+                coordinator,
+                worker_id,
+                socket_id,
+                &NativeWebSocketEvent::Error {
+                    message: format!("HTTP error: {}", response.status()),
+                    csp_violations,
+                },
+            )
+            .await?;
+            dispatch_shared_worker_websocket_event(
+                coordinator,
+                worker_id,
+                socket_id,
+                &NativeWebSocketEvent::Close {
+                    code: 1006,
+                    reason: String::new(),
+                    was_clean: false,
+                },
+            )
+            .await?;
+            return Ok(());
+        }
         Ok(Err(error)) => {
             dispatch_shared_worker_websocket_event(
                 coordinator,

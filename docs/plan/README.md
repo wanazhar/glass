@@ -10752,12 +10752,13 @@ fairness, rendering, WPT, and cross-platform conformance remain open. See the
 The committed [Slice 846 review](reviews/native-engine-browser-846-01.md)
 passed with no findings; the task is complete locally.
 
-Slice 847's implementation and local verification are complete; its task
-remains in progress until the review record is committed. The regression
-verifies the successful `load` and blocked `error` event handoff and confirms
-that callback Fetches cross the parent broker with the ordered HttpOnly cookie
-jar, without an intervening BrowserSession operation. See the
-[Slice 847 task](tasks/native-engine-browser-847.md).
+Slice 847 is complete locally after its implementation, focused tests, and
+direct self-review. The review found no blocking findings; no independent
+agent review was performed. The regression verifies the successful `load` and
+blocked `error` event handoff and confirms that callback Fetches cross the
+parent broker with the ordered HttpOnly cookie jar, without an intervening
+BrowserSession operation. See the [Slice 847 task](tasks/native-engine-browser-847.md)
+and [review](reviews/native-engine-browser-847-01.md).
 
 ## Historical plan: Glass v0.3.6 issue #36
 

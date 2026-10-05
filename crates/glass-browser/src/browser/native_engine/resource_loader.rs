@@ -635,6 +635,30 @@ fn fetch_credentials_for_url(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct NativeImageRequestPolicy {
+    destination: &'static str,
+    initiator_type: &'static str,
+    credentials_mode: NativeFetchCredentialsMode,
+    use_url_credentials: bool,
+}
+
+impl NativeImageRequestPolicy {
+    const HTML_IMAGE: Self = Self {
+        destination: "image",
+        initiator_type: "img",
+        credentials_mode: NativeFetchCredentialsMode::Include,
+        use_url_credentials: false,
+    };
+
+    const VIDEO_POSTER: Self = Self {
+        destination: "image",
+        initiator_type: "video",
+        credentials_mode: NativeFetchCredentialsMode::Include,
+        use_url_credentials: true,
+    };
+}
+
 pub(crate) struct NativeFetchRequest<'a> {
     pub(crate) document_url: &'a str,
     pub(crate) href: &'a str,
@@ -6714,6 +6738,47 @@ impl NativeResourceLoader {
         object_url: Option<&NativeObjectUrlResource>,
         referrer_policy: NativeFetchReferrerPolicy,
     ) -> Result<Option<NativeImage>, NativeEngineError> {
+        self.load_image_with_request_policy(
+            document_url,
+            src,
+            object_url,
+            referrer_policy,
+            NativeImageRequestPolicy::HTML_IMAGE,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_video_poster_async_with_referrer_policy(
+        &mut self,
+        document_url: &str,
+        src: &str,
+        referrer_policy: NativeFetchReferrerPolicy,
+    ) -> Result<Option<NativeImage>, NativeEngineError> {
+        self.load_image_with_request_policy(
+            document_url,
+            src,
+            None,
+            referrer_policy,
+            NativeImageRequestPolicy::VIDEO_POSTER,
+        )
+        .await
+    }
+
+    async fn load_image_with_request_policy(
+        &mut self,
+        document_url: &str,
+        src: &str,
+        object_url: Option<&NativeObjectUrlResource>,
+        referrer_policy: NativeFetchReferrerPolicy,
+        request_policy: NativeImageRequestPolicy,
+    ) -> Result<Option<NativeImage>, NativeEngineError> {
+        tracing::trace!(
+            destination = request_policy.destination,
+            initiator_type = request_policy.initiator_type,
+            credentials_mode = request_policy.credentials_mode.as_str(),
+            use_url_credentials = request_policy.use_url_credentials,
+            "loading native image subresource"
+        );
         validate_url_text("document URL", document_url)?;
         validate_url_text("image URL", src)?;
         let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
@@ -6725,9 +6790,20 @@ impl NativeResourceLoader {
             return Ok(None);
         }
         reject_credentials(&document_url)?;
-        let Some(target_url) = resolve_subresource_url_with_blob(&document_url, src)? else {
+        let Some(mut target_url) = (if request_policy.use_url_credentials {
+            resolve_video_poster_url(&document_url, src)?
+        } else {
+            resolve_subresource_url_with_blob(&document_url, src)?
+        }) else {
             return Ok(None);
         };
+        let authorization = if request_policy.use_url_credentials {
+            basic_authorization_from_url(&target_url)?
+        } else {
+            None
+        };
+        let authorization_origin = authorization.as_ref().map(|_| target_url.origin());
+        clear_url_credentials(&mut target_url)?;
         if !mixed_content_allowed(&document_url, &target_url) {
             return Ok(None);
         }
@@ -6765,13 +6841,18 @@ impl NativeResourceLoader {
             ));
         }
         let requested_cache_key = cache_key(&target_url);
-        let stale_cached_image = self
-            .network
-            .image_cache
-            .get(&requested_cache_key)
-            .cloned()
-            .filter(|cached| !cached.is_fresh(Instant::now()));
-        if let Some(cached) = self.network.image_cache.get(&requested_cache_key)
+        let cache_enabled = authorization.is_none();
+        let stale_cached_image = cache_enabled
+            .then(|| {
+                self.network
+                    .image_cache
+                    .get(&requested_cache_key)
+                    .cloned()
+                    .filter(|cached| !cached.is_fresh(Instant::now()))
+            })
+            .flatten();
+        if cache_enabled
+            && let Some(cached) = self.network.image_cache.get(&requested_cache_key)
             && cached.is_fresh(Instant::now())
         {
             return Ok(Some(cached.image.clone()));
@@ -6798,6 +6879,11 @@ impl NativeResourceLoader {
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
+            if authorization_origin.as_ref() == Some(&current_url.origin())
+                && let Some(authorization) = authorization.as_deref()
+            {
+                request = request.header(reqwest::header::AUTHORIZATION, authorization);
+            }
             if redirects == 0
                 && let Some(cached) = stale_cached_image.as_ref()
             {
@@ -6808,7 +6894,12 @@ impl NativeResourceLoader {
                     request = request.header(reqwest::header::IF_MODIFIED_SINCE, last_modified);
                 }
             }
-            if let Some(cookie) = self.network.cookie_header_for_request(
+            if fetch_credentials_for_url(
+                Some(request_policy.credentials_mode),
+                false,
+                &document_url,
+                &current_url,
+            ) && let Some(cookie) = self.network.cookie_header_for_request(
                 &current_url,
                 Some(&document_url),
                 false,
@@ -6890,15 +6981,17 @@ impl NativeResourceLoader {
                 self.cookie_changes
                     .extend(self.network.store_cookie(&cookie_url, &cookie));
             }
-            if has_set_cookie {
-                self.network.remove_image_cache(&requested_cache_key);
-            } else if let Some(entry) =
-                cached.refresh_from_not_modified(&response_headers, Instant::now())
-            {
-                self.network
-                    .store_image_cache_entry(requested_cache_key, entry);
-            } else {
-                self.network.remove_image_cache(&requested_cache_key);
+            if cache_enabled {
+                if has_set_cookie {
+                    self.network.remove_image_cache(&requested_cache_key);
+                } else if let Some(entry) =
+                    cached.refresh_from_not_modified(&response_headers, Instant::now())
+                {
+                    self.network
+                        .store_image_cache_entry(requested_cache_key, entry);
+                } else {
+                    self.network.remove_image_cache(&requested_cache_key);
+                }
             }
             return Ok(Some(cached_image));
         }
@@ -6937,20 +7030,22 @@ impl NativeResourceLoader {
             self.cookie_changes
                 .extend(self.network.store_cookie(&cookie_url, &cookie));
         }
-        if !has_set_cookie
-            && let Some(entry) = NativeImageCacheEntry::from_response(
-                image.clone(),
-                &response_headers,
-                Instant::now(),
-            )
-        {
-            self.network
-                .store_image_cache_entry(requested_cache_key, entry.clone());
-            self.network
-                .store_image_cache_entry(cache_key(&current_url), entry);
-        } else {
-            self.network.remove_image_cache(&requested_cache_key);
-            self.network.remove_image_cache(&cache_key(&current_url));
+        if cache_enabled {
+            if !has_set_cookie
+                && let Some(entry) = NativeImageCacheEntry::from_response(
+                    image.clone(),
+                    &response_headers,
+                    Instant::now(),
+                )
+            {
+                self.network
+                    .store_image_cache_entry(requested_cache_key, entry.clone());
+                self.network
+                    .store_image_cache_entry(cache_key(&current_url), entry);
+            } else {
+                self.network.remove_image_cache(&requested_cache_key);
+                self.network.remove_image_cache(&cache_key(&current_url));
+            }
         }
         Ok(Some(image))
     }
@@ -8907,6 +9002,83 @@ pub(crate) fn resolve_subresource_url(
         return Ok(None);
     }
     Ok(Some(target_url))
+}
+
+fn resolve_video_poster_url(
+    document_url: &Url,
+    href: &str,
+) -> Result<Option<Url>, NativeEngineError> {
+    let target_url = document_url
+        .join(href)
+        .map_err(|_| NativeEngineError::UnsupportedUrl {
+            reason: "video poster URL could not be resolved against its owner Document".into(),
+        })?;
+    if !is_network_url(without_fragment(target_url.as_str())) {
+        return Ok(None);
+    }
+    Ok(Some(target_url))
+}
+
+fn clear_url_credentials(url: &mut Url) -> Result<(), NativeEngineError> {
+    url.set_username("")
+        .and_then(|()| url.set_password(None))
+        .map_err(|()| NativeEngineError::UnsupportedUrl {
+            reason: "video poster URL credentials could not be removed from the request URL".into(),
+        })
+}
+
+fn basic_authorization_from_url(url: &Url) -> Result<Option<String>, NativeEngineError> {
+    if url.username().is_empty() && url.password().is_none() {
+        return Ok(None);
+    }
+    let mut user_pass = percent_decode_url_credential(url.username())?;
+    user_pass.push(b':');
+    if let Some(password) = url.password() {
+        user_pass.extend(percent_decode_url_credential(password)?);
+    }
+    if user_pass.len() > MAX_NATIVE_FETCH_HEADER_VALUE_BYTES {
+        return Err(NativeEngineError::limit(
+            "video poster URL credentials",
+            MAX_NATIVE_FETCH_HEADER_VALUE_BYTES,
+            user_pass.len(),
+        ));
+    }
+    Ok(Some(format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(user_pass)
+    )))
+}
+
+fn percent_decode_url_credential(value: &str) -> Result<Vec<u8>, NativeEngineError> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let Some(high) = bytes
+                .get(index + 1)
+                .and_then(|byte| (*byte as char).to_digit(16))
+            else {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "video poster URL contains malformed credentials".into(),
+                });
+            };
+            let Some(low) = bytes
+                .get(index + 2)
+                .and_then(|byte| (*byte as char).to_digit(16))
+            else {
+                return Err(NativeEngineError::UnsupportedUrl {
+                    reason: "video poster URL contains malformed credentials".into(),
+                });
+            };
+            decoded.push(((high << 4) | low) as u8);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    Ok(decoded)
 }
 
 fn resolve_subresource_url_with_blob(

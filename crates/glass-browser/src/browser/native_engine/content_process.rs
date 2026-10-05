@@ -16,9 +16,9 @@ use super::css::{
 };
 use super::dialog::{NativeDialogControlPlane, NativeDialogResolution, NativeDialogWait};
 use super::dom::{
-    NativeCheckableKind, NativeDocument, NativeDocumentWire, NativeImageFrameWire,
-    NativeImageResourceWire, NativeNodeId, NativePageImportMapSource, NativePageScriptSource,
-    NativePageScriptTiming, image_from_wire,
+    MAX_NATIVE_VIDEO_POSTERS, NativeCheckableKind, NativeDocument, NativeDocumentWire,
+    NativeImageFrameWire, NativeImageResourceWire, NativeNodeId, NativePageImportMapSource,
+    NativePageScriptSource, NativePageScriptTiming, image_from_wire,
 };
 use super::environment::NativeEnvironmentOverrides;
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
@@ -142,7 +142,7 @@ pub(crate) const MAX_NATIVE_EVENTSOURCE_RECONNECTS: usize = MAX_NATIVE_EFFECTS;
 pub(crate) const MAX_NATIVE_EVENTSOURCE_CONNECTIONS: usize = MAX_NATIVE_EFFECTS;
 const MAX_CONTENT_STYLESHEETS: usize = 16;
 const MAX_CONTENT_STYLESHEET_BYTES: usize = 512 * 1024;
-const MAX_CONTENT_IMAGES: usize = 64;
+const MAX_CONTENT_IMAGES: usize = MAX_NATIVE_VIDEO_POSTERS;
 const MAX_CONTENT_MEDIA: usize = 64;
 const MAX_CONTENT_FRAME_SOURCES: usize = 64;
 const MAX_CONTENT_NAVIGATION_SOURCES: usize = 64;
@@ -1667,6 +1667,43 @@ impl NativeContentFetchBroker<'_> {
         href: &str,
         referrer_policy: NativeFetchReferrerPolicy,
     ) -> Result<Option<NativeImage>, NativeEngineError> {
+        self.load_image_with_metadata(
+            document_url,
+            href,
+            json!({
+                "referrer_policy": referrer_policy.as_str(),
+            }),
+        )
+        .await
+    }
+
+    async fn load_video_poster(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        referrer_policy: NativeFetchReferrerPolicy,
+    ) -> Result<Option<NativeImage>, NativeEngineError> {
+        self.load_image_with_metadata(
+            document_url,
+            href,
+            json!({
+                "client": "document",
+                "destination": "image",
+                "initiator_type": "video",
+                "credentials_mode": "include",
+                "use_url_credentials": true,
+                "referrer_policy": referrer_policy.as_str(),
+            }),
+        )
+        .await
+    }
+
+    async fn load_image_with_metadata(
+        &mut self,
+        document_url: &str,
+        href: &str,
+        page_image_load: Value,
+    ) -> Result<Option<NativeImage>, NativeEngineError> {
         self.next_content_resource_fetch_id = self
             .next_content_resource_fetch_id
             .checked_add(1)
@@ -1691,9 +1728,7 @@ impl NativeContentFetchBroker<'_> {
                 "page_meta_csp": self.page_meta_content_security_policies,
                 "href": href,
                 "credentials": true,
-                "page_image_load": {
-                    "referrer_policy": referrer_policy.as_str(),
-                },
+                "page_image_load": page_image_load,
             }),
         )
         .await?;
@@ -7183,9 +7218,22 @@ impl NativeContentProcess {
                     for write in &cookie_writes {
                         loader.set_document_cookie(&write.owner.document_url, &write.value)?;
                     }
-                    let image =
+                    let image = if page_image_load
+                        .get("initiator_type")
+                        .and_then(Value::as_str)
+                        == Some("video")
+                    {
+                        load_parent_page_video_poster_async(
+                            loader,
+                            document_url,
+                            href,
+                            page_image_load,
+                        )
+                        .await
+                    } else {
                         load_parent_page_image_async(loader, document_url, href, page_image_load)
-                            .await;
+                            .await
+                    };
                     let mut broker_response =
                         parent_image_response_payload(request_id, fetch_id, href, image);
                     broker_response["document_cookie"] =
@@ -9883,6 +9931,99 @@ async fn load_parent_page_image_async(
     }) {
         return Err(NativeEngineError::limit(
             "parent image response",
+            MAX_NATIVE_IMAGE_TRANSFER_BYTES,
+            image
+                .as_ref()
+                .and_then(NativeImage::decoded_bytes)
+                .unwrap_or(usize::MAX),
+        ));
+    }
+    Ok(image)
+}
+
+async fn load_parent_page_video_poster_async(
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    href: &str,
+    value: &Value,
+) -> Result<Option<NativeImage>, NativeEngineError> {
+    let object = value.as_object().ok_or_else(|| {
+        NativeEngineError::worker_failure(
+            "decode parent video poster request",
+            NativeWorkerFailureKind::Protocol,
+            "video poster metadata must be an object",
+        )
+    })?;
+    const EXPECTED_FIELDS: [&str; 6] = [
+        "client",
+        "destination",
+        "initiator_type",
+        "credentials_mode",
+        "use_url_credentials",
+        "referrer_policy",
+    ];
+    if object.len() != EXPECTED_FIELDS.len()
+        || object
+            .keys()
+            .any(|key| !EXPECTED_FIELDS.contains(&key.as_str()))
+        || object.get("client").and_then(Value::as_str) != Some("document")
+        || object.get("destination").and_then(Value::as_str) != Some("image")
+        || object.get("initiator_type").and_then(Value::as_str) != Some("video")
+        || object.get("credentials_mode").and_then(Value::as_str) != Some("include")
+        || object.get("use_url_credentials").and_then(Value::as_bool) != Some(true)
+    {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent video poster request",
+            NativeWorkerFailureKind::Protocol,
+            "video poster request metadata does not match the fixed HTML request policy",
+        ));
+    }
+    let referrer_policy = object
+        .get("referrer_policy")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            NativeEngineError::worker_failure(
+                "decode parent video poster request",
+                NativeWorkerFailureKind::Protocol,
+                "video poster metadata omitted its Referrer-Policy",
+            )
+        })
+        .and_then(NativeFetchReferrerPolicy::parse)?;
+    validate_url_text("parent video poster document URL", document_url)?;
+    validate_url_text("parent video poster target URL", href)?;
+    let document = Url::parse(without_fragment(document_url)).map_err(|_| {
+        NativeEngineError::worker_failure(
+            "decode parent video poster request",
+            NativeWorkerFailureKind::Protocol,
+            "video poster owner Document URL is invalid",
+        )
+    })?;
+    let target = Url::parse(href)
+        .or_else(|_| document.join(href))
+        .map_err(|_| {
+            NativeEngineError::worker_failure(
+                "decode parent video poster request",
+                NativeWorkerFailureKind::Protocol,
+                "video poster target URL is invalid",
+            )
+        })?;
+    if !is_network_url(without_fragment(target.as_str())) {
+        return Err(NativeEngineError::worker_failure(
+            "decode parent video poster request",
+            NativeWorkerFailureKind::Protocol,
+            "parent video poster broker accepts only HTTP(S) targets",
+        ));
+    }
+    let image = loader
+        .load_video_poster_async_with_referrer_policy(document_url, href, referrer_policy)
+        .await?;
+    if image.as_ref().is_some_and(|image| {
+        image
+            .decoded_bytes()
+            .is_none_or(|bytes| bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES)
+    }) {
+        return Err(NativeEngineError::limit(
+            "parent video poster response",
             MAX_NATIVE_IMAGE_TRANSFER_BYTES,
             image
                 .as_ref()
@@ -16649,6 +16790,13 @@ async fn load_content_resource(
         )
         .await?,
     );
+    load_external_video_posters(
+        &mut document,
+        loader,
+        &resource.url,
+        Some(&mut parent_fetch_broker),
+    )
+    .await?;
     resource_events.extend(
         load_external_media(
             &mut document,
@@ -16973,6 +17121,53 @@ async fn load_external_images(
         }
     }
     Ok(image_events)
+}
+
+async fn load_external_video_posters(
+    document: &mut NativeDocument,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+) -> Result<(), NativeEngineError> {
+    for (node_index, source) in document
+        .external_video_poster_links()
+        .into_iter()
+        .take(MAX_CONTENT_IMAGES)
+    {
+        let node_id = NativeNodeId::from_parts(document.generation(), node_index);
+        if document.video_poster_load_attempted_for_node(node_id) {
+            continue;
+        }
+        if !document.mark_video_poster_load(node_index, source.clone())? {
+            continue;
+        }
+        let referrer_policy = document.video_poster_referrer_policy_for_node(node_id);
+        let image = if is_parent_owned_network_target(document_url, &source) {
+            if let Some(broker) = parent_fetch_broker.as_deref_mut() {
+                broker.page_meta_content_security_policies =
+                    loader.document_meta_content_security_policies(document_url)?;
+                broker
+                    .load_video_poster(document_url, &source, referrer_policy)
+                    .await
+            } else {
+                Err(missing_parent_network_authority("video poster load"))
+            }
+        } else {
+            // Poster fetching is currently limited to parent-owned HTTP(S)
+            // images. Data URLs are decoded by the paint path; other schemes
+            // remain unavailable without affecting document loading.
+            continue;
+        };
+        match image {
+            Ok(Some(image)) => document.set_video_poster_resource(node_index, source, image)?,
+            Ok(None)
+            | Err(NativeEngineError::Network { .. })
+            | Err(NativeEngineError::UnsupportedUrl { .. })
+            | Err(NativeEngineError::LimitExceeded { .. }) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 fn parent_image_preload_cache_key(document_url: &str, href: &str) -> Option<String> {
@@ -20521,6 +20716,16 @@ async fn mutate_script_document(
         ));
     }
     next.refresh_image_loads(viewport);
+    next.refresh_video_poster_loads();
+    if let Some(loader) = loader.as_deref_mut() {
+        load_external_video_posters(
+            &mut next,
+            loader,
+            &document_url,
+            parent_fetch_broker.as_deref_mut(),
+        )
+        .await?;
+    }
     let media_events = if let Some(loader) = loader.as_deref_mut() {
         load_external_media(
             &mut next,

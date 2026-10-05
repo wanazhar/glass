@@ -7740,7 +7740,10 @@ impl NativeEngineBackend {
         for capability in supported {
             let limitations = match capability {
                 BrowserCapability::Navigation => {
-                    vec!["bounded HTTP(S) navigation, scripts, forms, validation, and string fetch/FormData/URLSearchParams/XHR; broad subresources and full parser timing remain open".into()]
+                    vec![
+                        "bounded local/HTTP(S) document/form navigation, validation, parser/lifecycle script ordering, and selected parent-brokered stylesheet/CSS import/font, image/media, and classic/module resources".into(),
+                        "full browser-wide page-loading parity, all resource initiators, and standards-complete parser timing remain open".into(),
+                    ]
                 }
                 BrowserCapability::Evidence => {
                     vec!["bounded URL, title, and visible text only; no DOM or pixels".into()]
@@ -7757,7 +7760,9 @@ impl NativeEngineBackend {
                     ]
                 }
                 BrowserCapability::Script => vec![
-                    "bounded QuickJS DOM/event scripting with modules, tasks, policy-owned fetch/CORS, text-backed FormData/File/Blob/URLSearchParams, and async XHR; binary/stream parity, workers, subresources, and Web IDL identity remain open".into(),
+                    "bounded QuickJS DOM/events, module graphs/task turns, Dedicated/Shared/ServiceWorker API slices, and bounded WebSocket/EventSource transports".into(),
+                    "parent-owned Fetch/CORS and XHR cover text/binary bodies, FormData/File/Blob/URLSearchParams, and bounded streams; selected script/style/image/media resource loads are bounded".into(),
+                    "Full Web IDL identity, task-source/scheduler parity, and browser-wide API/resource conformance remain open".into(),
                 ],
                 BrowserCapability::Capture => {
                     vec![
@@ -11736,20 +11741,58 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendOperation, NativeBrowserEffectSource, NativeContentAsyncEffectNotification,
-        NativeCookieChange, NativeCookieChangesDeliveryTestHook, NativeEngineBackend,
-        NativeFrameRoute, NativeFrameState, NativePageMessagePortCommand,
-        NativePageMessagePortDeliveryTestHook, NativePageMessagePortRoute, NativeParkedFrame,
-        NativeServiceWorkerPublicationTestHook, NativeSharedWorkerCreateRequest,
-        NativeSharedWorkerPageRoute, activate_parked_frame_for_navigation,
-        dispatch_native_frame_tree_lifecycle, iframe_sandboxed_modals, lock_native_engine_owner,
-        next_ready_native_browser_effect_source,
+        BackendOperation, BrowserCapability, NativeBrowserEffectSource,
+        NativeContentAsyncEffectNotification, NativeCookieChange,
+        NativeCookieChangesDeliveryTestHook, NativeEngineBackend, NativeFrameRoute,
+        NativeFrameState, NativePageMessagePortCommand, NativePageMessagePortDeliveryTestHook,
+        NativePageMessagePortRoute, NativeParkedFrame, NativeServiceWorkerPublicationTestHook,
+        NativeSharedWorkerCreateRequest, NativeSharedWorkerPageRoute,
+        activate_parked_frame_for_navigation, dispatch_native_frame_tree_lifecycle,
+        iframe_sandboxed_modals, lock_native_engine_owner, next_ready_native_browser_effect_source,
     };
     use crate::browser::native_engine::{
         NativeCookieProfileEntry, NativeDialogControlPlane, NativeEngine, NativeEngineConfig,
         NativeMessagePortTransfer, NativeNodeSubtreeTransfer, NativeOrigin,
     };
     use std::sync::Arc;
+
+    #[test]
+    fn native_backend_profile_describes_bounded_navigation_and_script_support() {
+        let profile = NativeEngineBackend::profile_for("0.3.14")
+            .expect("native capability profile must be valid");
+        let navigation = profile
+            .capabilities
+            .get(&BrowserCapability::Navigation)
+            .expect("navigation capability must be present")
+            .limitations
+            .join("; ");
+        assert!(navigation.contains("selected parent-brokered stylesheet/CSS import/font"));
+        assert!(navigation.contains("image/media"));
+        assert!(navigation.contains("full browser-wide page-loading parity"));
+        assert!(navigation.contains("remain open"));
+        assert!(!navigation.contains("broad subresources remain open"));
+
+        let script = profile
+            .capabilities
+            .get(&BrowserCapability::Script)
+            .expect("script capability must be present")
+            .limitations
+            .join("; ");
+        for bounded_surface in [
+            "Dedicated/Shared/ServiceWorker API slices",
+            "parent-owned Fetch/CORS and XHR cover text/binary bodies, FormData/File/Blob/URLSearchParams, and bounded streams",
+            "bounded WebSocket/EventSource transports",
+            "selected script/style/image/media resource loads",
+        ] {
+            assert!(
+                script.contains(bounded_surface),
+                "missing {bounded_surface}"
+            );
+        }
+        assert!(script.contains("Full Web IDL identity"));
+        assert!(script.contains("task-source/scheduler parity"));
+        assert!(!script.contains("binary/stream parity, workers, subresources"));
+    }
 
     async fn initialized_fixture_backend(
         url: &str,

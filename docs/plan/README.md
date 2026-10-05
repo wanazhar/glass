@@ -11051,13 +11051,15 @@ format/diff checks passed. See the [Slice 871 task](tasks/native-engine-browser-
 and [direct self-review](reviews/native-engine-browser-871-01.md). Issue #40
 remains open.
 
-Slice 872 is the next metadata/documentation correction. The public native
-backend profile still says binary/stream behavior, workers, and subresources
-are open, while targeted code/tests now cover bounded support for each. The
-architecture matrix also still says general subresources are open. Slice 872
-will name the selected current paths and preserve full page-loading, Web
-IDL, scheduler, and Fetch/Streams conformance gaps. See the
-[Slice 872 task](tasks/native-engine-browser-872.md). Issue #40 remains open.
+The completed Slice 872 corrects the public native backend profile and
+architecture matrix: bounded binary/stream Fetch/XHR, Worker APIs,
+WebSocket/EventSource, and selected parent-brokered resources are no longer
+described as wholly open. It retains full page-loading, parser timing, Web IDL,
+scheduler, and browser-wide conformance gaps; capability levels and runtime
+behavior are unchanged. The exact profile unit test passed (1 passed; 1,695
+filtered), as did the scoped check and four documentation gates. See the
+[Slice 872 task](tasks/native-engine-browser-872.md) and [direct self-review](reviews/native-engine-browser-872-01.md).
+Issue #40 remains open.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

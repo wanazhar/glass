@@ -1,7 +1,7 @@
 ---
 id: native-engine-browser-872
 scope: glass-browser/native-engine/bounded-capability-profile-truth
-status: in_progress
+status: done
 depends-on: [native-engine-browser-871]
 ---
 
@@ -87,4 +87,29 @@ explicit.
 
 ## Results
 
-Implementation and verification are pending.
+`NativeEngineBackend::profile_for` previously claimed binary/stream behavior,
+workers, and subresources were open, and the architecture matrix said general
+subresources remained open. The current implementation has bounded support in
+each area. The profile now names bounded Fetch/CORS and XHR text/binary bodies,
+FormData/File/Blob/URLSearchParams, bounded streams, Worker API slices,
+WebSocket/EventSource transports, and selected script/style/image/media
+resources. Navigation metadata names selected parent-brokered stylesheets,
+CSS imports/fonts, images/media, and classic/module resources. Both descriptors
+retain complete page-loading, parser timing, Web IDL, scheduler, and
+browser-wide conformance gaps. Capability IDs, support levels, and runtime
+behavior are unchanged.
+
+The first unit execution exposed the backend-profile validator's 256-byte
+limit on each limitation entry. The bounded-support and remaining-gap claims
+are now separate concise entries. The final exact unit test passes.
+
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p glass-browser --features native-engine --lib --locked --quiet` passed with successful output suppressed.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-browser --features native-engine --lib --locked --quiet browser::native_backend::tests::native_backend_profile_describes_bounded_navigation_and_script_support -- --exact` passed (1 passed; 1,695 filtered).
+- `rustfmt --edition 2024 --check crates/glass-browser/src/browser/native_backend.rs` and `git diff --check` passed.
+- `python3 scripts/check-release-documentation.py --require-previous-version --report /tmp/glass-release-documentation-872.json` passed (1,527 Markdown documents; 83 current; zero current-claim failures).
+- `python3 scripts/check-documentation-depth.py` passed (93 guides and 19 contracts).
+- `python3 scripts/check-tui-shortcuts.py` passed (15 keys and 63 documentation markers).
+- `python3 scripts/check-documentation-coverage.py --glass /home/ubuntu/work/glass/target/debug/glass --glass-browser /home/ubuntu/work/glass/target/debug/glass-browser` passed (1,527 Markdown files; 346 full-product MCP tools, 101 browser-only; 17 examples; 22 public modules). It used the existing shared-target binaries via explicit paths.
+
+This correction improves capability-reporting truth only; it is not new
+browser conformance. Issue #40 remains open.

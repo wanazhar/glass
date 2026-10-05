@@ -72,6 +72,8 @@ const MAX_LOCATOR_BYTES: usize = crate::browser_backend::MAX_TEXT_BYTES;
 const MAX_FORM_CONTROLS: usize = 128;
 const MAX_IMAGE_SRCSET_CANDIDATES: usize = 32;
 const MAX_IMAGE_DENSITY_MILLI: u32 = 64_000;
+pub(crate) const MAX_NATIVE_DOCUMENT_PRELOAD_IMAGE_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_NATIVE_DOCUMENT_PRELOAD_IMAGES: usize = 64;
 const DEFAULT_IMAGE_DENSITY_MILLI: u32 = 1_000;
 
 fn parse_meta_referrer_policy(value: &str) -> Option<NativeFetchReferrerPolicy> {
@@ -954,6 +956,8 @@ pub struct NativeDocument {
     font_resources: Vec<NativeFontFaceResource>,
     font_book: NativeFontBook,
     external_stylesheet_states: BTreeMap<u32, NativeExternalStylesheetState>,
+    external_image_preload_states: BTreeMap<u32, String>,
+    preloaded_image_resources: BTreeMap<String, NativeImage>,
     computed_styles: Option<Vec<NativeComputedStyle>>,
     css_target_fragment: Option<String>,
     viewport: Viewport,
@@ -1520,6 +1524,8 @@ impl NativeDocument {
             font_resources: Vec::new(),
             font_book: NativeFontBook::system(),
             external_stylesheet_states: BTreeMap::new(),
+            external_image_preload_states: BTreeMap::new(),
+            preloaded_image_resources: BTreeMap::new(),
             viewport: Viewport::default(),
             css_target_fragment: None,
             computed_styles: None,
@@ -2238,6 +2244,13 @@ impl NativeDocument {
             .collect();
     }
 
+    pub(crate) fn set_external_image_preload_states(
+        &mut self,
+        states: impl IntoIterator<Item = (u32, String)>,
+    ) {
+        self.external_image_preload_states = states.into_iter().collect();
+    }
+
     pub(crate) fn font_face_rules(&self) -> &[NativeFontFaceRule] {
         self.stylesheet.font_face_rules()
     }
@@ -2582,6 +2595,78 @@ impl NativeDocument {
             .collect()
     }
 
+    pub(crate) fn external_image_preload_states(&self) -> Vec<(u32, String)> {
+        self.external_image_preload_states
+            .iter()
+            .map(|(node_index, href)| (*node_index, href.clone()))
+            .collect()
+    }
+
+    pub(crate) fn cache_preloaded_image_resource(
+        &mut self,
+        url: String,
+        image: NativeImage,
+    ) -> Result<bool, NativeEngineError> {
+        validate_url_text("preloaded image URL", &url)?;
+        let image_bytes = image.decoded_bytes().ok_or_else(|| {
+            NativeEngineError::invalid(
+                "preloaded image resource",
+                "decoded pixel size is not representable",
+            )
+        })?;
+        if image_bytes > MAX_NATIVE_IMAGE_TRANSFER_BYTES {
+            return Err(NativeEngineError::limit(
+                "preloaded image resource bytes",
+                MAX_NATIVE_IMAGE_TRANSFER_BYTES,
+                image_bytes,
+            ));
+        }
+        let retained_bytes = self
+            .preloaded_image_resources
+            .values()
+            .try_fold(0usize, |total, retained| {
+                total.checked_add(retained.decoded_bytes()?)
+            })
+            .ok_or_else(|| {
+                NativeEngineError::limit(
+                    "document preload image bytes",
+                    MAX_NATIVE_DOCUMENT_PRELOAD_IMAGE_BYTES,
+                    usize::MAX,
+                )
+            })?;
+        let replaced_bytes = self
+            .preloaded_image_resources
+            .get(&url)
+            .and_then(NativeImage::decoded_bytes)
+            .unwrap_or_default();
+        let next_bytes = retained_bytes
+            .saturating_sub(replaced_bytes)
+            .checked_add(image_bytes)
+            .ok_or_else(|| {
+                NativeEngineError::limit(
+                    "document preload image bytes",
+                    MAX_NATIVE_DOCUMENT_PRELOAD_IMAGE_BYTES,
+                    usize::MAX,
+                )
+            })?;
+        if (!self.preloaded_image_resources.contains_key(&url)
+            && self.preloaded_image_resources.len() >= MAX_NATIVE_DOCUMENT_PRELOAD_IMAGES)
+            || next_bytes > MAX_NATIVE_DOCUMENT_PRELOAD_IMAGE_BYTES
+        {
+            return Ok(false);
+        }
+        self.preloaded_image_resources.insert(url, image);
+        Ok(true)
+    }
+
+    pub(crate) fn take_preloaded_image_resource(&mut self, url: &str) -> Option<NativeImage> {
+        self.preloaded_image_resources.remove(url)
+    }
+
+    pub(crate) fn has_preloaded_image_resource(&self, url: &str) -> bool {
+        self.preloaded_image_resources.contains_key(url)
+    }
+
     pub(crate) fn rebuild_external_stylesheet(
         &mut self,
         document_url: &str,
@@ -2660,6 +2745,38 @@ impl NativeDocument {
                             node.attribute("crossorigin").map(str::to_owned),
                         )
                     })
+                })
+                .flatten()
+            })
+            .collect()
+    }
+
+    pub(crate) fn external_image_preload_links(&self) -> Vec<(u32, String)> {
+        self.nodes
+            .iter()
+            .filter_map(|node| {
+                let node_id = node.id();
+                self.node(node_id)?;
+                (node.element_name() == Some("link")
+                    && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI)
+                    && self.is_attached(node_id)
+                    && node.attribute("rel").is_some_and(|rel| {
+                        rel.split_ascii_whitespace()
+                            .any(|token| token.eq_ignore_ascii_case("preload"))
+                    })
+                    && node
+                        .attribute("as")
+                        .is_some_and(|destination| destination.eq_ignore_ascii_case("image"))
+                    && node.attribute("media").is_none()
+                    && node.attribute("type").is_none()
+                    && node.attribute("crossorigin").is_none()
+                    && node.attribute("integrity").is_none()
+                    && node.attribute("imagesrcset").is_none()
+                    && node.attribute("imagesizes").is_none())
+                .then(|| {
+                    node.attribute("href")
+                        .filter(|href| !href.is_empty())
+                        .map(|href| (node_id.index(), href.to_owned()))
                 })
                 .flatten()
             })
@@ -4429,6 +4546,8 @@ impl NativeDocument {
             font_resources: font_resources.clone(),
             font_book,
             external_stylesheet_states: BTreeMap::new(),
+            external_image_preload_states: BTreeMap::new(),
+            preloaded_image_resources: BTreeMap::new(),
             viewport,
             computed_styles: Some(wire.computed_styles),
             css_target_fragment: None,
@@ -4601,6 +4720,8 @@ impl NativeDocument {
             font_resources: Vec::new(),
             font_book: NativeFontBook::system(),
             external_stylesheet_states: BTreeMap::new(),
+            external_image_preload_states: BTreeMap::new(),
+            preloaded_image_resources: BTreeMap::new(),
             computed_styles: None,
             css_target_fragment: None,
             viewport: Viewport::default(),
@@ -15835,6 +15956,67 @@ mod tests {
         assert_eq!(
             live_meta_default.stylesheet_link_referrer_policy_for_node_index(default_link.index),
             NativeFetchReferrerPolicy::NoReferrer
+        );
+    }
+
+    #[test]
+    fn external_image_preload_discovery_requires_supported_link_attributes() {
+        let document = NativeDocument::parse(
+            "<head>\
+             <link rel='stylesheet PRELOAD' as='IMAGE' href='/supported.png'>\
+             <link rel='preload' as='image' href='/media.png' media='screen'>\
+             <link rel='preload' as='image' href='/type.png' type='image/png'>\
+             <link rel='preload' as='image' href='/cors.png' crossorigin='anonymous'>\
+             <link rel='preload' as='image' href='/integrity.png' integrity='sha256-x'>\
+             <link rel='preload' as='image' href='/responsive.png' imagesrcset='/2x.png 2x'>\
+             <link rel='preload' as='image' href='/sizes.png' imagesizes='100vw'>\
+             <link rel='preload' as='style' href='/style.css'>\
+             <link rel='preload' as='image' href=''>\
+             </head>",
+            &NativeEngineLimits::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            document
+                .external_image_preload_links()
+                .into_iter()
+                .map(|(_, href)| href)
+                .collect::<Vec<_>>(),
+            vec!["/supported.png".to_owned()]
+        );
+    }
+
+    #[test]
+    fn document_preload_image_cache_enforces_and_releases_decoded_byte_budget() {
+        let mut document =
+            NativeDocument::parse("<p>page</p>", &NativeEngineLimits::default()).unwrap();
+        let image = || NativeImage::new(256, 256, vec![0; 256 * 256 * 4]);
+
+        for index in 0..8 {
+            assert!(
+                document
+                    .cache_preloaded_image_resource(
+                        format!("https://example.test/{index}.png"),
+                        image(),
+                    )
+                    .unwrap()
+            );
+        }
+        assert!(
+            !document
+                .cache_preloaded_image_resource("https://example.test/overflow.png".into(), image())
+                .unwrap()
+        );
+        assert!(
+            document
+                .take_preloaded_image_resource("https://example.test/0.png")
+                .is_some()
+        );
+        assert!(
+            document
+                .cache_preloaded_image_resource("https://example.test/overflow.png".into(), image())
+                .unwrap()
         );
     }
 

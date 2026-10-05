@@ -11061,13 +11061,17 @@ filtered), as did the scoped check and four documentation gates. See the
 [Slice 872 task](tasks/native-engine-browser-872.md) and [direct self-review](reviews/native-engine-browser-872-01.md).
 Issue #40 remains open.
 
-Slice 873 is in progress to implement bounded process-backed image preloads
-through the parent network and cookie authority. The slice covers parser and
-script-inserted `<link rel="preload" as="image">` requests, matching
-document-local image reuse, and link load/error events. Responsive preload
-selection, CORS/integrity variants, other destinations, and fetch-priority
-scheduling remain outside this slice. See the
-[Slice 873 task](tasks/native-engine-browser-873.md). Issue #40 remains open.
+Slice 873 implements bounded process-backed `<link rel="preload" as="image">`
+for parser-discovered and script-inserted links, document-local image reuse,
+and link load/error events. The parent remains the sole network and cookie
+authority; the child receives image pixels and its URL-scoped visible-cookie
+projection only. The exact loopback regression passed (1 passed; 934 filtered;
+24.81 seconds), as did 11 focused preload unit tests, the exact capability
+profile test, the scoped check, and final documentation gates. Responsive
+selection, full CORS/integrity matching, other preload destinations, complete
+preload matching, and priority scheduling remain open. See the [Slice 873
+task](tasks/native-engine-browser-873.md) and [direct self-review](reviews/native-engine-browser-873-01.md).
+Issue #40 remains open; no remote CI result is claimed.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

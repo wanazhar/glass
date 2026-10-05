@@ -16630,6 +16630,15 @@ async fn load_content_resource(
     )
     .await?;
     resource_events.extend(
+        load_external_image_preloads(
+            &mut document,
+            loader,
+            &resource.url,
+            Some(&mut parent_fetch_broker),
+        )
+        .await?,
+    );
+    resource_events.extend(
         load_external_images(
             &mut document,
             None,
@@ -16877,12 +16886,16 @@ async fn load_external_images(
             continue;
         }
         document.mark_image_load(node_index, source.clone(), viewport)?;
+        let preloaded_image = parent_image_preload_cache_key(document_url, &source)
+            .and_then(|key| document.take_preloaded_image_resource(&key));
         let object_url = runtime
             .map(|runtime| runtime.object_url_resource(&source))
             .transpose()?
             .flatten();
         let referrer_policy = document.image_referrer_policy_for_node(node_id);
-        let image = if is_parent_owned_network_target(document_url, &source) {
+        let image = if let Some(image) = preloaded_image {
+            Ok(Some(image))
+        } else if is_parent_owned_network_target(document_url, &source) {
             if let Some(broker) = parent_fetch_broker.as_deref_mut() {
                 broker.page_meta_content_security_policies =
                     loader.document_meta_content_security_policies(document_url)?;
@@ -16960,6 +16973,78 @@ async fn load_external_images(
         }
     }
     Ok(image_events)
+}
+
+fn parent_image_preload_cache_key(document_url: &str, href: &str) -> Option<String> {
+    let document_url = Url::parse(without_fragment(document_url)).ok()?;
+    let mut image_url = resolve_subresource_url(&document_url, href).ok()??;
+    image_url.set_fragment(None);
+    Some(image_url.to_string())
+}
+
+async fn load_external_image_preloads(
+    document: &mut NativeDocument,
+    loader: &mut NativeResourceLoader,
+    document_url: &str,
+    mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
+    let links = document
+        .external_image_preload_links()
+        .into_iter()
+        .take(MAX_CONTENT_IMAGES)
+        .collect::<Vec<_>>();
+    let live_nodes = links
+        .iter()
+        .map(|(node_index, _)| *node_index)
+        .collect::<BTreeSet<_>>();
+    let mut states = document
+        .external_image_preload_states()
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    states.retain(|node_index, _| live_nodes.contains(node_index));
+    let mut events = Vec::new();
+
+    for (node_index, href) in links {
+        if states.get(&node_index) == Some(&href) {
+            continue;
+        }
+        states.insert(node_index, href.clone());
+        if !is_parent_owned_network_target(document_url, &href) {
+            continue;
+        }
+        let cache_key = parent_image_preload_cache_key(document_url, &href);
+        let event_kind = if cache_key
+            .as_deref()
+            .is_some_and(|key| document.has_preloaded_image_resource(key))
+        {
+            NativeEventKind::Load
+        } else {
+            let referrer_policy =
+                document.stylesheet_link_referrer_policy_for_node_index(node_index);
+            let image = if let Some(broker) = parent_fetch_broker.as_deref_mut() {
+                broker.page_meta_content_security_policies =
+                    loader.document_meta_content_security_policies(document_url)?;
+                broker
+                    .load_image(document_url, &href, referrer_policy)
+                    .await
+            } else {
+                Err(missing_parent_network_authority("image preload"))
+            };
+            match image {
+                Ok(Some(image)) => {
+                    if let Some(cache_key) = cache_key {
+                        let _retained =
+                            document.cache_preloaded_image_resource(cache_key, image)?;
+                    }
+                    NativeEventKind::Load
+                }
+                Ok(None) | Err(_) => NativeEventKind::Error,
+            }
+        };
+        events.push((node_index, event_kind));
+    }
+    document.set_external_image_preload_states(states);
+    Ok(events)
 }
 
 async fn load_external_media(
@@ -20280,6 +20365,46 @@ async fn mutate_script_document(
         Vec::new()
     };
     for (node_index, event_kind) in stylesheet_events {
+        let Some(event_batch) = host_event_batch(&[(node_index, event_kind)])? else {
+            continue;
+        };
+        let evaluation = runtime.evaluate_with_host_events(
+            &event_batch,
+            &next,
+            &document_url,
+            document_origin,
+            viewport,
+        )?;
+        apply_content_resource_event_evaluation(
+            &mut next,
+            runtime,
+            &mut document_url,
+            document_origin,
+            viewport,
+            evaluation,
+            &mut history,
+            &mut events,
+            &mut scroll_commands,
+            &mut dynamic_result,
+            &mut dynamic_navigation,
+        )?;
+        events.push((
+            NativeNodeId::from_parts(next.generation(), node_index),
+            event_kind,
+        ));
+    }
+    let preload_events = if let Some(loader) = loader.as_deref_mut() {
+        load_external_image_preloads(
+            &mut next,
+            loader,
+            &document_url,
+            parent_fetch_broker.as_deref_mut(),
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
+    for (node_index, event_kind) in preload_events {
         let Some(event_batch) = host_event_batch(&[(node_index, event_kind)])? else {
             continue;
         };

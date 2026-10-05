@@ -1,18 +1,18 @@
 # Native browser engine
 
-Status: issue #40 remains open. The earlier loopback-listener denial is stale:
-the current checkout has targeted process-backed HTTP evidence through Slices
-849 and 850, alongside the earlier cases below; this is not a claim that all
-HTTP request classes are covered. WPT and cross-platform conformance remain
-open. Slice 832's corrected two-origin regression passed (1 passed; 905
-filtered; 19.33 seconds); Slices 833-836 also have recorded passing
-process-backed cases, while WPT and cross-platform conformance remain open.
-Slice 843's latest recorded checkpoint routes browser-owned SharedWorker
-EventSource through the parent coordinator; its process-backed cookie and
-stream regression passed (1 passed; 910 filtered; 29.94 seconds). The shipped
-runtime entrypoints in both product packages now configure 4 MiB Tokio thread
-stacks after the default stack overflowed in this event-pump path. The newest
-local Slice 845 adds a process-backed Service Worker `waitUntil(fetch())`
+Status: issue #40 remains open. The earlier loopback-listener denial is stale.
+The current checkout has targeted process-backed HTTP evidence through Slice
+873, including parent-owned image preloads; this does not cover every request
+class or establish browser conformance. WPT, remote CI for unpushed changes,
+and cross-platform certification remain open. Slice 832's corrected two-origin
+regression passed (1 passed; 905 filtered; 19.33 seconds); Slices 833-836 also
+have recorded passing process-backed cases. Slice 843 records browser-owned
+SharedWorker EventSource routed through the parent coordinator; its
+process-backed cookie and stream regression passed (1 passed; 910 filtered;
+29.94 seconds). The shipped runtime entrypoints in both product packages now
+configure 4 MiB Tokio thread stacks after the default stack overflowed in this
+event-pump path. Local Slice 845 adds a process-backed Service Worker
+`waitUntil(fetch())`
 regression: the parent selects and accepts HttpOnly cookies, and the independent
 navigation commits before the held lifetime response is released, even after
 six seconds. An operation gate keeps the async-effect pump behind the backend
@@ -987,6 +987,18 @@ regression](../plan/tasks/native-engine-browser-871.md) extends the page IPC
 failure-cookie evidence to a DedicatedWorker: after the page's rejected
 handshake cookie is committed, the Worker sends it, its own rejected-response
 cookie is accepted in the parent, and a later page request reuses both.
+Slice 873 adds bounded process-backed `<link rel="preload" as="image">`
+requests. Initial and dynamically inserted preloads use the parent image
+broker, so the parent alone applies image CSP, selects cookies, and accepts
+`Set-Cookie`; the child receives image pixels and its URL-scoped visible-cookie
+projection only. A matching image reuses the decoded resource even when the
+HTTP response is `no-store`. The exact loopback regression covers duplicate
+preload discovery, dynamic success/error events and `href` replacement,
+parent-owned HttpOnly cookie reuse, and unsupported CORS metadata. Eleven
+focused preload unit tests and the capability-profile regression also pass.
+The 2 MiB document-local decoded-image cache and selected destination contract
+are explicit bounds, not full HTML preload or scheduling conformance. See the
+[Slice 873 task](../plan/tasks/native-engine-browser-873.md).
 Synchronous page and Worker XHR block on a parent IPC round trip: pending
 script cookie writes are applied before the request, response cookies remain
 in the parent jar, and the child receives only the visible cookie projection.
@@ -11361,7 +11373,7 @@ behaviors beyond bounded Document import-map registration.
 | Capability | Level | Current contract |
 |---|---|---|
 | lifecycle | available | initialize and explicit close |
-| navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph/dynamic-import child scripts with bounded parser-blocking/async/defer ordering, runtime-valued page, Dedicated/Shared Worker scripts and `importScripts()` dependencies, and rooted-file imports through bounded host loading, bounded task turns, and bounded GET/POST forms with urlencoded, multipart, and text/plain encodings plus validated submitter overrides; selected parent-brokered stylesheet/CSS import/font, image/media, and classic/module-script resources are covered, while general resource initiators, standards-complete parser timing, and browser-wide page-loading parity remain open |
+| navigation | available | local resources plus bounded external HTTP(S) HTML navigation, inline/classic/module-root/static-graph/dynamic-import child scripts with bounded parser-blocking/async/defer ordering, runtime-valued page, Dedicated/Shared Worker scripts and `importScripts()` dependencies, and rooted-file imports through bounded host loading, bounded task turns, and bounded GET/POST forms with urlencoded, multipart, and text/plain encodings plus validated submitter overrides; selected parent-brokered stylesheet/CSS import/font, image/media, image preload, and classic/module-script resources are covered, while general resource initiators, complete preload destination/CORS/integrity matching and priority scheduling, standards-complete parser timing, and browser-wide page-loading parity remain open |
 | contexts | available | up to 32 independent page targets with one explicitly selected active target; create, select, list, and close are native-owned |
 | evidence | available | bounded URL, title, visible text, revision; native semantic projection is Rust-only |
 | action | available | semantic click/type, focused-text printable/Backspace/Delete key input, bounded single- and multi-select option interaction, bounded semantic root scroll-into-view, bounded vertical root scrolling, bounded GET or POST form defaults with supported encodings and submitter overrides, plus native point targets for supported local controls; text selection, IME, inner CSS scroll-container adjustment, and nested scrolling remain open |
@@ -12033,7 +12045,8 @@ order; a source must match the bounded viewport-width media grammar, pass the
 image wire, intrinsic state, `currentSrc`, paint, and terminal load/error
 events. Mutating source `media`, `type`, `srcset`, or `sizes` re-evaluates the
 picture selection through the same native refresh path. Complex media queries,
-non-PNG decoders, preload/fetch-priority scheduling, and full source-element
+non-PNG decoders, complete preload destination matching/fetch-priority
+scheduling, and full source-element
 Web IDL remain explicit promotion work. Exact evidence is in
 `docs/plan/tasks/native-engine-browser-221.md`.
 

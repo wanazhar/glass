@@ -10992,12 +10992,16 @@ does not establish full EventSource redirects/reconnects, Fetch/CORS or WPT
 conformance, other platforms, or remote CI. See the [Slice 866 task](tasks/native-engine-browser-866.md)
 and [review](reviews/native-engine-browser-866-01.md). Issue #40 remains open.
 
-Slice 867 is planned to verify page EventSource redirect-cookie ordering.
-The current parent loader follows a redirect before processing that response's
-eligible `Set-Cookie`, so the next hop may not receive the cookie. The
-process-backed case will verify parent acceptance on the redirect response,
-selection on the next stream request, and later authorized reuse. See the
-[Slice 867 task](tasks/native-engine-browser-867.md). Issue #40 remains open.
+The completed Slice 867 fixes and verifies page EventSource redirect-cookie
+ordering. The parent now processes eligible response cookies before following
+each redirect, so the next hop receives the redirect's HttpOnly cookie. Its
+process-backed two-origin regression passed (1 passed; 930 filtered; 21.04
+seconds), verifying the seed on the first hop, the redirect cookie on the final
+stream and a later authorized page Fetch, and successful CORS-authorized event
+delivery. HttpOnly remains parent-owned and absent from `document.cookie`. The
+scoped check passed; no remote CI or cross-platform certification is claimed.
+See the [Slice 867 task](tasks/native-engine-browser-867.md) and
+[review](reviews/native-engine-browser-867-01.md). Issue #40 remains open.
 
 ## Historical plan: Glass v0.3.6 issue #36
 

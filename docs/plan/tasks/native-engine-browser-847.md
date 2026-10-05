@@ -3,7 +3,7 @@
 ```yaml
 id: native-engine-browser-847
 scope: native-engine/content-process-event-loop
-status: in-progress
+status: done
 depends-on: [native-engine-browser-846]
 ```
 
@@ -60,6 +60,7 @@ parent broker and authoritative cookie jar.
 - `docs/plan/native-engine-browser-profile.md`
 - `docs/plan/README.md`
 - `docs/plan/tasks/native-engine-browser-847.md`
+- `docs/plan/reviews/native-engine-browser-847-01.md`
 
 ## Verification
 
@@ -84,15 +85,17 @@ parent broker and authoritative cookie jar.
 - `cargo fmt --all -- --check` — passed.
 - `git diff --check` — passed.
 - `python3 scripts/check-release-documentation.py --require-previous-version`
-  — passed (1,476 Markdown documents; zero current-claim failures).
+  — passed (1,477 Markdown documents; zero current-claim failures).
 - `python3 scripts/check-documentation-depth.py` — passed (93 current guides,
   19 substantive contracts).
 - `python3 scripts/check-tui-shortcuts.py` — passed (15 implementation keys,
   63 documentation markers).
 - `python3 scripts/check-documentation-coverage.py --glass
   /home/ubuntu/work/glass/target/debug/glass --glass-browser
-  /home/ubuntu/work/glass/target/debug/glass-browser` — passed (1,476 Markdown
+  /home/ubuntu/work/glass/target/debug/glass-browser` — passed (1,477 Markdown
   files; 346 full-product MCP tools; 101 browser-only tools; 17 examples;
   22 public modules).
 - This is local evidence only. The checkpoint is unpushed and has no remote CI
   result; WPT and cross-platform conformance remain unverified.
+- Review: [native-engine-browser-847-01](../reviews/native-engine-browser-847-01.md)
+  — pass by direct self-review; no independent agent review was performed.

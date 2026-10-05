@@ -31680,8 +31680,10 @@ fn worker_bootstrap(
       return null;
     }}
     if (payload && payload.error) {{
-      const error = new Error(String(payload.error));
-      error.name = payload.timeout === true ? "TimeoutError" : "TypeError";
+      const error = payload.timeout === true
+        ? new Error(String(payload.error))
+        : new TypeError(String(payload.error));
+      if (payload.timeout === true) error.name = "TimeoutError";
       pending.reject(error);
     }} else pending.resolve(responseFromWorkerFetch(payload));
     return null;
@@ -42397,7 +42399,9 @@ fn document_bootstrap(
       return;
     }}
     if (payload && payload.error) {{
-      pending.reject(payload.timeout === true ? nativeTimeoutError() : new Error(String(payload.error)));
+      pending.reject(payload.timeout === true
+        ? nativeTimeoutError()
+        : new TypeError(String(payload.error)));
     }}
     else pending.resolve(responseFromFetch(payload));
   }};

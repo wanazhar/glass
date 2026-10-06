@@ -139,10 +139,10 @@ file tools  ───┘                 │
 | Artifact | Owner and revision rule | Conflict/recovery behavior |
 |---|---|---|
 | Cursor/selection | Buffer; one-based line and character column, UTF-8 boundary checked | Invalid positions are rejected; selected text is read from the shared unsaved buffer. |
-| Edit claim | `CollaborationBus`; actor/path/ordered line range | Overlapping write claims from different actors fail; read claims and bounded events remain available. |
+| Edit claim | `CollaborationBus`; actor/path/ordered line range | Partial overlapping write claims from any actor fail. An exact same-actor range re-claim updates its existing slot. Releasing an actor publishes one event per removed claim. |
 | Comment | Project workspace and durable timeline | Anchored to path and line range; open comments can be resolved by ID. |
 | Proposal | Project workspace and durable timeline | Stores original/proposed text and base hash/revision. Accepting after content drift marks it stale and does not apply it. |
-| Checkpoint | Project workspace and `editor-checkpoints.json` | Captures open buffers; restore records an event and adds undo history for replaced buffers. |
+| Checkpoint | Project workspace and `editor-checkpoints.json` | Captures open buffers; restore validates the full snapshot before mutation, advances revision once, recalculates dirty/hash state, and adds undo history for already-open buffers. |
 | Save/direct edit | Project workspace | Atomic save and external-change checks are authoritative; mutation remains governed and actor-attributed. |
 
 Editor comments, proposals, and checkpoint commands are surfaced in Code's

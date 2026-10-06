@@ -87,7 +87,7 @@ only become evidence after a live browser verification passes.
 
 `Alt-W` toggles soft wrapping. With wrapping enabled, source lines reflow to the available editor width, the horizontal scroll resets, and cursor visibility is calculated from the visual wrapped row. With wrapping disabled, source lines remain one row each and horizontal scrolling follows source columns. The renderer measures terminal cell width, preserves syntax and selection backgrounds, pads continuation rows under the line-number gutter, and renders a cursor cell even at end-of-line. This is presentation state only; the buffer cursor and selection remain one-based source positions.
 
-Editor collaboration is explicit, not automatic. `ProjectWorkspace::collaboration().claim(EditClaim)` records a read or write claim and rejects overlapping write claims from different actors. Opening or saving a buffer does **not** create or enforce a claim. Claim subscribers receive a bounded event stream; `release_actor` removes that actor's claims. Comments, proposals, and checkpoints are separate state:
+Editor collaboration is explicit, not automatic. `ProjectWorkspace::collaboration().claim(EditClaim)` records a read or write claim and rejects partial overlapping write claims, including overlaps from the same actor. Repeating a claim for the same exact range replaces that claim. Opening or saving a buffer does **not** create or enforce a claim. Claim subscribers receive a bounded event stream. `release_actor` removes that actor's claims and publishes one `editor.released` event for each removed claim. Comments, proposals, and checkpoints are separate state:
 
 | State | API/tool examples | Recovery |
 |---|---|---|
@@ -95,7 +95,7 @@ Editor collaboration is explicit, not automatic. `ProjectWorkspace::collaboratio
 | Proposal `pending`/`accepted`/`rejected`/`stale` | `.proposal.create`, `.accept`, `.reject` | Recreate from current content when base content changed |
 | Checkpoint | `.checkpoint.create`, `.restore` | Restore open buffers; inspect disk before saving |
 
-A proposal must match the exact original content and hash. A changed buffer marks it stale and does not overwrite the buffer. Exact selection replacement is Unicode-safe and clears the selection. Neovim is optional and remains a managed editing engine; Glass retains project, actor, browser, process, graph, and timeline ownership. See [Development TUI architecture](architecture/development-tui.md).
+A proposal must match the exact original content and hash. A changed buffer marks it stale and does not overwrite the buffer. Exact selection replacement is Unicode-safe. It advances the project revision once, stores one undo state, clears redo and the selection, and publishes an editor event. Checkpoint restore validates all buffers before changing the project. It advances the revision once and records one undo state for each restored buffer that was already open. It recomputes each dirty flag from the buffer content and recorded original hash. It moves invalid cursors to the end of the restored content and clears invalid selections. Restore changes in-memory buffers only; save them explicitly to write to disk. Neovim is optional and remains a managed editing engine; Glass retains project, actor, browser, process, graph, and timeline ownership. See [Development TUI architecture](architecture/development-tui.md).
 
 ## Processes and PTYs
 

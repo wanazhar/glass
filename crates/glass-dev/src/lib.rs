@@ -21,9 +21,72 @@
 //!
 //! [`DevelopmentWorkspace`] owns the resident project runtime and its trust
 //! boundary. [`SharedDevelopmentWorkspace`] is the thread-safe handle used by
-//! the TUI, daemon, MCP, and agent services. [`DevelopmentToolRouter`] exposes
-//! governed tool execution, while [`PiReadiness`] and [`PiSessionRequest`]
+//! the TUI, daemon, MCP, and agent services. [`PiReadiness`] and [`PiSessionRequest`]
 //! describe the managed Pi runtime surface.
+//!
+//! Raw process and resident-service controls are implementation details. The
+//! supported public mutation route is [`DevelopmentWorkspace::execute_tool`]
+//! with a [`tools::DevelopmentToolContext`] carrying the authority and confirmation
+//! factors. Workspace-local UI dispatchers also remain internal so callers
+//! cannot mint unrestricted execution contexts through a convenience API.
+//!
+//! ```compile_fail
+//! let _ = glass_dev::agents::AgentRegistry::new(".");
+//! ```
+//!
+//! ```compile_fail
+//! let _ = glass_dev::development::AgentToolGateway::default();
+//! ```
+//!
+//! ```compile_fail
+//! let _ = glass_dev::DevelopmentToolRouter::default();
+//! ```
+//!
+//! ```compile_fail
+//! let _ = glass_dev::browser::BrowserService::new(".");
+//! ```
+//!
+//! ```compile_fail
+//! let _ = glass_dev::github::ship;
+//! ```
+//!
+//! ```compile_fail
+//! let _ = glass_dev::development::ProcessManager::new(".");
+//! ```
+//!
+//! ```compile_fail
+//! let _ = glass_dev::tasks::TaskScheduler::new(".");
+//! ```
+//!
+//! ```compile_fail
+//! let _ = glass_dev::mcp::DevelopmentMcpBackend::open(".", true);
+//! ```
+//!
+//! ```compile_fail
+//! use glass_browser::browser::policy::PolicyPreset;
+//! use glass_browser::cli::args::TuiLayout;
+//! let _ = glass_dev::tui::DevTuiState::open_for_tui_with_policy(
+//!     ".",
+//!     TuiLayout::Desktop,
+//!     true,
+//!     PolicyPreset::Development,
+//! );
+//! ```
+//!
+//! ```compile_fail
+//! let workspace = glass_dev::DevelopmentWorkspace::open(".").unwrap();
+//! let _agents = workspace.agents();
+//! ```
+//!
+//! ```compile_fail
+//! let workspace = glass_dev::DevelopmentWorkspace::open(".").unwrap();
+//! let _browser = workspace.browser();
+//! ```
+//!
+//! ```compile_fail
+//! let mut workspace = glass_dev::DevelopmentWorkspace::open(".").unwrap();
+//! let _ = workspace.intelligence_mut();
+//! ```
 //!
 //! The focused browser-only API lives in
 //! [`glass_browser`](https://docs.rs/glass-browser).
@@ -109,17 +172,15 @@ pub mod workspace;
 use glass_browser::cli::args::Cli;
 
 /// Resident Pi agent types and scheduler handles.
-pub use agents::{
-    AgentEvent, AgentId, AgentRegistry, AgentSnapshot, AgentSpec, AgentStatus, ResidentAgentBroker,
-};
+pub use agents::{AgentEvent, AgentId, AgentSnapshot, AgentSpec, AgentStatus, ResidentAgentBroker};
 /// Development browser configuration, state, and service handle.
-pub use browser::{BrowserRuntimeState, BrowserService, BrowserStartConfig};
+pub use browser::{BrowserRuntimeState, BrowserStartConfig};
 /// User-facing customization and skill configuration.
 pub use customization::{Customization, GlassConfig, Skill};
 /// Experiment management and comparison types.
 pub use experiments::{
-    ExperimentComparison, ExperimentEvidence, ExperimentManager, ExperimentRanking,
-    ExperimentSnapshot, ExperimentState, ExperimentTrustPolicy, ExperimentWeights,
+    ExperimentComparison, ExperimentEvidence, ExperimentRanking, ExperimentSnapshot,
+    ExperimentState, ExperimentTrustPolicy, ExperimentWeights,
 };
 /// Development intelligence graph and replay types.
 pub use intelligence::{
@@ -127,7 +188,7 @@ pub use intelligence::{
     ObservableDevelopmentEvent, ObservableEventInput, ReplayDiff,
 };
 /// Language-service configuration and event types.
-pub use lsp::{LanguageServerConfig, LanguageService, LanguageServiceEvent};
+pub use lsp::{LanguageServerConfig, LanguageServiceEvent};
 /// Pi readiness and managed-session request types.
 pub use pi_runtime::{
     PINNED_PI_SDK_VERSION, PiReadiness, PiReadinessComponent, PiReadinessState, PiSessionRequest,
@@ -135,13 +196,12 @@ pub use pi_runtime::{
 /// Task scheduling, retry, evidence, and verification types.
 pub use tasks::{
     CrewWake, CrewWakeLiveEvidence, CrewWakeMember, RetryPolicy, TaskBudget, TaskEvidence, TaskId,
-    TaskScheduler, TaskSnapshot, TaskSpec, TaskState, VerificationRequirement,
-    load_latest_crew_wake, persist_crew_wake,
+    TaskSnapshot, TaskSpec, TaskState, VerificationRequirement, load_latest_crew_wake,
 };
 /// Workspace-local Agent todos persisted at `.glass/todos/session.json` (not the overnight task DAG).
 pub use todos::{SessionTodo, SessionTodoList, TodoStatus};
-/// Governed tool execution context and router.
-pub use tools::{DevelopmentToolContext, DevelopmentToolRouter};
+/// Context carrying host-granted authority and confirmation for tool execution.
+pub use tools::DevelopmentToolContext;
 /// Workspace trust identities, decisions, and persistence.
 pub use trust::{LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust, WorkspaceTrustStore};
 /// Shared workspace handle and per-turn Ask, Plan, or Agent composer mode.

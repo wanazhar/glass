@@ -366,7 +366,7 @@ pub struct DevelopmentDaemonResponse {
     pub error: Option<String>,
 }
 
-pub async fn dispatch(
+pub(crate) async fn dispatch(
     action: &DaemonCommand,
     unrestricted: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {

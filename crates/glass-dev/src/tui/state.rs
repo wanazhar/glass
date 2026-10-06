@@ -355,7 +355,7 @@ impl ProductMode {
 pub struct DevTuiState {
     pub workspace: SharedDevelopmentWorkspace,
     /// Cloned directly so modal status/control never needs the workspace lock.
-    pub browser_service: BrowserService,
+    pub(crate) browser_service: BrowserService,
     pub surface: DevSurface,
     pub layout: TuiLayout,
     /// Process-scoped unrestricted development mode from `glass --yolo`.
@@ -584,7 +584,8 @@ impl DevTuiState {
             _ => ProductMode::Build,
         }
     }
-    pub fn open(
+    #[cfg(test)]
+    pub(crate) fn open(
         root: impl AsRef<Path>,
         layout: TuiLayout,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -594,24 +595,16 @@ impl DevTuiState {
     /// Construct the interactive TUI without doing a full synchronous
     /// projection pass. The snapshot worker fills resident projections after
     /// the first frame, so a large repository can show the cockpit immediately.
-    pub fn open_for_tui(
+    #[cfg(test)]
+    pub(crate) fn open_for_tui(
         root: impl AsRef<Path>,
         layout: TuiLayout,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::open_internal(root, layout, false, false, PolicyPreset::Development)
     }
 
-    /// Construct the TUI with an explicit process-scoped development mode.
-    pub fn open_for_tui_with_mode(
-        root: impl AsRef<Path>,
-        layout: TuiLayout,
-        yolo_mode: bool,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::open_for_tui_with_policy(root, layout, yolo_mode, PolicyPreset::Development)
-    }
-
     /// Construct the TUI with explicit development and browser policies.
-    pub fn open_for_tui_with_policy(
+    pub(crate) fn open_for_tui_with_policy(
         root: impl AsRef<Path>,
         layout: TuiLayout,
         yolo_mode: bool,

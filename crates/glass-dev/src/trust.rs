@@ -149,7 +149,7 @@ impl WorkspaceTrustStore {
         )
     }
 
-    pub fn trust_project(&self, identity: &WorkspaceIdentity) -> DevelopmentResult<()> {
+    pub(crate) fn trust_project(&self, identity: &WorkspaceIdentity) -> DevelopmentResult<()> {
         if !identity.is_persistable() {
             return Err(DevelopmentError::Conflict(
                 "project identity cannot be proven safely on this filesystem; use trust-once"
@@ -174,16 +174,6 @@ impl WorkspaceTrustStore {
                     .sort_by_key(|record| record.trusted_at_unix_ms);
                 document.records.drain(..document.records.len() - 1024);
             }
-            self.save(&document)
-        })
-    }
-
-    pub fn forget(&self, identity: &WorkspaceIdentity) -> DevelopmentResult<()> {
-        self.with_exclusive_lock(|| {
-            let mut document = self.load()?;
-            document
-                .records
-                .retain(|record| record.identity != *identity);
             self.save(&document)
         })
     }

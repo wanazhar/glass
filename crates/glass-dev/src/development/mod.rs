@@ -48,11 +48,13 @@ pub mod replay;
 /// Search hit types and ranking helpers.
 pub mod search;
 
+pub(crate) use agent::AgentToolGateway;
+pub(crate) use agent::PiHarness;
 /// Agent authority, harness handoff, and tool registry contracts.
 pub use agent::{
-    AgentAuthorityContext, AgentContextPacket, AgentToolGateway, BrowserAgentContext, HarnessEvent,
-    HarnessRequest, LocalHarness, PiHarness, PiHarnessOptions, ToolAuthorization, ToolCall,
-    ToolDescriptor, ToolRegistry, resolve_context, resolve_context_with_browser,
+    AgentAuthorityContext, AgentContextPacket, BrowserAgentContext, HarnessEvent, HarnessRequest,
+    LocalHarness, ToolAuthorization, ToolCall, ToolDescriptor, resolve_context,
+    resolve_context_with_browser,
 };
 /// Cockpit attention, verification, and reconnect projections.
 pub use cockpit::{
@@ -67,7 +69,7 @@ pub use debug::{
     evaluate_breakpoints,
 };
 /// Project diff model and builder.
-pub use diff::{ProjectDiff, build_diff};
+pub use diff::ProjectDiff;
 /// Low-level editor positions, syntax spans, folds, and matching helpers.
 pub use editor::{
     EditorCheckpoint, EditorComment, EditorCommentState, EditorProposal, EditorProposalState,
@@ -79,20 +81,20 @@ pub use events::{
     Actor, ActorAuthority, ActorConnection, ActorKind, DevelopmentEvent, DevelopmentEventKind,
     DevelopmentEventPage, Timeline,
 };
+pub(crate) use experiment::ExperimentManager;
 /// Experiment comparison, evidence, and workspace management.
-pub use experiment::{
-    ExperimentComparison, ExperimentEvidence, ExperimentManager, ExperimentWorkspace,
-};
+pub use experiment::{ExperimentComparison, ExperimentEvidence, ExperimentWorkspace};
 /// Development graph nodes, links, provenance, and source locations.
 pub use graph::{DevelopmentGraph, LinkEvidence, LinkProvenance, RuntimeLink, SourceLocation};
+pub(crate) use language::LspClient;
 /// Language documents, diagnostics, responses, and client.
-pub use language::{
-    DiagnosticPosition, LanguageDiagnostic, LanguageDocument, LanguageResponse, LspClient,
-};
+pub use language::{DiagnosticPosition, LanguageDiagnostic, LanguageDocument, LanguageResponse};
+pub(crate) use neovim::start_neovim;
 /// Neovim capability probe and startup helpers.
-pub use neovim::{NeovimCapability, probe_neovim, start_neovim};
+pub use neovim::{NeovimCapability, probe_neovim};
+pub(crate) use process::ProcessManager;
 /// Process health, state, and bounded snapshots.
-pub use process::{ProcessHealth, ProcessManager, ProcessSnapshot, ProcessState};
+pub use process::{ProcessHealth, ProcessSnapshot, ProcessState};
 /// Project files, commands, configuration, and detection.
 pub use project::{
     CommandConfig, EditorBuffer, FileEntry, FileKind, GlassProjectConfig, ProjectDetection,

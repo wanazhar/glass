@@ -14,7 +14,7 @@ use std::time::Duration;
 
 type CliResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-pub fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliResult<()> {
+pub(crate) fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliResult<()> {
     match action {
         AgentCommand::Doctor | AgentCommand::Status => {
             return print_json(&crate::pi_runtime::pi_readiness()?);
@@ -156,7 +156,7 @@ pub fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliResult<()
     Ok(())
 }
 
-pub fn dispatch_harness(action: &HarnessCommand) -> CliResult<()> {
+pub(crate) fn dispatch_harness(action: &HarnessCommand) -> CliResult<()> {
     match action {
         HarnessCommand::List => {
             let harnesses = crate::harness::discover()
@@ -205,7 +205,7 @@ pub fn dispatch_harness(action: &HarnessCommand) -> CliResult<()> {
     Ok(())
 }
 
-pub fn dispatch_project(
+pub(crate) fn dispatch_project(
     action: &ProjectCommand,
     allow_mutation: bool,
     confirmed: bool,

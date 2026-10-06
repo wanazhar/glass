@@ -884,12 +884,15 @@ fn inspect(root: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
 
 `ProjectWorkspace` owns canonical-root confinement, native buffers, event
 timeline, graph, replay, and process manager. File and process limits are
-enforced before retention. Mutations should carry an `Actor`; external-agent
-edits and links remain attributable.
+enforced before retention. Raw project, browser, process, debugger, language,
+and agent controls remain internal to `glass-dev`.
 
-`AgentToolGateway` validates a fixed descriptor catalog, call envelope, JSON
-schema, authorization, and confirmation. Audit events store argument byte
-count/digest and result metadata, not argument values.
+The public development mutation route is `DevelopmentWorkspace::execute_tool`
+with a `tools::DevelopmentToolContext` that includes both mutation authority
+and confirmation, plus the expected workspace generation and project revision.
+The internal `AgentToolGateway` validates its descriptor catalog, call
+envelope, JSON schema, authorization, and confirmation. Audit events store
+argument byte count/digest and result metadata, not argument values.
 
 ### Managed Pi boundary
 

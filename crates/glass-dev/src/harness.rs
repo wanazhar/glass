@@ -185,7 +185,10 @@ pub fn resolve(name: &str) -> Result<ResolvedHarness, String> {
 }
 
 /// Launch a resolved harness in the requested project directory.
-pub fn launch_resolved(resolved: &ResolvedHarness, root: &Path) -> Result<ExitStatus, String> {
+pub(crate) fn launch_resolved(
+    resolved: &ResolvedHarness,
+    root: &Path,
+) -> Result<ExitStatus, String> {
     Command::new(&resolved.path)
         .current_dir(root)
         .status()

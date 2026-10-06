@@ -188,7 +188,7 @@ pub fn resolve_context_with_browser(
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ToolRegistry;
+pub(crate) struct ToolRegistry;
 
 const MAX_TOOL_ARGUMENT_BYTES: usize = 256 * 1024;
 const MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
@@ -237,7 +237,7 @@ impl ToolAuthorization {
 }
 
 #[derive(Debug, Clone)]
-pub struct AgentToolGateway {
+pub(crate) struct AgentToolGateway {
     registry: ToolRegistry,
     descriptors: Vec<ToolDescriptor>,
     browser_context: Option<BrowserAgentContext>,
@@ -256,7 +256,8 @@ impl Default for AgentToolGateway {
 }
 
 impl AgentToolGateway {
-    pub fn subprocess_broker() -> Self {
+    #[cfg(test)]
+    pub(crate) fn subprocess_broker() -> Self {
         let mut gateway = Self::default();
         for descriptor in &mut gateway.descriptors {
             if matches!(
@@ -275,7 +276,7 @@ impl AgentToolGateway {
         gateway
     }
 
-    pub fn set_browser_context(&mut self, context: Option<BrowserAgentContext>) {
+    pub(crate) fn set_browser_context(&mut self, context: Option<BrowserAgentContext>) {
         self.browser_context = context;
         for descriptor in &mut self.descriptors {
             let available = match descriptor.name.as_str() {
@@ -302,11 +303,11 @@ impl AgentToolGateway {
         }
     }
 
-    pub fn descriptors(&self) -> Vec<ToolDescriptor> {
+    pub(crate) fn descriptors(&self) -> Vec<ToolDescriptor> {
         self.descriptors.clone()
     }
 
-    pub fn execute(
+    pub(crate) fn execute(
         &self,
         workspace: &mut ProjectWorkspace,
         call: &ToolCall,
@@ -1668,7 +1669,7 @@ impl LocalHarness {
 ///
 /// Glass owns the stable request/event model; this type only translates that
 /// model to Pi. No prompt text is persisted by this adapter.
-pub struct PiHarness {
+pub(crate) struct PiHarness {
     child: Child,
     input: ChildStdin,
     output: Receiver<Value>,
@@ -1679,7 +1680,7 @@ pub struct PiHarness {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct PiHarnessOptions {
+pub(crate) struct PiHarnessOptions {
     pub unrestricted: bool,
     pub persist_session: bool,
     pub session_id: Option<String>,
@@ -1705,11 +1706,15 @@ impl std::fmt::Debug for PiHarness {
 }
 
 impl PiHarness {
-    pub fn spawn(root: &Path) -> DevelopmentResult<Self> {
+    #[cfg(test)]
+    pub(crate) fn spawn(root: &Path) -> DevelopmentResult<Self> {
         Self::spawn_with_unrestricted(root, false)
     }
 
-    pub fn spawn_with_unrestricted(root: &Path, unrestricted: bool) -> DevelopmentResult<Self> {
+    pub(crate) fn spawn_with_unrestricted(
+        root: &Path,
+        unrestricted: bool,
+    ) -> DevelopmentResult<Self> {
         Self::spawn_with_options(
             root,
             PiHarnessOptions {
@@ -1720,7 +1725,10 @@ impl PiHarness {
         )
     }
 
-    pub fn spawn_with_options(root: &Path, options: PiHarnessOptions) -> DevelopmentResult<Self> {
+    pub(crate) fn spawn_with_options(
+        root: &Path,
+        options: PiHarnessOptions,
+    ) -> DevelopmentResult<Self> {
         validate_pi_harness_options(&options)?;
         static NEXT_EXTENSION_ID: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(1);
@@ -1976,7 +1984,7 @@ impl PiHarness {
         })
     }
 
-    pub fn request(&mut self, request: HarnessRequest) -> DevelopmentResult<Vec<Value>> {
+    pub(crate) fn request(&mut self, request: HarnessRequest) -> DevelopmentResult<Vec<Value>> {
         let wait_for_agent = matches!(request, HarnessRequest::Prompt { .. });
         let id = self.start_request(request)?;
         let mut events = VecDeque::with_capacity(MAX_PI_BUFFERED_EVENTS);
@@ -2038,7 +2046,7 @@ impl PiHarness {
         }
     }
 
-    pub fn start_request(&mut self, request: HarnessRequest) -> DevelopmentResult<String> {
+    pub(crate) fn start_request(&mut self, request: HarnessRequest) -> DevelopmentResult<String> {
         let (command, private_text) = match request {
             HarnessRequest::Hello | HarnessRequest::State => {
                 (serde_json::json!({"type": "get_state"}), None)
@@ -2112,7 +2120,11 @@ impl PiHarness {
         Ok(id)
     }
 
-    pub fn respond_extension_ui(&mut self, id: &str, confirmed: bool) -> DevelopmentResult<()> {
+    pub(crate) fn respond_extension_ui(
+        &mut self,
+        id: &str,
+        confirmed: bool,
+    ) -> DevelopmentResult<()> {
         if !self.pending_ui_requests.remove(id) {
             return Err(DevelopmentError::Conflict(format!(
                 "stale or unknown Pi UI request: {id}"

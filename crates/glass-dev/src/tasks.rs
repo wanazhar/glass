@@ -399,7 +399,7 @@ fn append_wake_section(lines: &mut Vec<String>, title: &str, body: &str, limit: 
 }
 
 /// Persist a crew wake object and replace `{root}/.glass/crew/latest.json`.
-pub fn persist_crew_wake(root: &Path, wake: &CrewWake) -> DevelopmentResult<()> {
+pub(crate) fn persist_crew_wake(root: &Path, wake: &CrewWake) -> DevelopmentResult<()> {
     let dir = root.join(".glass").join("crew");
     std::fs::create_dir_all(&dir)?;
     let encoded = serde_json::to_vec_pretty(wake)?;
@@ -459,7 +459,7 @@ impl TaskAgentBackend for AgentRegistry {
     }
 }
 
-pub struct TaskScheduler {
+pub(crate) struct TaskScheduler {
     root: PathBuf,
     tasks: BTreeMap<TaskId, TaskRecord>,
     next_task: u64,
@@ -467,7 +467,7 @@ pub struct TaskScheduler {
 }
 
 impl TaskScheduler {
-    pub fn new(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
+    pub(crate) fn new(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
         Ok(Self {
             root: std::fs::canonicalize(root)?,
             tasks: BTreeMap::new(),

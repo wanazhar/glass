@@ -52,13 +52,22 @@ It does not write a trust decision to the external store. A later process
 without `--yolo` still requires the normal local trust decision.
 
 Public custom-command execution requires both factors in its
-`ToolAuthorization`. Raw project, Git, and kernel mutation methods are
-crate-private, so external library callers must use the governed workspace
-tool API. Git pushes resolve the actual push remote, including the configured
+`ToolAuthorization`. Raw agent, task, test, process, LSP, debugger, experiment,
+browser, project, Git, and kernel mutation methods are crate-private, so external
+library callers must use the governed workspace tool API. MCP, daemon, and TUI
+entry points that accept an unrestricted-mode flag are also crate-private;
+public callers cannot mint that process-local authority through a convenience
+constructor. Browser controls are available through the same workspace router,
+which enforces the mutation factors in addition to browser policy. Git pushes
+resolve the actual push remote, including the configured
 branch or repository push-remote preference when no remote is supplied. The
 Git service queries that destination repository's default branch and fails
 closed for unsupported or ambiguous push URLs. It also specifies one source
 and destination ref so local push configuration cannot add extra branches.
+
+`glass-browser::KnowledgeStore` remains a standalone, caller-path-owned browser
+storage API. It is not exposed through a mutable `DevelopmentWorkspace`
+accessor and does not grant Glass Dev workspace mutation or trust authority.
 
 Read-only trust APIs are available through the authoritative tool router:
 

@@ -1,13 +1,11 @@
 //! Isolated competing implementations ranked from observable evidence.
 
-use crate::agents::{AgentId, AgentRegistry, AgentSpec};
+use crate::agents::AgentId;
+#[cfg(test)]
+use crate::agents::{AgentRegistry, AgentSpec};
 use crate::development::{DevelopmentError, DevelopmentResult, ProcessHealth};
 use crate::git::{GitError, GitService};
-use crate::testing::TestRun;
-use crate::{
-    DevelopmentWorkspace, LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust,
-    WorkspaceTrustStore,
-};
+use crate::{DevelopmentWorkspace, LocalTrustDecision, WorkspaceTrust};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,6 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_EXPERIMENTS: usize = 8;
+#[cfg(test)]
 const MAX_NOTES_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,7 +144,7 @@ struct Experiment {
 }
 
 /// Owns worktrees and resident runtime state for competing implementations.
-pub struct ExperimentManager {
+pub(crate) struct ExperimentManager {
     repository: GitService,
     worktree_root: PathBuf,
     experiments: BTreeMap<String, Experiment>,
@@ -155,16 +154,7 @@ pub struct ExperimentManager {
 }
 
 impl ExperimentManager {
-    pub fn new(
-        repository_root: impl AsRef<Path>,
-        worktree_root: impl AsRef<Path>,
-    ) -> DevelopmentResult<Self> {
-        let identity = WorkspaceIdentity::inspect(repository_root.as_ref())?;
-        let trust = WorkspaceTrustStore::platform_default()?.status(&identity)?;
-        Self::new_governed(repository_root, worktree_root, trust)
-    }
-
-    pub fn new_governed(
+    pub(crate) fn new_governed(
         repository_root: impl AsRef<Path>,
         worktree_root: impl AsRef<Path>,
         parent_trust: WorkspaceTrust,
@@ -277,6 +267,7 @@ impl ExperimentManager {
         Ok(snapshot)
     }
 
+    #[cfg(test)]
     pub fn assign_agent(
         &mut self,
         id: &str,
@@ -294,67 +285,6 @@ impl ExperimentManager {
         experiment.snapshot.agent_id = Some(agent.clone());
         experiment.snapshot.state = ExperimentState::Running;
         Ok(agent)
-    }
-
-    pub fn start_process(
-        &mut self,
-        id: &str,
-        name: &str,
-        command: &str,
-    ) -> DevelopmentResult<serde_json::Value> {
-        let experiment = self.experiment_mut(id)?;
-        experiment.snapshot.state = ExperimentState::Running;
-        Ok(serde_json::to_value(
-            experiment
-                .workspace
-                .project_mut()
-                .start_process(name, command)?,
-        )?)
-    }
-
-    pub fn run_test(
-        &mut self,
-        id: &str,
-        run_id: &str,
-        suite_id: &str,
-        actor_id: &str,
-        timeout: Option<Duration>,
-    ) -> DevelopmentResult<TestRun> {
-        let experiment = self.experiment_mut(id)?;
-        let revision = experiment.workspace.project().revision();
-        experiment.snapshot.state = ExperimentState::Running;
-        experiment
-            .workspace
-            .tests_mut()
-            .start(run_id, suite_id, actor_id, revision, timeout)
-            .map_err(|error| DevelopmentError::Process(error.to_string()))
-    }
-
-    pub fn poll_tests(&mut self, id: &str) -> DevelopmentResult<Vec<TestRun>> {
-        let experiment = self.experiment_mut(id)?;
-        let finished = experiment
-            .workspace
-            .tests_mut()
-            .poll()
-            .map_err(|error| DevelopmentError::Process(error.to_string()))?;
-        for run in &finished {
-            let failed = run.exit_code != Some(0);
-            let count = u64::try_from(run.cases.len().max(1)).unwrap_or(u64::MAX);
-            if failed {
-                experiment.snapshot.evidence.tests_failed = experiment
-                    .snapshot
-                    .evidence
-                    .tests_failed
-                    .saturating_add(count);
-            } else {
-                experiment.snapshot.evidence.tests_passed = experiment
-                    .snapshot
-                    .evidence
-                    .tests_passed
-                    .saturating_add(count);
-            }
-        }
-        Ok(finished)
     }
 
     /// Collect every currently available evidence family from resident or
@@ -620,6 +550,7 @@ impl ExperimentManager {
         Ok(evidence)
     }
 
+    #[cfg(test)]
     pub fn record_evidence(
         &mut self,
         id: &str,
@@ -681,6 +612,9 @@ impl ExperimentManager {
         Ok(())
     }
 
+    // This is the reducer for issue #60 F88 and will be wired into the governed
+    // experiment observation route when that P2 task is addressed.
+    #[allow(dead_code)]
     pub fn refresh_changed_files(&mut self, id: &str) -> DevelopmentResult<u64> {
         let experiment = self.experiment_mut(id)?;
         let status = experiment
@@ -720,6 +654,7 @@ impl ExperimentManager {
         }
     }
 
+    #[cfg(test)]
     pub fn set_weights(
         &mut self,
         weights: ExperimentWeights,

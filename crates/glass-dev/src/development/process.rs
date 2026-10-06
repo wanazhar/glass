@@ -72,7 +72,7 @@ struct RunningProcess {
     job: WindowsJob,
 }
 
-pub struct ProcessManager {
+pub(crate) struct ProcessManager {
     root: PathBuf,
     processes: BTreeMap<String, RunningProcess>,
 }
@@ -88,7 +88,7 @@ impl std::fmt::Debug for ProcessManager {
 }
 
 impl ProcessManager {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
             processes: BTreeMap::new(),

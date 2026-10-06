@@ -111,7 +111,7 @@ pub(crate) struct ExternalInvocation {
 }
 
 /// Resolve and execute one temporary external-agent request.
-pub fn delegate(request: ExternalAgentRequest) -> Result<ExternalAgentResult, String> {
+pub(crate) fn delegate(request: ExternalAgentRequest) -> Result<ExternalAgentResult, String> {
     validate_request(&request)?;
     let root = fs::canonicalize(&request.root).map_err(|error| {
         format!(

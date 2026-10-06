@@ -237,7 +237,7 @@ impl DevelopmentWorkspace {
         &mut self.project
     }
 
-    pub fn agents(&mut self) -> &mut AgentRegistry {
+    pub(crate) fn agents(&mut self) -> &mut AgentRegistry {
         &mut self.agents
     }
 
@@ -245,7 +245,7 @@ impl DevelopmentWorkspace {
         crate::SessionTodoList::load(&self.root)
     }
 
-    pub fn write_todos(
+    pub(crate) fn write_todos(
         &mut self,
         items: Vec<crate::SessionTodo>,
     ) -> crate::development::DevelopmentResult<crate::SessionTodoList> {
@@ -254,7 +254,7 @@ impl DevelopmentWorkspace {
         Ok(list)
     }
 
-    pub fn complete_todo(
+    pub(crate) fn complete_todo(
         &mut self,
         id: &str,
     ) -> crate::development::DevelopmentResult<crate::SessionTodo> {
@@ -263,7 +263,7 @@ impl DevelopmentWorkspace {
         Ok(item)
     }
 
-    pub fn activate_todo(
+    pub(crate) fn activate_todo(
         &mut self,
         id: &str,
     ) -> crate::development::DevelopmentResult<crate::SessionTodo> {
@@ -272,7 +272,7 @@ impl DevelopmentWorkspace {
         Ok(item)
     }
 
-    pub fn seed_todos_from_plan(
+    pub(crate) fn seed_todos_from_plan(
         &mut self,
         goal: &str,
         body: &str,
@@ -282,7 +282,7 @@ impl DevelopmentWorkspace {
         Ok(list)
     }
 
-    pub fn create_task(&mut self, spec: TaskSpec) -> DevelopmentResult<TaskId> {
+    pub(crate) fn create_task(&mut self, spec: TaskSpec) -> DevelopmentResult<TaskId> {
         if !self.project_execution_permitted() {
             return Err(crate::development::DevelopmentError::Conflict(
                 "task execution is blocked until the workspace is trusted".into(),
@@ -292,7 +292,7 @@ impl DevelopmentWorkspace {
     }
 
     /// Queue the overnight factory crew in a confined worktree when Git is available.
-    pub fn create_crew(&mut self, goal: &str) -> DevelopmentResult<CrewWake> {
+    pub(crate) fn create_crew(&mut self, goal: &str) -> DevelopmentResult<CrewWake> {
         if !self.project_execution_permitted() {
             return Err(crate::development::DevelopmentError::Conflict(
                 "task execution is blocked until the workspace is trusted".into(),
@@ -360,7 +360,7 @@ impl DevelopmentWorkspace {
     }
 
     /// Fold live git/test/verify/page evidence into the persisted crew wake.
-    pub fn refresh_crew_wake(
+    pub(crate) fn refresh_crew_wake(
         &mut self,
         live: CrewWakeLiveEvidence,
     ) -> DevelopmentResult<Option<CrewWake>> {
@@ -416,7 +416,7 @@ impl DevelopmentWorkspace {
         Ok(Some(path.canonicalize().unwrap_or(path)))
     }
 
-    pub fn tasks(&mut self) -> DevelopmentResult<Vec<TaskSnapshot>> {
+    pub(crate) fn tasks(&mut self) -> DevelopmentResult<Vec<TaskSnapshot>> {
         let snapshots = self.tasks.list(&mut self.agents)?;
         let mut collected = false;
         for task in snapshots
@@ -442,31 +442,31 @@ impl DevelopmentWorkspace {
         }
     }
 
-    pub fn task(&mut self, id: &TaskId) -> DevelopmentResult<TaskSnapshot> {
+    pub(crate) fn task(&mut self, id: &TaskId) -> DevelopmentResult<TaskSnapshot> {
         self.tasks.snapshot(&mut self.agents, id)
     }
 
-    pub fn pause_task(&mut self, id: &TaskId) -> DevelopmentResult<()> {
+    pub(crate) fn pause_task(&mut self, id: &TaskId) -> DevelopmentResult<()> {
         self.tasks.pause(&mut self.agents, id)
     }
 
-    pub fn resume_task(&mut self, id: &TaskId) -> DevelopmentResult<()> {
+    pub(crate) fn resume_task(&mut self, id: &TaskId) -> DevelopmentResult<()> {
         self.tasks.resume(&mut self.agents, id)
     }
 
-    pub fn cancel_task(&mut self, id: &TaskId) -> DevelopmentResult<()> {
+    pub(crate) fn cancel_task(&mut self, id: &TaskId) -> DevelopmentResult<()> {
         self.tasks.cancel(&mut self.agents, id)
     }
 
-    pub fn retry_task(&mut self, id: &TaskId) -> DevelopmentResult<()> {
+    pub(crate) fn retry_task(&mut self, id: &TaskId) -> DevelopmentResult<()> {
         self.tasks.retry(&mut self.agents, id)
     }
 
-    pub fn override_blocked_task(&mut self, id: &TaskId) -> DevelopmentResult<()> {
+    pub(crate) fn override_blocked_task(&mut self, id: &TaskId) -> DevelopmentResult<()> {
         self.tasks.override_blocked(&mut self.agents, id)
     }
 
-    pub fn reassign_task(
+    pub(crate) fn reassign_task(
         &mut self,
         id: &TaskId,
         role: String,
@@ -477,7 +477,7 @@ impl DevelopmentWorkspace {
             .reassign(&mut self.agents, id, role, model, thinking)
     }
 
-    pub fn submit_task_evidence(
+    pub(crate) fn submit_task_evidence(
         &mut self,
         id: &TaskId,
         kind: String,
@@ -604,7 +604,7 @@ impl DevelopmentWorkspace {
         }
     }
 
-    pub fn browser(&self) -> &BrowserService {
+    pub(crate) fn browser(&self) -> &BrowserService {
         &self.browser
     }
 
@@ -619,7 +619,7 @@ impl DevelopmentWorkspace {
     /// Enable process-local YOLO execution without changing the persisted
     /// workspace trust decision. This explicitly opts the development suite
     /// into repository-controlled configuration for the current process.
-    pub fn enable_unrestricted_execution(&mut self) -> DevelopmentResult<()> {
+    pub(crate) fn enable_unrestricted_execution(&mut self) -> DevelopmentResult<()> {
         if self.unrestricted_execution {
             return Ok(());
         }
@@ -662,7 +662,7 @@ impl DevelopmentWorkspace {
 
     /// Apply an explicit decision from a local human surface. Remote tool,
     /// MCP, daemon-agent, Pi, and kernel APIs deliberately cannot call this.
-    pub fn apply_local_trust_decision(
+    pub(crate) fn apply_local_trust_decision(
         &mut self,
         decision: LocalTrustDecision,
     ) -> DevelopmentResult<WorkspaceTrust> {
@@ -692,7 +692,7 @@ impl DevelopmentWorkspace {
     }
 
     /// Start and initialize one named resident DAP session.
-    pub fn start_debugger(
+    pub(crate) fn start_debugger(
         &mut self,
         name: &str,
         config: &DebugAdapterConfig,
@@ -709,13 +709,13 @@ impl DevelopmentWorkspace {
         Ok(())
     }
 
-    pub fn debugger_mut(&mut self, name: &str) -> DebugResult<&mut DebuggerSession> {
+    pub(crate) fn debugger_mut(&mut self, name: &str) -> DebugResult<&mut DebuggerSession> {
         self.debuggers
             .get_mut(name)
             .ok_or_else(|| DebugError::InvalidInput(format!("unknown debugger session {name}")))
     }
 
-    pub fn experiments(&mut self) -> DevelopmentResult<&mut ExperimentManager> {
+    pub(crate) fn experiments(&mut self) -> DevelopmentResult<&mut ExperimentManager> {
         if !self.project_execution_permitted() {
             return Err(crate::development::DevelopmentError::Conflict(
                 "experiments are blocked until the workspace is trusted".into(),
@@ -745,7 +745,7 @@ impl DevelopmentWorkspace {
         self.debuggers.keys().map(String::as_str)
     }
 
-    pub fn stop_debugger(&mut self, name: &str) -> DebugResult<()> {
+    pub(crate) fn stop_debugger(&mut self, name: &str) -> DebugResult<()> {
         let mut debugger = self
             .debuggers
             .remove(name)
@@ -761,15 +761,15 @@ impl DevelopmentWorkspace {
         &self.intelligence
     }
 
-    pub fn intelligence_mut(&mut self) -> &mut DevelopmentIntelligence {
+    pub(crate) fn intelligence_mut(&mut self) -> &mut DevelopmentIntelligence {
         &mut self.intelligence
     }
 
-    pub fn tests(&self) -> &TestService {
+    pub(crate) fn tests(&self) -> &TestService {
         &self.tests
     }
 
-    pub fn tests_mut(&mut self) -> &mut TestService {
+    pub(crate) fn tests_mut(&mut self) -> &mut TestService {
         &mut self.tests
     }
 
@@ -781,7 +781,7 @@ impl DevelopmentWorkspace {
         &mut self.kernels
     }
 
-    pub fn execute_kernel(
+    pub(crate) fn execute_kernel(
         &mut self,
         name: &str,
         code: &str,
@@ -841,7 +841,7 @@ impl DevelopmentWorkspace {
         result
     }
 
-    pub fn language(&mut self) -> &mut LanguageService {
+    pub(crate) fn language(&mut self) -> &mut LanguageService {
         &mut self.language
     }
 
@@ -849,7 +849,7 @@ impl DevelopmentWorkspace {
         &self.knowledge
     }
 
-    pub fn knowledge_mut(&mut self) -> &mut KnowledgeStore {
+    pub(crate) fn knowledge_mut(&mut self) -> &mut KnowledgeStore {
         &mut self.knowledge
     }
 
@@ -896,13 +896,13 @@ impl DevelopmentWorkspace {
         self.agent_turn_mode
     }
 
-    pub fn set_agent_turn_mode(&mut self, mode: AgentTurnMode) {
+    pub(crate) fn set_agent_turn_mode(&mut self, mode: AgentTurnMode) {
         self.agent_turn_mode = mode;
     }
 
     /// Return task-loop state while allowing the scheduler to refresh its
     /// agent-backed transitions.
-    pub fn task_snapshots(&mut self) -> DevelopmentResult<Vec<TaskSnapshot>> {
+    pub(crate) fn task_snapshots(&mut self) -> DevelopmentResult<Vec<TaskSnapshot>> {
         self.tasks.list(&mut self.agents)
     }
 
@@ -1053,7 +1053,7 @@ impl SharedDevelopmentWorkspace {
         Self::open_with_policy_and_unrestricted(root, policy_preset, false)
     }
 
-    pub fn open_with_policy_and_unrestricted(
+    pub(crate) fn open_with_policy_and_unrestricted(
         root: impl AsRef<Path>,
         policy_preset: PolicyPreset,
         unrestricted: bool,
@@ -1501,7 +1501,7 @@ command='true'
             "[package]\nname='wake-fixture'\nversion='0.1.0'\n",
         )
         .unwrap();
-        crate::persist_crew_wake(
+        crate::tasks::persist_crew_wake(
             &root,
             &crate::CrewWake {
                 id: "wake-1".into(),

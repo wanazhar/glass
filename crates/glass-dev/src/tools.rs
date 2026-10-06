@@ -33,7 +33,7 @@ pub struct DevelopmentToolContext {
 
 /// Routes Glass Agent operations through authoritative resident services.
 #[derive(Debug, Clone)]
-pub struct DevelopmentToolRouter {
+pub(crate) struct DevelopmentToolRouter {
     core: AgentToolGateway,
     descriptors: Vec<ToolDescriptor>,
 }
@@ -57,7 +57,10 @@ impl Default for DevelopmentToolRouter {
 }
 
 impl DevelopmentToolRouter {
-    pub fn with_customization(customization: &crate::Customization, trust: WorkspaceTrust) -> Self {
+    pub(crate) fn with_customization(
+        customization: &crate::Customization,
+        trust: WorkspaceTrust,
+    ) -> Self {
         let mut router = Self::default();
         let custom = customization.descriptors(trust);
         router
@@ -67,12 +70,12 @@ impl DevelopmentToolRouter {
         router
     }
 
-    pub fn descriptors(&self) -> Vec<ToolDescriptor> {
+    pub(crate) fn descriptors(&self) -> Vec<ToolDescriptor> {
         self.descriptors.clone()
     }
 
     /// Apply the same trust gate used by execution before exposing descriptors.
-    pub fn descriptors_for(
+    pub(crate) fn descriptors_for(
         &self,
         trust: WorkspaceTrust,
         unrestricted: bool,
@@ -101,7 +104,7 @@ impl DevelopmentToolRouter {
             .collect()
     }
 
-    pub fn execute(
+    pub(crate) fn execute(
         &self,
         workspace: &mut DevelopmentWorkspace,
         call: &ToolCall,
@@ -2851,6 +2854,74 @@ mod tests {
                 .path("repository:root", "tool:write-1")
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn every_public_service_mutation_route_requires_both_authorization_factors() {
+        let mut workspace = workspace();
+        let router = DevelopmentToolRouter::default();
+        let mutating_routes = [
+            "glass.agent.spawn",
+            "glass.agent.delegate",
+            "glass.browser.navigate",
+            "glass.browser.remote-view.open",
+            "glass.workflow.run",
+            "glass.test.run",
+            "glass.lsp.start",
+            "glass.debug.start",
+            "glass.task.create",
+            "glass.task.crew",
+            "glass.experiment.create",
+            "glass.todo.write",
+            "glass.memory.forget",
+            "glass.process.start",
+        ];
+
+        for name in mutating_routes {
+            let descriptor = router
+                .descriptors_for(workspace.trust(), workspace.unrestricted_execution())
+                .into_iter()
+                .find(|descriptor| descriptor.name == name)
+                .unwrap_or_else(|| panic!("missing {name} descriptor"));
+            assert!(
+                descriptor.available,
+                "{name} must be available in the fixture"
+            );
+            assert!(descriptor.mutating, "{name} must be marked mutating");
+
+            let call = ToolCall {
+                id: format!("unauthorized-{name}"),
+                name: name.into(),
+                arguments: json!({}),
+            };
+            for (allow_mutation, confirmed, unrestricted) in [
+                (false, false, false),
+                (false, true, false),
+                (true, false, false),
+                (false, false, true),
+            ] {
+                let unauthorized = DevelopmentToolContext {
+                    authorization: ToolAuthorization {
+                        actor: Actor::embedded(),
+                        allow_mutation,
+                        confirmed,
+                        unrestricted,
+                    },
+                    initiator: None,
+                    expected_generation: workspace.generation(),
+                    expected_project_revision: workspace.project().revision(),
+                };
+                let error = router
+                    .execute(&mut workspace, &call, &unauthorized)
+                    .expect_err("a mutation route must reject an incomplete factor pair");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("requires mutation authority and confirmation"),
+                    "{name} rejected for the wrong reason: {error}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 ---
 id: issue60-p0-governance-001
 scope: glass-dev/trust-mutation-governance
-status: ready
+status: done
 depends-on: []
 ---
 
@@ -91,7 +91,10 @@ shared authorization route rather than changing correct code.
   for `glass.agent.slash`.
 - `cargo test -p glass-dev --doc --locked` passed (12 doctests, including public-API compile-fail fences).
 - `cargo test -p glass-dev --test development_runtime --locked` passed (4 tests), including trusted MCP listing and one-factor mutation rejection.
+- Independent review of the complete task diff passed with no findings. The
+  TUI regression exercises submission and denial; approval-submit and
+  asynchronous-error cleanup were verified by source inspection.
 - `cargo build -p glass-browser --bin glass-native-content-worker --locked` passed; this binary is required by one native-browser regression.
-- `cargo test -p glass-dev --lib --locked` passed (393 tests).
+- `cargo test -p glass-dev --lib --locked` passed (395 tests).
 - `cargo fmt --all -- --check` and `git diff --check` passed.
 - Scoped Clippy passed with `-A clippy::large_enum_variant`. The unmodified `ResidentBrowserSession` enum at `crates/glass-dev/src/browser.rs:154` still causes the strict all-targets Clippy command to fail; the broader `glass-browser` dependency also has existing lint failures.

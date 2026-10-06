@@ -402,8 +402,12 @@ graphics after Ratatui and clears/repositions on geometry change. Live capture
 is off by default unless CLI live mode is On/Auto, and an unavailable path
 clears the toggle instead of claiming success. Agent-watch activation and
 asynchronous screenshot failures are reconciled against the visual runtime so
-the advertised workspace presentation stays aligned. Visual requests are
-coalesced and do not block key handling.
+the advertised workspace presentation stays aligned. ANSI screenshot results
+that arrive after live view stops are discarded, preserving the semantic-only
+presentation. A terminal Herdr `Failed` or `Stopped` event discards the dead
+worker and records a persistent semantic-only reason; that runtime cannot
+restart the stream, so a new TUI runtime is required to retry it. Visual
+requests are coalesced and do not block key handling.
 
 Terminal process actions are governed and bounded: `s` queues the detected
 project dev command, while palette routes can start a custom command, inspect

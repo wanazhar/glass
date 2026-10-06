@@ -44,6 +44,9 @@ shared authorization route rather than changing correct code.
   through context-less public mutation methods.
 - Public custom shell calls carry the pair explicitly; raw project, Git, and
   kernel mutation methods are crate-private behind governed workspace tools.
+- Pi slash dispatch can create or restart resident sessions and execute native
+  commands, so descriptors classify it as mutating, untrusted workspaces cannot
+  call it, and the TUI queues it behind its mutation confirmation flow.
 - Kernel start schemas expose the explicit `mutationAuthority` capability
   grant, while the router independently enforces both authorization factors.
 - Kernel and Git metadata describe the effective operation and protected
@@ -83,6 +86,9 @@ shared authorization route rather than changing correct code.
 
 - `cargo check -p glass-dev --lib --bins --locked` passed.
 - `cargo test -p glass-dev every_public_service_mutation_route_requires_both_authorization_factors --locked` passed (1 test).
+- `cargo test -p glass-dev --lib --locked slash` passed (4 tests), covering
+  mutation denial, untrusted workspace denial, and the TUI confirmation queue
+  for `glass.agent.slash`.
 - `cargo test -p glass-dev --doc --locked` passed (12 doctests, including public-API compile-fail fences).
 - `cargo test -p glass-dev --test development_runtime --locked` passed (4 tests), including trusted MCP listing and one-factor mutation rejection.
 - `cargo build -p glass-browser --bin glass-native-content-worker --locked` passed; this binary is required by one native-browser regression.

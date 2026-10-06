@@ -1695,7 +1695,6 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.messages",
         "glass.agent.entries",
         "glass.agent.stats",
-        "glass.agent.slash",
         "glass.debug.events",
         "glass.debug.inspect",
         "glass.debug.processes",
@@ -1801,6 +1800,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.model",
         "glass.agent.thinking",
         "glass.agent.new-session",
+        "glass.agent.slash",
         "glass.agent.clone-session",
         "glass.agent.rewind",
         "glass.agent.fork",
@@ -1913,7 +1913,6 @@ fn untrusted_tool_allowed(name: &str) -> bool {
             | "glass.agent.messages"
             | "glass.agent.entries"
             | "glass.agent.stats"
-            | "glass.agent.slash"
             | "glass.graph.source"
             | "glass.agent.hello"
             | "glass.agent.models"
@@ -2857,12 +2856,62 @@ mod tests {
     }
 
     #[test]
+    fn agent_slash_requires_mutation_authority_and_workspace_trust() {
+        let mut trusted = workspace();
+        let router = DevelopmentToolRouter::default();
+        let descriptor = router
+            .descriptors_for(trusted.trust(), trusted.unrestricted_execution())
+            .into_iter()
+            .find(|descriptor| descriptor.name == "glass.agent.slash")
+            .expect("Pi slash descriptor");
+        assert!(descriptor.available);
+        assert!(descriptor.mutating);
+        assert!(tool_requires_mutation("glass.agent.slash"));
+
+        let call = ToolCall {
+            id: "unauthorized-pi-slash".into(),
+            name: "glass.agent.slash".into(),
+            arguments: json!({"name":"new","args":""}),
+        };
+        let read_only = context(&trusted, false);
+        assert!(router.execute(&mut trusted, &call, &read_only).is_err());
+
+        let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "glass-agent-slash-untrusted-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='untrusted-slash'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        let mut untrusted = DevelopmentWorkspace::open(&root).unwrap();
+        assert_eq!(untrusted.trust(), WorkspaceTrust::Untrusted);
+        let descriptor = router
+            .descriptors_for(untrusted.trust(), untrusted.unrestricted_execution())
+            .into_iter()
+            .find(|descriptor| descriptor.name == "glass.agent.slash")
+            .expect("Pi slash descriptor");
+        assert!(!descriptor.available);
+        let apparently_authorized = context(&untrusted, true);
+        assert!(
+            router
+                .execute(&mut untrusted, &call, &apparently_authorized)
+                .is_err()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn every_public_service_mutation_route_requires_both_authorization_factors() {
         let mut workspace = workspace();
         let router = DevelopmentToolRouter::default();
         let mutating_routes = [
             "glass.agent.spawn",
             "glass.agent.delegate",
+            "glass.agent.slash",
             "glass.browser.navigate",
             "glass.browser.remote-view.open",
             "glass.workflow.run",
@@ -3680,6 +3729,7 @@ mod tests {
             json!(["read-only", "workspace-write"])
         );
         assert!(tool_requires_mutation("glass.agent.delegate"));
+        assert!(tool_requires_mutation("glass.agent.slash"));
     }
 
     const AGENT_HIDDEN_TOOLS: &[&str] = &[

@@ -20,7 +20,11 @@ points.
 
 F92’s schema metadata placement is implemented in `53fd2ca9`. Its focused
 schema regression passed and is recorded in the
-[governance task](../tasks/issue60-p0-governance-001.md).
+[governance task](../tasks/issue60-p0-governance-001.md). F3’s unified TUI
+command/action routing and visual-runtime reconciliation passed independent
+review; evidence is recorded in the
+[command-routing task](../tasks/issue60-p1-tui-command-routing-001.md) and its
+[review report](../reviews/issue60-p1-tui-command-routing-001-01.md).
 
 ## Module and integration map
 
@@ -52,12 +56,11 @@ changes are insufficient where the issue names multiple entry points.
    and worker lifecycle issues. The first bounded slice covers reports #52–#54,
    #56, and #59 in
    [the daemon lifecycle task](../tasks/issue60-p1-daemon-lifecycle-001.md).
-4. **P1 TUI, editor, browser, workspace, and MCP reliability.** The accepted
-   overlay-priority slice is recorded in the
-   [TUI overlay task](../tasks/issue60-p1-tui-overlay-priority-001.md). Continue
-   with unified typed-command/menu/palette dispatch in the
-   [TUI command-routing task](../tasks/issue60-p1-tui-command-routing-001.md),
-   then resolve stale revisions, orphaned jobs, snapshot state, editor
+4. **P1 TUI, editor, browser, workspace, and MCP reliability.** The completed
+   overlay-priority and unified command-routing slices are recorded in the
+   [TUI overlay task](../tasks/issue60-p1-tui-overlay-priority-001.md) and
+   [TUI command-routing task](../tasks/issue60-p1-tui-command-routing-001.md).
+   Continue with stale revisions, orphaned jobs, snapshot state, editor
    metadata, browser identity, schemas, and persistent option forwarding.
 5. **P2 functional/UX contracts, then P3 consistency.** Align surfaces,
    layout/pointer behavior, help, CLI aliases, and low-risk presentation.

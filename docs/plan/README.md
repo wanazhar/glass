@@ -24,6 +24,26 @@ version claims.
 | Kitty/live browser presentation | 0.3.14; [Mobile and remote](../mobile-remote.md) and [browser connection](../architecture/browser-connection.md) |
 | Pi runtime and external harness workflow | Current checkout with Pi SDK 0.84.4; [Native Pi SDK runtime](../pi-sdk-runtime.md), [Development Runtime](../development-runtime.md), and [CLI](../cli.md) |
 
+## Active plan: Consolidated cross-surface bugs (issue #60)
+
+The full prioritized worklist is [Issue #60](https://github.com/wanazhar/glass/issues/60),
+covering findings F1–F100 and reports #41–#59. This plan reads the source
+reports as reproduction evidence and uses the current tree to decide whether a
+finding remains open; a superseded source issue being closed does not establish
+that its code path is fixed. Issue #40 is a separate feature epic and is out of
+scope.
+
+Delivery follows the tracker order: P0 policy/trust/mutation, P0 data
+preservation/revision, P1 lifecycle and cross-surface contracts, then P2/P3
+TUI, rendering, and consistency items. Each bounded task records current code
+evidence, updates the relevant contract documentation when behavior changes,
+adds focused regression coverage or reproducible verification, and updates the
+Issue #60 checklist only when its acceptance is met. Keep #60 open while any
+P0/P1 work remains. See [the issue delivery analysis](analysis/issue-60.md).
+
+The issue is authorized for focused commits pushed to `main`; no release, tag,
+or publication is in scope.
+
 ## Active plan: Glass native browser engine (issue #40)
 
 Status: the bounded foundation is complete through `native-engine-234`.

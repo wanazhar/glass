@@ -87,4 +87,13 @@ overlay. Include both file and session pickers in redraw transitions.
 - `cargo test -p glass-dev --lib --locked tui::pointer::tests::`: passed, 9
   tests; `cargo test -p glass-dev --lib --locked command_menu`: passed, 3 tests.
 - Follow-up `cargo fmt --all -- --check` and `git diff --check`: passed.
-- Independent review follow-up pending; task status remains `in-progress`.
+- Independent re-review 02's event-loop polling finding is addressed: a left
+  press on a visible command-menu row survives polling while that menu remains
+  active, and overlay transitions still clear pending gestures.
+- `cargo test -p glass-dev --lib --locked tui::pointer::tests::`: passed, 10
+  tests; `cargo test -p glass-dev --lib --locked command_menu`: passed, 4 tests;
+  `cargo test -p glass-dev --lib --locked
+  overlay_opening_discards_a_press_started_on_the_covered_surface`: passed, 1
+  test.
+- Follow-up `cargo fmt --all -- --check` and `git diff --check`: passed.
+- Independent re-review pending; task status remains `in-progress`.

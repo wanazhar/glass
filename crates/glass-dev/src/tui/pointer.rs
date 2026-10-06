@@ -134,7 +134,7 @@ impl PointerState {
                     return true;
                 }
                 let held = now.duration_since(down.at);
-                if !down.dragged && held >= LONG_PRESS {
+                if !down.dragged && held >= LONG_PRESS && overlay::active_overlay(state).is_none() {
                     state.open_menu();
                     return true;
                 }
@@ -149,9 +149,22 @@ impl PointerState {
     }
 
     pub fn poll(&mut self, state: &mut DevTuiState, now: Instant) {
-        if overlay::active_overlay(state).is_some() {
-            self.reset();
-            return;
+        match overlay::active_overlay(state) {
+            Some(ActiveOverlay::CommandCenterMenu)
+                if self.down.as_ref().is_some_and(|down| {
+                    down.button == MouseButton::Left && matches!(&down.hit, HitRegion::Menu(_))
+                }) =>
+            {
+                // Menu clicks complete on mouse-up. Preserve only a press
+                // that began on a visible menu row; overlay-transition resets
+                // cancel presses that began elsewhere.
+                return;
+            }
+            Some(_) => {
+                self.reset();
+                return;
+            }
+            None => {}
         }
         if let Some(down) = &self.down
             && down.button == MouseButton::Left
@@ -620,6 +633,50 @@ mod tests {
             HitRegion::Menu(state.menu_selection)
         );
 
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn command_menu_click_runs_after_the_event_loop_poll() {
+        let (mut state, root) = overlay_state();
+        state.terminal_width = 120;
+        state.terminal_height = 40;
+        state.surface = DevSurface::Agent;
+        state.open_menu();
+        let search_index = state.surface_actions().len();
+        state.menu_selection = search_index;
+
+        let geometry = super::super::render::command_menu_geometry_for_screen(&state);
+        let selected_row =
+            geometry.list_inner.y + u16::try_from(search_index - geometry.scroll_offset).unwrap();
+        let down = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: geometry.list_inner.x,
+            row: selected_row,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        let started = Instant::now();
+        let mut pointer = PointerState::default();
+        let mut previous = overlay::active_overlay(&state);
+
+        pointer.handle(&mut state, down, started);
+        super::super::reset_pointer_on_overlay_transition(&state, &mut pointer, &mut previous);
+        pointer.poll(&mut state, started + Duration::from_millis(20));
+        super::super::reset_pointer_on_overlay_transition(&state, &mut pointer, &mut previous);
+        assert!(state.menu_open);
+        assert!(!state.command_mode);
+
+        pointer.handle(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                ..down
+            },
+            started + Duration::from_millis(40),
+        );
+        assert!(!state.menu_open);
+        assert!(state.command_mode);
         drop(state);
         std::fs::remove_dir_all(root).expect("remove test workspace");
     }

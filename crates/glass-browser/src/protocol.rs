@@ -862,9 +862,14 @@ impl std::fmt::Display for ProtocolError {
 impl std::error::Error for ProtocolError {}
 
 fn validate_identifier(value: &str, field: &str) -> Result<(), ProtocolError> {
-    if value.is_empty() || value.len() > MAX_ID_BYTES || value.chars().any(char::is_whitespace) {
+    if value.is_empty()
+        || value.len() > MAX_ID_BYTES
+        || value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
         return Err(ProtocolError::InvalidField(format!(
-            "{field} must be a bounded non-whitespace identifier"
+            "{field} must be a bounded identifier without whitespace or control characters"
         )));
     }
     Ok(())
@@ -940,6 +945,113 @@ mod tests {
         assert_eq!(value["mutationLease"]["sessionId"], "session-1");
         let decoded: GlassRequest = serde_json::from_value(value).unwrap();
         assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn identifiers_reject_empty_oversized_whitespace_and_all_controls() {
+        assert!(validate_identifier("", "identifier").is_err());
+        assert!(validate_identifier(&"x".repeat(MAX_ID_BYTES + 1), "identifier").is_err());
+        assert!(validate_identifier("has whitespace", "identifier").is_err());
+        assert!(validate_identifier("printable-café-猫", "identifier").is_ok());
+
+        for code_point in (0x00..=0x1f).chain(0x7f..=0x9f) {
+            let control = char::from_u32(code_point).expect("Unicode control scalar");
+            let identifier = format!("before{control}after");
+            let error = validate_identifier(&identifier, "requestId")
+                .expect_err("control characters are invalid in identifiers");
+            assert!(
+                error.to_string().contains("requestId"),
+                "U+{code_point:04X} should report the stable requestId field"
+            );
+        }
+    }
+
+    #[test]
+    fn every_protocol_identifier_field_uses_control_validation() {
+        let control = "invalid\u{009f}id";
+        let mut request_id = request();
+        request_id.request_id = control.into();
+        let mut correlation_id = request();
+        correlation_id.correlation_id = Some(control.into());
+        let mut session_id = request();
+        session_id.session_id = Some(control.into());
+        let mut lease_session_id = request();
+        lease_session_id
+            .mutation_lease
+            .as_mut()
+            .expect("lease")
+            .session_id = control.into();
+        let mut lease_token = request();
+        lease_token.mutation_lease.as_mut().expect("lease").token = control.into();
+
+        for (field, request) in [
+            ("requestId", request_id),
+            ("correlationId", correlation_id),
+            ("sessionId", session_id),
+            ("mutationLease.sessionId", lease_session_id),
+            ("mutationLease.token", lease_token),
+        ] {
+            assert!(
+                request.validate().unwrap_err().to_string().contains(field),
+                "{field} must use shared identifier validation"
+            );
+        }
+
+        let valid_error_response = || GlassResponse {
+            protocol_version: GLASS_PROTOCOL_VERSION,
+            request_id: "response-1".into(),
+            correlation_id: None,
+            ok: false,
+            result: None,
+            error: Some(GlassError {
+                code: "invalid".into(),
+                phase: ErrorPhase::Preflight,
+                message: "request rejected".into(),
+                mutation_possible: false,
+                retry: RetryGuidance {
+                    classification: RetryClassification::SafeAfterReobserve,
+                    recommended_operation: "inspect_page".into(),
+                },
+                retryable: Some(true),
+                details: None,
+            }),
+        };
+        let mut response_id = valid_error_response();
+        response_id.request_id = control.into();
+        let mut response_correlation_id = valid_error_response();
+        response_correlation_id.correlation_id = Some(control.into());
+        let mut recommended_operation = valid_error_response();
+        recommended_operation
+            .error
+            .as_mut()
+            .expect("error response")
+            .retry
+            .recommended_operation = control.into();
+
+        for (field, response) in [
+            ("requestId", response_id),
+            ("correlationId", response_correlation_id),
+            ("retry.recommendedOperation", recommended_operation),
+        ] {
+            assert!(
+                response.validate().unwrap_err().to_string().contains(field),
+                "{field} must use shared identifier validation"
+            );
+        }
+
+        let continuity = WebIrContinuityPayload {
+            before: web_ir_fixture(7, "Email"),
+            after: web_ir_fixture(8, "Email address"),
+            entity_id: control.into(),
+        };
+        assert!(
+            continuity
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("entityId"),
+            "entityId must use shared identifier validation"
+        );
     }
 
     #[test]

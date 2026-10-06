@@ -68,6 +68,13 @@ canonical `WebIrDiffResult` projection used by the protocol helpers.
 A request must contain protocol version `1`, a non-empty operation name, and a
 bounded request ID. A response contains one result or one structured error.
 
+Canonical identifiers validated by the Rust protocol helpers are non-empty,
+at most 128 UTF-8 bytes, and contain no whitespace or Unicode control
+characters. Printable non-ASCII characters are allowed. This rule applies to
+request and response IDs, optional correlation and session IDs, mutation lease
+session IDs and tokens, Web IR continuity entity IDs, and retry operation IDs.
+Validation errors continue to identify the affected field.
+
 ## Compatibility
 
 Glass rejects unknown envelope fields. Additive fields must be optional. A

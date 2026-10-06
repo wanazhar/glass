@@ -69,6 +69,15 @@ impl Registry {
                 if !e.manifest.system_prompt.trim().is_empty() {
                     line.push_str(" · contributes prompt text");
                 }
+                if let Some(p) = e.manifest.cache_warmer {
+                    // Showing the knobs matters: warming is a
+                    // net spend, so the operator should be able
+                    // to see it is on and how it is tuned.
+                    line.push_str(&format!(
+                        " · warms cache after {}s (prefix ≥ {}B)",
+                        p.refresh_after_s, p.min_prefix_bytes
+                    ));
+                }
                 line
             })
             .collect()
@@ -114,6 +123,17 @@ impl Registry {
     }
 
     /// Combined system-prompt contributions.
+    /// The cache-warmer policy of the first extension that
+    /// declares one, if any.
+    ///
+    /// One warmer is enough: two refreshing the same prefix
+    /// would pay the cache-write cost twice for the same hit.
+    pub fn cache_warmer(&self) -> Option<protocol::WarmerPolicy> {
+        self.exts
+            .iter()
+            .find_map(|e| e.manifest.cache_warmer)
+    }
+
     pub fn system_prompt(&mut self) -> String {
         let mut out = String::new();
         for e in &mut self.exts {

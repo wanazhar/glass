@@ -90,6 +90,38 @@ pub struct Manifest {
     pub commands: Vec<CommandSpec>,
     /// Text appended to the system prompt.
     pub system_prompt: String,
+    /// Cache-warming policy, if this extension declares one.
+    ///
+    /// The extension owns the *policy* (how long to wait, how big
+    /// the prefix must be); the host owns the *mechanism*, because
+    /// only the host holds the credentials and only the host is
+    /// still running while the harness sits idle. A subprocess
+    /// cannot warm the cache itself: it has no API key, and the
+    /// host is not reading its stdout between turns.
+    pub cache_warmer: Option<WarmerPolicy>,
+}
+
+/// Policy for refreshing the prompt cache across idle gaps.
+///
+/// The provider expires the cache `ttl_s` after the last write.
+/// Refreshing at `refresh_after_s` — just before expiry — keeps the
+/// next turn a cache hit instead of a full re-read. That trades a
+/// cache *write* (1.25x the prefix) for a faster, cheaper turn
+/// (0.1x instead of 1.0x), which is a net spend, not a saving; it
+/// is worth it only when the latency of a cold prefix matters.
+#[derive(Clone, Copy, Debug)]
+pub struct WarmerPolicy {
+    /// Seconds after a turn to refresh the cache.
+    pub refresh_after_s: u64,
+    /// Smallest prefix worth warming, in bytes. Below this the
+    /// latency win is noise.
+    pub min_prefix_bytes: usize,
+}
+
+impl WarmerPolicy {
+    /// Five-minute TTL, refreshed at four, for prefixes above
+    /// roughly a thousand tokens.
+    pub const DEFAULT: Self = Self { refresh_after_s: 240, min_prefix_bytes: 4000 };
 }
 
 /// One message sent to an extension.
@@ -202,12 +234,31 @@ pub fn parse_manifest(v: &Value) -> Result<Manifest, String> {
         })
         .unwrap_or_default();
 
+    // The warmer policy is optional and deliberately conservative:
+    // an extension must opt in, and both knobs fall back to sane
+    // defaults rather than trusting a hostile value.
+    let cache_warmer = v.get("cache_warmer").and_then(Value::as_object).map(|o| {
+        let refresh_after_s = o
+            .get("refresh_after_s")
+            .and_then(Value::as_u64)
+            .filter(|s| *s > 0 && *s <= 3600)
+            .unwrap_or(WarmerPolicy::DEFAULT.refresh_after_s);
+        let min_prefix_bytes = o
+            .get("min_prefix_bytes")
+            .and_then(Value::as_u64)
+            .filter(|b| *b > 0 && *b <= 10_000_000)
+            .map(|b| b as usize)
+            .unwrap_or(WarmerPolicy::DEFAULT.min_prefix_bytes);
+        WarmerPolicy { refresh_after_s, min_prefix_bytes }
+    });
+
     Ok(Manifest {
         version: v.get("version").and_then(Value::as_str).unwrap_or("0").to_string(),
         system_prompt: v.get("system_prompt").and_then(Value::as_str).unwrap_or("").to_string(),
         name,
         tools,
         commands,
+        cache_warmer,
     })
 }
 
@@ -247,6 +298,38 @@ mod tests {
             ],
             "commands": [ { "name": "cache", "description": "show cache stats" } ]
         })
+    }
+
+    #[test]
+    fn no_cache_warmer_by_default() {
+        // Warming is a net spend, so it must be opted into.
+        assert!(parse_manifest(&reply()).unwrap().cache_warmer.is_none());
+    }
+
+    #[test]
+    fn cache_warmer_policy_is_parsed() {
+        let mut r = reply();
+        r["cache_warmer"] = json!({ "refresh_after_s": 240, "min_prefix_bytes": 4000 });
+        let m = parse_manifest(&r).unwrap();
+        let p = m.cache_warmer.expect("policy declared");
+        assert_eq!(p.refresh_after_s, 240);
+        assert_eq!(p.min_prefix_bytes, 4000);
+    }
+
+    #[test]
+    fn cache_warmer_falls_back_to_defaults() {
+        // An empty object must not disable warming, and a
+        // hostile value must not make the host sleep forever.
+        let mut r = reply();
+        r["cache_warmer"] = json!({});
+        let p = parse_manifest(&r).unwrap().cache_warmer.unwrap();
+        assert_eq!(p.refresh_after_s, WarmerPolicy::DEFAULT.refresh_after_s);
+        assert_eq!(p.min_prefix_bytes, WarmerPolicy::DEFAULT.min_prefix_bytes);
+
+        r["cache_warmer"] = json!({ "refresh_after_s": 999999, "min_prefix_bytes": 0 });
+        let p = parse_manifest(&r).unwrap().cache_warmer.unwrap();
+        assert_eq!(p.refresh_after_s, WarmerPolicy::DEFAULT.refresh_after_s);
+        assert_eq!(p.min_prefix_bytes, WarmerPolicy::DEFAULT.min_prefix_bytes);
     }
 
     #[test]

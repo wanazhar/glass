@@ -1,7 +1,7 @@
 ---
 id: issue60-p0-protocol-001
 scope: glass-browser/protocol-identifiers
-status: in-progress
+status: done
 depends-on: []
 ---
 

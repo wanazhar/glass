@@ -96,6 +96,7 @@ image request to media-source readiness or playback state.
 - `docs/plan/README.md`
 - `docs/plan/tasks/native-engine-browser-874.md`
 - `docs/plan/reviews/native-engine-browser-874-01.md`
+- `docs/plan/reviews/native-engine-browser-874-02.md`
 
 ## Verification
 
@@ -132,3 +133,12 @@ image request to media-source readiness or playback state.
   binaries for documentation coverage.
 - Commit implementation locally with a focused Conventional Commit before
   independent review. Do not push or claim remote CI. Keep Issue #40 open.
+
+## Reviews
+
+- [Initial review](../reviews/native-engine-browser-874-01.md) recorded four
+  blocking findings and one non-blocking stale-response test gap.
+- [Follow-up review](../reviews/native-engine-browser-874-02.md) found the
+  four blocking source findings resolved; the stale-response race test remains
+  a follow-up, and process-backed verification was blocked by loopback
+  permission errors in that review environment.

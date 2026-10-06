@@ -27,11 +27,15 @@ pub struct Editor {
     history: Vec<String>,
     hist_idx: Option<usize>,
     draft: String,
+    /// The column the cursor is drifting toward across
+    /// consecutive up/down moves. `None` means the next
+    /// vertical move uses the column the cursor is on.
+    goal_col: Option<usize>,
 }
 
 impl Editor {
     pub fn new() -> Self {
-        Self { buf: String::new(), cursor: 0, history: Vec::new(), hist_idx: None, draft: String::new() }
+        Self { buf: String::new(), cursor: 0, history: Vec::new(), hist_idx: None, draft: String::new(), goal_col: None }
     }
 
     pub fn text(&self) -> &str {
@@ -84,6 +88,7 @@ impl Editor {
                     let prev = prev_boundary(&self.buf, self.cursor);
                     self.buf.replace_range(prev..self.cursor, "");
                     self.cursor = prev;
+                    self.goal_col = None;
                 }
                 Edit::Continue
             }
@@ -91,31 +96,48 @@ impl Editor {
                 if self.cursor < self.buf.len() {
                     let next = prev_boundary(&self.buf, self.cursor + 1);
                     self.buf.replace_range(self.cursor..next, "");
+                    self.goal_col = None;
                 }
                 Edit::Continue
             }
             KeyCode::Left => {
                 self.cursor = prev_boundary(&self.buf, self.cursor);
+                self.goal_col = None;
                 Edit::Continue
             }
             KeyCode::Right => {
                 self.cursor = next_boundary(&self.buf, self.cursor);
+                self.goal_col = None;
                 Edit::Continue
             }
             KeyCode::Home => {
                 self.cursor = 0;
+                self.goal_col = None;
                 Edit::Continue
             }
             KeyCode::End => {
                 self.cursor = self.buf.len();
+                self.goal_col = None;
                 Edit::Continue
             }
             KeyCode::Up => {
-                self.recall(-1);
+                // A multi-line draft is an editing surface:
+                // up and down move the cursor between its
+                // lines. Only a single-line buffer treats
+                // them as history recall.
+                if self.buf.contains('\n') {
+                    self.move_line(-1);
+                } else {
+                    self.recall(-1);
+                }
                 Edit::Continue
             }
             KeyCode::Down => {
-                self.recall(1);
+                if self.buf.contains('\n') {
+                    self.move_line(1);
+                } else {
+                    self.recall(1);
+                }
                 Edit::Continue
             }
             _ => Edit::Continue,
@@ -125,6 +147,7 @@ impl Editor {
     fn insert(&mut self, c: char) {
         self.buf.insert(self.cursor, c);
         self.cursor += c.len_utf8();
+        self.goal_col = None;
     }
 
     /// Insert text at the cursor. This is the paste path:
@@ -134,6 +157,7 @@ impl Editor {
     pub fn insert_str(&mut self, s: &str) {
         self.buf.insert_str(self.cursor, s);
         self.cursor += s.len();
+        self.goal_col = None;
     }
 
     /// Walk prompt history. `delta` of -1 is older, +1 is newer.
@@ -151,6 +175,62 @@ impl Editor {
             None => std::mem::take(&mut self.draft),
         };
         self.cursor = self.buf.len();
+        self.goal_col = None;
+    }
+
+    /// Move the cursor up (`delta` -1) or down (+1) one
+    /// logical line, keeping the column.
+    ///
+    /// The column is remembered across consecutive moves
+    /// so that stepping up and back down lands on the
+    /// character you started on, even when the lines are
+    /// different lengths: the goal is clamped to each
+    /// line, but not overwritten by the clamped result.
+    fn move_line(&mut self, delta: isize) {
+        let starts = self.line_starts();
+        if starts.len() < 2 {
+            return;
+        }
+        // The line the cursor is on is the last one that
+        // starts at or before it.
+        let cur = starts.partition_point(|&s| s <= self.cursor) - 1;
+        // Column in characters, not bytes: a byte column
+        // would drift inside a multi-byte character.
+        let col = self.buf[starts[cur]..self.cursor].chars().count();
+        let goal = self.goal_col.unwrap_or(col);
+        self.goal_col = Some(goal);
+
+        let target = (cur as isize + delta).clamp(0, starts.len() as isize - 1) as usize;
+        let line_start = starts[target];
+        let line_end = if target + 1 < starts.len() {
+            starts[target + 1] - 1
+        } else {
+            self.buf.len()
+        };
+        let line = &self.buf[line_start..line_end];
+        let target_col = goal.min(line.chars().count());
+
+        // Turn the character column back into a byte
+        // offset inside the target line.
+        let mut off = 0usize;
+        for (seen, c) in line.chars().enumerate() {
+            if seen == target_col {
+                break;
+            }
+            off += c.len_utf8();
+        }
+        self.cursor = line_start + off;
+    }
+
+    /// Byte offset of the start of every logical line.
+    fn line_starts(&self) -> Vec<usize> {
+        let mut starts = vec![0usize];
+        for (i, c) in self.buf.char_indices() {
+            if c == '\n' {
+                starts.push(i + 1);
+            }
+        }
+        starts
     }
 
     /// Draw the editor at `base_row`, wrapping at `width`. Returns rows used.
@@ -299,6 +379,62 @@ pub fn repaint_rows(base_row: u16, count: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn move_line_keeps_the_column() {
+        let mut e = Editor::new();
+        e.insert_str("ab\ncd\nef");
+        // Cursor at the end of "ef", column 2. Move up
+        // twice: land on "cd" then "ab", same column.
+        e.move_line(-1);
+        assert_eq!(e.cursor, 5, "on 'cd' at column 2");
+        e.move_line(-1);
+        assert_eq!(e.cursor, 2, "on 'ab' at column 2");
+    }
+
+    #[test]
+    fn move_line_clamps_to_shorter_lines() {
+        let mut e = Editor::new();
+        e.insert_str("abcd\nef");
+        // Column 4 on "abcd"; move down to "ef" which is
+        // only 2 long, so the cursor clamps to its end.
+        e.cursor = 4;
+        e.move_line(1);
+        assert_eq!(e.cursor, 7, "clamped to the end of 'ef'");
+        // The goal column survives, so moving back up
+        // restores the original column.
+        e.move_line(-1);
+        assert_eq!(e.cursor, 4, "goal column restored");
+    }
+
+    #[test]
+    fn move_line_never_leaves_the_buffer() {
+        let mut e = Editor::new();
+        e.insert_str("a\nb\nc");
+        e.cursor = 0;
+        e.move_line(-1);
+        e.move_line(-1);
+        assert_eq!(e.cursor, 0, "cannot move above the first line");
+        e.move_line(1);
+        e.move_line(1);
+        e.move_line(1);
+        assert_eq!(e.cursor, 4, "cannot move below the last line");
+    }
+
+    #[test]
+    fn single_line_buffer_still_recalls_history() {
+        let mut e = Editor::new();
+        for prompt in ["one", "two", "three"] {
+            e.insert_str(prompt);
+            e.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        }
+        // A fresh single-line draft.
+        e.insert_str("one");
+        // A single-line buffer has nowhere to move between,
+        // so Up must fall back to history, not line motion.
+        e.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(e.text(), "three", "recalled, not moved");
+    }
 
     #[test]
     fn wrap_breaks_on_width() {

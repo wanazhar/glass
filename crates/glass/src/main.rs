@@ -41,8 +41,9 @@ In the prompt:
   ctrl-g      fullscreen transcript (scroll, collapse, follow)
   ctrl-c      interrupt the current turn
   ctrl-d      quit
-  up/down     prompt history
+  up/down     prompt history; line motion in a multi-line draft
   /btw <q>    ask a side question without recording it
+  /model <m>  switch the model for the rest of the session
   /extensions loaded extensions, their tools and commands
   /help       show this text
 
@@ -106,9 +107,6 @@ fn run(args: &[String]) -> Result<(), String> {
     let cfg_path = config::default_path();
     let cfg = config::load(&cfg_path).map_err(|e| e.to_string())?;
 
-    let provider = provider::build(&cfg.provider, &cfg.base_url, cfg.api_key(), &cfg.model)
-        .map_err(|e| e.to_string())?;
-
     let loaded_mods = mods::load(&cfg.mods)?;
 
     // Extensions are opt-in: nothing is spawned unless config names it, so a
@@ -156,7 +154,7 @@ fn run(args: &[String]) -> Result<(), String> {
 
     term::enter().map_err(|e| format!("cannot set up terminal: {e}"))?;
     let mut extensions = extensions;
-    let result = repl(cfg, provider, loaded_mods, &mut extensions, catalogue, project_instructions, session);
+    let result = repl(cfg, loaded_mods, &mut extensions, catalogue, project_instructions, session);
     // Extensions are child processes: they must be reaped on every exit path,
     // or they outlive the session holding the workspace open.
     extensions.shutdown();
@@ -165,14 +163,34 @@ fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn repl(
-    cfg: config::Config,
-    provider: Box<dyn provider::Provider>,
+    mut cfg: config::Config,
     loaded_mods: Vec<Box<dyn glass_mod_api::Mod_>>,
     extensions: &mut ext::Registry,
     catalogue: Option<String>,
     project_instructions: Option<String>,
     mut session: Session,
 ) -> Result<(), String> {
+    use std::sync::{Arc, Mutex};
+
+    // The model lives in one shared cell so `/model` can switch it
+    // and both the live provider and the cache warmer pick the new
+    // one up — neither holds a stale copy. The provider itself is not
+    // `Send`, but it is cheap to construct from configuration, so it
+    // is rebuilt on demand rather than shared with the warmer thread.
+    let current_model = Arc::new(Mutex::new(cfg.model.clone()));
+    let factory: crate::warmer::ProviderFactory = {
+        let kind = cfg.provider.clone();
+        let base_url = cfg.base_url.clone();
+        let api_key = cfg.api_key();
+        let model = Arc::clone(&current_model);
+        Arc::new(move || {
+            let m = model.lock().map_err(|_| "model lock poisoned".to_string())?.clone();
+            provider::build(&kind, &base_url, api_key.clone(), &m)
+                .map_err(|e| e.to_string())
+        })
+    };
+    let mut provider = factory().map_err(|e| e.to_string())?;
+
     let mut state = tools::State::new();
     let mut editor = Editor::new();
     let mut back = glass_tui::term::BackBuffer::new();
@@ -182,23 +200,7 @@ fn repl(
     let keys = input::KeyReader::spawn();
     let mut pending = queue::Queue::new();
 
-    // The cache warmer builds its own provider inside its
-    // background thread: the turn's provider is not `Send`,
-    // but a provider is cheap to construct from configuration,
-    // so the warmer makes a fresh one rather than sharing.
-    let warmer = {
-        let kind = cfg.provider.clone();
-        let base_url = cfg.base_url.clone();
-        let model = cfg.model.clone();
-        let api_key = cfg.api_key();
-        let factory: crate::warmer::ProviderFactory = std::sync::Arc::new(
-            move || {
-                provider::build(&kind, &base_url, api_key.clone(), &model)
-                    .map_err(|e| e.to_string())
-            },
-        );
-        crate::warmer::Warmer::new(factory)
-    };
+    let warmer = crate::warmer::Warmer::new(Arc::clone(&factory));
 
     let (mut w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
     let mut prompt_row = h.saturating_sub(2);
@@ -293,6 +295,31 @@ fn repl(
                 Ok(answer) if answer.is_empty() => println!("\x1b[33mbtw: no answer\x1b[0m"),
                 Ok(answer) => print!("{}", btw::render(question, &answer)),
                 Err(e) => println!("\x1b[31mbtw failed: {e}\x1b[0m"),
+            }
+            continue;
+        }
+
+        // `/model <name>` switches the model for the rest of the
+        // session. The candidate is built before anything is
+        // committed, so a typo leaves the running session on the
+        // model that was actually working.
+        if let Some(name) = text.strip_prefix("/model") {
+            let name = name.trim();
+            if name.is_empty() {
+                println!("\x1b[33mmodel: {}\x1b[0m", cfg.model);
+                println!("\x1b[33musage: /model <name>\x1b[0m");
+                continue;
+            }
+            match provider::build(&cfg.provider, &cfg.base_url, cfg.api_key(), name) {
+                Ok(p) => {
+                    if let Ok(mut m) = current_model.lock() {
+                        *m = name.to_string();
+                    }
+                    provider = p;
+                    cfg.model = name.to_string();
+                    println!("\x1b[90mmodel: {name}\x1b[0m");
+                }
+                Err(e) => println!("\x1b[31m/model failed: {e}\x1b[0m"),
             }
             continue;
         }

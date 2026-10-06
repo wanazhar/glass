@@ -54,8 +54,8 @@ The current daemon lifecycle slice covers reports #52–#54, #56, and #59:
 [task record](tasks/issue60-p1-daemon-lifecycle-001.md).
 The first TUI P1 slice centralizes overlay precedence across input, pointer, and
 rendering paths: [task record](tasks/issue60-p1-tui-overlay-priority-001.md).
-The next slice unifies typed command, palette action, menu, and live-browser
-dispatch: [task record](tasks/issue60-p1-tui-command-routing-001.md).
+The completed F3 slice unifies typed command, palette action, menu, and
+live-browser dispatch: [task record](tasks/issue60-p1-tui-command-routing-001.md).
 
 ## Active plan: Glass native browser engine (issue #40)
 

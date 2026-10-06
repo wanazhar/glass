@@ -1,7 +1,7 @@
 ---
 id: issue60-p1-tui-command-routing-001
 scope: glass-dev/tui-command-routing
-status: in-progress
+status: complete
 depends-on: [issue60-p1-tui-overlay-priority-001]
 ---
 
@@ -41,7 +41,9 @@ click.
   once, reports unavailable renderers consistently, and keeps the advertised
   browser presentation state synchronized with the runtime. Agent-watch
   activation and asynchronous screenshot failures also reconcile through that
-  runtime path.
+  runtime path. Discard queued ANSI frames after live mode stops. A terminated
+  Herdr worker moves this runtime to Semantic-only mode and future live
+  requests report its persistent failure reason.
 - Pointer menu selection uses the same action path as keyboard menu selection;
   it cannot claim live view started without applying the visual-runtime
   request.
@@ -59,7 +61,8 @@ click.
   action, and a pointer menu action. Verify each changes runtime state through
   one request path, including agent-watch activation and renderer-unavailable
   and screenshot-failure paths. Verify workspace presentation and runtime live
-  flags agree after each result.
+  flags agree after each result. Verify queued ANSI success results are ignored
+  after stop and terminated Herdr workers cannot be restarted as live.
 - Run focused TUI command, state, pointer, and visual-runtime tests, package
   checks, formatting, and independent review.
 
@@ -83,7 +86,11 @@ click.
 - `python3 scripts/check-release-documentation.py --require-previous-version --report /tmp/glass-release-documentation.json` — passed.
 - `python3 scripts/check-documentation-depth.py` — passed.
 - `python3 scripts/check-tui-shortcuts.py` — passed.
-- `python3 scripts/check-documentation-coverage.py` — reports the live MCP tool set differs from its conformance fixture and `docs/mcp-schema-budget.md` omits the live measurements `177` tools and `76,967` serialized bytes. Those MCP files are unchanged by this task.
+- `python3 scripts/check-documentation-coverage.py` — reports that the live MCP
+  tool set differs from its conformance fixture and
+  `docs/mcp-schema-budget.md` omits the live measurements (`177` tools and
+  `76,967` serialized bytes). Those MCP files are unchanged by this task.
 - `cargo fmt --all -- --check` and `git diff --check` — passed.
+- Independent review passed: [review report](../reviews/issue60-p1-tui-command-routing-001-01.md).
 
-Independent review is pending; keep task status `in-progress` until it passes.
+Finding F3 is complete.

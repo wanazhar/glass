@@ -278,22 +278,20 @@ impl GitService {
         current_branch: &str,
         default_branch: &str,
     ) -> GitResult<()> {
-        let destination_branch = branch.map(push_branch_name).transpose()?;
-        crate::github::require_push_branches(
-            current_branch,
-            destination_branch.as_deref().unwrap_or(current_branch),
-            default_branch,
-        )
-        .map_err(|error| GitError::InvalidInput(error.to_string()))?;
+        let source_branch = push_branch_name(current_branch)?;
+        let destination_branch = branch
+            .map(push_branch_name)
+            .transpose()?
+            .unwrap_or_else(|| source_branch.clone());
+        crate::github::require_push_branches(&source_branch, &destination_branch, default_branch)
+            .map_err(|error| GitError::InvalidInput(error.to_string()))?;
+        let refspec = explicit_push_refspec(&source_branch, &destination_branch)?;
         let mut arguments = vec!["push"];
         if let Some(remote) = remote {
             validate_ref(remote)?;
             arguments.push(remote);
         }
-        if let Some(branch) = branch {
-            push_branch_name(branch)?;
-            arguments.push(branch);
-        }
+        arguments.push(&refspec);
         self.run(&arguments, "push")?;
         Ok(())
     }
@@ -856,6 +854,12 @@ fn push_branch_name(branch: &str) -> GitResult<String> {
     Ok(branch.to_string())
 }
 
+fn explicit_push_refspec(source: &str, destination: &str) -> GitResult<String> {
+    let source = push_branch_name(source)?;
+    let destination = push_branch_name(destination)?;
+    Ok(format!("refs/heads/{source}:refs/heads/{destination}"))
+}
+
 fn absolute_worktree_path(path: &Path) -> GitResult<PathBuf> {
     if !path.is_absolute() || path == Path::new("/") {
         return Err(GitError::InvalidInput(
@@ -1041,6 +1045,97 @@ mod tests {
         assert!(push_branch_name("feature/fix:develop").is_err());
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn push_without_destination_uses_one_explicit_refspec_despite_remote_push_config() {
+        let root = repository();
+        let service = GitService::open(&root).unwrap();
+        let run_git = |directory: &Path, arguments: &[&str]| {
+            let output = Command::new("git")
+                .args(arguments)
+                .current_dir(directory)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {arguments:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+
+        run_git(&root, &["branch", "-M", "main"]);
+        std::fs::write(root.join("main.txt"), "main\n").unwrap();
+        service.stage(&["main.txt".into()]).unwrap();
+        service.commit("test: initialize protected main").unwrap();
+        service.create_branch("feature/push", None).unwrap();
+        service.switch_branch("feature/push", false).unwrap();
+        std::fs::write(root.join("feature.txt"), "feature\n").unwrap();
+        service.stage(&["feature.txt".into()]).unwrap();
+        service.commit("test: add feature commit").unwrap();
+
+        let remote = root.with_extension("push-remote.git");
+        let remote_path = remote.to_string_lossy().into_owned();
+        let output = Command::new("git")
+            .args(["init", "--bare", "-q", &remote_path])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        service
+            .run(
+                &["remote", "add", "origin", &remote_path],
+                "add test remote",
+            )
+            .unwrap();
+        service
+            .run(
+                &[
+                    "config",
+                    "--add",
+                    "remote.origin.push",
+                    "refs/heads/main:refs/heads/main",
+                ],
+                "configure protected push ref",
+            )
+            .unwrap();
+        service
+            .run(
+                &[
+                    "config",
+                    "--add",
+                    "remote.origin.push",
+                    "refs/heads/feature/push:refs/heads/feature/push",
+                ],
+                "configure feature push ref",
+            )
+            .unwrap();
+        service
+            .run(
+                &["config", "push.default", "matching"],
+                "configure push default",
+            )
+            .unwrap();
+
+        assert_eq!(
+            explicit_push_refspec("feature/push", "feature/push").unwrap(),
+            "refs/heads/feature/push:refs/heads/feature/push"
+        );
+        service
+            .push_with_branch_policy(Some("origin"), None, "feature/push", "main")
+            .unwrap();
+
+        let refs = Command::new("git")
+            .args(["for-each-ref", "--format=%(refname:short)"])
+            .current_dir(&remote)
+            .output()
+            .unwrap();
+        assert!(refs.status.success());
+        let refs = String::from_utf8(refs.stdout).unwrap();
+        assert_eq!(refs.trim(), "feature/push");
+
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(remote).unwrap();
     }
 
     #[cfg(unix)]

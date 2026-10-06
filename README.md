@@ -152,10 +152,11 @@ A new provider is a base URL and a model id, not a new implementation.
 | `ctrl-g` | fullscreen transcript: scroll, collapse, follow |
 | `ctrl-c` | interrupt |
 | `ctrl-d` | quit |
-| `up` / `down` | prompt history |
+| `up` / `down` | prompt history (line motion in a multi-line draft) |
 | `enter` | steer the running turn |
 | `alt-enter` | queue for after the turn |
 | `/help` | help |
+| `/model <name>` | switch the model for the rest of the session |
 | `/extensions` | loaded extensions, their tools and commands |
 
 ### Steering
@@ -225,6 +226,22 @@ short content anchor rather than by re-typed text:
 A stale anchor is rejected before anything is written, and a batch of edits is
 all-or-nothing. See `extensions/hashline/README.md` for why this is an extension
 and not a third core tool.
+
+## Plan tracking
+
+`extensions/todo` adds a `todo` tool, the way t3 codes ships it. The model
+keeps its own plan: `add` items as it breaks a task down, `check` them off as
+each finishes. The list lives in the extension process for the session, so it
+costs nothing to keep and disappears when the session ends. The tool returns the
+whole list after every change, so the model reads the state it just produced
+rather than making a separate call.
+
+```sh
+extensions = ["python3 ~/.config/glass/ext/todo.py"]
+```
+
+It is an extension for the same reason hashline is: a plan is a capability, not
+a core tool, and shipping it out of process keeps the two core tools to two.
 
 ## Context management
 

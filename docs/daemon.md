@@ -31,6 +31,11 @@ glass daemon stop
 Use `--socket PATH` and `--status PATH` to set explicit paths. The default
 paths are in the platform local-data directory.
 
+`daemon start` retains the spawned child until the status file confirms that
+the same process owns the requested endpoint. If the process exits early,
+startup reports that exit; if readiness times out after three seconds, Glass
+terminates and reaps the child before returning the timeout.
+
 ## Access control
 
 The socket has mode `0600`.
@@ -137,6 +142,11 @@ The native daemon protocol provides `workspace.open`, `workspace.list`,
 shuts the actor down and reaps owned resources; it does not delete project
 files, Pi session JSONL, or persistent timeline data.
 
+The registry keeps a workspace entry until its actor acknowledges shutdown
+after dropping its owned workspace. Concurrent close requests are serialized.
+If sending shutdown or receiving its acknowledgement fails, the registry
+entry remains available for retry or reconciliation.
+
 ## Recoverable operations
 
 `operation.submit` requires a client-generated request ID, actor, tool call,
@@ -163,6 +173,16 @@ when cancellation prevents a queued operation from starting. If the worker
 cannot report an authoritative outcome, the operation becomes `indeterminate`
 and is never presented as success. Daemon shutdown cancels queued/running
 operations and waits for the owned worker before acknowledging shutdown.
+
+If an operation worker panics, Glass marks that operation `indeterminate` and
+reopens the workspace actor from its durable root and trust store, restoring
+the resident-agent broker settings. A poisoned operation registry is recovered
+under its mutex; active records become `indeterminate` before the poison flag is
+cleared, so inspection and later operations can continue.
+
+Each request and response is limited to 1 MiB. When a result exceeds the
+response limit, the daemon sends a bounded error response with the valid
+request ID and continues reading that client's stream.
 
 Direct `workspace.tool` remains available for bounded observations. It rejects
 mutations and known long-running tool families with an instruction to submit an

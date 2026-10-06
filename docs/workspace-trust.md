@@ -55,7 +55,8 @@ Public custom-command execution requires both factors in its
 `ToolAuthorization`. Raw project, Git, and kernel mutation methods are
 crate-private, so external library callers must use the governed workspace
 tool API. Git pushes apply the repository's queried default-branch policy at
-the Git service boundary as well as at the tool router.
+the Git service boundary as well as at the tool router, and specify one source
+and destination ref so local push configuration cannot add extra branches.
 
 Read-only trust APIs are available through the authoritative tool router:
 

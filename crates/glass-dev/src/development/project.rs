@@ -10,7 +10,7 @@ use crate::development::graph::{LinkEvidence, LinkProvenance, RuntimeLink};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::Write,
     path::{Component, Path, PathBuf},
@@ -356,20 +356,54 @@ impl ProjectWorkspace {
                 "editor buffer {path} has an empty selection"
             )));
         }
-        let mut content = buffer.content;
+        let mut content = buffer.content.clone();
         content.replace_range(start..end, &replacement);
+        if content.len() > MAX_BUFFER_BYTES {
+            return Err(DevelopmentError::InvalidInput(format!(
+                "buffer exceeds the {} byte limit",
+                MAX_BUFFER_BYTES
+            )));
+        }
         let cursor =
             text_position_at_offset(&content, start + replacement.len()).ok_or_else(|| {
                 DevelopmentError::InvalidInput(
                     "replacement ended at an invalid UTF-8 boundary".into(),
                 )
             })?;
-        self.edit_buffer(path, content, actor.clone())?;
-        self.set_buffer_cursor(path, cursor.line, cursor.column)?;
-        self.set_buffer_selection(path, None, actor)?;
-        self.buffer(path)
-            .cloned()
-            .ok_or_else(|| DevelopmentError::NotFound(format!("buffer {path}")))
+        let revision = self.revision.saturating_add(1);
+        let mut updated = buffer.clone();
+        updated.content = content;
+        updated.dirty = hash(&updated.content) != updated.original_hash;
+        updated.cursor_line = cursor.line;
+        updated.cursor_column = cursor.column;
+        updated.selection = None;
+        updated.actor = actor.clone();
+        self.record_as(
+            actor,
+            DevelopmentEventKind::EditorSelectionReplaced,
+            serde_json::json!({
+                "path": updated.path,
+                "revision": revision,
+                "contentHash": hash(&updated.content),
+                "originalHash": updated.original_hash,
+                "dirty": updated.dirty,
+                "cursorLine": updated.cursor_line,
+                "cursorColumn": updated.cursor_column,
+                "selection": updated.selection,
+            }),
+        )?;
+
+        let mut undo = self.undo.get(path).cloned().unwrap_or_default();
+        if undo.len() >= 256 {
+            undo.remove(0);
+        }
+        undo.push(buffer.content);
+        self.undo.insert(path.to_string(), undo);
+        self.redo.remove(path);
+        self.buffers.insert(path.to_string(), updated.clone());
+        self.revision = revision;
+        self.invalidate_tree_cache();
+        Ok(updated)
     }
 
     pub fn editor_comments(&self, path: Option<&str>) -> Vec<super::EditorComment> {
@@ -670,23 +704,96 @@ impl ProjectWorkspace {
             .get(id)
             .cloned()
             .ok_or_else(|| DevelopmentError::NotFound(format!("checkpoint {id}")))?;
-        for restored in &checkpoint.buffers {
-            if let Some(current) = self.buffers.get(&restored.path) {
-                self.undo
-                    .entry(restored.path.clone())
-                    .or_default()
-                    .push(current.content.clone());
+        let mut paths = BTreeSet::new();
+        let mut restored_buffers = Vec::with_capacity(checkpoint.buffers.len());
+        for mut restored in checkpoint.buffers.iter().cloned() {
+            let (_, relative) = self.resolve_path(&restored.path, true)?;
+            if relative != restored.path || !paths.insert(relative.clone()) {
+                return Err(DevelopmentError::InvalidInput(
+                    "checkpoint contains a non-canonical or duplicate buffer path".into(),
+                ));
             }
-            self.buffers.insert(restored.path.clone(), restored.clone());
+            if restored.content.len() > MAX_BUFFER_BYTES {
+                return Err(DevelopmentError::InvalidInput(format!(
+                    "checkpoint buffer {} exceeds the {} byte limit",
+                    restored.path, MAX_BUFFER_BYTES
+                )));
+            }
+            if restored.original_hash.len() != 64
+                || !restored
+                    .original_hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(DevelopmentError::InvalidInput(format!(
+                    "checkpoint buffer {} has an invalid original hash",
+                    restored.path
+                )));
+            }
+            restored.original_hash.make_ascii_lowercase();
+            let end = text_position_at_offset(&restored.content, restored.content.len())
+                .expect("the end of a UTF-8 string is a valid editor position");
+            let normalize_position = |position| {
+                text_position_offset(&restored.content, position)
+                    .and_then(|offset| text_position_at_offset(&restored.content, offset))
+                    .unwrap_or(end)
+            };
+            let cursor = normalize_position(super::TextPosition {
+                line: restored.cursor_line,
+                column: restored.cursor_column,
+            });
+            restored.cursor_line = cursor.line;
+            restored.cursor_column = cursor.column;
+            restored.selection = restored.selection.and_then(|selection| {
+                let anchor = text_position_offset(&restored.content, selection.anchor)?;
+                let active = text_position_offset(&restored.content, selection.active)?;
+                Some(super::TextSelection {
+                    anchor: text_position_at_offset(&restored.content, anchor)?,
+                    active: text_position_at_offset(&restored.content, active)?,
+                })
+            });
+            restored.dirty = hash(&restored.content) != restored.original_hash;
+            restored_buffers.push(restored);
         }
-        let revision = self.bump_editor_revision();
+
+        let revision = self.revision.saturating_add(1);
+        let mut undo = self.undo.clone();
+        let mut redo = self.redo.clone();
+        for restored in &restored_buffers {
+            if let Some(current) = self.buffers.get(&restored.path) {
+                let history = undo.entry(restored.path.clone()).or_default();
+                if history.len() >= 256 {
+                    history.remove(0);
+                }
+                history.push(current.content.clone());
+            }
+            redo.remove(&restored.path);
+        }
         self.record_as(
             actor,
             DevelopmentEventKind::EditorCheckpointRestored,
-            serde_json::json!({"id": id, "revision": revision}),
+            serde_json::json!({
+                "id": id,
+                "revision": revision,
+                "buffers": restored_buffers.iter().map(|buffer| serde_json::json!({
+                    "path": buffer.path,
+                    "contentHash": hash(&buffer.content),
+                    "originalHash": buffer.original_hash,
+                    "dirty": buffer.dirty,
+                    "cursorLine": buffer.cursor_line,
+                    "cursorColumn": buffer.cursor_column,
+                    "selection": buffer.selection,
+                })).collect::<Vec<_>>(),
+            }),
         )?;
+        for restored in &restored_buffers {
+            self.buffers.insert(restored.path.clone(), restored.clone());
+        }
+        self.undo = undo;
+        self.redo = redo;
+        self.revision = revision;
         self.invalidate_tree_cache();
-        Ok(checkpoint.buffers)
+        Ok(restored_buffers)
     }
 
     fn validate_editor_path(&self, path: &str) -> DevelopmentResult<()> {
@@ -2256,6 +2363,33 @@ mod tests {
                 .as_deref(),
             Some("lpha\nβe")
         );
+        let original_hash = project.buffer("src/main.rs").unwrap().original_hash.clone();
+        let before = project.buffer("src/main.rs").unwrap().clone();
+        let before_revision = project.revision();
+        let timeline_path = project.timeline().path().to_path_buf();
+        project.undo.clear();
+        project
+            .redo
+            .insert("src/main.rs".into(), vec!["stale redo".into()]);
+        project.list_files_result().unwrap();
+        assert!(project.tree_cache.lock().unwrap().is_some());
+        let prior_event_count = project.timeline().events().len();
+
+        assert!(matches!(
+            project.replace_buffer_selection(
+                "src/main.rs",
+                "x".repeat(MAX_BUFFER_BYTES + 1),
+                Actor::local(),
+            ),
+            Err(DevelopmentError::InvalidInput(_))
+        ));
+        assert_eq!(project.revision(), before_revision);
+        assert_eq!(project.buffer("src/main.rs"), Some(&before));
+        assert!(project.undo.get("src/main.rs").is_none());
+        assert_eq!(project.redo["src/main.rs"], vec!["stale redo"]);
+        assert!(project.tree_cache.lock().unwrap().is_some());
+        assert_eq!(project.timeline().events().len(), prior_event_count);
+
         let buffer = project
             .replace_buffer_selection("src/main.rs", "X\nY".into(), Actor::local())
             .unwrap();
@@ -2263,6 +2397,21 @@ mod tests {
         assert_eq!(buffer.cursor_line, 2);
         assert_eq!(buffer.cursor_column, 2);
         assert!(buffer.selection.is_none());
+        assert_eq!(buffer.original_hash, original_hash);
+        assert!(buffer.dirty);
+        assert_eq!(project.revision(), before_revision + 1);
+        assert_eq!(project.buffer("src/main.rs"), Some(&buffer));
+        assert_eq!(project.undo["src/main.rs"], vec![before.content]);
+        assert!(project.redo.get("src/main.rs").is_none());
+        assert!(project.tree_cache.lock().unwrap().is_none());
+        let persisted_timeline = Timeline::open(&timeline_path).unwrap();
+        let event = persisted_timeline.events().last().unwrap();
+        assert_eq!(event.kind, DevelopmentEventKind::EditorSelectionReplaced);
+        assert_eq!(event.payload["path"], "src/main.rs");
+        assert_eq!(event.payload["revision"], project.revision());
+        assert_eq!(event.payload["contentHash"], hash(&buffer.content));
+        assert_eq!(event.payload["originalHash"], buffer.original_hash);
+        assert_eq!(event.payload["dirty"], true);
         assert!(matches!(
             project.set_buffer_selection(
                 "src/main.rs",
@@ -2491,24 +2640,138 @@ mod tests {
     #[test]
     fn editor_checkpoints_restore_unsaved_buffers_and_survive_reopen() {
         let root = fixture();
+        fs::write(root.join("src/other.rs"), "fn other() {}\n").unwrap();
         let mut project = ProjectWorkspace::open(&root).unwrap();
-        project
-            .edit_buffer("src/main.rs", "one\n".into(), Actor::local())
-            .unwrap();
+        project.open_buffer("src/main.rs", Actor::local()).unwrap();
+        project.open_buffer("src/other.rs", Actor::local()).unwrap();
         let checkpoint = project
             .create_editor_checkpoint("before experiment".into(), Actor::local())
             .unwrap();
+        let main_original_hash = project.buffer("src/main.rs").unwrap().original_hash.clone();
+        let other_original_hash = project
+            .buffer("src/other.rs")
+            .unwrap()
+            .original_hash
+            .clone();
+        {
+            let saved = project.checkpoints.get_mut(&checkpoint.id).unwrap();
+            let main = saved
+                .buffers
+                .iter_mut()
+                .find(|buffer| buffer.path == "src/main.rs")
+                .unwrap();
+            main.dirty = true;
+            main.cursor_line = 99;
+            main.cursor_column = 99;
+            let other = saved
+                .buffers
+                .iter_mut()
+                .find(|buffer| buffer.path == "src/other.rs")
+                .unwrap();
+            other.content = "snapshot\n".into();
+            other.dirty = false;
+            other.cursor_line = 99;
+            other.cursor_column = 99;
+            other.selection = Some(crate::development::TextSelection {
+                anchor: crate::development::TextPosition {
+                    line: 99,
+                    column: 1,
+                },
+                active: crate::development::TextPosition {
+                    line: 99,
+                    column: 1,
+                },
+            });
+        }
+        project.persist_checkpoints().unwrap();
         project
-            .edit_buffer("src/main.rs", "two\n".into(), Actor::local())
+            .edit_buffer("src/main.rs", "current main\n".into(), Actor::local())
             .unwrap();
         project
+            .edit_buffer("src/other.rs", "current other\n".into(), Actor::local())
+            .unwrap();
+        project.undo.clear();
+        project
+            .redo
+            .insert("src/main.rs".into(), vec!["stale redo".into()]);
+        project
+            .redo
+            .insert("src/other.rs".into(), vec!["stale redo".into()]);
+        project.list_files_result().unwrap();
+        let before_revision = project.revision();
+        let timeline_path = project.timeline().path().to_path_buf();
+        let before_main = project.buffer("src/main.rs").unwrap().content.clone();
+        let before_other = project.buffer("src/other.rs").unwrap().content.clone();
+        let restored = project
             .restore_editor_checkpoint(&checkpoint.id, Actor::local())
             .unwrap();
-        assert_eq!(project.buffer("src/main.rs").unwrap().content, "one\n");
+        assert_eq!(project.revision(), before_revision + 1);
+        let main = project.buffer("src/main.rs").unwrap();
+        assert_eq!(main.content, "fn main() {}\n");
+        assert!(!main.dirty, "content matching original hash must be clean");
+        assert_eq!(main.original_hash, main_original_hash);
+        assert_eq!((main.cursor_line, main.cursor_column), (2, 1));
+        let other = project.buffer("src/other.rs").unwrap();
+        assert_eq!(other.content, "snapshot\n");
+        assert!(
+            other.dirty,
+            "content differing from original hash must be dirty"
+        );
+        assert_eq!(other.original_hash, other_original_hash);
+        assert_eq!((other.cursor_line, other.cursor_column), (2, 1));
+        assert!(other.selection.is_none());
+        assert_eq!(restored, vec![main.clone(), other.clone()]);
+        assert_eq!(project.undo["src/main.rs"], vec![before_main]);
+        assert_eq!(project.undo["src/other.rs"], vec![before_other]);
+        assert!(project.redo.get("src/main.rs").is_none());
+        assert!(project.redo.get("src/other.rs").is_none());
+        assert!(project.tree_cache.lock().unwrap().is_none());
+        let timeline = Timeline::open(&timeline_path).unwrap();
+        let event = timeline.events().last().unwrap();
+        assert_eq!(event.kind, DevelopmentEventKind::EditorCheckpointRestored);
+        assert_eq!(event.payload["id"], checkpoint.id);
+        assert_eq!(event.payload["revision"], project.revision());
+        assert_eq!(event.payload["buffers"].as_array().unwrap().len(), 2);
+        assert_eq!(event.payload["buffers"][0]["dirty"], false);
+        assert_eq!(event.payload["buffers"][1]["dirty"], true);
+
+        let invalid_checkpoint_id = "invalid-checkpoint";
+        let mut invalid = checkpoint.clone();
+        invalid.id = invalid_checkpoint_id.into();
+        invalid.buffers[0].path = "../outside.rs".into();
+        project
+            .checkpoints
+            .insert(invalid_checkpoint_id.into(), invalid);
+        project.list_files_result().unwrap();
+        let before_failure_revision = project.revision();
+        let before_failure_main = project.buffer("src/main.rs").unwrap().clone();
+        let before_failure_undo = project.undo.clone();
+        let before_failure_event_count = project.timeline().events().len();
+        assert!(matches!(
+            project.restore_editor_checkpoint(invalid_checkpoint_id, Actor::local()),
+            Err(DevelopmentError::PathOutsideWorkspace(_)) | Err(DevelopmentError::InvalidInput(_))
+        ));
+        assert_eq!(project.revision(), before_failure_revision);
+        assert_eq!(project.buffer("src/main.rs"), Some(&before_failure_main));
+        assert_eq!(project.undo, before_failure_undo);
+        assert!(project.tree_cache.lock().unwrap().is_some());
+        assert_eq!(
+            project.timeline().events().len(),
+            before_failure_event_count
+        );
         drop(project);
 
         let reopened = ProjectWorkspace::open(&root).unwrap();
         assert_eq!(reopened.editor_checkpoints().len(), 1);
+        assert_eq!(
+            reopened.editor_checkpoints()[0]
+                .buffers
+                .iter()
+                .find(|buffer| buffer.path == "src/other.rs")
+                .unwrap()
+                .content,
+            "snapshot\n"
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

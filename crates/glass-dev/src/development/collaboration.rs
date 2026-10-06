@@ -54,39 +54,60 @@ impl CollaborationBus {
                 "edit claim requires a bounded path and ordered one-based lines".into(),
             ));
         }
-        let claims = self.claims.entry(claim.path.clone()).or_default();
         let overlaps = |other: &EditClaim| {
             claim.start_line <= other.end_line && other.start_line <= claim.end_line
         };
         if claim.access == EditAccess::Write
-            && claims.iter().any(|other| {
-                other.actor.id != claim.actor.id
-                    && other.access == EditAccess::Write
-                    && overlaps(other)
+            && self.claims.get(&claim.path).is_some_and(|claims| {
+                claims.iter().any(|other| {
+                    other.access == EditAccess::Write
+                        && !(other.actor.id == claim.actor.id
+                            && other.start_line == claim.start_line
+                            && other.end_line == claim.end_line)
+                        && overlaps(other)
+                })
             })
         {
             return Err(DevelopmentError::Conflict(format!(
-                "{} overlaps another actor's write claim",
+                "{} overlaps an active write claim",
                 claim.path
             )));
         }
+        let event = CollaborationEvent {
+            kind: "editor.claimed".into(),
+            actor: claim.actor.clone(),
+            payload: serde_json::to_value(&claim)?,
+        };
+        let claims = self.claims.entry(claim.path.clone()).or_default();
         claims.retain(|other| {
             !(other.actor.id == claim.actor.id
                 && other.start_line == claim.start_line
                 && other.end_line == claim.end_line)
         });
-        claims.push(claim.clone());
-        self.publish(CollaborationEvent {
-            kind: "editor.claimed".into(),
-            actor: claim.actor.clone(),
-            payload: serde_json::to_value(claim)?,
-        });
+        claims.push(claim);
+        self.publish(event);
         Ok(())
     }
 
     pub fn release_actor(&mut self, actor_id: &str) {
-        for claims in self.claims.values_mut() {
-            claims.retain(|claim| claim.actor.id != actor_id);
+        let mut released = Vec::new();
+        self.claims.retain(|_, claims| {
+            claims.retain(|claim| {
+                if claim.actor.id == actor_id {
+                    released.push(claim.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            !claims.is_empty()
+        });
+        for claim in released {
+            self.publish(CollaborationEvent {
+                kind: "editor.released".into(),
+                actor: claim.actor.clone(),
+                payload: serde_json::json!({"claim": claim}),
+            });
         }
     }
 
@@ -107,28 +128,62 @@ impl CollaborationBus {
 mod tests {
     use super::*;
 
+    fn claim(actor: Actor, start_line: u32, end_line: u32, access: EditAccess) -> EditClaim {
+        EditClaim {
+            actor,
+            path: "src/app.rs".into(),
+            start_line,
+            end_line,
+            access,
+        }
+    }
+
     #[test]
     fn overlapping_writers_fail_while_readers_and_events_remain_bounded() {
         let mut bus = CollaborationBus::default();
         let receiver = bus.subscribe();
-        bus.claim(EditClaim {
-            actor: Actor::local(),
-            path: "src/app.rs".into(),
-            start_line: 10,
-            end_line: 20,
-            access: EditAccess::Write,
-        })
-        .unwrap();
+        bus.claim(claim(Actor::local(), 10, 20, EditAccess::Write))
+            .unwrap();
         assert!(
-            bus.claim(EditClaim {
-                actor: Actor::external("codex"),
-                path: "src/app.rs".into(),
-                start_line: 15,
-                end_line: 16,
-                access: EditAccess::Write,
-            })
-            .is_err()
+            bus.claim(claim(Actor::external("codex"), 15, 16, EditAccess::Write))
+                .is_err()
         );
         assert_eq!(receiver.try_recv().unwrap().kind, "editor.claimed");
+    }
+
+    #[test]
+    fn same_actor_overlapping_write_claims_conflict_but_exact_reclaims_replace() {
+        let mut bus = CollaborationBus::default();
+        let actor = Actor::local();
+        bus.claim(claim(actor.clone(), 10, 20, EditAccess::Write))
+            .unwrap();
+        bus.claim(claim(actor.clone(), 10, 20, EditAccess::Write))
+            .expect("reclaiming the same range replaces that claim");
+        assert_eq!(bus.claims("src/app.rs").len(), 1);
+        assert!(matches!(
+            bus.claim(claim(actor, 15, 25, EditAccess::Write)),
+            Err(DevelopmentError::Conflict(_))
+        ));
+        assert_eq!(bus.claims("src/app.rs").len(), 1);
+    }
+
+    #[test]
+    fn releasing_actor_publishes_each_released_claim() {
+        let mut bus = CollaborationBus::default();
+        let receiver = bus.subscribe();
+        let actor = Actor::external("codex");
+        bus.claim(claim(actor.clone(), 10, 20, EditAccess::Write))
+            .unwrap();
+        bus.claim(claim(actor.clone(), 30, 40, EditAccess::Read))
+            .unwrap();
+        let _ = receiver.try_iter().collect::<Vec<_>>();
+
+        bus.release_actor(&actor.id);
+
+        assert!(bus.claims("src/app.rs").is_empty());
+        let released = receiver.try_iter().collect::<Vec<_>>();
+        assert_eq!(released.len(), 2);
+        assert!(released.iter().all(|event| event.kind == "editor.released"));
+        assert!(released.iter().all(|event| event.actor.id == actor.id));
     }
 }

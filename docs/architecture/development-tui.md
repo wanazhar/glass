@@ -288,7 +288,7 @@ bounded file list, syntax-aware source preview, review summary and diagnostics.
 Selecting a file opens/refreshes a shared `EditorBuffer`; the full-screen editor
 projects the same buffer, actor, dirty bit, cursor and selection. Comments are
 anchored to line ranges; proposals carry base hash/revision and can become
-accepted, rejected, or stale; checkpoints are named project-scoped persisted snapshots that restore in-memory buffers without writing disk. `Alt-A`
+accepted, rejected, or stale; checkpoints are named project-scoped persisted snapshots that restore in-memory buffers without writing disk. Restore advances the project revision once and records undo state for already-open buffers. It recalculates dirty state from each original hash. It moves invalid cursors to the end of restored content and clears invalid selections. `Alt-A`
 prepares the focused buffer and current cursor/selection for an Agent prompt;
 the attachment includes unsaved text and is bounded, with the agent able to
 request the remainder through file tools.

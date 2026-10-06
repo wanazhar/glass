@@ -115,6 +115,7 @@ pub enum DevelopmentEventKind {
     WorkspaceOpened,
     FileOpened,
     FileSaved,
+    EditorSelectionReplaced,
     EditorCommentAdded,
     EditorCommentResolved,
     EditorProposalCreated,
@@ -292,34 +293,55 @@ impl Timeline {
         payload: Value,
     ) -> DevelopmentResult<DevelopmentEvent> {
         let event = DevelopmentEvent::new(actor, kind, workspace, payload, self.next_ordinal);
-        self.next_ordinal = self.next_ordinal.saturating_add(1);
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
+        let next_ordinal = self.next_ordinal.saturating_add(1);
+        let mut events = self.events.clone();
+        if events.len() == MAX_TIMELINE_EVENTS {
+            events.pop_front();
         }
-        if self.events.len() == MAX_TIMELINE_EVENTS {
-            self.events.pop_front();
-        }
-        self.events.push_back(event.clone());
-        self.persist_bounded()?;
+        events.push_back(event.clone());
+        Self::persist_bounded(&self.path, &events, next_ordinal)?;
+        self.next_ordinal = next_ordinal;
+        self.events = events;
         Ok(event)
     }
 
-    fn persist_bounded(&self) -> DevelopmentResult<()> {
-        let temporary = self.path.with_extension(format!(
-            "jsonl.tmp-{}-{}",
-            std::process::id(),
-            self.next_ordinal
-        ));
+    fn persist_bounded(
+        path: &Path,
+        events: &VecDeque<DevelopmentEvent>,
+        next_ordinal: u64,
+    ) -> DevelopmentResult<()> {
+        Self::persist_bounded_with(path, events, next_ordinal, |file, events| {
+            for event in events {
+                serde_json::to_writer(&mut *file, event)?;
+                file.write_all(b"\n")?;
+            }
+            Ok(())
+        })
+    }
+
+    fn persist_bounded_with(
+        path: &Path,
+        events: &VecDeque<DevelopmentEvent>,
+        next_ordinal: u64,
+        write_events: impl FnOnce(&mut fs::File, &VecDeque<DevelopmentEvent>) -> DevelopmentResult<()>,
+    ) -> DevelopmentResult<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let temporary =
+            path.with_extension(format!("jsonl.tmp-{}-{}", std::process::id(), next_ordinal));
         let mut file = OpenOptions::new()
             .create_new(true)
             .write(true)
             .open(&temporary)?;
-        for event in &self.events {
-            serde_json::to_writer(&mut file, event)?;
-            file.write_all(b"\n")?;
+        let write_result =
+            write_events(&mut file, events).and_then(|()| file.sync_all().map_err(Into::into));
+        drop(file);
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&temporary);
+            return Err(error);
         }
-        file.sync_all()?;
-        if let Err(error) = fs::rename(&temporary, &self.path) {
+        if let Err(error) = fs::rename(&temporary, path) {
             let _ = fs::remove_file(&temporary);
             return Err(error.into());
         }
@@ -411,6 +433,72 @@ mod tests {
         let empty_expired = empty.events_after(Some("dev-expired"), 1);
         assert!(empty_expired.cursor_expired);
         assert_eq!(empty_expired.cursor, None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_timeline_persist_does_not_publish_an_in_memory_event() {
+        let root = std::env::temp_dir().join(format!("glass-timeline-fail-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let blocker = root.join("not-a-directory");
+        fs::write(&blocker, "file").unwrap();
+        let mut timeline = Timeline::open(blocker.join("timeline.jsonl")).unwrap();
+
+        assert!(
+            timeline
+                .record(
+                    Actor::local(),
+                    DevelopmentEventKind::FileOpened,
+                    root.display().to_string(),
+                    serde_json::json!({"path": "src/main.rs"}),
+                )
+                .is_err()
+        );
+        assert_eq!(timeline.events().len(), 0);
+        assert_eq!(timeline.next_ordinal, 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_timeline_temp_write_cleans_up_and_allows_same_ordinal_retry() {
+        let root =
+            std::env::temp_dir().join(format!("glass-timeline-write-fail-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("timeline.jsonl");
+        let mut timeline = Timeline::open(&path).unwrap();
+        let event = DevelopmentEvent::new(
+            Actor::local(),
+            DevelopmentEventKind::FileOpened,
+            root.display().to_string(),
+            serde_json::json!({"path": "src/main.rs"}),
+            1,
+        );
+        let mut candidate = VecDeque::new();
+        candidate.push_back(event);
+        let temporary = path.with_extension(format!("jsonl.tmp-{}-2", std::process::id()));
+
+        assert!(
+            Timeline::persist_bounded_with(&path, &candidate, 2, |file, _| {
+                file.write_all(b"partial event")?;
+                Err(std::io::Error::other("injected write failure").into())
+            })
+            .is_err()
+        );
+        assert!(!temporary.exists());
+        assert_eq!(timeline.next_ordinal, 1);
+        assert!(timeline.events().next().is_none());
+
+        timeline
+            .record(
+                Actor::local(),
+                DevelopmentEventKind::FileOpened,
+                root.display().to_string(),
+                serde_json::json!({"path": "src/main.rs"}),
+            )
+            .unwrap();
+        assert_eq!(Timeline::open(&path).unwrap().events().len(), 1);
         let _ = fs::remove_dir_all(root);
     }
 }

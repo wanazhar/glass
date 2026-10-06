@@ -3249,6 +3249,11 @@ impl NativeDocument {
         });
     }
 
+    pub(crate) fn clear_video_poster_loads(&mut self) {
+        self.video_poster_resources.clear();
+        self.video_poster_loads.clear();
+    }
+
     pub(crate) fn video_poster_resource_for_node(
         &self,
         node_id: NativeNodeId,
@@ -5062,6 +5067,29 @@ impl NativeDocument {
         self.document_referrer_policy
     }
 
+    pub(crate) fn effective_base_url(&self, document_url: &str) -> String {
+        let Ok(fallback_url) = Url::parse(document_url) else {
+            return document_url.to_owned();
+        };
+        let mut pending = vec![self.root];
+        while let Some(node_id) = pending.pop() {
+            let Some(node) = self.node(node_id) else {
+                continue;
+            };
+            if node.element_name() == Some("base")
+                && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI)
+                && self.is_attached(node_id)
+                && let Some(href) = node.attribute("href")
+            {
+                return fallback_url
+                    .join(href)
+                    .map_or_else(|_| fallback_url.to_string(), |url| url.to_string());
+            }
+            pending.extend(node.children.iter().rev().copied());
+        }
+        fallback_url.to_string()
+    }
+
     pub(crate) fn image_referrer_policy_for_node(
         &self,
         node_id: NativeNodeId,
@@ -5072,22 +5100,6 @@ impl NativeDocument {
                 (node.element_name() == Some("img")
                     && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI)
                     || self.is_svg_image_node(node_id))
-                    && self.is_attached(node_id)
-            })
-            .and_then(|node| node.attribute("referrerpolicy"))
-            .and_then(parse_element_referrer_policy);
-        element_policy.unwrap_or(self.document_referrer_policy)
-    }
-
-    pub(crate) fn video_poster_referrer_policy_for_node(
-        &self,
-        node_id: NativeNodeId,
-    ) -> NativeFetchReferrerPolicy {
-        let element_policy = self
-            .node(node_id)
-            .filter(|node| {
-                node.element_name() == Some("video")
-                    && node.state.namespace_uri.as_deref() == Some(HTML_NAMESPACE_URI)
                     && self.is_attached(node_id)
             })
             .and_then(|node| node.attribute("referrerpolicy"))

@@ -539,16 +539,26 @@ Required GCWP behavior, not current runtime support; Slice 874 is in progress.
 For process-backed HTTP(S) documents, each HTML `<video>` evaluates its
 `poster` URL when created and whenever the attribute is set, changed, or
 removed. An absent or empty value clears the poster without a request; a
-nonempty value is resolved against the owner Document and fetched. For network
-URLs, the browser parent performs the request through
-its image broker under image CSP policy and parent-owned cookie authority.
-The request has destination `image` and initiator type `video`, uses
-credentials mode `include` with URL credentials, and has the owner Document as
-its client; that Document supplies the effective referrer policy. Eligible
-response cookies remain in the parent.
+nonempty value is resolved against the owner Document's effective base URL,
+including the first attached HTML `<base href>`, and fetched. The reflected
+`HTMLVideoElement.poster` value uses that same effective base URL; changing the
+base URL invalidates poster load state and resolves the current attribute again.
+For network URLs, the browser parent performs the request through its image
+broker under image CSP policy and parent-owned cookie authority. The request
+has destination `image` and initiator type `video`, uses credentials mode
+`include` with URL credentials, and has the owner Document as its client; only
+that Document's effective referrer policy applies, not a `referrerpolicy`
+attribute on `<video>`. Eligible `Set-Cookie` values are applied by the parent
+as each HTTP response arrives, including redirects and responses whose status,
+body, MIME type, or image decode later fails. URL userinfo is removed before
+network I/O; credentials may authorize the URL's initial origin, but
+`Authorization` remains stripped after a redirect chain crosses origins, per
+the [Fetch HTTP-redirect
+algorithm](https://fetch.spec.whatwg.org/#http-redirect-fetch).
 Only bounded decoded image data and the URL-scoped script-visible cookie
-projection may enter the content process. A poster response must never fail
-Document navigation or expose a cookie header, jar, or HttpOnly value.
+projection may enter the content process.
+A poster response must never fail Document navigation or expose a cookie
+header, jar, or HttpOnly value.
 
 The poster paints within the video's replaced-element box while no decoded
 video frame is available, preserving the image aspect ratio and centering it.

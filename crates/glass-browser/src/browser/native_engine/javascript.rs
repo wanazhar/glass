@@ -36681,6 +36681,7 @@ fn document_bootstrap(
     };
     let serialized = serde_json::to_string(&serde_json::json!({
         "url": document_url,
+        "base_url": document.effective_base_url(document_url),
         "creation_url": document_creation_url,
         "document_referrer_policy": document.document_referrer_policy().as_str(),
         "compat_mode": document.compat_mode(),
@@ -43714,6 +43715,27 @@ fn document_bootstrap(
         "application/vnd.apple.mpegurl", "application/x-mpegurl",
       ].includes(mediaType);
   }};
+  const effectiveDocumentBaseUrl = () => {{
+    const fallback = String(host.url || host.base_url || "");
+    const ownerDocument = globalThis.document;
+    const pending = Array.isArray(ownerDocument && ownerDocument.__glassChildren)
+      ? ownerDocument.__glassChildren.slice().reverse()
+      : [];
+    while (pending.length > 0) {{
+      const element = pending.pop();
+      if (!element || element.nodeType !== 1) continue;
+      if (element.namespaceURI === HTML_NAMESPACE
+          && element.tagName === "BASE"
+          && element.hasAttribute("href")) {{
+        try {{ return new URLNative(element.getAttribute("href") || "", host.url || fallback).href; }}
+        catch (_error) {{ return fallback; }}
+      }}
+      const children = Array.isArray(element.__glassChildren) ? element.__glassChildren : [];
+      for (let index = children.length - 1; index >= 0; index -= 1)
+        pending.push(children[index]);
+    }}
+    return fallback;
+  }};
   const installUrlAttributeProperty = (element, property, attribute, baseUrl, onSet = null) => {{
     Object.defineProperty(element, property, {{
       enumerable: true,
@@ -43770,7 +43792,7 @@ fn document_bootstrap(
         get() {{
           const value = element.getAttribute("poster");
           if (value === null || value === "") return "";
-          try {{ return new URLNative(value, baseUrl).href; }} catch (_error) {{ return ""; }}
+          try {{ return new URLNative(value, effectiveDocumentBaseUrl()).href; }} catch (_error) {{ return ""; }}
         }},
         set(next) {{ element.setAttribute("poster", String(next)); }},
       }});

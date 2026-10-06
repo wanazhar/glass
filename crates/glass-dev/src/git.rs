@@ -139,6 +139,12 @@ pub struct GitCommandResult {
     pub stderr: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PushDestination {
+    remote: String,
+    url: String,
+}
+
 pub struct GitService {
     root: PathBuf,
     timeout: Duration,
@@ -256,9 +262,6 @@ impl GitService {
     }
 
     pub(crate) fn push(&self, remote: Option<&str>, branch: Option<&str>) -> GitResult<()> {
-        if let Some(remote) = remote {
-            validate_ref(remote)?;
-        }
         if let Some(branch) = branch {
             push_branch_name(branch)?;
         }
@@ -266,9 +269,90 @@ impl GitService {
             .status()?
             .branch
             .ok_or_else(|| GitError::InvalidInput("push requires a named current branch".into()))?;
-        let default_branch = crate::github::default_branch_for_root(&self.root)
-            .map_err(|error| GitError::InvalidInput(error.to_string()))?;
-        self.push_with_branch_policy(remote, branch, &current_branch, &default_branch)
+        self.push_with_target_default_branch(remote, branch, &current_branch, |push_url| {
+            crate::github::default_branch_for_remote(&self.root, push_url)
+                .map_err(|error| GitError::InvalidInput(error.to_string()))
+        })
+    }
+
+    fn push_with_target_default_branch(
+        &self,
+        remote: Option<&str>,
+        branch: Option<&str>,
+        current_branch: &str,
+        default_branch_for_target: impl FnOnce(&str) -> GitResult<String>,
+    ) -> GitResult<()> {
+        let destination = self.resolve_push_destination(remote, current_branch)?;
+        let default_branch = default_branch_for_target(&destination.url)?;
+        self.push_with_branch_policy(
+            Some(&destination.remote),
+            branch,
+            current_branch,
+            &default_branch,
+        )
+    }
+
+    fn resolve_push_destination(
+        &self,
+        remote: Option<&str>,
+        current_branch: &str,
+    ) -> GitResult<PushDestination> {
+        let current_branch = push_branch_name(current_branch)?;
+        let remote = match remote {
+            Some(remote) => {
+                validate_ref(remote)?;
+                remote.to_string()
+            }
+            None => self.configured_push_remote(&current_branch)?,
+        };
+        let output = self.run(
+            &["remote", "get-url", "--push", "--all", &remote],
+            "resolve push destination",
+        )?;
+        let urls = output
+            .stdout
+            .lines()
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        if urls.len() != 1
+            || urls[0]
+                .bytes()
+                .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+        {
+            return Err(GitError::InvalidInput(
+                "push requires one unambiguous remote push URL".into(),
+            ));
+        }
+        Ok(PushDestination {
+            remote,
+            url: urls[0].to_string(),
+        })
+    }
+
+    fn configured_push_remote(&self, current_branch: &str) -> GitResult<String> {
+        let config = self
+            .run(
+                &["config", "--null", "--local", "--list"],
+                "read push configuration",
+            )?
+            .stdout;
+        let remote = if let Some(remote) = config_value(&config, |key| {
+            branch_config_key_matches(key, current_branch, "pushremote")
+        })? {
+            remote
+        } else if let Some(remote) = config_value(&config, |key| {
+            key.eq_ignore_ascii_case("remote.pushdefault")
+        })? {
+            remote
+        } else if let Some(remote) = config_value(&config, |key| {
+            branch_config_key_matches(key, current_branch, "remote")
+        })? {
+            remote
+        } else {
+            "origin".into()
+        };
+        validate_ref(&remote)?;
+        Ok(remote)
     }
 
     fn push_with_branch_policy(
@@ -860,6 +944,53 @@ fn explicit_push_refspec(source: &str, destination: &str) -> GitResult<String> {
     Ok(format!("refs/heads/{source}:refs/heads/{destination}"))
 }
 
+fn config_value(config: &str, matches_key: impl Fn(&str) -> bool) -> GitResult<Option<String>> {
+    let mut values = Vec::new();
+    for entry in config.split('\0').filter(|entry| !entry.is_empty()) {
+        let Some((key, value)) = entry.split_once('\n') else {
+            return Err(GitError::InvalidInput(
+                "Git returned malformed local configuration".into(),
+            ));
+        };
+        if matches_key(key) {
+            values.push(value.to_string());
+        }
+    }
+    if values.len() > 1 {
+        return Err(GitError::InvalidInput(
+            "push remote configuration is ambiguous".into(),
+        ));
+    }
+    match values.pop() {
+        Some(value) if value.is_empty() => Err(GitError::InvalidInput(
+            "push remote configuration must not be empty".into(),
+        )),
+        Some(value) => Ok(Some(value)),
+        None => Ok(None),
+    }
+}
+
+fn branch_config_key_matches(key: &str, branch: &str, setting: &str) -> bool {
+    const PREFIX: &str = "branch.";
+    if key
+        .get(..PREFIX.len())
+        .is_none_or(|prefix| !prefix.eq_ignore_ascii_case(PREFIX))
+    {
+        return false;
+    }
+    let Some(rest) = key.get(PREFIX.len()..) else {
+        return false;
+    };
+    let suffix = format!(".{setting}");
+    if rest.len() < suffix.len() {
+        return false;
+    }
+    let split = rest.len() - suffix.len();
+    rest.get(split..)
+        .is_some_and(|actual| actual.eq_ignore_ascii_case(&suffix))
+        && rest.get(..split) == Some(branch)
+}
+
 fn absolute_worktree_path(path: &Path) -> GitResult<PathBuf> {
     if !path.is_absolute() || path == Path::new("/") {
         return Err(GitError::InvalidInput(
@@ -961,6 +1092,37 @@ mod tests {
         root
     }
 
+    fn push_repository() -> (PathBuf, GitService, PathBuf, PathBuf) {
+        let root = repository();
+        let service = GitService::open(&root).unwrap();
+        service
+            .run(&["branch", "-M", "main"], "name default branch")
+            .unwrap();
+        std::fs::write(root.join("main.txt"), "main\n").unwrap();
+        service.stage(&["main.txt".into()]).unwrap();
+        service
+            .commit("test: initialize push policy fixture")
+            .unwrap();
+        service.create_branch("feature/push", None).unwrap();
+        service.switch_branch("feature/push", false).unwrap();
+
+        let origin = root.with_extension("origin.git");
+        let backup = root.with_extension("backup.git");
+        for (name, path) in [("origin", &origin), ("backup", &backup)] {
+            let path = path.to_string_lossy().into_owned();
+            let output = Command::new("git")
+                .args(["init", "--bare", "-q", &path])
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            service
+                .run(&["remote", "add", name, &path], "add push test remote")
+                .unwrap();
+        }
+        (root, service, origin, backup)
+    }
+
     #[test]
     fn git_service_tracks_stage_commit_diff_branch_and_blame() {
         let root = repository();
@@ -1045,6 +1207,95 @@ mod tests {
         assert!(push_branch_name("feature/fix:develop").is_err());
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_non_origin_push_uses_the_backup_default_branch() {
+        let (root, service, origin, backup) = push_repository();
+        let origin_url = origin.to_string_lossy().into_owned();
+        let backup_url = backup.to_string_lossy().into_owned();
+
+        let error = service
+            .push_with_target_default_branch(Some("backup"), None, "feature/push", |push_url| {
+                assert_eq!(push_url, backup_url);
+                assert_ne!(push_url, origin_url);
+                Ok("feature/push".into())
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("protected branch policy"));
+
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(origin).unwrap();
+        std::fs::remove_dir_all(backup).unwrap();
+    }
+
+    #[test]
+    fn omitted_push_remote_honors_branch_push_remote_before_origin_defaults() {
+        let (root, service, origin, backup) = push_repository();
+        let origin_url = origin.to_string_lossy().into_owned();
+        let backup_url = backup.to_string_lossy().into_owned();
+        service
+            .run(
+                &["config", "branch.feature/push.remote", "origin"],
+                "configure branch fetch remote",
+            )
+            .unwrap();
+        service
+            .run(
+                &["config", "remote.pushDefault", "origin"],
+                "configure default push remote",
+            )
+            .unwrap();
+        service
+            .run(
+                &["config", "branch.feature/push.pushRemote", "backup"],
+                "configure branch push remote",
+            )
+            .unwrap();
+
+        let error = service
+            .push_with_target_default_branch(None, None, "feature/push", |push_url| {
+                assert_eq!(push_url, backup_url);
+                assert_ne!(push_url, origin_url);
+                Ok("feature/push".into())
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("protected branch policy"));
+
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(origin).unwrap();
+        std::fs::remove_dir_all(backup).unwrap();
+    }
+
+    #[test]
+    fn push_rejects_a_remote_with_multiple_push_urls() {
+        let (root, service, origin, backup) = push_repository();
+        let backup_url = backup.to_string_lossy().into_owned();
+        service
+            .run(
+                &["config", "--add", "remote.backup.pushurl", &backup_url],
+                "configure first backup push URL",
+            )
+            .unwrap();
+        service
+            .run(
+                &["config", "--add", "remote.backup.pushurl", &backup_url],
+                "configure second backup push URL",
+            )
+            .unwrap();
+
+        let error = service
+            .resolve_push_destination(Some("backup"), "feature/push")
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("one unambiguous remote push URL")
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(origin).unwrap();
+        std::fs::remove_dir_all(backup).unwrap();
     }
 
     #[test]

@@ -609,10 +609,16 @@ fn default_branch(root: &Path, repository: &str) -> DevelopmentResult<String> {
     })
 }
 
-pub(crate) fn default_branch_for_root(root: &Path) -> DevelopmentResult<String> {
-    let repository = probe_uncached(root)
-        .repository
-        .ok_or_else(|| DevelopmentError::NotFound("GitHub origin is not configured".into()))?;
+pub(crate) fn default_branch_for_remote(
+    root: &Path,
+    remote_url: &str,
+) -> DevelopmentResult<String> {
+    let repository = parse_github_remote(remote_url).ok_or_else(|| {
+        DevelopmentError::Conflict(
+            "push destination is not a supported GitHub remote; refusing protected-branch check"
+                .into(),
+        )
+    })?;
     default_branch(root, &repository.name_with_owner)
 }
 
@@ -935,6 +941,13 @@ mod tests {
         ] {
             assert!(parse_github_remote(remote).is_none(), "{remote}");
         }
+    }
+
+    #[test]
+    fn protected_default_branch_lookup_fails_closed_for_unsupported_push_remotes() {
+        let error = default_branch_for_remote(Path::new("."), "https://gitlab.com/owner/repo.git")
+            .unwrap_err();
+        assert!(error.to_string().contains("not a supported GitHub remote"));
     }
 
     #[test]

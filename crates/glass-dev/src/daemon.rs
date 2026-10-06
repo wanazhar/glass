@@ -262,6 +262,9 @@ impl OperationRegistry {
         let Some(record) = self.records.get_mut(id) else {
             return false;
         };
+        if record.state.terminal() {
+            return false;
+        }
         if record.cancellation_requested {
             record.state = DevelopmentOperationState::Cancelled;
             record.completed_at_ms = Some(now_ms());
@@ -282,28 +285,30 @@ impl OperationRegistry {
         let Some(record) = self.records.get_mut(id) else {
             return;
         };
+        if record.state.terminal() {
+            return;
+        }
         record.revision_after = Some(revision_after);
         record.completed_at_ms = Some(now_ms());
-        let (state, message) = if record.cancellation_requested {
-            record.state = DevelopmentOperationState::Cancelled;
-            record.result = None;
-            record.failure_reason =
-                Some("operation completed after cancellation was requested".into());
-            (DevelopmentOperationState::Cancelled, "operation cancelled")
-        } else {
-            match result {
-                Ok(value) => {
-                    record.state = DevelopmentOperationState::Succeeded;
-                    record.result_ref =
-                        Some(format!("operation://{}/{}/result", self.workspace_id, id));
-                    record.result = Some(value);
-                    (DevelopmentOperationState::Succeeded, "operation succeeded")
-                }
-                Err(error) => {
-                    record.state = DevelopmentOperationState::Failed;
-                    record.failure_reason = Some(error);
-                    (DevelopmentOperationState::Failed, "operation failed")
-                }
+        let (state, message) = match result {
+            Ok(value) => {
+                record.state = DevelopmentOperationState::Succeeded;
+                record.result_ref =
+                    Some(format!("operation://{}/{}/result", self.workspace_id, id));
+                record.result = Some(value);
+                record.failure_reason = None;
+                (DevelopmentOperationState::Succeeded, "operation succeeded")
+            }
+            Err(error) if record.cancellation_requested => {
+                record.state = DevelopmentOperationState::Cancelled;
+                record.failure_reason =
+                    Some(format!("operation cancelled before completion: {error}"));
+                (DevelopmentOperationState::Cancelled, "operation cancelled")
+            }
+            Err(error) => {
+                record.state = DevelopmentOperationState::Failed;
+                record.failure_reason = Some(error);
+                (DevelopmentOperationState::Failed, "operation failed")
             }
         };
         self.event(id, state, message);
@@ -324,21 +329,25 @@ impl OperationRegistry {
     }
 
     fn cancel(&mut self, id: &str) -> Result<DevelopmentOperation, String> {
-        let (state, record) = {
+        let (state, record, cancellation_applied) = {
             let record = self
                 .records
                 .get_mut(id)
                 .ok_or_else(|| "unknown workspace operation".to_string())?;
-            if !record.state.terminal() {
+            if record.state.terminal() {
+                (record.state, record.clone(), false)
+            } else {
                 record.cancellation_requested = true;
                 if record.state == DevelopmentOperationState::Queued {
                     record.state = DevelopmentOperationState::Cancelled;
                     record.completed_at_ms = Some(now_ms());
                 }
+                (record.state, record.clone(), true)
             }
-            (record.state, record.clone())
         };
-        self.event(id, state, "cancellation requested");
+        if cancellation_applied {
+            self.event(id, state, "cancellation requested");
+        }
         Ok(record)
     }
 }
@@ -2153,6 +2162,200 @@ mod tests {
         }
     }
 
+    async fn inspect_operation(
+        operations: Arc<Mutex<OperationRegistry>>,
+        operation_id: &str,
+    ) -> DevelopmentDaemonResponse {
+        let workspace_id = "daemon-result-race";
+        let (sender, _receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
+        let handle = WorkspaceActorHandle {
+            sender,
+            summary: serde_json::json!({"id":workspace_id}),
+            operations,
+        };
+        let workspaces = Rc::new(RefCell::new(BTreeMap::from([(
+            workspace_id.to_string(),
+            handle,
+        )])));
+        execute_request(
+            DevelopmentDaemonRequest {
+                id: "inspect-result-race".into(),
+                token: "test-token".into(),
+                operation: "operation.inspect".into(),
+                workspace_id: Some(workspace_id.into()),
+                root: None,
+                call: None,
+                expected_generation: None,
+                expected_project_revision: None,
+                allow_mutation: false,
+                confirmed: false,
+                actor: None,
+                since: None,
+                limit: None,
+                operation_id: Some(operation_id.into()),
+            },
+            "test-token",
+            Path::new("unused-socket"),
+            &workspaces,
+            &WorkspaceTrustStore::at(PathBuf::from("unused-trust-store")),
+            false,
+        )
+        .await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn running_cancellation_preserves_a_completed_result_in_operation_inspect() {
+        let operations = Arc::new(Mutex::new(OperationRegistry::new(
+            "daemon-result-race".into(),
+        )));
+        let operation_id = {
+            let mut registry = operations.lock().unwrap();
+            let (operation, created) = registry
+                .submit(
+                    "cancel-then-complete",
+                    "test-client".into(),
+                    "test.operation".into(),
+                    3,
+                    false,
+                )
+                .unwrap();
+            assert!(created);
+            assert!(registry.start(&operation.id));
+            assert!(
+                registry
+                    .cancel(&operation.id)
+                    .unwrap()
+                    .cancellation_requested
+            );
+            operation.id
+        };
+
+        {
+            let mut registry = operations.lock().unwrap();
+            registry.finish(
+                &operation_id,
+                4,
+                Ok(serde_json::json!({"completed":true,"value":42})),
+            );
+            let record = &registry.records[&operation_id];
+            assert_eq!(record.state, DevelopmentOperationState::Succeeded);
+            assert!(record.cancellation_requested);
+            assert_eq!(
+                record.result,
+                Some(serde_json::json!({"completed":true,"value":42}))
+            );
+            assert_eq!(record.revision_after, Some(4));
+
+            let event_count = registry.events.len();
+            registry.finish(&operation_id, 5, Err("late finish must be ignored".into()));
+            assert_eq!(registry.events.len(), event_count);
+            assert_eq!(registry.records[&operation_id].revision_after, Some(4));
+            assert_eq!(
+                registry.records[&operation_id].result,
+                Some(serde_json::json!({"completed":true,"value":42}))
+            );
+        }
+
+        let response = inspect_operation(Arc::clone(&operations), &operation_id).await;
+        assert!(response.ok, "{:?}", response.error);
+        assert_eq!(response.result["operation"]["state"], "succeeded");
+        assert_eq!(
+            response.result["operation"]["result"],
+            serde_json::json!({
+                "completed":true,"value":42
+            })
+        );
+        assert_eq!(response.result["operation"]["cancellationRequested"], true);
+        assert_eq!(response.result["reconciled"], true);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn completion_before_cancellation_keeps_the_terminal_result() {
+        let operations = Arc::new(Mutex::new(OperationRegistry::new(
+            "daemon-result-race".into(),
+        )));
+        let operation_id = {
+            let mut registry = operations.lock().unwrap();
+            let (operation, created) = registry
+                .submit(
+                    "complete-then-cancel",
+                    "test-client".into(),
+                    "test.operation".into(),
+                    7,
+                    false,
+                )
+                .unwrap();
+            assert!(created);
+            assert!(registry.start(&operation.id));
+            registry.finish(
+                &operation.id,
+                8,
+                Ok(serde_json::json!({"completed":true,"value":"kept"})),
+            );
+            let event_count = registry.events.len();
+            let cancelled = registry.cancel(&operation.id).unwrap();
+            assert_eq!(cancelled.state, DevelopmentOperationState::Succeeded);
+            assert!(!cancelled.cancellation_requested);
+            assert_eq!(registry.events.len(), event_count);
+            registry.finish(
+                &operation.id,
+                9,
+                Ok(serde_json::json!({"value":"overwritten"})),
+            );
+            assert_eq!(
+                registry.records[&operation.id].state,
+                DevelopmentOperationState::Succeeded
+            );
+            assert_eq!(
+                registry.records[&operation.id].result,
+                Some(serde_json::json!({
+                    "completed":true,"value":"kept"
+                }))
+            );
+            operation.id
+        };
+
+        let response = inspect_operation(Arc::clone(&operations), &operation_id).await;
+        assert!(response.ok, "{:?}", response.error);
+        assert_eq!(response.result["operation"]["state"], "succeeded");
+        assert_eq!(response.result["operation"]["result"]["value"], "kept");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_before_start_remains_terminal_without_a_result() {
+        let operations = Arc::new(Mutex::new(OperationRegistry::new(
+            "daemon-result-race".into(),
+        )));
+        let operation_id = {
+            let mut registry = operations.lock().unwrap();
+            let (operation, created) = registry
+                .submit(
+                    "cancel-before-start",
+                    "test-client".into(),
+                    "test.operation".into(),
+                    0,
+                    false,
+                )
+                .unwrap();
+            assert!(created);
+            let cancelled = registry.cancel(&operation.id).unwrap();
+            assert_eq!(cancelled.state, DevelopmentOperationState::Cancelled);
+            assert!(!registry.start(&operation.id));
+            registry.finish(&operation.id, 1, Ok(serde_json::json!({"tooLate":true})));
+            let record = &registry.records[&operation.id];
+            assert_eq!(record.state, DevelopmentOperationState::Cancelled);
+            assert!(record.result.is_none());
+            assert!(record.revision_after.is_none());
+            operation.id
+        };
+
+        let response = inspect_operation(Arc::clone(&operations), &operation_id).await;
+        assert!(response.ok, "{:?}", response.error);
+        assert_eq!(response.result["operation"]["state"], "cancelled");
+        assert!(response.result["operation"]["result"].is_null());
+        assert_eq!(response.result["reconciled"], true);
+    }
+
     async fn wait_for_operation_state(
         operations: &Arc<Mutex<OperationRegistry>>,
         operation_id: &str,
@@ -2601,13 +2804,17 @@ while True:
                 wait_for_operation_state(
                     &operations,
                     &cancelled.id,
-                    DevelopmentOperationState::Cancelled,
+                    DevelopmentOperationState::Succeeded,
                 )
                 .await;
+                let completed_after_cancel =
+                    operations.lock().unwrap().records[&cancelled.id].clone();
                 assert_eq!(
-                    operations.lock().unwrap().records[&cancelled.id].state,
-                    DevelopmentOperationState::Cancelled
+                    completed_after_cancel.state,
+                    DevelopmentOperationState::Succeeded
                 );
+                assert!(completed_after_cancel.cancellation_requested);
+                assert!(completed_after_cancel.result.is_some());
                 assert!(
                     operations
                         .lock()

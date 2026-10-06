@@ -562,6 +562,62 @@ mod tests {
     }
 
     #[test]
+    fn clicking_live_browser_action_queues_the_shared_menu_request() {
+        let (mut state, root) = overlay_state();
+        state.surface = DevSurface::App;
+        state.terminal_width = 120;
+        state.terminal_height = 40;
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
+            .expect("trust project");
+        state.open_menu();
+        let action_index = state
+            .surface_actions()
+            .iter()
+            .position(|action| action.label == "Live browser view")
+            .expect("live browser menu action");
+        let geometry = super::super::render::command_menu_geometry_for_screen(&state);
+        let column = geometry.list_inner.x + 1;
+        let row = geometry.list_inner.y + action_index as u16;
+        assert_eq!(hit_test(&state, column, row), HitRegion::Menu(action_index));
+
+        let mut pointer = PointerState::default();
+        let down = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        let pressed_at = Instant::now();
+        pointer.handle(&mut state, down, pressed_at);
+        pointer.handle(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                ..down
+            },
+            pressed_at + Duration::from_millis(1),
+        );
+
+        assert!(state.browser_visual_live);
+        assert_eq!(
+            state
+                .take_browser_visual_request()
+                .expect("pointer browser visual request")
+                .live,
+            true
+        );
+        assert_eq!(
+            state.status,
+            "Live view starting · screenshot worker will update the pane"
+        );
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
     fn command_menu_hit_testing_rejects_coordinates_outside_surface_pane() {
         let (mut state, root) = overlay_state();
         state.terminal_width = 120;

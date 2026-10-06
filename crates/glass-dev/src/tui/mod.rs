@@ -345,6 +345,25 @@ impl VisualRuntime {
     }
 }
 
+fn reconcile_browser_visual_request(state: &mut DevTuiState, visual: &mut VisualRuntime) {
+    let Some(request) = state.take_browser_visual_request() else {
+        return;
+    };
+    if let Some(reason) = visual.request_live(request.live) {
+        visual.sync_state(state);
+        state.browser_workspace.state_mut().presentation_reason = Some(reason.clone());
+        state.status = format!("Live view unavailable · {reason}");
+        return;
+    }
+    visual.sync_state(state);
+    if let Some(failure) = request.failure {
+        state.browser_workspace.state_mut().presentation_reason = Some(failure.clone());
+        state.status = format!("Live view unavailable · {failure}");
+    } else if let Some(status) = request.status {
+        state.status = status;
+    }
+}
+
 /// Run the interactive Glass Dev TUI with the complete browser policy.
 pub(crate) fn run_with_browser_policy(
     root: impl AsRef<Path>,
@@ -443,31 +462,7 @@ pub(crate) fn run_with_browser_policy(
                     } else if active_overlay == Some(overlay::ActiveOverlay::CommandCenterMenu) {
                         match key.code {
                             KeyCode::Esc => state.close_menu(),
-                            KeyCode::Enter => {
-                                let was_live = state.browser_visual_live;
-                                let visual_requested = state.surface == DevSurface::App
-                                    && state
-                                        .surface_actions()
-                                        .get(state.menu_selection)
-                                        .is_some_and(|action| action.command == "browser view");
-                                state.run_menu_action();
-                                if visual_requested && state.browser_visual_live != was_live {
-                                    let live = state.browser_visual_live;
-                                    if let Some(reason) = visual.request_live(live) {
-                                        state.browser_visual_live = false;
-                                        state.status = format!("Live view unavailable · {reason}");
-                                    } else {
-                                        visual.sync_state(&mut state);
-                                        state.status = if live {
-                                            "Live view starting · screenshot worker will update the pane"
-                                                .into()
-                                        } else {
-                                            "Live view off · semantic inspection remains available"
-                                                .into()
-                                        };
-                                    }
-                                }
-                            }
+                            KeyCode::Enter => state.run_menu_action(),
                             KeyCode::Up | KeyCode::Char('k') => state.move_menu_selection(-1),
                             KeyCode::Down | KeyCode::Char('j') => state.move_menu_selection(1),
                             _ => {}
@@ -671,26 +666,7 @@ pub(crate) fn run_with_browser_policy(
                     } else if active_overlay == Some(overlay::ActiveOverlay::CommandPalette) {
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => state.close_palette(),
-                            (KeyCode::Enter, _) => {
-                                let was_live = state.browser_visual_live;
-                                state.submit_palette(&mut worker);
-                                if state.browser_visual_live != was_live {
-                                    let live = state.browser_visual_live;
-                                    if let Some(reason) = visual.request_live(live) {
-                                        state.browser_visual_live = false;
-                                        state.status = format!("Live view unavailable · {reason}");
-                                    } else {
-                                        visual.sync_state(&mut state);
-                                        state.status = if live {
-                                            "Live view starting · screenshot worker will update the pane"
-                                                .into()
-                                        } else {
-                                            "Live view off · semantic inspection remains available"
-                                                .into()
-                                        };
-                                    }
-                                }
-                            }
+                            (KeyCode::Enter, _) => state.submit_palette(&mut worker),
                             (KeyCode::Backspace, _) => state.palette_backspace(),
                             (KeyCode::Char('u'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>
@@ -1078,6 +1054,7 @@ pub(crate) fn run_with_browser_policy(
         let menu_was_open = state.menu_open;
         pointer.poll(&mut state, Instant::now());
         reset_pointer_on_overlay_transition(&state, &mut pointer, &mut previous_active_overlay);
+        reconcile_browser_visual_request(&mut state, &mut visual);
         render_requested |= menu_was_open != state.menu_open;
         if state.agent_login_requested {
             state.agent_login_requested = false;
@@ -1101,19 +1078,19 @@ pub(crate) fn run_with_browser_policy(
                     state.status = "Live view ready · Herdr pane graphics".into();
                 }
                 HerdrEvent::Failed(reason) => {
-                    visual.live = false;
-                    visual.sync_state(&mut state);
-                    state.browser_workspace.state_mut().presentation_reason =
-                        Some(format!("Herdr graphics unavailable: {reason}"));
-                    state.status = format!("Live view unavailable · Herdr: {reason}");
+                    state.request_browser_visual_failure(format!(
+                        "Herdr graphics unavailable: {reason}"
+                    ));
+                    reconcile_browser_visual_request(&mut state, &mut visual);
                 }
                 HerdrEvent::Stopped if visual.live => {
-                    visual.live = false;
-                    visual.sync_state(&mut state);
+                    state.request_browser_visual_live(
+                        false,
+                        Some("Live view stopped · semantic inspection remains available".into()),
+                    );
+                    reconcile_browser_visual_request(&mut state, &mut visual);
                     state.browser_workspace.state_mut().presentation_reason =
                         Some("Herdr pane graphics stream stopped".into());
-                    state.status =
-                        "Live view stopped · semantic inspection remains available".into();
                 }
                 HerdrEvent::Connected | HerdrEvent::Stopped => {}
             }
@@ -1195,6 +1172,7 @@ pub(crate) fn run_with_browser_policy(
             let browser_start = result.tool == "glass.browser.start" && result.result.is_ok();
             let browser_observe = result.tool == "glass.browser.observe" && result.result.is_ok();
             state.apply_tool_job_result(result);
+            reconcile_browser_visual_request(&mut state, &mut visual);
             if state.pending_verify.is_some() {
                 state.submit_pending_verify(&mut worker);
             } else if browser_start {
@@ -1221,11 +1199,8 @@ pub(crate) fn run_with_browser_policy(
                         }
                     }
                     Err(error) => {
-                        visual.live = false;
-                        visual.sync_state(&mut state);
-                        state.browser_workspace.state_mut().presentation_reason =
-                            Some(error.clone());
-                        state.status = format!("Live view unavailable · {error}");
+                        state.request_browser_visual_failure(error);
+                        reconcile_browser_visual_request(&mut state, &mut visual);
                     }
                 },
                 VisualPath::Kitty if visual.live => match visual_png(&result) {
@@ -1256,23 +1231,17 @@ pub(crate) fn run_with_browser_policy(
                                     state.status = "Live view updated · Kitty graphics".into();
                                 }
                                 Err(error) => {
-                                    visual.live = false;
-                                    visual.sync_state(&mut state);
+                                    state.request_browser_visual_failure(error.clone());
+                                    reconcile_browser_visual_request(&mut state, &mut visual);
                                     visual.sync_kitty_area(None, &mut guard)?;
-                                    state.browser_workspace.state_mut().presentation_reason =
-                                        Some(error.clone());
-                                    state.status = format!("Live view unavailable · {error}");
                                 }
                             }
                         }
                     }
                     Err(error) => {
-                        visual.live = false;
-                        visual.sync_state(&mut state);
+                        state.request_browser_visual_failure(error.clone());
+                        reconcile_browser_visual_request(&mut state, &mut visual);
                         visual.sync_kitty_area(None, &mut guard)?;
-                        state.browser_workspace.state_mut().presentation_reason =
-                            Some(error.clone());
-                        state.status = format!("Live view unavailable · {error}");
                     }
                 },
                 VisualPath::Kitty => {}
@@ -1282,6 +1251,7 @@ pub(crate) fn run_with_browser_policy(
                 VisualPath::SemanticOnly { .. } => {}
                 VisualPath::Herdr => {}
             }
+            reconcile_browser_visual_request(&mut state, &mut visual);
         }
         if let Some(snapshot) = worker.take_pending() {
             state.apply_snapshot(&snapshot);
@@ -1615,6 +1585,113 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create test workspace");
         let state = DevTuiState::open(&root, TuiLayout::Desktop).expect("open TUI state");
         (state, root)
+    }
+
+    fn test_visual_runtime(path: VisualPath) -> VisualRuntime {
+        VisualRuntime {
+            path,
+            live: false,
+            quality: TuiLiveQuality::Balanced,
+            fit: TuiLiveFit::Contain,
+            herdr: None,
+            kitty: None,
+            kitty_generation: 0,
+            kitty_pane: None,
+            kitty_drawn: false,
+        }
+    }
+
+    #[test]
+    fn visual_request_reconciliation_keeps_runtime_state_and_presentation_aligned() {
+        let (mut state, root) = overlay_test_state();
+        let mut visual = test_visual_runtime(VisualPath::SemanticOnly {
+            reason: "test renderer unavailable".into(),
+        });
+        state.request_browser_visual_live(true, Some("starting".into()));
+        reconcile_browser_visual_request(&mut state, &mut visual);
+
+        assert!(!visual.live);
+        assert!(!state.browser_visual_live);
+        assert_eq!(
+            state.browser_workspace.state().presentation,
+            glass_browser::browser_workspace::BrowserPresentationPath::SemanticOnly
+        );
+        assert_eq!(
+            state
+                .browser_workspace
+                .state()
+                .presentation_reason
+                .as_deref(),
+            Some("test renderer unavailable")
+        );
+        assert!(state.status.contains("Live view unavailable"));
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn agent_watch_requests_and_reconciles_live_presentation() {
+        let (mut state, root) = overlay_test_state();
+        let mut visual = test_visual_runtime(VisualPath::Ansi);
+        state.watch_agent_on_app(
+            "glass.browser.click",
+            &serde_json::json!({"target":"Continue"}),
+        );
+        assert!(state.browser_visual_live);
+        reconcile_browser_visual_request(&mut state, &mut visual);
+
+        assert!(visual.live);
+        assert!(state.browser_visual_live);
+        assert_eq!(
+            state.browser_workspace.state().presentation,
+            glass_browser::browser_workspace::BrowserPresentationPath::Ansi
+        );
+        assert!(state.status.contains("Agent click Continue · watching"));
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn ansi_screenshot_failure_clears_runtime_and_workspace_live_state() {
+        let (mut state, root) = overlay_test_state();
+        let mut visual = test_visual_runtime(VisualPath::Ansi);
+        state.request_browser_visual_live(true, Some("starting".into()));
+        reconcile_browser_visual_request(&mut state, &mut visual);
+        assert!(visual.live);
+        assert!(state.browser_visual_live);
+
+        state.apply_visual_job_result_with_fit(
+            snapshot::VisualJobResult {
+                id: 1,
+                columns: 40,
+                rows: 20,
+                result: Err("browser disconnected".into()),
+            },
+            glass_browser::terminal_graphics::FrameFit::Contain,
+        );
+        assert!(!state.browser_visual_live);
+        reconcile_browser_visual_request(&mut state, &mut visual);
+
+        assert!(!visual.live);
+        assert!(!state.browser_visual_live);
+        assert_eq!(
+            state.browser_workspace.state().presentation,
+            glass_browser::browser_workspace::BrowserPresentationPath::SemanticOnly
+        );
+        assert!(
+            state
+                .browser_workspace
+                .state()
+                .presentation_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("browser screenshot failed"))
+        );
+        assert!(state.status.contains("Live view unavailable"));
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
     }
 
     #[test]

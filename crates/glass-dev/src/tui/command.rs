@@ -18,6 +18,100 @@ pub struct SurfaceAction {
     pub description: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaletteResolution {
+    TypedCommand(String),
+    SelectedAction(SurfaceAction),
+    NoMatch,
+}
+
+/// Resolve palette submission without allowing a fuzzy result to consume a
+/// complete typed command. A command prefix that still needs a documented
+/// placeholder resolves to the corresponding action so its prefill is reused.
+pub fn resolve_palette_submission(
+    typed: &str,
+    selected: Option<SurfaceAction>,
+) -> PaletteResolution {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return selected
+            .map(PaletteResolution::SelectedAction)
+            .unwrap_or(PaletteResolution::NoMatch);
+    }
+
+    let normalized = typed.split_whitespace().collect::<Vec<_>>().join(" ");
+    let root = normalized.split_whitespace().next().unwrap_or_default();
+    let one_word_root = !normalized.contains(' ') && is_tui_command_root(root);
+
+    if is_complete_tui_command(&normalized) {
+        return PaletteResolution::TypedCommand(normalized);
+    }
+
+    if !one_word_root
+        && let Some(action) = selected
+        && palette_prefix_resolves_to_action(&normalized, action)
+    {
+        return PaletteResolution::SelectedAction(action);
+    }
+
+    if one_word_root || is_tui_command_root(root) || selected.is_none() {
+        PaletteResolution::TypedCommand(normalized)
+    } else {
+        PaletteResolution::SelectedAction(selected.expect("checked selected action"))
+    }
+}
+
+fn palette_prefix_resolves_to_action(input: &str, action: SurfaceAction) -> bool {
+    let mut prefix = Vec::new();
+    let mut has_placeholder = false;
+    for token in action.command.split_whitespace() {
+        if token
+            .chars()
+            .all(|character| character.is_ascii_uppercase() || character == '_')
+        {
+            has_placeholder = true;
+            break;
+        }
+        prefix.push(token);
+    }
+    let prefix = prefix.join(" ");
+    let input = input.to_ascii_lowercase();
+    let prefix = prefix.to_ascii_lowercase();
+    if prefix == input {
+        return has_placeholder;
+    }
+    prefix.starts_with(&input)
+}
+
+fn is_tui_command_root(root: &str) -> bool {
+    ROOT_COMMANDS.contains(&root)
+        || matches!(
+            root,
+            "a" | "actions"
+                | "app"
+                | "?"
+                | "doctor"
+                | "open"
+                | "plan"
+                | "q"
+                | "search"
+                | "tasks"
+                | "tests"
+                | "gh"
+                | "experiments"
+                | "knowledge"
+                | "surfaces"
+                | "backend"
+                | "tools"
+        )
+}
+
+fn is_complete_tui_command(input: &str) -> bool {
+    // `git diff` is a complete command whose text is also a prefix of the
+    // selected-file diff action. Preserve the command route when both match.
+    input == "git diff"
+}
+
 const AGENT_ACTIONS: &[SurfaceAction] = &[
     SurfaceAction {
         label: "Compose message",
@@ -336,7 +430,7 @@ const GIT_ACTIONS: &[SurfaceAction] = &[
     },
     SurfaceAction {
         label: "View selected file diff",
-        command: "git diff",
+        command: "git diff selected",
         key: ":",
         description: "open the focused file diff",
     },
@@ -2503,6 +2597,17 @@ fn execute_browser(
         state.surface = DevSurface::App;
         return Ok(format!("Opened resident {command}"));
     };
+    if command == "browser" && action == "view" {
+        state.surface = DevSurface::App;
+        let live = !state.browser_visual_live;
+        let status = if live {
+            "Live view starting · screenshot worker will update the pane"
+        } else {
+            "Live view off · semantic inspection remains available"
+        };
+        state.request_browser_visual_live(live, Some(status.into()));
+        return Ok(status.into());
+    }
     let (tool, arguments, mutating) = if command == "workflow" {
         if action == "record" {
             return execute_workflow_record(state, &parts[1..]);
@@ -2750,6 +2855,11 @@ fn execute_git(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
         state.surface = DevSurface::Git;
         return Ok("Git status refreshed".into());
     };
+    if action == "diff" && parts.get(1) == Some(&"selected") {
+        state.git_diff_requested = true;
+        state.surface = DevSurface::Git;
+        return Ok("Git diff queued · loading off-thread".into());
+    }
     let (tool, arguments, mutating) = match action {
         "status" => ("glass.git.status", json!({}), false),
         "diff" => (
@@ -3071,6 +3181,60 @@ mod tests {
     fn every_major_surface_has_a_palette_route() {
         for surface in DevSurface::ALL {
             assert_eq!(parse_surface(surface.label()), Some(surface));
+        }
+    }
+
+    #[test]
+    fn palette_resolution_preserves_typed_routes_and_prefills_partial_actions() {
+        let live_view = APP_ACTIONS
+            .iter()
+            .find(|action| action.label == "Live browser view")
+            .copied()
+            .expect("live browser view action");
+        let navigate = APP_ACTIONS
+            .iter()
+            .find(|action| action.label == "Navigate")
+            .copied()
+            .expect("navigate action");
+        let selected_diff = GIT_ACTIONS
+            .iter()
+            .find(|action| action.label == "View selected file diff")
+            .copied()
+            .expect("selected diff action");
+
+        assert_eq!(
+            resolve_palette_submission("browser view", Some(live_view)),
+            PaletteResolution::TypedCommand("browser view".into())
+        );
+        assert_eq!(
+            resolve_palette_submission("browser view https://example.test", Some(live_view)),
+            PaletteResolution::TypedCommand("browser view https://example.test".into())
+        );
+        assert_eq!(
+            resolve_palette_submission("browser navigate https://example.test", Some(navigate)),
+            PaletteResolution::TypedCommand("browser navigate https://example.test".into())
+        );
+        assert_eq!(
+            resolve_palette_submission("browser nav", Some(navigate)),
+            PaletteResolution::SelectedAction(navigate)
+        );
+        assert_eq!(
+            resolve_palette_submission("browser navigate", Some(navigate)),
+            PaletteResolution::SelectedAction(navigate)
+        );
+        assert_eq!(
+            resolve_palette_submission("Live browser", Some(live_view)),
+            PaletteResolution::SelectedAction(live_view)
+        );
+        assert_eq!(
+            resolve_palette_submission("git diff", Some(selected_diff)),
+            PaletteResolution::TypedCommand("git diff".into())
+        );
+        for direct_route in ["open", "search", "doctor"] {
+            assert_eq!(
+                resolve_palette_submission(direct_route, Some(live_view)),
+                PaletteResolution::TypedCommand(direct_route.into())
+            );
         }
     }
 

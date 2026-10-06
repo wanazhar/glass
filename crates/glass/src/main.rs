@@ -223,6 +223,15 @@ fn repl(
                 prompt_row = nh.saturating_sub(2);
                 continue;
             }
+            // Bracketed paste delivers a whole run at once,
+            // newlines included, as a single event. Dropping
+            // it — which is what a bare `continue` did —
+            // meant pasted text silently vanished, the one
+            // input a coding harness uses most.
+            glass_tui::crossterm::event::Event::Paste(text) => {
+                editor.insert_str(&text);
+                continue;
+            }
             _ => continue,
         };
 

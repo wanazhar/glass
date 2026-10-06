@@ -1,6 +1,7 @@
 use super::command;
 use super::editor::EditorMode;
 use super::file_view;
+use super::overlay::{self, ActiveOverlay};
 use super::pi_commands;
 use super::state::{DevSurface, DevTuiState, EditorExitPrompt, ResponsiveClass, safe_browser_url};
 use glass_browser::browser::{NATIVE_BEFOREUNLOAD_MESSAGE, NATIVE_DIALOG_TEXT_LIMIT_BYTES};
@@ -116,15 +117,15 @@ fn header_height() -> u16 {
 }
 
 fn composer_visible_lines(state: &DevTuiState) -> u16 {
-    if !state.composer_mode {
+    if overlay::active_overlay(state) != Some(ActiveOverlay::Composer) {
         return 0;
     }
     let lines = state.composer_input.split('\n').count().max(1);
     (lines as u16).clamp(1, 6)
 }
 
-fn footer_height(state: &DevTuiState) -> u16 {
-    if state.composer_mode {
+pub(super) fn footer_height(state: &DevTuiState) -> u16 {
+    if overlay::active_overlay(state) == Some(ActiveOverlay::Composer) {
         composer_visible_lines(state).saturating_add(2)
     } else {
         3
@@ -203,15 +204,7 @@ fn status_line(state: &DevTuiState, width: u16) -> Line<'static> {
 pub fn browser_visual_area(state: &DevTuiState, area: Rect) -> Option<Rect> {
     if state.surface != DevSurface::App
         || !state.browser_visual_live
-        || state.quit_confirmation
-        || state.help_open
-        || state.command_mode
-        || state.pi_command_mode
-        || state.menu_open
-        || state.browser_target_picker
-        || state.browser_recovery.is_some()
-        || state.code_edit_mode
-        || state.browser_dialog.is_some()
+        || overlay::active_overlay(state).is_some_and(ActiveOverlay::occludes_surface)
     {
         return None;
     }
@@ -414,24 +407,45 @@ fn render_native_browser_dialog(frame: &mut Frame<'_>, state: &DevTuiState, area
 
 pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
     let area = frame.area();
-    if state.quit_confirmation {
-        render_quit_confirmation(frame, state, area);
-        return;
+    let active = overlay::active_overlay(state);
+    match active {
+        Some(ActiveOverlay::QuitConfirmation) => {
+            render_quit_confirmation(frame, state, area);
+            return;
+        }
+        Some(ActiveOverlay::EditorExitPrompt) => {
+            if state.code_edit_mode {
+                render_fullscreen_editor(frame, state, area);
+            } else if let Some(prompt) = state.editor_exit_prompt {
+                render_editor_exit_prompt(frame, area, prompt);
+            }
+            return;
+        }
+        Some(ActiveOverlay::BrowserDialog) => {
+            render_native_browser_dialog(frame, state, area);
+            return;
+        }
+        Some(ActiveOverlay::Help) => {
+            render_help(frame, state, area);
+            return;
+        }
+        Some(ActiveOverlay::FullscreenEditor) => {
+            render_fullscreen_editor(frame, state, area);
+            return;
+        }
+        _ => {}
     }
-    if state.browser_dialog.is_some() {
-        render_native_browser_dialog(frame, state, area);
-        return;
-    }
-    if state.help_open {
-        render_help(frame, state, area);
-        return;
-    }
-    if state.code_edit_mode {
+    let editor_background = state.code_edit_mode
+        && matches!(
+            active,
+            Some(
+                ActiveOverlay::FilePicker | ActiveOverlay::SessionPicker | ActiveOverlay::Composer
+            )
+        );
+    if editor_background {
         render_fullscreen_editor(frame, state, area);
-        return;
-    }
-    if state.factory_split
-        && state.composer_mode
+    } else if state.factory_split
+        && active == Some(ActiveOverlay::Composer)
         && !state.focused_editor_path.is_empty()
         && matches!(state.surface, DevSurface::Agent | DevSurface::Code)
         && !matches!(
@@ -441,23 +455,19 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
     {
         render_factory_home(frame, state, area);
         return;
+    } else {
+        match state.responsive_class(area.width, area.height) {
+            ResponsiveClass::Desktop => render_desktop(frame, state, area),
+            ResponsiveClass::Compact => render_compact(frame, state, area),
+            ResponsiveClass::Phone => render_phone(frame, state, area),
+        }
     }
-    match state.responsive_class(area.width, area.height) {
-        ResponsiveClass::Desktop => render_desktop(frame, state, area),
-        ResponsiveClass::Compact => render_compact(frame, state, area),
-        ResponsiveClass::Phone => render_phone(frame, state, area),
-    }
-    if state.command_mode {
-        render_command_palette(frame, state, area);
-    }
-    if state.pi_command_mode {
-        render_pi_command_palette(frame, state, area);
-    }
-    if state.file_picker_open {
-        render_file_picker(frame, state, area);
-    }
-    if state.session_picker_open {
-        render_session_picker(frame, state, area);
+    match active {
+        Some(ActiveOverlay::CommandPalette) => render_command_palette(frame, state, area),
+        Some(ActiveOverlay::PiSlashCommand) => render_pi_command_palette(frame, state, area),
+        Some(ActiveOverlay::FilePicker) => render_file_picker(frame, state, area),
+        Some(ActiveOverlay::SessionPicker) => render_session_picker(frame, state, area),
+        _ => {}
     }
 }
 fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -466,11 +476,13 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
         .constraints([
             Constraint::Length(2),
             Constraint::Min(4),
-            Constraint::Length(if state.composer_mode {
-                footer_height(state).max(4)
-            } else {
-                4
-            }),
+            Constraint::Length(
+                if overlay::active_overlay(state) == Some(ActiveOverlay::Composer) {
+                    footer_height(state).max(4)
+                } else {
+                    4
+                },
+            ),
         ])
         .split(area);
     let content = state.focused_editor_content.as_str();
@@ -641,7 +653,7 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
             "Esc back · unsaved changes ask first",
         )
     };
-    if state.composer_mode {
+    if overlay::active_overlay(state) == Some(ActiveOverlay::Composer) {
         render_status(frame, state, rows[2]);
     } else {
         let footer = vec![
@@ -1413,11 +1425,12 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let rows = shell_rows(state, area);
     render_header(frame, state, rows[0], "phone cockpit");
     render_surface(frame, state, rows[1]);
-    let footer_lines = if state.composer_mode {
+    let active = overlay::active_overlay(state);
+    let footer_lines = if active == Some(ActiveOverlay::Composer) {
         let mut lines = composer_input_lines(state, rows[2].width.saturating_sub(6));
         lines.push(status_line(state, rows[2].width.saturating_sub(2)));
         lines
-    } else if state.file_picker_open {
+    } else if active == Some(ActiveOverlay::FilePicker) {
         vec![
             Line::from(input_spans(
                 " file: ",
@@ -1430,7 +1443,7 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             )),
             status_line(state, rows[2].width.saturating_sub(2)),
         ]
-    } else if state.pi_command_mode {
+    } else if active == Some(ActiveOverlay::PiSlashCommand) {
         let mut spans = input_spans(
             "/ ",
             Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
@@ -1445,7 +1458,7 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         };
         spans.push(Span::styled(hint, Style::default().fg(MUTED)));
         vec![Line::from(spans)]
-    } else if state.command_mode {
+    } else if active == Some(ActiveOverlay::CommandPalette) {
         let (prefix, input, cursor) = match navigation_value(state) {
             Some(address) => (" URL: ", address, navigation_cursor(state, address)),
             None => (" : ", state.command_input.as_str(), state.command_cursor),
@@ -3616,7 +3629,8 @@ fn more_route_lines(state: &DevTuiState) -> Vec<String> {
 }
 
 fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    if state.menu_open {
+    let active = overlay::active_overlay(state);
+    if active == Some(ActiveOverlay::CommandCenterMenu) {
         let search_index = state.surface_actions().len();
         let quit_index = state.quit_menu_index();
         let items = state
@@ -3777,7 +3791,7 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         }
         return;
     }
-    if state.browser_target_picker {
+    if active == Some(ActiveOverlay::BrowserTargetPicker) {
         frame.render_widget(
             Paragraph::new(panel_text(&state.browser_target_picker_view()))
                 .style(Style::default().fg(TEXT))
@@ -3800,7 +3814,11 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         );
         return;
     }
-    if let Some(offer) = state.browser_recovery.as_ref() {
+    if let Some(offer) = state
+        .browser_recovery
+        .as_ref()
+        .filter(|_| active == Some(ActiveOverlay::BrowserRecovery))
+    {
         let actions = offer
             .actions()
             .iter()
@@ -3831,7 +3849,11 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         );
         return;
     }
-    if let Some(pending) = state.pending_agent_approval.as_ref() {
+    if let Some(pending) = state
+        .pending_agent_approval
+        .as_ref()
+        .filter(|_| active == Some(ActiveOverlay::AgentApproval))
+    {
         frame.render_widget(
             Paragraph::new(panel_text(&format!(
                 "APPROVE TOOL\n{}\n{}\n{}\nEnter/Y approve · Esc/N deny",
@@ -3853,7 +3875,11 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         );
         return;
     }
-    if let Some(pending) = state.pending_confirmation.as_ref() {
+    if let Some(pending) = state
+        .pending_confirmation
+        .as_ref()
+        .filter(|_| active == Some(ActiveOverlay::MutationConfirmation))
+    {
         frame.render_widget(
             Paragraph::new(panel_text(&format!(
                 "CONFIRM\n{}\nEnter/Y approve · Esc/N deny",
@@ -4147,7 +4173,12 @@ fn status_style(state: &DevTuiState) -> Style {
         || status.contains("required")
     {
         Style::default().fg(WARNING)
-    } else if state.composer_mode || state.command_mode || state.pi_command_mode {
+    } else if matches!(
+        overlay::active_overlay(state),
+        Some(
+            ActiveOverlay::Composer | ActiveOverlay::PiSlashCommand | ActiveOverlay::CommandPalette
+        )
+    ) {
         Style::default().fg(ACCENT_BRIGHT)
     } else {
         Style::default().fg(SUCCESS)
@@ -4213,7 +4244,8 @@ fn composer_input_lines(state: &DevTuiState, width: u16) -> Vec<Line<'static>> {
 
 fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let (glyph, glyph_color) = status_glyph(state);
-    let lines = if state.composer_mode {
+    let active = overlay::active_overlay(state);
+    let lines = if active == Some(ActiveOverlay::Composer) {
         let mut lines = composer_input_lines(state, area.width.saturating_sub(5));
         lines.push(Line::from(vec![
             Span::styled(
@@ -4225,7 +4257,7 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             Span::styled(state.status.clone(), status_style(state)),
         ]));
         lines
-    } else if state.file_picker_open {
+    } else if active == Some(ActiveOverlay::FilePicker) {
         vec![
             Line::from(input_spans(
                 " file: ",
@@ -4238,7 +4270,7 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             )),
             status_line(state, area.width.saturating_sub(2)),
         ]
-    } else if state.pi_command_mode {
+    } else if active == Some(ActiveOverlay::PiSlashCommand) {
         let mut spans = input_spans(
             "/ ",
             Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
@@ -4253,7 +4285,7 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         };
         spans.push(Span::styled(hint, Style::default().fg(MUTED)));
         vec![Line::from(spans)]
-    } else if state.command_mode {
+    } else if active == Some(ActiveOverlay::CommandPalette) {
         let (prefix, input, cursor, hint) = match navigation_value(state) {
             Some(address) => (
                 "URL: ",
@@ -4358,6 +4390,17 @@ mod tests {
         state
     }
 
+    fn overlay_state() -> (DevTuiState, std::path::PathBuf) {
+        let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "glass-dev-tui-overlay-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let state = DevTuiState::open(&root, TuiLayout::Desktop).unwrap();
+        (state, root)
+    }
+
     fn trust_workspace_once(state: &mut DevTuiState) {
         state
             .ws_mut()
@@ -4383,6 +4426,51 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| render(frame, state)).unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn file_picker_is_rendered_above_editor_and_pi_and_suppresses_lower_overlays() {
+        let (mut state, root) = overlay_state();
+        state.code_edit_mode = true;
+        state.pi_command_mode = true;
+        state.command_mode = true;
+        state.file_picker_open = true;
+        state.session_picker_open = true;
+
+        let output = rendered(&state, 100, 30);
+        assert!(output.contains("OPEN FILE"));
+        assert!(!output.contains("PI COMMANDS"));
+        assert!(!output.contains("PI SESSIONS"));
+        assert!(!output.contains("COMMAND PALETTE"));
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn session_picker_is_rendered_above_editor_and_pi() {
+        let (mut state, root) = overlay_state();
+        state.code_edit_mode = true;
+        state.pi_command_mode = true;
+        state.session_picker_open = true;
+
+        let output = rendered(&state, 100, 30);
+        assert!(output.contains("PI SESSIONS"));
+        assert!(!output.contains("PI COMMANDS"));
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn help_rendering_suppresses_a_lower_priority_command_center_menu() {
+        let (mut state, root) = overlay_state();
+        state.help_open = true;
+        state.menu_open = true;
+
+        let output = rendered(&state, 100, 30);
+        assert!(output.contains("HELP ·"));
+        assert!(!output.contains("ACTIONS ·"));
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn install_native_dialog(state: &mut DevTuiState, dialog_type: &str) {
@@ -4424,6 +4512,37 @@ mod tests {
         assert!(phone.contains("JAVASCRIPT CONFIRM"));
         assert!(phone.contains("Confirm"));
         assert!(phone.contains("https://example.test/checkout"));
+    }
+
+    #[test]
+    fn composer_keeps_live_browser_pixels_while_pickers_occlude_them() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::App;
+        state.browser_visual_live = true;
+        let area = Rect::new(0, 0, 120, 32);
+        assert!(browser_visual_area(&state, area).is_some());
+
+        state.composer_mode = true;
+        assert_eq!(
+            overlay::active_overlay(&state),
+            Some(ActiveOverlay::Composer)
+        );
+        assert!(browser_visual_area(&state, area).is_some());
+
+        state.file_picker_open = true;
+        assert_eq!(
+            overlay::active_overlay(&state),
+            Some(ActiveOverlay::FilePicker)
+        );
+        assert!(browser_visual_area(&state, area).is_none());
+
+        state.file_picker_open = false;
+        state.session_picker_open = true;
+        assert_eq!(
+            overlay::active_overlay(&state),
+            Some(ActiveOverlay::SessionPicker)
+        );
+        assert!(browser_visual_area(&state, area).is_none());
     }
 
     #[test]

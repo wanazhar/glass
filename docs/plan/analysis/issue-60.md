@@ -44,8 +44,9 @@ changes are insufficient where the issue names multiple entry points.
    confirmation.
 2. **P0 data preservation and revisions.** Repair TUI exit/FIM/chat state,
    editor claims and checkpoint/selection mutation, and daemon completion
-   races. Source report #55 has a focused task for preserving successful daemon
-   results when cancellation arrives after completion.
+   races. The queued task docs split these shared-state changes into the TUI
+   data-preservation task, the editor claims/revisions task, and the focused
+   source report #55 daemon result-race task.
 3. **P1 lifecycle and transport.** Repair daemon locks, process startup,
    workspace actor recovery/close, and bounded response handling; then browser
    and worker lifecycle issues.

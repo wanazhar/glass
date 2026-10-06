@@ -1698,7 +1698,9 @@ mod tests {
         );
         state.file_picker_open = true;
         reset_pointer_on_overlay_transition(&state, &mut pointer, &mut previous);
+        pointer.poll(&mut state, Instant::now() + Duration::from_millis(20));
         state.file_picker_open = false;
+        reset_pointer_on_overlay_transition(&state, &mut pointer, &mut previous);
         assert!(!pointer.handle(
             &mut state,
             MouseEvent {

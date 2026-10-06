@@ -349,6 +349,90 @@ pub(crate) struct WrappedEditorSource {
     pub(crate) cursor: Option<EditorVisualCursor>,
 }
 
+pub(crate) fn insert_ghost_at_cursor(source: &mut WrappedEditorSource, ghost: &str, style: Style) {
+    let Some(cursor) = source.cursor else {
+        return;
+    };
+    let Some(line) = source.text.lines.get_mut(cursor.row) else {
+        return;
+    };
+    let old_spans = std::mem::take(&mut line.spans);
+    let mut spans = Vec::with_capacity(old_spans.len() + 1);
+    let mut column = 0;
+    let mut inserted = false;
+    for span in old_spans {
+        for character in span.content.chars() {
+            if !inserted && column == cursor.column {
+                spans.push(Span::styled(ghost.to_string(), style));
+                inserted = true;
+            }
+            append_unit(
+                &mut spans,
+                &StyledUnit {
+                    character,
+                    style: span.style,
+                    source_index: None,
+                    width: display_width(character),
+                    whitespace: character.is_whitespace(),
+                },
+            );
+            column = column.saturating_add(display_width(character));
+        }
+    }
+    if !inserted {
+        spans.push(Span::styled(ghost.to_string(), style));
+    }
+    line.spans = spans;
+}
+
+pub(crate) fn insert_ghost_at_source_cursor(
+    text: &mut Text<'static>,
+    line_index: usize,
+    cursor_index: usize,
+    source_length: usize,
+    ghost: &str,
+    style: Style,
+) {
+    let Some(line) = text.lines.get_mut(line_index) else {
+        return;
+    };
+    let old_spans = std::mem::take(&mut line.spans);
+    let mut spans = Vec::with_capacity(old_spans.len() + 1);
+    let mut source_index = 0;
+    let mut inserted = false;
+    for (span_index, span) in old_spans.into_iter().enumerate() {
+        if span_index == 0 {
+            spans.push(span);
+            continue;
+        }
+        let mut chunk = String::new();
+        for character in span.content.chars() {
+            let is_source = source_index < source_length;
+            if !inserted
+                && ((is_source && source_index == cursor_index)
+                    || (!is_source && cursor_index >= source_length))
+            {
+                if !chunk.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut chunk), span.style));
+                }
+                spans.push(Span::styled(ghost.to_string(), style));
+                inserted = true;
+            }
+            chunk.push(character);
+            if is_source {
+                source_index += 1;
+            }
+        }
+        if !chunk.is_empty() {
+            spans.push(Span::styled(chunk, span.style));
+        }
+    }
+    if !inserted {
+        spans.push(Span::styled(ghost.to_string(), style));
+    }
+    line.spans = spans;
+}
+
 #[derive(Clone)]
 struct StyledUnit {
     character: char,
@@ -1892,6 +1976,34 @@ mod tests {
             wrapped.text.lines.iter().all(|line| line.width() <= 24),
             "wrapped editor rows must fit the requested width"
         );
+    }
+
+    #[test]
+    fn ghost_text_is_rendered_at_the_cursor_in_both_layouts() {
+        let decorations = EditorDecorations {
+            marks: &[],
+            inlays: &[],
+            extra_selections: &[],
+        };
+        let mut plain = render_editable_source("src/main.rs", "abcdef", 1, 4, None, &decorations);
+        insert_ghost_at_source_cursor(&mut plain, 0, 3, 6, "[ghost]", Style::default());
+        let plain_line = plain.lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(plain_line.ends_with("abc[ghost]def"), "{plain_line:?}");
+
+        let mut wrapped =
+            render_editable_source_wrapped("src/main.rs", "abcdef", 1, 4, None, 10, &decorations);
+        let cursor_row = wrapped.cursor.expect("cursor in wrapped source").row;
+        insert_ghost_at_cursor(&mut wrapped, "[ghost]", Style::default());
+        let wrapped_line = wrapped.text.lines[cursor_row]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(wrapped_line.contains("c[ghost]d"), "{wrapped_line:?}");
     }
 
     #[test]

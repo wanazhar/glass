@@ -202,8 +202,14 @@ pub struct AgentEvent {
 
 #[derive(Debug)]
 enum WorkerCommand {
-    Request(PiSessionRequest),
-    ApproveTool { frame_id: String, approved: bool },
+    Request {
+        request: PiSessionRequest,
+        started: Option<SyncSender<Result<String, String>>>,
+    },
+    ApproveTool {
+        frame_id: String,
+        approved: bool,
+    },
     Shutdown,
 }
 
@@ -494,7 +500,7 @@ impl AgentRegistry {
         let text = text.into();
         validate_text("agent prompt", &text, MAX_PROMPT_BYTES)?;
         validate_context_attachment(context.as_ref())?;
-        self.send(id, PiSessionRequest::Prompt { text, context })
+        self.send(id, PiSessionRequest::Prompt { text, context }, None)
     }
 
     pub(crate) fn steer_with_context(
@@ -506,7 +512,7 @@ impl AgentRegistry {
         let text = text.into();
         validate_text("agent steering", &text, MAX_PROMPT_BYTES)?;
         validate_context_attachment(context.as_ref())?;
-        self.send(id, PiSessionRequest::Steer { text, context })
+        self.send(id, PiSessionRequest::Steer { text, context }, None)
     }
 
     pub(crate) fn follow_up_with_context(
@@ -518,7 +524,37 @@ impl AgentRegistry {
         let text = text.into();
         validate_text("agent follow-up", &text, MAX_PROMPT_BYTES)?;
         validate_context_attachment(context.as_ref())?;
-        self.send(id, PiSessionRequest::FollowUp { text, context })
+        self.send(id, PiSessionRequest::FollowUp { text, context }, None)
+    }
+
+    pub(crate) fn send_with_context_and_client_message_id(
+        &mut self,
+        id: &AgentId,
+        mode: &str,
+        text: impl Into<String>,
+        context: Option<Value>,
+        client_message_id: Option<&str>,
+    ) -> DevelopmentResult<()> {
+        if let Some(client_message_id) = client_message_id
+            && (client_message_id.is_empty()
+                || client_message_id.len() > 128
+                || !client_message_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte)))
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "client message ID must be 1-128 ASCII letters, digits, or ._:-".into(),
+            ));
+        }
+        let text = text.into();
+        validate_text("agent message", &text, MAX_PROMPT_BYTES)?;
+        validate_context_attachment(context.as_ref())?;
+        let request = match mode {
+            "steer" => PiSessionRequest::Steer { text, context },
+            "follow-up" => PiSessionRequest::FollowUp { text, context },
+            _ => PiSessionRequest::Prompt { text, context },
+        };
+        self.send(id, request, client_message_id)
     }
 
     pub(crate) fn approve_tool(
@@ -559,7 +595,54 @@ impl AgentRegistry {
         id: &AgentId,
         request: PiSessionRequest,
     ) -> DevelopmentResult<()> {
-        self.send(id, request)
+        self.send(id, request, None)
+    }
+
+    pub(crate) fn request_with_id(
+        &mut self,
+        id: &AgentId,
+        request: PiSessionRequest,
+    ) -> DevelopmentResult<String> {
+        self.refresh()?;
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        {
+            let record = self.record_mut(id)?;
+            if record.snapshot.status.terminal() || record.snapshot.status == AgentStatus::Queued {
+                return Err(DevelopmentError::Conflict(format!(
+                    "agent {} cannot accept requests while {:?}",
+                    id.as_str(),
+                    record.snapshot.status
+                )));
+            }
+            let sender = record.command.as_ref().ok_or_else(|| {
+                DevelopmentError::Conflict(format!("agent {} is still starting", id.as_str()))
+            })?;
+            sender
+                .try_send(WorkerCommand::Request {
+                    request,
+                    started: Some(started_tx),
+                })
+                .map_err(|error| match error {
+                    TrySendError::Full(_) => DevelopmentError::Conflict(format!(
+                        "agent {} command queue is full",
+                        id.as_str()
+                    )),
+                    TrySendError::Disconnected(_) => DevelopmentError::Process(format!(
+                        "agent {} command channel closed",
+                        id.as_str()
+                    )),
+                })?;
+        }
+        match started_rx.recv_timeout(Duration::from_secs(15)) {
+            Ok(Ok(request_id)) => Ok(request_id),
+            Ok(Err(error)) => Err(DevelopmentError::Process(error)),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(DevelopmentError::Conflict(
+                "Pi did not start the request within 15 seconds".into(),
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(DevelopmentError::Process(
+                "Pi worker stopped before starting the request".into(),
+            )),
+        }
     }
 
     /// Mark a non-terminal agent complete after its worker settles.
@@ -587,7 +670,10 @@ impl AgentRegistry {
             return Ok(());
         }
         if let Some(sender) = &self.record_mut(id)?.command {
-            let _ = sender.try_send(WorkerCommand::Request(PiSessionRequest::Abort));
+            let _ = sender.try_send(WorkerCommand::Request {
+                request: PiSessionRequest::Abort,
+                started: None,
+            });
             let _ = sender.try_send(WorkerCommand::Shutdown);
         }
         self.record_mut(id)?.command = None;
@@ -636,9 +722,14 @@ impl AgentRegistry {
         Ok(())
     }
 
-    fn send(&mut self, id: &AgentId, request: PiSessionRequest) -> DevelopmentResult<()> {
+    fn send(
+        &mut self,
+        id: &AgentId,
+        request: PiSessionRequest,
+        client_message_id: Option<&str>,
+    ) -> DevelopmentResult<()> {
         self.refresh()?;
-        let user_event = match &request {
+        let mut user_event = match &request {
             PiSessionRequest::Prompt { text, context } => Some(
                 serde_json::json!({"text": text, "mode": "prompt", "contextAttached": context.is_some()}),
             ),
@@ -650,6 +741,14 @@ impl AgentRegistry {
             ),
             _ => None,
         };
+        if let (Some(message_id), Some(Value::Object(payload))) =
+            (client_message_id, user_event.as_mut())
+        {
+            payload.insert(
+                "clientMessageId".into(),
+                Value::String(message_id.to_string()),
+            );
+        }
         {
             let record = self.record_mut(id)?;
             if record.snapshot.status.terminal() || record.snapshot.status == AgentStatus::Queued {
@@ -663,7 +762,10 @@ impl AgentRegistry {
                 DevelopmentError::Conflict(format!("agent {} is still starting", id.as_str()))
             })?;
             sender
-                .try_send(WorkerCommand::Request(request))
+                .try_send(WorkerCommand::Request {
+                    request,
+                    started: None,
+                })
                 .map_err(|error| match error {
                     TrySendError::Full(_) => DevelopmentError::Conflict(format!(
                         "agent {} command queue is full",
@@ -806,7 +908,10 @@ impl AgentRegistry {
         for id in exceeded {
             if let Some(record) = self.records.get_mut(&id) {
                 if let Some(sender) = record.command.take() {
-                    let _ = sender.try_send(WorkerCommand::Request(PiSessionRequest::Abort));
+                    let _ = sender.try_send(WorkerCommand::Request {
+                        request: PiSessionRequest::Abort,
+                        started: None,
+                    });
                     let _ = sender.try_send(WorkerCommand::Shutdown);
                 }
                 record.snapshot.status = AgentStatus::Failed;
@@ -1043,7 +1148,7 @@ fn run_worker(
     loop {
         loop {
             match commands.try_recv() {
-                Ok(WorkerCommand::Request(request)) => {
+                Ok(WorkerCommand::Request { request, started }) => {
                     let waits_for_agent = matches!(
                         request,
                         PiSessionRequest::Prompt { .. }
@@ -1051,11 +1156,23 @@ fn run_worker(
                             | PiSessionRequest::Complete { .. }
                     );
                     match harness.start_request(request) {
-                        Ok(request_id) => send_critical_worker_event(
-                            &events,
-                            WorkerEvent::RequestStarted(id.clone(), request_id, waits_for_agent),
-                        ),
+                        Ok(request_id) => {
+                            if let Some(started) = started {
+                                let _ = started.send(Ok(request_id.clone()));
+                            }
+                            send_critical_worker_event(
+                                &events,
+                                WorkerEvent::RequestStarted(
+                                    id.clone(),
+                                    request_id,
+                                    waits_for_agent,
+                                ),
+                            );
+                        }
                         Err(error) => {
+                            if let Some(started) = started {
+                                let _ = started.send(Err(error.to_string()));
+                            }
                             send_critical_worker_event(
                                 &events,
                                 WorkerEvent::Failed(id.clone(), error.to_string()),
@@ -1271,6 +1388,43 @@ mod tests {
                 dropped_events: Arc::new(AtomicU64::new(0)),
             },
         );
+    }
+
+    #[test]
+    fn request_with_id_returns_the_workers_pi_request_identifier() {
+        let root = test_root();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        let id = AgentId::parse("agent-request-id-test").unwrap();
+        let (command, commands) = mpsc::sync_channel(COMMAND_CAPACITY);
+        let worker = thread::spawn(move || {
+            while let Ok(command) = commands.recv() {
+                match command {
+                    WorkerCommand::Request {
+                        request: PiSessionRequest::Complete { .. },
+                        started: Some(started),
+                    } => {
+                        started.send(Ok("glass-request-17".into())).unwrap();
+                    }
+                    WorkerCommand::Shutdown => break,
+                    _ => {}
+                }
+            }
+        });
+        insert_test_worker(&mut registry, id.clone(), command, worker);
+
+        let request_id = registry
+            .request_with_id(
+                &id,
+                PiSessionRequest::Complete {
+                    prefix: "fn main() {".into(),
+                    suffix: "}".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(request_id, "glass-request-17");
+        registry.cancel(&id).unwrap();
+        drop(registry);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

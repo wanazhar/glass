@@ -2109,12 +2109,24 @@ async fn hardened_navigation_intercepts_private_redirects_before_following() {
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
-    interception.record_lagged_events(3);
+
+    let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(1);
+    event_tx.send(()).unwrap();
+    event_tx.send(()).unwrap();
+    let receiver_error = event_rx.recv().await.unwrap_err();
+    assert!(matches!(
+        receiver_error,
+        tokio::sync::broadcast::error::RecvError::Lagged(1)
+    ));
+    assert_eq!(
+        record_policy_event_receiver_error(receiver_error, &interception.lagged_events),
+        Some(1)
+    );
     assert!(matches!(
         interception.take_denial().await,
         Some(PolicyError::Denied { .. })
     ));
-    assert_eq!(interception.take_lagged_events(), 3);
+    assert_eq!(interception.take_lagged_events(), 1);
     assert_eq!(interception.take_lagged_events(), 0);
     interception.shutdown().await;
     cdp.close().await;

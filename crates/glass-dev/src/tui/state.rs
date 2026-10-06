@@ -10,7 +10,7 @@ use super::parse::IncrementalSyntax;
 use crate::browser::BrowserService;
 use crate::development::TextSelection;
 use crate::{ExperimentComparison, SharedDevelopmentWorkspace};
-use glass_browser::browser::policy::PolicyPreset;
+use glass_browser::browser::policy::BrowserPolicy;
 use glass_browser::browser::session::VerificationPredicate;
 use glass_browser::browser::{
     NATIVE_DIALOG_TEXT_LIMIT_BYTES, NativeDialogResolution, NativePendingDialog, WorkflowRecorder,
@@ -589,7 +589,8 @@ impl DevTuiState {
         root: impl AsRef<Path>,
         layout: TuiLayout,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::open_internal(root, layout, true, false, PolicyPreset::Development)
+        let browser_policy = BrowserPolicy::development(root.as_ref())?;
+        Self::open_internal(root, layout, true, false, browser_policy)
     }
 
     /// Construct the interactive TUI without doing a full synchronous
@@ -600,17 +601,18 @@ impl DevTuiState {
         root: impl AsRef<Path>,
         layout: TuiLayout,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::open_internal(root, layout, false, false, PolicyPreset::Development)
+        let browser_policy = BrowserPolicy::development(root.as_ref())?;
+        Self::open_internal(root, layout, false, false, browser_policy)
     }
 
-    /// Construct the TUI with explicit development and browser policies.
-    pub(crate) fn open_for_tui_with_policy(
+    /// Construct the TUI with the complete browser authorization policy.
+    pub(crate) fn open_for_tui_with_browser_policy(
         root: impl AsRef<Path>,
         layout: TuiLayout,
         yolo_mode: bool,
-        policy_preset: PolicyPreset,
+        browser_policy: BrowserPolicy,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::open_internal(root, layout, false, yolo_mode, policy_preset)
+        Self::open_internal(root, layout, false, yolo_mode, browser_policy)
     }
 
     fn open_internal(
@@ -618,11 +620,11 @@ impl DevTuiState {
         layout: TuiLayout,
         initial_refresh: bool,
         yolo_mode: bool,
-        policy_preset: PolicyPreset,
+        browser_policy: BrowserPolicy,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let workspace = SharedDevelopmentWorkspace::open_with_policy_and_unrestricted(
+        let workspace = SharedDevelopmentWorkspace::open_with_browser_policy_and_unrestricted(
             root,
-            policy_preset,
+            browser_policy,
             yolo_mode,
         )?;
         // Glass Dev's resident Pi session is an explicitly human-controlled
@@ -8254,8 +8256,13 @@ impl DevTuiState {
         match tool {
             "glass.browser.observe" => {
                 let revision = result
-                    .pointer("/accessibility/revision")
-                    .and_then(serde_json::Value::as_u64);
+                    .get("browserRevision")
+                    .and_then(serde_json::Value::as_u64)
+                    .or_else(|| {
+                        result
+                            .pointer("/accessibility/revision")
+                            .and_then(serde_json::Value::as_u64)
+                    });
                 let title = result
                     .pointer("/page/title")
                     .and_then(serde_json::Value::as_str)
@@ -9860,6 +9867,42 @@ fn editor_offset(content: &str, line: u32, column: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tui_state_forwards_complete_browser_policy_to_resident_workspace() {
+        let root =
+            std::env::temp_dir().join(format!("glass-tui-browser-policy-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let policy = BrowserPolicy::development(&root)
+            .unwrap()
+            .with_host_rules(
+                ["allowed.example.test".to_string()],
+                ["denied.example.test".to_string()],
+            )
+            .unwrap();
+
+        let state =
+            DevTuiState::open_for_tui_with_browser_policy(&root, TuiLayout::Desktop, false, policy)
+                .expect("open TUI state with complete browser policy");
+        let workspace = state.ws().expect("lock development workspace");
+        let browser = workspace.browser();
+        assert_eq!(
+            browser
+                .navigation_preflight("https://allowed.example.test/path")
+                .decision,
+            glass_browser::browser::policy::NavigationPreflightDecision::Allow
+        );
+        assert_eq!(
+            browser
+                .navigation_preflight("https://denied.example.test/path")
+                .decision,
+            glass_browser::browser::policy::NavigationPreflightDecision::Deny
+        );
+
+        drop(workspace);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
 
     #[test]
     fn debug_thread_and_frame_packets_parse_source_locations() {

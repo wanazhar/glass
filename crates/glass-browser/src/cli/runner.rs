@@ -4406,7 +4406,7 @@ fn read_extraction_request(path: Option<&std::path::PathBuf>) -> BrowserResult<E
     Ok(request)
 }
 
-pub(crate) fn policy_from_cli(cli: &Cli) -> BrowserResult<BrowserPolicy> {
+pub fn policy_from_cli(cli: &Cli) -> BrowserResult<BrowserPolicy> {
     let unrestricted_capabilities = [
         PolicyCapability::Attach,
         PolicyCapability::PersistentProfile,
@@ -5030,6 +5030,51 @@ mod tests {
             policy.decide(PolicyCapability::RawCdp),
             crate::browser::policy::PolicyDecision::Allow
         ));
+    }
+
+    #[test]
+    fn policy_from_cli_preserves_exact_host_rules_and_preset() {
+        std::thread::Builder::new()
+            .name("glass-cli-policy-test".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "glass",
+                    "--policy",
+                    "development",
+                    "--policy-allow-host",
+                    "allowed.example.test",
+                    "--policy-deny-host",
+                    "denied.example.test",
+                    "doctor",
+                ])
+                .unwrap();
+
+                let policy = policy_from_cli(&cli).unwrap();
+
+                assert_eq!(policy.preset(), PolicyPreset::Development);
+                assert_eq!(
+                    policy
+                        .preflight_navigation("https://allowed.example.test/path")
+                        .decision,
+                    crate::browser::policy::NavigationPreflightDecision::Allow
+                );
+                assert_eq!(
+                    policy
+                        .preflight_navigation("https://denied.example.test/path")
+                        .decision,
+                    crate::browser::policy::NavigationPreflightDecision::Deny
+                );
+                assert_eq!(
+                    policy
+                        .preflight_navigation("https://sub.allowed.example.test/path")
+                        .decision,
+                    crate::browser::policy::NavigationPreflightDecision::Deny
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

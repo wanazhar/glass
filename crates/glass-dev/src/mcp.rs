@@ -2,6 +2,9 @@
 
 use crate::development::{Actor, ToolAuthorization, ToolCall};
 use crate::{DevelopmentToolContext, DevelopmentWorkspace};
+use glass_browser::browser::policy::BrowserPolicy;
+#[cfg(test)]
+use glass_browser::browser::policy::PolicyPreset;
 use glass_browser::mcp::server::{HostMcpTool, HostMcpToolBackend};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -17,8 +20,20 @@ pub(crate) struct DevelopmentMcpBackend {
 }
 
 impl DevelopmentMcpBackend {
+    #[cfg(test)]
     pub(crate) fn open(root: impl AsRef<Path>, unrestricted: bool) -> Result<Self, String> {
-        let mut workspace = DevelopmentWorkspace::open(root).map_err(|error| error.to_string())?;
+        let browser_policy = BrowserPolicy::from_preset(PolicyPreset::Development, root.as_ref())
+            .map_err(|error| error.to_string())?;
+        Self::open_with_browser_policy(root, unrestricted, browser_policy)
+    }
+
+    pub(crate) fn open_with_browser_policy(
+        root: impl AsRef<Path>,
+        unrestricted: bool,
+        browser_policy: BrowserPolicy,
+    ) -> Result<Self, String> {
+        let mut workspace = DevelopmentWorkspace::open_with_browser_policy(root, browser_policy)
+            .map_err(|error| error.to_string())?;
         if unrestricted {
             workspace
                 .enable_unrestricted_execution()
@@ -256,6 +271,53 @@ fn augment_schema(mut schema: Value, mutating: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glass_browser::browser::policy::NavigationPreflightDecision;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_POLICY_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn backend_forwards_complete_browser_policy_to_resident_workspace() {
+        let sequence = NEXT_POLICY_ROOT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "glass-mcp-policy-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='fixture'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        let policy = BrowserPolicy::development(&root)
+            .unwrap()
+            .with_host_rules(
+                ["allowed.example.test".to_string()],
+                ["denied.example.test".to_string()],
+            )
+            .unwrap();
+
+        let backend =
+            DevelopmentMcpBackend::open_with_browser_policy(&root, false, policy).unwrap();
+        let workspace = backend.workspace.lock().unwrap();
+        let browser = workspace.browser();
+        assert_eq!(
+            browser
+                .navigation_preflight("https://allowed.example.test/path")
+                .decision,
+            NavigationPreflightDecision::Allow
+        );
+        assert_eq!(
+            browser
+                .navigation_preflight("https://denied.example.test/path")
+                .decision,
+            NavigationPreflightDecision::Deny
+        );
+
+        drop(workspace);
+        drop(backend);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn mutation_extension_is_root_level_and_glass_metadata_stays_a_property() {

@@ -1,7 +1,7 @@
 ---
 id: issue60-p0-browser-policy-001
 scope: glass-browser/resident-browser-policy
-status: in-progress
+status: done
 depends-on: [issue60-p0-governance-001]
 ---
 
@@ -43,8 +43,24 @@ the positional URL. Ensure event-stream lag cannot overwrite a real
 
 ## Verification
 
-- Add launch-argument ordering coverage for hardened host rules.
-- Add an interception regression where a real denial is followed by a lagged
-  event receiver; both the denial and lag signal must remain observable.
-- Exercise or reproduce policy forwarding through the resident browser path,
-  including exact host allow and deny behavior and revision projection.
+- CLI dispatch now forwards the complete `BrowserPolicy` to MCP and TUI;
+  workspace constructors enforce matching canonical roots and preserve exact
+  host rules in the resident worker.
+- The native resident runtime checks navigation URLs against that policy and
+  refuses hardened/untrusted presets because it cannot provide Chromium's
+  network interception guarantees. Resident responses include a top-level
+  `browserRevision`, which the TUI projection consumes.
+- Chrome resolver rules precede its positional URL. Interception lag is
+  tracked separately from the last concrete policy denial.
+- Focused regressions passed:
+  - `cargo check -p glass-dev --lib --bins --locked`
+  - `cargo test -p glass-dev --lib --locked browser_policy`
+  - `cargo test -p glass-dev --lib --locked shared_workspace_forwards_exact_browser_host_rules_to_resident_service`
+  - `cargo test -p glass-dev --lib --locked resident_browser_defaults_to_native_runtime`
+  - `cargo test -p glass-browser --lib --locked hardened_navigation_intercepts_private_redirects_before_following`
+  - `cargo test -p glass-browser --lib --locked hardened_host_resolver_rules_precede_the_positional_url`
+  - `cargo test -p glass-browser --lib --locked policy_from_cli_preserves_exact_host_rules_and_preset`
+  - `cargo fmt --all -- --check`
+  - `git diff --check`
+- Independent review: PASS; the reviewer confirmed the actual lagged receiver
+  error is handled without replacing the blocked-request denial.

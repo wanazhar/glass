@@ -267,8 +267,13 @@ pub fn browser_result(tool: &str, value: &Value) -> String {
             .and_then(Value::as_array)
             .map_or(0, Vec::len);
         let revision = value
-            .pointer("/accessibility/revision")
-            .and_then(Value::as_u64);
+            .get("browserRevision")
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                value
+                    .pointer("/accessibility/revision")
+                    .and_then(Value::as_u64)
+            });
         return format!(
             "✓ observed {title} · {interactive} interactive · rev {}",
             revision.map_or_else(|| "—".into(), |revision| revision.to_string())

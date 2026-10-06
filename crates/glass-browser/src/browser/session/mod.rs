@@ -261,6 +261,19 @@ fn record_policy_event_lag(lagged_events: &AtomicU64, count: u64) {
     });
 }
 
+fn record_policy_event_receiver_error(
+    error: tokio::sync::broadcast::error::RecvError,
+    lagged_events: &AtomicU64,
+) -> Option<u64> {
+    match error {
+        tokio::sync::broadcast::error::RecvError::Lagged(count) => {
+            record_policy_event_lag(lagged_events, count);
+            Some(count)
+        }
+        tokio::sync::broadcast::error::RecvError::Closed => None,
+    }
+}
+
 struct PolicyInterception {
     cdp: CdpClient,
     sessions: Arc<Mutex<HashSet<String>>>,
@@ -290,15 +303,18 @@ impl PolicyInterception {
             loop {
                 let event = match events.recv().await {
                     Ok(event) => event,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                        record_policy_event_lag(&worker_lagged_events, count);
-                        tracing::warn!(
-                            dropped_events = count,
-                            "browser policy interception event stream lagged"
-                        );
-                        continue;
+                    Err(error) => {
+                        match record_policy_event_receiver_error(error, &worker_lagged_events) {
+                            Some(count) => {
+                                tracing::warn!(
+                                    dropped_events = count,
+                                    "browser policy interception event stream lagged"
+                                );
+                                continue;
+                            }
+                            None => break,
+                        }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 };
                 if event.method == "Target.attachedToTarget" {
                     if let Some(session_id) = event.params["sessionId"].as_str() {
@@ -366,11 +382,6 @@ impl PolicyInterception {
 
     async fn take_denial(&self) -> Option<PolicyError> {
         self.last_denial.lock().await.take()
-    }
-
-    #[cfg(test)]
-    fn record_lagged_events(&self, count: u64) {
-        record_policy_event_lag(&self.lagged_events, count);
     }
 
     fn take_lagged_events(&self) -> u64 {

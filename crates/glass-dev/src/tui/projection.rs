@@ -434,16 +434,22 @@ pub struct ConversationEntry {
     pub text: String,
     pub streaming: bool,
     pub entry_id: Option<String>,
+    pub client_message_id: Option<String>,
     pub tool_name: Option<String>,
 }
 
 impl ConversationEntry {
-    fn user(text: impl Into<String>, entry_id: Option<String>) -> Self {
+    fn user(
+        text: impl Into<String>,
+        entry_id: Option<String>,
+        client_message_id: Option<String>,
+    ) -> Self {
         Self {
             kind: ConversationKind::User,
             text: text.into(),
             streaming: false,
             entry_id,
+            client_message_id,
             tool_name: None,
         }
     }
@@ -454,6 +460,7 @@ impl ConversationEntry {
             text: text.into(),
             streaming,
             entry_id,
+            client_message_id: None,
             tool_name: None,
         }
     }
@@ -464,6 +471,7 @@ impl ConversationEntry {
             text: text.into(),
             streaming: false,
             entry_id: None,
+            client_message_id: None,
             tool_name,
         }
     }
@@ -474,6 +482,7 @@ impl ConversationEntry {
             text: text.into(),
             streaming: false,
             entry_id: None,
+            client_message_id: None,
             tool_name,
         }
     }
@@ -484,6 +493,7 @@ impl ConversationEntry {
             text: text.into(),
             streaming: false,
             entry_id: None,
+            client_message_id: None,
             tool_name,
         }
     }
@@ -698,7 +708,11 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
             "cancelled" => items.push(ConversationEntry::error("cancelled", None)),
             "user" => {
                 if let Some(text) = event_text(event) {
-                    items.push(ConversationEntry::user(text, entry_id));
+                    items.push(ConversationEntry::user(
+                        text,
+                        entry_id,
+                        event_client_message_id(event),
+                    ));
                 }
             }
             "response" => {
@@ -761,6 +775,15 @@ fn event_entry_id(event: &crate::AgentEvent) -> Option<String> {
     .find_map(Value::as_str)
     .filter(|value| !value.is_empty())
     .map(str::to_string)
+}
+
+fn event_client_message_id(event: &crate::AgentEvent) -> Option<String> {
+    event
+        .payload
+        .get("clientMessageId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+        .map(str::to_string)
 }
 
 fn push_thinking(items: &mut Vec<ConversationEntry>, entry_id: Option<String>) {
@@ -1122,7 +1145,11 @@ mod tests {
                 agent_id: agent_id.clone(),
                 timestamp_ms: 0,
                 kind: "user".into(),
-                payload: serde_json::json!({"text": "ship it", "entryId": "entry-user"}),
+                payload: serde_json::json!({
+                    "text": "ship it",
+                    "entryId": "entry-user",
+                    "clientMessageId": "chat-17"
+                }),
             },
             crate::AgentEvent {
                 sequence: 2,
@@ -1150,6 +1177,7 @@ mod tests {
         ];
         let entries = conversation_entries(&events);
         assert_eq!(entries[0].entry_id.as_deref(), Some("entry-user"));
+        assert_eq!(entries[0].client_message_id.as_deref(), Some("chat-17"));
         assert_eq!(entries[1].tool_name.as_deref(), Some("glass.file.write"));
         assert!(entries[1].text.contains("path src/lib.rs"));
         assert!(!entries[1].text.contains("secret-token-value"));

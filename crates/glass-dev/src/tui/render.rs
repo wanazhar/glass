@@ -2,7 +2,7 @@ use super::command;
 use super::editor::EditorMode;
 use super::file_view;
 use super::pi_commands;
-use super::state::{DevSurface, DevTuiState, ResponsiveClass, safe_browser_url};
+use super::state::{DevSurface, DevTuiState, EditorExitPrompt, ResponsiveClass, safe_browser_url};
 use glass_browser::browser::{NATIVE_BEFOREUNLOAD_MESSAGE, NATIVE_DIALOG_TEXT_LIMIT_BYTES};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -415,7 +415,7 @@ fn render_native_browser_dialog(frame: &mut Frame<'_>, state: &DevTuiState, area
 pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
     let area = frame.area();
     if state.quit_confirmation {
-        render_quit_confirmation(frame, area);
+        render_quit_confirmation(frame, state, area);
         return;
     }
     if state.browser_dialog.is_some() {
@@ -551,7 +551,7 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
         extra_selections: &state.editor_engine.extra_selections,
     };
     let wrapped_cursor = if state.editor_soft_wrap {
-        let wrapped = file_view::render_editable_source_wrapped(
+        let mut wrapped = file_view::render_editable_source_wrapped(
             &state.focused_editor_path,
             content,
             state.focused_editor_line,
@@ -560,6 +560,13 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
             editor_inner.width.max(1),
             &decorations,
         );
+        if let Some(ghost) = state.visible_ghost_text() {
+            file_view::insert_ghost_at_cursor(
+                &mut wrapped,
+                ghost,
+                Style::default().fg(MUTED).add_modifier(Modifier::ITALIC),
+            );
+        }
         let cursor = wrapped.cursor;
         frame.render_widget(
             Paragraph::new(wrapped.text)
@@ -578,14 +585,22 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
             state.focused_editor_selection.as_ref(),
             &decorations,
         );
-        if let Some(ghost) = &state.editor_engine.ghost {
+        if let Some(ghost) = state.visible_ghost_text() {
             let index = state.focused_editor_line.saturating_sub(1) as usize;
-            if let Some(line) = text.lines.get_mut(index) {
-                line.spans.push(Span::styled(
-                    ghost.text.clone(),
-                    Style::default().fg(MUTED).add_modifier(Modifier::ITALIC),
-                ));
-            }
+            let source_length = content
+                .split('\n')
+                .nth(index)
+                .unwrap_or_default()
+                .chars()
+                .count();
+            file_view::insert_ghost_at_source_cursor(
+                &mut text,
+                index,
+                state.focused_editor_column.saturating_sub(1) as usize,
+                source_length,
+                ghost,
+                Style::default().fg(MUTED).add_modifier(Modifier::ITALIC),
+            );
         }
         frame.render_widget(
             Paragraph::new(text)
@@ -759,7 +774,7 @@ fn render_editor_exit_prompt(
         modal,
     );
 }
-fn render_quit_confirmation(frame: &mut Frame<'_>, area: Rect) {
+fn render_quit_confirmation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let width = area.width.saturating_sub(4).min(64);
     let height = area.height.saturating_sub(4).min(7);
     let modal = Rect {
@@ -770,19 +785,25 @@ fn render_quit_confirmation(frame: &mut Frame<'_>, area: Rect) {
     };
     frame.render_widget(Clear, modal);
     frame.render_widget(
-        Paragraph::new(panel_text("QUIT?\n\nEnter quit · Esc stay"))
-            .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
-            .block(
-                Block::default()
-                    .title(" EXIT · confirm ")
-                    .title_style(Style::default().fg(WARNING).add_modifier(Modifier::BOLD))
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(WARNING))
-                    .bg(PANEL_BACKGROUND)
-                    .padding(Padding::horizontal(1)),
-            )
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(panel_text(
+            if state.editor_exit_prompt == Some(EditorExitPrompt::Unsaved) {
+                "UNSAVED EDITOR CHANGES\n\nEnter discard and quit · Esc keep editing"
+            } else {
+                "QUIT?\n\nEnter quit · Esc stay"
+            },
+        ))
+        .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
+        .block(
+            Block::default()
+                .title(" EXIT · confirm ")
+                .title_style(Style::default().fg(WARNING).add_modifier(Modifier::BOLD))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(WARNING))
+                .bg(PANEL_BACKGROUND)
+                .padding(Padding::horizontal(1)),
+        )
+        .wrap(Wrap { trim: false }),
         modal,
     );
 }
@@ -4632,6 +4653,13 @@ mod tests {
         assert!(output.contains("QUIT?"));
         assert!(output.contains("Enter quit"));
         assert!(output.contains("Esc stay"));
+
+        state.editor_exit_prompt = Some(EditorExitPrompt::Unsaved);
+        state.quit_confirmation = true;
+        let unsaved_output = rendered(&state, 80, 24);
+        assert!(unsaved_output.contains("UNSAVED EDITOR CHANGES"));
+        assert!(unsaved_output.contains("Enter discard and quit"));
+        assert!(unsaved_output.contains("Esc keep editing"));
     }
 
     #[test]
@@ -5460,6 +5488,58 @@ mod tests {
     }
 
     #[test]
+    fn soft_wrapped_editor_renders_and_accepts_only_current_ghost_text() {
+        let mut state = state(TuiLayout::Desktop);
+        trust_workspace_once(&mut state);
+        let root = std::path::PathBuf::from(&state.snapshot_root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/main.rs"),
+            "fn main() { let first = 1; let second = 2; let third = 3; }\n",
+        )
+        .unwrap();
+        state
+            .ws_mut()
+            .unwrap()
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .unwrap();
+        state.refresh_editor_projection();
+        state
+            .ws_mut()
+            .unwrap()
+            .project_mut()
+            .set_buffer_cursor("src/main.rs", 1, 18)
+            .unwrap();
+        state.refresh_editor_projection();
+        state.enter_code_edit();
+        let offset = crate::development::editor::text_position_offset(
+            &state.focused_editor_content,
+            crate::development::TextPosition {
+                line: state.focused_editor_line,
+                column: state.focused_editor_column,
+            },
+        )
+        .unwrap();
+        let revision = state.ws().unwrap().project().revision();
+        state.editor_engine.ghost = Some(crate::tui::editor::GhostText {
+            text: "visible-completion".into(),
+            path: state.focused_editor_path.clone(),
+            offset,
+            revision,
+        });
+        state.editor_soft_wrap = true;
+
+        let output = rendered(&state, 48, 24);
+        assert!(output.contains("visible-completion"), "{output:?}");
+        state.edit_code_key(
+            crossterm::event::KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert!(state.focused_editor_content.contains("visible-completion"));
+    }
+
+    #[test]
     fn mobile_code_view_wraps_long_preview_lines() {
         let mut state = state(TuiLayout::Mobile);
         state.surface = DevSurface::Code;
@@ -5662,6 +5742,7 @@ mod tests {
         state
             .pending_chat_messages
             .push(super::super::state::PendingChatMessage {
+                message_id: "chat-follow-up-7".into(),
                 text: "follow up while you work".into(),
                 state: super::super::state::ChatMessageState::Sending,
                 job_id: Some(7),
@@ -5685,6 +5766,7 @@ mod tests {
         state
             .pending_chat_messages
             .push(super::super::state::PendingChatMessage {
+                message_id: "chat-send-7".into(),
                 text: "inspect the failing test".into(),
                 state: super::super::state::ChatMessageState::Sending,
                 job_id: Some(7),
@@ -5705,6 +5787,7 @@ mod tests {
         state
             .pending_chat_messages
             .push(super::super::state::PendingChatMessage {
+                message_id: "chat-send-9".into(),
                 text: "retry after the agent stopped".into(),
                 state: super::super::state::ChatMessageState::Sending,
                 job_id: Some(9),
@@ -5725,6 +5808,7 @@ mod tests {
         state
             .pending_chat_messages
             .push(super::super::state::PendingChatMessage {
+                message_id: "chat-send-8".into(),
                 text: "retry this request".into(),
                 state: super::super::state::ChatMessageState::Sending,
                 job_id: Some(8),
@@ -5756,6 +5840,7 @@ mod tests {
         state
             .pending_chat_messages
             .push(super::super::state::PendingChatMessage {
+                message_id: "chat-hello-1".into(),
                 text: "hello hello".into(),
                 state: super::super::state::ChatMessageState::Sent,
                 job_id: None,
@@ -5765,6 +5850,14 @@ mod tests {
         state.apply_snapshot(&super::super::snapshot::DisplaySnapshot {
             agent_states: vec![(agent_id, crate::AgentStatus::Idle)],
             agent_conversation: state.agent_conversation.clone(),
+            conversation_items: vec![super::super::projection::ConversationEntry {
+                kind: super::super::projection::ConversationKind::User,
+                text: "hello hello".into(),
+                streaming: false,
+                entry_id: Some("entry-hello-1".into()),
+                client_message_id: Some("chat-hello-1".into()),
+                tool_name: None,
+            }],
             ..Default::default()
         });
 

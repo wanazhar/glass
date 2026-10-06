@@ -1,7 +1,7 @@
 ---
 id: issue60-p0-tui-data-preservation-001
 scope: glass-dev/tui-editor-agent-data-preservation
-status: pending
+status: complete
 depends-on: [issue60-p0-tui-safety-001]
 ---
 
@@ -54,3 +54,16 @@ than message text.
   reconciliation and completion.
 - Record interaction-level TUI evidence for the visible suggestion and exit
   guard behavior.
+
+## Verification evidence
+
+- `cargo test -p glass-dev --lib --locked` — 419 passed.
+- Focused regressions passed for
+  `request_with_id_returns_the_workers_pi_request_identifier`,
+  `pi_fim_response_requires_the_exact_request_identifier`,
+  `quitting_after_gp_still_guards_a_dirty_editor_buffer`, and
+  `quitting_selects_the_dirty_buffer_when_another_buffer_is_focused`.
+- `cargo check -p glass-dev --lib --bins --locked` — passed.
+- `cargo fmt --all -- --check` and `git diff --check` — passed.
+- `cargo build -p glass-browser --bin glass-native-content-worker --locked` —
+  passed for the full library test environment.

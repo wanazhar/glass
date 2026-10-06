@@ -28,6 +28,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_BROWSER_TOOL: AtomicU64 = AtomicU64::new(1);
+static NEXT_CHAT_MESSAGE: AtomicU64 = AtomicU64::new(1);
 
 pub struct PendingConfirmation {
     pub call: crate::development::ToolCall,
@@ -66,13 +67,16 @@ enum PendingFim {
     Thread {
         path: String,
         offset: usize,
-        rx: std::sync::mpsc::Receiver<Option<String>>,
+        revision: u64,
+        rx: std::sync::mpsc::Receiver<Result<String, String>>,
     },
     Pi {
         path: String,
         offset: usize,
+        revision: u64,
         agent_id: crate::AgentId,
         since: u64,
+        request_id: String,
     },
 }
 
@@ -88,6 +92,37 @@ impl PendingFim {
             Self::Thread { offset, .. } | Self::Pi { offset, .. } => *offset,
         }
     }
+
+    fn revision(&self) -> u64 {
+        match self {
+            Self::Thread { revision, .. } | Self::Pi { revision, .. } => *revision,
+        }
+    }
+}
+
+fn matching_pi_fim_response(
+    events: &[crate::AgentEvent],
+    agent_id: &crate::AgentId,
+    request_id: &str,
+) -> Option<Result<Option<String>, String>> {
+    events.iter().rev().find_map(|event| {
+        if &event.agent_id != agent_id
+            || event
+                .payload
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                != Some("response")
+            || event.payload.get("id").and_then(serde_json::Value::as_str) != Some(request_id)
+            || event
+                .payload
+                .get("operation")
+                .and_then(serde_json::Value::as_str)
+                != Some("complete")
+        {
+            return None;
+        }
+        Some(crate::fim::parse_fim_text_checked(&event.payload))
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +246,7 @@ impl DebugPane {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingChatMessage {
+    pub message_id: String,
     pub text: String,
     pub state: ChatMessageState,
     pub job_id: Option<u64>,
@@ -875,8 +911,45 @@ impl DevTuiState {
         if self.quit {
             return;
         }
+        if self.editor_exit_prompt.is_none() {
+            let dirty_buffer = match self.workspace.try_lock() {
+                Ok(workspace) => workspace
+                    .project()
+                    .buffers()
+                    .enumerate()
+                    .find(|(_, buffer)| buffer.dirty)
+                    .map(|(index, buffer)| (index, buffer.path.clone())),
+                Err(_) if self.focused_editor_dirty => {
+                    Some((self.editor_buffer_index, self.focused_editor_path.clone()))
+                }
+                Err(_) => {
+                    self.status =
+                        "Workspace busy · retry quit after editor buffers can be checked".into();
+                    return;
+                }
+            }
+            .or_else(|| {
+                self.focused_editor_dirty
+                    .then(|| (self.editor_buffer_index, self.focused_editor_path.clone()))
+            });
+            if let Some((index, path)) = dirty_buffer {
+                self.editor_buffer_index = index;
+                if !path.is_empty() {
+                    self.focused_editor_path = path;
+                }
+                self.surface = DevSurface::Code;
+                self.code_edit_mode = true;
+                self.refresh_editor_projection();
+                self.request_editor_exit();
+                return;
+            }
+        }
         self.quit_confirmation = true;
-        self.status = "Quit confirmation · Enter exits · Esc stays".into();
+        self.status = if self.editor_exit_prompt == Some(EditorExitPrompt::Unsaved) {
+            "Unsaved changes · confirm quit to discard or Esc to keep editing".into()
+        } else {
+            "Quit confirmation · Enter exits · Esc stays".into()
+        };
     }
 
     pub fn confirm_quit(&mut self) {
@@ -2177,15 +2250,16 @@ impl DevTuiState {
         } else {
             self.agent_conversation.clone()
         };
-        let mut observed = std::collections::BTreeMap::<String, usize>::new();
+        let observed = self
+            .conversation_items
+            .iter()
+            .filter_map(|entry| entry.client_message_id.as_deref())
+            .collect::<std::collections::HashSet<_>>();
         for message in &self.pending_chat_messages {
-            if message.state != ChatMessageState::Failed {
-                let marker = format!("YOU\n{}", message.text);
-                let seen = observed.entry(message.text.clone()).or_default();
-                if *seen < conversation.matches(&marker).count() {
-                    *seen += 1;
-                    continue;
-                }
+            if message.state != ChatMessageState::Failed
+                && observed.contains(message.message_id.as_str())
+            {
+                continue;
             }
             if !conversation.is_empty() {
                 conversation.push_str("\n\n");
@@ -2216,19 +2290,12 @@ impl DevTuiState {
         if entries.is_empty() && !self.agent_conversation.starts_with("No conversation yet.") {
             entries = parse_conversation_view(&self.agent_conversation);
         }
-        let mut observed = std::collections::BTreeMap::<String, usize>::new();
         for message in &self.pending_chat_messages {
             if message.state != ChatMessageState::Failed {
-                let seen = observed.entry(message.text.clone()).or_default();
-                let existing = entries
-                    .iter()
-                    .filter(|entry| {
-                        entry.kind == super::projection::ConversationKind::User
-                            && entry.text == message.text
-                    })
-                    .count();
-                if *seen < existing {
-                    *seen += 1;
+                if entries.iter().any(|entry| {
+                    entry.kind == super::projection::ConversationKind::User
+                        && entry.client_message_id.as_deref() == Some(message.message_id.as_str())
+                }) {
                     continue;
                 }
             }
@@ -2242,6 +2309,7 @@ impl DevTuiState {
                 text: format!("{}\n{suffix}", message.text),
                 streaming: false,
                 entry_id: None,
+                client_message_id: Some(message.message_id.clone()),
                 tool_name: None,
             });
         }
@@ -2446,21 +2514,13 @@ impl DevTuiState {
     }
 
     fn reconcile_pending_chat(&mut self) {
-        let conversation = self.agent_conversation.clone();
-        let mut confirmed = std::collections::BTreeMap::<String, usize>::new();
+        let observed = self
+            .conversation_items
+            .iter()
+            .filter_map(|entry| entry.client_message_id.clone())
+            .collect::<std::collections::HashSet<_>>();
         self.pending_chat_messages.retain(|message| {
-            if message.state == ChatMessageState::Failed {
-                return true;
-            }
-            let marker = format!("YOU\n{}", message.text);
-            let observed = conversation.matches(&marker).count();
-            let seen = confirmed.entry(message.text.clone()).or_default();
-            if *seen < observed {
-                *seen += 1;
-                false
-            } else {
-                true
-            }
+            message.state == ChatMessageState::Failed || !observed.contains(&message.message_id)
         });
     }
     /// Start the shortest in-TUI path to a usable agent conversation.
@@ -3424,10 +3484,16 @@ impl DevTuiState {
             "" => format!("{playbook}\n\n{text}"),
             instruction => format!("{instruction}\n\n{playbook}\n\n{text}"),
         };
+        let message_id = format!(
+            "chat-{}-{}",
+            std::process::id(),
+            NEXT_CHAT_MESSAGE.fetch_add(1, Ordering::Relaxed)
+        );
         let mut arguments = serde_json::json!({
             "text": prefixed,
             "mode": if steer { "steer" } else { "follow-up" },
             "context": context,
+            "clientMessageId": message_id.clone(),
         });
         if let Some(prove) = prove {
             if !self.auto_checkpoint("before-prove-it") {
@@ -3467,6 +3533,7 @@ impl DevTuiState {
             Ok(id) => {
                 self.agent_send_job = Some(id);
                 self.pending_chat_messages.push(PendingChatMessage {
+                    message_id,
                     text: display_text,
                     state: ChatMessageState::Sending,
                     job_id: Some(id),
@@ -5706,19 +5773,11 @@ impl DevTuiState {
                             format!("Discard failed: {error} · S save · D retry · Q quit");
                     }
                 },
-                crossterm::event::KeyCode::Char('q' | 'Q') => match self.discard_editor_buffer() {
-                    Ok(()) => {
-                        self.code_edit_mode = false;
-                        self.editor_exit_prompt = None;
-                        self.surface = DevSurface::Code;
-                        self.quit = true;
-                        self.status = "Changes discarded · closing Glass Dev".into();
-                    }
-                    Err(error) => {
-                        self.status =
-                            format!("Discard failed: {error} · S save · D retry · Q quit");
-                    }
-                },
+                crossterm::event::KeyCode::Char('q' | 'Q') => {
+                    self.quit_confirmation = true;
+                    self.status =
+                        "Unsaved changes · confirm quit to discard or Esc to keep editing".into();
+                }
                 crossterm::event::KeyCode::Esc => self.cancel_editor_exit(),
                 _ => {}
             },
@@ -5908,11 +5967,12 @@ impl DevTuiState {
             return;
         };
         let path = buffer.path.clone();
-        if code == crossterm::event::KeyCode::Tab
-            && let Some(ghost) = self.editor_engine.ghost.take()
-        {
-            self.accept_ghost_text(&path, &ghost.text);
-            return;
+        if code == crossterm::event::KeyCode::Tab {
+            if let Some(ghost) = self.editor_engine.ghost.take() {
+                let text = ghost.text.clone();
+                self.accept_ghost_text(ghost, &text);
+                return;
+            }
         }
         if matches!(
             code,
@@ -5921,7 +5981,7 @@ impl DevTuiState {
             && !modifiers.contains(crossterm::event::KeyModifiers::SHIFT)
             && self.editor_engine.ghost.is_some()
         {
-            self.accept_ghost_word(&path);
+            self.accept_ghost_word();
             return;
         }
         let result = match (code, modifiers) {
@@ -7132,27 +7192,41 @@ impl DevTuiState {
         }
     }
 
-    fn accept_ghost_text(&mut self, path: &str, text: &str) {
-        let _ = self.insert_editor_text(path, text);
+    fn accept_ghost_text(&mut self, ghost: GhostText, text: &str) {
+        if !self.ghost_matches_current_buffer(&ghost) {
+            self.editor_engine.ghost = None;
+            self.status = "Stale suggestion discarded · request again at the current cursor".into();
+            return;
+        }
+        let path = ghost.path;
+        self.editor_engine.ghost = None;
+        let _ = self.insert_editor_text(&path, text);
         self.refresh_editor_projection();
         self.advance_next_edit();
     }
 
-    fn accept_ghost_word(&mut self, path: &str) {
+    fn accept_ghost_word(&mut self) {
         let Some(ghost) = self.editor_engine.ghost.take() else {
             return;
         };
-        match split_ghost_word(&ghost.text) {
+        if !self.ghost_matches_current_buffer(&ghost) {
+            self.status = "Stale suggestion discarded · request again at the current cursor".into();
+            return;
+        }
+        let parts =
+            split_ghost_word(&ghost.text).map(|(word, rest)| (word.to_string(), rest.to_string()));
+        match parts {
             Some((word, rest)) if !rest.is_empty() => {
-                let _ = self.insert_editor_text(path, word);
+                let _ = self.insert_editor_text(&ghost.path, &word);
                 self.refresh_editor_projection();
-                self.editor_engine.ghost = Some(GhostText {
-                    text: rest.to_string(),
-                });
+                self.install_current_ghost(rest);
                 self.status = "Ghost word accepted · Tab rest · Ctrl-Right another word".into();
             }
-            Some((word, _)) => self.accept_ghost_text(path, word),
-            None => self.accept_ghost_text(path, &ghost.text),
+            Some((word, _)) => self.accept_ghost_text(ghost, &word),
+            None => {
+                let text = ghost.text.clone();
+                self.accept_ghost_text(ghost, &text);
+            }
         }
     }
 
@@ -7193,6 +7267,84 @@ impl DevTuiState {
         );
     }
 
+    fn current_editor_revision(&self) -> Option<u64> {
+        let workspace = self.workspace.try_lock().ok()?;
+        let project = workspace.project();
+        let buffer = project.buffer(&self.focused_editor_path)?;
+        if buffer.content != self.focused_editor_content
+            || buffer.cursor_line != self.focused_editor_line
+            || buffer.cursor_column != self.focused_editor_column
+        {
+            return None;
+        }
+        Some(project.revision())
+    }
+
+    fn ghost_matches_current_buffer(&self, ghost: &GhostText) -> bool {
+        if ghost.path != self.focused_editor_path {
+            return false;
+        }
+        let Some(offset) = crate::development::editor::text_position_offset(
+            &self.focused_editor_content,
+            crate::development::TextPosition {
+                line: self.focused_editor_line.max(1),
+                column: self.focused_editor_column.max(1),
+            },
+        ) else {
+            return false;
+        };
+        offset == ghost.offset && self.current_editor_revision() == Some(ghost.revision)
+    }
+
+    pub fn visible_ghost_text(&self) -> Option<&str> {
+        let ghost = self.editor_engine.ghost.as_ref()?;
+        self.ghost_matches_current_buffer(ghost)
+            .then_some(ghost.text.as_str())
+    }
+
+    fn install_ghost_text(
+        &mut self,
+        path: &str,
+        offset: usize,
+        revision: u64,
+        text: String,
+    ) -> bool {
+        match crate::fim::validate_ghost_text(&text) {
+            Ok(Some(text)) => {
+                self.editor_engine.ghost = Some(GhostText {
+                    text,
+                    path: path.to_string(),
+                    offset,
+                    revision,
+                });
+                true
+            }
+            Ok(None) => false,
+            Err(error) => {
+                self.editor_engine.ghost = None;
+                self.status = format!("Suggestion rejected · {error}");
+                false
+            }
+        }
+    }
+
+    fn install_current_ghost(&mut self, text: String) -> bool {
+        let path = self.focused_editor_path.clone();
+        let Some(offset) = crate::development::editor::text_position_offset(
+            &self.focused_editor_content,
+            crate::development::TextPosition {
+                line: self.focused_editor_line.max(1),
+                column: self.focused_editor_column.max(1),
+            },
+        ) else {
+            return false;
+        };
+        let Some(revision) = self.current_editor_revision() else {
+            return false;
+        };
+        self.install_ghost_text(&path, offset, revision, text)
+    }
+
     pub fn request_ghost_from_line(&mut self) {
         let path = self.focused_editor_path.clone();
         let Some(offset) = crate::development::editor::text_position_offset(
@@ -7204,18 +7356,27 @@ impl DevTuiState {
         ) else {
             return;
         };
+        let Some(revision) = self.current_editor_revision() else {
+            self.editor_engine.ghost = None;
+            return;
+        };
+        if self.editor_engine.ghost.as_ref().is_some_and(|ghost| {
+            ghost.path != path || ghost.offset != offset || ghost.revision != revision
+        }) {
+            self.editor_engine.ghost = None;
+        }
         if let Some(text) = local_fim(&self.focused_editor_content, offset) {
-            self.editor_engine.ghost = Some(GhostText { text });
+            self.install_ghost_text(&path, offset, revision, text);
             return;
         }
-        if self.take_ready_fim(&path, offset) {
+        if self.take_ready_fim(&path, offset, revision) {
             return;
         }
-        self.spawn_hosted_fim(&path, offset);
+        self.spawn_hosted_fim(&path, offset, revision);
         let line = self.focused_editor_line.saturating_sub(1);
         let character = self.focused_editor_column.saturating_sub(1);
         if let Some(text) = self.lsp_ghost_insert(&path, line, character) {
-            self.editor_engine.ghost = Some(GhostText { text });
+            self.install_ghost_text(&path, offset, revision, text);
             return;
         }
         let line = self
@@ -7235,7 +7396,7 @@ impl DevTuiState {
         } else {
             return;
         };
-        self.editor_engine.ghost = Some(GhostText { text: ghost.into() });
+        self.install_ghost_text(&path, offset, revision, ghost.into());
     }
 
     pub fn tick_fim(&mut self) -> bool {
@@ -7249,68 +7410,84 @@ impl DevTuiState {
         ) else {
             return false;
         };
-        self.take_ready_fim(&path, offset)
+        let Some(revision) = self.current_editor_revision() else {
+            return false;
+        };
+        self.take_ready_fim(&path, offset, revision)
     }
 
-    fn take_ready_fim(&mut self, path: &str, offset: usize) -> bool {
-        let stale = self
-            .pending_fim
-            .as_ref()
-            .is_some_and(|pending| pending.path() != path || pending.offset() != offset);
+    fn take_ready_fim(&mut self, path: &str, offset: usize, revision: u64) -> bool {
+        let stale = self.pending_fim.as_ref().is_some_and(|pending| {
+            pending.path() != path || pending.offset() != offset || pending.revision() != revision
+        });
         if stale {
             self.pending_fim = None;
+            self.status = "Stale suggestion discarded · request again at the current cursor".into();
             return false;
         }
         let pi = match &self.pending_fim {
             Some(PendingFim::Pi {
-                agent_id, since, ..
-            }) => Some((agent_id.clone(), *since)),
+                agent_id,
+                since,
+                path,
+                offset,
+                revision,
+                request_id,
+            }) => Some((
+                agent_id.clone(),
+                *since,
+                request_id.clone(),
+                path.clone(),
+                *offset,
+                *revision,
+            )),
             _ => None,
         };
-        if let Some((agent_id, since)) = pi {
-            let text = self
+        if let Some((agent_id, since, request_id, path, offset, revision)) = pi {
+            let response = self
                 .locked(|workspace| {
-                    workspace
-                        .agents()
-                        .history(since)
-                        .ok()?
-                        .into_iter()
-                        .rev()
-                        .find_map(|event| {
-                            if event.agent_id != agent_id {
-                                return None;
-                            }
-                            if event
-                                .payload
-                                .get("operation")
-                                .and_then(serde_json::Value::as_str)
-                                != Some("complete")
-                            {
-                                return None;
-                            }
-                            crate::fim::parse_fim_text(&event.payload)
-                        })
+                    let events = workspace.agents().history(since).ok()?;
+                    matching_pi_fim_response(&events, &agent_id, &request_id)
                 })
                 .flatten();
-            return match text {
-                Some(text) => {
+            return match response {
+                Some(Ok(Some(text))) => {
                     self.pending_fim = None;
-                    self.editor_engine.ghost = Some(GhostText { text });
-                    true
+                    self.install_ghost_text(&path, offset, revision, text)
+                }
+                Some(Err(error)) => {
+                    self.pending_fim = None;
+                    self.status = format!("Suggestion rejected · {error}");
+                    false
+                }
+                Some(Ok(None)) => {
+                    self.pending_fim = None;
+                    false
                 }
                 None => false,
             };
         }
-        let Some(PendingFim::Thread { rx, .. }) = self.pending_fim.as_mut() else {
+        let Some(PendingFim::Thread {
+            path,
+            offset,
+            revision,
+            rx,
+        }) = self.pending_fim.as_mut()
+        else {
             return false;
         };
+        let (path, offset, revision) = (path.clone(), *offset, *revision);
         match rx.try_recv() {
-            Ok(Some(text)) if !text.is_empty() => {
+            Ok(Ok(text)) if !text.is_empty() => {
                 self.pending_fim = None;
-                self.editor_engine.ghost = Some(GhostText { text });
-                true
+                self.install_ghost_text(&path, offset, revision, text)
             }
-            Ok(_) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            Ok(Err(error)) => {
+                self.pending_fim = None;
+                self.status = format!("Suggestion rejected · {error}");
+                false
+            }
+            Ok(Ok(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.pending_fim = None;
                 false
             }
@@ -7318,12 +7495,10 @@ impl DevTuiState {
         }
     }
 
-    fn spawn_hosted_fim(&mut self, path: &str, offset: usize) {
-        if self
-            .pending_fim
-            .as_ref()
-            .is_some_and(|pending| pending.path() == path && pending.offset() == offset)
-        {
+    fn spawn_hosted_fim(&mut self, path: &str, offset: usize, revision: u64) {
+        if self.pending_fim.as_ref().is_some_and(|pending| {
+            pending.path() == path && pending.offset() == offset && pending.revision() == revision
+        }) {
             return;
         }
         let Some(provider) = self.workspace.try_lock().ok().and_then(|workspace| {
@@ -7339,11 +7514,12 @@ impl DevTuiState {
                 let _ = std::thread::Builder::new()
                     .name("glass-fim".into())
                     .spawn(move || {
-                        let _ = tx.send(provider.complete(&prefix, &suffix).ok());
+                        let _ = tx.send(provider.complete(&prefix, &suffix));
                     });
                 self.pending_fim = Some(PendingFim::Thread {
                     path: path.to_string(),
                     offset,
+                    revision,
                     rx,
                 });
             }
@@ -7372,22 +7548,24 @@ impl DevTuiState {
                                     (item.status == crate::AgentStatus::Idle).then_some(item.id)
                                 })
                             })?;
-                        workspace
+                        let request_id = workspace
                             .agents()
-                            .request(
+                            .request_with_id(
                                 &id,
                                 crate::pi_runtime::PiSessionRequest::Complete { prefix, suffix },
                             )
                             .ok()?;
-                        Some((id, since))
+                        Some((id, since, request_id))
                     })
                     .flatten();
-                if let Some((agent_id, since)) = queued {
+                if let Some((agent_id, since, request_id)) = queued {
                     self.pending_fim = Some(PendingFim::Pi {
                         path: path.to_string(),
                         offset,
+                        revision,
                         agent_id,
                         since,
+                        request_id,
                     });
                 }
             }
@@ -9507,6 +9685,7 @@ fn parse_conversation_view(conversation: &str) -> Vec<super::projection::Convers
             text,
             streaming: false,
             entry_id: None,
+            client_message_id: None,
             tool_name: None,
         });
     }
@@ -10946,6 +11125,124 @@ mod tests {
     }
 
     #[test]
+    fn quitting_after_gp_still_guards_a_dirty_editor_buffer() {
+        let root = std::env::temp_dir().join(format!("glass-gp-dirty-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(
+            root.join("src/button.tsx"),
+            "<button data-glass-entity=\"action.checkout.submit\">Pay</button>\n",
+        )
+        .expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
+        trust_workspace_once(&mut state);
+        {
+            let mut workspace = state.ws_mut().expect("workspace lock");
+            workspace
+                .project_mut()
+                .open_buffer("src/button.tsx", crate::development::Actor::local())
+                .expect("open source buffer");
+            workspace
+                .project_mut()
+                .link_runtime_source(
+                    "action.checkout.submit",
+                    "src/button.tsx",
+                    1,
+                    1,
+                    crate::development::LinkProvenance::ExplicitMarker,
+                    "test link",
+                    1.0,
+                    crate::development::Actor::local(),
+                )
+                .expect("link source to page entity");
+        }
+        state.browser_workspace.replace_entities(
+            1,
+            vec![BrowserWorkspaceEntity {
+                reference: "action.checkout.submit".into(),
+                role: "button".into(),
+                name: "Pay".into(),
+                actionable: true,
+                revision: 1,
+            }],
+        );
+        state.focused_editor_path = "src/button.tsx".into();
+        state.refresh_editor_projection();
+        state.enter_code_edit();
+        state.editor_engine.enter_insert();
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('!'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        state.editor_engine.ghost = None;
+        state.handle_editor_escape();
+        assert_eq!(state.editor_engine.mode, EditorMode::Normal);
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('g'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert_eq!(state.surface, DevSurface::App);
+        assert!(!state.code_edit_mode);
+        assert!(state.focused_editor_dirty);
+
+        state.request_quit();
+        assert_eq!(state.editor_exit_prompt, Some(EditorExitPrompt::Unsaved));
+        assert!(!state.quit_confirmation);
+        assert!(!state.quit);
+        assert!(state.code_edit_mode);
+        assert!(state.focused_editor_content.contains('!'));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn quitting_selects_the_dirty_buffer_when_another_buffer_is_focused() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-quit-dirty-buffer-selection-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/dirty.rs"), "fn dirty() {}\n").expect("write dirty source");
+        std::fs::write(root.join("src/clean.rs"), "fn clean() {}\n").expect("write clean source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
+        {
+            let mut workspace = state.ws_mut().expect("workspace lock");
+            let project = workspace.project_mut();
+            project
+                .open_buffer("src/dirty.rs", crate::development::Actor::local())
+                .expect("open dirty buffer");
+            project
+                .open_buffer("src/clean.rs", crate::development::Actor::local())
+                .expect("open clean buffer");
+            project
+                .edit_buffer(
+                    "src/dirty.rs",
+                    "fn dirty() { /* unsaved */ }\n".into(),
+                    crate::development::Actor::local(),
+                )
+                .expect("make dirty buffer unsaved");
+        }
+        state.editor_buffer_index = 0;
+        state.refresh_editor_projection();
+        assert_eq!(state.focused_editor_path, "src/clean.rs");
+        assert!(!state.focused_editor_dirty);
+
+        state.request_quit();
+
+        assert_eq!(state.editor_buffer_index, 1);
+        assert_eq!(state.focused_editor_path, "src/dirty.rs");
+        assert!(state.focused_editor_dirty);
+        assert_eq!(state.editor_exit_prompt, Some(EditorExitPrompt::Unsaved));
+        assert!(!state.quit_confirmation);
+        assert!(!state.quit);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
     fn g_on_app_opens_the_linked_source() {
         let root = std::env::temp_dir().join(format!("glass-app-source-{}", std::process::id()));
         std::fs::create_dir_all(root.join("src")).expect("create source directory");
@@ -11022,6 +11319,123 @@ mod tests {
     }
 
     #[test]
+    fn pi_fim_response_requires_the_exact_request_identifier() {
+        let agent_id = crate::AgentId::parse("agent-fim-test").unwrap();
+        let response = |sequence, request_id: &str, text: &str| crate::AgentEvent {
+            sequence,
+            agent_id: agent_id.clone(),
+            timestamp_ms: 0,
+            kind: "response".into(),
+            payload: serde_json::json!({
+                "type": "response",
+                "operation": "complete",
+                "id": request_id,
+                "ok": true,
+                "result": {"text": text}
+            }),
+        };
+        let old_request = response(1, "glass-old", "completion for cursor A");
+        let current_request = response(2, "glass-current", "completion for cursor B");
+        assert_eq!(
+            matching_pi_fim_response(
+                &[old_request.clone(), current_request],
+                &agent_id,
+                "glass-current"
+            ),
+            Some(Ok(Some("completion for cursor B".into())))
+        );
+        assert!(matching_pi_fim_response(&[old_request], &agent_id, "glass-current").is_none());
+    }
+
+    #[test]
+    fn fim_results_and_ghost_acceptance_require_the_originating_buffer_revision() {
+        let root = std::env::temp_dir().join(format!("glass-fim-owner-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write main source");
+        std::fs::write(root.join("src/other.rs"), "fn other() {}\n").expect("write other source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
+        trust_workspace_once(&mut state);
+        {
+            let mut workspace = state.ws_mut().expect("workspace lock");
+            workspace
+                .project_mut()
+                .open_buffer("src/main.rs", crate::development::Actor::local())
+                .expect("open main buffer");
+            workspace
+                .project_mut()
+                .open_buffer("src/other.rs", crate::development::Actor::local())
+                .expect("open other buffer");
+        }
+        state.editor_buffer_index = 0;
+        state.refresh_editor_projection();
+        state.enter_code_edit();
+        let origin_revision = state.current_editor_revision().expect("main revision");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(Ok("main-only".into()))
+            .expect("send test result");
+        state.pending_fim = Some(PendingFim::Thread {
+            path: "src/main.rs".into(),
+            offset: 0,
+            revision: origin_revision,
+            rx: receiver,
+        });
+
+        state.editor_buffer_index = 1;
+        state.refresh_editor_projection();
+        assert!(!state.tick_fim());
+        assert!(state.editor_engine.ghost.is_none());
+        assert!(state.status.contains("Stale suggestion discarded"));
+
+        let other_revision = state.current_editor_revision().expect("other revision");
+        assert!(state.install_ghost_text(
+            "src/other.rs",
+            0,
+            other_revision,
+            "wrong-revision".into(),
+        ));
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .edit_buffer(
+                "src/other.rs",
+                "fn other() { /* changed */ }\n".into(),
+                crate::development::Actor::local(),
+            )
+            .expect("edit other buffer");
+        state.refresh_editor_projection();
+        let changed_content = state.focused_editor_content.clone();
+        state.edit_code_key(
+            crossterm::event::KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert_eq!(state.focused_editor_content, changed_content);
+        assert!(state.editor_engine.ghost.is_none());
+        assert!(state.status.contains("Stale suggestion discarded"));
+
+        let current_revision = state.current_editor_revision().expect("current revision");
+        assert!(state.install_ghost_text(
+            "src/other.rs",
+            0,
+            current_revision,
+            "wrong-buffer".into(),
+        ));
+        state.editor_buffer_index = 0;
+        state.refresh_editor_projection();
+        let main_content = state.focused_editor_content.clone();
+        state.edit_code_key(
+            crossterm::event::KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert_eq!(state.focused_editor_content, main_content);
+        assert!(!state.focused_editor_content.contains("wrong-buffer"));
+        assert!(state.status.contains("Stale suggestion discarded"));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
     fn ghost_tab_jumps_to_the_next_incomplete_ident() {
         let root = std::env::temp_dir().join(format!("glass-ghost-next-{}", std::process::id()));
         std::fs::create_dir_all(root.join("src")).expect("create source directory");
@@ -11047,9 +11461,16 @@ mod tests {
             false,
         );
         state.refresh_editor_projection();
-        state.editor_engine.ghost = Some(GhostText {
-            text: "world".into(),
-        });
+        let offset = crate::development::editor::text_position_offset(
+            &state.focused_editor_content,
+            crate::development::TextPosition {
+                line: state.focused_editor_line,
+                column: state.focused_editor_column,
+            },
+        )
+        .expect("ghost cursor offset");
+        let revision = state.current_editor_revision().expect("buffer revision");
+        assert!(state.install_ghost_text("src/main.rs", offset, revision, "world".into(),));
         state.edit_code_key(
             crossterm::event::KeyCode::Tab,
             crossterm::event::KeyModifiers::NONE,
@@ -11541,9 +11962,15 @@ mod tests {
             crossterm::event::KeyCode::Char('!'),
             crossterm::event::KeyModifiers::NONE,
         );
-        state.request_editor_exit();
+        let unsaved = state.focused_editor_content.clone();
+        state.request_quit();
+        assert_eq!(state.editor_exit_prompt, Some(EditorExitPrompt::Unsaved));
+        assert!(!state.quit_confirmation);
         state.handle_editor_exit_key(crossterm::event::KeyCode::Char('q'));
-        assert!(state.quit);
+        assert!(state.quit_confirmation);
+        assert!(!state.quit);
+        assert!(state.code_edit_mode);
+        assert_eq!(state.editor_exit_prompt, Some(EditorExitPrompt::Unsaved));
         assert_eq!(
             std::fs::read_to_string(root.join("src/main.rs")).expect("read discarded source"),
             saved
@@ -11554,10 +11981,17 @@ mod tests {
                 .expect("workspace lock")
                 .project()
                 .buffer("src/main.rs")
-                .expect("discarded buffer")
+                .expect("preserved unsaved buffer")
                 .content,
-            saved
+            unsaved
         );
+        state.cancel_quit();
+        assert!(!state.quit_confirmation);
+        assert_eq!(state.editor_exit_prompt, Some(EditorExitPrompt::Unsaved));
+        assert!(state.focused_editor_dirty);
+        state.handle_editor_exit_key(crossterm::event::KeyCode::Char('q'));
+        state.confirm_quit();
+        assert!(state.quit);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 
@@ -11569,16 +12003,85 @@ mod tests {
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
         state.agent_conversation = "YOU\ninspect the failing test\n\nGLASS AGENT\nworking".into();
         state.pending_chat_messages.push(PendingChatMessage {
+            message_id: "chat-inspect-1".into(),
             text: "inspect the failing test".into(),
             state: ChatMessageState::Sent,
             job_id: None,
             error: None,
         });
+        state.conversation_items = vec![super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::User,
+            text: "inspect the failing test".into(),
+            streaming: false,
+            entry_id: Some("entry-inspect-1".into()),
+            client_message_id: Some("chat-inspect-1".into()),
+            tool_name: None,
+        }];
 
         let view = state.conversation_view();
         assert_eq!(view.matches("YOU\ninspect the failing test").count(), 1);
         assert!(!view.contains("Glass Agent is thinking"));
 
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn pending_chat_reconciliation_uses_message_identity_for_duplicate_text() {
+        let root = std::env::temp_dir().join(format!("glass-chat-ids-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
+        state.agent_conversation = "YOU\nfix the same test".into();
+        let pending = |message_id: &str| PendingChatMessage {
+            message_id: message_id.into(),
+            text: "fix the same test".into(),
+            state: ChatMessageState::Sent,
+            job_id: None,
+            error: None,
+        };
+        state.pending_chat_messages = vec![pending("chat-1"), pending("chat-2")];
+        let user_entry = |message_id: &str| super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::User,
+            text: "fix the same test".into(),
+            streaming: false,
+            entry_id: Some(format!("entry-{message_id}")),
+            client_message_id: Some(message_id.into()),
+            tool_name: None,
+        };
+        state.conversation_items = vec![user_entry("chat-1")];
+
+        state.reconcile_pending_chat();
+        assert_eq!(state.pending_chat_messages.len(), 1);
+        assert_eq!(state.pending_chat_messages[0].message_id, "chat-2");
+        assert_eq!(
+            state
+                .conversation_view()
+                .matches("YOU\nfix the same test")
+                .count(),
+            2,
+            "the confirmed first message and distinct pending duplicate both remain visible"
+        );
+
+        state.conversation_items.push(user_entry("chat-2"));
+        state.agent_conversation = "YOU\nfix the same test\n\nYOU\nfix the same test".into();
+        state.reconcile_pending_chat();
+        assert!(state.pending_chat_messages.is_empty());
+        assert_eq!(
+            state
+                .conversation_view()
+                .matches("YOU\nfix the same test")
+                .count(),
+            2,
+            "two confirmed messages with the same text remain visible"
+        );
+        assert_eq!(
+            state
+                .conversation_entries_view()
+                .iter()
+                .filter(|entry| entry.kind == super::super::projection::ConversationKind::User)
+                .count(),
+            2
+        );
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 
@@ -11771,6 +12274,7 @@ mod tests {
             text: "ship the review".into(),
             streaming: false,
             entry_id: Some("entry-7".into()),
+            client_message_id: None,
             tool_name: None,
         }];
         state.transcript_selection = 0;
@@ -11817,6 +12321,7 @@ mod tests {
             text: "previous prompt\n· sending…".into(),
             streaming: false,
             entry_id: Some("entry-1".into()),
+            client_message_id: None,
             tool_name: None,
         }];
         state.edit_last_user_message();

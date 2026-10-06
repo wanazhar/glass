@@ -140,6 +140,10 @@ pub struct Jump {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GhostText {
     pub text: String,
+    /// Buffer identity and revision that produced this suggestion.
+    pub path: String,
+    pub offset: usize,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

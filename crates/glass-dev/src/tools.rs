@@ -1196,6 +1196,15 @@ impl DevelopmentToolRouter {
                 let text = string("text")?;
                 let context = call.arguments.get("context").cloned();
                 let mode = optional_string(call, "mode").unwrap_or("follow-up");
+                let client_message_id = match call.arguments.get("clientMessageId") {
+                    Some(Value::String(value)) => Some(value.as_str()),
+                    Some(_) => {
+                        return Err(DevelopmentError::InvalidInput(
+                            "clientMessageId must be a bounded string".into(),
+                        ));
+                    }
+                    None => None,
+                };
                 let selected = optional_string(call, "agentId")
                     .map(|value| agent_id(workspace, value))
                     .transpose()?;
@@ -1231,7 +1240,13 @@ impl DevelopmentToolRouter {
                                 "assistant",
                                 "interactive Glass Agent session",
                             ))?;
-                        map_service(workspace.agents().prompt_with_context(&id, text, context))?;
+                        map_service(workspace.agents().send_with_context_and_client_message_id(
+                            &id,
+                            "prompt",
+                            text,
+                            context,
+                            client_message_id,
+                        ))?;
                         return Ok(serde_json::json!({"queued":true,"agentId":id}));
                     }
                 };
@@ -1244,13 +1259,20 @@ impl DevelopmentToolRouter {
                     workspace.agents().restart(&agent)?;
                     status = workspace.agents().snapshot(&agent)?.status;
                 }
-                if mode == "steer" && status == crate::AgentStatus::Working {
-                    map_service(workspace.agents().steer_with_context(&agent, text, context.clone()))?;
-                } else if mode == "follow-up" && status == crate::AgentStatus::Working {
-                    map_service(workspace.agents().follow_up_with_context(&agent, text, context.clone()))?;
+                let effective_mode = if status == crate::AgentStatus::Working
+                    && matches!(mode, "steer" | "follow-up")
+                {
+                    mode
                 } else {
-                    map_service(workspace.agents().prompt_with_context(&agent, text, context))?;
-                }
+                    "prompt"
+                };
+                map_service(workspace.agents().send_with_context_and_client_message_id(
+                    &agent,
+                    effective_mode,
+                    text,
+                    context,
+                    client_message_id,
+                ))?;
                 let mut response = serde_json::json!({"queued":true,"agentId":agent});
                 if restarted {
                     response["restarted"] = Value::Bool(true);
@@ -2005,7 +2027,30 @@ fn confined_worktree_path(workspace_root: &Path, path: &Path) -> DevelopmentResu
 }
 
 fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
-    let (description, input_schema) = if name == "glass.agent.delegate" {
+    let (description, input_schema) = if name == "glass.agent.send" {
+        (
+            "Send a user message to the resident Glass Agent session".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "minLength": 1, "maxLength": 65536},
+                    "mode": {"type": "string", "enum": ["prompt", "follow-up", "steer"]},
+                    "agentId": {"type": "string", "minLength": 1, "maxLength": 64},
+                    "context": {"type": "object"},
+                    "intent": {"type": "string", "maxLength": 2048},
+                    "verify": {"type": "object"},
+                    "clientMessageId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": "^[A-Za-z0-9._:-]+$"
+                    }
+                },
+                "required": ["text"],
+                "additionalProperties": false
+            }),
+        )
+    } else if name == "glass.agent.delegate" {
         (
             "Delegate one bounded prompt to a temporary installed external agent".to_string(),
             serde_json::json!({

@@ -222,6 +222,7 @@ fn augment_schema(mut schema: Value, mutating: bool) -> Value {
     let object = schema
         .as_object_mut()
         .expect("tool schema must be an object");
+    object.insert("x-glass-mutating".into(), Value::Bool(mutating));
     let properties = object
         .entry("properties")
         .or_insert_with(|| json!({}))
@@ -239,8 +240,7 @@ fn augment_schema(mut schema: Value, mutating: bool) -> Value {
                 "expectedGeneration":{"type":"integer","minimum":1},
                 "expectedProjectRevision":{"type":"integer","minimum":0}
             },
-            "additionalProperties":false,
-            "x-glass-mutating":mutating
+            "additionalProperties":false
         }),
     );
     schema

@@ -255,11 +255,18 @@ struct CachedObservationContext {
 
 type PausedPolicyRequests = Arc<Mutex<HashSet<(Option<String>, String)>>>;
 
+fn record_policy_event_lag(lagged_events: &AtomicU64, count: u64) {
+    let _ = lagged_events.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
+        Some(total.saturating_add(count))
+    });
+}
+
 struct PolicyInterception {
     cdp: CdpClient,
     sessions: Arc<Mutex<HashSet<String>>>,
     paused: PausedPolicyRequests,
     last_denial: Arc<Mutex<Option<PolicyError>>>,
+    lagged_events: Arc<AtomicU64>,
     worker: tokio::task::JoinHandle<()>,
 }
 
@@ -273,21 +280,22 @@ impl PolicyInterception {
         let sessions = Arc::new(Mutex::new(HashSet::from([initial_session.clone()])));
         let paused = Arc::new(Mutex::new(HashSet::new()));
         let last_denial = Arc::new(Mutex::new(None));
+        let lagged_events = Arc::new(AtomicU64::new(0));
         let worker_cdp = cdp.clone();
         let worker_sessions = Arc::clone(&sessions);
         let worker_paused = Arc::clone(&paused);
         let worker_denial = Arc::clone(&last_denial);
+        let worker_lagged_events = Arc::clone(&lagged_events);
         let worker = tokio::spawn(async move {
             loop {
                 let event = match events.recv().await {
                     Ok(event) => event,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                        *worker_denial.lock().await = Some(PolicyError::Denied {
-                            operation: "navigation".to_string(),
-                            reason: format!(
-                                "policy event stream lagged by {count}; paused requests remain blocked"
-                            ),
-                        });
+                        record_policy_event_lag(&worker_lagged_events, count);
+                        tracing::warn!(
+                            dropped_events = count,
+                            "browser policy interception event stream lagged"
+                        );
                         continue;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -351,12 +359,22 @@ impl PolicyInterception {
             sessions,
             paused,
             last_denial,
+            lagged_events,
             worker,
         })
     }
 
     async fn take_denial(&self) -> Option<PolicyError> {
         self.last_denial.lock().await.take()
+    }
+
+    #[cfg(test)]
+    fn record_lagged_events(&self, count: u64) {
+        record_policy_event_lag(&self.lagged_events, count);
+    }
+
+    fn take_lagged_events(&self) -> u64 {
+        self.lagged_events.swap(0, Ordering::Relaxed)
     }
 
     async fn shutdown(self) {
@@ -519,6 +537,15 @@ impl Drop for DisposableProfileDir {
 }
 
 impl CdpBrowserSession {
+    /// Drain the number of CDP events dropped by this session's policy
+    /// interception worker. Lag remains diagnostic state and never replaces a
+    /// concrete navigation denial.
+    pub fn take_policy_event_lagged_count(&self) -> u64 {
+        self.policy_interception
+            .as_ref()
+            .map_or(0, PolicyInterception::take_lagged_events)
+    }
+
     /// PID of Chrome launched by this session, absent for attached sessions.
     pub fn owned_chrome_pid(&self) -> Option<u32> {
         self.chrome.as_ref().map(|chrome| chrome.pid)

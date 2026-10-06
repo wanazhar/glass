@@ -2109,10 +2109,13 @@ async fn hardened_navigation_intercepts_private_redirects_before_following() {
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
+    interception.record_lagged_events(3);
     assert!(matches!(
         interception.take_denial().await,
         Some(PolicyError::Denied { .. })
     ));
+    assert_eq!(interception.take_lagged_events(), 3);
+    assert_eq!(interception.take_lagged_events(), 0);
     interception.shutdown().await;
     cdp.close().await;
     server.await.unwrap();

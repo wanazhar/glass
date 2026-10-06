@@ -100,7 +100,15 @@ phone layouts open on the Trust surface before activation:
 The command palette equivalents are `trust inspect`, `trust untrusted`,
 `trust once`, and `trust project`. Only this local-human path can apply a new
 decision. Opening untrusted keeps safe file/browser review available without
-leaving the TUI.
+leaving the TUI. The Code surface can preview files, resolving path aliases to
+an existing buffer without replacing its unsaved content. Creating editor
+checkpoints or workflow drafts, entering the editor, changing or saving project
+buffers, and applying editor proposals require trust. The initial Trust surface
+remains in place until the user chooses Open untrusted, Trust once, or Trust
+project; surface shortcuts, pointer navigation, and command or palette actions
+cannot bypass that choice. After read-only review opens, normal navigation is
+available, and every execution or project-write gate reads the workspace's
+current trust state so a stale TUI snapshot cannot grant project authority.
 
 ## Skills and experiments
 

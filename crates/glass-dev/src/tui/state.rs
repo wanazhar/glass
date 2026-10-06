@@ -1125,6 +1125,7 @@ impl DevTuiState {
     }
 
     pub fn start_workflow_recording(&mut self, name: &str) -> Result<String, String> {
+        self.require_workflow_trust()?;
         if let Some(recording) = &self.workflow_recording {
             return Err(format!(
                 "already recording {} · :workflow record stop first",
@@ -1155,6 +1156,7 @@ impl DevTuiState {
     }
 
     pub fn capture_workflow_click(&mut self) -> Result<bool, String> {
+        self.require_workflow_trust()?;
         if self.workflow_recording.is_none() {
             return Ok(false);
         }
@@ -1178,6 +1180,7 @@ impl DevTuiState {
     }
 
     pub fn record_workflow_type(&mut self, input_name: &str) -> Result<String, String> {
+        self.require_workflow_trust()?;
         let selected = self
             .browser_workspace
             .state()
@@ -1201,6 +1204,7 @@ impl DevTuiState {
     }
 
     pub fn record_workflow_verify(&mut self) -> Result<String, String> {
+        self.require_workflow_trust()?;
         let value = self
             .pending_verify
             .clone()
@@ -1222,6 +1226,7 @@ impl DevTuiState {
     }
 
     pub fn stop_workflow_recording(&mut self) -> Result<String, String> {
+        self.require_workflow_trust()?;
         let recording = self
             .workflow_recording
             .take()
@@ -1250,6 +1255,15 @@ impl DevTuiState {
             path.display()
         );
         Ok(self.status.clone())
+    }
+
+    fn require_workflow_trust(&mut self) -> Result<(), String> {
+        if self.trust_allows_execution() {
+            return Ok(());
+        }
+        let error = "trust the workspace before changing workflow drafts".to_string();
+        self.status = error.clone();
+        Err(error)
     }
 
     fn refresh_workflow_recording_status(&mut self) {
@@ -1400,6 +1414,10 @@ impl DevTuiState {
     }
 
     pub fn open_palette(&mut self) {
+        if !self.may_leave_trust_surface() {
+            self.status = "Choose O, 1, or T on the Trust surface before opening commands".into();
+            return;
+        }
         self.close_file_picker();
         self.command_mode = true;
         self.command_input.clear();
@@ -1956,6 +1974,10 @@ impl DevTuiState {
     }
 
     pub fn open_palette_with(&mut self, prefix: &str) {
+        if !self.may_leave_trust_surface() {
+            self.status = "Choose O, 1, or T on the Trust surface before opening commands".into();
+            return;
+        }
         self.open_palette();
         self.command_input = prefix.into();
         self.command_cursor = self.command_input.len();
@@ -2517,7 +2539,15 @@ impl DevTuiState {
     }
 
     pub(crate) fn trust_allows_execution(&self) -> bool {
-        self.yolo_mode || self.snapshot_trust_label != "untrusted"
+        self.yolo_mode
+            || self
+                .workspace
+                .try_lock()
+                .is_ok_and(|workspace| workspace.trust().permits_project_execution())
+    }
+
+    pub(crate) fn may_leave_trust_surface(&self) -> bool {
+        self.surface != DevSurface::Trust || self.trust_allows_execution()
     }
 
     /// Focus the shared chat dock without changing the active surface.
@@ -2584,6 +2614,10 @@ impl DevTuiState {
     }
 
     pub fn jump_to_app_keep_dock(&mut self) {
+        if !self.may_leave_trust_surface() {
+            self.status = "Trust decision required · choose O, 1, or T before navigating".into();
+            return;
+        }
         self.surface = DevSurface::App;
         self.status = if self.composer_mode {
             "App · dock stays open · watch the agent or type a follow-up".into()
@@ -2782,7 +2816,12 @@ impl DevTuiState {
     }
 
     pub fn accept_review_pack(&mut self) -> Result<String, String> {
-        self.auto_checkpoint("before-review-accept");
+        if !self.trust_allows_execution() {
+            return Err("trust the workspace before applying editor proposals".into());
+        }
+        if !self.auto_checkpoint("before-review-accept") {
+            return Err(self.status.clone());
+        }
         match self.locked(|workspace| {
             workspace
                 .project_mut()
@@ -2806,8 +2845,13 @@ impl DevTuiState {
     }
 
     pub fn accept_review_proposal(&mut self, id: Option<&str>) -> Result<String, String> {
+        if !self.trust_allows_execution() {
+            return Err("trust the workspace before applying editor proposals".into());
+        }
         let id = self.resolve_review_proposal_id(id)?;
-        self.auto_checkpoint("before-review-accept");
+        if !self.auto_checkpoint("before-review-accept") {
+            return Err(self.status.clone());
+        }
         match self.locked(|workspace| {
             workspace
                 .project_mut()
@@ -3127,6 +3171,11 @@ impl DevTuiState {
     }
 
     pub fn open_file_picker(&mut self) {
+        if !self.may_leave_trust_surface() {
+            self.close_file_picker();
+            self.status = "Choose O, 1, or T on the Trust surface before opening files".into();
+            return;
+        }
         self.command_mode = false;
         self.file_picker_open = true;
         self.file_picker_query.clear();
@@ -3199,6 +3248,11 @@ impl DevTuiState {
     }
 
     pub fn submit_file_picker(&mut self) {
+        if !self.may_leave_trust_surface() {
+            self.close_file_picker();
+            self.status = "Choose O, 1, or T on the Trust surface before opening files".into();
+            return;
+        }
         let matches = self.file_picker_matches();
         let Some(&index) = matches.get(self.file_picker_selection) else {
             self.status = "No matching file".into();
@@ -3206,10 +3260,19 @@ impl DevTuiState {
         };
         self.selected_file = index;
         self.close_file_picker();
-        self.open_selected_file_for_edit();
+        if self.trust_allows_execution() {
+            self.open_selected_file_for_edit();
+        } else {
+            self.open_selected_file();
+            self.show_surface(DevSurface::Code);
+            self.status = "File opened in read-only preview · trust workspace to edit".into();
+        }
     }
 
     pub fn open_path(&mut self, path: &str) -> Result<String, String> {
+        if !self.may_leave_trust_surface() {
+            return Err("choose Open untrusted or trust the workspace before opening files".into());
+        }
         if path.trim().is_empty() {
             return Err("open requires PATH".into());
         }
@@ -3221,8 +3284,14 @@ impl DevTuiState {
             self.files.insert(0, path.to_string());
             self.selected_file = 0;
         }
-        self.open_selected_file_for_edit();
-        Ok(format!("Opened {path}"))
+        if self.trust_allows_execution() {
+            self.open_selected_file_for_edit();
+            Ok(format!("Opened {path}"))
+        } else {
+            self.open_selected_file();
+            self.show_surface(DevSurface::Code);
+            Ok(format!("Opened {path} in read-only preview"))
+        }
     }
 
     pub fn insert_composer_text(&mut self, text: &str) {
@@ -3361,6 +3430,11 @@ impl DevTuiState {
             "context": context,
         });
         if let Some(prove) = prove {
+            if !self.auto_checkpoint("before-prove-it") {
+                self.composer_input = display_text;
+                self.composer_cursor = self.composer_input.len();
+                return;
+            }
             arguments["verify"] = prove.verify.clone();
             arguments["intent"] = serde_json::Value::String(prove.intent);
             self.pending_verify = Some(prove.verify);
@@ -3376,7 +3450,6 @@ impl DevTuiState {
                 "composer prove-it queued",
                 false,
             ));
-            self.auto_checkpoint("before-prove-it");
         }
         if let Some(agent) = self.selected_agent.as_ref() {
             arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
@@ -4353,6 +4426,10 @@ impl DevTuiState {
     }
 
     pub fn show_surface(&mut self, surface: DevSurface) {
+        if surface != DevSurface::Trust && !self.may_leave_trust_surface() {
+            self.status = "Trust decision required · choose O, 1, or T before navigating".into();
+            return;
+        }
         self.surface = surface;
         self.status = format!("{} selected", surface.label());
         if surface != DevSurface::Code {
@@ -4691,6 +4768,9 @@ impl DevTuiState {
     }
 
     pub fn attach_selected_process_url(&mut self) -> Result<String, String> {
+        if !self.trust_allows_execution() {
+            return Err("trust the workspace before attaching the detected app".into());
+        }
         let url = self
             .selected_process_entry()
             .and_then(|entry| entry.url.clone())
@@ -4698,7 +4778,9 @@ impl DevTuiState {
             .ok_or_else(|| {
                 "No URL on the selected process · start a suite that prints one".to_string()
             })?;
-        self.auto_checkpoint("before-app-attach");
+        if !self.auto_checkpoint("before-app-attach") {
+            return Err(self.status.clone());
+        }
         self.prepare_browser_navigation(&url)
     }
 
@@ -5173,10 +5255,21 @@ impl DevTuiState {
     }
 
     pub fn open_selected_file(&mut self) {
-        let Some(path) = self.files.get(self.selected_file).cloned() else {
+        let Some(requested_path) = self.files.get(self.selected_file).cloned() else {
             self.status = "No project file selected".into();
             return;
         };
+        let path = self
+            .workspace
+            .try_lock()
+            .ok()
+            .and_then(|workspace| {
+                workspace
+                    .project()
+                    .normalize_existing_file_path(&requested_path)
+                    .ok()
+            })
+            .unwrap_or(requested_path);
         let already_open = self
             .workspace
             .try_lock()
@@ -5222,6 +5315,10 @@ impl DevTuiState {
     }
 
     pub fn open_selected_file_for_edit(&mut self) {
+        if !self.trust_allows_execution() {
+            self.status = "Trust the workspace before editing project files".into();
+            return;
+        }
         let selected_path = self.files.get(self.selected_file).cloned();
         self.open_selected_file();
         if selected_path.as_deref() == Some(self.focused_editor_path.as_str()) {
@@ -5463,6 +5560,10 @@ impl DevTuiState {
     }
 
     fn enter_code_edit_with_mode(&mut self, mode: EditorMode) {
+        if !self.trust_allows_execution() {
+            self.status = "Trust the workspace before editing project files".into();
+            return;
+        }
         let has_buffer = self.focused_buffer().is_some();
         if !has_buffer {
             self.open_selected_file();
@@ -5625,6 +5726,9 @@ impl DevTuiState {
     }
 
     fn save_editor_buffer(&mut self) -> Result<(), String> {
+        if !self.trust_allows_execution() {
+            return Err("trust the workspace before saving project files".into());
+        }
         let path = self.focused_editor_path.clone();
         self.workspace
             .try_lock()
@@ -5641,7 +5745,7 @@ impl DevTuiState {
             .try_lock()
             .map_err(|error| error.to_string())?
             .project_mut()
-            .open_buffer(&path, crate::development::Actor::local())
+            .reload_buffer_from_disk(&path, crate::development::Actor::local())
             .map(|_| ())
             .map_err(|error| error.to_string())
     }
@@ -5721,6 +5825,15 @@ impl DevTuiState {
         code: crossterm::event::KeyCode,
         modifiers: crossterm::event::KeyModifiers,
     ) {
+        if !self.trust_allows_execution() {
+            self.editor_engine.stop_pair_apply();
+            self.editor_engine.enter_normal();
+            self.code_edit_mode = false;
+            self.status =
+                "Workspace is untrusted · editor is read-only; unsaved changes are preserved"
+                    .into();
+            return;
+        }
         if code == crossterm::event::KeyCode::Char('w')
             && modifiers.contains(crossterm::event::KeyModifiers::ALT)
         {
@@ -6391,7 +6504,11 @@ impl DevTuiState {
             self.editor_engine.clear_pending();
             return Ok(());
         }
-        self.auto_checkpoint("before-operator");
+        if !self.auto_checkpoint("before-operator") {
+            return Err(crate::development::DevelopmentError::Conflict(
+                self.status.clone(),
+            ));
+        }
         match operator {
             Operator::Yank => {
                 self.editor_engine.yank = offsets
@@ -6472,6 +6589,11 @@ impl DevTuiState {
     }
 
     pub fn tick_pair_apply(&mut self) -> bool {
+        if !self.trust_allows_execution() {
+            self.editor_engine.stop_pair_apply();
+            self.status = "Workspace is untrusted · editor is read-only".into();
+            return false;
+        }
         let Some(apply) = self.editor_engine.pair_apply.clone() else {
             return false;
         };
@@ -6647,13 +6769,18 @@ impl DevTuiState {
         }
     }
 
-    fn auto_checkpoint(&mut self, name: &str) {
+    fn auto_checkpoint(&mut self, name: &str) -> bool {
+        if !self.trust_allows_execution() {
+            self.status = "trust the workspace before creating editor checkpoints".into();
+            return false;
+        }
         let _ = self.locked(|workspace| {
             workspace
                 .project_mut()
                 .create_editor_checkpoint(name.to_string(), crate::development::Actor::local())
                 .map(|_| ())
         });
+        true
     }
 
     fn editor_hover(&mut self) {
@@ -6800,7 +6927,9 @@ impl DevTuiState {
             self.status = "No proposal hunk on this buffer".into();
             return;
         };
-        self.auto_checkpoint("before-hunk-accept");
+        if !self.auto_checkpoint("before-hunk-accept") {
+            return;
+        }
         match self.locked(|workspace| {
             workspace
                 .project_mut()
@@ -6880,7 +7009,9 @@ impl DevTuiState {
             self.code_edit_mode = false;
             return;
         }
-        self.auto_checkpoint("before-app-jump");
+        if !self.auto_checkpoint("before-app-jump") {
+            return;
+        }
         match self.prepare_browser_navigation(&url) {
             Ok(message) => {
                 self.status = if entity.is_some() {
@@ -6929,10 +7060,15 @@ impl DevTuiState {
     }
 
     pub fn attach_detected_app(&mut self) -> Result<String, String> {
+        if !self.trust_allows_execution() {
+            return Err("trust the workspace before attaching the detected app".into());
+        }
         let url = self
             .resolved_app_url()
             .ok_or_else(|| "No App URL · start the detected suite".to_string())?;
-        self.auto_checkpoint("before-app-attach");
+        if !self.auto_checkpoint("before-app-attach") {
+            return Err(self.status.clone());
+        }
         self.prepare_browser_navigation(&url)
     }
 
@@ -8802,10 +8938,13 @@ impl DevTuiState {
             .iter()
             .enumerate()
             .filter(|(_, target)| {
+                let safe_url = safe_browser_url(&target.url)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
                 terms.iter().all(|term| {
                     target.id.to_ascii_lowercase().contains(term)
                         || target.title.to_ascii_lowercase().contains(term)
-                        || target.url.to_ascii_lowercase().contains(term)
+                        || safe_url.contains(term)
                 })
             })
             .map(|(index, _)| index)
@@ -9868,6 +10007,15 @@ fn editor_offset(content: &str, line: u32, column: u32) -> usize {
 mod tests {
     use super::*;
 
+    fn trust_workspace_once(state: &mut DevTuiState) {
+        state
+            .ws_mut()
+            .expect("lock temporary workspace")
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
+            .expect("trust temporary workspace for test");
+        state.snapshot_trust_label = "trusted once".into();
+    }
+
     #[test]
     fn tui_state_forwards_complete_browser_policy_to_resident_workspace() {
         let root =
@@ -10122,6 +10270,211 @@ mod tests {
     }
 
     #[test]
+    fn untrusted_trust_surface_blocks_desktop_phone_and_command_navigation() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-trust-routing-{}-{}",
+            std::process::id(),
+            NEXT_BROWSER_TOOL.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        std::fs::write(
+            root.join("glass.toml"),
+            "[tools.probe]\ndescription='probe'\ncommand='echo unsafe'\n",
+        )
+        .expect("write executable project configuration");
+
+        for (layout, shortcuts) in [
+            (TuiLayout::Desktop, &['2', 'v', '6', 'm'][..]),
+            (TuiLayout::Mobile, &['2', '3', '5'][..]),
+        ] {
+            let mut state = DevTuiState::open(&root, layout).expect("open untrusted TUI workspace");
+            assert_eq!(state.surface, DevSurface::Trust);
+            assert_eq!(
+                state.ws().expect("lock").trust(),
+                crate::WorkspaceTrust::Untrusted
+            );
+
+            // A stale display snapshot must not grant project execution.
+            state.snapshot_trust_label = "trusted project".into();
+            assert!(!state.trust_allows_execution());
+            assert!(command::execute(&mut state, "agent prompt hello").is_err());
+
+            for shortcut in shortcuts {
+                state.handle_printable(*shortcut);
+                assert_eq!(state.surface, DevSurface::Trust, "shortcut {shortcut:?}");
+            }
+            state.next_surface();
+            assert_eq!(state.surface, DevSurface::Trust);
+            state.previous_surface();
+            assert_eq!(state.surface, DevSurface::Trust);
+            state.show_surface(DevSurface::App);
+            assert_eq!(state.surface, DevSurface::Trust);
+            state.jump_to_app_keep_dock();
+            assert_eq!(state.surface, DevSurface::Trust);
+            assert!(command::execute(&mut state, "view app").is_err());
+            assert_eq!(state.surface, DevSurface::Trust);
+            assert!(command::execute(&mut state, "open README.md").is_err());
+            state.open_file_picker();
+            assert!(!state.file_picker_open);
+            assert_eq!(state.surface, DevSurface::Trust);
+            assert!(state.open_path("README.md").is_err());
+            state.open_selected_file_for_edit();
+            assert_eq!(state.surface, DevSurface::Trust);
+            state.open_palette();
+            assert!(!state.command_mode);
+            state.open_menu();
+            state.menu_selection = state.surface_actions().len();
+            state.run_menu_action();
+            assert!(!state.command_mode);
+            assert_eq!(state.surface, DevSurface::Trust);
+
+            // The explicit read-only choice opens navigation while execution
+            // remains governed by the workspace's untrusted state.
+            state.handle_printable('O');
+            assert_eq!(state.surface, DevSurface::Agent);
+            assert!(!state.trust_allows_execution());
+            state.snapshot_trust_label = "trusted project".into();
+            assert!(!state.trust_allows_execution());
+            assert!(command::execute(&mut state, "agent prompt hello").is_err());
+            state.handle_printable('2');
+            assert_eq!(state.surface, DevSurface::Code);
+            drop(state);
+        }
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn open_untrusted_preview_preserves_dirty_buffer_across_path_alias() {
+        let root =
+            std::env::temp_dir().join(format!("glass-untrusted-read-only-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create temporary workspace");
+        std::fs::write(
+            root.join("glass.toml"),
+            "[tools.probe]\ndescription='probe'\ncommand='echo unsafe'\n",
+        )
+        .expect("write executable project configuration");
+        let original = "fn main() {}\n";
+        std::fs::write(root.join("src/README.md"), original).expect("write test file");
+
+        let mut state =
+            DevTuiState::open(&root, TuiLayout::Desktop).expect("open untrusted TUI workspace");
+        state.files = vec!["src/README.md".into()];
+        state.handle_printable('O');
+        assert_eq!(state.surface, DevSurface::Agent);
+        assert!(!state.trust_allows_execution());
+
+        state.handle_printable('2');
+        assert_eq!(state.surface, DevSurface::Code);
+        state.selected_file = 0;
+        state.open_selected_file();
+        assert_eq!(state.focused_editor_content, original);
+        let unsaved = "unsaved review buffer\n";
+        state
+            .ws_mut()
+            .expect("lock temporary workspace")
+            .project_mut()
+            .edit_buffer(
+                "src/README.md",
+                unsaved.into(),
+                crate::development::Actor::local(),
+            )
+            .expect("seed dirty buffer for preview preservation");
+        state.refresh_editor_projection();
+        assert_eq!(state.focused_editor_content, unsaved);
+        assert!(
+            state
+                .open_path("src/./README.md")
+                .expect("read-only source preview")
+                .contains("read-only preview")
+        );
+        assert_eq!(state.focused_editor_content, unsaved);
+
+        state.handle_printable('i');
+        assert!(!state.code_edit_mode);
+        state.open_selected_file_for_edit();
+        assert!(!state.code_edit_mode);
+        state.open_file_picker();
+        assert!(state.file_picker_open);
+        state.submit_file_picker();
+        assert!(!state.file_picker_open);
+        assert!(!state.code_edit_mode);
+        assert_eq!(state.surface, DevSurface::Code);
+        assert!(state.open_path("src/./README.md").is_ok());
+        assert!(!state.code_edit_mode);
+        assert_eq!(state.focused_editor_content, unsaved);
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/README.md")).unwrap(),
+            original
+        );
+        assert!(
+            state
+                .ws()
+                .expect("lock workspace")
+                .project()
+                .buffer("src/README.md")
+                .is_some_and(|buffer| buffer.dirty && buffer.content == unsaved)
+        );
+
+        state
+            .ws_mut()
+            .expect("lock temporary workspace")
+            .project_mut()
+            .propose_editor_change(
+                "src/README.md",
+                unsaved.into(),
+                "proposal must not apply\n".into(),
+                "test untrusted proposal guard".into(),
+                crate::development::Actor::local(),
+            )
+            .expect("seed pending proposal");
+        state.refresh_editor_projection();
+        assert!(state.accept_review_pack().is_err());
+        assert_eq!(
+            state
+                .ws()
+                .expect("lock temporary workspace")
+                .project()
+                .buffer("src/README.md")
+                .expect("preview buffer")
+                .content,
+            unsaved
+        );
+
+        // Simulate an edit session that was opened before trust was revoked:
+        // typed edits and saving still consult live authority, preserving the
+        // in-memory buffer while leaving the file on disk untouched.
+        state
+            .ws_mut()
+            .expect("lock temporary workspace")
+            .project_mut()
+            .edit_buffer(
+                "src/README.md",
+                "dirty but unsaved\n".into(),
+                crate::development::Actor::local(),
+            )
+            .expect("seed stale unsaved buffer");
+        state.refresh_editor_projection();
+        state.code_edit_mode = true;
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('X'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert!(!state.code_edit_mode);
+        assert_eq!(
+            state.focused_editor_content, "dirty but unsaved\n",
+            "revoked trust must preserve existing unsaved editor content"
+        );
+        assert!(state.save_editor_buffer().is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/README.md")).expect("read file"),
+            original
+        );
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
     fn browser_context_url_redaction_preserves_path_only() {
         assert_eq!(
             safe_browser_url("https://example.test/orders/7?token=secret#receipt"),
@@ -10180,7 +10533,13 @@ mod tests {
             BrowserWorkspaceTarget {
                 id: "page-docs".into(),
                 title: "Project docs".into(),
-                url: "https://example.test/docs?token=secret".into(),
+                url: "https://example.test/docs?token=secret#receipt".into(),
+                selected: false,
+            },
+            BrowserWorkspaceTarget {
+                id: "page-private".into(),
+                title: "Private docs".into(),
+                url: "https://example.test/docs?session=private#fragment-secret".into(),
                 selected: false,
             },
             BrowserWorkspaceTarget {
@@ -10195,11 +10554,23 @@ mod tests {
             .expect("queue target picker");
         state.queued_tool_request = None;
         let matches = state.browser_target_matches();
-        assert_eq!(matches, vec![0]);
+        assert_eq!(matches, vec![0, 1]);
+
+        for sensitive_term in ["token", "secret", "receipt", "session", "fragment-secret"] {
+            state.browser_target_query = sensitive_term.into();
+            assert_eq!(
+                state.browser_target_matches(),
+                Vec::<usize>::new(),
+                "URL-only term {sensitive_term:?} matched a redacted URL"
+            );
+        }
+        state.browser_target_query = "docs".into();
         let view = state.browser_target_picker_view();
         assert!(view.contains("Project docs"));
+        assert!(view.contains("Private docs"));
         assert!(view.contains("https://example.test/docs"));
         assert!(!view.contains("token=secret"));
+        assert!(!view.contains("fragment-secret"));
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
     #[test]
@@ -10209,7 +10580,7 @@ mod tests {
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
         state.surface = DevSurface::Agent;
-        state.snapshot_trust_label = "trusted".into();
+        trust_workspace_once(&mut state);
         state.agent_readiness = format!(
             "✓ Ready · Node ✓ · SDK {} · auth ✓",
             crate::pi_runtime::PINNED_PI_SDK_VERSION
@@ -10234,7 +10605,7 @@ mod tests {
             let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop)
                 .expect("open temporary workspace");
             state.surface = DevSurface::Agent;
-            state.snapshot_trust_label = "trusted".into();
+            trust_workspace_once(&mut state);
             state.agent_readiness = format!(
                 "✓ Ready · Node ✓ · SDK {} · auth ✓",
                 crate::pi_runtime::PINNED_PI_SDK_VERSION
@@ -10264,7 +10635,7 @@ mod tests {
         state.close_menu();
 
         state.surface = DevSurface::Agent;
-        state.snapshot_trust_label = "trusted".into();
+        trust_workspace_once(&mut state);
         state.agent_readiness = format!(
             "✓ Ready · Node ✓ · SDK {} · auth ✓",
             crate::pi_runtime::PINNED_PI_SDK_VERSION
@@ -10282,6 +10653,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create temporary workspace");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
         state.files = vec!["src/lib.rs".into(), "Cargo.toml".into()];
         state.open_palette();
         state.command_input = "open".into();
@@ -10328,6 +10700,7 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
         state.files = vec![
             "src/lib.rs".into(),
             "src/main.rs".into(),
@@ -10559,6 +10932,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create temporary workspace");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
         state.focused_editor_path = "app/settings/page.tsx".into();
         state.focused_editor_line = 1;
         state.process_urls = vec!["http://localhost:3000/".into()];
@@ -10582,6 +10956,7 @@ mod tests {
         .expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
         state.files = vec!["src/button.tsx".into()];
         state.browser_workspace.replace_entities(
             1,
@@ -10654,6 +11029,7 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), source).expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
         state
             .ws_mut()
             .expect("workspace lock")
@@ -10732,6 +11108,7 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
         state
             .ws_mut()
             .expect("workspace lock")
@@ -10767,6 +11144,7 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), "fn foo() { foo(); foo }\n").expect("write");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
         state
             .ws_mut()
             .expect("lock")
@@ -10820,6 +11198,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create temporary workspace");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
         state.browser_workspace.replace_entities(
             7,
             vec![BrowserWorkspaceEntity {
@@ -10861,6 +11240,7 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
         state
             .ws_mut()
             .expect("workspace lock")
@@ -10902,6 +11282,84 @@ mod tests {
     }
 
     #[test]
+    fn untrusted_workflow_recording_cannot_start_capture_or_write_draft() {
+        let root =
+            std::env::temp_dir().join(format!("glass-workflow-untrusted-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
+
+        assert!(command::execute(&mut state, "workflow record start untrusted").is_err());
+        assert!(state.workflow_recording.is_none());
+
+        trust_workspace_once(&mut state);
+        state.browser_workspace.replace_entities(
+            1,
+            vec![BrowserWorkspaceEntity {
+                reference: "r1:save".into(),
+                role: "button".into(),
+                name: "Save settings".into(),
+                actionable: true,
+                revision: 1,
+            }],
+        );
+        state.browser_workspace.state_mut().selected_entity = Some(0);
+        state
+            .start_workflow_recording("retained")
+            .expect("start recording with trust");
+        assert!(state.capture_workflow_click().expect("capture click"));
+
+        // A trusted workspace cannot be downgraded while its trusted project
+        // configuration is active. Model closing and reopening the same
+        // project without granting trust, while preserving the in-memory TUI
+        // recording that must not be written under the new trust state.
+        let reopened =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("reopen untrusted");
+        assert!(!reopened.trust_allows_execution());
+        state.workspace = reopened.workspace;
+        assert!(state.capture_workflow_click().is_err());
+        assert!(state.stop_workflow_recording().is_err());
+        assert!(state.workflow_recording.is_some());
+        assert!(!root.join(".glass/workflows/retained.draft.json").exists());
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn untrusted_app_attach_does_not_persist_editor_checkpoint() {
+        let root =
+            std::env::temp_dir().join(format!("glass-untrusted-app-attach-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
+        state.process_urls = vec!["http://localhost:3000/".into()];
+
+        command::execute(&mut state, "trust untrusted").expect("open untrusted");
+        command::execute(&mut state, "view terminal").expect("open Terminal for review");
+        let checkpoint_path = state
+            .ws()
+            .expect("lock workspace")
+            .project()
+            .timeline()
+            .path()
+            .with_file_name("editor-checkpoints.json");
+
+        assert!(command::execute(&mut state, "app attach").is_err());
+        assert!(state.attach_selected_process_url().is_err());
+        assert!(
+            state
+                .ws()
+                .expect("lock workspace")
+                .project()
+                .editor_checkpoints()
+                .is_empty()
+        );
+        assert!(!checkpoint_path.exists());
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
     fn editor_soft_wrap_toggle_scrolls_visual_rows_and_resets_horizontal_scroll() {
         let root =
             std::env::temp_dir().join(format!("glass-editor-soft-wrap-{}", std::process::id()));
@@ -10910,6 +11368,7 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), content).expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Mobile).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
         state
             .ws_mut()
             .expect("workspace lock")
@@ -10988,6 +11447,7 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), "alpha\nbeta\n").expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
         state
             .ws_mut()
             .expect("workspace lock")
@@ -11027,6 +11487,7 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), original).expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
         state
             .ws_mut()
             .expect("workspace lock")
@@ -11043,10 +11504,22 @@ mod tests {
         assert_eq!(state.editor_exit_prompt, Some(EditorExitPrompt::Unsaved));
         state.handle_editor_exit_key(crossterm::event::KeyCode::Char('d'));
         assert!(!state.code_edit_mode);
+        assert_eq!(state.focused_editor_content, original);
+        assert!(!state.focused_editor_dirty);
         assert_eq!(
             std::fs::read_to_string(root.join("src/main.rs")).expect("read source"),
             original
         );
+        let reopened = state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("reopen discarded editor buffer");
+        assert_eq!(reopened.content, original);
+        assert!(!reopened.dirty);
+        state.refresh_editor_projection();
+        assert_eq!(state.focused_editor_content, original);
 
         state.enter_code_edit();
         state.edit_code_key(
@@ -11073,6 +11546,16 @@ mod tests {
         assert!(state.quit);
         assert_eq!(
             std::fs::read_to_string(root.join("src/main.rs")).expect("read discarded source"),
+            saved
+        );
+        assert_eq!(
+            state
+                .ws()
+                .expect("workspace lock")
+                .project()
+                .buffer("src/main.rs")
+                .expect("discarded buffer")
+                .content,
             saved
         );
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
@@ -11168,7 +11651,7 @@ mod tests {
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
         state.surface = DevSurface::Agent;
-        state.snapshot_trust_label = "trusted".into();
+        trust_workspace_once(&mut state);
         state.agent_readiness = format!(
             "✓ Ready · Node ✓ · SDK {} · auth ✓",
             crate::pi_runtime::PINNED_PI_SDK_VERSION
@@ -11200,7 +11683,7 @@ mod tests {
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
         state.surface = DevSurface::Agent;
-        state.snapshot_trust_label = "trusted".into();
+        trust_workspace_once(&mut state);
         state.agent_readiness = format!(
             "✓ Ready · Node ✓ · SDK {} · auth ✓",
             crate::pi_runtime::PINNED_PI_SDK_VERSION
@@ -11348,7 +11831,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create temporary workspace");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        state.snapshot_trust_label = "trusted".into();
+        trust_workspace_once(&mut state);
         state.agent_readiness = format!(
             "✓ Ready · Node ✓ · SDK {} · auth ✓",
             crate::pi_runtime::PINNED_PI_SDK_VERSION

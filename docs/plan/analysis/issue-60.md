@@ -18,8 +18,9 @@ remains. Mark a finding complete only after a focused regression or an explicit
 reproducible verification establishes the contract across the affected entry
 points.
 
-F92’s schema metadata placement is implemented in `53fd2ca9`, but its tracker
-item remains open until focused schema regression evidence is recorded.
+F92’s schema metadata placement is implemented in `53fd2ca9`. Its focused
+schema regression passed and is recorded in the
+[governance task](../tasks/issue60-p0-governance-001.md).
 
 ## Module and integration map
 

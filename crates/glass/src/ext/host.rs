@@ -7,11 +7,21 @@
 use std::io::{BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use super::protocol::{self, is_nested_call, Manifest, Request, MAX_REPLY_BYTES, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS};
+use super::protocol::{self, is_nested_call, is_subagent_call, Manifest, Request, MAX_REPLY_BYTES, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS};
 use super::protocol::parse_manifest;
 
 /// Callback the host uses to run a tool an extension asked for.
 pub type HostToolBridge<'a> = dyn FnMut(&str, &str) -> String + 'a;
+
+/// Callback the host uses to run a delegated task in a fresh context.
+///
+/// The subagent loop needs the provider and the workspace, which belong
+/// to the REPL. Rather than hand the extension a borrow of them — the
+/// extension outlives the turn that triggered the delegation — the REPL
+/// installs a factory that builds what it needs on demand. The factory
+/// owns only an `Arc` provider factory and a `PathBuf`, so it is
+/// `'static` and the extension needs no lifetime parameter.
+pub type SubagentFn = Box<dyn FnMut(&str) -> String + Send + Sync>;
 
 
 /// A running extension process.
@@ -25,6 +35,9 @@ pub struct Extension {
     /// means either the fd or the buffer has something.
     raw_fd: i32,
     next_id: u64,
+    /// Runs a delegated task. Set by the REPL so the host, not the
+    /// extension process, owns the nested agent loop.
+    subagent: Option<SubagentFn>,
 }
 
 impl Extension {
@@ -64,6 +77,7 @@ impl Extension {
             stdout: child.stdout.take().map(BufReader::new),
             raw_fd,
             next_id: 0,
+            subagent: None,
             child,
         };
 
@@ -78,6 +92,15 @@ impl Extension {
         ext.manifest = parse_manifest(&reply)
             .map_err(|e| format!("extension `{cmd}`: {e}"))?;
         Ok(ext)
+    }
+
+    /// Install the callback that runs delegated tasks.
+    ///
+    /// The REPL owns the provider and the workspace, so it supplies
+    /// the runner; the extension process only asks for a task to be
+    /// delegated. Called once after spawn, before any request.
+    pub fn set_subagent(&mut self, runner: SubagentFn) {
+        self.subagent = Some(runner);
     }
 
     /// Send a request and read one reply.
@@ -107,6 +130,27 @@ impl Extension {
         // answer we were waiting for.
         loop {
             let v = self.read_reply(timeout_ms)?;
+            if is_subagent_call(&v) {
+                // A delegated task. The host owns the nested agent
+                // loop; the extension process only asked for it. An
+                // extension with no runner installed is refused, not
+                // hung on, because a silent gap is worse than an error.
+                let runner = self.subagent.as_mut()?;
+                let task = v.get("task").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                let out = runner(&task);
+
+                self.next_id += 1;
+                let id = self.next_id;
+                let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
+                let mut reply = protocol::subagent_result_json(&call_id, &out);
+                reply["id"] = serde_json::json!(id);
+                let mut line = serde_json::to_string(&reply).ok()?;
+                line.push('\n');
+                let stdin = self.stdin.as_mut()?;
+                stdin.write_all(line.as_bytes()).ok()?;
+                stdin.flush().ok()?;
+                continue;
+            }
             if is_nested_call(&v) {
                 // No bridge means this extension tried to use a capability
                 // the caller did not grant it, which is a refusal, not a retry.

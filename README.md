@@ -243,6 +243,24 @@ extensions = ["python3 ~/.config/glass/ext/todo.py"]
 It is an extension for the same reason hashline is: a plan is a capability, not
 a core tool, and shipping it out of process keeps the two core tools to two.
 
+## Delegation
+
+`extensions/subagent` adds a `subagent` tool: hand a self-contained task to a
+second agent and get back its report. The sub-agent runs a full turn loop with
+its own isolated context, so its scratch work never enters your conversation —
+only the final report does. It carries the two core tools (`bash` and `state`)
+and nothing else, and runs synchronously inside your turn: the work happens in
+your workspace, so a sub-agent can edit the same files you can.
+
+```sh
+extensions = ["python3 ~/.config/glass/ext/subagent.py"]
+```
+
+The heavy lifting stays in the harness. The extension only declares the tool and
+forwards the task; the nested loop itself runs in glass, where the provider and
+the tools already live. That keeps the extension a thin shell and means a
+sub-agent is never a second harness to maintain.
+
 ## Context management
 
 Compaction is two-tier, because frontier models degrade on long inputs even with

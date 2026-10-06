@@ -277,6 +277,20 @@ pub fn is_nested_call(v: &Value) -> bool {
     v.get("type").and_then(Value::as_str) == Some("call_tool")
 }
 
+/// Wire form of the host's answer to a nested `run_subagent` request.
+pub fn subagent_result_json(call_id: &Value, output: &str) -> Value {
+    json!({ "type": "subagent_result", "call_id": call_id, "output": output })
+}
+
+/// True when `v` is a nested `run_subagent` request.
+///
+/// A subagent is a delegated task the host runs in a fresh, isolated
+/// context. Like a nested tool call it arrives while the extension's own
+/// request is still in flight, so it is demultiplexed the same way.
+pub fn is_subagent_call(v: &Value) -> bool {
+    v.get("type").and_then(Value::as_str) == Some("run_subagent")
+}
+
 /// Render a tool spec into the `(name, description, schema)` triple the
 /// provider layer expects.
 pub fn tool_triple(t: &ToolSpec) -> (String, String, String) {

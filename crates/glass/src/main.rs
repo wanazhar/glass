@@ -202,6 +202,54 @@ fn repl(
 
     let warmer = crate::warmer::Warmer::new(Arc::clone(&factory));
 
+    // Subagents run as a nested agent with its own isolated
+    // context. The runner is a plain closure: it builds a fresh
+    // provider and a throwaway session, so a delegated task never
+    // sees the parent's conversation. Only the core tools come
+    // along — the runner cannot borrow the live `mods` or the live
+    // extension registry, both of which the parent turn owns.
+    let make_subagent = || -> ext::host::SubagentFn {
+        let factory = Arc::clone(&factory);
+        let workspace = cfg.workspace.clone();
+        Box::new(move |task: &str| -> String {
+            let provider = match factory() {
+                Ok(p) => p,
+                Err(e) => return format!("subagent: {e}"),
+            };
+            let dir = std::env::temp_dir()
+                .join(format!("glass-subagent-{}", std::process::id()));
+            let mut session = match Session::create(&dir) {
+                Ok(s) => s,
+                Err(e) => return format!("subagent: {e}"),
+            };
+            session.append(Record::User(task.to_string()));
+            let mut state = tools::State::new();
+            let mods: Vec<Box<dyn glass_mod_api::Mod_>> = Vec::new();
+            let mut registry = ext::Registry::empty();
+            let prompt = format!(
+                "You are a subagent working on a delegated task.\n\n\
+                 Task: {task}\n\n\
+                 Do the task using bash and state. Do not ask the user \
+                 questions. When you are done, reply with a concise report \
+                 of what you found or changed."
+            );
+            let mut agent = Agent::new(
+                provider.as_ref(),
+                &mut session,
+                &mut state,
+                &mods,
+                &mut registry,
+                &workspace,
+            )
+            .with_prompt(prompt, None, None);
+            match agent.run_turn(|_| {}) {
+                Ok((out, _)) => out.text,
+                Err(e) => format!("subagent failed: {e}"),
+            }
+        })
+    };
+    extensions.set_subagent(make_subagent);
+
     let (mut w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
     let mut prompt_row = h.saturating_sub(2);
     let mut totals = Totals::new();

@@ -52,6 +52,8 @@ or publication is in scope. Completed P0 work is recorded in the
 and [daemon result-race](tasks/issue60-p0-daemon-result-race-001.md) tasks.
 The current daemon lifecycle slice covers reports #52–#54, #56, and #59:
 [task record](tasks/issue60-p1-daemon-lifecycle-001.md).
+The first TUI P1 slice centralizes overlay precedence across input, pointer, and
+rendering paths: [task record](tasks/issue60-p1-tui-overlay-priority-001.md).
 
 ## Active plan: Glass native browser engine (issue #40)
 

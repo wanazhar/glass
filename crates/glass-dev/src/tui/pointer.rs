@@ -1,5 +1,6 @@
 //! Pointer hit-testing. Mouse and terminal-touch call the same reducers as keys.
 
+use super::overlay::{self, ActiveOverlay};
 use super::state::{DevSurface, DevTuiState, ResponsiveClass};
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use std::time::{Duration, Instant};
@@ -39,7 +40,48 @@ struct PointerDown {
 }
 
 impl PointerState {
+    pub fn reset(&mut self) {
+        self.down = None;
+        self.last_click = None;
+    }
+
     pub fn handle(&mut self, state: &mut DevTuiState, mouse: MouseEvent, now: Instant) -> bool {
+        match overlay::active_overlay(state) {
+            Some(ActiveOverlay::Help) => {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => state.scroll_help(-3),
+                    MouseEventKind::ScrollDown => state.scroll_help(3),
+                    _ => {}
+                }
+                self.reset();
+                return true;
+            }
+            Some(ActiveOverlay::CommandCenterMenu) => match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    state.move_menu_selection(-3);
+                    return true;
+                }
+                MouseEventKind::ScrollDown => {
+                    state.move_menu_selection(3);
+                    return true;
+                }
+                _ => {}
+            },
+            Some(ActiveOverlay::Composer) => {
+                if matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) {
+                    return true;
+                }
+            }
+            Some(_) => {
+                self.reset();
+                return true;
+            }
+            None => {}
+        }
+
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 state.scroll_surface(-3);
@@ -50,12 +92,14 @@ impl PointerState {
                 true
             }
             MouseEventKind::Down(button) => {
-                let hit = hit_test(state, mouse.column, mouse.row);
                 if button == MouseButton::Right {
-                    state.open_menu();
-                    self.down = None;
+                    if overlay::active_overlay(state).is_none() {
+                        state.open_menu();
+                    }
+                    self.reset();
                     return true;
                 }
+                let hit = hit_test(state, mouse.column, mouse.row);
                 if let Some((previous, at)) = &self.last_click
                     && now.duration_since(*at) <= DOUBLE_CLICK
                     && *previous == hit
@@ -105,6 +149,10 @@ impl PointerState {
     }
 
     pub fn poll(&mut self, state: &mut DevTuiState, now: Instant) {
+        if overlay::active_overlay(state).is_some() {
+            self.reset();
+            return;
+        }
         if let Some(down) = &self.down
             && down.button == MouseButton::Left
             && !down.dragged
@@ -120,19 +168,32 @@ pub fn hit_test(state: &DevTuiState, column: u16, row: u16) -> HitRegion {
     let width = state.terminal_width.max(1);
     let height = state.terminal_height.max(1);
     let footer = footer_rows(state);
+    match overlay::active_overlay(state) {
+        Some(ActiveOverlay::Help) => return HitRegion::Help,
+        Some(ActiveOverlay::CommandCenterMenu) => {
+            if row >= height.saturating_sub(footer) {
+                return HitRegion::Other;
+            }
+            let index = usize::from(row.saturating_sub(3));
+            let item_count = state.quit_menu_index() + 1;
+            return if index < item_count {
+                HitRegion::Menu(index)
+            } else {
+                HitRegion::Other
+            };
+        }
+        Some(ActiveOverlay::Composer) => {
+            return if row >= height.saturating_sub(footer) {
+                HitRegion::Dock
+            } else {
+                HitRegion::Other
+            };
+        }
+        Some(_) => return HitRegion::Other,
+        None => {}
+    }
     if row >= height.saturating_sub(footer) {
         return HitRegion::Dock;
-    }
-    if state.help_open {
-        return HitRegion::Help;
-    }
-    if state.menu_open {
-        let index = usize::from(row.saturating_sub(3));
-        let item_count = state.quit_menu_index() + 1;
-        if index < item_count {
-            return HitRegion::Menu(index);
-        }
-        return HitRegion::Other;
     }
     if let Some(surface) = navigation_surface_at(
         state.responsive_class(width, height),
@@ -175,8 +236,8 @@ fn header_rows(_state: &DevTuiState) -> u16 {
     2
 }
 
-fn footer_rows(_state: &DevTuiState) -> u16 {
-    3
+fn footer_rows(state: &DevTuiState) -> u16 {
+    super::render::footer_height(state)
 }
 
 fn list_index(state: &DevTuiState, row: u16, len: usize) -> usize {
@@ -269,10 +330,6 @@ fn apply_click(state: &mut DevTuiState, hit: &HitRegion) -> bool {
             state.run_menu_action();
             true
         }
-        HitRegion::Other if state.composer_mode => {
-            state.close_composer();
-            true
-        }
         _ => true,
     }
 }
@@ -322,6 +379,153 @@ fn apply_primary(state: &mut DevTuiState, hit: &HitRegion) -> bool {
 mod tests {
     use super::*;
     use glass_browser::cli::args::TuiLayout;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    fn overlay_state() -> (DevTuiState, std::path::PathBuf) {
+        let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "glass-pointer-overlay-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create test workspace");
+        let state = DevTuiState::open(&root, TuiLayout::Desktop).expect("open TUI state");
+        (state, root)
+    }
+
+    #[test]
+    fn overlays_block_covered_mouse_paths_while_help_and_menu_keep_their_routes() {
+        let (mut state, root) = overlay_state();
+        state.terminal_width = 100;
+        state.terminal_height = 40;
+        state.surface = DevSurface::Git;
+        state.surface_scroll.insert(DevSurface::Git, 5);
+        state.file_picker_open = true;
+        state.command_mode = true;
+        state.pi_command_mode = true;
+        state.code_edit_mode = true;
+        assert_eq!(hit_test(&state, 50, 10), HitRegion::Other);
+
+        let mut pointer = PointerState::default();
+        pointer.handle(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 50,
+                row: 10,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            },
+            Instant::now(),
+        );
+        assert_eq!(state.surface_scroll.get(&DevSurface::Git), Some(&5));
+
+        let press = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 50,
+            row: 10,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        pointer.handle(&mut state, press, Instant::now());
+        pointer.handle(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: 51,
+                row: 11,
+                ..press
+            },
+            Instant::now(),
+        );
+        pointer.handle(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                ..press
+            },
+            Instant::now(),
+        );
+        assert_eq!(state.surface_scroll.get(&DevSurface::Git), Some(&5));
+
+        state.file_picker_open = false;
+        state.command_mode = false;
+        state.pi_command_mode = false;
+        state.code_edit_mode = false;
+        state.help_open = true;
+        pointer.handle(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 50,
+                row: 10,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            },
+            Instant::now(),
+        );
+        assert_eq!(state.help_scroll, 3);
+        assert_eq!(state.surface_scroll.get(&DevSurface::Git), Some(&5));
+
+        state.help_open = false;
+        state.open_menu();
+        assert!(matches!(hit_test(&state, 50, 3), HitRegion::Menu(0)));
+        let previous_selection = state.menu_selection;
+        pointer.handle(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 50,
+                row: 10,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            },
+            Instant::now(),
+        );
+        assert_ne!(state.menu_selection, previous_selection);
+        let search_index = state.surface_actions().len();
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 50,
+            row: 3 + search_index as u16,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        pointer.handle(&mut state, click, Instant::now());
+        pointer.handle(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                ..click
+            },
+            Instant::now(),
+        );
+        assert!(!state.menu_open);
+        assert!(state.command_mode);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn modal_transition_cancels_a_pending_long_press() {
+        let (mut state, root) = overlay_state();
+        state.terminal_width = 100;
+        state.terminal_height = 40;
+        let started = Instant::now();
+        let mut pointer = PointerState::default();
+        pointer.handle(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 50,
+                row: 20,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            },
+            started,
+        );
+        state.file_picker_open = true;
+        pointer.poll(&mut state, started + LONG_PRESS);
+        assert!(!state.menu_open);
+        assert!(matches!(hit_test(&state, 50, 20), HitRegion::Other));
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
 
     #[test]
     fn trust_sidebar_row_matches_the_highlighted_prompt() {

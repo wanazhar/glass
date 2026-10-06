@@ -12,6 +12,7 @@ mod bindings;
 mod command;
 mod editor;
 mod file_view;
+mod overlay;
 mod parse;
 mod pi_commands;
 mod playbooks;
@@ -366,11 +367,14 @@ pub(crate) fn run_with_browser_policy(
     let mut last_visual = Instant::now();
     let mut last_render = Instant::now() - Duration::from_millis(33);
     let mut render_requested = true;
-    let mut previous_overlay_mask = 0_u16;
+    let mut previous_overlay_mask = 0_u32;
+    let mut previous_active_overlay = overlay::active_overlay(&state);
     let mut pointer = pointer::PointerState::default();
     loop {
         let size = guard.terminal.size()?;
         render_requested |= state.poll_native_browser_dialog();
+        let active_overlay = overlay::active_overlay(&state);
+        reset_pointer_on_overlay_transition(&state, &mut pointer, &mut previous_active_overlay);
         let overlay_mask = terminal_overlay_mask(&state);
         if overlay_mask != previous_overlay_mask {
             guard
@@ -387,18 +391,7 @@ pub(crate) fn run_with_browser_policy(
         visual.sync_kitty_area(kitty_area, &mut guard)?;
         let render_interval = if state.browser_visual_live && visual.live {
             Duration::from_millis(33)
-        } else if state.composer_mode
-            || state.code_edit_mode
-            || state.command_mode
-            || state.pi_command_mode
-            || state.menu_open
-            || state.help_open
-            || state.quit_confirmation
-            || state.browser_dialog.is_some()
-            || state.pending_confirmation.is_some()
-            || state.pending_agent_approval.is_some()
-            || state.running_tool_job.is_some()
-        {
+        } else if active_overlay.is_some() || state.running_tool_job.is_some() {
             Duration::from_millis(100)
         } else if worker.is_busy() {
             // Background snapshots remain responsive without forcing an idle
@@ -419,22 +412,23 @@ pub(crate) fn run_with_browser_policy(
             render_requested = true;
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    let active_overlay = overlay::active_overlay(&state);
                     // The quit modal is the strongest user-facing guard.
-                    if state.quit_confirmation {
+                    if active_overlay == Some(overlay::ActiveOverlay::QuitConfirmation) {
                         match key.code {
                             KeyCode::Enter | KeyCode::Char('y' | 'Y') => state.confirm_quit(),
                             KeyCode::Esc | KeyCode::Char('n' | 'N') => state.cancel_quit(),
                             _ => {}
                         }
-                    } else if state.editor_exit_prompt.is_some() {
+                    } else if active_overlay == Some(overlay::ActiveOverlay::EditorExitPrompt) {
                         state.handle_editor_exit_key(key.code);
                     } else if key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         state.request_quit();
-                    } else if state.browser_dialog.is_some() {
+                    } else if active_overlay == Some(overlay::ActiveOverlay::BrowserDialog) {
                         state.handle_native_browser_dialog_key(key.code, key.modifiers);
-                    } else if state.help_open {
+                    } else if active_overlay == Some(overlay::ActiveOverlay::Help) {
                         match key.code {
                             KeyCode::Esc | KeyCode::Char('?') => state.toggle_help(),
                             KeyCode::Up | KeyCode::Char('k') => state.scroll_help(-1),
@@ -444,14 +438,9 @@ pub(crate) fn run_with_browser_policy(
                             KeyCode::Home => state.help_scroll = 0,
                             _ => {}
                         }
-                    } else if key.code == KeyCode::Char('?')
-                        && !state.composer_mode
-                        && !state.command_mode
-                        && !state.pi_command_mode
-                        && !state.code_edit_mode
-                    {
+                    } else if active_overlay.is_none() && key.code == KeyCode::Char('?') {
                         state.toggle_help();
-                    } else if state.menu_open {
+                    } else if active_overlay == Some(overlay::ActiveOverlay::CommandCenterMenu) {
                         match key.code {
                             KeyCode::Esc => state.close_menu(),
                             KeyCode::Enter => {
@@ -483,7 +472,7 @@ pub(crate) fn run_with_browser_policy(
                             KeyCode::Down | KeyCode::Char('j') => state.move_menu_selection(1),
                             _ => {}
                         }
-                    } else if state.browser_target_picker && state.surface == DevSurface::App {
+                    } else if active_overlay == Some(overlay::ActiveOverlay::BrowserTargetPicker) {
                         match key.code {
                             KeyCode::Esc => state.close_browser_target_picker(),
                             KeyCode::Enter => state.select_browser_target(),
@@ -502,7 +491,7 @@ pub(crate) fn run_with_browser_policy(
                             }
                             _ => {}
                         }
-                    } else if state.browser_recovery.is_some() && state.surface == DevSurface::App {
+                    } else if active_overlay == Some(overlay::ActiveOverlay::BrowserRecovery) {
                         match key.code {
                             KeyCode::Esc => {
                                 state.browser_recovery = None;
@@ -521,7 +510,7 @@ pub(crate) fn run_with_browser_policy(
                             }
                             _ => {}
                         }
-                    } else if state.pending_agent_approval.is_some() {
+                    } else if active_overlay == Some(overlay::ActiveOverlay::AgentApproval) {
                         match key.code {
                             KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
                                 state.resolve_agent_approval(true, &mut worker);
@@ -531,7 +520,7 @@ pub(crate) fn run_with_browser_policy(
                             }
                             _ => {}
                         }
-                    } else if state.pending_confirmation.is_some() {
+                    } else if active_overlay == Some(overlay::ActiveOverlay::MutationConfirmation) {
                         match key.code {
                             KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
                                 state.approve_confirmation_async(&mut worker);
@@ -541,7 +530,7 @@ pub(crate) fn run_with_browser_policy(
                             }
                             _ => {}
                         }
-                    } else if state.code_edit_mode && !state.composer_mode {
+                    } else if active_overlay == Some(overlay::ActiveOverlay::FullscreenEditor) {
                         match (key.code, key.modifiers) {
                             (KeyCode::Char('l'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>
@@ -556,7 +545,7 @@ pub(crate) fn run_with_browser_policy(
                             (KeyCode::Esc, _) => state.handle_editor_escape(),
                             _ => state.edit_code_key(key.code, key.modifiers),
                         }
-                    } else if state.pi_command_mode {
+                    } else if active_overlay == Some(overlay::ActiveOverlay::PiSlashCommand) {
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => state.close_pi_command_palette(),
                             (KeyCode::Enter, _) => state.submit_pi_command(),
@@ -589,35 +578,8 @@ pub(crate) fn run_with_browser_policy(
                             }
                             _ => {}
                         }
-                    } else if state.file_picker_open {
-                        match (key.code, key.modifiers) {
-                            (KeyCode::Esc, _) => state.close_file_picker(),
-                            (KeyCode::Char('p'), value)
-                                if value.contains(KeyModifiers::CONTROL) =>
-                            {
-                                state.close_file_picker();
-                            }
-                            (KeyCode::Enter, _) => state.submit_file_picker(),
-                            (KeyCode::Backspace, _) => state.file_picker_backspace(),
-                            (KeyCode::Char('u'), value)
-                                if value.contains(KeyModifiers::CONTROL) =>
-                            {
-                                state.file_picker_query.clear();
-                                state.file_picker_cursor = 0;
-                                state.file_picker_selection = 0;
-                            }
-                            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                                state.move_file_picker_selection(-1)
-                            }
-                            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-                                state.move_file_picker_selection(1)
-                            }
-                            (KeyCode::Char(character), _) => {
-                                state.insert_file_picker_char(character)
-                            }
-                            _ => {}
-                        }
-                    } else if state.session_picker_open {
+                    } else if dispatch_file_picker_key(&mut state, key.code, key.modifiers) {
+                    } else if active_overlay == Some(overlay::ActiveOverlay::SessionPicker) {
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => state.close_session_picker(),
                             (KeyCode::Enter, _) => state.submit_session_picker(&mut worker),
@@ -629,7 +591,7 @@ pub(crate) fn run_with_browser_policy(
                             }
                             _ => {}
                         }
-                    } else if state.composer_mode {
+                    } else if active_overlay == Some(overlay::ActiveOverlay::Composer) {
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => state.close_composer(),
                             (KeyCode::Enter, value) if value.contains(KeyModifiers::SHIFT) => {
@@ -706,7 +668,7 @@ pub(crate) fn run_with_browser_policy(
                             }
                             _ => {}
                         }
-                    } else if state.command_mode {
+                    } else if active_overlay == Some(overlay::ActiveOverlay::CommandPalette) {
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => state.close_palette(),
                             (KeyCode::Enter, _) => {
@@ -1099,36 +1061,9 @@ pub(crate) fn run_with_browser_policy(
                         }
                     }
                 }
-                Event::Paste(text) if state.browser_dialog.is_some() => {
-                    for character in text.chars() {
-                        state.insert_native_dialog_char(character);
-                    }
-                }
-                Event::Paste(text) if state.command_mode => state.insert_palette_text(&text),
-                Event::Paste(text) if state.pi_command_mode => {
-                    for character in text.chars() {
-                        state.insert_pi_command_char(character);
-                    }
-                }
-                Event::Paste(text) if state.composer_mode => state.insert_composer_text(&text),
+                Event::Paste(text) => route_paste(&mut state, &text),
                 Event::Mouse(mouse) => {
-                    if state.browser_dialog.is_some() {
-                        // The page dialog owns input until it is resolved.
-                    } else if !state.quit_confirmation
-                        && state.editor_exit_prompt.is_none()
-                        && state.pending_confirmation.is_none()
-                        && state.pending_agent_approval.is_none()
-                        && !state.browser_target_picker
-                        && state.browser_recovery.is_none()
-                    {
-                        pointer.handle(&mut state, mouse, Instant::now());
-                    } else {
-                        match mouse.kind {
-                            crossterm::event::MouseEventKind::ScrollUp => state.scroll_surface(-3),
-                            crossterm::event::MouseEventKind::ScrollDown => state.scroll_surface(3),
-                            _ => {}
-                        }
-                    }
+                    pointer.handle(&mut state, mouse, Instant::now());
                 }
                 Event::FocusLost => {
                     let _ = state
@@ -1136,15 +1071,13 @@ pub(crate) fn run_with_browser_policy(
                         .reduce(BrowserWorkspaceIntent::CloseOverlay);
                 }
                 Event::Resize(width, height) => state.set_terminal_size(width, height),
-                Event::Key(_) | Event::Paste(_) | Event::FocusGained => {}
+                Event::Key(_) | Event::FocusGained => {}
             }
         }
+        reset_pointer_on_overlay_transition(&state, &mut pointer, &mut previous_active_overlay);
         let menu_was_open = state.menu_open;
-        if state.browser_dialog.is_some() {
-            pointer = pointer::PointerState::default();
-        } else {
-            pointer.poll(&mut state, Instant::now());
-        }
+        pointer.poll(&mut state, Instant::now());
+        reset_pointer_on_overlay_transition(&state, &mut pointer, &mut previous_active_overlay);
         render_requested |= menu_was_open != state.menu_open;
         if state.agent_login_requested {
             state.agent_login_requested = false;
@@ -1363,51 +1296,86 @@ pub(crate) fn run_with_browser_policy(
     drop(worker);
     Ok(())
 }
-fn terminal_overlay_mask(state: &DevTuiState) -> u16 {
-    let mut mask = 0_u16;
-    if state.command_mode {
-        mask |= 1 << 0;
+fn terminal_overlay_mask(state: &DevTuiState) -> u32 {
+    let overlay = overlay::active_overlay(state)
+        .map(|active| 1_u32 << (16 + active as u32))
+        .unwrap_or_default();
+    // Preserve the pre-existing Git diff presentation bit while reserving the
+    // upper bits for the single resolver-selected overlay.
+    let git_diff = if state.git_diff_open { 1_u32 << 7 } else { 0 };
+    overlay | git_diff
+}
+
+fn reset_pointer_on_overlay_transition(
+    state: &DevTuiState,
+    pointer: &mut pointer::PointerState,
+    previous: &mut Option<overlay::ActiveOverlay>,
+) {
+    let current = overlay::active_overlay(state);
+    if current != *previous {
+        pointer.reset();
+        *previous = current;
     }
-    if state.composer_mode {
-        mask |= 1 << 1;
+}
+
+fn route_paste(state: &mut DevTuiState, text: &str) {
+    match overlay::active_overlay(state) {
+        Some(overlay::ActiveOverlay::BrowserDialog) => {
+            for character in text.chars() {
+                state.insert_native_dialog_char(character);
+            }
+        }
+        Some(overlay::ActiveOverlay::BrowserTargetPicker) => {
+            for character in text.chars() {
+                state.insert_browser_target_query(character);
+            }
+        }
+        Some(overlay::ActiveOverlay::FilePicker) => {
+            for character in text.chars() {
+                state.insert_file_picker_char(character);
+            }
+        }
+        Some(overlay::ActiveOverlay::PiSlashCommand) => {
+            for character in text.chars() {
+                state.insert_pi_command_char(character);
+            }
+        }
+        Some(overlay::ActiveOverlay::Composer) => state.insert_composer_text(text),
+        Some(overlay::ActiveOverlay::CommandPalette) => state.insert_palette_text(text),
+        _ => {}
     }
-    if state.menu_open {
-        mask |= 1 << 2;
+}
+
+fn handle_file_picker_key(state: &mut DevTuiState, code: KeyCode, modifiers: KeyModifiers) {
+    match (code, modifiers) {
+        (KeyCode::Esc, _) => state.close_file_picker(),
+        (KeyCode::Char('p'), value) if value.contains(KeyModifiers::CONTROL) => {
+            state.close_file_picker();
+        }
+        (KeyCode::Enter, _) => state.submit_file_picker(),
+        (KeyCode::Backspace, _) => state.file_picker_backspace(),
+        (KeyCode::Char('u'), value) if value.contains(KeyModifiers::CONTROL) => {
+            state.file_picker_query.clear();
+            state.file_picker_cursor = 0;
+            state.file_picker_selection = 0;
+        }
+        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => state.move_file_picker_selection(-1),
+        (KeyCode::Down, _) | (KeyCode::Char('j'), _) => state.move_file_picker_selection(1),
+        (KeyCode::Char(character), _) => state.insert_file_picker_char(character),
+        _ => {}
     }
-    if state.help_open {
-        mask |= 1 << 3;
+}
+
+fn dispatch_file_picker_key(
+    state: &mut DevTuiState,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> bool {
+    if overlay::active_overlay(state) != Some(overlay::ActiveOverlay::FilePicker) {
+        return false;
     }
-    if state.code_edit_mode {
-        mask |= 1 << 4;
-    }
-    if state.browser_target_picker {
-        mask |= 1 << 5;
-    }
-    if state.browser_recovery.is_some() {
-        mask |= 1 << 6;
-    }
-    if state.git_diff_open {
-        mask |= 1 << 7;
-    }
-    if state.pending_confirmation.is_some() {
-        mask |= 1 << 8;
-    }
-    if state.pending_agent_approval.is_some() {
-        mask |= 1 << 9;
-    }
-    if state.quit_confirmation {
-        mask |= 1 << 10;
-    }
-    if state.editor_exit_prompt.is_some() {
-        mask |= 1 << 11;
-    }
-    if state.pi_command_mode {
-        mask |= 1 << 12;
-    }
-    if state.browser_dialog.is_some() {
-        mask |= 1 << 13;
-    }
-    mask
+    handle_file_picker_key(state, code, modifiers);
+    true
 }
 
 /// Map a left-click on the desktop or compact navigation column to a surface.
@@ -1634,6 +1602,117 @@ impl Drop for TerminalGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    fn overlay_test_state() -> (DevTuiState, std::path::PathBuf) {
+        let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "glass-overlay-routing-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create test workspace");
+        let state = DevTuiState::open(&root, TuiLayout::Desktop).expect("open TUI state");
+        (state, root)
+    }
+
+    #[test]
+    fn file_picker_receives_keys_and_paste_above_editor_pi_and_palette() {
+        let (mut state, root) = overlay_test_state();
+        state.file_picker_open = true;
+        state.session_picker_open = true;
+        state.code_edit_mode = true;
+        state.pi_command_mode = true;
+        state.command_mode = true;
+        state.pi_command_input = "pi".into();
+        state.command_input = "palette".into();
+
+        assert!(dispatch_file_picker_key(
+            &mut state,
+            KeyCode::Char('r'),
+            KeyModifiers::empty()
+        ));
+        route_paste(&mut state, "eadme");
+
+        assert_eq!(state.file_picker_query, "readme");
+        assert_eq!(state.pi_command_input, "pi");
+        assert_eq!(state.command_input, "palette");
+        assert!(state.code_edit_mode);
+        assert_eq!(
+            overlay::active_overlay(&state),
+            Some(overlay::ActiveOverlay::FilePicker)
+        );
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn redraw_mask_tracks_the_resolved_picker_and_keeps_git_diff_bit() {
+        let (mut state, root) = overlay_test_state();
+        state.code_edit_mode = true;
+        state.pi_command_mode = true;
+        state.file_picker_open = true;
+        state.git_diff_open = true;
+        let file_mask = terminal_overlay_mask(&state);
+        assert_ne!(
+            file_mask & (1_u32 << (16 + overlay::ActiveOverlay::FilePicker as u32)),
+            0
+        );
+        assert_ne!(file_mask & (1_u32 << 7), 0);
+        assert_eq!(
+            file_mask & (1_u32 << (16 + overlay::ActiveOverlay::PiSlashCommand as u32)),
+            0
+        );
+
+        state.file_picker_open = false;
+        state.session_picker_open = true;
+        let session_mask = terminal_overlay_mask(&state);
+        assert_ne!(
+            session_mask & (1_u32 << (16 + overlay::ActiveOverlay::SessionPicker as u32)),
+            0
+        );
+        assert_ne!(file_mask, session_mask);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn overlay_opening_discards_a_press_started_on_the_covered_surface() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+        let (mut state, root) = overlay_test_state();
+        state.terminal_width = 100;
+        state.terminal_height = 40;
+        let mut pointer = pointer::PointerState::default();
+        let mut previous = overlay::active_overlay(&state);
+        pointer.handle(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 80,
+                row: 39,
+                modifiers: KeyModifiers::empty(),
+            },
+            Instant::now(),
+        );
+        state.file_picker_open = true;
+        reset_pointer_on_overlay_transition(&state, &mut pointer, &mut previous);
+        state.file_picker_open = false;
+        assert!(!pointer.handle(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 80,
+                row: 39,
+                modifiers: KeyModifiers::empty(),
+            },
+            Instant::now() + Duration::from_millis(500),
+        ));
+        assert!(!state.composer_mode);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
 
     #[test]
     fn mouse_navigation_maps_rows_inside_the_visible_list() {

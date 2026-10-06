@@ -124,13 +124,29 @@ a second keybinding or state owner.
 
 ## Navigation and modal routing
 
-The event loop routes the strongest guard first: quit confirmation, editor exit
-prompt, Ctrl-C, native browser JavaScript dialog, help, command-center menu, browser target picker/recovery,
-agent approval, mutation confirmation, full-screen editor, file/session
-pickers, Pi slash-command modal, composer dock, Glass command palette, then
-ordinary surface input including Git workbench keys. `Esc` closes the active
+One active-overlay resolver owns keyboard, mouse, and terminal-overlay
+precedence. From highest priority to lowest it selects quit confirmation,
+editor exit prompt, native browser JavaScript dialog, help, command-center menu,
+browser target picker, file picker, session picker, browser recovery, agent
+approval, mutation confirmation, full-screen editor, Pi slash-command modal,
+composer dock, and Glass command palette. If no modal is active, ordinary
+surface input owns the event, including Git workbench keys. Ctrl-C remains a
+global quit request after the unsaved-editor prompt and before ordinary overlay
+dispatch. A picker or modal consumes its input; clicks and wheel events cannot
+reach the covered surface. The command-center menu accepts pointer selection,
+and help accepts its documented wheel scrolling. `Esc` closes the active
 modal/overlay; it does not cancel a running worker job. Git keys stay live while
 a diff is open, but they do not trap confirm or palette input.
+
+The full-screen editor owns key input while `code_edit_mode` is active unless
+the composer dock is open; then the composer owns key input and the editor stays
+visible behind it. The editor exit prompt always takes precedence over both.
+
+The same resolver selects the overlay drawn above the surface and provides the
+terminal redraw mask. Opening or closing the file picker or session picker
+therefore clears and redraws terminal-native browser pixels just like other
+modal transitions. A hidden lower-priority overlay does not receive keyboard,
+mouse, paste, or surface input while a higher-priority overlay is active.
 
 | Input | Route and behavior |
 |---|---|

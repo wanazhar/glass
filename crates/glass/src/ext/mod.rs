@@ -9,7 +9,7 @@ pub mod protocol;
 
 use std::path::Path;
 
-use host::{Extension, HostToolBridge};
+use host::{Extension, HostToolBridge, SubagentFn};
 use protocol::{tool_triple, ExtConcurrency, ToolSpec};
 
 /// Every loaded extension.
@@ -49,6 +49,19 @@ impl Registry {
             }
         }
         reg
+    }
+
+    /// Install the subagent runner on every extension.
+    ///
+    /// Each extension gets its own runner, built by `make`,
+    /// because a `SubagentFn` is a `Box` and cannot be shared.
+    /// Only the extension that declares the `subagent` tool will
+    /// actually invoke it; the rest hold an unused runner, which
+    /// is cheap — an `Arc` clone and a `PathBuf`.
+    pub fn set_subagent(&mut self, make: impl Fn() -> SubagentFn) {
+        for ext in self.exts.iter_mut() {
+            ext.set_subagent(make());
+        }
     }
 
     pub fn names(&self) -> Vec<&str> {

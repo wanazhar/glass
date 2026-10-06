@@ -852,5 +852,12 @@ projection and existing native Fetch behavior.
   Fetch. The parent remains the only cookie matcher, `Set-Cookie` acceptor,
   and jar owner. Other request classes and the wider conformance audit remain
   open; Slice 843 and Issue #40 are not complete.
-- Implementation is in progress on `task/native-engine-browser-843`.
-- Issue #40 remains open.
+- The pending timer-resource checkpoint from `task/native-engine-browser-843`
+  was compared with current mainline. Parent mutation settlement and the
+  stylesheet callback regression are already covered by later mainline work,
+  including Slice 847's process-backed test and Slice 848's broader resource
+  event handling, so those older copies were not duplicated. The distinct
+  script-node event-owner rebinding change is recorded in main commit
+  `d7f7d819`.
+- `git diff --check` passed for the event-owner change; no test was run for
+  this follow-up. Slice 843 remains in progress and Issue #40 remains open.

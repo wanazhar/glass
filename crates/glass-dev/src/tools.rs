@@ -71,6 +71,36 @@ impl DevelopmentToolRouter {
         self.descriptors.clone()
     }
 
+    /// Apply the same trust gate used by execution before exposing descriptors.
+    pub fn descriptors_for(
+        &self,
+        trust: WorkspaceTrust,
+        unrestricted: bool,
+    ) -> Vec<ToolDescriptor> {
+        let effective_trust = if unrestricted && trust == WorkspaceTrust::Untrusted {
+            WorkspaceTrust::TrustedOnce
+        } else {
+            trust
+        };
+        self.descriptors
+            .iter()
+            .cloned()
+            .map(|mut descriptor| {
+                if descriptor.available
+                    && !effective_trust.permits_project_execution()
+                    && !untrusted_tool_allowed(&descriptor.name)
+                {
+                    descriptor.available = false;
+                    descriptor.unavailable_reason = Some(format!(
+                        "tool {} is blocked until the workspace is trusted",
+                        descriptor.name
+                    ));
+                }
+                descriptor
+            })
+            .collect()
+    }
+
     pub fn execute(
         &self,
         workspace: &mut DevelopmentWorkspace,
@@ -92,8 +122,8 @@ impl DevelopmentToolRouter {
             )));
         }
         let descriptor = self
-            .descriptors
-            .iter()
+            .descriptors_for(workspace.trust(), workspace.unrestricted_execution())
+            .into_iter()
             .find(|descriptor| descriptor.name == call.name)
             .ok_or_else(|| DevelopmentError::NotFound(format!("tool {}", call.name)))?;
         if !descriptor.available {
@@ -104,18 +134,7 @@ impl DevelopmentToolRouter {
                     .unwrap_or_else(|| format!("tool {} is unavailable", call.name)),
             ));
         }
-        if workspace.trust() == WorkspaceTrust::Untrusted
-            && !workspace.unrestricted_execution()
-            && !untrusted_tool_allowed(&call.name)
-        {
-            return Err(DevelopmentError::Conflict(format!(
-                "tool {} is blocked until the workspace is trusted",
-                call.name
-            )));
-        }
-        if descriptor.mutating
-            && (!context.authorization.allow_mutation || !context.authorization.confirmed)
-        {
+        if descriptor.mutating && !context.authorization.permits_mutation() {
             return Err(DevelopmentError::Conflict(format!(
                 "tool {} requires mutation authority and confirmation",
                 call.name
@@ -264,8 +283,7 @@ impl DevelopmentToolRouter {
                 )
                 .map_err(DevelopmentError::InvalidInput)?;
                 if sandbox == crate::external_agents::ExternalSandbox::WorkspaceWrite
-                    && (!context.authorization.allow_mutation
-                        || !context.authorization.confirmed)
+                    && !context.authorization.permits_mutation()
                 {
                     return Err(DevelopmentError::Conflict(
                         "workspace-write delegation requires explicit mutation authority and confirmation"
@@ -284,8 +302,8 @@ impl DevelopmentToolRouter {
                         prompt: string("prompt")?.into(),
                         sandbox,
                         timeout: Duration::from_secs(timeout),
-                        allow_mutation: context.authorization.allow_mutation
-                            && context.authorization.confirmed,
+                        allow_mutation: context.authorization.allow_mutation,
+                        confirmed: context.authorization.confirmed,
                     },
                 )
                 .map_err(DevelopmentError::Process)?;
@@ -812,9 +830,20 @@ impl DevelopmentToolRouter {
                 let kind = parse_kernel_kind(string("kind")?)?;
                 let name = string("name")?;
                 let capabilities = string_array_or_empty(call, "capabilities")?;
-                let mutation_authority = boolean(call, "mutationAuthority", false)
-                    && context.authorization.allow_mutation
-                    && context.authorization.confirmed;
+                let requested_mutation_authority = boolean(call, "mutationAuthority", false);
+                let has_mutating_capability = capabilities.iter().any(|capability| {
+                    workspace
+                        .tool_descriptors()
+                        .iter()
+                        .any(|descriptor| descriptor.name == *capability && descriptor.mutating)
+                });
+                if has_mutating_capability && !requested_mutation_authority {
+                    return Err(DevelopmentError::Conflict(
+                        "mutating kernel capabilities require mutation authority".into(),
+                    ));
+                }
+                let mutation_authority = requested_mutation_authority
+                    && context.authorization.permits_mutation();
                 map_service(workspace.kernels_mut().start_governed(
                     name,
                     kind,
@@ -1824,8 +1853,10 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
 
 pub(crate) fn tool_requires_mutation(name: &str) -> bool {
     static MUTATING: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
-        service_descriptors()
+        AgentToolGateway::default()
+            .descriptors()
             .into_iter()
+            .chain(service_descriptors())
             .filter(|descriptor| descriptor.mutating)
             .map(|descriptor| descriptor.name)
             .collect()

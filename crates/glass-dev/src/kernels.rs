@@ -259,6 +259,15 @@ impl KernelManager {
         validate_name(name, "kernel")?;
         validate_actor_id(actor_id, "kernel actor")?;
         let capabilities = validate_capabilities(capabilities)?;
+        if !mutation_authority
+            && capabilities
+                .iter()
+                .any(|capability| crate::tools::tool_requires_mutation(capability))
+        {
+            return Err(KernelError::InvalidInput(
+                "mutating kernel capabilities require mutation authority".into(),
+            ));
+        }
         if self.sessions.contains_key(name) {
             return Err(KernelError::InvalidInput(format!(
                 "kernel {name} already exists"
@@ -1148,6 +1157,24 @@ mod tests {
                 .unwrap();
             assert_eq!(result.tool_calls, 1);
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mutating_kernel_capabilities_require_kernel_mutation_authority() {
+        let root = root();
+        let mut kernels = KernelManager::new(&root).unwrap();
+        let error = kernels
+            .start_governed(
+                "write-denied",
+                KernelKind::Sql,
+                "kernel:write-denied",
+                &["glass.file.write".into()],
+                false,
+            )
+            .expect_err("mutating capabilities need explicit kernel mutation authority");
+        assert!(error.to_string().contains("mutation authority"));
+        assert!(kernels.snapshot("write-denied").is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
 

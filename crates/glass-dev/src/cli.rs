@@ -75,6 +75,7 @@ pub fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliResult<()
                 sandbox,
                 timeout: Duration::from_secs(*timeout_secs),
                 allow_mutation: *allow_mutation || unrestricted,
+                confirmed: *yes || unrestricted,
             })?;
         print_json(&result)?;
         if !result.success {
@@ -204,7 +205,19 @@ pub fn dispatch_harness(action: &HarnessCommand) -> CliResult<()> {
     Ok(())
 }
 
-pub fn dispatch_project(action: &ProjectCommand) -> CliResult<()> {
+pub fn dispatch_project(
+    action: &ProjectCommand,
+    allow_mutation: bool,
+    confirmed: bool,
+) -> CliResult<()> {
+    if project_command_requires_mutation(action)
+        && !crate::development::ToolAuthorization::factors_permit_mutation(
+            allow_mutation,
+            confirmed,
+        )
+    {
+        return Err("project operation requires --allow-mutation and --yes (or --yolo)".into());
+    }
     match action {
         ProjectCommand::Inspect { root } => {
             let workspace = ProjectWorkspace::open(root)?;
@@ -257,10 +270,7 @@ pub fn dispatch_project(action: &ProjectCommand) -> CliResult<()> {
             workspace.rename_path(from, to, Actor::local())?;
             print_json(&serde_json::json!({"from": from, "to": to, "renamed": true}))?;
         }
-        ProjectCommand::Delete { root, path, yes } => {
-            if !yes {
-                return Err("project delete requires --yes confirmation".into());
-            }
+        ProjectCommand::Delete { root, path } => {
             let mut workspace = ProjectWorkspace::open(root)?;
             workspace.delete_path(path, Actor::local())?;
             print_json(&serde_json::json!({"path": path, "deleted": true}))?;
@@ -470,6 +480,36 @@ pub fn dispatch_project(action: &ProjectCommand) -> CliResult<()> {
     Ok(())
 }
 
+fn project_command_requires_mutation(action: &ProjectCommand) -> bool {
+    match action {
+        ProjectCommand::Edit { .. }
+        | ProjectCommand::Mkdir { .. }
+        | ProjectCommand::Rename { .. }
+        | ProjectCommand::Delete { .. }
+        | ProjectCommand::Diagnostics { .. }
+        | ProjectCommand::Run { .. }
+        | ProjectCommand::Test { .. }
+        | ProjectCommand::Lint { .. }
+        | ProjectCommand::Link { .. }
+        | ProjectCommand::Breakpoint { .. }
+        | ProjectCommand::Attach { .. }
+        | ProjectCommand::Graph {
+            action: ProjectGraphCommand::Discover,
+            ..
+        }
+        | ProjectCommand::Neovim {
+            action: NeovimCommand::Start { .. },
+            ..
+        }
+        | ProjectCommand::Experiment { .. } => true,
+        ProjectCommand::Process { action, .. } => !matches!(
+            action,
+            ProjectProcessCommand::List | ProjectProcessCommand::Output { .. }
+        ),
+        _ => false,
+    }
+}
+
 fn detected_command(
     detection: &crate::development::ProjectDetection,
     name: &str,
@@ -541,4 +581,35 @@ fn parse_link_provenance(value: &str) -> CliResult<LinkProvenance> {
 fn print_json<T: Serialize + ?Sized>(value: &T) -> CliResult<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod project_authorization_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn direct_project_mutations_require_authority_and_confirmation() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-project-cli-auth-{}-{}",
+            std::process::id(),
+            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let action = ProjectCommand::Mkdir {
+            path: "authorized-dir".into(),
+            root: root.clone(),
+        };
+        for (allow_mutation, confirmed) in [(false, false), (false, true), (true, false)] {
+            let error = dispatch_project(&action, allow_mutation, confirmed)
+                .expect_err("incomplete project authorization must fail");
+            assert!(error.to_string().contains("--allow-mutation and --yes"));
+            assert!(!root.join("authorized-dir").exists());
+        }
+        dispatch_project(&action, true, true).unwrap();
+        assert!(root.join("authorized-dir").is_dir());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

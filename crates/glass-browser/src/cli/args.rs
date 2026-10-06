@@ -404,6 +404,12 @@ pub enum Commands {
     },
     /// Inspect and operate the current project development runtime.
     Project {
+        /// Grant mutation authority to one project operation.
+        #[arg(long, global = true)]
+        allow_mutation: bool,
+        /// Confirm the exact project operation.
+        #[arg(long, global = true)]
+        yes: bool,
         #[command(subcommand)]
         action: ProjectCommand,
     },
@@ -1072,8 +1078,6 @@ pub enum ProjectCommand {
     /// Delete one file or an empty directory after explicit confirmation.
     Delete {
         path: String,
-        #[arg(long)]
-        yes: bool,
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
@@ -1714,6 +1718,45 @@ pub enum CheckpointCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_mutation_authorization_is_available_at_project_scope() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                for args in [
+                    [
+                        "glass",
+                        "project",
+                        "--allow-mutation",
+                        "--yes",
+                        "edit",
+                        "src/main.rs",
+                    ],
+                    [
+                        "glass",
+                        "project",
+                        "edit",
+                        "src/main.rs",
+                        "--allow-mutation",
+                        "--yes",
+                    ],
+                ] {
+                    let cli = Cli::try_parse_from(args).unwrap();
+                    assert!(matches!(
+                        cli.command,
+                        Some(Commands::Project {
+                            allow_mutation: true,
+                            yes: true,
+                            action: ProjectCommand::Edit { .. },
+                        })
+                    ));
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     fn flag_pair(flags: &[String], flag: &str, value: &str) -> bool {
         flags

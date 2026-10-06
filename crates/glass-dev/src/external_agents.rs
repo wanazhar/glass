@@ -84,6 +84,7 @@ pub struct ExternalAgentRequest {
     pub sandbox: ExternalSandbox,
     pub timeout: Duration,
     pub allow_mutation: bool,
+    pub confirmed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -249,7 +250,12 @@ fn validate_request(request: &ExternalAgentRequest) -> Result<(), String> {
     if request.timeout < MIN_TIMEOUT || request.timeout > MAX_TIMEOUT {
         return Err("temporary-agent timeout must be between 1 second and 1 hour".into());
     }
-    if request.sandbox == ExternalSandbox::WorkspaceWrite && !request.allow_mutation {
+    if request.sandbox == ExternalSandbox::WorkspaceWrite
+        && !crate::development::ToolAuthorization::factors_permit_mutation(
+            request.allow_mutation,
+            request.confirmed,
+        )
+    {
         return Err(
             "workspace-write delegation requires explicit mutation authority and confirmation"
                 .into(),
@@ -532,6 +538,7 @@ mod tests {
             sandbox: ExternalSandbox::ReadOnly,
             timeout: Duration::from_millis(999),
             allow_mutation: false,
+            confirmed: false,
         };
         assert!(
             validate_request(&request)
@@ -541,19 +548,59 @@ mod tests {
     }
 
     #[test]
-    fn workspace_write_requires_authority() {
-        let request = ExternalAgentRequest {
-            harness: "codex".into(),
+    fn workspace_write_requires_both_authorization_factors() {
+        for (allow_mutation, confirmed) in [(false, false), (false, true), (true, false)] {
+            let request = ExternalAgentRequest {
+                harness: "unsupported".into(),
+                root: PathBuf::from("."),
+                prompt: "edit the failing test".into(),
+                sandbox: ExternalSandbox::WorkspaceWrite,
+                timeout: Duration::from_secs(30),
+                allow_mutation,
+                confirmed,
+            };
+            let error = validate_request(&request)
+                .expect_err("incomplete workspace-write authorization must fail");
+            assert!(error.contains("explicit mutation authority and confirmation"));
+        }
+
+        let authorized = ExternalAgentRequest {
+            harness: "unsupported".into(),
             root: PathBuf::from("."),
             prompt: "edit the failing test".into(),
             sandbox: ExternalSandbox::WorkspaceWrite,
             timeout: Duration::from_secs(30),
-            allow_mutation: false,
+            allow_mutation: true,
+            confirmed: true,
         };
-        assert!(
-            validate_request(&request)
-                .expect_err("workspace writes without authority must fail")
-                .contains("explicit mutation authority")
-        );
+        assert!(validate_request(&authorized).is_ok());
+    }
+
+    #[test]
+    fn public_delegate_checks_both_factors_before_resolving_harness() {
+        for (allow_mutation, confirmed) in [(false, false), (false, true), (true, false)] {
+            let error = delegate(ExternalAgentRequest {
+                harness: "unsupported".into(),
+                root: std::env::temp_dir(),
+                prompt: "edit the failing test".into(),
+                sandbox: ExternalSandbox::WorkspaceWrite,
+                timeout: Duration::from_secs(30),
+                allow_mutation,
+                confirmed,
+            })
+            .expect_err("direct library delegation must reject incomplete authorization");
+            assert!(error.contains("explicit mutation authority and confirmation"));
+        }
+        let error = delegate(ExternalAgentRequest {
+            harness: "unsupported".into(),
+            root: std::env::temp_dir(),
+            prompt: "edit the failing test".into(),
+            sandbox: ExternalSandbox::WorkspaceWrite,
+            timeout: Duration::from_secs(30),
+            allow_mutation: true,
+            confirmed: true,
+        })
+        .expect_err("unknown harness should be rejected after authorization");
+        assert!(error.contains("unsupported temporary agent"));
     }
 }

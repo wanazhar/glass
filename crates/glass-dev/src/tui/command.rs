@@ -735,6 +735,14 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
     let Some(command) = parts.next() else {
         return Ok("Command palette closed".into());
     };
+    if !state.may_leave_trust_surface()
+        && !matches!(
+            command,
+            "trust" | "view" | "help" | "?" | "quit" | "q" | "a" | "actions"
+        )
+    {
+        return Err("choose Open untrusted or trust the workspace before running commands".into());
+    }
     match command {
         "search" => {
             let mut args = vec!["search"];
@@ -785,7 +793,13 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
         }
         "view" => {
             let name = parts.next().ok_or("view requires a surface")?;
-            state.surface = parse_surface(name).ok_or("unknown surface")?;
+            let surface = parse_surface(name).ok_or("unknown surface")?;
+            if surface != DevSurface::Trust && !state.may_leave_trust_surface() {
+                return Err(
+                    "choose Open untrusted or trust the workspace before leaving Trust".into(),
+                );
+            }
+            state.show_surface(surface);
             Ok(format!("Opened {}", state.surface.label()))
         }
         "trust" => execute_trust(state, parts.collect()),

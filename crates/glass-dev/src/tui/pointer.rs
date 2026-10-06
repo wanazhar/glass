@@ -139,6 +139,7 @@ pub fn hit_test(state: &DevTuiState, column: u16, row: u16) -> HitRegion {
         header_rows(state),
         column,
         row,
+        state.surface == DevSurface::Trust,
     ) {
         return HitRegion::Surface(surface);
     }
@@ -188,6 +189,7 @@ fn navigation_surface_at(
     header_height: u16,
     column: u16,
     row: u16,
+    trust_surface: bool,
 ) -> Option<DevSurface> {
     let nav_width = match responsive {
         ResponsiveClass::Desktop => 24,
@@ -198,9 +200,16 @@ fn navigation_surface_at(
     if column >= nav_width || row < first_item_row {
         return None;
     }
-    DevSurface::PRIMARY
-        .into_iter()
-        .nth(usize::from(row - first_item_row))
+    let index = usize::from(row - first_item_row);
+    if trust_surface {
+        if index == 0 {
+            Some(DevSurface::Trust)
+        } else {
+            DevSurface::PRIMARY.get(index - 1).copied()
+        }
+    } else {
+        DevSurface::PRIMARY.get(index).copied()
+    }
 }
 
 fn apply_select(state: &mut DevTuiState, hit: &HitRegion) {
@@ -315,13 +324,54 @@ mod tests {
     use glass_browser::cli::args::TuiLayout;
 
     #[test]
+    fn trust_sidebar_row_matches_the_highlighted_prompt() {
+        let root = std::env::temp_dir().join(format!("glass-trust-hit-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("glass.toml"),
+            "[tools.probe]\ndescription='probe'\ncommand='echo unsafe'\n",
+        )
+        .unwrap();
+        let mut state = DevTuiState::open(&root, TuiLayout::Desktop).unwrap();
+        state.terminal_width = 140;
+        state.terminal_height = 40;
+        assert_eq!(state.surface, DevSurface::Trust);
+
+        assert_eq!(
+            hit_test(&state, 2, 3),
+            HitRegion::Surface(DevSurface::Trust)
+        );
+        assert_eq!(
+            hit_test(&state, 2, 4),
+            HitRegion::Surface(DevSurface::Agent)
+        );
+        let mut pointer = PointerState::default();
+        pointer.handle(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 2,
+                row: 4,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            },
+            Instant::now(),
+        );
+        assert_eq!(state.surface, DevSurface::Trust);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn footer_click_is_the_chat_dock() {
         let root = std::env::temp_dir().join(format!("glass-hit-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop).unwrap();
         state.terminal_width = 140;
         state.terminal_height = 40;
-        state.snapshot_trust_label = "trusted".into();
+        state
+            .ws_mut()
+            .unwrap()
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
+            .unwrap();
         state.agent_readiness = format!(
             "✓ Ready · Node ✓ · SDK {} · auth ✓",
             crate::pi_runtime::PINNED_PI_SDK_VERSION

@@ -853,8 +853,11 @@ impl ProjectWorkspace {
         path: &str,
         actor: Actor,
     ) -> DevelopmentResult<EditorBuffer> {
-        let content = self.read_file(path)?;
         let (_, relative) = self.resolve_path(path, false)?;
+        if let Some(existing) = self.buffers.get(&relative) {
+            return Ok(existing.clone());
+        }
+        let content = self.read_file(path)?;
         let buffer = EditorBuffer {
             path: relative.clone(),
             original_hash: hash(&content),
@@ -869,12 +872,39 @@ impl ProjectWorkspace {
         Ok(buffer)
     }
 
+    pub(crate) fn reload_buffer_from_disk(
+        &mut self,
+        path: &str,
+        actor: Actor,
+    ) -> DevelopmentResult<EditorBuffer> {
+        let content = self.read_file(path)?;
+        let (_, relative) = self.resolve_path(path, false)?;
+        let buffer = EditorBuffer {
+            path: relative.clone(),
+            original_hash: hash(&content),
+            content,
+            dirty: false,
+            cursor_line: 1,
+            cursor_column: 1,
+            selection: None,
+            actor,
+        };
+        self.buffers.insert(relative.clone(), buffer.clone());
+        self.undo.remove(&relative);
+        self.redo.remove(&relative);
+        Ok(buffer)
+    }
+
     pub fn buffers(&self) -> impl Iterator<Item = &EditorBuffer> {
         self.buffers.values()
     }
 
     pub fn buffer(&self, path: &str) -> Option<&EditorBuffer> {
         self.buffers.get(path)
+    }
+
+    pub(crate) fn normalize_existing_file_path(&self, path: &str) -> DevelopmentResult<String> {
+        self.resolve_path(path, false).map(|(_, relative)| relative)
     }
 
     pub(crate) fn edit_buffer(
@@ -1598,6 +1628,7 @@ impl ProjectWorkspace {
 
 fn portable_relative_path(path: &Path) -> String {
     path.components()
+        .filter(|component| !matches!(component, Component::CurDir))
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
@@ -2030,6 +2061,37 @@ mod tests {
         .unwrap();
         fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
         root
+    }
+
+    #[test]
+    fn opening_a_path_alias_reuses_the_existing_dirty_buffer() {
+        let root = fixture();
+        let original = "fn main() {}\n";
+        let unsaved = "fn main() { /* unsaved */ }\n";
+        let mut project = ProjectWorkspace::open(&root).unwrap();
+        project.open_buffer("src/main.rs", Actor::local()).unwrap();
+        project
+            .edit_buffer("src/main.rs", unsaved.into(), Actor::local())
+            .unwrap();
+
+        let reopened = project
+            .open_buffer("src/./main.rs", Actor::local())
+            .unwrap();
+
+        assert_eq!(reopened.path, "src/main.rs");
+        assert!(reopened.dirty);
+        assert_eq!(reopened.content, unsaved);
+        assert_eq!(
+            fs::read_to_string(root.join("src/main.rs")).unwrap(),
+            original
+        );
+        assert_eq!(
+            project
+                .normalize_existing_file_path("src/./main.rs")
+                .unwrap(),
+            "src/main.rs"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

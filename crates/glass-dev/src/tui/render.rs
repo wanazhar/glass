@@ -1582,7 +1582,14 @@ fn compact_multiline(text: &str, width: u16) -> String {
 }
 
 fn render_navigation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let items = DevSurface::PRIMARY
+    let surfaces = if state.surface == DevSurface::Trust {
+        std::iter::once(DevSurface::Trust)
+            .chain(DevSurface::PRIMARY)
+            .collect::<Vec<_>>()
+    } else {
+        DevSurface::PRIMARY.to_vec()
+    };
+    let items = surfaces
         .into_iter()
         .map(|surface| {
             let selected = surface == state.surface;
@@ -4330,6 +4337,14 @@ mod tests {
         state
     }
 
+    fn trust_workspace_once(state: &mut DevTuiState) {
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
+            .expect("trust temporary workspace");
+    }
+
     fn rendered(state: &DevTuiState, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -4806,6 +4821,17 @@ mod tests {
     }
 
     #[test]
+    fn trust_prompt_is_highlighted_in_desktop_and_compact_navigation() {
+        let mut desktop = state(TuiLayout::Desktop);
+        desktop.surface = DevSurface::Trust;
+        assert!(rendered(&desktop, 140, 40).contains("›  Trust"));
+
+        let mut compact = state(TuiLayout::Compact);
+        compact.surface = DevSurface::Trust;
+        assert!(rendered(&compact, 64, 24).contains("›  Trust"));
+    }
+
+    #[test]
     fn progress_overlays_and_visual_fallback_diagnostics_are_visible() {
         let mut state = state(TuiLayout::Desktop);
         state.surface = DevSurface::Agent;
@@ -5253,6 +5279,7 @@ mod tests {
     #[test]
     fn code_surface_opens_edits_navigates_undoes_redoes_and_saves() {
         let mut state = state(TuiLayout::Desktop);
+        trust_workspace_once(&mut state);
         state.surface = DevSurface::Code;
         state.selected_file = state
             .files
@@ -5308,6 +5335,7 @@ mod tests {
     #[test]
     fn selected_file_opens_as_full_screen_editor_with_cursor_and_exit_help() {
         let mut state = state(TuiLayout::Desktop);
+        trust_workspace_once(&mut state);
         state.surface = DevSurface::Code;
         state.selected_file = state
             .files
@@ -5348,6 +5376,7 @@ mod tests {
     #[test]
     fn fullscreen_editor_keeps_projected_content_when_workspace_is_busy() {
         let mut state = state(TuiLayout::Desktop);
+        trust_workspace_once(&mut state);
         state.surface = DevSurface::Code;
         state.selected_file = state
             .files

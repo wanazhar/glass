@@ -69,6 +69,42 @@ pub struct TuiVisualOptions {
     pub fit: TuiLiveFit,
 }
 
+fn handle_untrusted_trust_shortcut(
+    state: &mut DevTuiState,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> bool {
+    if state.surface != DevSurface::Trust || state.trust_allows_execution() {
+        return false;
+    }
+
+    match (code, modifiers) {
+        (KeyCode::Char('g'), value) if value.contains(KeyModifiers::CONTROL) => {
+            state.jump_to_app_keep_dock();
+            true
+        }
+        (KeyCode::Char('p'), value)
+            if value.contains(KeyModifiers::CONTROL) && value.contains(KeyModifiers::SHIFT) =>
+        {
+            state.open_palette();
+            true
+        }
+        (KeyCode::Char('p'), value) if value.contains(KeyModifiers::CONTROL) => {
+            state.open_file_picker();
+            true
+        }
+        (KeyCode::Char('k'), value) if value.contains(KeyModifiers::CONTROL) => {
+            state.open_palette();
+            true
+        }
+        (KeyCode::Char('l'), value) if value.contains(KeyModifiers::CONTROL) => {
+            state.focus_composer_dock();
+            true
+        }
+        _ => false,
+    }
+}
+
 const KITTY_CLEAR: &[u8] = b"\x1b_Ga=d,d=A\x1b\\";
 
 struct VisualRuntime {
@@ -732,6 +768,11 @@ pub(crate) fn run_with_browser_policy(
                         }
                     } else {
                         match (key.code, key.modifiers) {
+                            _ if handle_untrusted_trust_shortcut(
+                                &mut state,
+                                key.code,
+                                key.modifiers,
+                            ) => {}
                             (KeyCode::Char('l'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>
                             {
@@ -1377,6 +1418,7 @@ fn navigation_surface_at(
     header_height: u16,
     column: u16,
     row: u16,
+    trust_surface: bool,
 ) -> Option<DevSurface> {
     let nav_width = match responsive {
         ResponsiveClass::Desktop => 24,
@@ -1387,9 +1429,16 @@ fn navigation_surface_at(
     if column >= nav_width || row < first_item_row {
         return None;
     }
-    DevSurface::PRIMARY
-        .into_iter()
-        .nth(usize::from(row - first_item_row))
+    let index = usize::from(row - first_item_row);
+    if trust_surface {
+        if index == 0 {
+            Some(DevSurface::Trust)
+        } else {
+            DevSurface::PRIMARY.get(index - 1).copied()
+        }
+    } else {
+        DevSurface::PRIMARY.get(index).copied()
+    }
 }
 
 fn visual_png(result: &snapshot::VisualJobResult) -> Result<Vec<u8>, String> {
@@ -1589,29 +1638,82 @@ mod tests {
     #[test]
     fn mouse_navigation_maps_rows_inside_the_visible_list() {
         assert_eq!(
-            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 3),
+            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 3, false),
             Some(DevSurface::Agent)
         );
         assert_eq!(
-            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 4),
+            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 4, false),
             Some(DevSurface::Code)
         );
         assert_eq!(
-            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 9),
+            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 9, false),
             Some(DevSurface::Debug)
         );
         assert_eq!(
-            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 2),
+            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 2, false),
             None
         );
         assert_eq!(
-            navigation_surface_at(ResponsiveClass::Desktop, 2, 24, 3),
+            navigation_surface_at(ResponsiveClass::Desktop, 2, 24, 3, false),
             None
         );
-        assert_eq!(navigation_surface_at(ResponsiveClass::Phone, 2, 2, 3), None);
         assert_eq!(
-            navigation_surface_at(ResponsiveClass::Compact, 3, 2, 4),
+            navigation_surface_at(ResponsiveClass::Phone, 2, 2, 3, false),
+            None
+        );
+        assert_eq!(
+            navigation_surface_at(ResponsiveClass::Compact, 3, 2, 4, false),
             Some(DevSurface::Agent)
         );
+        assert_eq!(
+            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 3, true),
+            Some(DevSurface::Trust)
+        );
+        assert_eq!(
+            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 4, true),
+            Some(DevSurface::Agent)
+        );
+    }
+
+    #[test]
+    fn initial_trust_shortcuts_block_app_jump_and_file_picker_submission() {
+        let root =
+            std::env::temp_dir().join(format!("glass-trust-key-routing-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        std::fs::write(
+            root.join("glass.toml"),
+            "[tools.probe]\ndescription='probe'\ncommand='echo unsafe'\n",
+        )
+        .expect("write executable project configuration");
+        std::fs::write(root.join("README.md"), "review only\n").expect("write test file");
+
+        let mut state =
+            DevTuiState::open(&root, TuiLayout::Desktop).expect("open untrusted TUI workspace");
+        assert_eq!(state.surface, DevSurface::Trust);
+        state.files.push("README.md".into());
+
+        assert!(handle_untrusted_trust_shortcut(
+            &mut state,
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL,
+        ));
+        assert!(!state.file_picker_open);
+        assert_eq!(state.surface, DevSurface::Trust);
+
+        // Even if a picker state survives a trust transition, submit cannot
+        // open a project file or replace the Trust surface.
+        state.file_picker_open = true;
+        state.submit_file_picker();
+        assert!(!state.file_picker_open);
+        assert!(state.focused_editor_path.is_empty());
+        assert_eq!(state.surface, DevSurface::Trust);
+
+        assert!(handle_untrusted_trust_shortcut(
+            &mut state,
+            KeyCode::Char('g'),
+            KeyModifiers::CONTROL,
+        ));
+        assert_eq!(state.surface, DevSurface::Trust);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 }

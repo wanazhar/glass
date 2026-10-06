@@ -74,6 +74,9 @@ click.
 - `cargo test -p glass-dev --lib agent_watch_requests_and_reconciles_live_presentation --locked` — passed.
 - `cargo test -p glass-dev --lib visual_request_reconciliation_keeps_runtime_state_and_presentation_aligned --locked` — passed for unavailable-renderer handling.
 - `cargo test -p glass-dev --lib ansi_screenshot_failure_clears_runtime_and_workspace_live_state --locked` — passed.
+- `cargo test -p glass-dev --lib stale_ansi_screenshot_is_ignored_after_live_view_stops --locked` — passed with a valid decoded PNG fixture; a queued success after stop preserves SemanticOnly presentation and the stopped status.
+- `cargo test -p glass-dev --lib failed_herdr_worker_stays_disabled_after_stopped_and_rejects_restart --locked` — passed; the terminal failure survives the subsequent Stopped event, and a later enable request remains SemanticOnly with the failure reason.
+- `cargo test -p glass-dev --lib stopped_herdr_worker_rejects_restart_with_a_persistent_reason --locked` — passed; a normal terminal Stopped event also prevents retry against the dead worker.
 - `cargo test -p glass-dev --lib typed_open_in_palette_runs_instead_of_fuzzy_action --locked` — passed.
 - `cargo check -p glass-dev --lib --bins --locked` — passed; `glass-browser` reported its existing dead-code warnings.
 - `cargo build -p glass-dev --bin glass --locked` and `cargo build -p glass-browser --bin glass-browser --locked` — passed for documentation inventory prerequisites.

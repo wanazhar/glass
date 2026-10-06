@@ -343,6 +343,16 @@ impl VisualRuntime {
             .map(TerminalGraphics::shutdown)
             .unwrap_or_default()
     }
+
+    fn disable_herdr(&mut self, reason: String) -> bool {
+        if !matches!(self.path, VisualPath::Herdr) {
+            return false;
+        }
+        self.herdr.take();
+        self.live = false;
+        self.path = VisualPath::SemanticOnly { reason };
+        true
+    }
 }
 
 fn reconcile_browser_visual_request(state: &mut DevTuiState, visual: &mut VisualRuntime) {
@@ -1069,31 +1079,7 @@ pub(crate) fn run_with_browser_policy(
         let visual_events = visual.poll_events();
         render_requested |= !visual_events.is_empty();
         for event in visual_events {
-            match event {
-                HerdrEvent::Connected if visual.live => {
-                    state.browser_workspace.state_mut().presentation =
-                        glass_browser::browser_workspace::BrowserPresentationPath::Herdr;
-                    state.browser_workspace.state_mut().presentation_reason =
-                        Some("Herdr pane graphics stream connected".into());
-                    state.status = "Live view ready · Herdr pane graphics".into();
-                }
-                HerdrEvent::Failed(reason) => {
-                    state.request_browser_visual_failure(format!(
-                        "Herdr graphics unavailable: {reason}"
-                    ));
-                    reconcile_browser_visual_request(&mut state, &mut visual);
-                }
-                HerdrEvent::Stopped if visual.live => {
-                    state.request_browser_visual_live(
-                        false,
-                        Some("Live view stopped · semantic inspection remains available".into()),
-                    );
-                    reconcile_browser_visual_request(&mut state, &mut visual);
-                    state.browser_workspace.state_mut().presentation_reason =
-                        Some("Herdr pane graphics stream stopped".into());
-                }
-                HerdrEvent::Connected | HerdrEvent::Stopped => {}
-            }
+            handle_herdr_event(&mut state, &mut visual, event);
         }
         state.flush_pending_trust();
         state.flush_pending_open_file();
@@ -1245,9 +1231,7 @@ pub(crate) fn run_with_browser_policy(
                     }
                 },
                 VisualPath::Kitty => {}
-                VisualPath::Ansi => {
-                    state.apply_visual_job_result_with_fit(result, frame_fit(visual.fit));
-                }
+                VisualPath::Ansi => apply_ansi_visual_result(&mut state, &visual, result),
                 VisualPath::SemanticOnly { .. } => {}
                 VisualPath::Herdr => {}
             }
@@ -1389,6 +1373,47 @@ fn visual_png(result: &snapshot::VisualJobResult) -> Result<Vec<u8>, String> {
     base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .map_err(|error| format!("screenshot payload was not valid base64: {error}"))
+}
+
+fn apply_ansi_visual_result(
+    state: &mut DevTuiState,
+    visual: &VisualRuntime,
+    result: snapshot::VisualJobResult,
+) {
+    if visual.live {
+        state.apply_visual_job_result_with_fit(result, frame_fit(visual.fit));
+    }
+}
+
+fn handle_herdr_event(state: &mut DevTuiState, visual: &mut VisualRuntime, event: HerdrEvent) {
+    match event {
+        HerdrEvent::Connected if visual.live => {
+            state.browser_workspace.state_mut().presentation =
+                glass_browser::browser_workspace::BrowserPresentationPath::Herdr;
+            state.browser_workspace.state_mut().presentation_reason =
+                Some("Herdr pane graphics stream connected".into());
+            state.status = "Live view ready · Herdr pane graphics".into();
+        }
+        HerdrEvent::Failed(reason) => {
+            let failure = format!("Herdr graphics unavailable: {reason}");
+            if visual.disable_herdr(failure.clone()) {
+                state.request_browser_visual_failure(failure);
+                reconcile_browser_visual_request(state, visual);
+            }
+        }
+        HerdrEvent::Stopped => {
+            let reason = "Herdr pane graphics stream stopped";
+            if visual.disable_herdr(reason.into()) {
+                state.request_browser_visual_live(
+                    false,
+                    Some("Live view stopped · semantic inspection remains available".into()),
+                );
+                reconcile_browser_visual_request(state, visual);
+                state.browser_workspace.state_mut().presentation_reason = Some(reason.into());
+            }
+        }
+        HerdrEvent::Connected => {}
+    }
 }
 
 fn run_agent_login(state: &mut DevTuiState, guard: &mut TerminalGuard) {
@@ -1599,6 +1624,139 @@ mod tests {
             kitty_pane: None,
             kitty_drawn: false,
         }
+    }
+
+    #[test]
+    fn stale_ansi_screenshot_is_ignored_after_live_view_stops() {
+        use base64::Engine as _;
+
+        let (mut state, root) = overlay_test_state();
+        let stopped_status = "Live view stopped · semantic inspection remains available";
+        let stopped_reason = "visual presentation is off; semantic inspection remains available";
+        state.status = stopped_status.into();
+        state.browser_visual_live = false;
+        let browser = state.browser_workspace.state_mut();
+        browser.presentation =
+            glass_browser::browser_workspace::BrowserPresentationPath::SemanticOnly;
+        browser.presentation_reason = Some(stopped_reason.into());
+
+        let png = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
+            .expect("decode PNG fixture");
+        let mut canvas = glass_browser::terminal_graphics::AnsiCanvas::default();
+        glass_browser::tui::live_view::AnsiPane::from_png(
+            &mut canvas,
+            &png,
+            8,
+            4,
+            glass_browser::terminal_graphics::FrameFit::Contain,
+        )
+        .expect("fixture is a successful ANSI screenshot");
+
+        let mut visual = test_visual_runtime(VisualPath::Ansi);
+        assert!(!visual.live);
+        apply_ansi_visual_result(
+            &mut state,
+            &visual,
+            snapshot::VisualJobResult {
+                id: 9,
+                columns: 8,
+                rows: 4,
+                result: Ok(serde_json::json!({
+                    "base64": base64::engine::general_purpose::STANDARD.encode(png)
+                })),
+            },
+        );
+        reconcile_browser_visual_request(&mut state, &mut visual);
+
+        assert_eq!(
+            state.browser_workspace.state().presentation,
+            glass_browser::browser_workspace::BrowserPresentationPath::SemanticOnly
+        );
+        assert_eq!(
+            state
+                .browser_workspace
+                .state()
+                .presentation_reason
+                .as_deref(),
+            Some(stopped_reason)
+        );
+        assert_eq!(state.status, stopped_status);
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn failed_herdr_worker_stays_disabled_after_stopped_and_rejects_restart() {
+        let (mut state, root) = overlay_test_state();
+        let mut visual = test_visual_runtime(VisualPath::Herdr);
+        visual.live = true;
+
+        handle_herdr_event(
+            &mut state,
+            &mut visual,
+            HerdrEvent::Failed("socket closed".into()),
+        );
+        let failure_reason = "Herdr graphics unavailable: socket closed";
+        assert!(!visual.live);
+        assert!(matches!(
+            &visual.path,
+            VisualPath::SemanticOnly { reason } if reason == failure_reason
+        ));
+
+        handle_herdr_event(&mut state, &mut visual, HerdrEvent::Stopped);
+        state.request_browser_visual_live(true, Some("starting again".into()));
+        reconcile_browser_visual_request(&mut state, &mut visual);
+
+        assert!(!visual.live);
+        assert!(!state.browser_visual_live);
+        assert_eq!(
+            state.browser_workspace.state().presentation,
+            glass_browser::browser_workspace::BrowserPresentationPath::SemanticOnly
+        );
+        assert_eq!(
+            state
+                .browser_workspace
+                .state()
+                .presentation_reason
+                .as_deref(),
+            Some(failure_reason)
+        );
+        assert!(state.status.contains(failure_reason));
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn stopped_herdr_worker_rejects_restart_with_a_persistent_reason() {
+        let (mut state, root) = overlay_test_state();
+        let mut visual = test_visual_runtime(VisualPath::Herdr);
+        visual.live = true;
+
+        handle_herdr_event(&mut state, &mut visual, HerdrEvent::Stopped);
+        state.request_browser_visual_live(true, Some("starting again".into()));
+        reconcile_browser_visual_request(&mut state, &mut visual);
+
+        assert!(!visual.live);
+        assert!(!state.browser_visual_live);
+        assert_eq!(
+            state.browser_workspace.state().presentation,
+            glass_browser::browser_workspace::BrowserPresentationPath::SemanticOnly
+        );
+        assert_eq!(
+            state
+                .browser_workspace
+                .state()
+                .presentation_reason
+                .as_deref(),
+            Some("Herdr pane graphics stream stopped")
+        );
+        assert!(state.status.contains("Herdr pane graphics stream stopped"));
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
     }
 
     #[test]

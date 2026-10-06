@@ -1561,7 +1561,7 @@ impl DevTuiState {
         );
     }
 
-    pub(crate) fn submit_pi_command(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+    pub(crate) fn submit_pi_command(&mut self) {
         if self.background_action_running() {
             self.status =
                 "Pi command kept in the modal · another background action is running".into();
@@ -1585,25 +1585,27 @@ impl DevTuiState {
         if let Some(agent) = self.selected_agent.as_ref() {
             arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
         }
-        let (call, context) = match self.tool_request("glass.agent.slash", arguments, false) {
+        let (call, context) = match self.tool_request("glass.agent.slash", arguments, true) {
             Ok(request) => request,
             Err(error) => {
                 self.status = format!("Pi /{command} unavailable: {error}");
                 return;
             }
         };
-        match worker.submit_tool(call, context) {
-            Ok(id) => {
-                self.running_tool_job = Some(id);
-                self.pi_command_pending = Some(command.to_string());
-                self.pi_command_pending_args = args.clone();
-                self.pi_command_mode = false;
-                self.pi_command_input.clear();
-                self.pi_command_cursor = 0;
-                self.pi_command_selection = 0;
-                self.pi_command_scroll = 0;
-                self.status = format!("Pi /{command} · running in resident session…");
-                worker.request_conversation();
+        self.pi_command_pending = Some(command.to_string());
+        self.pi_command_pending_args = args;
+        self.pi_command_mode = false;
+        self.pi_command_input.clear();
+        self.pi_command_cursor = 0;
+        self.pi_command_selection = 0;
+        self.pi_command_scroll = 0;
+        match self.queue_or_confirm(call, context, format!("Run Pi /{command}")) {
+            Ok(true) => {
+                self.status = format!("Pi /{command} queued");
+            }
+            Ok(false) => {
+                self.status =
+                    format!("Pi /{command} awaits confirmation · Enter approves · Esc cancels");
             }
             Err(error) => {
                 self.pi_command_pending = None;
@@ -3426,7 +3428,7 @@ impl DevTuiState {
             self.pi_command_input = raw;
             self.pi_command_cursor = self.pi_command_input.len();
             self.composer_input.clear();
-            self.submit_pi_command(worker);
+            self.submit_pi_command();
             return;
         }
         let rest = parts.collect::<Vec<_>>();
@@ -3508,7 +3510,7 @@ impl DevTuiState {
                 self.pi_command_input = raw;
                 self.pi_command_cursor = self.pi_command_input.len();
                 self.composer_input.clear();
-                self.submit_pi_command(worker);
+                self.submit_pi_command();
                 return;
             }
         };
@@ -3531,6 +3533,7 @@ impl DevTuiState {
         let Some(pending) = self.pending_confirmation.take() else {
             return;
         };
+        let is_pi_command = pending.call.name == "glass.agent.slash";
         match worker.submit_tool(pending.call, pending.context) {
             Ok(id) => {
                 self.running_tool_job = Some(id);
@@ -3538,8 +3541,17 @@ impl DevTuiState {
                     "Running {} · Esc keeps the workspace responsive",
                     pending.summary
                 );
+                if is_pi_command {
+                    worker.request_conversation();
+                }
             }
-            Err(error) => self.status = format!("Could not queue mutation: {error}"),
+            Err(error) => {
+                if is_pi_command {
+                    self.pi_command_pending = None;
+                    self.pi_command_pending_args.clear();
+                }
+                self.status = format!("Could not queue mutation: {error}");
+            }
         }
     }
 
@@ -3707,12 +3719,22 @@ impl DevTuiState {
         let Some((call, context)) = self.queued_tool_request.take() else {
             return;
         };
+        let is_pi_command = call.name == "glass.agent.slash";
         match worker.submit_tool(call, context) {
             Ok(id) => {
                 self.running_tool_job = Some(id);
                 self.status.push_str(" · running in background");
+                if is_pi_command {
+                    worker.request_conversation();
+                }
             }
-            Err(error) => self.status = format!("Could not queue tool: {error}"),
+            Err(error) => {
+                if is_pi_command {
+                    self.pi_command_pending = None;
+                    self.pi_command_pending_args.clear();
+                }
+                self.status = format!("Could not queue tool: {error}");
+            }
         }
     }
 
@@ -4129,6 +4151,10 @@ impl DevTuiState {
         self.pending_browser_navigation = None;
         self.pending_page_entity = None;
         if let Some(pending) = self.pending_confirmation.take() {
+            if pending.call.name == "glass.agent.slash" {
+                self.pi_command_pending = None;
+                self.pi_command_pending_args.clear();
+            }
             self.status = format!("Denied · {}", pending.summary);
         }
     }
@@ -9883,6 +9909,35 @@ mod tests {
         assert!(!state.quit_confirmation);
         assert!(state.quit);
         assert_eq!(state.status, "Closing Glass Dev");
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn pi_slash_command_waits_for_mutation_confirmation() {
+        let root =
+            std::env::temp_dir().join(format!("glass-tui-pi-slash-confirm-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.pi_command_input = "/new".into();
+
+        state.submit_pi_command();
+
+        let pending = state
+            .pending_confirmation
+            .as_ref()
+            .expect("slash command should require confirmation");
+        assert_eq!(pending.call.name, "glass.agent.slash");
+        assert_eq!(pending.call.arguments["name"], "new");
+        assert!(pending.context.authorization.permits_mutation());
+        assert_eq!(state.pi_command_pending.as_deref(), Some("new"));
+        assert!(state.queued_tool_request.is_none());
+
+        state.deny_confirmation();
+        assert!(state.pending_confirmation.is_none());
+        assert!(state.pi_command_pending.is_none());
+        assert!(state.pi_command_pending_args.is_empty());
 
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }

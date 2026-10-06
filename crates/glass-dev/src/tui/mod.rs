@@ -526,7 +526,7 @@ pub(crate) fn run(
                     } else if state.pi_command_mode {
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => state.close_pi_command_palette(),
-                            (KeyCode::Enter, _) => state.submit_pi_command(&mut worker),
+                            (KeyCode::Enter, _) => state.submit_pi_command(),
                             (KeyCode::Backspace, _) => state.pi_command_backspace(),
                             (KeyCode::Char('u'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>

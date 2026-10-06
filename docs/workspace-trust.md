@@ -54,8 +54,10 @@ without `--yolo` still requires the normal local trust decision.
 Public custom-command execution requires both factors in its
 `ToolAuthorization`. Raw project, Git, and kernel mutation methods are
 crate-private, so external library callers must use the governed workspace
-tool API. Git pushes apply the repository's queried default-branch policy at
-the Git service boundary as well as at the tool router, and specify one source
+tool API. Git pushes resolve the actual push remote, including the configured
+branch or repository push-remote preference when no remote is supplied. The
+Git service queries that destination repository's default branch and fails
+closed for unsupported or ambiguous push URLs. It also specifies one source
 and destination ref so local push configuration cannot add extra branches.
 
 Read-only trust APIs are available through the authoritative tool router:

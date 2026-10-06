@@ -36,11 +36,14 @@ shared authorization route rather than changing correct code.
   documented authority and confirmation pair; no adapter is the sole guard.
 - Public custom shell calls carry the pair explicitly; raw project, Git, and
   kernel mutation methods are crate-private behind governed workspace tools.
+- Kernel start schemas expose the explicit `mutationAuthority` capability
+  grant, while the router independently enforces both authorization factors.
 - Kernel and Git metadata describe the effective operation and protected
   branch policy used by enforcement, including pushes checked against the
-  repository's queried default branch at the Git service boundary. Each push
-  names exactly one source and destination ref so Git push configuration cannot
-  add unchecked branches.
+  actual destination repository's queried default branch at the Git service
+  boundary. Unsupported or ambiguous push remotes fail closed. Each push names
+  exactly one source and destination ref so Git push configuration cannot add
+  unchecked branches.
 - MCP advertises `x-glass-mutating` at the root of each tool input schema.
 - Keep the existing trust and mutation failure modes explicit and fail closed.
 

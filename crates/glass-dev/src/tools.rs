@@ -2032,6 +2032,44 @@ fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
                 "additionalProperties": false
             }),
         )
+    } else if name == "glass.eval.start" {
+        (
+            "Start a persistent kernel with an explicit Glass capability allowlist".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": "^[A-Za-z0-9._-]+$"
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["python", "javascript", "shell", "sql"]
+                    },
+                    "capabilities": {
+                        "type": "array",
+                        "default": [],
+                        "maxItems": 64,
+                        "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "pattern": "^[A-Za-z0-9._-]+$",
+                            "not": {"pattern": "^glass\\.eval\\."}
+                        }
+                    },
+                    "mutationAuthority": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Explicitly grants this kernel mutating capabilities. It does not replace workspace mutation authority or per-call confirmation, which the router checks independently."
+                    }
+                },
+                "required": ["name", "kind"],
+                "additionalProperties": false
+            }),
+        )
     } else {
         (
             format!("Resident Glass Dev operation {name}"),
@@ -2822,7 +2860,12 @@ mod tests {
         let start = ToolCall {
             id: "kernel-1".into(),
             name: "glass.eval.start".into(),
-            arguments: serde_json::json!({"name":"analysis","kind":"sql"}),
+            arguments: serde_json::json!({
+                "name":"analysis",
+                "kind":"sql",
+                "capabilities":["glass.file.write"],
+                "mutationAuthority":true
+            }),
         };
         for (allow_mutation, confirmed) in [(false, false), (false, true), (true, false)] {
             let mut unauthorized = context(&workspace, false);
@@ -2853,12 +2896,51 @@ mod tests {
     }
 
     #[test]
+    fn eval_start_descriptor_exposes_the_separate_kernel_mutation_grant() {
+        let descriptor = DevelopmentToolRouter::default()
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.name == "glass.eval.start")
+            .expect("kernel start descriptor");
+
+        assert!(descriptor.mutating);
+        assert_eq!(
+            descriptor.input_schema["properties"]["kind"]["enum"],
+            json!(["python", "javascript", "shell", "sql"])
+        );
+        assert_eq!(
+            descriptor.input_schema["properties"]["capabilities"]["maxItems"],
+            json!(64)
+        );
+        assert_eq!(
+            descriptor.input_schema["properties"]["capabilities"]["items"]["not"]["pattern"],
+            "^glass\\.eval\\."
+        );
+        assert_eq!(
+            descriptor.input_schema["properties"]["mutationAuthority"]["type"],
+            "boolean"
+        );
+        assert_eq!(
+            descriptor.input_schema["properties"]["mutationAuthority"]["default"],
+            false
+        );
+        assert!(
+            descriptor.input_schema["properties"]["mutationAuthority"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("does not replace workspace mutation authority or per-call confirmation")
+        );
+        assert_eq!(descriptor.input_schema["required"], json!(["name", "kind"]));
+        assert_eq!(descriptor.input_schema["additionalProperties"], false);
+    }
+
+    #[test]
     fn kernel_bindings_reenter_the_same_router_with_dual_provenance() {
         let mut workspace = workspace();
         std::fs::write(workspace.root().join("evidence.txt"), "governed\n").unwrap();
         let router = DevelopmentToolRouter::default();
         let mutation = context(&workspace, true);
-        router
+        let start = router
             .execute(
                 &mut workspace,
                 &ToolCall {
@@ -2867,12 +2949,14 @@ mod tests {
                     arguments: serde_json::json!({
                         "name":"analysis",
                         "kind":"sql",
-                        "capabilities":["glass.file.read","glass.file.write"]
+                        "capabilities":["glass.file.read","glass.file.write"],
+                        "mutationAuthority":true
                     }),
                 },
                 &mutation,
             )
             .unwrap();
+        assert_eq!(start["mutationAuthority"], true);
         let result = router
             .execute(
                 &mut workspace,
@@ -2899,6 +2983,27 @@ mod tests {
         assert_eq!(nested.evidence["initiator"], "embedded:glass-agent");
         assert_eq!(nested.evidence["executor"], "kernel:analysis");
 
+        let write = router
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "kernel-binding-write".into(),
+                    name: "glass.eval.execute".into(),
+                    arguments: serde_json::json!({
+                        "name":"analysis",
+                        "code":r#"GLASS CALL {"id":"sql-2","tool":"glass.file.write","arguments":{"path":"allowed.txt","content":"governed write\n"}}"#
+                    }),
+                },
+                &mutation,
+            )
+            .unwrap();
+        assert_eq!(write["value"]["written"], true);
+        assert_eq!(
+            std::fs::read_to_string(workspace.root().join("allowed.txt")).unwrap(),
+            "governed write\n"
+        );
+
+        let read_only = context(&workspace, false);
         let denied = router.execute(
             &mut workspace,
             &ToolCall {
@@ -2906,10 +3011,10 @@ mod tests {
                 name: "glass.eval.execute".into(),
                 arguments: serde_json::json!({
                     "name":"analysis",
-                    "code":r#"GLASS CALL {"id":"sql-2","tool":"glass.file.write","arguments":{"path":"denied.txt","content":"no"}}"#
+                    "code":r#"GLASS CALL {"id":"sql-3","tool":"glass.file.write","arguments":{"path":"denied.txt","content":"no"}}"#
                 }),
             },
-            &mutation,
+            &read_only,
         );
         assert!(denied.unwrap_err().to_string().contains("mutation"));
         assert!(!workspace.root().join("denied.txt").exists());
@@ -2932,9 +3037,9 @@ mod tests {
                         "capabilities":[
                             "glass.browser.state",
                             "glass.test.results",
-                            "glass.graph.path",
-                            "glass.file.write"
-                        ]
+                            "glass.graph.path"
+                        ],
+                        "mutationAuthority":false
                     }),
                 },
                 &mutation,
@@ -2989,7 +3094,12 @@ mod tests {
             },
             &mutation,
         );
-        assert!(denied.unwrap_err().to_string().contains("mutation"));
+        assert!(
+            denied
+                .unwrap_err()
+                .to_string()
+                .contains("kernel capability glass.file.write was not granted")
+        );
         assert!(!workspace.root().join("denied.py").exists());
 
         router

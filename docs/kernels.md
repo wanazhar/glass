@@ -8,7 +8,8 @@ execution time, and nested Glass calls are bounded.
 ## Capability binding
 
 A kernel starts with an explicit allowlist. An empty list grants no Glass tool
-access:
+access. The `glass.eval.start` schema exposes `mutationAuthority` as a separate
+per-kernel grant. Set it to `true` when the allowlist includes mutating tools:
 
 ```json
 {
@@ -23,8 +24,12 @@ Bindings use the same `DevelopmentToolRouter` as MCP, Pi, the daemon, and TUI.
 The router rechecks workspace generation and current project revision, trust,
 tool availability, mutation authority, confirmation, result size, hooks, graph
 links, and replay events. Kernel code cannot grant itself a capability or
-mutation authority. `glass.eval.*` is never a valid nested capability, and one
-execution is limited to 32 nested calls, preventing recursive kernel dispatch.
+mutation authority. `mutationAuthority: true` grants the kernel permission to
+request its mutating capabilities; it does not supply the separate workspace
+mutation-authority and per-call confirmation factors. The router checks those
+factors for `glass.eval.start` and again for each nested mutating call.
+`glass.eval.*` is never a valid nested capability, and one execution is limited
+to 32 nested calls, preventing recursive kernel dispatch.
 
 Each nested call records both actors:
 

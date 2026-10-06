@@ -8,13 +8,14 @@ schemas supported by an installed server.
 
 ## Current 0.3.14 development-source measurement
 
-On the current checkout, `target/debug/glass` reports:
+The full trusted development catalog, queried with process-local `--yolo`,
+reports:
 
 | Metric | Measured value |
 |---|---:|
 | Negotiated tools | 346 |
-| Serialized `tools` array | 173,741 UTF-8 bytes |
-| Four-bytes-per-token estimate | 43,436 tokens (rounded up) |
+| Serialized `tools` array | 174,396 UTF-8 bytes |
+| Four-bytes-per-token estimate | 43,599 tokens (rounded up) |
 | JSON-RPC framing | excluded |
 
 This is a reproducible local measurement, not a guarantee for another commit,
@@ -33,13 +34,19 @@ Build the exact executable, then run the browser-free probe:
 
 ```console
 cargo build --package glass-dev --all-features --locked
-GLASS_BINARY_PATH=target/debug/glass node benchmarks/schema-scoreboard.mjs
+cat > /tmp/glass-mcp-yolo <<'EOF'
+#!/bin/sh
+exec target/debug/glass --yolo "$@"
+EOF
+chmod +x /tmp/glass-mcp-yolo
+GLASS_BINARY_PATH=/tmp/glass-mcp-yolo node benchmarks/schema-scoreboard.mjs
 ```
 
-The probe starts `glass --mcp`, completes initialization and the initialized
-notification, requests `tools/list`, serializes only the returned `tools`
-array, counts UTF-8 bytes, and divides by four for a conservative model-agnostic
-estimate. It does not start Chrome.
+The wrapper selects the full trusted tool inventory even when the checkout is
+untrusted. The probe starts `glass --yolo --mcp`, completes initialization and
+the initialized notification, requests `tools/list`, serializes only the
+returned `tools` array, counts UTF-8 bytes, and divides by four for a
+conservative model-agnostic estimate. It does not start Chrome.
 
 Record the commit, binary profile, tool count, bytes, and methodology together.
 Do not compare a full JSON-RPC response with a bare array, or a pre-negotiation
@@ -54,10 +61,10 @@ workspace catalog. This is a regression alarm, not permission to consume the
 remaining space. Any increase must include the before/after scoreboard and
 explain why a new public tool is preferable to an existing typed verb or a
 namespaced resource.
-The measured full-product catalog is 9,901 bytes above the 160 KiB ceiling on this checkout. Treat that as an active budget exception: release documentation must not call the catalog within budget until the catalog is reduced or the ceiling is deliberately changed with compatibility and release evidence.
+The measured full-product catalog is 10,556 bytes above the 160 KiB ceiling on this checkout. Treat that as an active budget exception: release documentation must not call the catalog within budget until the catalog is reduced or the ceiling is deliberately changed with compatibility and release evidence.
 
 The increase from the published 0.3.4 measurement of 129,444 bytes to the
-current 173,741-byte development inventory covers explicit trust, autonomous
+current 174,396-byte development inventory covers explicit trust, autonomous
 task, measured experiment, debugger inspection, governed-kernel operations,
 the governed Agent composer/runtime setup routes, workspace-local Agent todos, and Git
 fetch/pull/merge/rebase.
@@ -88,11 +95,11 @@ The current measurement identifies these larger input schemas:
 |---|---:|---|
 | `extractStructured` | 1,576 | typed extraction fields, sources, and bounds |
 | `resolveIntentWithKnowledge` | 1,133 | intent plus scoped knowledge controls |
+| `glass.eval.start` | 1,076 | kernel kind, bounded capability allowlist, and explicit mutation grant |
 | `executeIntent` | 826 | revision-bound executable intent |
 | `executeTask` | 767 | validated Task Protocol execution controls |
+| `glass.agent.delegate` | 760 | external agent selection, bounded prompt, and sandbox policy |
 | `resolveIntent` | 695 | structured intent resolution |
-| `actAndVerify` | 691 | action plus explicit postcondition evidence |
-| `glass.file.grep` | 664 | bounded search scope and result controls |
 
 These sizes are diagnostic priorities, not automatic defects. Simplification
 must preserve validation, bounds, authority, and compatibility; moving required

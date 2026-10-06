@@ -832,7 +832,7 @@ mod warm_integration {
     use super::*;
     use crate::ext::Registry;
     use crate::provider::Error;
-    use crate::warmer::{CacheSnapshot, ProviderFactory, Warmer};
+    use crate::warmer::{ProviderFactory, Warmer};
     use glass_mod_api::Message;
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};

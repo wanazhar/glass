@@ -127,6 +127,15 @@ impl Editor {
         self.cursor += c.len_utf8();
     }
 
+    /// Insert text at the cursor. This is the paste path:
+    /// bracketed paste delivers a whole run of text at once,
+    /// including newlines, and a pasted diff or stack trace
+    /// must keep its line breaks rather than be flattened.
+    pub fn insert_str(&mut self, s: &str) {
+        self.buf.insert_str(self.cursor, s);
+        self.cursor += s.len();
+    }
+
     /// Walk prompt history. `delta` of -1 is older, +1 is newer.
     fn recall(&mut self, delta: isize) {
         if self.history.is_empty() {
@@ -148,19 +157,34 @@ impl Editor {
     pub fn render(&self, base_row: u16, width: u16, focused: bool) -> u16 {
         let width = width.max(8) as usize;
         let mut out = String::new();
+        let chunks = wrap(&self.buf, width);
 
-        for (i, chunk) in wrap(&self.buf, width).into_iter().enumerate() {
+        // The cursor can sit one row past the last line of
+        // text, at the pending-wrap position. Draw that row
+        // too, or the cursor lands somewhere it was never
+        // cleared and leaves a ghost of the previous frame.
+        let cursor_row = cursor_position(&self.buf, self.cursor, width).0 as usize;
+        let total = chunks.len().max(cursor_row + 1).max(1);
+
+        for i in 0..total {
             let row = base_row + i as u16;
-            term::move_to(row, 0);
-            out.push_str(&format!("\x1b[2K\x1b[90m❯\x1b[0m {chunk}"));
+            // Position inside `out`, not with term::move_to:
+            // that prints straight to stdout, which would
+            // reorder ahead of the text below.
+            out.push_str(&format!("\x1b[{row};0H"));
+            let chunk = chunks.get(i).copied().unwrap_or("");
+            // Only the first row carries the prompt glyph;
+            // continuation rows are plain cleared lines.
+            let marker = if i == 0 { "\x1b[2K\x1b[90m❯\x1b[0m " } else { "\x1b[2K" };
+            out.push_str(&format!("{marker}{chunk}"));
         }
 
         if self.buf.is_empty() && !focused {
-            term::move_to(base_row, 2);
+            out.push_str(&format!("\x1b[{base_row};2H"));
             out.push_str("\x1b[90mtype a message, /help for commands\x1b[0m");
         }
 
-        let rows = wrap(&self.buf, width).len().max(1) as u16;
+        let rows = total as u16;
         self.draw_cursor(base_row, width, focused, &mut out);
         print!("{out}");
         let _ = io::stdout().flush();
@@ -187,20 +211,33 @@ impl Default for Editor {
     }
 }
 
-/// Wrap on character boundaries so we never split a UTF-8 sequence.
+/// Wrap on character boundaries so we never split a UTF-8
+/// sequence, and on newlines so pasted multi-line text keeps
+/// its line breaks instead of being flattened or, worse,
+/// emitting a raw carriage return that desynchronizes the
+/// row accounting.
 fn wrap(text: &str, width: usize) -> Vec<&str> {
     if text.is_empty() {
         return vec![""];
     }
     let mut lines = Vec::new();
-    let mut start = 0;
-    for (i, _) in text.char_indices() {
-        if i - start >= width {
-            lines.push(&text[start..i]);
-            start = i;
+    for line in text.split('\n') {
+        if line.is_empty() {
+            lines.push("");
+            continue;
         }
+        let mut start = 0;
+        for (i, _) in line.char_indices() {
+            if i - start >= width {
+                lines.push(&line[start..i]);
+                start = i;
+            }
+        }
+        lines.push(&line[start..]);
     }
-    lines.push(&text[start..]);
+    if lines.is_empty() {
+        lines.push("");
+    }
     lines
 }
 
@@ -223,9 +260,30 @@ fn next_boundary(s: &str, at: usize) -> usize {
 }
 
 fn cursor_position(buf: &str, cursor: usize, width: usize) -> (u16, u16) {
-    let head = &buf[..cursor];
-    let row = head.chars().count() / width;
-    let col = head.chars().count() % width;
+    let width = width.max(1);
+    let mut row = 0usize;
+    let mut col = 0usize;
+    for c in buf[..cursor].chars() {
+        if c == '\n' {
+            row += 1;
+            col = 0;
+        } else {
+            // Wrap before placing, so a full row followed
+            // by a newline advances one row, not two.
+            if col == width {
+                row += 1;
+                col = 0;
+            }
+            col += 1;
+        }
+    }
+    // A cursor left at the end of a full row sits at the
+    // terminal's pending-wrap position: the start of the
+    // next row, which the renderer must therefore draw.
+    if col == width {
+        row += 1;
+        col = 0;
+    }
     (row as u16, col as u16)
 }
 
@@ -236,4 +294,94 @@ pub fn repaint_rows(base_row: u16, count: u16) {
         print!("\x1b[2K");
     }
     let _ = io::stdout().flush();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrap_breaks_on_width() {
+        let lines = wrap("abcdefghij", 4);
+        assert_eq!(lines, vec!["abcd", "efgh", "ij"]);
+    }
+
+    #[test]
+    fn wrap_breaks_on_newlines() {
+        // A pasted diff keeps its line breaks. Before
+        // this, a newline was wrapped like any other
+        // character and the row count was wrong.
+        let lines = wrap("ab\ncd", 10);
+        assert_eq!(lines, vec!["ab", "cd"]);
+    }
+
+    #[test]
+    fn wrap_counts_empty_lines() {
+        let lines = wrap("a\n\nb", 10);
+        assert_eq!(lines, vec!["a", "", "b"]);
+    }
+
+    #[test]
+    fn wrap_wraps_long_pasted_lines() {
+        let lines = wrap("abcdef\nghijkl", 4);
+        assert_eq!(lines, vec!["abcd", "ef", "ghij", "kl"]);
+    }
+
+    #[test]
+    fn wrap_never_splits_utf8() {
+        // Multi-byte characters. Wrapping is byte-oriented
+        // by design (see the struct comment), but it must
+        // only ever cut on character boundaries or the
+        // slice panics, and it must not lose text.
+        let text = "éééé";
+        let lines = wrap(text, 2);
+        assert_eq!(lines.concat(), text);
+        for l in &lines {
+            assert!(l.is_empty() || l.is_char_boundary(0));
+            assert!(l.is_char_boundary(l.len()));
+        }
+    }
+
+    #[test]
+    fn cursor_position_counts_newlines_as_rows() {
+        // Row 1, column 0: two newlines mean the cursor
+        // is on the third line.
+        let (row, col) = cursor_position("ab\ncd\n", 6, 80);
+        assert_eq!((row, col), (2, 0));
+    }
+
+    #[test]
+    fn cursor_position_wraps_at_width() {
+        let (row, col) = cursor_position("abcdefgh", 8, 4);
+        assert_eq!((row, col), (2, 0));
+    }
+
+    #[test]
+    fn cursor_position_mixes_newlines_and_wrap() {
+        // "ab\n" is one row break, then "cdef" wraps at
+        // width 2 into two more rows, landing the cursor
+        // at row 2, column 0.
+        let (row, col) = cursor_position("ab\ncdef", 7, 2);
+        assert_eq!((row, col), (3, 0));
+    }
+
+    #[test]
+    fn insert_str_places_text_at_cursor() {
+        let mut e = Editor::new();
+        e.set_text("hello world");
+        e.cursor = 5;
+        e.insert_str(" there");
+        assert_eq!(e.text(), "hello there world");
+        assert_eq!(e.cursor, 11);
+    }
+
+    #[test]
+    fn insert_str_keeps_newlines() {
+        let mut e = Editor::new();
+        e.insert_str("line one\nline two");
+        assert_eq!(e.text(), "line one\nline two");
+        // The row count the renderer uses must match
+        // the newlines present.
+        assert_eq!(wrap(e.text(), 80).len(), 2);
+    }
 }

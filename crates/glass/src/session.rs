@@ -443,7 +443,6 @@ mod tests {
         s.append(Record::Assistant("two".into()));
         s.append(Record::User("three".into()));
         let id = s.id.clone();
-        let log_path = s.path.clone();
         drop(s);
 
         let reopened = Session::open(&dir, &id).unwrap();
@@ -464,7 +463,6 @@ mod tests {
     #[test]
     fn resume_rebuilds_the_compaction_projection() {
         let dir = tmpdir("proj-resume");
-        let target = dir.join("p");
         let mut s = Session::create(&dir).unwrap();
         let id = s.id.clone();
         let log_path = s.path.clone();
@@ -527,7 +525,6 @@ mod tests {
         let dir = tmpdir("proj-idem");
         let mut s = Session::create(&dir).unwrap();
         let id = s.id.clone();
-        let log_path = s.path.clone();
         s.append(Record::User("task".into()));
         for i in 0..60 {
             s.append(Record::User(format!("q{i}")));

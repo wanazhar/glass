@@ -1,8 +1,8 @@
 ---
 id: issue60-p0-browser-policy-001
 scope: glass-browser/resident-browser-policy
-status: ready
-depends-on: []
+status: in-progress
+depends-on: [issue60-p0-governance-001]
 ---
 
 # Issue #60 P0: resident browser policy and denial integrity

@@ -664,7 +664,14 @@ pub async fn launch_chrome_with_viewport(
     host_resolver_rules: Option<&str>,
     viewport: Option<(i64, i64)>,
 ) -> Result<ChromeProcess, Box<dyn std::error::Error>> {
-    let args = chrome_arguments(port, profile_dir, headed, incognito, viewport);
+    let args = chrome_arguments(
+        port,
+        profile_dir,
+        headed,
+        incognito,
+        host_resolver_rules,
+        viewport,
+    );
     info!(binary = %chrome_path.display(), arguments = %args.join(" "), "launching Chrome");
     let mut command = Command::new(chrome_path);
     command
@@ -672,9 +679,6 @@ pub async fn launch_chrome_with_viewport(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    if let Some(rules) = host_resolver_rules {
-        command.arg(format!("--host-resolver-rules={rules}"));
-    }
     let mut child = command.spawn()?;
     let pid = child.id().unwrap_or(0);
     let stderr = child
@@ -839,6 +843,7 @@ fn chrome_arguments(
     profile_dir: Option<&Path>,
     headed: bool,
     incognito: bool,
+    host_resolver_rules: Option<&str>,
     viewport: Option<(i64, i64)>,
 ) -> Vec<String> {
     let mut args = vec![
@@ -872,6 +877,9 @@ fn chrome_arguments(
     }
     if incognito {
         args.push("--incognito".to_string());
+    }
+    if let Some(rules) = host_resolver_rules {
+        args.push(format!("--host-resolver-rules={rules}"));
     }
     args.push("about:blank".to_string());
     args
@@ -1264,11 +1272,32 @@ mod tests {
     #[test]
     fn chrome_arguments_add_incognito_and_disposable_profile_dir() {
         let profile = Path::new("/tmp/glass-incognito");
-        let args = chrome_arguments(9222, Some(profile), false, true, None);
+        let args = chrome_arguments(9222, Some(profile), false, true, None, None);
 
         assert!(args.contains(&"--incognito".to_string()));
         assert!(args.contains(&"--user-data-dir=/tmp/glass-incognito".to_string()));
         assert!(args.contains(&"--disable-restore-session-state".to_string()));
+    }
+
+    #[test]
+    fn hardened_host_resolver_rules_precede_the_positional_url() {
+        let args = chrome_arguments(
+            9222,
+            None,
+            false,
+            false,
+            Some("MAP example.test 203.0.113.8"),
+            None,
+        );
+        let resolver = args
+            .iter()
+            .position(|argument| argument.starts_with("--host-resolver-rules="))
+            .unwrap();
+        let url = args
+            .iter()
+            .position(|argument| argument == "about:blank")
+            .unwrap();
+        assert!(resolver < url);
     }
 
     #[test]

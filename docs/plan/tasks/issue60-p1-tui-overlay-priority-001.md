@@ -1,7 +1,7 @@
 ---
 id: issue60-p1-tui-overlay-priority-001
 scope: glass-dev/tui-overlay-routing
-status: in-progress
+status: complete
 depends-on: [issue60-p0-tui-safety-001]
 ---
 
@@ -84,16 +84,24 @@ overlay. Include both file and session pickers in redraw transitions.
   rendered list bounds and scroll offset with pointer hit-testing. The details
   panel, navigation/context panes, and scrolled menu rows have focused
   regressions.
+- Independent review 01 — BLOCKED by menu hit bounds; addressed in
+  `f4f425ac` and retained at
+  [review 01](../reviews/issue60-p1-tui-overlay-priority-001-01.md).
 - `cargo test -p glass-dev --lib --locked tui::pointer::tests::`: passed, 9
   tests; `cargo test -p glass-dev --lib --locked command_menu`: passed, 3 tests.
 - Follow-up `cargo fmt --all -- --check` and `git diff --check`: passed.
 - Independent re-review 02's event-loop polling finding is addressed: a left
   press on a visible command-menu row survives polling while that menu remains
   active, and overlay transitions still clear pending gestures.
+- Independent re-review 02 — BLOCKED by the event-loop poll clearing menu
+  presses; addressed in `7fc269f1` and retained at
+  [review 02](../reviews/issue60-p1-tui-overlay-priority-001-02.md).
 - `cargo test -p glass-dev --lib --locked tui::pointer::tests::`: passed, 10
   tests; `cargo test -p glass-dev --lib --locked command_menu`: passed, 4 tests;
   `cargo test -p glass-dev --lib --locked
   overlay_opening_discards_a_press_started_on_the_covered_surface`: passed, 1
   test.
 - Follow-up `cargo fmt --all -- --check` and `git diff --check`: passed.
-- Independent re-review pending; task status remains `in-progress`.
+- Independent re-review 03 — PASS; confirmed menu Down → poll → Up activation,
+  transition cancellation, and consistent shared render/hit geometry. See
+  [review 03](../reviews/issue60-p1-tui-overlay-priority-001-03.md).

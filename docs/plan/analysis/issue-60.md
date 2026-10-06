@@ -51,10 +51,10 @@ changes are insufficient where the issue names multiple entry points.
    and worker lifecycle issues. The first bounded slice covers reports #52–#54,
    #56, and #59 in
    [the daemon lifecycle task](../tasks/issue60-p1-daemon-lifecycle-001.md).
-4. **P1 TUI, editor, browser, workspace, and MCP reliability.** Start by
-   centralizing overlay priority in the
-   [TUI overlay task](../tasks/issue60-p1-tui-overlay-priority-001.md), then
-   resolve stale
+4. **P1 TUI, editor, browser, workspace, and MCP reliability.** The accepted
+   overlay-priority slice is recorded in the
+   [TUI overlay task](../tasks/issue60-p1-tui-overlay-priority-001.md). Continue
+   with stale
    revisions, orphaned jobs, snapshot state, editor metadata, browser identity,
    schemas, and persistent option forwarding.
 5. **P2 functional/UX contracts, then P3 consistency.** Align surfaces,

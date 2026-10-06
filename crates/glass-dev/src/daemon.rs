@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
@@ -24,6 +24,7 @@ const WORKSPACE_COMMAND_CAPACITY: usize = 64;
 const WORKSPACE_EVENT_CAPACITY: usize = 512;
 const MAX_EVENT_BATCH: usize = 256;
 const DAEMON_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
 const OPERATION_CAPACITY: usize = 128;
 const OPERATION_EVENT_CAPACITY: usize = 512;
 
@@ -43,6 +44,47 @@ struct WorkspaceActorHandle {
     sender: tokio::sync::mpsc::Sender<WorkspaceCommand>,
     summary: Value,
     operations: Arc<Mutex<OperationRegistry>>,
+    close_lock: Rc<tokio::sync::Mutex<()>>,
+}
+
+#[derive(Clone)]
+struct WorkspaceRecovery {
+    root: PathBuf,
+    trust_store: WorkspaceTrustStore,
+    unrestricted: bool,
+    resident_broker: Option<ResidentAgentBroker>,
+}
+
+impl WorkspaceRecovery {
+    fn from_workspace(
+        workspace: &DevelopmentWorkspace,
+        resident_broker: Option<ResidentAgentBroker>,
+    ) -> Self {
+        Self {
+            root: workspace.root().to_path_buf(),
+            trust_store: WorkspaceTrustStore::at(workspace.trust_store_path().to_path_buf()),
+            unrestricted: workspace.unrestricted_execution(),
+            resident_broker,
+        }
+    }
+
+    fn reopen(&self) -> Result<DevelopmentWorkspace, String> {
+        let mut workspace =
+            DevelopmentWorkspace::open_with_store(&self.root, self.trust_store.clone())
+                .map_err(|error| error.to_string())?;
+        if self.unrestricted {
+            workspace
+                .enable_unrestricted_execution()
+                .map_err(|error| error.to_string())?;
+        }
+        if let Some(broker) = &self.resident_broker {
+            workspace
+                .agents()
+                .set_resident_broker(broker.clone())
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(workspace)
+    }
 }
 
 enum WorkspaceCommand {
@@ -322,6 +364,33 @@ impl OperationRegistry {
         );
     }
 
+    fn recover_poisoned_state(&mut self) {
+        let active = self
+            .records
+            .iter_mut()
+            .filter_map(|(id, record)| {
+                if record.state.terminal() {
+                    return None;
+                }
+                record.state = DevelopmentOperationState::Indeterminate;
+                record.indeterminate = true;
+                record.failure_reason = Some(
+                    "operation registry lock was poisoned; outcome recovered as indeterminate"
+                        .into(),
+                );
+                record.completed_at_ms = Some(now_ms());
+                Some(id.clone())
+            })
+            .collect::<Vec<_>>();
+        for id in active {
+            self.event(
+                &id,
+                DevelopmentOperationState::Indeterminate,
+                "operation registry recovered after lock poisoning",
+            );
+        }
+    }
+
     fn cancel(&mut self, id: &str) -> Result<DevelopmentOperation, String> {
         let (state, record, cancellation_applied) = {
             let record = self
@@ -343,6 +412,22 @@ impl OperationRegistry {
             self.event(id, state, "cancellation requested");
         }
         Ok(record)
+    }
+}
+
+fn lock_operations(operations: &Mutex<OperationRegistry>) -> MutexGuard<'_, OperationRegistry> {
+    match operations.lock() {
+        Ok(registry) => registry,
+        Err(poisoned) => {
+            let mut registry = poisoned.into_inner();
+            registry.recover_poisoned_state();
+            operations.clear_poison();
+            tracing::error!(
+                workspace_id = %registry.workspace_id,
+                "recovered poisoned daemon operation registry"
+            );
+            registry
+        }
     }
 }
 
@@ -477,7 +562,7 @@ async fn start_with_unrestricted(
         if unrestricted {
             command.arg("--yolo");
         }
-        command
+        let mut child = command
             .args(["daemon", "serve"])
             .arg("--socket")
             .arg(socket)
@@ -487,19 +572,7 @@ async fn start_with_unrestricted(
             .stdout(std::process::Stdio::from(stdout))
             .stderr(std::process::Stdio::from(stderr))
             .spawn()?;
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        loop {
-            if let Ok(status) = read_status(status_path)
-                && process_alive(status.pid)
-                && status.socket == socket
-            {
-                return Ok(status);
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err("development daemon did not become ready within three seconds".into());
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+        wait_for_startup(&mut child, socket, status_path, DAEMON_STARTUP_TIMEOUT).await
     }
     #[cfg(windows)]
     {
@@ -528,7 +601,7 @@ async fn start_with_unrestricted(
         if unrestricted {
             command.arg("--yolo");
         }
-        command
+        let mut child = command
             .args(["daemon", "serve"])
             .arg("--socket")
             .arg(socket)
@@ -538,20 +611,64 @@ async fn start_with_unrestricted(
             .stdout(std::process::Stdio::from(stdout))
             .stderr(std::process::Stdio::from(stderr))
             .spawn()?;
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        loop {
-            if let Ok(status) = read_status(status_path)
-                && process_alive(status.pid)
-                && status.socket == socket
-            {
-                return Ok(status);
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err("development daemon did not become ready within three seconds".into());
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+        wait_for_startup(&mut child, socket, status_path, DAEMON_STARTUP_TIMEOUT).await
     }
+}
+
+async fn wait_for_startup(
+    child: &mut std::process::Child,
+    socket: &Path,
+    status_path: &Path,
+    timeout: Duration,
+) -> Result<DevelopmentDaemonStatus, Box<dyn std::error::Error>> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Ok(status) = read_status(status_path)
+            && status.pid == child.id()
+            && process_alive(status.pid)
+            && status.socket == socket
+        {
+            return Ok(status);
+        }
+        if let Some(status) = child.try_wait()? {
+            return Err(std::io::Error::other(format!(
+                "development daemon exited before becoming ready ({status})"
+            ))
+            .into());
+        }
+        if std::time::Instant::now() >= deadline {
+            let timeout_message = format!(
+                "development daemon did not become ready within {} milliseconds",
+                timeout.as_millis()
+            );
+            return match terminate_and_reap(child) {
+                Ok(_) => {
+                    Err(std::io::Error::new(std::io::ErrorKind::TimedOut, timeout_message).into())
+                }
+                Err(error) => Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("{timeout_message}; failed to terminate and reap child: {error}"),
+                )
+                .into()),
+            };
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+fn terminate_and_reap(
+    child: &mut std::process::Child,
+) -> std::io::Result<std::process::ExitStatus> {
+    if let Some(status) = child.try_wait()? {
+        return Ok(status);
+    }
+    if let Err(error) = child.kill() {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        return Err(error);
+    }
+    child.wait()
 }
 
 pub fn read_status_checked(
@@ -849,15 +966,36 @@ where
                 },
             }
         };
-        let encoded = serde_json::to_vec(&response)?;
-        if encoded.len() > MAX_RESPONSE_BYTES {
-            return Err("daemon response exceeds the size limit".into());
-        }
+        let encoded = encode_bounded_response(response)?;
         write.write_all(&encoded).await?;
         write.write_all(b"\n").await?;
         write.flush().await?;
     }
     Ok(())
+}
+
+fn encode_bounded_response(
+    response: DevelopmentDaemonResponse,
+) -> Result<Vec<u8>, serde_json::Error> {
+    let encoded = serde_json::to_vec(&response)?;
+    if encoded.len() <= MAX_RESPONSE_BYTES {
+        return Ok(encoded);
+    }
+
+    let id = if validate_identifier(&response.id, "request").is_ok() {
+        response.id
+    } else {
+        "oversized".into()
+    };
+    let error_response = DevelopmentDaemonResponse {
+        id,
+        ok: false,
+        result: Value::Null,
+        error: Some("daemon response exceeds the size limit".into()),
+    };
+    let encoded_error = serde_json::to_vec(&error_response)?;
+    debug_assert!(encoded_error.len() <= MAX_RESPONSE_BYTES);
+    Ok(encoded_error)
 }
 
 async fn execute_request(
@@ -900,14 +1038,17 @@ async fn execute_request(
                         .enable_unrestricted_execution()
                         .map_err(|error| error.to_string())?;
                 }
+                let resident_broker = ResidentAgentBroker {
+                    socket: socket.to_path_buf(),
+                    token: token.to_string(),
+                    workspace_id: workspace_id.to_string(),
+                };
                 workspace
                     .agents()
-                    .set_resident_broker(ResidentAgentBroker {
-                        socket: socket.to_path_buf(),
-                        token: token.to_string(),
-                        workspace_id: workspace_id.to_string(),
-                    })
+                    .set_resident_broker(resident_broker.clone())
                     .map_err(|error| error.to_string())?;
+                let recovery =
+                    WorkspaceRecovery::from_workspace(&workspace, Some(resident_broker));
                 let result = workspace_summary(workspace_id, &workspace);
                 let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
                 let operations = Arc::new(Mutex::new(OperationRegistry::new(workspace_id.into())));
@@ -916,6 +1057,7 @@ async fn execute_request(
                     workspace,
                     receiver,
                     Arc::clone(&operations),
+                    recovery,
                 ));
                 let mut state = workspaces.borrow_mut();
                 if state.contains_key(workspace_id) || state.len() >= MAX_WORKSPACES {
@@ -927,6 +1069,7 @@ async fn execute_request(
                         sender,
                         summary: result.clone(),
                         operations,
+                        close_lock: Rc::new(tokio::sync::Mutex::new(())),
                     },
                 );
                 Ok(result)
@@ -964,11 +1107,7 @@ async fn execute_request(
                 let context = request_tool_context(&request, "operation.submit")?;
                 let handle = workspace_handle(workspaces, workspace_id)?;
                 let actor = request.actor.clone().unwrap_or_else(|| "local".into());
-                let (operation, created) = handle
-                    .operations
-                    .lock()
-                    .map_err(|_| "workspace operation registry is poisoned")?
-                    .submit(
+                let (operation, created) = lock_operations(&handle.operations).submit(
                         &request.id,
                         actor,
                         call.name.clone(),
@@ -985,12 +1124,10 @@ async fn execute_request(
                         })
                         .is_err()
                 {
-                    if let Ok(mut registry) = handle.operations.lock() {
-                        registry.indeterminate(
-                            &operation.id,
-                            "workspace actor command queue closed".into(),
-                        );
-                    }
+                    lock_operations(&handle.operations).indeterminate(
+                        &operation.id,
+                        "workspace actor command queue closed".into(),
+                    );
                     return Err("workspace actor command queue closed".into());
                 }
                 Ok(serde_json::json!({"accepted":true,"created":created,"operation":operation}))
@@ -999,10 +1136,7 @@ async fn execute_request(
                 let workspace_id = required_workspace_id(&request)?;
                 let operation_id = required_operation_id(&request)?;
                 let handle = workspace_handle(workspaces, workspace_id)?;
-                let operation = handle
-                    .operations
-                    .lock()
-                    .map_err(|_| "workspace operation registry is poisoned")?
+                let operation = lock_operations(&handle.operations)
                     .records
                     .get(operation_id)
                     .cloned()
@@ -1023,10 +1157,7 @@ async fn execute_request(
             "operation.list" => {
                 let workspace_id = required_workspace_id(&request)?;
                 let handle = workspace_handle(workspaces, workspace_id)?;
-                let registry = handle
-                    .operations
-                    .lock()
-                    .map_err(|_| "workspace operation registry is poisoned")?;
+                let registry = lock_operations(&handle.operations);
                 let operations = registry
                     .order
                     .iter()
@@ -1038,11 +1169,7 @@ async fn execute_request(
                 let workspace_id = required_workspace_id(&request)?;
                 let operation_id = required_operation_id(&request)?;
                 let handle = workspace_handle(workspaces, workspace_id)?;
-                let operation = handle
-                    .operations
-                    .lock()
-                    .map_err(|_| "workspace operation registry is poisoned")?
-                    .cancel(operation_id)?;
+                let operation = lock_operations(&handle.operations).cancel(operation_id)?;
                 Ok(serde_json::json!({"operation":operation}))
             }
             "operation.events" => {
@@ -1058,10 +1185,7 @@ async fn execute_request(
                     ));
                 }
                 let handle = workspace_handle(workspaces, workspace_id)?;
-                let registry = handle
-                    .operations
-                    .lock()
-                    .map_err(|_| "workspace operation registry is poisoned")?;
+                let registry = lock_operations(&handle.operations);
                 let since = request.since.unwrap_or(0);
                 let events = registry
                     .events
@@ -1088,19 +1212,26 @@ async fn execute_request(
             }
             "workspace.close" => {
                 let workspace_id = required_workspace_id(&request)?;
-                let handle = workspaces.borrow_mut().remove(workspace_id);
-                if let Some(handle) = handle {
-                    let (response, received) = tokio::sync::oneshot::channel();
-                    handle
-                        .sender
-                        .send(WorkspaceCommand::Shutdown { response })
-                        .await
-                        .map_err(|_| "workspace actor command queue closed")?;
-                    received.await.map_err(|_| "workspace actor did not stop")?;
-                    Ok(serde_json::json!({"closed":true}))
-                } else {
-                    Ok(serde_json::json!({"closed":false}))
+                let Some(handle) = workspaces.borrow().get(workspace_id).cloned() else {
+                    return Ok(serde_json::json!({"closed":false}));
+                };
+                let _close_guard = handle.close_lock.lock().await;
+                let still_registered = workspaces
+                    .borrow()
+                    .get(workspace_id)
+                    .is_some_and(|current| current.sender.same_channel(&handle.sender));
+                if !still_registered {
+                    return Ok(serde_json::json!({"closed":false}));
                 }
+                let (response, received) = tokio::sync::oneshot::channel();
+                handle
+                    .sender
+                    .send(WorkspaceCommand::Shutdown { response })
+                    .await
+                    .map_err(|_| "workspace actor command queue closed")?;
+                received.await.map_err(|_| "workspace actor did not stop")?;
+                let removed = workspaces.borrow_mut().remove(workspace_id).is_some();
+                Ok(serde_json::json!({"closed":removed}))
             }
             _ => Err("unknown daemon operation".into()),
         }
@@ -1195,11 +1326,13 @@ async fn run_workspace_actor(
     workspace: DevelopmentWorkspace,
     mut commands: tokio::sync::mpsc::Receiver<WorkspaceCommand>,
     operations: Arc<Mutex<OperationRegistry>>,
+    recovery: WorkspaceRecovery,
 ) {
     let mut workspace = Some(workspace);
     let mut queued_operations: VecDeque<QueuedOperation> = VecDeque::new();
     let (completion_tx, mut completions) = tokio::sync::mpsc::channel::<OperationCompletion>(1);
     let mut operation_running = false;
+    let mut running_operation: Option<(String, String)> = None;
     let mut command_channel_open = true;
     let mut closing: Option<tokio::sync::oneshot::Sender<()>> = None;
     let mut events = VecDeque::with_capacity(WORKSPACE_EVENT_CAPACITY);
@@ -1219,13 +1352,11 @@ async fn run_workspace_actor(
     loop {
         if closing.is_none() && !operation_running && workspace.is_some() {
             while let Some((operation_id, call, context)) = queued_operations.pop_front() {
-                let should_start = operations
-                    .lock()
-                    .map(|mut registry| registry.start(&operation_id))
-                    .unwrap_or(false);
+                let should_start = lock_operations(&operations).start(&operation_id);
                 if !should_start {
                     continue;
                 }
+                running_operation = Some((operation_id.clone(), call.id.clone()));
                 let mut owned_workspace = workspace
                     .take()
                     .expect("workspace operation start owns the workspace");
@@ -1233,6 +1364,10 @@ async fn run_workspace_actor(
                 operation_running = true;
                 tokio::task::spawn_local(async move {
                     let joined = tokio::task::spawn_blocking(move || {
+                        #[cfg(test)]
+                        if call.name == "glass.test.daemon_worker_panic" {
+                            panic!("simulated daemon operation worker panic");
+                        }
                         let result = owned_workspace
                             .execute_tool(&call, &context)
                             .map_err(|error| error.to_string());
@@ -1252,6 +1387,7 @@ async fn run_workspace_actor(
             }
         }
         if closing.is_some() && !operation_running {
+            drop(workspace.take());
             if let Some(response) = closing.take() {
                 let _ = response.send(());
             }
@@ -1263,10 +1399,10 @@ async fn run_workspace_actor(
                 operation_running = false;
                 match completion {
                     Some(Ok((returned_workspace, operation_id, call_id, revision_after, result))) => {
+                        running_operation = None;
                         workspace = Some(returned_workspace);
-                        if let Ok(mut registry) = operations.lock() {
-                            registry.finish(&operation_id, revision_after, result.clone());
-                        }
+                        lock_operations(&operations)
+                            .finish(&operation_id, revision_after, result.clone());
                         push_workspace_event(
                             &workspace_id,
                             &mut events,
@@ -1278,24 +1414,33 @@ async fn run_workspace_actor(
                         );
                     }
                     Some(Err(error)) => {
-                        let running_id = operations.lock().ok().and_then(|registry| {
-                            registry.records.values().find(|record| {
-                                record.state == DevelopmentOperationState::Running
-                            }).map(|record| record.id.clone())
-                        });
-                        if let Some(operation_id) = running_id
-                            && let Ok(mut registry) = operations.lock()
-                        {
-                            registry.indeterminate(
+                        if let Some((operation_id, call_id)) = running_operation.take() {
+                            lock_operations(&operations).indeterminate(
                                 &operation_id,
                                 format!("workspace operation worker failed: {error}"),
                             );
+                            push_workspace_event(
+                                &workspace_id,
+                                &mut events,
+                                &mut next_event,
+                                &mut dropped_events,
+                                "operation.indeterminate",
+                                Some(call_id),
+                                false,
+                            );
                         }
                         tracing::error!(workspace_id, %error, "workspace operation worker failed");
-                        if let Some(response) = closing.take() {
-                            let _ = response.send(());
+                        match recovery.reopen() {
+                            Ok(reopened) => workspace = Some(reopened),
+                            Err(recovery_error) => {
+                                tracing::error!(
+                                    workspace_id,
+                                    %recovery_error,
+                                    "workspace actor could not recover after operation worker failure"
+                                );
+                                break;
+                            }
                         }
-                        break;
                     }
                     None => break,
                 }
@@ -1329,7 +1474,27 @@ async fn run_workspace_actor(
                             let _ = response.send(Err(format!(
                                 "workspace actor tool execution failed: {error}"
                             )));
-                            break;
+                            match recovery.reopen() {
+                                Ok(reopened) => workspace = Some(reopened),
+                                Err(recovery_error) => {
+                                    tracing::error!(
+                                        workspace_id,
+                                        %recovery_error,
+                                        "workspace actor could not recover after tool worker failure"
+                                    );
+                                    break;
+                                }
+                            }
+                            push_workspace_event(
+                                &workspace_id,
+                                &mut events,
+                                &mut next_event,
+                                &mut dropped_events,
+                                "workspace.recovered",
+                                None,
+                                false,
+                            );
+                            continue;
                         }
                     };
                     workspace = Some(returned_workspace);
@@ -1357,32 +1522,30 @@ async fn run_workspace_actor(
                     ));
                 }
                 Some(WorkspaceCommand::Shutdown { response }) => {
-                    if let Ok(mut registry) = operations.lock() {
-                        let active = registry
-                            .records
-                            .values()
-                            .filter(|record| !record.state.terminal())
-                            .map(|record| record.id.clone())
-                            .collect::<Vec<_>>();
-                        for id in active {
-                            let _ = registry.cancel(&id);
-                        }
+                    let mut registry = lock_operations(&operations);
+                    let active = registry
+                        .records
+                        .values()
+                        .filter(|record| !record.state.terminal())
+                        .map(|record| record.id.clone())
+                        .collect::<Vec<_>>();
+                    for id in active {
+                        let _ = registry.cancel(&id);
                     }
                     queued_operations.clear();
                     closing = Some(response);
                 }
                 None => {
                     command_channel_open = false;
-                    if let Ok(mut registry) = operations.lock() {
-                        let active = registry
-                            .records
-                            .values()
-                            .filter(|record| !record.state.terminal())
-                            .map(|record| record.id.clone())
-                            .collect::<Vec<_>>();
-                        for id in active {
-                            let _ = registry.cancel(&id);
-                        }
+                    let mut registry = lock_operations(&operations);
+                    let active = registry
+                        .records
+                        .values()
+                        .filter(|record| !record.state.terminal())
+                        .map(|record| record.id.clone())
+                        .collect::<Vec<_>>();
+                    for id in active {
+                        let _ = registry.cancel(&id);
                     }
                     queued_operations.clear();
                     if !operation_running {
@@ -2156,6 +2319,242 @@ mod tests {
         }
     }
 
+    fn test_daemon_request(
+        id: &str,
+        operation: &str,
+        workspace_id: Option<&str>,
+    ) -> DevelopmentDaemonRequest {
+        DevelopmentDaemonRequest {
+            id: id.into(),
+            token: "test-token".into(),
+            operation: operation.into(),
+            workspace_id: workspace_id.map(str::to_string),
+            root: None,
+            call: None,
+            expected_generation: None,
+            expected_project_revision: None,
+            allow_mutation: false,
+            confirmed: false,
+            actor: None,
+            since: None,
+            limit: None,
+            operation_id: None,
+        }
+    }
+
+    #[test]
+    fn poisoned_operation_registry_marks_active_operations_indeterminate() {
+        let operations = Mutex::new(OperationRegistry::new("poisoned".into()));
+        let operation_id = {
+            let mut registry = operations.lock().unwrap();
+            let (operation, created) = registry
+                .submit(
+                    "active-request",
+                    "test-client".into(),
+                    "test.operation".into(),
+                    0,
+                    false,
+                )
+                .unwrap();
+            assert!(created);
+            assert!(registry.start(&operation.id));
+            operation.id
+        };
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _registry = operations.lock().unwrap();
+            panic!("simulate panic while operation registry is locked");
+        }));
+        assert!(panic.is_err());
+        assert!(operations.is_poisoned());
+
+        {
+            let registry = lock_operations(&operations);
+            let record = &registry.records[&operation_id];
+            assert_eq!(record.state, DevelopmentOperationState::Indeterminate);
+            assert!(record.indeterminate);
+            assert!(
+                record
+                    .failure_reason
+                    .as_deref()
+                    .unwrap()
+                    .contains("poisoned")
+            );
+            assert_eq!(
+                registry.events.back().map(|event| event.state),
+                Some(DevelopmentOperationState::Indeterminate)
+            );
+        }
+        assert!(!operations.is_poisoned());
+        assert_eq!(
+            operations.lock().unwrap().records[&operation_id].state,
+            DevelopmentOperationState::Indeterminate
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn daemon_startup_timeout_kills_and_reaps_the_child() {
+        let mut command = if cfg!(windows) {
+            let mut command = std::process::Command::new("powershell.exe");
+            command.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"]);
+            command
+        } else {
+            let mut command = std::process::Command::new("sleep");
+            command.arg("30");
+            command
+        };
+        let mut child = command
+            .spawn()
+            .expect("start a child that cannot publish daemon readiness");
+        let status_path = std::env::temp_dir().join(format!(
+            "glassd-no-status-{}-{}",
+            std::process::id(),
+            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let error = wait_for_startup(
+            &mut child,
+            Path::new("unused-daemon-socket"),
+            &status_path,
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("did not become ready"), "{error}");
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "startup child was not reaped"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn oversized_daemon_response_returns_error_and_keeps_connection_open() {
+        let (server_stream, client_stream) = tokio::io::duplex(64 * 1024);
+        let (sender, _receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
+        let operations = Arc::new(Mutex::new(OperationRegistry::new("large".into())));
+        let handle = WorkspaceActorHandle {
+            sender,
+            summary: serde_json::json!({"payload":"x".repeat(MAX_RESPONSE_BYTES)}),
+            operations,
+            close_lock: Rc::new(tokio::sync::Mutex::new(())),
+        };
+        let workspaces = Rc::new(RefCell::new(BTreeMap::from([("large".into(), handle)])));
+        let trust_store = WorkspaceTrustStore::at(PathBuf::from("unused-trust-store"));
+        let server = handle_stream(
+            server_stream,
+            "test-token",
+            Path::new("unused-socket"),
+            &workspaces,
+            &trust_store,
+            false,
+        );
+        let client = async move {
+            let (read, mut write) = tokio::io::split(client_stream);
+            for request in [
+                test_daemon_request("large-list", "workspace.list", None),
+                test_daemon_request("ping", "ping", None),
+            ] {
+                let encoded = serde_json::to_vec(&request).unwrap();
+                write.write_all(&encoded).await.unwrap();
+                write.write_all(b"\n").await.unwrap();
+            }
+            write.shutdown().await.unwrap();
+            let mut lines = BufReader::new(read).lines();
+            let first: DevelopmentDaemonResponse =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            let second: DevelopmentDaemonResponse =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            (first, second)
+        };
+        let (server_result, (first, second)) = tokio::join!(server, client);
+        server_result.unwrap();
+        assert_eq!(first.id, "large-list");
+        assert!(!first.ok);
+        assert_eq!(
+            first.error.as_deref(),
+            Some("daemon response exceeds the size limit")
+        );
+        assert_eq!(second.id, "ping");
+        assert!(second.ok, "{:?}", second.error);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn workspace_close_keeps_registry_until_confirmation_and_serializes_duplicates() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
+        let handle = WorkspaceActorHandle {
+            sender,
+            summary: serde_json::json!({"id":"closing"}),
+            operations: Arc::new(Mutex::new(OperationRegistry::new("closing".into()))),
+            close_lock: Rc::new(tokio::sync::Mutex::new(())),
+        };
+        let workspaces = Rc::new(RefCell::new(BTreeMap::from([("closing".into(), handle)])));
+        let trust_store = WorkspaceTrustStore::at(PathBuf::from("unused-trust-store"));
+        let close_a = execute_request(
+            test_daemon_request("close-a", "workspace.close", Some("closing")),
+            "test-token",
+            Path::new("unused-socket"),
+            &workspaces,
+            &trust_store,
+            false,
+        );
+        let close_b = execute_request(
+            test_daemon_request("close-b", "workspace.close", Some("closing")),
+            "test-token",
+            Path::new("unused-socket"),
+            &workspaces,
+            &trust_store,
+            false,
+        );
+        let actor = async {
+            let Some(WorkspaceCommand::Shutdown { response }) = receiver.recv().await else {
+                panic!("workspace close did not send shutdown");
+            };
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            assert!(workspaces.borrow().contains_key("closing"));
+            response.send(()).unwrap();
+            assert!(
+                receiver.recv().await.is_none(),
+                "duplicate shutdown was sent"
+            );
+        };
+        let (first, second, ()) = tokio::join!(close_a, close_b, actor);
+        assert!(first.ok && second.ok);
+        let closed = [first, second].map(|response| response.result["closed"].as_bool().unwrap());
+        assert_eq!(closed.into_iter().filter(|closed| *closed).count(), 1);
+        assert!(workspaces.borrow().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn workspace_close_retains_registry_when_shutdown_is_not_confirmed() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
+        let handle = WorkspaceActorHandle {
+            sender,
+            summary: serde_json::json!({"id":"closing"}),
+            operations: Arc::new(Mutex::new(OperationRegistry::new("closing".into()))),
+            close_lock: Rc::new(tokio::sync::Mutex::new(())),
+        };
+        let workspaces = Rc::new(RefCell::new(BTreeMap::from([("closing".into(), handle)])));
+        let trust_store = WorkspaceTrustStore::at(PathBuf::from("unused-trust-store"));
+        let close = execute_request(
+            test_daemon_request("close-fail", "workspace.close", Some("closing")),
+            "test-token",
+            Path::new("unused-socket"),
+            &workspaces,
+            &trust_store,
+            false,
+        );
+        let actor = async {
+            let Some(WorkspaceCommand::Shutdown { response }) = receiver.recv().await else {
+                panic!("workspace close did not send shutdown");
+            };
+            drop(response);
+        };
+        let (response, ()) = tokio::join!(close, actor);
+        assert!(!response.ok);
+        assert!(response.error.as_deref().unwrap().contains("did not stop"));
+        assert!(workspaces.borrow().contains_key("closing"));
+    }
+
     async fn inspect_operation(
         operations: Arc<Mutex<OperationRegistry>>,
         operation_id: &str,
@@ -2166,6 +2565,7 @@ mod tests {
             sender,
             summary: serde_json::json!({"id":workspace_id}),
             operations,
+            close_lock: Rc::new(tokio::sync::Mutex::new(())),
         };
         let workspaces = Rc::new(RefCell::new(BTreeMap::from([(
             workspace_id.to_string(),
@@ -2483,6 +2883,103 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn operation_worker_panic_marks_indeterminate_and_reopens_the_workspace_actor() {
+        let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "glassd-worker-panic-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = WorkspaceTrustStore::at(root.join("trust.json"));
+        store
+            .trust_project(&crate::WorkspaceIdentity::inspect(&root).unwrap())
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let workspace =
+                    DevelopmentWorkspace::open_with_store(&root, store.clone()).unwrap();
+                let recovery = WorkspaceRecovery::from_workspace(&workspace, None);
+                let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
+                let operations = Arc::new(Mutex::new(OperationRegistry::new("panic".into())));
+                tokio::task::spawn_local(run_workspace_actor(
+                    "panic".into(),
+                    workspace,
+                    receiver,
+                    Arc::clone(&operations),
+                    recovery,
+                ));
+                let handle = WorkspaceActorHandle {
+                    sender: sender.clone(),
+                    summary: serde_json::json!({"id":"panic"}),
+                    operations: Arc::clone(&operations),
+                    close_lock: Rc::new(tokio::sync::Mutex::new(())),
+                };
+                let (operation, created) = lock_operations(&operations)
+                    .submit(
+                        "panic-request",
+                        "test-client".into(),
+                        "glass.test.daemon_worker_panic".into(),
+                        0,
+                        false,
+                    )
+                    .unwrap();
+                assert!(created);
+                sender
+                    .send(WorkspaceCommand::SubmitOperation {
+                        operation_id: operation.id.clone(),
+                        call: ToolCall {
+                            id: "panic-call".into(),
+                            name: "glass.test.daemon_worker_panic".into(),
+                            arguments: serde_json::json!({}),
+                        },
+                        context: Box::new(test_context()),
+                    })
+                    .await
+                    .unwrap();
+
+                wait_for_operation_state(
+                    &operations,
+                    &operation.id,
+                    DevelopmentOperationState::Indeterminate,
+                )
+                .await;
+                let registry = lock_operations(&operations);
+                let record = &registry.records[&operation.id];
+                assert!(record.indeterminate);
+                assert!(
+                    record
+                        .failure_reason
+                        .as_deref()
+                        .unwrap()
+                        .contains("worker failed")
+                );
+                drop(registry);
+
+                let tasks = workspace_tool(
+                    handle.clone(),
+                    ToolCall {
+                        id: "task-list-after-recovery".into(),
+                        name: "glass.task.list".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                    test_context(),
+                )
+                .await;
+                assert!(tasks.is_ok(), "workspace actor did not recover: {tasks:?}");
+
+                let (response, received) = tokio::sync::oneshot::channel();
+                sender
+                    .send(WorkspaceCommand::Shutdown { response })
+                    .await
+                    .unwrap();
+                received.await.unwrap();
+            })
+            .await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn workspace_actors_do_not_serialize_unrelated_long_operations() {
         let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
         let base = std::env::temp_dir().join(format!(
@@ -2534,6 +3031,7 @@ while True:
                     let workspace =
                         DevelopmentWorkspace::open_with_store(root, store.clone()).unwrap();
                     let summary = workspace_summary(id, &workspace);
+                    let recovery = WorkspaceRecovery::from_workspace(&workspace, None);
                     let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
                     let operations = Arc::new(Mutex::new(OperationRegistry::new(id.into())));
                     tokio::task::spawn_local(run_workspace_actor(
@@ -2541,11 +3039,13 @@ while True:
                         workspace,
                         receiver,
                         Arc::clone(&operations),
+                        recovery,
                     ));
                     WorkspaceActorHandle {
                         sender,
                         summary,
                         operations,
+                        close_lock: Rc::new(tokio::sync::Mutex::new(())),
                     }
                 };
                 let first = actor("first", &first_root);
@@ -2697,6 +3197,7 @@ while True:
                 let workspace =
                     DevelopmentWorkspace::open_with_store(&root, store.clone()).unwrap();
                 let summary = workspace_summary("operations", &workspace);
+                let recovery = WorkspaceRecovery::from_workspace(&workspace, None);
                 let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
                 let operations = Arc::new(Mutex::new(OperationRegistry::new("operations".into())));
                 tokio::task::spawn_local(run_workspace_actor(
@@ -2704,11 +3205,13 @@ while True:
                     workspace,
                     receiver,
                     Arc::clone(&operations),
+                    recovery,
                 ));
                 let handle = WorkspaceActorHandle {
                     sender: sender.clone(),
                     summary: summary.clone(),
                     operations: Arc::clone(&operations),
+                    close_lock: Rc::new(tokio::sync::Mutex::new(())),
                 };
                 let (kernel_kind, slow_code) = if cfg!(windows) {
                     ("python", "import time; time.sleep(0.2); print('complete')")
@@ -2778,6 +3281,7 @@ while True:
                     sender: sender.clone(),
                     summary,
                     operations: Arc::clone(&operations),
+                    close_lock: Rc::clone(&handle.close_lock),
                 };
                 let immediate = reconnected.operations.lock().unwrap().records[&first.id].clone();
                 assert!(matches!(
@@ -2896,6 +3400,7 @@ while True:
             .run_until(async {
                 let workspace = DevelopmentWorkspace::open(&root).unwrap();
                 let summary = workspace_summary("events", &workspace);
+                let recovery = WorkspaceRecovery::from_workspace(&workspace, None);
                 let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
                 let operations = Arc::new(Mutex::new(OperationRegistry::new("events".into())));
                 tokio::task::spawn_local(run_workspace_actor(
@@ -2903,14 +3408,16 @@ while True:
                     workspace,
                     receiver,
                     Arc::clone(&operations),
+                    recovery,
                 ));
                 let first_client = WorkspaceActorHandle {
                     sender: sender.clone(),
                     summary: summary.clone(),
                     operations: Arc::clone(&operations),
+                    close_lock: Rc::new(tokio::sync::Mutex::new(())),
                 };
                 workspace_tool(
-                    first_client,
+                    first_client.clone(),
                     ToolCall {
                         id: "task-list".into(),
                         name: "glass.task.list".into(),
@@ -2925,6 +3432,7 @@ while True:
                         sender: sender.clone(),
                         summary: summary.clone(),
                         operations: Arc::clone(&operations),
+                        close_lock: Rc::clone(&first_client.close_lock),
                     },
                     0,
                     16,
@@ -2940,6 +3448,7 @@ while True:
                     sender,
                     summary,
                     operations,
+                    close_lock: Rc::clone(&first_client.close_lock),
                 };
                 workspace_tool(
                     reconnected.clone(),

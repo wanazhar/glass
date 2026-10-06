@@ -42,11 +42,16 @@ Issue #60 checklist only when its acceptance is met. Keep #60 open while any
 P0/P1 work remains. See [the issue delivery analysis](analysis/issue-60.md).
 
 The issue is authorized for focused commits pushed to `main`; no release, tag,
-or publication is in scope. The remaining P0 data-preservation work is split
-into [TUI editor/chat state](tasks/issue60-p0-tui-data-preservation-001.md),
+or publication is in scope. Completed P0 work is recorded in the
+[browser policy](tasks/issue60-p0-browser-policy-001.md),
+[governance](tasks/issue60-p0-governance-001.md),
+[protocol](tasks/issue60-p0-protocol-001.md),
+[TUI safety](tasks/issue60-p0-tui-safety-001.md),
+[TUI editor/chat state](tasks/issue60-p0-tui-data-preservation-001.md),
 [editor claims and revisions](tasks/issue60-p0-editor-claims-revisions-001.md),
-and the [daemon cancellation/completion
-race](tasks/issue60-p0-daemon-result-race-001.md).
+and [daemon result-race](tasks/issue60-p0-daemon-result-race-001.md) tasks.
+The current daemon lifecycle slice covers reports #52–#54, #56, and #59:
+[task record](tasks/issue60-p1-daemon-lifecycle-001.md).
 
 ## Active plan: Glass native browser engine (issue #40)
 

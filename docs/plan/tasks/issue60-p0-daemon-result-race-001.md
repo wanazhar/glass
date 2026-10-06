@@ -1,7 +1,7 @@
 ---
 id: issue60-p0-daemon-result-race-001
 scope: glass-dev/daemon-operation-completion
-status: ready
+status: done
 depends-on: []
 ---
 

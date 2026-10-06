@@ -155,10 +155,15 @@ effect occurred.
 
 Running cancellation is cooperative at the Glass tool boundary. A cancel
 request is recorded immediately; the owned synchronous tool is still joined
-and its resources reaped, then the operation becomes `cancelled`. If the worker
-cannot report an authoritative result, the operation becomes `indeterminate`
-and is never presented as success. Daemon shutdown cancels queued/running
-operations and waits for the owned worker before acknowledging shutdown.
+and its resources reaped. If that worker returns a result, the operation keeps
+that result and becomes `succeeded` or `failed`, even when cancellation was
+requested while it was running. The operation becomes `cancelled` only when
+cancellation wins before a result is available, such as cancellation before a
+queued operation starts or a cancelled worker that returns without a result.
+If the worker cannot report an authoritative outcome, the operation becomes
+`indeterminate` and is never presented as success. Daemon shutdown cancels
+queued/running operations and waits for the owned worker before acknowledging
+shutdown.
 
 Direct `workspace.tool` remains available for bounded observations. It rejects
 mutations and known long-running tool families with an instruction to submit an

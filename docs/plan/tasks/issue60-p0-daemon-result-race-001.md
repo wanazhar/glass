@@ -34,6 +34,7 @@ completed or was actually cancelled.
 ## Path
 
 - Daemon operation state and `finish()` in `crates/glass-dev/src/daemon.rs`
+- Running cancellation contract in `docs/daemon.md`
 - Existing daemon operation unit tests and focused race regression coverage
 
 ## Verification

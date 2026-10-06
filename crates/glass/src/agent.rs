@@ -14,6 +14,7 @@ use crate::concurrency;
 use crate::readguard;
 use crate::verify;
 use crate::provider::{self, Event, Provider, Request};
+use crate::warmer::{CacheSnapshot, Warmer};
 use crate::session::{Record, Session};
 use crate::tools::{self, State};
 
@@ -113,6 +114,9 @@ pub struct Agent<'a> {
     steer: Option<String>,
     /// Files the model has demonstrably read. Feeds the read-before-write guard.
     reads: readguard::ReadSet,
+    /// Cache warmer, when the REPL provides one. The Agent owns
+    /// no credentials, so the warmer is injected rather than built.
+    pub warmer: Option<&'a Warmer>,
 }
 
 /// Lines of a written file echoed back to the model.
@@ -159,7 +163,45 @@ impl<'a> Agent<'a> {
             prefix_bytes: 0,
             steer: None,
             reads: readguard::ReadSet::new(),
+            warmer: None,
         }
+    }
+
+    /// Attach the cache warmer.
+    pub fn with_warmer(mut self, warmer: &'a Warmer) -> Self {
+        self.warmer = Some(warmer);
+        self
+    }
+
+    /// Refresh the prompt cache across the idle gap that is
+    /// about to begin, if an extension asked for one and the
+    /// prefix is large enough to be worth the write.
+    ///
+    /// Called when a turn ends and control returns to the
+    /// prompt: that is the moment the harness goes idle, and
+    /// therefore the moment a cold cache would be felt.
+    pub fn schedule_warm(&self) {
+        let Some(warmer) = self.warmer else { return };
+        let Some(policy) = self.extensions.cache_warmer() else { return };
+        if self.prefix_bytes < policy.min_prefix_bytes {
+            return;
+        }
+
+        // Rebuild exactly what the last request sent, so the
+        // refresh lands on the same cache entries a real turn
+        // would read.
+        let mut tools = provider::collect_tools(self.mods);
+        for (n, d, sc) in self.extensions.tools() {
+            if !tools.iter().any(|(existing, _, _)| *existing == n) {
+                tools.push((n, d, sc));
+            }
+        }
+        let snapshot = CacheSnapshot {
+            system: self.system_prompt(),
+            messages: self.session.messages(),
+            tools,
+        };
+        warmer.schedule(policy, snapshot);
     }
 
     /// Fetch extension prompt text once and cache it.
@@ -316,6 +358,7 @@ impl<'a> Agent<'a> {
             self.extensions.turn_end(&out.text, self.prefix_bytes);
 
             if !out.wants_tools() {
+                self.schedule_warm();
                 return Ok((last, Stop::Finished));
             }
 
@@ -782,4 +825,233 @@ impl<'a> Agent<'a> {
         });
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod warm_integration {
+    use super::*;
+    use crate::ext::Registry;
+    use crate::provider::Error;
+    use crate::warmer::{CacheSnapshot, ProviderFactory, Warmer};
+    use glass_mod_api::Message;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    /// Does nothing with input. A named function rather
+    /// than a closure so it is generic over the borrow
+    /// lifetime, which `run_turn` requires.
+    fn no_pump(_: &mut Option<String>) {}
+
+    /// A provider that answers immediately and asks for no
+    /// tools, so a turn finishes in one round.
+    struct MockTurnProvider;
+
+    impl Provider for MockTurnProvider {
+        fn id(&self) -> &str {
+            "mock"
+        }
+        fn stream(
+            &self,
+            _req: &Request<'_>,
+        ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+            Ok(Box::new(
+                vec![Event::Text("ok".into()), Event::Done].into_iter(),
+            ))
+        }
+        fn context_window(&self) -> u32 {
+            200_000
+        }
+    }
+
+    fn counting_factory(
+        calls: Arc<AtomicU64>,
+    ) -> ProviderFactory {
+        Arc::new(move || {
+            struct Counting {
+                calls: Arc<AtomicU64>,
+            }
+            impl Provider for Counting {
+                fn id(&self) -> &str {
+                    "counting"
+                }
+                fn stream(
+                    &self,
+                    _req: &Request<'_>,
+                ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+                    self.calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(Box::new(vec![Event::Done].into_iter()))
+                }
+                fn context_window(&self) -> u32 {
+                    200_000
+                }
+            }
+            Ok(Box::new(Counting {
+                calls: Arc::clone(&calls),
+            }))
+        })
+    }
+
+    /// Path to the real cache-warmer extension, which declares
+    /// the policy the Agent reads.
+    fn warmer_extension() -> String {
+        let root = env!("CARGO_MANIFEST_DIR");
+        format!(
+            "python3 {}/../../extensions/cache-warmer/cache-warmer.py",
+            root
+        )
+    }
+
+    #[test]
+    fn a_finished_turn_schedules_a_cache_refresh() {
+        // The extension declares a 4000-byte minimum, so the
+        // system prompt has to be large enough to clear it —
+        // a tiny prompt must not schedule a refresh, because
+        // warming a few hundred bytes is pure cost.
+        let big_prompt = "x".repeat(5000);
+
+        let dir = std::env::temp_dir().join(format!(
+            "glass-warm-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut session = Session::create(&dir).unwrap();
+        let mut state = State::new();
+        let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
+
+        let mut extensions = Registry::load(
+            &[warmer_extension()],
+            Path::new("."),
+            "mock",
+        );
+
+        let calls = Arc::new(AtomicU64::new(0));
+        let warmer = Warmer::new(counting_factory(Arc::clone(&calls)));
+
+        {
+            let mut agent = Agent::new(
+                &MockTurnProvider,
+                &mut session,
+                &mut state,
+                &no_mods,
+                &mut extensions,
+                Path::new("."),
+            )
+            .with_prompt(big_prompt, None, None)
+            .with_warmer(&warmer);
+
+            assert_eq!(warmer.scheduled(), 0);
+            let result = agent.run_turn(no_pump);
+            assert!(result.is_ok(), "turn should finish cleanly");
+        }
+
+        // The turn ended with no tool calls, so the harness
+        // went idle and a refresh was scheduled for the gap.
+        assert_eq!(
+            warmer.scheduled(),
+            1,
+            "a finished turn must schedule exactly one refresh"
+        );
+
+        // Wait past the extension's refresh delay only if it
+        // was tuned short; with the default 240s we assert on
+        // the schedule, not the firing, so do not block here.
+        let _ = calls;
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_small_prefix_schedules_no_refresh() {
+        // Below the extension's minimum, warming is a net
+        // spend for no latency win, so nothing is scheduled.
+        let dir = std::env::temp_dir().join(format!(
+            "glass-warm-small-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut session = Session::create(&dir).unwrap();
+        let mut state = State::new();
+        let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
+        let mut extensions = Registry::load(
+            &[warmer_extension()],
+            Path::new("."),
+            "mock",
+        );
+
+        let calls = Arc::new(AtomicU64::new(0));
+        let warmer = Warmer::new(counting_factory(Arc::clone(&calls)));
+
+        {
+            let mut agent = Agent::new(
+                &MockTurnProvider,
+                &mut session,
+                &mut state,
+                &no_mods,
+                &mut extensions,
+                Path::new("."),
+            )
+            // Short prompt: well under the 4000-byte minimum.
+            .with_prompt("you are glass".into(), None, None)
+            .with_warmer(&warmer);
+
+            let result = agent.run_turn(no_pump);
+            assert!(result.is_ok());
+        }
+
+        assert_eq!(
+            warmer.scheduled(),
+            0,
+            "a small prefix must not schedule a refresh"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_extension_schedules_no_refresh() {
+        // With no cache-warmer extension loaded, nothing
+        // schedules, which is the default configuration.
+        let dir = std::env::temp_dir().join(format!(
+            "glass-warm-none-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut session = Session::create(&dir).unwrap();
+        let mut state = State::new();
+        let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
+        let mut extensions = Registry::empty();
+
+        let calls = Arc::new(AtomicU64::new(0));
+        let warmer = Warmer::new(counting_factory(Arc::clone(&calls)));
+
+        {
+            let mut agent = Agent::new(
+                &MockTurnProvider,
+                &mut session,
+                &mut state,
+                &no_mods,
+                &mut extensions,
+                Path::new("."),
+            )
+            .with_prompt("x".repeat(5000), None, None)
+            .with_warmer(&warmer);
+
+            let result = agent.run_turn(no_pump);
+            assert!(result.is_ok());
+        }
+
+        assert_eq!(
+            warmer.scheduled(),
+            0,
+            "no extension means no warmer, even on a big prefix"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Silence the unused-import warning for Message, which the
+    // request shape references but this test constructs indirectly.
+    #[allow(dead_code)]
+    fn _message_type_is_used(_: Option<Message>) {}
 }

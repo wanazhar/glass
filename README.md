@@ -76,6 +76,36 @@ The log is append-only, so compaction rebuilds the projection on
 resume rather than reverting to raw history — a resumed session
 does not re-compact and re-pay for a summary it already wrote.
 
+### Cache warmer (disabled by default)
+
+Providers expire the cache a few minutes after the last write. On a
+long task the harness then goes idle — you are reading output, thinking,
+away from the keyboard — and the first turn afterwards pays to re-read
+the whole prefix. `extensions/cache-warmer` refreshes the cache just
+before it expires, so that turn is a hit instead of a miss.
+
+It is off by default, and the reason is worth stating plainly: a cache
+*write* costs 1.25x the prefix while a *miss* costs 1.0x, so each
+refresh is a net spend of about 0.35x the prefix. The only thing it
+buys is latency on the first turn after an idle gap. Enable it if that
+latency is worth the spend:
+
+```toml
+extensions = ["python3 ~/.config/glass/ext/cache-warmer.py"]
+```
+
+The extension declares a *policy*; the host owns the *mechanism*. That
+split is deliberate — a subprocess cannot warm the cache itself, because
+it holds no API key and the host is not reading its stdout between
+turns, which is exactly when a refresh has to happen. So the extension
+says how long to wait and how big the prefix must be, and the host does
+the refreshing in a background thread that a new turn cancels.
+
+Two knobs, both optional: `refresh_after_s` (default 240, just under
+the 300s TTL) and `min_prefix_bytes` (default 4000, so a short prompt
+is never warmed for nothing). Both are tunable by environment variable,
+and `/extensions` shows the active values.
+
 Compare: Codex CLI — the only serious Rust harness in existence — reports ~100MB
 idle RSS and ships an 80MB binary. glass is roughly 50x smaller because it does
 not do the things that make it big: no syntax highlighting, no image codecs, no

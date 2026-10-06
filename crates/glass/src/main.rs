@@ -20,6 +20,7 @@ mod skills;
 mod sse;
 mod tools;
 mod verify;
+mod warmer;
 
 use std::io::Write;
 
@@ -181,6 +182,24 @@ fn repl(
     let keys = input::KeyReader::spawn();
     let mut pending = queue::Queue::new();
 
+    // The cache warmer builds its own provider inside its
+    // background thread: the turn's provider is not `Send`,
+    // but a provider is cheap to construct from configuration,
+    // so the warmer makes a fresh one rather than sharing.
+    let warmer = {
+        let kind = cfg.provider.clone();
+        let base_url = cfg.base_url.clone();
+        let model = cfg.model.clone();
+        let api_key = cfg.api_key();
+        let factory: crate::warmer::ProviderFactory = std::sync::Arc::new(
+            move || {
+                provider::build(&kind, &base_url, api_key.clone(), &model)
+                    .map_err(|e| e.to_string())
+            },
+        );
+        crate::warmer::Warmer::new(factory)
+    };
+
     let (mut w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
     let mut prompt_row = h.saturating_sub(2);
 
@@ -302,6 +321,10 @@ fn repl(
             continue;
         }
 
+        // A new turn supersedes any cache refresh the previous
+        // one scheduled: the user is back, so the next request
+        // rewrites the cache anyway.
+        warmer.begin_turn();
         session.append(Record::User(text.clone()));
         println!("\n\x1b[90m❯\x1b[0m {text}");
 
@@ -323,7 +346,8 @@ fn repl(
                 .prime_extensions()
                 .with_prompt(cfg.system_prompt.clone(), catalogue.clone(), project_instructions.clone())
                 .with_limits(cfg.max_tokens, cfg.reasoning_budget, 24)
-                .with_progress(report);
+                .with_progress(report)
+                .with_warmer(&warmer);
 
                 println!("\x1b[38;5;245m");
                 let mut draft = glass_tui::Editor::new();

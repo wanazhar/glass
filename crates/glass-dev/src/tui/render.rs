@@ -173,6 +173,97 @@ fn surface_area(state: &DevTuiState, area: Rect) -> Rect {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CommandMenuGeometry {
+    pub list_area: Rect,
+    pub list_inner: Rect,
+    pub details_area: Rect,
+    pub item_count: usize,
+    pub scroll_offset: usize,
+}
+
+fn command_menu_regions(area: Rect) -> [Rect; 2] {
+    let rows = if area.height >= 11 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(5), Constraint::Length(5)])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(0)])
+            .split(area)
+    };
+    [rows[0], rows[1]]
+}
+
+fn command_menu_list_block(surface: DevSurface) -> Block<'static> {
+    Block::default()
+        .title(format!(" ACTIONS · {} ", surface.label()))
+        .title_style(
+            Style::default()
+                .fg(ACCENT_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        )
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(PANEL_BORDER))
+        .padding(Padding::horizontal(1))
+}
+
+fn command_menu_scroll_offset(selected: usize, item_count: usize, visible_rows: usize) -> usize {
+    if item_count == 0 || visible_rows == 0 {
+        return 0;
+    }
+    selected
+        .min(item_count - 1)
+        .saturating_add(1)
+        .saturating_sub(visible_rows)
+}
+
+fn command_menu_geometry(state: &DevTuiState, area: Rect) -> CommandMenuGeometry {
+    let [list_area, details_area] = command_menu_regions(area);
+    let list_inner = command_menu_list_block(state.surface).inner(list_area);
+    let item_count = state.surface_actions().len() + 2;
+    let scroll_offset = command_menu_scroll_offset(
+        state.menu_selection,
+        item_count,
+        usize::from(list_inner.height),
+    );
+    CommandMenuGeometry {
+        list_area,
+        list_inner,
+        details_area,
+        item_count,
+        scroll_offset,
+    }
+}
+
+pub(super) fn command_menu_geometry_for_screen(state: &DevTuiState) -> CommandMenuGeometry {
+    let frame_area = Rect::new(
+        0,
+        0,
+        state.terminal_width.max(1),
+        state.terminal_height.max(1),
+    );
+    command_menu_geometry(state, surface_area(state, frame_area))
+}
+
+pub(super) fn command_menu_hit_index(state: &DevTuiState, column: u16, row: u16) -> Option<usize> {
+    let geometry = command_menu_geometry_for_screen(state);
+    let inner = geometry.list_inner;
+    if column < inner.x
+        || column >= inner.x.saturating_add(inner.width)
+        || row < inner.y
+        || row >= inner.y.saturating_add(inner.height)
+    {
+        return None;
+    }
+    let visible_row = usize::from(row - inner.y);
+    let item = geometry.scroll_offset.checked_add(visible_row)?;
+    (item < geometry.item_count).then_some(item)
+}
+
 fn git_header_label(state: &DevTuiState) -> Option<String> {
     if state.git_branch.is_empty() {
         return None;
@@ -3736,39 +3827,18 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             "Unavailable · Esc close"
         };
         let example = command::palette_example(state.surface);
-        let rows = if area.height >= 11 {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(5), Constraint::Length(5)])
-                .split(area)
-        } else {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(1), Constraint::Length(0)])
-                .split(area)
-        };
-        let mut menu_state = ListState::default();
-        menu_state.select(Some(state.menu_selection));
+        let geometry = command_menu_geometry(state, area);
+        let mut menu_state = ListState::default()
+            .with_offset(geometry.scroll_offset)
+            .with_selected(Some(state.menu_selection));
         frame.render_stateful_widget(
             List::new(items)
                 .style(Style::default().bg(PANEL_BACKGROUND))
-                .block(
-                    Block::default()
-                        .title(format!(" ACTIONS · {} ", state.surface.label()))
-                        .title_style(
-                            Style::default()
-                                .fg(ACCENT_BRIGHT)
-                                .add_modifier(Modifier::BOLD),
-                        )
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Plain)
-                        .border_style(Style::default().fg(PANEL_BORDER))
-                        .padding(Padding::horizontal(1)),
-                ),
-            rows[0],
+                .block(command_menu_list_block(state.surface)),
+            geometry.list_area,
             &mut menu_state,
         );
-        if rows[1].height > 0 {
+        if geometry.details_area.height > 0 {
             frame.render_widget(
                 Paragraph::new(panel_text(&format!(
                     "{}\n{}\n{}",
@@ -3786,7 +3856,7 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                         .padding(Padding::horizontal(1)),
                 )
                 .wrap(Wrap { trim: false }),
-                rows[1],
+                geometry.details_area,
             );
         }
         return;

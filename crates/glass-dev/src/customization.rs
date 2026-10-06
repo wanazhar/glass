@@ -167,6 +167,7 @@ pub struct Skill {
 pub enum CustomizationAuthority {
     GlassBuiltIn,
     UserGlobal,
+    TrustedOnce,
     TrustedProject,
     UntrustedProject,
     ExternalClient,
@@ -302,10 +303,10 @@ impl Customization {
     }
 
     pub fn inspect(&self, trust: WorkspaceTrust) -> Vec<CustomizationInspectionItem> {
-        let project_authority = if trust.permits_project_execution() {
-            CustomizationAuthority::TrustedProject
-        } else {
-            CustomizationAuthority::UntrustedProject
+        let project_authority = match trust {
+            WorkspaceTrust::Untrusted => CustomizationAuthority::UntrustedProject,
+            WorkspaceTrust::TrustedOnce => CustomizationAuthority::TrustedOnce,
+            WorkspaceTrust::TrustedProject => CustomizationAuthority::TrustedProject,
         };
         let source = self
             .config_path

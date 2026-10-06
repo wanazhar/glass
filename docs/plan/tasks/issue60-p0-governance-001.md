@@ -1,7 +1,7 @@
 ---
 id: issue60-p0-governance-001
 scope: glass-dev/trust-mutation-governance
-status: ready
+status: in-progress
 depends-on: []
 ---
 

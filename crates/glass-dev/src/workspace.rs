@@ -656,7 +656,7 @@ impl DevelopmentWorkspace {
     }
 
     pub fn trust_inspection(&self) -> Vec<crate::customization::CustomizationInspectionItem> {
-        self.customization.inspect(self.trust)
+        self.customization.inspect(self.execution_trust())
     }
 
     /// Apply an explicit decision from a local human surface. Remote tool,
@@ -826,7 +826,7 @@ impl DevelopmentWorkspace {
                         actor: executor.clone(),
                         allow_mutation: authorization.allow_mutation && policy.mutation_authority,
                         confirmed: authorization.confirmed && policy.mutation_authority,
-                        unrestricted: policy.mutation_authority && authorization.confirmed,
+                        unrestricted: policy.mutation_authority && authorization.permits_mutation(),
                     },
                     initiator: Some(initiator.clone()),
                     expected_generation: generation,
@@ -853,7 +853,8 @@ impl DevelopmentWorkspace {
     }
 
     pub fn tool_descriptors(&self) -> Vec<crate::development::ToolDescriptor> {
-        self.tools.descriptors()
+        self.tools
+            .descriptors_for(self.trust, self.unrestricted_execution)
     }
 
     pub fn execute_tool(
@@ -1213,6 +1214,59 @@ mod tests {
     }
 
     #[test]
+    fn tool_mutations_require_authority_and_confirmation_pair() {
+        let root = test_root();
+        std::fs::create_dir_all(&root).unwrap();
+        let mut workspace = DevelopmentWorkspace::open(&root).unwrap();
+        workspace
+            .apply_local_trust_decision(LocalTrustDecision::TrustOnce)
+            .unwrap();
+        let call = ToolCall {
+            id: "mutation-pair".into(),
+            name: "glass.file.mkdir".into(),
+            arguments: serde_json::json!({"path":"written-dir"}),
+        };
+
+        for (allow_mutation, confirmed) in [(false, false), (false, true), (true, false)] {
+            let context = DevelopmentToolContext {
+                authorization: ToolAuthorization {
+                    actor: Actor::external("pair-test"),
+                    allow_mutation,
+                    confirmed,
+                    unrestricted: false,
+                },
+                initiator: None,
+                expected_generation: workspace.generation(),
+                expected_project_revision: workspace.project().revision(),
+            };
+            let error = workspace
+                .execute_tool(&call, &context)
+                .expect_err("a missing authorization factor must block mutation");
+            assert!(
+                error
+                    .to_string()
+                    .contains("mutation authority and confirmation")
+            );
+            assert!(!root.join("written-dir").exists());
+        }
+
+        let authorized = DevelopmentToolContext {
+            authorization: ToolAuthorization {
+                actor: Actor::external("pair-test"),
+                allow_mutation: true,
+                confirmed: true,
+                unrestricted: false,
+            },
+            initiator: None,
+            expected_generation: workspace.generation(),
+            expected_project_revision: workspace.project().revision(),
+        };
+        workspace.execute_tool(&call, &authorized).unwrap();
+        assert!(root.join("written-dir").is_dir());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn untrusted_open_never_executes_or_privileges_project_configuration() {
         let root = test_root();
         let store = WorkspaceTrustStore::at(root.with_extension("trust.json"));
@@ -1314,6 +1368,56 @@ command = '''{command}'''
             assert!(error.to_string().contains("trust"), "{name}: {error}");
         }
         assert!(!marker.exists(), "an untrusted command executed");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn trust_inspection_reports_effective_trust_without_persisting_yolo() {
+        let root = test_root();
+        std::fs::create_dir_all(root.join(".glass/skills")).unwrap();
+        std::fs::write(
+            root.join(".glass/skills/project.md"),
+            "Repository instructions are active only under effective trust.",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("glass.toml"),
+            "[tools.check]
+description='check'
+command='true'
+",
+        )
+        .unwrap();
+
+        let mut workspace = DevelopmentWorkspace::open(&root).unwrap();
+        assert_eq!(workspace.trust(), WorkspaceTrust::Untrusted);
+        let untrusted = workspace.trust_inspection();
+        assert!(untrusted.iter().any(|item| {
+            item.kind == "skill"
+                && item.name == "project"
+                && item.authority == crate::customization::CustomizationAuthority::UntrustedProject
+        }));
+        assert!(
+            workspace
+                .tool_descriptors()
+                .iter()
+                .any(|descriptor| descriptor.name == "glass.custom.check" && !descriptor.available)
+        );
+
+        workspace.enable_unrestricted_execution().unwrap();
+        assert_eq!(workspace.trust(), WorkspaceTrust::Untrusted);
+        assert!(workspace.trust_inspection().iter().any(|item| {
+            item.kind == "skill"
+                && item.name == "project"
+                && item.authority == crate::customization::CustomizationAuthority::TrustedOnce
+        }));
+        assert!(
+            workspace
+                .tool_descriptors()
+                .iter()
+                .any(|descriptor| descriptor.name == "glass.custom.check" && descriptor.available)
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }

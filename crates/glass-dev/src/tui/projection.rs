@@ -26,6 +26,7 @@ pub fn trust_items(items: &[crate::customization::CustomizationInspectionItem]) 
             match item.authority {
                 crate::customization::CustomizationAuthority::GlassBuiltIn => "built-in",
                 crate::customization::CustomizationAuthority::UserGlobal => "user-global",
+                crate::customization::CustomizationAuthority::TrustedOnce => "trusted-once",
                 crate::customization::CustomizationAuthority::TrustedProject => "trusted-project",
                 crate::customization::CustomizationAuthority::UntrustedProject =>
                     "untrusted-project",

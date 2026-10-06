@@ -217,7 +217,7 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
             dispatch_workspace(action)?;
             return Ok(());
         }
-        Some(Commands::Project { action }) => {
+        Some(Commands::Project { action, .. }) => {
             let _ = action;
             return Err("project commands belong to the `glass` development product".into());
         }

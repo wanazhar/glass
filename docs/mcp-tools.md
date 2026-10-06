@@ -11,7 +11,12 @@ cancellation, concurrency, policy, errors, and session security.
 
 Tool calls use MCP JSON-RPC framing. Camel-case input fields map to canonical
 Glass request payloads; MCP-only fields such as `responseMode` and
-`includeTrace` do not become part of browser or task contracts.
+`includeTrace` do not become part of browser or task contracts. Development
+tool schemas mark mutations with the root-level `x-glass-mutating` extension;
+`_glass` remains an ordinary optional input property carrying actor and
+authorization metadata. Untrusted workspaces omit trust-blocked tools from
+`tools/list`, and calls use the same effective-trust gate as the resident
+router.
 
 ## Resident development tool inventory
 

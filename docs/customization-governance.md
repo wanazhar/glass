@@ -11,6 +11,7 @@ trusted.
 |---|---|---|
 | `glassBuiltIn` | runtime rules and built-in tools | shipped Glass code and policy |
 | `userGlobal` | files under the user Glass skill directory | local user configuration |
+| `trustedOnce` | project content activated for one process | explicit process-local trust; not persisted |
 | `trustedProject` | trusted `glass.toml` and `.glass/skills` | repository content explicitly trusted by a local human |
 | `untrustedProject` | the same project content before trust | visible for inspection; agent context and execution blocked |
 | `externalClient` | CLI, MCP, daemon, or other connected actor | caller identity and negotiated authority; never a customization source |
@@ -31,10 +32,11 @@ PROJECT  project-style              .glass/skills/project-style.md
 ```
 
 Project skills are visible as `untrustedProject` before trust but are omitted
-from the privileged agent instructions in normal mode. An explicit
-process-local `glass --yolo` run activates them as `trustedProject` execution
-context without persisting a trust decision. User-global skills remain
-independent of project trust.
+from the privileged agent instructions in normal mode. A process-local
+`glass --yolo` run reports them as `trustedOnce` execution context without
+persisting a trust decision. Availability, trust inspection, and execution all
+use this same effective trust. User-global skills remain independent of
+project trust.
 
 ## Hook evidence
 

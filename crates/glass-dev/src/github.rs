@@ -543,11 +543,8 @@ pub fn ship(root: &Path, request: &GitHubShipRequest) -> DevelopmentResult<GitHu
     let branch = current_branch(root).ok_or_else(|| {
         DevelopmentError::Conflict("GitHub ship requires a named current branch".into())
     })?;
-    if matches!(branch.as_str(), "main" | "master") {
-        return Err(DevelopmentError::Conflict(
-            "GitHub ship requires a feature branch, not the default branch".into(),
-        ));
-    }
+    let default_branch = default_branch(root, &repository.name_with_owner)?;
+    require_feature_branch(&branch, &default_branch)?;
     let title = bounded_optional("title", request.title.as_deref(), 512)?;
     let body = bounded_optional("body", request.body.as_deref(), 16 * 1024)?;
     let base = bounded_optional("base", request.base.as_deref(), 256)?;
@@ -584,6 +581,60 @@ pub fn ship(root: &Path, request: &GitHubShipRequest) -> DevelopmentResult<GitHu
         url,
         output,
     })
+}
+
+fn default_branch(root: &Path, repository: &str) -> DevelopmentResult<String> {
+    let (exit, stdout, stderr) = run_gh_capture(
+        root,
+        &[
+            "repo",
+            "view",
+            repository,
+            "--json",
+            "defaultBranchRef",
+            "--jq",
+            ".defaultBranchRef.name",
+        ],
+        REVIEW_TIMEOUT,
+        MAX_REMOTE_BYTES,
+    )?;
+    if !exit.success() {
+        return Err(DevelopmentError::Conflict(format!(
+            "could not determine GitHub default branch: {}",
+            compact_process_output(&stdout, &stderr)
+        )));
+    }
+    parse_default_branch(&stdout).ok_or_else(|| {
+        DevelopmentError::Conflict("GitHub returned an invalid or empty default branch".into())
+    })
+}
+
+fn parse_default_branch(output: &[u8]) -> Option<String> {
+    let branch = std::str::from_utf8(output).ok()?.trim();
+    if branch.is_empty()
+        || branch.len() > 256
+        || branch.starts_with('-')
+        || branch
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+    {
+        return None;
+    }
+    Some(branch.to_string())
+}
+
+fn require_feature_branch(current: &str, default: &str) -> DevelopmentResult<()> {
+    if current == default {
+        return Err(DevelopmentError::Conflict(format!(
+            "GitHub ship requires a feature branch, not repository default branch {default}"
+        )));
+    }
+    if matches!(current, "main" | "master") {
+        return Err(DevelopmentError::Conflict(format!(
+            "GitHub ship requires a feature branch, not protected branch {current}"
+        )));
+    }
+    Ok(())
 }
 
 fn current_branch(root: &Path) -> Option<String> {
@@ -868,6 +919,24 @@ mod tests {
         ] {
             assert!(parse_github_remote(remote).is_none(), "{remote}");
         }
+    }
+
+    #[test]
+    fn ship_protects_repository_default_branch_and_well_known_defaults() {
+        assert_eq!(
+            parse_default_branch(b"develop\n").as_deref(),
+            Some("develop")
+        );
+        assert!(parse_default_branch(b"\n").is_none());
+        assert!(parse_default_branch(b"main branch\n").is_none());
+        assert!(require_feature_branch("feature/fix", "develop").is_ok());
+        assert!(
+            require_feature_branch("develop", "develop")
+                .unwrap_err()
+                .to_string()
+                .contains("repository default branch develop")
+        );
+        assert!(require_feature_branch("main", "develop").is_err());
     }
 
     #[test]

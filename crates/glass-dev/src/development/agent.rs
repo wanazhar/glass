@@ -208,6 +208,16 @@ pub struct ToolAuthorization {
 }
 
 impl ToolAuthorization {
+    /// Whether these factors carry both required mutation authorizations.
+    pub fn factors_permit_mutation(allow_mutation: bool, confirmed: bool) -> bool {
+        allow_mutation && confirmed
+    }
+
+    /// Whether this request carries both required mutation authorization factors.
+    pub fn permits_mutation(&self) -> bool {
+        Self::factors_permit_mutation(self.allow_mutation, self.confirmed)
+    }
+
     pub fn read_only(actor: Actor) -> Self {
         Self {
             actor,

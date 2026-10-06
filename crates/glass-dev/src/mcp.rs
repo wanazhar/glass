@@ -48,13 +48,19 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
                 input_schema: augment_schema(descriptor.input_schema, descriptor.mutating),
             })
             .collect::<Vec<_>>();
-        tools.extend(LEGACY_TOOLS.iter().map(|(name, mutating)| HostMcpTool {
-            name: (*name).into(),
-            description: format!(
-                "Trust-governed compatibility route for legacy development tool {name}"
-            ),
-            input_schema: augment_schema(json!({"type":"object"}), *mutating),
-        }));
+        let project_execution_permitted = workspace.execution_trust().permits_project_execution();
+        tools.extend(
+            LEGACY_TOOLS
+                .iter()
+                .filter(|(_, mutating)| !*mutating || project_execution_permitted)
+                .map(|(name, mutating)| HostMcpTool {
+                    name: (*name).into(),
+                    description: format!(
+                        "Trust-governed compatibility route for legacy development tool {name}"
+                    ),
+                    input_schema: augment_schema(json!({"type":"object"}), *mutating),
+                }),
+        );
         tools
     }
 
@@ -86,45 +92,46 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
             .map_err(|_| "development MCP workspace poisoned".to_string())?;
         let legacy = LEGACY_TOOLS.iter().find(|(legacy, _)| *legacy == name);
         let legacy_execution = legacy.is_some();
+        let execution_trust = workspace.execution_trust();
         let descriptor = if legacy_execution {
+            let mutating = legacy.expect("legacy tool checked above").1;
             crate::development::ToolDescriptor {
                 name: name.into(),
                 description: format!("Trust-governed compatibility route {name}"),
                 input_schema: json!({"type":"object"}),
-                mutating: legacy.expect("legacy tool checked above").1,
-                available: true,
-                unavailable_reason: None,
+                mutating,
+                available: !mutating || execution_trust.permits_project_execution(),
+                unavailable_reason: (mutating && !execution_trust.permits_project_execution())
+                    .then(|| format!("{name} is blocked until the workspace is trusted")),
             }
         } else {
             workspace
                 .tool_descriptors()
                 .into_iter()
-                .find(|descriptor| descriptor.name == name && descriptor.available)
+                .find(|descriptor| descriptor.name == name)
                 .ok_or_else(|| format!("unknown development MCP tool {name}"))?
         };
+        let allow_mutation = metadata
+            .get("allowMutation")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let confirmed = metadata
+            .get("confirmed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let authorized = self.unrestricted
-            || (metadata
-                .get("allowMutation")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-                && metadata
-                    .get("confirmed")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false));
+            || ToolAuthorization::factors_permit_mutation(allow_mutation, confirmed);
+        if !descriptor.available {
+            return Err(descriptor
+                .unavailable_reason
+                .unwrap_or_else(|| format!("{name} is unavailable")));
+        }
         if descriptor.mutating && !authorized {
             return Err(format!(
                 "{name} requires _glass.allowMutation=true and _glass.confirmed=true"
             ));
         }
         let (name, arguments) = if legacy_execution {
-            if descriptor.mutating
-                && !self.unrestricted
-                && !workspace.trust().permits_project_execution()
-            {
-                return Err(format!(
-                    "{name} is blocked until the workspace is trusted by a local user"
-                ));
-            }
             translate_legacy_execution(name, arguments, workspace.root())?
         } else {
             (name.to_string(), arguments)
@@ -132,8 +139,8 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
         let context = DevelopmentToolContext {
             authorization: ToolAuthorization {
                 actor: Actor::external(actor),
-                allow_mutation: authorized,
-                confirmed: authorized,
+                allow_mutation: self.unrestricted || allow_mutation,
+                confirmed: self.unrestricted || confirmed,
                 unrestricted: self.unrestricted,
             },
             initiator: None,
@@ -251,17 +258,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mutation_extension_is_root_level_and_glass_metadata_stays_a_property() {
+        let schema = augment_schema(
+            json!({"type":"object","properties":{"path":{"type":"string"}}}),
+            true,
+        );
+        assert_eq!(schema["x-glass-mutating"], Value::Bool(true));
+        assert!(schema["properties"]["x-glass-mutating"].is_null());
+        assert!(schema["properties"]["_glass"].is_object());
+        assert_eq!(schema["properties"]["path"]["type"], "string");
+    }
+
+    #[test]
     fn backend_lists_and_executes_governed_resident_tools() {
         let root = std::env::temp_dir().join(format!("glass-mcp-backend-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("note.txt"), "resident\n").unwrap();
         let backend = DevelopmentMcpBackend::open(&root, false).unwrap();
+        let listed = backend.tools();
+        assert!(listed.iter().any(|tool| tool.name == "glass.file.read"));
         assert!(
-            backend
-                .tools()
-                .iter()
-                .any(|tool| tool.name == "glass.file.read")
+            !listed.iter().any(|tool| tool.name == "glass.file.write"),
+            "untrusted listing must hide tools the execution router blocks"
+        );
+        assert!(
+            !listed.iter().any(|tool| tool.name == "project.edit"),
+            "legacy mutating routes must follow the same trust listing"
         );
         let read = backend
             .call("glass.file.read", json!({"path":"note.txt"}))

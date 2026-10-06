@@ -1879,34 +1879,26 @@ fn git_branch(root: &Path) -> Option<String> {
 }
 
 fn git_statuses(root: &Path) -> BTreeMap<String, String> {
-    let Some(output) = crate::git::git_command(root)
-        .args([
-            "-c",
-            "alias.status=",
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--untracked-files=all",
-        ])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-    else {
+    let Ok(service) = crate::git::GitService::open(root) else {
         return BTreeMap::new();
     };
-    let mut statuses = BTreeMap::new();
-    for entry in output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|entry| entry.len() >= 4)
-    {
-        let status = String::from_utf8_lossy(&entry[..2]).trim().to_string();
-        let path = String::from_utf8_lossy(&entry[3..]).into_owned();
-        if !path.is_empty() {
-            statuses.insert(path, status);
-        }
-    }
-    statuses
+    let Ok(status) = service.status() else {
+        return BTreeMap::new();
+    };
+    status
+        .entries
+        .into_iter()
+        .map(|entry| {
+            let value = if entry.untracked {
+                "??".to_string()
+            } else {
+                format!("{}{}", entry.index_status, entry.worktree_status)
+                    .trim()
+                    .to_string()
+            };
+            (entry.path, value)
+        })
+        .collect()
 }
 
 fn detect_framework(root: &Path) -> Option<String> {
@@ -2025,6 +2017,57 @@ mod tests {
         .unwrap();
         fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
         root
+    }
+
+    #[test]
+    fn project_file_status_uses_porcelain_v2_rename_paths() {
+        let root = fixture();
+        for arguments in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "Glass Test"],
+            vec!["config", "user.email", "glass@example.invalid"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(arguments)
+                    .current_dir(&root)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let original = "rename source with enough content to pass Git's similarity check
+";
+        fs::write(root.join("old name.txt"), original).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "--", "old name.txt"])
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["commit", "-qm", "test: add rename fixture"])
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["mv", "--", "old name.txt", "new name.txt"])
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        let statuses = git_statuses(&root);
+        assert_eq!(statuses.get("new name.txt").map(String::as_str), Some("R"));
+        assert!(!statuses.contains_key("old name.txt"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

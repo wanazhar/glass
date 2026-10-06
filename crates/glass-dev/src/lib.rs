@@ -159,11 +159,6 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         )?);
         return glass_browser::mcp::server::run_mcp_server_with_backend(&cli, backend).await;
     }
-    if cli.browser_runtime != glass_browser::BrowserRuntime::Chromium
-        || cli.browser_endpoint.is_some()
-    {
-        return glass_browser::cli::runner::dispatch(cli).await;
-    }
     if let Some(glass_browser::cli::args::Commands::Agent { action }) = &cli.command
         && matches!(
             action,
@@ -186,9 +181,14 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(glass_browser::cli::args::Commands::Daemon { action }) = &cli.command {
         return daemon::dispatch(action, cli.yolo).await;
     }
-    if let Some(glass_browser::cli::args::Commands::Project { action }) = &cli.command {
+    if let Some(glass_browser::cli::args::Commands::Project {
+        action,
+        allow_mutation,
+        yes,
+    }) = &cli.command
+    {
         enforce_legacy_development_trust(&cli)?;
-        return cli::dispatch_project(action);
+        return cli::dispatch_project(action, *allow_mutation || cli.yolo, *yes || cli.yolo);
     }
     if cli.prompt.is_none()
         && matches!(
@@ -200,6 +200,11 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
     if cli.command.is_none() && cli.prompt.is_none() && !cli.mcp {
         return run_development_tui(&cli);
+    }
+    if cli.browser_runtime != glass_browser::BrowserRuntime::Chromium
+        || cli.browser_endpoint.is_some()
+    {
+        return glass_browser::cli::runner::dispatch(cli).await;
     }
     enforce_legacy_development_trust(&cli)?;
     glass_browser::cli::runner::dispatch(cli).await
@@ -231,7 +236,7 @@ fn enforce_legacy_development_trust(cli: &Cli) -> Result<(), Box<dyn std::error:
     }
 
     let (root, safe_static) = match cli.command.as_ref() {
-        Some(Commands::Project { action }) => {
+        Some(Commands::Project { action, .. }) => {
             let root = match action {
                 ProjectCommand::Inspect { root }
                 | ProjectCommand::Files { root }
@@ -263,8 +268,11 @@ fn enforce_legacy_development_trust(cli: &Cli) -> Result<(), Box<dyn std::error:
                     | ProjectCommand::Search { .. }
                     | ProjectCommand::Read { .. }
                     | ProjectCommand::Diff { .. }
-                    | ProjectCommand::Graph { .. }
-                    | ProjectCommand::Breakpoint { .. }
+                    | ProjectCommand::Graph {
+                        action: glass_browser::cli::args::ProjectGraphCommand::Entity { .. }
+                            | glass_browser::cli::args::ProjectGraphCommand::Source { .. },
+                        ..
+                    }
                     | ProjectCommand::Timeline { .. }
                     | ProjectCommand::Replay { .. }
             );
@@ -378,4 +386,68 @@ async fn dispatch_external_tool(
         expected_project_revision: workspace.project().revision(),
     };
     Ok(workspace.execute_tool(&call, &context)?)
+}
+
+#[cfg(test)]
+mod authorization_boundary_tests {
+    use super::*;
+    use clap::Parser;
+    use glass_browser::cli::args::Cli;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn cli_agent_tool_uses_workspace_router_trust_gate() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-cli-agent-tool-{}-{}",
+            std::process::id(),
+            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let call = crate::development::ToolCall {
+            id: "cli-boundary-check".into(),
+            name: "glass.file.write".into(),
+            arguments: serde_json::json!({"path":"blocked.txt","content":"blocked"}),
+        };
+        let call = serde_json::to_string(&call).unwrap();
+        let root_arg = root.to_str().unwrap().to_string();
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let cli = Cli::try_parse_from([
+                    "glass",
+                    "agent",
+                    "tool",
+                    call.as_str(),
+                    "--root",
+                    root_arg.as_str(),
+                    "--allow-mutation",
+                    "--yes",
+                ])
+                .unwrap();
+                assert_ne!(
+                    cli.browser_runtime,
+                    glass_browser::BrowserRuntime::Chromium,
+                    "the test must cover Glass Dev's default native runtime route"
+                );
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let error = runtime.block_on(dispatch(cli)).expect_err(
+                    "CLI tools must pass through the shared workspace authorization route",
+                );
+                assert!(
+                    error
+                        .to_string()
+                        .contains("blocked until the workspace is trusted")
+                );
+                assert!(!root.join("blocked.txt").exists());
+                std::fs::remove_dir_all(root).unwrap();
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 }

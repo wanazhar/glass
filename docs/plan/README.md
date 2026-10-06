@@ -42,7 +42,9 @@ Issue #60 checklist only when its acceptance is met. Keep #60 open while any
 P0/P1 work remains. See [the issue delivery analysis](analysis/issue-60.md).
 
 The issue is authorized for focused commits pushed to `main`; no release, tag,
-or publication is in scope.
+or publication is in scope. The completed-results/cancellation race from
+[source report #55](tasks/issue60-p0-daemon-result-race-001.md) is one of the
+next bounded P0 tasks.
 
 ## Active plan: Glass native browser engine (issue #40)
 

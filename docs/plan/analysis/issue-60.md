@@ -55,9 +55,10 @@ changes are insufficient where the issue names multiple entry points.
 4. **P1 TUI, editor, browser, workspace, and MCP reliability.** The accepted
    overlay-priority slice is recorded in the
    [TUI overlay task](../tasks/issue60-p1-tui-overlay-priority-001.md). Continue
-   with stale
-   revisions, orphaned jobs, snapshot state, editor metadata, browser identity,
-   schemas, and persistent option forwarding.
+   with unified typed-command/menu/palette dispatch in the
+   [TUI command-routing task](../tasks/issue60-p1-tui-command-routing-001.md),
+   then resolve stale revisions, orphaned jobs, snapshot state, editor
+   metadata, browser identity, schemas, and persistent option forwarding.
 5. **P2 functional/UX contracts, then P3 consistency.** Align surfaces,
    layout/pointer behavior, help, CLI aliases, and low-risk presentation.
 

@@ -188,8 +188,12 @@ mouse, paste, or surface input while a higher-priority overlay is active.
 The command center lists actions for the current surface plus Search commands and
 Quit. Search accepts a typed route, including expert commands such as
 `help`/`quit`; action placeholders are prefilled without `NAME`, `PATH`, or
-other argument tokens. Browser action commands are delegated to the embedded
-browser workspace and preserve its revision checks.
+other argument tokens. Complete typed commands and their arguments retain their
+route semantics; partial queries resolve through the filtered action list.
+Palette selection, keyboard menu activation, and pointer menu activation use
+the same action availability, prefill, execution, and status path. Browser
+action commands are delegated to the embedded browser workspace and preserve
+its revision checks.
 
 ### Native browser JavaScript dialog overlay
 
@@ -387,15 +391,19 @@ observation. Browser start failures expose a recovery sheet: attach a compatible
 endpoint, launch an isolated automatic port, retry the preferred port (where
 applicable), or dismiss. Project and agent state survive browser recovery.
 
-`browser view` (from the App action menu or palette) toggles live presentation;
-there is no standalone `v` toggle in the Glass Dev reducer (`v` selects App in
-wide navigation). The selected path is Herdr, Kitty, or bounded ANSI when
-available and allowed, otherwise Semantic-only with a visible reason. In App,
-ANSI frames use a bounded `AnsiPane`; Herdr uses its latest-frame queue; Kitty
-writes native graphics after Ratatui and clears/repositions on geometry change.
-Live capture is off by default unless CLI live mode is On/Auto, and an
-unavailable path clears the toggle instead of claiming success. Visual requests
-are coalesced and do not block key handling.
+`browser view` from typed palette input, the App action menu, or a selected
+palette action toggles live presentation through one queued runtime request;
+pointer menu activation uses the same menu action path. There is no standalone
+`v` toggle in the Glass Dev reducer (`v` selects App in wide navigation). The
+selected path is Herdr, Kitty, or bounded ANSI when available and allowed,
+otherwise Semantic-only with a visible reason. In App, ANSI frames use a
+bounded `AnsiPane`; Herdr uses its latest-frame queue; Kitty writes native
+graphics after Ratatui and clears/repositions on geometry change. Live capture
+is off by default unless CLI live mode is On/Auto, and an unavailable path
+clears the toggle instead of claiming success. Agent-watch activation and
+asynchronous screenshot failures are reconciled against the visual runtime so
+the advertised workspace presentation stays aligned. Visual requests are
+coalesced and do not block key handling.
 
 Terminal process actions are governed and bounded: `s` queues the detected
 project dev command, while palette routes can start a custom command, inspect

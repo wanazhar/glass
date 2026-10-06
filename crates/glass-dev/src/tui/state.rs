@@ -573,6 +573,7 @@ pub struct DevTuiState {
     pub browser_target_query: String,
     pub browser_target_selection: usize,
     pub browser_visual_live: bool,
+    pending_browser_visual_request: Option<BrowserVisualRequest>,
     pub browser_observe_pending: bool,
     pub browser_ansi: AnsiCanvas,
     pub browser_pane: Option<AnsiPane>,
@@ -584,6 +585,13 @@ pub struct DevTuiState {
     pub private_cockpit: Option<crate::development::LocalCockpit>,
     pub workflow_recording: Option<TuiWorkflowRecording>,
     pending_fim: Option<PendingFim>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BrowserVisualRequest {
+    pub(crate) live: bool,
+    pub(crate) status: Option<String>,
+    pub(crate) failure: Option<String>,
 }
 
 impl DevTuiState {
@@ -878,6 +886,7 @@ impl DevTuiState {
             browser_target_query: String::new(),
             browser_target_selection: 0,
             browser_visual_live: false,
+            pending_browser_visual_request: None,
             browser_observe_pending: false,
             browser_ansi: AnsiCanvas::default(),
             browser_pane: None,
@@ -1093,7 +1102,7 @@ impl DevTuiState {
                         .then_some("the working tree has no changes")
                 }
             }
-            "git diff" => {
+            "git diff selected" => {
                 if let Some(reason) = snapshot_pending() {
                     Some(reason)
                 } else {
@@ -1381,79 +1390,8 @@ impl DevTuiState {
         let Some(action) = self.surface_actions().get(self.menu_selection).copied() else {
             return;
         };
-        if let Some(reason) = self.surface_action_unavailable_reason(action) {
-            self.status = format!("{} unavailable · {reason}", action.label);
-            return;
-        }
-        self.menu_open = false;
-        let name = action.label;
-        let hint = action.command;
-        if hint == "browser view" {
-            self.surface = DevSurface::App;
-            self.browser_visual_live = !self.browser_visual_live;
-            self.status = if self.browser_visual_live {
-                "Live view starting · command palette can stop it".into()
-            } else {
-                "Live view off · semantic inspection remains available".into()
-            };
-            return;
-        }
-        if hint == "process start dev" {
-            self.request_detected_dev();
-            return;
-        }
-        if hint == "git diff" && self.surface == DevSurface::Git {
-            self.git_diff_requested = true;
-            self.status = "Git diff queued · loading off-thread".into();
-            return;
-        }
-        if self.surface == DevSurface::Trust && matches!(hint, "I" | "O" | "1" | "T") {
-            self.handle_printable(hint.chars().next().expect("trust action hint is non-empty"));
-            return;
-        }
-        if hint == "i" {
-            if self.surface == DevSurface::Agent {
-                self.open_composer();
-            } else {
-                self.enter_code_edit();
-            }
-        } else if hint == "Enter" {
-            if self.surface == DevSurface::Code {
-                self.open_selected_file();
-            }
-        } else if hint == "Ctrl-S" && self.surface == DevSurface::Code {
-            self.edit_code_key(
-                crossterm::event::KeyCode::Char('s'),
-                crossterm::event::KeyModifiers::CONTROL,
-            );
-        } else if action.key == ":" {
-            let has_placeholder = hint.split_whitespace().any(|token| {
-                token
-                    .chars()
-                    .all(|character| character.is_ascii_uppercase() || character == '_')
-            });
-            if has_placeholder {
-                // Strip documentation placeholders from the editable command
-                // so users can type values immediately instead of backspacing
-                // `NAME`, `QUERY`, or `RUN_ID` out of the input line.
-                let prefill = hint
-                    .split_whitespace()
-                    .take_while(|token| {
-                        !token
-                            .chars()
-                            .all(|character| character.is_ascii_uppercase() || character == '_')
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                self.open_palette_with(&format!("{prefill} "));
-            } else {
-                match command::execute(self, hint) {
-                    Ok(message) => self.status = message,
-                    Err(error) => self.status = format!("{name} unavailable: {error}"),
-                }
-            }
-        } else {
-            self.status = format!("{name} is available from this surface");
+        if let Some(input) = self.resolve_surface_action(action) {
+            self.dispatch_command(&input);
         }
     }
 
@@ -1745,34 +1683,23 @@ impl DevTuiState {
 
     pub fn submit_palette(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let typed = self.command_input.trim().to_string();
-        let typed_root = typed.split_whitespace().next().unwrap_or("");
-        let command = match (typed_root, self.selected_palette_action()) {
-            ("a" | "actions" | "help" | "?" | "q" | "quit" | "open" | "search" | "doctor", _) => {
-                self.command_mode = false;
-                self.command_input.clear();
-                self.command_cursor = 0;
-                self.command_history_index = None;
-                self.palette_scroll = 0;
-                self.palette_selection = 0;
-                Some(typed)
+        let resolution =
+            command::resolve_palette_submission(&typed, self.selected_palette_action());
+        let input = match resolution {
+            command::PaletteResolution::TypedCommand(input) => {
+                self.reset_palette_for_dispatch();
+                Some(input)
             }
-            (_, Some(action)) => self.prepare_palette_action(action),
-            (_, None) if typed.is_empty() => {
+            command::PaletteResolution::SelectedAction(action) => {
+                self.resolve_surface_action(action)
+            }
+            command::PaletteResolution::NoMatch => {
                 self.status = "No matching palette action · Esc closes".into();
                 return;
             }
-            (_, None) => {
-                self.command_mode = false;
-                self.command_input.clear();
-                self.command_cursor = 0;
-                self.command_history_index = None;
-                self.palette_scroll = 0;
-                self.palette_selection = 0;
-                Some(typed)
-            }
         };
 
-        let Some(input) = command else {
+        let Some(input) = input else {
             if !self.command_mode {
                 self.submit_queued_tool(worker);
                 worker.request_refresh();
@@ -1786,7 +1713,22 @@ impl DevTuiState {
                 self.command_history.remove(0);
             }
         }
-        match command::execute(self, &input) {
+        self.dispatch_command(&input);
+        self.submit_queued_tool(worker);
+        worker.request_refresh();
+    }
+
+    fn reset_palette_for_dispatch(&mut self) {
+        self.command_mode = false;
+        self.command_input.clear();
+        self.command_cursor = 0;
+        self.command_history_index = None;
+        self.palette_scroll = 0;
+        self.palette_selection = 0;
+    }
+
+    fn dispatch_command(&mut self, input: &str) {
+        match command::execute(self, input) {
             Ok(message) => {
                 self.palette_error = None;
                 self.status = message;
@@ -1796,12 +1738,16 @@ impl DevTuiState {
                 self.status = format!("Error: {error}");
             }
         }
-        self.submit_queued_tool(worker);
-        worker.request_refresh();
     }
 
-    fn prepare_palette_action(&mut self, action: command::SurfaceAction) -> Option<String> {
+    fn resolve_surface_action(&mut self, action: command::SurfaceAction) -> Option<String> {
+        if let Some(reason) = self.surface_action_unavailable_reason(action) {
+            self.palette_error = Some(reason.into());
+            self.status = format!("{} unavailable · {reason}", action.label);
+            return None;
+        }
         self.palette_error = None;
+        self.menu_open = false;
         match action.command {
             "i" => {
                 self.command_mode = false;
@@ -1830,23 +1776,6 @@ impl DevTuiState {
                 self.surface = DevSurface::App;
                 self.open_palette_with("browser type ");
                 self.status = "Type · enter the target and text, then press Enter".into();
-                None
-            }
-            "browser view" => {
-                self.command_mode = false;
-                self.browser_visual_live = !self.browser_visual_live;
-                self.status = if self.browser_visual_live {
-                    "Live view starting · command palette can stop it".into()
-                } else {
-                    "Live view off · semantic inspection remains available".into()
-                };
-                None
-            }
-            "process start dev"
-                if matches!(self.surface, DevSurface::Terminal | DevSurface::More) =>
-            {
-                self.command_mode = false;
-                self.request_detected_dev();
                 None
             }
             "debug threads SESSION" | "debug continue SESSION THREAD_ID" => {
@@ -1895,12 +1824,6 @@ impl DevTuiState {
                     None
                 }
             }
-            "git diff" if self.surface == DevSurface::Git => {
-                self.command_mode = false;
-                self.git_diff_requested = true;
-                self.status = "Git diff queued · loading off-thread".into();
-                None
-            }
             "1" | "T" | "I" | "O" => {
                 self.command_mode = false;
                 self.handle_printable(action.command.chars().next().unwrap());
@@ -1915,15 +1838,7 @@ impl DevTuiState {
                 None
             }
             command => {
-                let prefill = command
-                    .split_whitespace()
-                    .take_while(|token| {
-                        !token
-                            .chars()
-                            .all(|character| character.is_ascii_uppercase() || character == '_')
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                let prefill = action_command_prefix(command);
                 if prefill != command {
                     self.open_palette_with(&format!("{prefill} "));
                     self.status = format!(
@@ -1938,7 +1853,7 @@ impl DevTuiState {
                     self.command_history_index = None;
                     self.palette_scroll = 0;
                     self.palette_selection = 0;
-                    Some(command.into())
+                    Some(command.to_string())
                 }
             }
         }
@@ -2686,12 +2601,33 @@ impl DevTuiState {
         };
     }
 
+    pub(crate) fn request_browser_visual_live(&mut self, live: bool, status: Option<String>) {
+        self.browser_visual_live = live;
+        self.pending_browser_visual_request = Some(BrowserVisualRequest {
+            live,
+            status,
+            failure: None,
+        });
+    }
+
+    pub(crate) fn request_browser_visual_failure(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        self.browser_visual_live = false;
+        self.pending_browser_visual_request = Some(BrowserVisualRequest {
+            live: false,
+            status: None,
+            failure: Some(reason),
+        });
+    }
+
+    pub(crate) fn take_browser_visual_request(&mut self) -> Option<BrowserVisualRequest> {
+        self.pending_browser_visual_request.take()
+    }
+
     pub fn watch_agent_on_app(&mut self, tool: &str, value: &serde_json::Value) {
         self.browser_workspace.state_mut().input_owner =
             glass_browser::browser_workspace::BrowserInputOwner::Agent;
-        if !self.browser_visual_live {
-            self.browser_visual_live = true;
-        }
+        self.request_browser_visual_live(true, None);
         let target = value
             .get("target")
             .or_else(|| value.get("name"))
@@ -3749,29 +3685,29 @@ impl DevTuiState {
         let png = match result.result {
             Ok(value) => {
                 let Some(encoded) = value.get("base64").and_then(serde_json::Value::as_str) else {
-                    self.browser_visual_live = false;
-                    self.browser_workspace.state_mut().presentation_reason =
-                        Some("screenshot payload did not contain base64 PNG data".into());
-                    self.status = "Live view unavailable · screenshot payload was empty".into();
+                    self.note_browser_visual_failure(
+                        "screenshot payload did not contain base64 PNG data",
+                        "Live view unavailable · screenshot payload was empty",
+                    );
                     return;
                 };
                 use base64::Engine as _;
                 match base64::engine::general_purpose::STANDARD.decode(encoded) {
                     Ok(png) => png,
                     Err(error) => {
-                        self.browser_visual_live = false;
-                        self.browser_workspace.state_mut().presentation_reason =
-                            Some(format!("screenshot payload was not valid base64: {error}"));
-                        self.status = "Live view unavailable · invalid screenshot payload".into();
+                        self.note_browser_visual_failure(
+                            format!("screenshot payload was not valid base64: {error}"),
+                            "Live view unavailable · invalid screenshot payload",
+                        );
                         return;
                     }
                 }
             }
             Err(error) => {
-                self.browser_visual_live = false;
-                self.browser_workspace.state_mut().presentation_reason =
-                    Some(format!("browser screenshot failed: {error}"));
-                self.status = format!("Live view unavailable · {error}");
+                self.note_browser_visual_failure(
+                    format!("browser screenshot failed: {error}"),
+                    format!("Live view unavailable · {error}"),
+                );
                 return;
             }
         };
@@ -3794,11 +3730,23 @@ impl DevTuiState {
                 self.status = "Live view updated · ANSI half-block".into();
             }
             Err(error) => {
-                self.browser_visual_live = false;
-                self.browser_workspace.state_mut().presentation_reason = Some(error.to_string());
-                self.status = format!("Live view unavailable: {error}");
+                self.note_browser_visual_failure(
+                    error.to_string(),
+                    format!("Live view unavailable: {error}"),
+                );
             }
         }
+    }
+
+    fn note_browser_visual_failure(
+        &mut self,
+        reason: impl Into<String>,
+        status: impl Into<String>,
+    ) {
+        let reason = reason.into();
+        self.request_browser_visual_failure(reason.clone());
+        self.browser_workspace.state_mut().presentation_reason = Some(reason);
+        self.status = status.into();
     }
 
     pub fn queue_tool_request(
@@ -9976,6 +9924,18 @@ fn pending_agent_approval(
     None
 }
 
+fn action_command_prefix(command: &str) -> String {
+    command
+        .split_whitespace()
+        .take_while(|token| {
+            !token
+                .chars()
+                .all(|character| character.is_ascii_uppercase() || character == '_')
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn fuzzy_contains(candidate: &str, query: &str) -> bool {
     if query.is_empty() {
         return true;
@@ -10193,6 +10153,22 @@ mod tests {
             .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
             .expect("trust temporary workspace for test");
         state.snapshot_trust_label = "trusted once".into();
+    }
+
+    fn routed_state(label: &str) -> (DevTuiState, std::path::PathBuf) {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "glass-tui-routing-{label}-{}-{suffix}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
+        (state, root)
     }
 
     #[test]
@@ -10845,6 +10821,140 @@ mod tests {
             "typed :open must open the file picker, not a fuzzy action"
         );
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn typed_palette_selected_action_and_menu_share_live_view_dispatch() {
+        let (mut typed, typed_root) = routed_state("typed-browser-view");
+        typed.surface = DevSurface::App;
+        typed.open_palette();
+        typed.insert_palette_text("browser view");
+        let mut typed_worker = super::super::snapshot::SnapshotWorker::spawn(&typed);
+        typed.submit_palette(&mut typed_worker);
+        drop(typed_worker);
+        let typed_request = typed
+            .take_browser_visual_request()
+            .expect("typed browser view request");
+
+        let (mut palette, palette_root) = routed_state("selected-browser-view");
+        palette.surface = DevSurface::App;
+        palette.open_palette();
+        palette.insert_palette_text("Live browser");
+        assert_eq!(
+            palette.selected_palette_action().map(|action| action.label),
+            Some("Live browser view")
+        );
+        let mut palette_worker = super::super::snapshot::SnapshotWorker::spawn(&palette);
+        palette.submit_palette(&mut palette_worker);
+        drop(palette_worker);
+        let palette_request = palette
+            .take_browser_visual_request()
+            .expect("selected browser view request");
+
+        let (mut menu, menu_root) = routed_state("menu-browser-view");
+        menu.surface = DevSurface::App;
+        let live_view_index = menu
+            .surface_actions()
+            .iter()
+            .position(|action| action.label == "Live browser view")
+            .expect("live browser view menu action");
+        menu.open_menu();
+        menu.menu_selection = live_view_index;
+        menu.run_menu_action();
+        let menu_request = menu
+            .take_browser_visual_request()
+            .expect("menu browser view request");
+
+        assert!(typed_request.live);
+        assert_eq!(typed_request, palette_request);
+        assert_eq!(palette_request, menu_request);
+        assert_eq!(typed.status, palette.status);
+        assert_eq!(palette.status, menu.status);
+        assert_eq!(typed.surface, DevSurface::App);
+        assert_eq!(palette.surface, DevSurface::App);
+        assert_eq!(menu.surface, DevSurface::App);
+
+        drop((typed, palette, menu));
+        std::fs::remove_dir_all(typed_root).expect("remove typed workspace");
+        std::fs::remove_dir_all(palette_root).expect("remove palette workspace");
+        std::fs::remove_dir_all(menu_root).expect("remove menu workspace");
+    }
+
+    #[test]
+    fn menu_and_selected_palette_action_share_placeholder_prefill() {
+        let (mut menu, menu_root) = routed_state("menu-navigate-prefill");
+        menu.surface = DevSurface::App;
+        let navigate_index = menu
+            .surface_actions()
+            .iter()
+            .position(|action| action.label == "Navigate")
+            .expect("navigate menu action");
+        menu.open_menu();
+        menu.menu_selection = navigate_index;
+        menu.run_menu_action();
+
+        let (mut palette, palette_root) = routed_state("palette-navigate-prefill");
+        palette.surface = DevSurface::App;
+        palette.open_palette();
+        let navigate_index = palette
+            .surface_actions()
+            .iter()
+            .position(|action| action.label == "Navigate")
+            .expect("navigate palette action");
+        palette.palette_selection = navigate_index;
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&palette);
+        palette.submit_palette(&mut worker);
+        drop(worker);
+
+        assert_eq!(menu.command_input, "browser navigate ");
+        assert_eq!(palette.command_input, menu.command_input);
+        assert_eq!(palette.status, menu.status);
+        assert!(menu.command_mode);
+        assert!(palette.command_mode);
+
+        drop((menu, palette));
+        std::fs::remove_dir_all(menu_root).expect("remove menu workspace");
+        std::fs::remove_dir_all(palette_root).expect("remove palette workspace");
+    }
+
+    #[test]
+    fn menu_and_selected_palette_action_share_unavailable_reason() {
+        let (mut menu, menu_root) = routed_state("menu-unavailable-observe");
+        menu.surface = DevSurface::App;
+        let observe_index = menu
+            .surface_actions()
+            .iter()
+            .position(|action| action.label == "Observe page")
+            .expect("observe menu action");
+        menu.open_menu();
+        menu.menu_selection = observe_index;
+        menu.run_menu_action();
+
+        let (mut palette, palette_root) = routed_state("palette-unavailable-observe");
+        palette.surface = DevSurface::App;
+        palette.open_palette();
+        let observe_index = palette
+            .surface_actions()
+            .iter()
+            .position(|action| action.label == "Observe page")
+            .expect("observe palette action");
+        palette.palette_selection = observe_index;
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&palette);
+        palette.submit_palette(&mut worker);
+        drop(worker);
+
+        assert_eq!(palette.status, menu.status);
+        assert_eq!(palette.palette_error, menu.palette_error);
+        assert!(menu.menu_open, "unavailable menu action stays visible");
+        assert!(
+            palette.command_mode,
+            "unavailable palette action stays visible"
+        );
+        assert!(menu.status.contains("browser is not connected"));
+
+        drop((menu, palette));
+        std::fs::remove_dir_all(menu_root).expect("remove menu workspace");
+        std::fs::remove_dir_all(palette_root).expect("remove palette workspace");
     }
 
     #[test]
@@ -12108,7 +12218,7 @@ mod tests {
         state.open_palette_with("agent rewind ENTRY_ID");
         let action = state.selected_palette_action().expect("rewind action");
         assert_eq!(action.label, "Rewind Pi session");
-        assert!(state.prepare_palette_action(action).is_none());
+        assert!(state.resolve_surface_action(action).is_none());
         assert!(state.command_mode);
         assert_eq!(state.command_input, "agent rewind ");
         assert!(state.status.contains("required value"));

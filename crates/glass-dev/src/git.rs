@@ -195,7 +195,7 @@ impl GitService {
         Ok(self.run(&arguments, "diff")?.stdout)
     }
 
-    pub fn stage(&self, paths: &[String]) -> GitResult<()> {
+    pub(crate) fn stage(&self, paths: &[String]) -> GitResult<()> {
         let paths = validate_paths(paths)?;
         let mut arguments = vec!["add", "--"];
         arguments.extend(paths.iter().map(String::as_str));
@@ -203,7 +203,7 @@ impl GitService {
         Ok(())
     }
 
-    pub fn unstage(&self, paths: &[String]) -> GitResult<()> {
+    pub(crate) fn unstage(&self, paths: &[String]) -> GitResult<()> {
         let paths = validate_paths(paths)?;
         let mut arguments = vec!["restore", "--staged", "--"];
         arguments.extend(paths.iter().map(String::as_str));
@@ -211,7 +211,7 @@ impl GitService {
         Ok(())
     }
 
-    pub fn discard(&self, paths: &[String]) -> GitResult<()> {
+    pub(crate) fn discard(&self, paths: &[String]) -> GitResult<()> {
         let paths = validate_paths(paths)?;
         let mut arguments = vec!["restore", "--"];
         arguments.extend(paths.iter().map(String::as_str));
@@ -219,7 +219,7 @@ impl GitService {
         Ok(())
     }
 
-    pub fn fetch(&self, remote: Option<&str>) -> GitResult<()> {
+    pub(crate) fn fetch(&self, remote: Option<&str>) -> GitResult<()> {
         let mut arguments = vec!["fetch"];
         if let Some(remote) = remote {
             validate_ref(remote)?;
@@ -229,7 +229,7 @@ impl GitService {
         Ok(())
     }
 
-    pub fn pull(&self, remote: Option<&str>, branch: Option<&str>) -> GitResult<()> {
+    pub(crate) fn pull(&self, remote: Option<&str>, branch: Option<&str>) -> GitResult<()> {
         let mut arguments = vec!["pull"];
         if let Some(remote) = remote {
             validate_ref(remote)?;
@@ -243,26 +243,55 @@ impl GitService {
         Ok(())
     }
 
-    pub fn merge(&self, branch: &str) -> GitResult<()> {
+    pub(crate) fn merge(&self, branch: &str) -> GitResult<()> {
         validate_ref(branch)?;
         self.run(&["merge", "--no-edit", branch], "merge")?;
         Ok(())
     }
 
-    pub fn rebase(&self, onto: &str) -> GitResult<()> {
+    pub(crate) fn rebase(&self, onto: &str) -> GitResult<()> {
         validate_ref(onto)?;
         self.run(&["rebase", onto], "rebase")?;
         Ok(())
     }
 
-    pub fn push(&self, remote: Option<&str>, branch: Option<&str>) -> GitResult<()> {
+    pub(crate) fn push(&self, remote: Option<&str>, branch: Option<&str>) -> GitResult<()> {
+        if let Some(remote) = remote {
+            validate_ref(remote)?;
+        }
+        if let Some(branch) = branch {
+            push_branch_name(branch)?;
+        }
+        let current_branch = self
+            .status()?
+            .branch
+            .ok_or_else(|| GitError::InvalidInput("push requires a named current branch".into()))?;
+        let default_branch = crate::github::default_branch_for_root(&self.root)
+            .map_err(|error| GitError::InvalidInput(error.to_string()))?;
+        self.push_with_branch_policy(remote, branch, &current_branch, &default_branch)
+    }
+
+    fn push_with_branch_policy(
+        &self,
+        remote: Option<&str>,
+        branch: Option<&str>,
+        current_branch: &str,
+        default_branch: &str,
+    ) -> GitResult<()> {
+        let destination_branch = branch.map(push_branch_name).transpose()?;
+        crate::github::require_push_branches(
+            current_branch,
+            destination_branch.as_deref().unwrap_or(current_branch),
+            default_branch,
+        )
+        .map_err(|error| GitError::InvalidInput(error.to_string()))?;
         let mut arguments = vec!["push"];
         if let Some(remote) = remote {
             validate_ref(remote)?;
             arguments.push(remote);
         }
         if let Some(branch) = branch {
-            validate_ref(branch)?;
+            push_branch_name(branch)?;
             arguments.push(branch);
         }
         self.run(&arguments, "push")?;
@@ -294,7 +323,7 @@ impl GitService {
         Ok(branches)
     }
 
-    pub fn create_branch(&self, name: &str, start_point: Option<&str>) -> GitResult<()> {
+    pub(crate) fn create_branch(&self, name: &str, start_point: Option<&str>) -> GitResult<()> {
         validate_ref(name)?;
         let mut arguments = vec!["branch", name];
         if let Some(start_point) = start_point {
@@ -305,7 +334,7 @@ impl GitService {
         Ok(())
     }
 
-    pub fn switch_branch(&self, name: &str, create: bool) -> GitResult<()> {
+    pub(crate) fn switch_branch(&self, name: &str, create: bool) -> GitResult<()> {
         validate_ref(name)?;
         let mut arguments = vec!["switch"];
         if create {
@@ -316,7 +345,7 @@ impl GitService {
         Ok(())
     }
 
-    pub fn commit(&self, message: &str) -> GitResult<GitCommit> {
+    pub(crate) fn commit(&self, message: &str) -> GitResult<GitCommit> {
         if message.trim().is_empty() || message.len() > 16 * 1024 {
             return Err(GitError::InvalidInput(
                 "commit message must contain 1..=16384 bytes".into(),
@@ -383,7 +412,7 @@ impl GitService {
             .collect())
     }
 
-    pub fn stash_push(&self, message: &str, include_untracked: bool) -> GitResult<()> {
+    pub(crate) fn stash_push(&self, message: &str, include_untracked: bool) -> GitResult<()> {
         if message.len() > 1024 {
             return Err(GitError::InvalidInput(
                 "stash message exceeds 1024 bytes".into(),
@@ -409,7 +438,7 @@ impl GitService {
             .collect())
     }
 
-    pub fn stash_pop(&self, reference: &str) -> GitResult<()> {
+    pub(crate) fn stash_pop(&self, reference: &str) -> GitResult<()> {
         validate_ref(reference)?;
         self.run(&["stash", "pop", reference], "pop stash")?;
         Ok(())
@@ -422,7 +451,12 @@ impl GitService {
         parse_worktrees(&output)
     }
 
-    pub fn create_worktree(&self, path: &Path, branch: &str, create_branch: bool) -> GitResult<()> {
+    pub(crate) fn create_worktree(
+        &self,
+        path: &Path,
+        branch: &str,
+        create_branch: bool,
+    ) -> GitResult<()> {
         validate_ref(branch)?;
         let path = absolute_worktree_path(path)?;
         let encoded = path
@@ -439,7 +473,7 @@ impl GitService {
         Ok(())
     }
 
-    pub fn remove_worktree(&self, path: &Path, force: bool) -> GitResult<()> {
+    pub(crate) fn remove_worktree(&self, path: &Path, force: bool) -> GitResult<()> {
         let path = absolute_worktree_path(path)?;
         let path = path.canonicalize()?;
         if path == self.root {
@@ -806,6 +840,22 @@ fn validate_ref(reference: &str) -> GitResult<()> {
     Ok(())
 }
 
+fn push_branch_name(branch: &str) -> GitResult<String> {
+    validate_ref(branch)?;
+    if branch.starts_with('+') || branch.contains(':') {
+        return Err(GitError::InvalidInput(
+            "Git push branch must be a branch name, not a refspec".into(),
+        ));
+    }
+    let branch = branch.strip_prefix("refs/heads/").unwrap_or(branch);
+    if branch.starts_with("refs/") {
+        return Err(GitError::InvalidInput(
+            "Git push target must name a branch under refs/heads".into(),
+        ));
+    }
+    Ok(branch.to_string())
+}
+
 fn absolute_worktree_path(path: &Path) -> GitResult<PathBuf> {
     if !path.is_absolute() || path == Path::new("/") {
         return Err(GitError::InvalidInput(
@@ -963,6 +1013,33 @@ mod tests {
         let service = GitService::open(&root).unwrap();
         assert!(service.push(Some("--upload-pack=bad"), None).is_err());
         assert!(absolute_worktree_path(Path::new("relative")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_service_push_policy_rejects_protected_source_and_destination() {
+        let root = repository();
+        let service = GitService::open(&root).unwrap();
+
+        let protected_source = service
+            .push_with_branch_policy(None, Some("feature/fix"), "develop", "develop")
+            .unwrap_err();
+        assert!(
+            protected_source
+                .to_string()
+                .contains("protected branch policy")
+        );
+
+        let protected_destination = service
+            .push_with_branch_policy(None, Some("refs/heads/develop"), "feature/fix", "develop")
+            .unwrap_err();
+        assert!(
+            protected_destination
+                .to_string()
+                .contains("protected branch policy")
+        );
+        assert!(push_branch_name("feature/fix:develop").is_err());
+
         std::fs::remove_dir_all(root).unwrap();
     }
 

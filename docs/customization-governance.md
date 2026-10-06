@@ -59,6 +59,11 @@ or external state. Consequently every custom tool requires mutation authority
 and confirmation; `mutating = false` is retained only as an auditable project
 declaration, never as a policy bypass.
 
+The public `Customization::execute_tool` and `execute_command` methods also
+require a `ToolAuthorization` carrying both mutation authority and confirmation.
+Hook dispatch and raw project, Git, and kernel mutators remain crate-private;
+external callers use the governed workspace tool route for those operations.
+
 Project commands use the same rule and a fixed 15-minute upper bound. The TUI
 help/palette labels them `PROJECT:<name>`, and execution results begin with
 `PROJECT command <name>` so repository-provided actions are not confused with

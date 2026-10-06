@@ -51,6 +51,12 @@ and supplies both mutation authorization factors without per-operation prompts.
 It does not write a trust decision to the external store. A later process
 without `--yolo` still requires the normal local trust decision.
 
+Public custom-command execution requires both factors in its
+`ToolAuthorization`. Raw project, Git, and kernel mutation methods are
+crate-private, so external library callers must use the governed workspace
+tool API. Git pushes apply the repository's queried default-branch policy at
+the Git service boundary as well as at the tool router.
+
 Read-only trust APIs are available through the authoritative tool router:
 
 ```text

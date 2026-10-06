@@ -213,9 +213,11 @@ pub use workspace::{AgentTurnMode, DevelopmentWorkspace, SharedDevelopmentWorksp
 /// the public browser runtime through the one-way crate dependency.
 pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if cli.mcp {
-        let backend = std::sync::Arc::new(mcp::DevelopmentMcpBackend::open(
+        let policy = glass_browser::cli::runner::policy_from_cli(&cli)?;
+        let backend = std::sync::Arc::new(mcp::DevelopmentMcpBackend::open_with_browser_policy(
             std::env::current_dir()?,
             cli.yolo,
+            policy,
         )?);
         return glass_browser::mcp::server::run_mcp_server_with_backend(&cli, backend).await;
     }
@@ -277,12 +279,13 @@ fn run_development_tui(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         quality: cli.tui_live_quality,
         fit: cli.tui_live_fit,
     };
-    tui::run(
+    let policy = glass_browser::cli::runner::policy_from_cli(cli)?;
+    tui::run_with_browser_policy(
         std::env::current_dir()?,
         cli.tui_layout,
         visual_options,
         cli.yolo,
-        cli.policy,
+        policy,
     )
 }
 

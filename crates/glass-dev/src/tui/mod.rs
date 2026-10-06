@@ -32,7 +32,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use glass_browser::browser::policy::PolicyPreset;
+use glass_browser::browser::policy::BrowserPolicy;
 use glass_browser::browser_workspace::{BrowserConnectionPhase, BrowserWorkspaceIntent};
 use glass_browser::cli::args::{
     TuiLayout, TuiLiveBackend, TuiLiveFit, TuiLiveMode, TuiLiveQuality,
@@ -308,22 +308,19 @@ impl VisualRuntime {
     }
 }
 
-/// Run the interactive Glass Dev TUI until the user exits.
-///
-/// Requires interactive stdin and stdout. `root` is the project workspace;
-/// `layout` selects the desktop/phone composition and `visual_options`
-/// selects the optional browser preview path. Non-interactive callers should
-pub(crate) fn run(
+/// Run the interactive Glass Dev TUI with the complete browser policy.
+pub(crate) fn run_with_browser_policy(
     root: impl AsRef<Path>,
     layout: TuiLayout,
     visual_options: TuiVisualOptions,
     yolo_mode: bool,
-    policy_preset: PolicyPreset,
+    browser_policy: BrowserPolicy,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("Glass Dev TUI requires an interactive terminal; use a CLI subcommand or --mcp for non-interactive use".into());
     }
-    let mut state = DevTuiState::open_for_tui_with_policy(root, layout, yolo_mode, policy_preset)?;
+    let mut state =
+        DevTuiState::open_for_tui_with_browser_policy(root, layout, yolo_mode, browser_policy)?;
     let mut visual = VisualRuntime::new(visual_options)?;
     visual.sync_state(&mut state);
     let mut worker = snapshot::SnapshotWorker::spawn(&state);

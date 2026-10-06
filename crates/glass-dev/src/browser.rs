@@ -2,6 +2,8 @@
 
 use crate::development::{DevelopmentError, DevelopmentResult};
 use crate::development::{RemoteFrame, RemoteInput, RemoteView};
+#[cfg(test)]
+use glass_browser::browser::policy::NavigationPreflight;
 use glass_browser::browser::policy::{BrowserPolicy, PolicyPreset};
 use glass_browser::browser::session::{
     CdpBrowserSession, SemanticObservation, SemanticObservationLevel, SessionOptions,
@@ -184,6 +186,8 @@ impl ResidentBrowserSession {
 pub(crate) struct BrowserService {
     commands: SyncSender<(BrowserCommand, Reply)>,
     native_dialog_controller: Arc<Mutex<Option<NativeDialogController>>>,
+    #[cfg(test)]
+    policy: BrowserPolicy,
 }
 
 impl BrowserService {
@@ -194,14 +198,33 @@ impl BrowserService {
     }
 
     /// Create a resident browser worker with an explicit authorization preset.
+    #[cfg(test)]
     pub(crate) fn new_with_policy(
         root: impl AsRef<Path>,
         policy_preset: PolicyPreset,
     ) -> DevelopmentResult<Self> {
+        let policy = BrowserPolicy::from_preset(policy_preset, root.as_ref())
+            .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+        Self::new_with_browser_policy(root, policy)
+    }
+
+    /// Create a resident browser worker with the complete authorization policy.
+    pub(crate) fn new_with_browser_policy(
+        root: impl AsRef<Path>,
+        policy: BrowserPolicy,
+    ) -> DevelopmentResult<Self> {
         let root = root.as_ref().to_path_buf();
+        let canonical_root = std::fs::canonicalize(&root)
+            .map_err(|error| DevelopmentError::InvalidInput(error.to_string()))?;
+        if policy.workspace_root() != canonical_root {
+            return Err(DevelopmentError::InvalidInput(
+                "browser policy workspace root must match the resident browser root".into(),
+            ));
+        }
         let (commands, receiver) = mpsc::sync_channel::<(BrowserCommand, Reply)>(COMMAND_QUEUE);
         let native_dialog_controller = Arc::new(Mutex::new(None));
         let worker_dialog_controller = Arc::clone(&native_dialog_controller);
+        let worker_policy = policy.clone();
         std::thread::Builder::new()
             .name("glass-browser-workspace".into())
             .stack_size(BROWSER_WORKER_STACK_BYTES)
@@ -212,7 +235,7 @@ impl BrowserService {
                 let Ok(runtime) = runtime else {
                     return;
                 };
-                let mut worker = BrowserWorker::new(root, policy_preset, worker_dialog_controller);
+                let mut worker = BrowserWorker::new(worker_policy, worker_dialog_controller);
                 while let Ok((command, reply)) = receiver.recv() {
                     let result = runtime.block_on(worker.execute(command));
                     let _ = reply.send(result);
@@ -223,7 +246,16 @@ impl BrowserService {
         Ok(Self {
             commands,
             native_dialog_controller,
+            #[cfg(test)]
+            policy,
         })
+    }
+
+    /// Evaluate a URL against this service's active navigation policy without
+    /// resolving hosts, consuming a confirmation token, or starting a session.
+    #[cfg(test)]
+    pub(crate) fn navigation_preflight(&self, url: &str) -> NavigationPreflight {
+        self.policy.preflight_navigation(url)
     }
 
     fn call(&self, command: BrowserCommand) -> DevelopmentResult<Value> {
@@ -478,8 +510,7 @@ impl BrowserService {
     }
 }
 struct BrowserWorker {
-    root: PathBuf,
-    policy_preset: PolicyPreset,
+    policy: BrowserPolicy,
     native_dialog_controller: Arc<Mutex<Option<NativeDialogController>>>,
     session: Option<ResidentBrowserSession>,
     revision: Option<u64>,
@@ -493,13 +524,11 @@ struct BrowserWorker {
 
 impl BrowserWorker {
     fn new(
-        root: PathBuf,
-        policy_preset: PolicyPreset,
+        policy: BrowserPolicy,
         native_dialog_controller: Arc<Mutex<Option<NativeDialogController>>>,
     ) -> Self {
         Self {
-            root,
-            policy_preset,
+            policy,
             native_dialog_controller,
             session: None,
             revision: None,
@@ -514,7 +543,7 @@ impl BrowserWorker {
 
     fn state(&self) -> BrowserRuntimeState {
         BrowserRuntimeState {
-            policy_preset: self.policy_preset,
+            policy_preset: self.policy.preset(),
             connected: self.session.is_some(),
             browser_backend: self
                 .session
@@ -568,9 +597,19 @@ impl BrowserWorker {
                 "modalDialogs is supported only by the native browser runtime".into(),
             ));
         }
+        if !config.attach
+            && matches!(
+                self.policy.preset(),
+                PolicyPreset::Hardened | PolicyPreset::UntrustedMcp
+            )
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "hardened and untrusted-mcp network interception currently requires the full Chromium session"
+                    .into(),
+            ));
+        }
         let session = if config.attach {
-            let policy = BrowserPolicy::from_preset(self.policy_preset, &self.root)
-                .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+            let policy = self.policy.clone();
             let mut builder = SessionOptions::builder()
                 .port(config.port)
                 .attach(true)
@@ -625,13 +664,12 @@ impl BrowserWorker {
     }
 
     fn browser_policy(&self) -> DevelopmentResult<BrowserPolicy> {
-        BrowserPolicy::from_preset(self.policy_preset, &self.root)
-            .map_err(|error| DevelopmentError::Process(error.to_string()))
+        Ok(self.policy.clone())
     }
 
     async fn execute(&mut self, command: BrowserCommand) -> DevelopmentResult<Value> {
         self.apply_remote_inputs().await?;
-        match command {
+        let value = match command {
             BrowserCommand::Start(config) => self.start_session(config).await,
             BrowserCommand::Reconnect => {
                 let config = self.last_config.clone().ok_or_else(|| {
@@ -777,6 +815,12 @@ impl BrowserWorker {
                 expected_revision,
                 timeout,
             } => {
+                if matches!(self.session()?, ResidentBrowserSession::Native(_)) {
+                    self.policy
+                        .require_url(&url)
+                        .await
+                        .map_err(|error| DevelopmentError::Process(error.to_string()))?;
+                }
                 match self.session()? {
                     ResidentBrowserSession::Native(session) => {
                         let outcome = tokio::time::timeout(
@@ -1168,7 +1212,8 @@ impl BrowserWorker {
                     Ok(serde_json::json!({"revoked":false}))
                 }
             }
-        }
+        }?;
+        Ok(project_browser_revision(value, self.revision))
     }
 
     async fn publish_remote_frame(&self) -> DevelopmentResult<()> {
@@ -1303,6 +1348,13 @@ fn browser_error(error: Box<dyn std::error::Error>) -> DevelopmentError {
     DevelopmentError::Process(error.to_string())
 }
 
+fn project_browser_revision(mut value: Value, revision: Option<u64>) -> Value {
+    if let (Value::Object(object), Some(revision)) = (&mut value, revision) {
+        object.insert("browserRevision".into(), Value::from(revision));
+    }
+    value
+}
+
 fn native_profile_storage_path(profile: &str) -> DevelopmentResult<PathBuf> {
     if profile.is_empty()
         || profile == "."
@@ -1403,6 +1455,7 @@ mod tests {
         let observation = service.observe().unwrap();
         assert_eq!(observation["level"], "structured");
         assert!(observation["page"].is_object());
+        assert_eq!(observation["browserRevision"], observation["revision"]);
         let web_ir = service.web_ir().unwrap();
         assert_eq!(web_ir["schemaVersion"], 1);
         assert!(web_ir["entityCount"].as_u64().is_some());

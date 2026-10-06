@@ -21,7 +21,7 @@ use crate::tasks::{
 use crate::testing::{TestFramework, TestService, TestSuite};
 use crate::tools::{DevelopmentToolContext, DevelopmentToolRouter};
 use crate::trust::{LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust, WorkspaceTrustStore};
-use glass_browser::browser::policy::PolicyPreset;
+use glass_browser::browser::policy::{BrowserPolicy, PolicyPreset};
 use glass_browser::browser::session::{KnowledgeStore, default_knowledge_store_path_for_workspace};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -134,10 +134,36 @@ impl DevelopmentWorkspace {
         trust_store: WorkspaceTrustStore,
         policy_preset: PolicyPreset,
     ) -> DevelopmentResult<Self> {
+        let browser_policy = BrowserPolicy::from_preset(policy_preset, root.as_ref())
+            .map_err(|error| crate::development::DevelopmentError::Process(error.to_string()))?;
+        Self::open_with_store_and_browser_policy(root, trust_store, browser_policy)
+    }
+
+    /// Open a project using the complete browser authorization policy,
+    /// including caller-supplied host rules and confirmation tokens.
+    pub fn open_with_browser_policy(
+        root: impl AsRef<Path>,
+        browser_policy: BrowserPolicy,
+    ) -> DevelopmentResult<Self> {
+        let store = WorkspaceTrustStore::platform_default()?;
+        Self::open_with_store_and_browser_policy(root, store, browser_policy)
+    }
+
+    /// Open with explicit workspace trust and the complete browser policy.
+    pub fn open_with_store_and_browser_policy(
+        root: impl AsRef<Path>,
+        trust_store: WorkspaceTrustStore,
+        browser_policy: BrowserPolicy,
+    ) -> DevelopmentResult<Self> {
         let trust_identity = WorkspaceIdentity::inspect(root.as_ref())?;
         let trust = trust_store.status(&trust_identity)?;
         let project = ProjectWorkspace::open(root)?;
         let root = project.root().to_path_buf();
+        if browser_policy.workspace_root() != root {
+            return Err(crate::development::DevelopmentError::InvalidInput(
+                "browser policy workspace root must match the development workspace".into(),
+            ));
+        }
         let git = if root
             .ancestors()
             .any(|ancestor| ancestor.join(".git").exists())
@@ -166,7 +192,7 @@ impl DevelopmentWorkspace {
             .map_err(|error| crate::development::DevelopmentError::Process(error.to_string()))?;
         let mut agents = AgentRegistry::new(&root)?;
         agents.set_additional_system_prompt(customization.agent_instructions(trust))?;
-        let browser = BrowserService::new_with_policy(&root, policy_preset)?;
+        let browser = BrowserService::new_with_browser_policy(&root, browser_policy)?;
         let language = LanguageService::new(&root)?;
         let knowledge = KnowledgeStore::open(default_knowledge_store_path_for_workspace(
             "default",
@@ -1058,8 +1084,18 @@ impl SharedDevelopmentWorkspace {
         policy_preset: PolicyPreset,
         unrestricted: bool,
     ) -> DevelopmentResult<Self> {
+        let browser_policy = BrowserPolicy::from_preset(policy_preset, root.as_ref())
+            .map_err(|error| crate::development::DevelopmentError::Process(error.to_string()))?;
+        Self::open_with_browser_policy_and_unrestricted(root, browser_policy, unrestricted)
+    }
+
+    pub(crate) fn open_with_browser_policy_and_unrestricted(
+        root: impl AsRef<Path>,
+        browser_policy: BrowserPolicy,
+        unrestricted: bool,
+    ) -> DevelopmentResult<Self> {
         let mut development_workspace =
-            DevelopmentWorkspace::open_with_policy(root, policy_preset)?;
+            DevelopmentWorkspace::open_with_browser_policy(root, browser_policy)?;
         if unrestricted {
             development_workspace.enable_unrestricted_execution()?;
         }
@@ -1171,6 +1207,7 @@ impl SharedDevelopmentWorkspace {
 mod tests {
     use super::*;
     use crate::development::{Actor, ToolAuthorization, ToolCall};
+    use glass_browser::browser::policy::NavigationPreflightDecision;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -1203,6 +1240,68 @@ mod tests {
         let state = clone.lock().unwrap();
         assert_eq!(state.generation(), 2);
         assert_eq!(state.root(), std::fs::canonicalize(&root).unwrap());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shared_workspace_forwards_exact_browser_host_rules_to_resident_service() {
+        let root = test_root();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='fixture'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        let policy = BrowserPolicy::development(&root)
+            .unwrap()
+            .with_host_rules(
+                ["allowed.example.test".to_string()],
+                ["denied.example.test".to_string()],
+            )
+            .unwrap();
+
+        let workspace = SharedDevelopmentWorkspace::open_with_browser_policy_and_unrestricted(
+            &root, policy, false,
+        )
+        .unwrap();
+        let state = workspace.lock().unwrap();
+        let browser = state.browser();
+        assert_eq!(
+            browser
+                .navigation_preflight("https://allowed.example.test/path")
+                .decision,
+            NavigationPreflightDecision::Allow
+        );
+        assert_eq!(
+            browser
+                .navigation_preflight("https://denied.example.test/path")
+                .decision,
+            NavigationPreflightDecision::Deny
+        );
+        assert_eq!(
+            browser
+                .navigation_preflight("https://sub.allowed.example.test/path")
+                .decision,
+            NavigationPreflightDecision::Deny
+        );
+        browser
+            .start(crate::browser::BrowserStartConfig::default())
+            .unwrap();
+        let denied = browser.navigate(
+            "https://denied.example.test/path".into(),
+            1,
+            std::time::Duration::from_secs(2),
+        );
+        assert!(
+            denied
+                .unwrap_err()
+                .to_string()
+                .contains("host is explicitly denied")
+        );
+        browser.stop().unwrap();
+        drop(state);
+        drop(workspace);
 
         std::fs::remove_dir_all(root).unwrap();
     }

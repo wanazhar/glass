@@ -80,4 +80,11 @@ overlay. Include both file and session pickers in redraw transitions.
   missing live measurements in `docs/mcp-schema-budget.md` (177 negotiated
   tools; 76,967-byte serialized `tools` array). Those files are outside this
   task's scope and unchanged.
-- Independent review pending; task status remains `in-progress`.
+- Independent review 01's menu hit-test finding is addressed by sharing the
+  rendered list bounds and scroll offset with pointer hit-testing. The details
+  panel, navigation/context panes, and scrolled menu rows have focused
+  regressions.
+- `cargo test -p glass-dev --lib --locked tui::pointer::tests::`: passed, 9
+  tests; `cargo test -p glass-dev --lib --locked command_menu`: passed, 3 tests.
+- Follow-up `cargo fmt --all -- --check` and `git diff --check`: passed.
+- Independent review follow-up pending; task status remains `in-progress`.

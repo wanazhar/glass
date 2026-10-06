@@ -171,16 +171,9 @@ pub fn hit_test(state: &DevTuiState, column: u16, row: u16) -> HitRegion {
     match overlay::active_overlay(state) {
         Some(ActiveOverlay::Help) => return HitRegion::Help,
         Some(ActiveOverlay::CommandCenterMenu) => {
-            if row >= height.saturating_sub(footer) {
-                return HitRegion::Other;
-            }
-            let index = usize::from(row.saturating_sub(3));
-            let item_count = state.quit_menu_index() + 1;
-            return if index < item_count {
-                HitRegion::Menu(index)
-            } else {
-                HitRegion::Other
-            };
+            return super::render::command_menu_hit_index(state, column, row)
+                .map(HitRegion::Menu)
+                .unwrap_or(HitRegion::Other);
         }
         Some(ActiveOverlay::Composer) => {
             return if row >= height.saturating_sub(footer) {
@@ -498,6 +491,135 @@ mod tests {
         );
         assert!(!state.menu_open);
         assert!(state.command_mode);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn command_menu_details_panel_cannot_select_or_run_an_action() {
+        let (mut state, root) = overlay_state();
+        state.layout = TuiLayout::Mobile;
+        state.terminal_width = 48;
+        state.terminal_height = 18;
+        state.surface = DevSurface::Agent;
+        state.open_menu();
+
+        let geometry = super::super::render::command_menu_geometry_for_screen(&state);
+        assert!(geometry.details_area.height > 1);
+        let first_list_row = geometry.list_inner.y;
+        assert_eq!(
+            hit_test(&state, geometry.list_inner.x, first_list_row),
+            HitRegion::Menu(0)
+        );
+
+        // The top border is part of the details panel, and the following row
+        // is its body. Neither is an action row in the menu list.
+        let details_points = [
+            (geometry.details_area.x + 1, geometry.details_area.y),
+            (geometry.details_area.x + 1, geometry.details_area.y + 1),
+        ];
+        for (column, row) in details_points {
+            assert_eq!(hit_test(&state, column, row), HitRegion::Other);
+        }
+
+        let original_selection = state.menu_selection;
+        let mut pointer = PointerState::default();
+        for (column, row) in details_points {
+            let down = MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            };
+            let at = Instant::now();
+            pointer.handle(&mut state, down, at);
+            pointer.handle(
+                &mut state,
+                MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    ..down
+                },
+                at + Duration::from_millis(1),
+            );
+        }
+        assert!(state.menu_open);
+        assert_eq!(state.menu_selection, original_selection);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn command_menu_hit_testing_rejects_coordinates_outside_surface_pane() {
+        let (mut state, root) = overlay_state();
+        state.terminal_width = 120;
+        state.terminal_height = 18;
+        state.surface = DevSurface::Agent;
+        state.open_menu();
+
+        let geometry = super::super::render::command_menu_geometry_for_screen(&state);
+        assert!(geometry.list_area.x > 0);
+        let list_row = geometry.list_inner.y;
+        let outside_pane_points = [
+            (0, list_row),
+            (geometry.list_area.x + geometry.list_area.width, list_row),
+        ];
+        assert!(outside_pane_points[1].0 < state.terminal_width);
+        for (column, row) in outside_pane_points {
+            assert_eq!(hit_test(&state, column, row), HitRegion::Other);
+        }
+
+        let original_selection = state.menu_selection;
+        let mut pointer = PointerState::default();
+        for (column, row) in outside_pane_points {
+            let down = MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            };
+            let at = Instant::now();
+            pointer.handle(&mut state, down, at);
+            pointer.handle(
+                &mut state,
+                MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    ..down
+                },
+                at + Duration::from_millis(1),
+            );
+        }
+        assert!(state.menu_open);
+        assert_eq!(state.menu_selection, original_selection);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn command_menu_hit_testing_tracks_the_rendered_scroll_offset() {
+        let (mut state, root) = overlay_state();
+        state.layout = TuiLayout::Mobile;
+        state.terminal_width = 48;
+        state.terminal_height = 16;
+        state.surface = DevSurface::Agent;
+        state.open_menu();
+        let item_count = state.surface_actions().len() + 2;
+        state.menu_selection = item_count - 1;
+
+        let geometry = super::super::render::command_menu_geometry_for_screen(&state);
+        assert!(geometry.list_inner.height > 0);
+        assert!(geometry.scroll_offset > 0);
+        assert_eq!(geometry.item_count, item_count);
+        assert_eq!(
+            hit_test(&state, geometry.list_inner.x, geometry.list_inner.y),
+            HitRegion::Menu(geometry.scroll_offset)
+        );
+        let selected_row = geometry.list_inner.y
+            + u16::try_from(state.menu_selection - geometry.scroll_offset).unwrap();
+        assert_eq!(
+            hit_test(&state, geometry.list_inner.x, selected_row),
+            HitRegion::Menu(state.menu_selection)
+        );
+
         drop(state);
         std::fs::remove_dir_all(root).expect("remove test workspace");
     }

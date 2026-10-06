@@ -42508,6 +42508,25 @@ fn document_bootstrap(
     return value;
   }};
   const listenerKey = (owner, type) => String(owner) + ":" + normalizeEventType(type);
+  // Script-created nodes use temporary indexes in listener keys until their
+  // first host mutation commits them to the native document arena.
+  const rebindNodeEventOwner = (previousIndex, nextIndex) => {{
+    if (!Number.isSafeInteger(previousIndex) || !Number.isSafeInteger(nextIndex)
+        || previousIndex < 0 || nextIndex < 0 || previousIndex === nextIndex) return;
+    const previousOwner = "node:" + previousIndex;
+    const nextOwner = "node:" + nextIndex;
+    const prefix = previousOwner + ":";
+    for (const registry of [listeners, eventHandlers]) {{
+      for (const [key, value] of Array.from(registry.entries())) {{
+        if (!key.startsWith(prefix)) continue;
+        const reboundKey = nextOwner + key.slice(previousOwner.length);
+        if (registry.has(reboundKey))
+          throw new TypeError("native event owner index collision");
+        registry.set(reboundKey, value);
+        registry.delete(key);
+      }}
+    }}
+  }};
   const listenerCount = () => {{
     let count = 0;
     for (const callbacks of listeners.values()) count += callbacks.length;
@@ -43069,6 +43088,7 @@ fn document_bootstrap(
     const object = scriptNodeObjects.get(temporaryIndex);
     if (!object || !Number.isSafeInteger(nodeIndex) || nodeIndex < 0) continue;
     globalThis.__glassRebindTransferredNodeIndex(temporaryIndex, nodeIndex);
+    rebindNodeEventOwner(Number(object.nodeIndex), nodeIndex);
     object.nodeIndex = nodeIndex;
     if (Number(object.nodeType) === 1
         && object.namespaceURI === HTML_NAMESPACE

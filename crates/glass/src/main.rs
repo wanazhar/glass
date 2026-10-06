@@ -202,6 +202,7 @@ fn repl(
 
     let (mut w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
     let mut prompt_row = h.saturating_sub(2);
+    let mut totals = Totals::new();
 
     loop {
         editor.render(prompt_row, w, true);
@@ -387,7 +388,8 @@ fn repl(
                         println!("\x1b[33m⚠ {w}\x1b[0m");
                     }
                     if let Some(u) = out.usage {
-                        println!("{}", usage_line(&u));
+                        totals.add(&u);
+                        println!("{}{}", usage_line(&u), totals.suffix());
                     }
                 }
                 Err(e) => {
@@ -504,6 +506,68 @@ fn usage_line(u: &provider::Usage) -> String {
         "\x1b[90m  {total} in / {} out{cached}\x1b[0m",
         thousands(u.output)
     )
+}
+
+/// Running token totals for the whole session.
+///
+/// The per-turn line shows the rate; this shows how much
+/// the session has cost so far. That cumulative number is
+/// the one that decides whether a cache warmer, or a long
+/// task, is worth what it is spending.
+struct Totals {
+    turns: u32,
+    input: u64,
+    cache_read: u64,
+    cache_write: u64,
+    output: u64,
+}
+
+impl Totals {
+    fn new() -> Self {
+        Self { turns: 0, input: 0, cache_read: 0, cache_write: 0, output: 0 }
+    }
+
+    fn add(&mut self, u: &provider::Usage) {
+        self.turns += 1;
+        self.input += u.input as u64;
+        self.cache_read += u.cache_read as u64;
+        self.cache_write += u.cache_write as u64;
+        self.output += u.output as u64;
+    }
+
+    fn prompt_total(&self) -> u64 {
+        self.input + self.cache_read + self.cache_write
+    }
+
+    fn hit_rate(&self) -> f32 {
+        let total = self.prompt_total();
+        if total == 0 {
+            return 0.0;
+        }
+        self.cache_read as f32 / total as f32
+    }
+
+    /// Compact tail for the usage line: cumulative tokens
+    /// and cache rate across every turn so far.
+    fn suffix(&self) -> String {
+        let tok = self.prompt_total() + self.output;
+        let pct = (self.hit_rate() * 100.0).round() as u32;
+        format!(
+            "\x1b[90m · session {tok} tok · {pct}% cache\x1b[0m",
+            tok = compact(tok),
+        )
+    }
+}
+
+/// Abbreviate a large count so the session tail stays short.
+fn compact(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 10_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        thousands(n as u32)
+    }
 }
 
 /// Group digits so long token counts stay readable at a glance.
@@ -652,4 +716,41 @@ fn view_transcript(session: &Session, loaded: &[Box<dyn glass_mod_api::Mod_>]) -
         .map_err(|e| e.to_string())?;
     println!();
     res
+}
+
+#[cfg(test)]
+mod totals_tests {
+    use super::{compact, Totals};
+    use crate::provider::Usage;
+
+    fn u(input: u32, read: u32, write: u32, output: u32) -> Usage {
+        Usage { input, cache_read: read, cache_write: write, output }
+    }
+
+    #[test]
+    fn accumulates_across_turns() {
+        let mut t = Totals::new();
+        t.add(&u(100, 900, 100, 50));
+        t.add(&u(0, 990, 0, 30));
+        assert_eq!(t.turns, 2);
+        assert_eq!(t.prompt_total(), 100 + 900 + 100 + 990);
+        assert_eq!(t.output, 80);
+    }
+
+    #[test]
+    fn hit_rate_is_cumulative() {
+        let mut t = Totals::new();
+        // Two turns, each half served from cache.
+        t.add(&u(500, 500, 0, 10));
+        t.add(&u(500, 500, 0, 10));
+        // 1000 read of 2000 total prompt tokens.
+        assert!((t.hit_rate() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn compact_abbreviates_large_counts() {
+        assert_eq!(compact(9_999), "9,999");
+        assert_eq!(compact(12_345), "12.3k");
+        assert_eq!(compact(2_500_000), "2.5M");
+    }
 }

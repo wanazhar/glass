@@ -143,7 +143,7 @@ fn prove_embedded_rpc() -> DevelopmentResult<()> {
     Ok(())
 }
 
-pub fn start_neovim(
+pub(crate) fn start_neovim(
     processes: &mut ProcessManager,
     name: &str,
     path: Option<&Path>,

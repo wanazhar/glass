@@ -10,14 +10,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_ARGUMENT_BYTES: usize = 256 * 1024;
 
-pub struct DevelopmentMcpBackend {
+pub(crate) struct DevelopmentMcpBackend {
     workspace: Mutex<DevelopmentWorkspace>,
     unrestricted: bool,
     next_call: AtomicU64,
 }
 
 impl DevelopmentMcpBackend {
-    pub fn open(root: impl AsRef<Path>, unrestricted: bool) -> Result<Self, String> {
+    pub(crate) fn open(root: impl AsRef<Path>, unrestricted: bool) -> Result<Self, String> {
         let mut workspace = DevelopmentWorkspace::open(root).map_err(|error| error.to_string())?;
         if unrestricted {
             workspace

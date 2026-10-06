@@ -53,7 +53,7 @@ impl SessionTodoList {
             .unwrap_or_default()
     }
 
-    pub fn persist(&self, root: &Path) -> DevelopmentResult<()> {
+    pub(crate) fn persist(&self, root: &Path) -> DevelopmentResult<()> {
         let dir = root.join(".glass/todos");
         std::fs::create_dir_all(&dir).map_err(|error| {
             DevelopmentError::Process(format!("todo directory unavailable: {error}"))
@@ -63,7 +63,7 @@ impl SessionTodoList {
             .map_err(|error| DevelopmentError::Process(format!("todo write failed: {error}")))
     }
 
-    pub fn write(&mut self, items: Vec<SessionTodo>, root: &Path) -> DevelopmentResult<()> {
+    pub(crate) fn write(&mut self, items: Vec<SessionTodo>, root: &Path) -> DevelopmentResult<()> {
         if items.len() > MAX_TODOS {
             return Err(DevelopmentError::InvalidInput(format!(
                 "todo list is limited to {MAX_TODOS} items"
@@ -96,7 +96,7 @@ impl SessionTodoList {
         self.persist(root)
     }
 
-    pub fn complete(&mut self, id: &str, root: &Path) -> DevelopmentResult<SessionTodo> {
+    pub(crate) fn complete(&mut self, id: &str, root: &Path) -> DevelopmentResult<SessionTodo> {
         let item = self
             .items
             .iter_mut()
@@ -108,7 +108,7 @@ impl SessionTodoList {
         Ok(done)
     }
 
-    pub fn activate(&mut self, id: &str, root: &Path) -> DevelopmentResult<SessionTodo> {
+    pub(crate) fn activate(&mut self, id: &str, root: &Path) -> DevelopmentResult<SessionTodo> {
         if !self.items.iter().any(|item| item.id == id) {
             return Err(DevelopmentError::NotFound(format!("todo {id}")));
         }
@@ -127,7 +127,12 @@ impl SessionTodoList {
             .ok_or_else(|| DevelopmentError::NotFound(format!("todo {id}")))
     }
 
-    pub fn seed_from_plan(&mut self, goal: &str, body: &str, root: &Path) -> DevelopmentResult<()> {
+    pub(crate) fn seed_from_plan(
+        &mut self,
+        goal: &str,
+        body: &str,
+        root: &Path,
+    ) -> DevelopmentResult<()> {
         let mut items = vec![SessionTodo {
             id: "todo-goal".into(),
             title: goal.chars().take(160).collect(),

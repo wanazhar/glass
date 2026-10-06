@@ -32,7 +32,7 @@ pub struct LanguageServiceEvent {
 }
 
 /// One shared set of persistent language servers for the workspace.
-pub struct LanguageService {
+pub(crate) struct LanguageService {
     root: PathBuf,
     servers: BTreeMap<String, LspClient>,
     events: VecDeque<LanguageServiceEvent>,
@@ -40,7 +40,7 @@ pub struct LanguageService {
 }
 
 impl LanguageService {
-    pub fn new(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
+    pub(crate) fn new(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
         Ok(Self {
             root: std::fs::canonicalize(root)?,
             servers: BTreeMap::new(),
@@ -49,7 +49,11 @@ impl LanguageService {
         })
     }
 
-    pub fn start(&mut self, name: &str, config: &LanguageServerConfig) -> DevelopmentResult<()> {
+    pub(crate) fn start(
+        &mut self,
+        name: &str,
+        config: &LanguageServerConfig,
+    ) -> DevelopmentResult<()> {
         validate_name(name)?;
         validate_command(config)?;
         if self.servers.contains_key(name) {
@@ -63,7 +67,8 @@ impl LanguageService {
         Ok(())
     }
 
-    pub fn start_rust_analyzer(&mut self) -> DevelopmentResult<()> {
+    #[cfg(test)]
+    pub(crate) fn start_rust_analyzer(&mut self) -> DevelopmentResult<()> {
         validate_name("rust")?;
         if self.servers.contains_key("rust") {
             return Err(DevelopmentError::Conflict(
@@ -76,7 +81,7 @@ impl LanguageService {
         Ok(())
     }
 
-    pub fn stop(&mut self, name: &str) -> DevelopmentResult<()> {
+    pub(crate) fn stop(&mut self, name: &str) -> DevelopmentResult<()> {
         self.servers
             .remove(name)
             .ok_or_else(|| DevelopmentError::NotFound(format!("language server {name}")))?;
@@ -88,7 +93,7 @@ impl LanguageService {
         self.servers.keys().map(String::as_str)
     }
 
-    pub fn client_mut(&mut self, name: &str) -> DevelopmentResult<&mut LspClient> {
+    pub(crate) fn client_mut(&mut self, name: &str) -> DevelopmentResult<&mut LspClient> {
         self.servers
             .get_mut(name)
             .ok_or_else(|| DevelopmentError::NotFound(format!("language server {name}")))
@@ -335,7 +340,7 @@ impl LanguageService {
             .collect()
     }
 
-    pub fn raw_request(
+    pub(crate) fn raw_request(
         &mut self,
         name: &str,
         actor: &str,

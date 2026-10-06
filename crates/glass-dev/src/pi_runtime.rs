@@ -166,7 +166,7 @@ struct PendingPiToolApproval {
     call: ToolCall,
 }
 
-pub struct GlassPiRuntime {
+pub(crate) struct GlassPiRuntime {
     child: Child,
     input: ChildStdin,
     output: Receiver<Result<Value, String>>,
@@ -192,7 +192,7 @@ impl std::fmt::Debug for GlassPiRuntime {
 }
 
 impl GlassPiRuntime {
-    pub fn spawn(root: &Path, options: PiRuntimeOptions) -> DevelopmentResult<Self> {
+    pub(crate) fn spawn(root: &Path, options: PiRuntimeOptions) -> DevelopmentResult<Self> {
         validate_options(&options)?;
         let root = fs::canonicalize(root)?;
         fs::create_dir_all(&options.session_dir)?;
@@ -279,7 +279,7 @@ impl GlassPiRuntime {
         }
     }
 
-    pub fn start_request(&mut self, request: PiSessionRequest) -> DevelopmentResult<String> {
+    pub(crate) fn start_request(&mut self, request: PiSessionRequest) -> DevelopmentResult<String> {
         let (operation, params) = request_parts(request);
         let id = format!("glass-{}", self.next_id);
         self.next_id = self.next_id.saturating_add(1);
@@ -314,7 +314,7 @@ impl GlassPiRuntime {
         }
     }
 
-    pub fn resolve_tool_approval(
+    pub(crate) fn resolve_tool_approval(
         &mut self,
         frame_id: &str,
         approved: bool,
@@ -812,7 +812,7 @@ pub fn pi_readiness() -> DevelopmentResult<PiReadiness> {
     })
 }
 
-pub fn setup_pi_runtime(
+pub(crate) fn setup_pi_runtime(
     sdk_entry: Option<&Path>,
     agent_dir: Option<&Path>,
     update: bool,
@@ -821,7 +821,7 @@ pub fn setup_pi_runtime(
     setup_pi_runtime_with_provider(sdk_entry, agent_dir, update, login, None)
 }
 
-pub fn setup_pi_runtime_with_provider(
+pub(crate) fn setup_pi_runtime_with_provider(
     sdk_entry: Option<&Path>,
     agent_dir: Option<&Path>,
     update: bool,

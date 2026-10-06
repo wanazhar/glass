@@ -239,7 +239,7 @@ struct WorkerRuntime {
 /// Each running agent owns a distinct Pi process and persistent session. The
 /// registry only starts dependency-ready work, bounds all queues and retained
 /// evidence, and never silently promotes a failed dependency to success.
-pub struct AgentRegistry {
+pub(crate) struct AgentRegistry {
     root: PathBuf,
     sessions_dir: PathBuf,
     records: BTreeMap<AgentId, AgentRecord>,
@@ -258,7 +258,7 @@ pub struct AgentRegistry {
 
 impl AgentRegistry {
     /// Create a registry rooted at the canonical project directory.
-    pub fn new(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
+    pub(crate) fn new(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
         let root = std::fs::canonicalize(root)?;
         let sessions_dir = root.join(".glass").join("pi-sessions");
         let (events_tx, events_rx) = mpsc::sync_channel(EVENT_CAPACITY);
@@ -281,7 +281,10 @@ impl AgentRegistry {
     }
 
     /// Configure the authenticated broker used for resident-agent requests.
-    pub fn set_resident_broker(&mut self, broker: ResidentAgentBroker) -> DevelopmentResult<()> {
+    pub(crate) fn set_resident_broker(
+        &mut self,
+        broker: ResidentAgentBroker,
+    ) -> DevelopmentResult<()> {
         if !broker.socket.is_absolute()
             || broker.socket == Path::new("/")
             || broker.token.is_empty()
@@ -304,7 +307,7 @@ impl AgentRegistry {
         self.local_tool_executor = Some(executor);
     }
 
-    pub fn set_additional_system_prompt(
+    pub(crate) fn set_additional_system_prompt(
         &mut self,
         prompt: Option<String>,
     ) -> DevelopmentResult<()> {
@@ -321,11 +324,12 @@ impl AgentRegistry {
     }
 
     /// Active user-global and trusted-project instructions supplied to Pi.
+    #[cfg(test)]
     pub fn additional_system_prompt(&self) -> Option<&str> {
         self.additional_system_prompt.as_deref()
     }
 
-    pub fn set_defaults(
+    pub(crate) fn set_defaults(
         &mut self,
         model: Option<String>,
         thinking: Option<String>,
@@ -345,7 +349,7 @@ impl AgentRegistry {
         Ok(())
     }
     /// Make newly created resident agents unrestricted for this process.
-    pub fn set_default_unrestricted(&mut self, unrestricted: bool) {
+    pub(crate) fn set_default_unrestricted(&mut self, unrestricted: bool) {
         self.default_unrestricted = unrestricted;
     }
 
@@ -354,7 +358,7 @@ impl AgentRegistry {
     }
 
     /// Validate and enqueue an agent; dependencies must be known and successful.
-    pub fn create(&mut self, mut spec: AgentSpec) -> DevelopmentResult<AgentId> {
+    pub(crate) fn create(&mut self, mut spec: AgentSpec) -> DevelopmentResult<AgentId> {
         self.refresh()?;
         if self.default_unrestricted {
             spec.unrestricted = true;
@@ -420,7 +424,7 @@ impl AgentRegistry {
     }
 
     /// Drain worker events, update snapshots, and start newly ready agents.
-    pub fn refresh(&mut self) -> DevelopmentResult<()> {
+    pub(crate) fn refresh(&mut self) -> DevelopmentResult<()> {
         loop {
             match self.events_rx.try_recv() {
                 Ok(event) => self.apply_worker_event(event),
@@ -473,11 +477,15 @@ impl AgentRegistry {
     }
 
     /// Send an initial prompt to an agent, subject to prompt-size bounds.
-    pub fn prompt(&mut self, id: &AgentId, text: impl Into<String>) -> DevelopmentResult<()> {
+    pub(crate) fn prompt(
+        &mut self,
+        id: &AgentId,
+        text: impl Into<String>,
+    ) -> DevelopmentResult<()> {
         self.prompt_with_context(id, text, None)
     }
 
-    pub fn prompt_with_context(
+    pub(crate) fn prompt_with_context(
         &mut self,
         id: &AgentId,
         text: impl Into<String>,
@@ -489,11 +497,7 @@ impl AgentRegistry {
         self.send(id, PiSessionRequest::Prompt { text, context })
     }
 
-    pub fn steer(&mut self, id: &AgentId, text: impl Into<String>) -> DevelopmentResult<()> {
-        self.steer_with_context(id, text, None)
-    }
-
-    pub fn steer_with_context(
+    pub(crate) fn steer_with_context(
         &mut self,
         id: &AgentId,
         text: impl Into<String>,
@@ -505,11 +509,7 @@ impl AgentRegistry {
         self.send(id, PiSessionRequest::Steer { text, context })
     }
 
-    pub fn follow_up(&mut self, id: &AgentId, text: impl Into<String>) -> DevelopmentResult<()> {
-        self.follow_up_with_context(id, text, None)
-    }
-
-    pub fn follow_up_with_context(
+    pub(crate) fn follow_up_with_context(
         &mut self,
         id: &AgentId,
         text: impl Into<String>,
@@ -521,7 +521,7 @@ impl AgentRegistry {
         self.send(id, PiSessionRequest::FollowUp { text, context })
     }
 
-    pub fn approve_tool(
+    pub(crate) fn approve_tool(
         &mut self,
         id: &AgentId,
         frame_id: impl Into<String>,
@@ -554,12 +554,16 @@ impl AgentRegistry {
             })
     }
 
-    pub fn request(&mut self, id: &AgentId, request: PiSessionRequest) -> DevelopmentResult<()> {
+    pub(crate) fn request(
+        &mut self,
+        id: &AgentId,
+        request: PiSessionRequest,
+    ) -> DevelopmentResult<()> {
         self.send(id, request)
     }
 
     /// Mark a non-terminal agent complete after its worker settles.
-    pub fn complete(&mut self, id: &AgentId) -> DevelopmentResult<()> {
+    pub(crate) fn complete(&mut self, id: &AgentId) -> DevelopmentResult<()> {
         self.refresh()?;
         if self.record_mut(id)?.snapshot.status.terminal() {
             return Err(DevelopmentError::Conflict(format!(
@@ -577,7 +581,7 @@ impl AgentRegistry {
     }
 
     /// Cancel a non-terminal agent and stop its worker.
-    pub fn cancel(&mut self, id: &AgentId) -> DevelopmentResult<()> {
+    pub(crate) fn cancel(&mut self, id: &AgentId) -> DevelopmentResult<()> {
         self.refresh()?;
         if self.record_mut(id)?.snapshot.status.terminal() {
             return Ok(());
@@ -598,7 +602,7 @@ impl AgentRegistry {
     /// aborted or crashed turn should not strand the composer on a terminal
     /// worker. Completed sessions remain terminal by design; callers should
     /// create a new session when they explicitly finished one.
-    pub fn restart(&mut self, id: &AgentId) -> DevelopmentResult<()> {
+    pub(crate) fn restart(&mut self, id: &AgentId) -> DevelopmentResult<()> {
         self.refresh()?;
         let previous_status = {
             let record = self.record_mut(id)?;

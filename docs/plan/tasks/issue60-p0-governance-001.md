@@ -34,6 +34,14 @@ shared authorization route rather than changing correct code.
   decision as the execution router, including process-local unrestricted mode.
 - Mutating library, CLI, TUI, MCP, daemon, and harness paths require the
   documented authority and confirmation pair; no adapter is the sole guard.
+- Raw agent, task, test, process, LSP, debugger, browser, and experiment services are
+  internal implementation details. Public callers use
+  `DevelopmentWorkspace::tool_descriptors` and `execute_tool`, so trust,
+  revision, turn-mode, mutation, and confirmation checks share one boundary.
+  Public workspace accessors do not expose mutable raw services.
+- Todo persistence, workspace knowledge mutation, trust-store writes, local
+  trust activation hooks, and unrestricted-mode activation cannot be reached
+  through context-less public mutation methods.
 - Public custom shell calls carry the pair explicitly; raw project, Git, and
   kernel mutation methods are crate-private behind governed workspace tools.
 - Kernel start schemas expose the explicit `mutationAuthority` capability
@@ -55,6 +63,17 @@ shared authorization route rather than changing correct code.
 - `crates/glass-dev/src/mcp.rs`
 - `crates/glass-dev/src/cli.rs`
 - `crates/glass-dev/src/external_agents.rs`
+- `crates/glass-dev/src/agents.rs`
+- `crates/glass-dev/src/browser.rs`
+- `crates/glass-dev/src/debugger.rs`
+- `crates/glass-dev/src/development/agent.rs`
+- `crates/glass-dev/src/development/language.rs`
+- `crates/glass-dev/src/experiments.rs`
+- `crates/glass-dev/src/lsp.rs`
+- `crates/glass-dev/src/tasks.rs`
+- `crates/glass-dev/src/testing.rs`
+- `crates/glass-dev/src/todos.rs`
+- `crates/glass-dev/src/trust.rs`
 - `crates/glass-dev/src/kernels.rs`
 - `crates/glass-dev/src/git.rs`
 - `crates/glass-dev/src/github.rs`
@@ -62,11 +81,11 @@ shared authorization route rather than changing correct code.
 
 ## Verification
 
-- Add focused regressions for each changed decision and each public boundary
-  involved in the fix.
-- Exercise the real workspace/router path for trust inspection versus tool
-  listing and execution.
-- Cover direct library mutation with each authority/confirmation combination.
-- Confirm schema metadata is root-level and `_glass` remains an ordinary
-  parameter object.
-- Record any cross-platform Git limitation without weakening the contract.
+- `cargo check -p glass-dev --lib --bins --locked` passed.
+- `cargo test -p glass-dev every_public_service_mutation_route_requires_both_authorization_factors --locked` passed (1 test).
+- `cargo test -p glass-dev --doc --locked` passed (12 doctests, including public-API compile-fail fences).
+- `cargo test -p glass-dev --test development_runtime --locked` passed (4 tests), including trusted MCP listing and one-factor mutation rejection.
+- `cargo build -p glass-browser --bin glass-native-content-worker --locked` passed; this binary is required by one native-browser regression.
+- `cargo test -p glass-dev --lib --locked` passed (393 tests).
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+- Scoped Clippy passed with `-A clippy::large_enum_variant`. The unmodified `ResidentBrowserSession` enum at `crates/glass-dev/src/browser.rs:154` still causes the strict all-targets Clippy command to fail; the broader `glass-browser` dependency also has existing lint failures.

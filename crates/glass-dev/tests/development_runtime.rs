@@ -130,9 +130,15 @@ fn temp_project() -> std::path::PathBuf {
 
 fn trusted_store(root: &std::path::Path) -> std::path::PathBuf {
     let path = root.with_extension("trust.json");
-    glass_dev::WorkspaceTrustStore::at(&path)
-        .trust_project(&glass_dev::WorkspaceIdentity::inspect(root).unwrap())
-        .unwrap();
+    let identity = glass_dev::WorkspaceIdentity::inspect(root).unwrap();
+    let document = serde_json::json!({
+        "version": 1,
+        "records": [{
+            "identity": identity,
+            "trustedAtUnixMs": 1
+        }]
+    });
+    std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
     path
 }
 
@@ -161,6 +167,8 @@ fn cli_project_and_agent_paths_are_browser_free() {
     let run = Command::new(&binary)
         .args([
             "project",
+            "--allow-mutation",
+            "--yes",
             "run",
             "smoke",
             "--command",
@@ -255,9 +263,11 @@ fn yolo_bypasses_workspace_trust_and_normal_mode_stays_gated() {
 #[test]
 fn mcp_combines_browser_and_resident_dev_tools_on_clean_json_rpc_stdout() {
     let root = temp_project();
+    let trust_store = trusted_store(&root);
     let mut child = Command::new(glass_binary())
         .arg("--mcp")
         .current_dir(&root)
+        .env("GLASS_TRUST_STORE_PATH", &trust_store)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -305,12 +315,12 @@ fn mcp_combines_browser_and_resident_dev_tools_on_clean_json_rpc_stdout() {
             "id": 5,
             "method": "tools/call",
             "params": {
-                "name": "project.run",
-                "arguments": {
-                    "name": "blocked",
-                    "command": "echo should-not-run",
-                    "wait": true,
-                    "_glass": {"allowMutation": true, "confirmed": true}
+                    "name": "project.run",
+                    "arguments": {
+                        "name": "blocked",
+                        "command": "echo should-not-run",
+                        "wait": true,
+                        "_glass": {"allowMutation": true, "confirmed": false}
                 }
             }
         }),
@@ -363,7 +373,7 @@ fn mcp_combines_browser_and_resident_dev_tools_on_clean_json_rpc_stdout() {
         response(5)["result"]["content"][0]["text"]
             .as_str()
             .unwrap()
-            .contains("trusted")
+            .contains("_glass.allowMutation=true and _glass.confirmed=true")
     );
     assert!(!root.join("should-not-run").exists());
     let fixture: Value = serde_json::from_str(include_str!("fixtures/client-conformance-v1.json"))
@@ -384,4 +394,5 @@ fn mcp_combines_browser_and_resident_dev_tools_on_clean_json_rpc_stdout() {
     );
 
     std::fs::remove_dir_all(root).expect("temporary project should be removed");
+    let _ = std::fs::remove_file(trust_store);
 }

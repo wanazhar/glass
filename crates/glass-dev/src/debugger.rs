@@ -168,7 +168,7 @@ impl SourceBreakpoint {
 }
 
 /// One owned DAP adapter process with bounded request and event queues.
-pub struct DapClient {
+pub(crate) struct DapClient {
     child: Child,
     stdin: DapWriter,
     messages: Receiver<DebugResult<Value>>,
@@ -181,7 +181,7 @@ pub struct DapClient {
 }
 
 impl DapClient {
-    pub fn spawn(root: &Path, config: &DebugAdapterConfig) -> DebugResult<Self> {
+    pub(crate) fn spawn(root: &Path, config: &DebugAdapterConfig) -> DebugResult<Self> {
         if !root.is_dir() {
             return Err(DebugError::InvalidInput(format!(
                 "debugger project root is not a directory: {}",
@@ -557,7 +557,7 @@ fn spawn_output_drain(mut output: impl Read + Send + 'static) -> JoinHandle<()> 
 }
 
 /// Adapter-neutral debugger session state and typed operations.
-pub struct DebuggerSession {
+pub(crate) struct DebuggerSession {
     client: DapClient,
     state: DebugSessionState,
     capabilities: Value,
@@ -569,7 +569,7 @@ pub struct DebuggerSession {
 }
 
 impl DebuggerSession {
-    pub fn start(
+    pub(crate) fn start(
         root: &Path,
         config: &DebugAdapterConfig,
         client_name: &str,
@@ -601,14 +601,6 @@ impl DebuggerSession {
             watches: Vec::new(),
             events: VecDeque::new(),
         })
-    }
-
-    pub fn state(&self) -> DebugSessionState {
-        self.state
-    }
-
-    pub fn capabilities(&self) -> &Value {
-        &self.capabilities
     }
 
     pub fn launch(&mut self, arguments: Value) -> DebugResult<Value> {
@@ -651,6 +643,7 @@ impl DebuggerSession {
         Ok(body)
     }
 
+    #[cfg(test)]
     pub fn set_breakpoints(&mut self, path: &Path, lines: &[u64]) -> DebugResult<Value> {
         let breakpoints = lines
             .iter()

@@ -40,7 +40,7 @@ pub struct LanguageDiagnostic {
 /// Minimal standards-compliant LSP client used by the Development Runtime.
 /// Language intelligence stays in external language servers; Glass owns only
 /// lifecycle, bounded framing, normalized diagnostics, and timeline routing.
-pub struct LspClient {
+pub(crate) struct LspClient {
     root: PathBuf,
     child: Child,
     input: ChildStdin,
@@ -76,7 +76,11 @@ impl std::fmt::Debug for LspClient {
 }
 
 impl LspClient {
-    pub fn spawn(root: &Path, server: &str, arguments: &[String]) -> DevelopmentResult<Self> {
+    pub(crate) fn spawn(
+        root: &Path,
+        server: &str,
+        arguments: &[String],
+    ) -> DevelopmentResult<Self> {
         Self::spawn_with_initialization_options(root, server, arguments, None)
     }
 
@@ -124,7 +128,7 @@ impl LspClient {
         Ok(client)
     }
 
-    pub fn rust_analyzer(root: &Path) -> DevelopmentResult<Self> {
+    pub(crate) fn rust_analyzer(root: &Path) -> DevelopmentResult<Self> {
         Self::spawn_with_initialization_options(
             root,
             "rust-analyzer",
@@ -233,13 +237,15 @@ impl LspClient {
         })
     }
 
-    pub fn save_document(&mut self, path: &str) -> DevelopmentResult<()> {
+    #[cfg(test)]
+    fn save_document(&mut self, path: &str) -> DevelopmentResult<()> {
         let document = self.sync_document(path)?;
         let uri = document.uri.clone();
         self.notify(serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":uri}}}))
     }
 
-    pub fn close_document(&mut self, path: &str) -> DevelopmentResult<()> {
+    #[cfg(test)]
+    fn close_document(&mut self, path: &str) -> DevelopmentResult<()> {
         let (_, normalized) = self.resolve_document(path)?;
         let document = self
             .documents

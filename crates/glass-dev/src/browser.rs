@@ -110,10 +110,6 @@ enum BrowserCommand {
     Forward(u64),
     Reload(u64),
     StopLoading(u64),
-    Highlight {
-        target: String,
-        expected_revision: u64,
-    },
     Click {
         target: String,
         expected_revision: u64,
@@ -185,19 +181,20 @@ impl ResidentBrowserSession {
 
 /// Cloneable command handle for the one authoritative browser worker.
 #[derive(Clone)]
-pub struct BrowserService {
+pub(crate) struct BrowserService {
     commands: SyncSender<(BrowserCommand, Reply)>,
     native_dialog_controller: Arc<Mutex<Option<NativeDialogController>>>,
 }
 
 impl BrowserService {
     /// Create a resident browser worker with the development policy.
-    pub fn new(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
+    #[cfg(test)]
+    pub(crate) fn new(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
         Self::new_with_policy(root, PolicyPreset::Development)
     }
 
     /// Create a resident browser worker with an explicit authorization preset.
-    pub fn new_with_policy(
+    pub(crate) fn new_with_policy(
         root: impl AsRef<Path>,
         policy_preset: PolicyPreset,
     ) -> DevelopmentResult<Self> {
@@ -240,62 +237,62 @@ impl BrowserService {
     }
 
     /// Start a browser session; fails if one is already connected.
-    pub fn start(&self, config: BrowserStartConfig) -> DevelopmentResult<Value> {
+    pub(crate) fn start(&self, config: BrowserStartConfig) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Start(config))
     }
 
     /// Stop the session and revoke any remote view.
-    pub fn stop(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn stop(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Stop)
     }
 
     /// Restart using the most recent start configuration.
-    pub fn reconnect(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn reconnect(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Reconnect)
     }
 
     /// Return connection, workflow, and latest revision state.
-    pub fn state(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn state(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::State)
     }
 
     /// Capture a fresh observation and advance the worker's known revision.
-    pub fn observe(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn observe(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Observe)
     }
 
     /// Capture the session's current snapshot without forcing a fresh observe.
-    pub fn snapshot(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn snapshot(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Snapshot)
     }
 
     /// Capture semantic observations at the requested level.
-    pub fn semantic(&self, level: SemanticObservationLevel) -> DevelopmentResult<Value> {
+    pub(crate) fn semantic(&self, level: SemanticObservationLevel) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Semantic(level))
     }
 
     /// Extract the current page into a bounded Web IR inspection summary.
-    pub fn web_ir(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn web_ir(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::WebIr)
     }
 
     /// Return the observation delta since the session's previous revision.
-    pub fn diff(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn diff(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Diff)
     }
 
     /// List browser targets.
-    pub fn targets(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn targets(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Targets)
     }
 
     /// Select a target and return a fresh observation for it.
-    pub fn select_target(&self, target: String) -> DevelopmentResult<Value> {
+    pub(crate) fn select_target(&self, target: String) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::SelectTarget(target))
     }
 
     /// Navigate if `expected_revision` still matches; `timeout` bounds navigation.
-    pub fn navigate(
+    pub(crate) fn navigate(
         &self,
         url: String,
         expected_revision: u64,
@@ -311,7 +308,7 @@ impl BrowserService {
     /// Read the exact pending process-backed native dialog without waiting for
     /// the serialized browser worker. This is available only after starting a
     /// native session with `modal_dialogs: true`.
-    pub fn pending_native_dialog(&self) -> DevelopmentResult<Option<NativePendingDialog>> {
+    pub(crate) fn pending_native_dialog(&self) -> DevelopmentResult<Option<NativePendingDialog>> {
         self.dialog_controller()?
             .pending_dialog()
             .map_err(|error| DevelopmentError::Process(error.to_string()))
@@ -320,7 +317,7 @@ impl BrowserService {
     /// Whether this service currently exposes an out-of-band native dialog
     /// controller. This is a nonblocking capability check for interactive
     /// hosts that poll while a browser operation is suspended.
-    pub fn native_dialog_control_enabled(&self) -> DevelopmentResult<bool> {
+    pub(crate) fn native_dialog_control_enabled(&self) -> DevelopmentResult<bool> {
         self.native_dialog_controller
             .lock()
             .map(|controller| controller.is_some())
@@ -334,7 +331,7 @@ impl BrowserService {
     /// Resolve the exact pending native dialog without waiting for the
     /// serialized browser worker. A stale identity is rejected and leaves the
     /// page operation suspended.
-    pub fn resolve_native_dialog(
+    pub(crate) fn resolve_native_dialog(
         &self,
         dialog_id: &str,
         resolution: NativeDialogResolution,
@@ -360,37 +357,30 @@ impl BrowserService {
             })
     }
     /// Go back if the supplied observation revision is current.
-    pub fn back(&self, expected_revision: u64) -> DevelopmentResult<Value> {
+    pub(crate) fn back(&self, expected_revision: u64) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Back(expected_revision))
     }
     /// Go forward if the supplied observation revision is current.
-    pub fn forward(&self, expected_revision: u64) -> DevelopmentResult<Value> {
+    pub(crate) fn forward(&self, expected_revision: u64) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Forward(expected_revision))
     }
     /// Reload if the supplied observation revision is current.
-    pub fn reload(&self, expected_revision: u64) -> DevelopmentResult<Value> {
+    pub(crate) fn reload(&self, expected_revision: u64) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Reload(expected_revision))
     }
     /// Stop loading if the supplied observation revision is current.
-    pub fn stop_loading(&self, expected_revision: u64) -> DevelopmentResult<Value> {
+    pub(crate) fn stop_loading(&self, expected_revision: u64) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::StopLoading(expected_revision))
     }
-    /// Highlight a target if the supplied observation revision is current.
-    pub fn highlight(&self, target: String, expected_revision: u64) -> DevelopmentResult<Value> {
-        self.call(BrowserCommand::Highlight {
-            target,
-            expected_revision,
-        })
-    }
     /// Click a target if the supplied observation revision is current.
-    pub fn click(&self, target: String, expected_revision: u64) -> DevelopmentResult<Value> {
+    pub(crate) fn click(&self, target: String, expected_revision: u64) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Click {
             target,
             expected_revision,
         })
     }
     /// Type text into the selected or explicit target at the current revision.
-    pub fn type_text(
+    pub(crate) fn type_text(
         &self,
         text: String,
         target: Option<String>,
@@ -403,7 +393,12 @@ impl BrowserService {
         })
     }
     /// Scroll by the requested delta at the current observation revision.
-    pub fn scroll(&self, dx: f64, dy: f64, expected_revision: u64) -> DevelopmentResult<Value> {
+    pub(crate) fn scroll(
+        &self,
+        dx: f64,
+        dy: f64,
+        expected_revision: u64,
+    ) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Scroll {
             dx,
             dy,
@@ -411,12 +406,12 @@ impl BrowserService {
         })
     }
     /// Capture a screenshot of the connected browser.
-    pub fn screenshot(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn screenshot(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Screenshot)
     }
 
     /// Start a workflow from its JSON definition and named inputs.
-    pub fn run_workflow(
+    pub(crate) fn run_workflow(
         &self,
         definition: Value,
         inputs: BTreeMap<String, Value>,
@@ -425,12 +420,12 @@ impl BrowserService {
     }
 
     /// Pause the active workflow and retain its checkpoint.
-    pub fn pause_workflow(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn pause_workflow(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::PauseWorkflow)
     }
 
     /// Resume a workflow from a caller-provided checkpoint.
-    pub fn resume_workflow(
+    pub(crate) fn resume_workflow(
         &self,
         definition: Value,
         inputs: BTreeMap<String, Value>,
@@ -444,22 +439,22 @@ impl BrowserService {
     }
 
     /// List workflow definitions known to the connected session.
-    pub fn list_workflows(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn list_workflows(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::ListWorkflows)
     }
 
     /// Cancel the active workflow.
-    pub fn cancel_workflow(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn cancel_workflow(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::CancelWorkflow)
     }
 
     /// Verify the active workflow's completion conditions.
-    pub fn verify_workflow(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn verify_workflow(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::VerifyWorkflow)
     }
 
     /// Evaluate a causal verification predicate against the live page.
-    pub fn verify_predicate(
+    pub(crate) fn verify_predicate(
         &self,
         predicate: VerificationPredicate,
         timeout: Duration,
@@ -468,17 +463,17 @@ impl BrowserService {
     }
 
     /// Open a remote-view capability for the connected browser.
-    pub fn open_remote_view(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn open_remote_view(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::RemoteViewOpen)
     }
 
     /// Return remote-view status and current capability state.
-    pub fn remote_view_status(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn remote_view_status(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::RemoteViewStatus)
     }
 
     /// Revoke the remote-view capability.
-    pub fn revoke_remote_view(&self) -> DevelopmentResult<Value> {
+    pub(crate) fn revoke_remote_view(&self) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::RemoteViewRevoke)
     }
 }
@@ -898,26 +893,6 @@ impl BrowserWorker {
                         serde_json::to_value(outcome).map_err(Into::into)
                     }
                 }
-            }
-            BrowserCommand::Highlight {
-                target,
-                expected_revision,
-            } => {
-                match self.session()? {
-                    ResidentBrowserSession::Native(session) => {
-                        session
-                            .native_highlight_target_with_revision(&target, expected_revision)
-                            .await
-                            .map_err(browser_error)?;
-                    }
-                    ResidentBrowserSession::Chromium(session) => {
-                        session
-                            .highlight_target_with_revision(&target, expected_revision)
-                            .await
-                            .map_err(browser_error)?;
-                    }
-                }
-                Ok(serde_json::json!({"highlighted":target,"browserRevision":expected_revision}))
             }
             BrowserCommand::Click {
                 target,

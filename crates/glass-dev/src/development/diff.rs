@@ -24,7 +24,7 @@ pub struct ProjectDiff {
     pub test_impact: BTreeMap<String, serde_json::Value>,
 }
 
-pub fn build_diff(
+pub(crate) fn build_diff(
     root: &Path,
     timeline: &Timeline,
     graph: &DevelopmentGraph,

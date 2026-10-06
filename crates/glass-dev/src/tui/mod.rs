@@ -313,7 +313,7 @@ impl VisualRuntime {
 /// Requires interactive stdin and stdout. `root` is the project workspace;
 /// `layout` selects the desktop/phone composition and `visual_options`
 /// selects the optional browser preview path. Non-interactive callers should
-pub fn run(
+pub(crate) fn run(
     root: impl AsRef<Path>,
     layout: TuiLayout,
     visual_options: TuiVisualOptions,

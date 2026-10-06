@@ -528,7 +528,10 @@ pub fn review(root: &Path) -> DevelopmentResult<GitHubReview> {
 
 /// Create a pull request from the current branch after explicit caller
 /// confirmation. Arguments are passed directly to `gh`; no shell is used.
-pub fn ship(root: &Path, request: &GitHubShipRequest) -> DevelopmentResult<GitHubShipResult> {
+pub(crate) fn ship(
+    root: &Path,
+    request: &GitHubShipRequest,
+) -> DevelopmentResult<GitHubShipResult> {
     let status = probe_uncached(root);
     let repository = status
         .repository

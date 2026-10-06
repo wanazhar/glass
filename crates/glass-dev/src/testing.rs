@@ -132,7 +132,7 @@ struct RunningTest {
 
 type OutputReader = JoinHandle<std::io::Result<(Vec<u8>, bool)>>;
 
-pub struct TestService {
+pub(crate) struct TestService {
     root: PathBuf,
     suites: BTreeMap<String, TestSuite>,
     running: BTreeMap<String, RunningTest>,
@@ -141,7 +141,7 @@ pub struct TestService {
 }
 
 impl TestService {
-    pub fn discover(root: impl AsRef<Path>) -> TestResult<Self> {
+    pub(crate) fn discover(root: impl AsRef<Path>) -> TestResult<Self> {
         let root = root.as_ref().canonicalize()?;
         let suites = discover_suites(&root)?
             .into_iter()
@@ -156,15 +156,11 @@ impl TestService {
         })
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     pub fn suites(&self) -> impl Iterator<Item = &TestSuite> {
         self.suites.values()
     }
 
-    pub fn register(&mut self, suite: TestSuite) -> TestResult<()> {
+    pub(crate) fn register(&mut self, suite: TestSuite) -> TestResult<()> {
         validate_name(&suite.id, "test suite")?;
         if suite.program.is_empty() || suite.arguments.len() > 256 {
             return Err(TestError::InvalidInput(
@@ -180,7 +176,7 @@ impl TestService {
         Ok(())
     }
 
-    pub fn start(
+    pub(crate) fn start(
         &mut self,
         run_id: &str,
         suite_id: &str,
@@ -255,7 +251,7 @@ impl TestService {
         Ok(snapshot)
     }
 
-    pub fn cancel(&mut self, run_id: &str) -> TestResult<()> {
+    pub(crate) fn cancel(&mut self, run_id: &str) -> TestResult<()> {
         let running = self
             .running
             .get_mut(run_id)
@@ -296,6 +292,7 @@ impl TestService {
         self.completed.iter()
     }
 
+    #[cfg(test)]
     pub fn result(&self, run_id: &str) -> Option<&TestRun> {
         self.completed.iter().find(|result| result.id == run_id)
     }
@@ -324,7 +321,7 @@ impl TestService {
             .collect()
     }
 
-    pub fn watch(&mut self, suite_id: &str, current_revision: u64) -> TestResult<()> {
+    pub(crate) fn watch(&mut self, suite_id: &str, current_revision: u64) -> TestResult<()> {
         if !self.suites.contains_key(suite_id) {
             return Err(TestError::NotFound(format!("test suite {suite_id}")));
         }
@@ -332,11 +329,8 @@ impl TestService {
         Ok(())
     }
 
-    pub fn unwatch(&mut self, suite_id: &str) -> bool {
-        self.watched.remove(suite_id).is_some()
-    }
-
-    pub fn changed_watches(&mut self, current_revision: u64) -> Vec<String> {
+    #[cfg(test)]
+    pub(crate) fn changed_watches(&mut self, current_revision: u64) -> Vec<String> {
         let mut changed = Vec::new();
         for (suite, revision) in &mut self.watched {
             if *revision != current_revision {

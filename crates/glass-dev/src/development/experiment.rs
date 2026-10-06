@@ -37,13 +37,13 @@ pub struct ExperimentComparison {
 }
 
 #[derive(Debug, Clone)]
-pub struct ExperimentManager {
+pub(crate) struct ExperimentManager {
     repository: PathBuf,
     root: PathBuf,
 }
 
 impl ExperimentManager {
-    pub fn new(repository: &Path) -> DevelopmentResult<Self> {
+    pub(crate) fn new(repository: &Path) -> DevelopmentResult<Self> {
         let repository = fs::canonicalize(repository)?;
         let output = Command::new("git")
             .args(["rev-parse", "--show-toplevel"])
@@ -69,7 +69,11 @@ impl ExperimentManager {
         Ok(Self { repository, root })
     }
 
-    pub fn create(&self, name: &str, dev_port: u16) -> DevelopmentResult<ExperimentWorkspace> {
+    pub(crate) fn create(
+        &self,
+        name: &str,
+        dev_port: u16,
+    ) -> DevelopmentResult<ExperimentWorkspace> {
         validate_name(name)?;
         if dev_port == 0 {
             return Err(DevelopmentError::InvalidInput(
@@ -105,6 +109,7 @@ impl ExperimentManager {
         })
     }
 
+    #[cfg(test)]
     pub fn evidence(
         &self,
         experiment: &ExperimentWorkspace,
@@ -145,14 +150,6 @@ impl ExperimentManager {
             semantic_regressions,
             workflow_status,
         })
-    }
-
-    pub fn compare(
-        &self,
-        left: ExperimentEvidence,
-        right: ExperimentEvidence,
-    ) -> ExperimentComparison {
-        ExperimentComparison { left, right }
     }
 }
 

@@ -199,11 +199,15 @@ impl DevelopmentToolRouter {
                 &call.arguments,
                 execution_trust,
                 &actor_id,
+                &context.authorization,
             )
         } else if let Some(name) = call.name.strip_prefix("glass.command.") {
-            workspace
-                .customization()
-                .execute_command(name, execution_trust, &actor_id)
+            workspace.customization().execute_command(
+                name,
+                execution_trust,
+                &actor_id,
+                &context.authorization,
+            )
         } else {
             self.core
                 .execute(workspace.project_mut(), call, &context.authorization)
@@ -2820,6 +2824,17 @@ mod tests {
             name: "glass.eval.start".into(),
             arguments: serde_json::json!({"name":"analysis","kind":"sql"}),
         };
+        for (allow_mutation, confirmed) in [(false, false), (false, true), (true, false)] {
+            let mut unauthorized = context(&workspace, false);
+            unauthorized.authorization.allow_mutation = allow_mutation;
+            unauthorized.authorization.confirmed = confirmed;
+            assert!(
+                router
+                    .execute(&mut workspace, &start, &unauthorized)
+                    .is_err()
+            );
+        }
+        assert!(workspace.kernels().snapshot("analysis").is_none());
         let mutation = context(&workspace, true);
         router.execute(&mut workspace, &start, &mutation).unwrap();
         let execute = ToolCall {

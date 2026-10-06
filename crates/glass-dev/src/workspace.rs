@@ -233,7 +233,7 @@ impl DevelopmentWorkspace {
     }
 
     /// Mutable access for governed resident service operations.
-    pub fn project_mut(&mut self) -> &mut ProjectWorkspace {
+    pub(crate) fn project_mut(&mut self) -> &mut ProjectWorkspace {
         &mut self.project
     }
 
@@ -582,6 +582,7 @@ impl DevelopmentWorkspace {
                     &serde_json::Value::Null,
                     self.execution_trust(),
                     "glassd:task-verifier",
+                    &ToolAuthorization::read_only(Actor::external("glassd:task-verifier")),
                 );
                 let (passed, details) = match result {
                     Ok(result) => (true, serde_json::json!({"name":name,"result":result})),
@@ -776,7 +777,7 @@ impl DevelopmentWorkspace {
         &self.kernels
     }
 
-    pub fn kernels_mut(&mut self) -> &mut KernelManager {
+    pub(crate) fn kernels_mut(&mut self) -> &mut KernelManager {
         &mut self.kernels
     }
 

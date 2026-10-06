@@ -1,7 +1,7 @@
 //! Governed project configuration, skills, hooks, commands, and custom tools.
 
 use crate::WorkspaceTrust;
-use crate::development::{DevelopmentError, DevelopmentResult, ToolDescriptor};
+use crate::development::{DevelopmentError, DevelopmentResult, ToolAuthorization, ToolDescriptor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -564,7 +564,9 @@ impl Customization {
         arguments: &Value,
         trust: WorkspaceTrust,
         actor: &str,
+        authorization: &ToolAuthorization,
     ) -> DevelopmentResult<Value> {
+        require_mutation_authorization(authorization)?;
         require_project_trust(trust)?;
         let tool = self
             .custom_tool(name)
@@ -595,7 +597,9 @@ impl Customization {
         name: &str,
         trust: WorkspaceTrust,
         actor: &str,
+        authorization: &ToolAuthorization,
     ) -> DevelopmentResult<Value> {
+        require_mutation_authorization(authorization)?;
         require_project_trust(trust)?;
         let command = self
             .command(name)
@@ -620,7 +624,7 @@ impl Customization {
         result
     }
 
-    pub fn run_hooks(
+    pub(crate) fn run_hooks(
         &self,
         event: &str,
         evidence: &Value,
@@ -698,6 +702,16 @@ impl Customization {
                 },
             );
         }
+    }
+}
+
+fn require_mutation_authorization(authorization: &ToolAuthorization) -> DevelopmentResult<()> {
+    if authorization.permits_mutation() {
+        Ok(())
+    } else {
+        Err(DevelopmentError::Conflict(
+            "custom shell execution requires explicit mutation authority and confirmation".into(),
+        ))
     }
 }
 
@@ -1080,6 +1094,12 @@ input_schema = {{ type = "object", required = ["text"] }}
         )
         .unwrap();
         let customization = Customization::load(&root).unwrap();
+        let authorization = crate::development::ToolAuthorization {
+            actor: crate::development::Actor::external("customization-test"),
+            allow_mutation: true,
+            confirmed: true,
+            unrestricted: false,
+        };
         assert!(
             customization
                 .agent_instructions(WorkspaceTrust::TrustedOnce)
@@ -1093,6 +1113,7 @@ input_schema = {{ type = "object", required = ["text"] }}
                     &serde_json::json!({"text":"ok"}),
                     WorkspaceTrust::TrustedOnce,
                     "external:customization-test",
+                    &authorization,
                 )
                 .unwrap()["text"],
             "ok"
@@ -1114,7 +1135,8 @@ input_schema = {{ type = "object", required = ["text"] }}
                 .execute_command(
                     "hello",
                     WorkspaceTrust::TrustedOnce,
-                    "external:customization-test"
+                    "external:customization-test",
+                    &authorization,
                 )
                 .unwrap()["stdout"]
                 .as_str()
@@ -1199,6 +1221,66 @@ input_schema = {{ type = "object", required = ["text"] }}
         );
         drop(workspace);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn public_custom_shell_execution_requires_both_mutation_factors() {
+        let root =
+            std::env::temp_dir().join(format!("glass-customization-auth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let command_marker = root.join("command-ran");
+        let tool_marker = root.join("tool-ran");
+        let command = format!("echo executed > {}", command_marker.display());
+        let tool = format!("echo executed > {}", tool_marker.display());
+        std::fs::write(
+            root.join("glass.toml"),
+            format!(
+                "[commands]\nunsafe = '''{command}'''\n[tools.unsafe]\ndescription = 'unsafe fixture'\ncommand = '''{tool}'''\ninput_schema = {{ type = 'object' }}\n"
+            ),
+        )
+        .unwrap();
+        let customization = Customization::load(&root).unwrap();
+
+        for (allow_mutation, confirmed) in [(false, false), (false, true), (true, false)] {
+            let authorization = crate::development::ToolAuthorization {
+                actor: crate::development::Actor::external("customization-auth-test"),
+                allow_mutation,
+                confirmed,
+                unrestricted: false,
+            };
+            let command_error = customization
+                .execute_command(
+                    "unsafe",
+                    WorkspaceTrust::TrustedOnce,
+                    "external:customization-auth-test",
+                    &authorization,
+                )
+                .unwrap_err();
+            assert!(
+                command_error
+                    .to_string()
+                    .contains("requires explicit mutation")
+            );
+            let tool_error = customization
+                .execute_tool(
+                    "glass.custom.unsafe",
+                    &serde_json::json!({}),
+                    WorkspaceTrust::TrustedOnce,
+                    "external:customization-auth-test",
+                    &authorization,
+                )
+                .unwrap_err();
+            assert!(
+                tool_error
+                    .to_string()
+                    .contains("requires explicit mutation")
+            );
+            assert!(!command_marker.exists());
+            assert!(!tool_marker.exists());
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

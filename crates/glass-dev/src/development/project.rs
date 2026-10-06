@@ -149,7 +149,6 @@ pub struct ProjectWorkspace {
     timeline: Timeline,
     graph: DevelopmentGraph,
     graph_path: PathBuf,
-    collaboration: super::CollaborationBus,
     diagnostics: BTreeMap<String, Vec<LanguageDiagnostic>>,
     language: Option<LspClient>,
     tree_cache: Mutex<Option<(Instant, ProjectTreeResult)>>,
@@ -227,7 +226,6 @@ impl ProjectWorkspace {
             timeline,
             graph,
             graph_path,
-            collaboration: super::CollaborationBus::default(),
             diagnostics: BTreeMap::new(),
             language: None,
             tree_cache: Mutex::new(None),
@@ -285,11 +283,7 @@ impl ProjectWorkspace {
         self.actors.values()
     }
 
-    pub fn collaboration(&mut self) -> &mut super::CollaborationBus {
-        &mut self.collaboration
-    }
-
-    pub fn set_buffer_selection(
+    pub(crate) fn set_buffer_selection(
         &mut self,
         path: &str,
         selection: Option<super::TextSelection>,
@@ -338,7 +332,7 @@ impl ProjectWorkspace {
     }
 
     /// Replace the human's current selection and leave the cursor after the replacement.
-    pub fn replace_buffer_selection(
+    pub(crate) fn replace_buffer_selection(
         &mut self,
         path: &str,
         replacement: String,
@@ -387,7 +381,7 @@ impl ProjectWorkspace {
             .collect()
     }
 
-    pub fn add_editor_comment(
+    pub(crate) fn add_editor_comment(
         &mut self,
         path: &str,
         start_line: u32,
@@ -425,7 +419,7 @@ impl ProjectWorkspace {
         Ok(comment)
     }
 
-    pub fn resolve_editor_comment(
+    pub(crate) fn resolve_editor_comment(
         &mut self,
         id: &str,
         actor: Actor,
@@ -461,7 +455,7 @@ impl ProjectWorkspace {
         self.proposals.values().cloned().collect()
     }
 
-    pub fn propose_editor_change(
+    pub(crate) fn propose_editor_change(
         &mut self,
         path: &str,
         original: String,
@@ -510,7 +504,7 @@ impl ProjectWorkspace {
         Ok(proposal)
     }
 
-    pub fn accept_editor_proposal(
+    pub(crate) fn accept_editor_proposal(
         &mut self,
         id: &str,
         actor: Actor,
@@ -568,7 +562,7 @@ impl ProjectWorkspace {
         Ok(buffer)
     }
 
-    pub fn accept_pending_editor_proposals(
+    pub(crate) fn accept_pending_editor_proposals(
         &mut self,
         actor: Actor,
     ) -> DevelopmentResult<Vec<super::EditorBuffer>> {
@@ -590,7 +584,7 @@ impl ProjectWorkspace {
         Ok(buffers)
     }
 
-    pub fn reject_editor_proposal(
+    pub(crate) fn reject_editor_proposal(
         &mut self,
         id: &str,
         actor: Actor,
@@ -637,7 +631,7 @@ impl ProjectWorkspace {
         self.checkpoints.values().cloned().collect()
     }
 
-    pub fn create_editor_checkpoint(
+    pub(crate) fn create_editor_checkpoint(
         &mut self,
         name: String,
         actor: Actor,
@@ -666,7 +660,7 @@ impl ProjectWorkspace {
         Ok(checkpoint)
     }
 
-    pub fn restore_editor_checkpoint(
+    pub(crate) fn restore_editor_checkpoint(
         &mut self,
         id: &str,
         actor: Actor,
@@ -775,7 +769,7 @@ impl ProjectWorkspace {
         Ok(())
     }
 
-    pub fn attach_actor(&mut self, actor: Actor) -> DevelopmentResult<()> {
+    pub(crate) fn attach_actor(&mut self, actor: Actor) -> DevelopmentResult<()> {
         if self.actors.len() >= 64 && !self.actors.contains_key(&actor.id) {
             return Err(DevelopmentError::InvalidInput(
                 "workspace cannot contain more than 64 actors".into(),
@@ -790,7 +784,7 @@ impl ProjectWorkspace {
         Ok(())
     }
 
-    pub fn processes(&mut self) -> &mut ProcessManager {
+    pub(crate) fn processes(&mut self) -> &mut ProcessManager {
         &mut self.processes
     }
 
@@ -837,7 +831,7 @@ impl ProjectWorkspace {
         Ok(result)
     }
 
-    pub fn read_file(&mut self, path: &str) -> DevelopmentResult<String> {
+    pub(crate) fn read_file(&mut self, path: &str) -> DevelopmentResult<String> {
         let (_, relative) = self.resolve_path(path, false)?;
         let content = self.read_file_snapshot(path)?;
         self.record(
@@ -854,7 +848,11 @@ impl ProjectWorkspace {
         read_bounded_utf8(&absolute, MAX_FILE_BYTES, "project file")
     }
 
-    pub fn open_buffer(&mut self, path: &str, actor: Actor) -> DevelopmentResult<EditorBuffer> {
+    pub(crate) fn open_buffer(
+        &mut self,
+        path: &str,
+        actor: Actor,
+    ) -> DevelopmentResult<EditorBuffer> {
         let content = self.read_file(path)?;
         let (_, relative) = self.resolve_path(path, false)?;
         let buffer = EditorBuffer {
@@ -879,7 +877,7 @@ impl ProjectWorkspace {
         self.buffers.get(path)
     }
 
-    pub fn edit_buffer(
+    pub(crate) fn edit_buffer(
         &mut self,
         path: &str,
         content: String,
@@ -929,7 +927,7 @@ impl ProjectWorkspace {
         Ok(())
     }
 
-    pub fn save_buffer(&mut self, path: &str) -> DevelopmentResult<EditorBuffer> {
+    pub(crate) fn save_buffer(&mut self, path: &str) -> DevelopmentResult<EditorBuffer> {
         let buffer = self
             .buffers
             .get(path)
@@ -955,7 +953,7 @@ impl ProjectWorkspace {
         Ok(saved)
     }
 
-    pub fn undo_buffer(&mut self, path: &str) -> DevelopmentResult<EditorBuffer> {
+    pub(crate) fn undo_buffer(&mut self, path: &str) -> DevelopmentResult<EditorBuffer> {
         let previous = self
             .undo
             .get_mut(path)
@@ -976,7 +974,7 @@ impl ProjectWorkspace {
         Ok(result)
     }
 
-    pub fn redo_buffer(&mut self, path: &str) -> DevelopmentResult<EditorBuffer> {
+    pub(crate) fn redo_buffer(&mut self, path: &str) -> DevelopmentResult<EditorBuffer> {
         let next = self
             .redo
             .get_mut(path)
@@ -997,7 +995,7 @@ impl ProjectWorkspace {
         Ok(result)
     }
 
-    pub fn replace_in_buffer(
+    pub(crate) fn replace_in_buffer(
         &mut self,
         path: &str,
         needle: &str,
@@ -1025,7 +1023,7 @@ impl ProjectWorkspace {
         Ok(matches)
     }
 
-    pub fn set_buffer_cursor(
+    pub(crate) fn set_buffer_cursor(
         &mut self,
         path: &str,
         line: u32,
@@ -1045,7 +1043,12 @@ impl ProjectWorkspace {
         Ok(())
     }
 
-    pub fn rename_path(&mut self, from: &str, to: &str, actor: Actor) -> DevelopmentResult<()> {
+    pub(crate) fn rename_path(
+        &mut self,
+        from: &str,
+        to: &str,
+        actor: Actor,
+    ) -> DevelopmentResult<()> {
         self.invalidate_tree_cache();
         let (source, source_relative) = self.resolve_path(from, false)?;
         let (destination, destination_relative) = self.resolve_path(to, true)?;
@@ -1076,7 +1079,7 @@ impl ProjectWorkspace {
         )
     }
 
-    pub fn create_directory(&mut self, path: &str, actor: Actor) -> DevelopmentResult<()> {
+    pub(crate) fn create_directory(&mut self, path: &str, actor: Actor) -> DevelopmentResult<()> {
         self.invalidate_tree_cache();
         let (absolute, relative) = self.resolve_path(path, true)?;
         if absolute.exists() {
@@ -1093,7 +1096,7 @@ impl ProjectWorkspace {
         )
     }
 
-    pub fn delete_path(&mut self, path: &str, actor: Actor) -> DevelopmentResult<()> {
+    pub(crate) fn delete_path(&mut self, path: &str, actor: Actor) -> DevelopmentResult<()> {
         self.invalidate_tree_cache();
         let (absolute, relative) = self.resolve_path(path, false)?;
         let metadata = fs::symlink_metadata(&absolute)?;
@@ -1118,7 +1121,12 @@ impl ProjectWorkspace {
         )
     }
 
-    pub fn write_file(&mut self, path: &str, content: &str, actor: Actor) -> DevelopmentResult<()> {
+    pub(crate) fn write_file(
+        &mut self,
+        path: &str,
+        content: &str,
+        actor: Actor,
+    ) -> DevelopmentResult<()> {
         self.invalidate_tree_cache();
         if content.len() > MAX_FILE_BYTES {
             return Err(DevelopmentError::InvalidInput(format!(
@@ -1178,7 +1186,7 @@ impl ProjectWorkspace {
         Ok(())
     }
 
-    pub fn start_process(
+    pub(crate) fn start_process(
         &mut self,
         name: &str,
         command: &str,
@@ -1197,7 +1205,7 @@ impl ProjectWorkspace {
         Ok(snapshot)
     }
 
-    pub fn stop_process(&mut self, name: &str) -> DevelopmentResult<super::ProcessSnapshot> {
+    pub(crate) fn stop_process(&mut self, name: &str) -> DevelopmentResult<super::ProcessSnapshot> {
         let snapshot = self.processes.stop(name)?;
         self.revision = self.revision.saturating_add(1);
         self.record(
@@ -1207,7 +1215,7 @@ impl ProjectWorkspace {
         Ok(snapshot)
     }
 
-    pub fn run_verification(
+    pub(crate) fn run_verification(
         &mut self,
         name: &str,
         command: &str,
@@ -1279,7 +1287,7 @@ impl ProjectWorkspace {
         Ok(snapshot)
     }
 
-    pub fn run_command_to_completion(
+    pub(crate) fn run_command_to_completion(
         &mut self,
         name: &str,
         command: &str,
@@ -1329,7 +1337,8 @@ impl ProjectWorkspace {
     /// strictly newer semantic revision. This keeps HMR/build claims tied to
     /// caller-supplied browser evidence instead of treating a file save as
     /// proof that the running application changed.
-    pub fn confirm_live_update(
+    #[allow(dead_code)]
+    pub(crate) fn confirm_live_update(
         &mut self,
         source_path: &str,
         before_revision: u64,
@@ -1357,7 +1366,7 @@ impl ProjectWorkspace {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn link_runtime_source(
+    pub(crate) fn link_runtime_source(
         &mut self,
         entity_id: &str,
         path: &str,
@@ -1389,11 +1398,11 @@ impl ProjectWorkspace {
         Ok(link)
     }
 
-    pub fn diff(&mut self) -> DevelopmentResult<ProjectDiff> {
+    pub(crate) fn diff(&mut self) -> DevelopmentResult<ProjectDiff> {
         build_diff(&self.root, &self.timeline, &self.graph, &mut self.processes)
     }
 
-    pub fn discover_runtime_links(&mut self) -> DevelopmentResult<Vec<RuntimeLink>> {
+    pub(crate) fn discover_runtime_links(&mut self) -> DevelopmentResult<Vec<RuntimeLink>> {
         let discovered = self.graph.discover_explicit_markers(&self.root)?;
         self.graph.save(&self.graph_path)?;
         for link in &discovered {
@@ -1408,7 +1417,7 @@ impl ProjectWorkspace {
         Ok(discovered)
     }
 
-    pub fn publish_rust_diagnostics(
+    pub(crate) fn publish_rust_diagnostics(
         &mut self,
         path: &str,
     ) -> DevelopmentResult<Vec<LanguageDiagnostic>> {
@@ -1428,7 +1437,7 @@ impl ProjectWorkspace {
         Ok(diagnostics)
     }
 
-    pub fn evaluate_semantic_breakpoints(
+    pub(crate) fn evaluate_semantic_breakpoints(
         &mut self,
         breakpoints: &[SemanticBreakpoint],
         before: &SemanticSnapshot,
@@ -1448,7 +1457,11 @@ impl ProjectWorkspace {
         super::replay(&self.timeline, start, limit)
     }
 
-    pub fn search(&mut self, query: &str, limit: usize) -> DevelopmentResult<Vec<SearchHit>> {
+    pub(crate) fn search(
+        &mut self,
+        query: &str,
+        limit: usize,
+    ) -> DevelopmentResult<Vec<SearchHit>> {
         if query.trim().is_empty() || query.len() > 256 || limit == 0 || limit > 256 {
             return Err(DevelopmentError::InvalidInput(
                 "search requires a 1-256 byte query and a 1-256 result limit".into(),
@@ -1521,7 +1534,7 @@ impl ProjectWorkspace {
         Ok(super::rank(hits, limit))
     }
 
-    pub fn record(
+    pub(crate) fn record(
         &mut self,
         kind: DevelopmentEventKind,
         payload: serde_json::Value,
@@ -1529,7 +1542,7 @@ impl ProjectWorkspace {
         self.record_as(self.actor.clone(), kind, payload)
     }
 
-    pub fn record_as(
+    pub(crate) fn record_as(
         &mut self,
         actor: Actor,
         kind: DevelopmentEventKind,

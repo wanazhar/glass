@@ -609,6 +609,13 @@ fn default_branch(root: &Path, repository: &str) -> DevelopmentResult<String> {
     })
 }
 
+pub(crate) fn default_branch_for_root(root: &Path) -> DevelopmentResult<String> {
+    let repository = probe_uncached(root)
+        .repository
+        .ok_or_else(|| DevelopmentError::NotFound("GitHub origin is not configured".into()))?;
+    default_branch(root, &repository.name_with_owner)
+}
+
 fn parse_default_branch(output: &[u8]) -> Option<String> {
     let branch = std::str::from_utf8(output).ok()?.trim();
     if branch.is_empty()
@@ -626,15 +633,24 @@ fn parse_default_branch(output: &[u8]) -> Option<String> {
 fn require_feature_branch(current: &str, default: &str) -> DevelopmentResult<()> {
     if current == default {
         return Err(DevelopmentError::Conflict(format!(
-            "GitHub ship requires a feature branch, not repository default branch {default}"
+            "protected branch policy rejects {current}: repository default branch is {default}"
         )));
     }
     if matches!(current, "main" | "master") {
         return Err(DevelopmentError::Conflict(format!(
-            "GitHub ship requires a feature branch, not protected branch {current}"
+            "protected branch policy rejects protected branch {current}"
         )));
     }
     Ok(())
+}
+
+pub(crate) fn require_push_branches(
+    source: &str,
+    destination: &str,
+    default: &str,
+) -> DevelopmentResult<()> {
+    require_feature_branch(source, default)?;
+    require_feature_branch(destination, default)
 }
 
 fn current_branch(root: &Path) -> Option<String> {
@@ -934,9 +950,12 @@ mod tests {
             require_feature_branch("develop", "develop")
                 .unwrap_err()
                 .to_string()
-                .contains("repository default branch develop")
+                .contains("repository default branch is develop")
         );
         assert!(require_feature_branch("main", "develop").is_err());
+        assert!(require_push_branches("feature/fix", "feature/fix", "develop").is_ok());
+        assert!(require_push_branches("develop", "feature/fix", "develop").is_err());
+        assert!(require_push_branches("feature/fix", "develop", "develop").is_err());
     }
 
     #[test]

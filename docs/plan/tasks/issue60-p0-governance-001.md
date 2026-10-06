@@ -1,7 +1,7 @@
 ---
 id: issue60-p0-governance-001
 scope: glass-dev/trust-mutation-governance
-status: in-progress
+status: ready
 depends-on: []
 ---
 
@@ -34,8 +34,11 @@ shared authorization route rather than changing correct code.
   decision as the execution router, including process-local unrestricted mode.
 - Mutating library, CLI, TUI, MCP, daemon, and harness paths require the
   documented authority and confirmation pair; no adapter is the sole guard.
+- Public custom shell calls carry the pair explicitly; raw project, Git, and
+  kernel mutation methods are crate-private behind governed workspace tools.
 - Kernel and Git metadata describe the effective operation and protected
-  branch policy used by enforcement.
+  branch policy used by enforcement, including pushes checked against the
+  repository's queried default branch at the Git service boundary.
 - MCP advertises `x-glass-mutating` at the root of each tool input schema.
 - Keep the existing trust and mutation failure modes explicit and fail closed.
 

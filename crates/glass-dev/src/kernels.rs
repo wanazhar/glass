@@ -244,11 +244,17 @@ impl KernelManager {
         })
     }
 
-    pub fn start(&mut self, name: &str, kind: KernelKind, actor_id: &str) -> KernelResult<()> {
+    #[cfg(test)]
+    pub(crate) fn start(
+        &mut self,
+        name: &str,
+        kind: KernelKind,
+        actor_id: &str,
+    ) -> KernelResult<()> {
         self.start_governed(name, kind, actor_id, &[], false)
     }
 
-    pub fn start_governed(
+    pub(crate) fn start_governed(
         &mut self,
         name: &str,
         kind: KernelKind,
@@ -312,7 +318,8 @@ impl KernelManager {
         Ok(())
     }
 
-    pub fn execute(
+    #[cfg(test)]
+    pub(crate) fn execute(
         &mut self,
         name: &str,
         code: &str,
@@ -327,7 +334,7 @@ impl KernelManager {
         })
     }
 
-    pub fn execute_with_tools(
+    pub(crate) fn execute_with_tools(
         &mut self,
         name: &str,
         code: &str,
@@ -423,7 +430,7 @@ impl KernelManager {
         self.sessions.get(name).map(|session| &session.snapshot)
     }
 
-    pub fn stop(&mut self, name: &str) -> KernelResult<KernelSnapshot> {
+    pub(crate) fn stop(&mut self, name: &str) -> KernelResult<KernelSnapshot> {
         let mut session = self
             .sessions
             .remove(name)
@@ -432,7 +439,7 @@ impl KernelManager {
         Ok(session.snapshot.clone())
     }
 
-    pub fn cancel(&mut self, name: &str) -> KernelResult<KernelSnapshot> {
+    pub(crate) fn cancel(&mut self, name: &str) -> KernelResult<KernelSnapshot> {
         let session = self
             .sessions
             .get_mut(name)
@@ -442,7 +449,7 @@ impl KernelManager {
         Ok(session.snapshot.clone())
     }
 
-    pub fn reset(&mut self, name: &str, actor_id: &str) -> KernelResult<()> {
+    pub(crate) fn reset(&mut self, name: &str, actor_id: &str) -> KernelResult<()> {
         let session = self
             .sessions
             .get(name)

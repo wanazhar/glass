@@ -74973,8 +74973,39 @@ async fn native_content_process_video_posters_use_parent_cookie_authority_and_pa
                     ] {
                         assert!(has_cookie(cookie), "missing {cookie} in {request}");
                     }
-                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                        .to_vec()
+                    b"HTTP/1.1 404 Not Found\r\nSet-Cookie: failed_poster=stored; HttpOnly; Path=/; SameSite=Lax\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+                }
+                "/undecodable.png" => {
+                    for cookie in ["failed_poster=stored"] {
+                        assert!(has_cookie(cookie), "missing {cookie} in {request}");
+                    }
+                    b"HTTP/1.1 200 OK\r\nSet-Cookie: undecodable_poster=stored; HttpOnly; Path=/; SameSite=Lax\r\nContent-Type: image/png\r\nContent-Length: 12\r\nConnection: close\r\n\r\nnot an image".to_vec()
+                }
+                "/redirect-exit.png" => {
+                    for cookie in ["failed_poster=stored", "undecodable_poster=stored"] {
+                        assert!(has_cookie(cookie), "missing {cookie} in {request}");
+                    }
+                    b"HTTP/1.1 302 Found\r\nSet-Cookie: redirected_poster=stored; HttpOnly; Path=/; SameSite=Lax\r\nLocation: file:///blocked.png\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+                }
+                "/after-failure.png" => {
+                    for cookie in [
+                        "owner_secret=hidden",
+                        "poster_initial=stored",
+                        "poster_secret=accepted",
+                        "failed_poster=stored",
+                        "undecodable_poster=stored",
+                        "redirected_poster=stored",
+                    ] {
+                        assert!(has_cookie(cookie), "missing {cookie} in {request}");
+                    }
+                    let image = native_test_solid_png_bytes([200, 40, 180, 255]);
+                    let mut response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        image.len()
+                    )
+                    .into_bytes();
+                    response.extend_from_slice(&image);
+                    response
                 }
                 other => panic!("unexpected video poster request {other}: {request}"),
             };
@@ -75130,6 +75161,60 @@ async fn native_content_process_video_posters_use_parent_cookie_authority_and_pa
             .any(|command| matches!(command, NativeDisplayCommand::Image { .. })),
         "failed poster must not retain or paint the previous image"
     );
+    let undecodable_poster_url = format!("http://{poster_address}/undecodable.png");
+    engine
+        .evaluate_async(&format!(
+            "document.getElementById('poster').poster = {undecodable_poster_url:?}; true"
+        ))
+        .await
+        .unwrap();
+    assert!(
+        !engine
+            .display_list()
+            .unwrap()
+            .commands
+            .iter()
+            .any(|command| matches!(command, NativeDisplayCommand::Image { .. })),
+        "undecodable poster must not be painted"
+    );
+    let redirect_exit_url = format!("http://{poster_address}/redirect-exit.png");
+    engine
+        .evaluate_async(&format!(
+            "document.getElementById('poster').poster = {redirect_exit_url:?}; true"
+        ))
+        .await
+        .unwrap();
+    assert!(
+        !engine
+            .display_list()
+            .unwrap()
+            .commands
+            .iter()
+            .any(|command| matches!(command, NativeDisplayCommand::Image { .. })),
+        "poster redirect to an unsupported scheme must fail without painting"
+    );
+    let after_failure_url = format!("http://{poster_address}/after-failure.png");
+    engine
+        .evaluate_async(&format!(
+            "document.getElementById('poster').poster = {after_failure_url:?}; true"
+        ))
+        .await
+        .unwrap();
+    let after_failure_pixels = engine
+        .display_list()
+        .unwrap()
+        .commands
+        .into_iter()
+        .find_map(|command| match command {
+            NativeDisplayCommand::Image { pixels, .. } => Some(pixels),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        after_failure_pixels
+            .chunks_exact(4)
+            .all(|pixel| pixel == [200, 40, 180, 255])
+    );
     assert_eq!(
         engine
             .evaluate_async(
@@ -75140,7 +75225,14 @@ async fn native_content_process_video_posters_use_parent_cookie_authority_and_pa
         serde_json::json!([[], "", 0, 0, null, "owner_visible=visible"])
     );
     let cookies = engine.cookies_async().await.unwrap();
-    for name in ["owner_secret", "poster_initial", "poster_secret"] {
+    for name in [
+        "owner_secret",
+        "poster_initial",
+        "poster_secret",
+        "failed_poster",
+        "undecodable_poster",
+        "redirected_poster",
+    ] {
         assert!(
             cookies
                 .iter()
@@ -75154,10 +75246,256 @@ async fn native_content_process_video_posters_use_parent_cookie_authority_and_pa
         .iter()
         .map(|request| request.split_whitespace().nth(1).unwrap_or_default())
         .collect::<Vec<_>>();
-    assert_eq!(paths, ["/first.png", "/second.png", "/missing.png"]);
+    assert_eq!(
+        paths,
+        [
+            "/first.png",
+            "/second.png",
+            "/missing.png",
+            "/undecodable.png",
+            "/redirect-exit.png",
+            "/after-failure.png"
+        ]
+    );
     engine.close_async().await.unwrap();
     poster_server_shutdown_tx.send(()).unwrap();
     poster_server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_video_poster_uses_document_referrer_policy() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let poster_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let poster_address = poster_listener.local_addr().unwrap();
+    let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+    let poster_server = tokio::spawn(async move {
+        let (mut stream, _) = poster_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        request_tx.send(request).unwrap();
+        let image = native_test_solid_png_bytes([70, 110, 210, 255]);
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            image.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(&image);
+        stream.write_all(&response).await.unwrap();
+    });
+
+    let owner_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let owner_address = owner_listener.local_addr().unwrap();
+    assert_ne!(owner_address.port(), poster_address.port());
+    let page = format!(
+        "<!doctype html><video poster='http://{poster_address}/poster.png' referrerpolicy='unsafe-url'></video>"
+    );
+    let owner_server = tokio::spawn(async move {
+        let (mut stream, _) = owner_listener.accept().await.unwrap();
+        let _ = read_http_request(&mut stream).await;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nReferrer-Policy: no-referrer\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+            page.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{owner_address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    owner_server.await.unwrap();
+    let request = tokio::time::timeout(Duration::from_secs(5), request_rx)
+        .await
+        .expect("poster request should reach its loopback server")
+        .unwrap();
+    assert!(
+        !request.lines().any(|line| {
+            line.split_once(':')
+                .is_some_and(|(name, _)| name.eq_ignore_ascii_case("referer"))
+        }),
+        "the video attribute must not override the owner's no-referrer policy: {request}"
+    );
+    engine.close_async().await.unwrap();
+    poster_server.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_video_poster_resolves_against_document_base_url() {
+    let _guard = native_content_process_test_lock().lock().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let page = "<!doctype html><base id='poster-base' href='/assets/'><video id='poster' poster='cover.png'></video>";
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let _ = read_http_request(&mut stream).await;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+            page.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/assets/cover.png"));
+        let image = native_test_solid_png_bytes([90, 190, 60, 255]);
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            image.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(&image);
+        stream.write_all(&response).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(
+            request.split_whitespace().nth(1),
+            Some("/changed/cover.png")
+        );
+        let image = native_test_solid_png_bytes([180, 100, 40, 255]);
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            image.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(&image);
+        stream.write_all(&response).await.unwrap();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/cover.png"));
+        let image = native_test_solid_png_bytes([60, 160, 200, 255]);
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            image.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(&image);
+        stream.write_all(&response).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('poster').poster")
+            .await
+            .unwrap(),
+        serde_json::json!(format!("http://{address}/assets/cover.png"))
+    );
+    let changed_base_poster = engine
+        .evaluate_async(
+            "document.getElementById('poster-base').setAttribute('href', '/changed/'); document.getElementById('poster').poster",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        changed_base_poster,
+        serde_json::json!(format!("http://{address}/changed/cover.png"))
+    );
+    let removed_base_poster = engine
+        .evaluate_async(
+            "document.getElementById('poster-base').removeAttribute('href'); document.getElementById('poster').poster",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        removed_base_poster,
+        serde_json::json!(format!("http://{address}/cover.png"))
+    );
+    server.await.unwrap();
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_content_process_video_poster_url_credentials_stay_stripped_after_cross_origin_redirect()
+ {
+    let _guard = native_content_process_test_lock().lock().await;
+    let origin_a_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_a = origin_a_listener.local_addr().unwrap();
+    let origin_b_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_b = origin_b_listener.local_addr().unwrap();
+    assert_ne!(origin_a.port(), origin_b.port());
+    let origin_a_server = tokio::spawn(async move {
+        let (mut stream, _) = origin_a_listener.accept().await.unwrap();
+        let first_request = read_http_request(&mut stream).await;
+        assert_eq!(first_request.split_whitespace().nth(1), Some("/start.png"));
+        assert!(
+            first_request
+                .lines()
+                .any(|line| { line.eq_ignore_ascii_case("Authorization: Basic dXNlcjpwYXNz") }),
+            "the initial URL credentials should authorize origin A: {first_request}"
+        );
+        assert!(!first_request.contains("user:pass@"));
+        let redirect = format!(
+            "HTTP/1.1 302 Found\r\nLocation: http://{origin_b}/bridge\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(redirect.as_bytes()).await.unwrap();
+
+        let (mut stream, _) = origin_a_listener.accept().await.unwrap();
+        let final_request = read_http_request(&mut stream).await;
+        assert_eq!(final_request.split_whitespace().nth(1), Some("/final.png"));
+        assert!(
+            !final_request.lines().any(|line| {
+                line.split_once(':')
+                    .is_some_and(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+            }),
+            "Authorization must stay stripped after the chain leaves origin A: {final_request}"
+        );
+        assert!(!final_request.contains("user:pass@"));
+        let image = native_test_solid_png_bytes([40, 130, 200, 255]);
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            image.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(&image);
+        stream.write_all(&response).await.unwrap();
+    });
+    let origin_b_server = tokio::spawn(async move {
+        let (mut stream, _) = origin_b_listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        assert_eq!(request.split_whitespace().nth(1), Some("/bridge"));
+        assert!(
+            !request.lines().any(|line| {
+                line.split_once(':')
+                    .is_some_and(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+            }),
+            "URL credentials must not be sent to origin B: {request}"
+        );
+        assert!(!request.contains("user:pass@"));
+        let redirect = format!(
+            "HTTP/1.1 302 Found\r\nLocation: http://{origin_a}/final.png\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(redirect.as_bytes()).await.unwrap();
+    });
+
+    let owner_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let owner_address = owner_listener.local_addr().unwrap();
+    let page =
+        format!("<!doctype html><video poster='http://user:pass@{origin_a}/start.png'></video>");
+    let owner_server = tokio::spawn(async move {
+        let (mut stream, _) = owner_listener.accept().await.unwrap();
+        let _ = read_http_request(&mut stream).await;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+            page.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let mut engine = NativeEngine::new(
+        NativeEngineConfig::default().with_initial_url(format!("http://{owner_address}/page")),
+    )
+    .unwrap();
+    engine.initialize_async().await.unwrap();
+    owner_server.await.unwrap();
+    origin_a_server.await.unwrap();
+    origin_b_server.await.unwrap();
+    engine.close_async().await.unwrap();
 }
 
 #[tokio::test]

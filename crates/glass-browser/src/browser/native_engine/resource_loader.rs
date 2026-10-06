@@ -6803,6 +6803,7 @@ impl NativeResourceLoader {
             None
         };
         let authorization_origin = authorization.as_ref().map(|_| target_url.origin());
+        let mut authorization_removed_after_cross_origin_redirect = false;
         clear_url_credentials(&mut target_url)?;
         if !mixed_content_allowed(&document_url, &target_url) {
             return Ok(None);
@@ -6868,7 +6869,7 @@ impl NativeResourceLoader {
         let mut request_referrer =
             fetch_referrer_for_target(Some(&document_url), &current_url, effective_referrer_policy);
         let mut redirects = 0;
-        let mut pending_cookies = Vec::new();
+        let mut has_set_cookie = false;
         let response = loop {
             let mut request_url = current_url.clone();
             request_url.set_fragment(None);
@@ -6879,7 +6880,8 @@ impl NativeResourceLoader {
             if let Some(referrer) = request_referrer.as_deref() {
                 request = request.header(reqwest::header::REFERER, referrer);
             }
-            if authorization_origin.as_ref() == Some(&current_url.origin())
+            if !authorization_removed_after_cross_origin_redirect
+                && authorization_origin.as_ref() == Some(&current_url.origin())
                 && let Some(authorization) = authorization.as_deref()
             {
                 request = request.header(reqwest::header::AUTHORIZATION, authorization);
@@ -6918,7 +6920,9 @@ impl NativeResourceLoader {
                 .iter()
             {
                 if let Ok(cookie) = value.to_str() {
-                    pending_cookies.push((current_url.clone(), cookie.to_owned()));
+                    has_set_cookie = true;
+                    self.cookie_changes
+                        .extend(self.network.store_cookie(&current_url, cookie));
                 }
             }
             if !is_http_redirect(response.status()) {
@@ -6956,6 +6960,9 @@ impl NativeResourceLoader {
             {
                 return Ok(None);
             }
+            if current_url.origin() != next_url.origin() {
+                authorization_removed_after_cross_origin_redirect = true;
+            }
             if let Some(policy) = referrer_policy_from_headers(response.headers()) {
                 effective_referrer_policy = policy;
             }
@@ -6968,7 +6975,6 @@ impl NativeResourceLoader {
             redirects += 1;
         };
         let response_headers = response.headers().clone();
-        let has_set_cookie = !pending_cookies.is_empty();
         if response.status() == reqwest::StatusCode::NOT_MODIFIED {
             let Some(cached) = stale_cached_image else {
                 return Ok(None);
@@ -6976,10 +6982,6 @@ impl NativeResourceLoader {
             let cached_image = cached.image.clone();
             if redirects != 0 {
                 return Ok(None);
-            }
-            for (cookie_url, cookie) in pending_cookies {
-                self.cookie_changes
-                    .extend(self.network.store_cookie(&cookie_url, &cookie));
             }
             if cache_enabled {
                 if has_set_cookie {
@@ -7026,10 +7028,6 @@ impl NativeResourceLoader {
         else {
             return Ok(None);
         };
-        for (cookie_url, cookie) in pending_cookies {
-            self.cookie_changes
-                .extend(self.network.store_cookie(&cookie_url, &cookie));
-        }
         if cache_enabled {
             if !has_set_cookie
                 && let Some(entry) = NativeImageCacheEntry::from_response(

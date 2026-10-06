@@ -17129,11 +17129,19 @@ async fn load_external_video_posters(
     document_url: &str,
     mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<(), NativeEngineError> {
+    let poster_base_url = Url::parse(&document.effective_base_url(document_url)).ok();
     for (node_index, source) in document
         .external_video_poster_links()
         .into_iter()
         .take(MAX_CONTENT_IMAGES)
     {
+        let Some(target_url) = poster_base_url
+            .as_ref()
+            .and_then(|base_url| base_url.join(&source).ok())
+        else {
+            continue;
+        };
+        let target_url = target_url.to_string();
         let node_id = NativeNodeId::from_parts(document.generation(), node_index);
         if document.video_poster_load_attempted_for_node(node_id) {
             continue;
@@ -17141,13 +17149,13 @@ async fn load_external_video_posters(
         if !document.mark_video_poster_load(node_index, source.clone())? {
             continue;
         }
-        let referrer_policy = document.video_poster_referrer_policy_for_node(node_id);
-        let image = if is_parent_owned_network_target(document_url, &source) {
+        let referrer_policy = document.document_referrer_policy();
+        let image = if is_parent_owned_network_target(document_url, &target_url) {
             if let Some(broker) = parent_fetch_broker.as_deref_mut() {
                 broker.page_meta_content_security_policies =
                     loader.document_meta_content_security_policies(document_url)?;
                 broker
-                    .load_video_poster(document_url, &source, referrer_policy)
+                    .load_video_poster(document_url, &target_url, referrer_policy)
                     .await
             } else {
                 Err(missing_parent_network_authority("video poster load"))
@@ -19888,6 +19896,7 @@ fn apply_content_resource_event_evaluation(
     script_result: &mut NativePageScriptResult,
     navigation: &mut Option<ScriptNavigationTarget>,
 ) -> Result<(), NativeEngineError> {
+    let previous_base_url = document.effective_base_url(document_url);
     apply_content_event_history(
         &evaluation.commands,
         document_url,
@@ -19914,6 +19923,9 @@ fn apply_content_resource_event_evaluation(
             kind,
         )
     }));
+    if document.effective_base_url(document_url) != previous_base_url {
+        document.clear_video_poster_loads();
+    }
     if let Some(page_navigation) = script_result.navigation.take() {
         *navigation = Some(ScriptNavigationTarget::Location {
             href: page_navigation.href,
@@ -20426,6 +20438,7 @@ async fn mutate_script_document(
     ),
     NativeEngineError,
 > {
+    let previous_base_url = current.effective_base_url(document_url);
     let mut document_url = document_url.to_owned();
     let mut history = Vec::new();
     let mut effective_commands = commands.to_vec();
@@ -20716,6 +20729,9 @@ async fn mutate_script_document(
         ));
     }
     next.refresh_image_loads(viewport);
+    if next.effective_base_url(&document_url) != previous_base_url {
+        next.clear_video_poster_loads();
+    }
     next.refresh_video_poster_loads();
     if let Some(loader) = loader.as_deref_mut() {
         load_external_video_posters(

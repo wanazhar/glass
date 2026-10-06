@@ -26,8 +26,11 @@ completed or was actually cancelled.
 
 - If the operation has produced a completed result before cancellation takes
   effect, retain and return that result with a successful terminal state.
-- Report `Cancelled` only when cancellation wins before completion and the
-  operation has no completed result to preserve.
+- Preserve ordinary worker errors as `Failed` with their failure reason, even
+  when cancellation was requested while the operation was running.
+- Report `Cancelled` when cancellation prevents a queued operation from
+  starting. Running cancellation is intent only; it does not convert an
+  ordinary worker error into cancellation.
 - Completion, cancellation, polling, and repeated finish attempts must not
   produce conflicting terminal states or lose the result.
 
@@ -40,7 +43,8 @@ completed or was actually cancelled.
 ## Verification
 
 - Add deterministic coverage for cancellation requested after a result is
-  available, cancellation winning before a result exists, and repeated finish
-  calls.
+  available, cancellation requested while running before a successful result,
+  cancellation requested while running before a worker error, cancellation
+  winning before start, and repeated finish calls.
 - Verify the public operation status/poll response retains the completed result
   in the completion-wins case.

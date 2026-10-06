@@ -299,12 +299,6 @@ impl OperationRegistry {
                 record.failure_reason = None;
                 (DevelopmentOperationState::Succeeded, "operation succeeded")
             }
-            Err(error) if record.cancellation_requested => {
-                record.state = DevelopmentOperationState::Cancelled;
-                record.failure_reason =
-                    Some(format!("operation cancelled before completion: {error}"));
-                (DevelopmentOperationState::Cancelled, "operation cancelled")
-            }
             Err(error) => {
                 record.state = DevelopmentOperationState::Failed;
                 record.failure_reason = Some(error);
@@ -2267,6 +2261,58 @@ mod tests {
         );
         assert_eq!(response.result["operation"]["cancellationRequested"], true);
         assert_eq!(response.result["reconciled"], true);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn running_cancellation_keeps_an_ordinary_worker_error_failed() {
+        let operations = Arc::new(Mutex::new(OperationRegistry::new(
+            "daemon-result-race".into(),
+        )));
+        let operation_id = {
+            let mut registry = operations.lock().unwrap();
+            let (operation, created) = registry
+                .submit(
+                    "cancel-then-fail",
+                    "test-client".into(),
+                    "test.operation".into(),
+                    3,
+                    false,
+                )
+                .unwrap();
+            assert!(created);
+            assert!(registry.start(&operation.id));
+            assert!(
+                registry
+                    .cancel(&operation.id)
+                    .unwrap()
+                    .cancellation_requested
+            );
+            registry.finish(&operation.id, 4, Err("ordinary tool failure".into()));
+
+            let record = &registry.records[&operation.id];
+            assert_eq!(record.state, DevelopmentOperationState::Failed);
+            assert!(record.cancellation_requested);
+            assert_eq!(
+                record.failure_reason.as_deref(),
+                Some("ordinary tool failure")
+            );
+            assert!(record.result.is_none());
+            assert_eq!(
+                registry.events.back().map(|event| event.state),
+                Some(DevelopmentOperationState::Failed)
+            );
+            operation.id
+        };
+
+        let response = inspect_operation(Arc::clone(&operations), &operation_id).await;
+        assert!(response.ok, "{:?}", response.error);
+        assert_eq!(response.result["operation"]["state"], "failed");
+        assert_eq!(
+            response.result["operation"]["failureReason"],
+            "ordinary tool failure"
+        );
+        assert_eq!(response.result["operation"]["cancellationRequested"], true);
+        assert!(response.result["operation"]["result"].is_null());
     }
 
     #[tokio::test(flavor = "current_thread")]

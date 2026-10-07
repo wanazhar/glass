@@ -186,6 +186,7 @@ pub fn hit_test(state: &DevTuiState, column: u16, row: u16) -> HitRegion {
         return HitRegion::Other;
     }
     let geometry = super::render::screen_geometry(state, screen);
+    let footer = super::render::pointer_footer_area(state, screen);
     match overlay::active_overlay(state) {
         Some(ActiveOverlay::Help) => return HitRegion::Help,
         Some(ActiveOverlay::CommandCenterMenu) => {
@@ -194,7 +195,7 @@ pub fn hit_test(state: &DevTuiState, column: u16, row: u16) -> HitRegion {
                 .unwrap_or(HitRegion::Other);
         }
         Some(ActiveOverlay::Composer) => {
-            return if contains(geometry.footer, column, row) {
+            return if contains(footer, column, row) {
                 HitRegion::Dock
             } else {
                 HitRegion::Other
@@ -203,7 +204,7 @@ pub fn hit_test(state: &DevTuiState, column: u16, row: u16) -> HitRegion {
         Some(_) => return HitRegion::Other,
         None => {}
     }
-    if contains(geometry.footer, column, row) {
+    if contains(footer, column, row) {
         return HitRegion::Dock;
     }
     if let Some(surface) = super::render::navigation_surface_at(state, screen, column, row) {
@@ -1103,6 +1104,34 @@ mod tests {
     }
 
     #[test]
+    fn one_line_composer_over_fullscreen_code_editor_hits_the_first_dock_row() {
+        let (mut state, root) = overlay_state();
+        set_viewport(&mut state, TuiLayout::Desktop, 140, 40);
+        state.surface = DevSurface::Code;
+        state.code_edit_mode = true;
+        state.composer_mode = true;
+        state.composer_input = "draft".into();
+
+        let screen = screen(&state);
+        let rendered_footer = super::super::render::fullscreen_editor_rows(&state, screen)[2];
+        let pointer_footer = super::super::render::pointer_footer_area(&state, screen);
+        assert_eq!(rendered_footer, pointer_footer);
+        assert_eq!(rendered_footer.height, 4);
+        assert_eq!(
+            hit_test(&state, 10, rendered_footer.y),
+            HitRegion::Dock,
+            "the first row painted by the full-screen editor composer is a dock hit"
+        );
+        assert_eq!(
+            hit_test(&state, 10, rendered_footer.y - 1),
+            HitRegion::Other
+        );
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn footer_click_is_the_chat_dock() {
         let root = std::env::temp_dir().join(format!("glass-hit-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -1187,30 +1216,55 @@ mod tests {
     }
 
     #[test]
-    fn every_more_route_is_visible_to_pointer_on_phone_layout() {
-        let root =
-            std::env::temp_dir().join(format!("glass-more-phone-hit-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Mobile).unwrap();
-        state.terminal_width = 48;
-        state.terminal_height = 18;
-        state.surface = DevSurface::More;
+    fn more_route_hits_use_visible_content_rows_and_reject_panel_edges() {
+        for (layout, width, height) in [(TuiLayout::Mobile, 48, 14), (TuiLayout::Desktop, 140, 40)]
+        {
+            let (mut state, root) = overlay_state();
+            set_viewport(&mut state, layout, width, height);
+            state.surface = DevSurface::More;
 
-        let mut routes = Vec::new();
-        for row in 0..state.terminal_height {
-            for column in 0..state.terminal_width {
-                if let HitRegion::MoreRoute(index) = hit_test(&state, column, row)
-                    && !routes.contains(&index)
-                {
-                    routes.push(index);
+            for index in 0..DevTuiState::MORE_ROUTES.len() {
+                state.selected_more = index;
+                let screen = screen(&state);
+                let route = super::super::render::more_route_hit_geometry(&state, screen);
+                assert!(route.content.width > 0 && route.content.height > 0);
+                if layout == TuiLayout::Mobile && index == DevTuiState::MORE_ROUTES.len() - 1 {
+                    assert!(route.scroll_offset > 0, "short phone route panel scrolls");
                 }
+                let row = route.content.y + (index - route.scroll_offset) as u16;
+                assert!(row < route.content.bottom());
+                assert_eq!(
+                    hit_test(&state, route.content.x, row),
+                    HitRegion::MoreRoute(index),
+                    "visible route {index} should hit in {layout:?}"
+                );
             }
-        }
-        assert_eq!(
-            routes,
-            (0..DevTuiState::MORE_ROUTES.len()).collect::<Vec<_>>()
-        );
 
-        std::fs::remove_dir_all(root).unwrap();
+            state.selected_more = DevTuiState::MORE_ROUTES.len() - 1;
+            let route = super::super::render::more_route_hit_geometry(&state, screen(&state));
+            let row = route.content.y;
+            for column in [
+                route.panel.x,
+                route.panel.x + 1,
+                route.content.right(),
+                route.panel.right() - 1,
+            ] {
+                assert_eq!(
+                    hit_test(&state, column, row),
+                    HitRegion::Other,
+                    "route border/padding column {column} should not select in {layout:?}"
+                );
+            }
+            for border_row in [route.panel.y, route.panel.bottom() - 1] {
+                assert_eq!(
+                    hit_test(&state, route.content.x, border_row),
+                    HitRegion::Other,
+                    "route border row {border_row} should not select in {layout:?}"
+                );
+            }
+
+            drop(state);
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 }

@@ -1,7 +1,7 @@
 ---
 id: issue60-p1-tui-visual-state-001
 scope: glass-dev/tui-browser-visual-lifecycle
-status: in-progress
+status: complete
 depends-on: [issue60-p1-tui-overlay-priority-001, issue60-p1-worker-request-coalescing-001]
 ---
 
@@ -100,3 +100,6 @@ but its workspace presentation and frame revision remain advertised as fresh.
   `docs/mcp-schema-budget.md`: 177 negotiated tools and a 76,967-byte
   serialized `tools` array. The new task and architecture links pass the
   script's repository-link validation.
+- Independent review: [PASS](../reviews/issue60-p1-tui-visual-state-001-01.md),
+  commit `52bd12fb29bb14bc1571f97b23f05b087dd86938`; no product changes were
+  needed after review.

@@ -48,7 +48,8 @@ open and close.
   string or erase the pre-existing composer draft. `/ask` without arguments
   changes to Ask mode and returns to the composer with the draft intact. The
   corresponding `/plan` and `/agent` aliases follow the same rule. `/todo`
-  opens the Tasks surface while retaining the composer draft. `/stats` and
+  opens the Tasks surface while retaining the composer text and cursor, with
+  composer focus inactive so Tasks keeps keyboard input. `/stats` and
   `/sessions` retain their existing Glass workspace-tool routes instead of
   being sent to Pi; typed and pasted forms use the same routes. `/think LEVEL`
   retains its Glass thinking-level tool route, while native `/thinking` stays
@@ -73,6 +74,9 @@ open and close.
   the exact command text/cursor returns. Also verify retryable slash input is
   kept on dispatch failure or while another job runs, and a Trust redirect
   stays on Trust with the draft.
+- Submit composer-origin `/ask` and `/todo` without opening the modal
+  separately; verify each route changes mode/surface while retaining exact
+  command text/cursor. Keep modal-origin unrelated drafts covered too.
 - Compare typed and pasted `/ask what is this`: both select Ask mode, submit
   the same prompt, and preserve the composer draft. Cover `/ask` without
   arguments, existing `/stats`, `/sessions`, and `/think LEVEL` routes, and a
@@ -119,3 +123,16 @@ active if execution is redirected there.
 - `cargo fmt --all -- --check` and `git diff --check` — passed.
 - `python3 scripts/check-documentation-depth.py` — passed (93 current guides routed/audited; 19 substantive contracts).
 - `python3 scripts/check-release-documentation.py --require-previous-version` — passed (1,564 Markdown documents; 0 current-claim failures).
+
+## Review 02 follow-up
+
+Fresh review found that composer-origin `/ask` with no arguments and `/todo`
+discarded their saved slash input when changing mode/surface. Both routes now
+restore the composer-origin text/cursor after the transition. `/todo` leaves
+composer focus inactive while Tasks owns the keyboard. Modal-origin commands
+still preserve an unrelated existing draft as before.
+
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib composer_ask_without_arguments_restores_exact_command_and_cursor --locked` — passed (1 test).
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib composer_todo_route_restores_exact_command_and_cursor_on_tasks --locked` — passed (1 test).
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib ask_without_arguments_returns_to_composer_and_native_command_close_restores_focus --locked` — passed (1 test), retaining modal-origin unrelated-draft behavior.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib pasted_todo_opens_tasks_without_changing_composer_draft_or_cursor --locked` — passed (1 test), retaining modal-origin `/todo` behavior.

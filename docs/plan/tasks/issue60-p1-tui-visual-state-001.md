@@ -35,7 +35,8 @@ but its workspace presentation and frame revision remain advertised as fresh.
 - Capture only when the same rendered App visual area used by the UI exists.
   App and the non-occluding Composer overlay keep capture available; an
   occluding overlay, a non-App surface, or an empty rendered pane pauses it.
-- Size captures from the rendered pane bounds.
+- Size captures from the rendered pane bounds. ANSI pixels and Kitty frames use
+  the same one-cell border inset within that layout-derived visual panel.
 - Discard a result if its capture was outstanding when the pane became hidden,
   even if the pane is visible again when the result arrives. Also reject results
   when the current pane is unavailable or the visual runtime is no longer live.

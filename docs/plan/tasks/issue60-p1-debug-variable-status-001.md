@@ -1,7 +1,7 @@
 ---
 id: issue60-p1-debug-variable-status-001
 scope: glass-dev/tui-debug-variable-preview-status
-status: in-progress
+status: complete
 depends-on: [issue60-p1-worker-request-coalescing-001]
 ---
 
@@ -67,3 +67,4 @@ a worker request.
 - `python3 scripts/check-release-documentation.py --require-previous-version --report /tmp/glass-issue60-f20-release-documentation.json` — passed; 1,561 Markdown files scanned and 0 current-claim failures.
 - `python3 scripts/check-tui-shortcuts.py` — passed; 15 implementation keys and 63 documentation markers.
 - `python3 scripts/check-documentation-coverage.py --glass /home/ubuntu/work/glass/target/debug/glass --glass-browser /home/ubuntu/work/glass/target/debug/glass-browser` — the known unrelated MCP inventory drift remains: live tools differ from `crates/glass-dev/tests/fixtures/client-conformance-v1.json`, and `docs/mcp-schema-budget.md` lacks the measured `| Negotiated tools | 177 |` and `| Serialized `tools` array | 76,967 UTF-8 bytes |` entries. F20 does not change MCP tools or their schema.
+- Independent [review 01](../reviews/issue60-p1-debug-variable-status-001-01.md) passed at implementation commit `7a647c71` with no blocking findings.

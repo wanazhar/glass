@@ -70,6 +70,9 @@ behind already-active overlays:
 The F20 debugger-variable slice gives stale scope/variable previews terminal
 status and reports scopes without expandable variables:
 [task record](tasks/issue60-p1-debug-variable-status-001.md).
+TUI-1 unifies typed and pasted Pi slash commands and returns to the preserved
+Agent composer draft after modal close:
+[task record](tasks/issue60-p1-tui-pi-draft-routing-001.md).
 
 ## Active plan: Glass native browser engine (issue #40)
 

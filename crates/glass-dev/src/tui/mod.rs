@@ -647,8 +647,9 @@ pub(crate) fn run_with_browser_policy(
                         }
                     } else if active_overlay == Some(overlay::ActiveOverlay::PiSlashCommand) {
                         match (key.code, key.modifiers) {
-                            (KeyCode::Esc, _) => state.close_pi_command_palette(),
-                            (KeyCode::Enter, _) => state.submit_pi_command(),
+                            (KeyCode::Esc, _) | (KeyCode::Enter, _) => {
+                                route_pi_command_commit_key(&mut state, key.code, &mut worker);
+                            }
                             (KeyCode::Backspace, _) => state.pi_command_backspace(),
                             (KeyCode::Char('u'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>
@@ -754,8 +755,8 @@ pub(crate) fn run_with_browser_policy(
                             {
                                 state.jump_to_app_keep_dock();
                             }
-                            (KeyCode::Char('/'), _) if state.composer_input.trim().is_empty() => {
-                                state.open_pi_command_palette();
+                            (KeyCode::Char('/'), _) => {
+                                route_composer_slash_key(&mut state, key.code);
                             }
                             (KeyCode::Left, _) => state.move_composer_cursor(false),
                             (KeyCode::Right, _) => state.move_composer_cursor(true),
@@ -1400,14 +1401,45 @@ fn route_paste(state: &mut DevTuiState, text: &str) {
             }
         }
         Some(overlay::ActiveOverlay::PiSlashCommand) => {
-            for character in text.chars() {
-                state.insert_pi_command_char(character);
+            state.insert_pi_command_text(text);
+        }
+        Some(overlay::ActiveOverlay::Composer) => {
+            if text.trim_start().starts_with('/') {
+                state.open_pi_command_palette();
+                state.insert_pi_command_text(text.trim());
+            } else {
+                state.insert_composer_text(text);
             }
         }
-        Some(overlay::ActiveOverlay::Composer) => state.insert_composer_text(text),
         Some(overlay::ActiveOverlay::CommandPalette) => state.insert_palette_text(text),
         _ => {}
     }
+}
+
+fn route_composer_slash_key(state: &mut DevTuiState, code: KeyCode) -> bool {
+    if code != KeyCode::Char('/')
+        || overlay::active_overlay(state) != Some(overlay::ActiveOverlay::Composer)
+    {
+        return false;
+    }
+    state.open_pi_command_palette();
+    true
+}
+
+fn route_pi_command_commit_key(
+    state: &mut DevTuiState,
+    code: KeyCode,
+    worker: &mut snapshot::SnapshotWorker,
+) -> bool {
+    if overlay::active_overlay(state) != Some(overlay::ActiveOverlay::PiSlashCommand) {
+        return false;
+    }
+    match code {
+        KeyCode::Esc => state.close_pi_command_palette(),
+        KeyCode::Enter => state.submit_pi_command(worker),
+        _ => return false,
+    }
+    true
 }
 
 fn handle_file_picker_key(state: &mut DevTuiState, code: KeyCode, modifiers: KeyModifiers) {
@@ -1697,6 +1729,46 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create test workspace");
         let state = DevTuiState::open(&root, TuiLayout::Desktop).expect("open TUI state");
         (state, root)
+    }
+
+    #[test]
+    fn typed_slash_key_routes_multiline_draft_through_modal_escape_and_enter() {
+        let (mut state, root) = overlay_test_state();
+        state.surface = DevSurface::Agent;
+        state.open_composer();
+        state.composer_input = "review this\nkeep the draft".into();
+        state.composer_cursor = 9;
+
+        assert!(route_composer_slash_key(&mut state, KeyCode::Char('/')));
+        assert!(state.pi_command_mode);
+        assert_eq!(state.composer_input, "review this\nkeep the draft");
+        assert_eq!(state.composer_cursor, 9);
+
+        let mut worker = snapshot::SnapshotWorker::spawn(&state);
+        assert!(route_pi_command_commit_key(
+            &mut state,
+            KeyCode::Esc,
+            &mut worker
+        ));
+        assert!(state.composer_mode);
+        assert_eq!(state.composer_input, "review this\nkeep the draft");
+        assert_eq!(state.composer_cursor, 9);
+
+        assert!(route_composer_slash_key(&mut state, KeyCode::Char('/')));
+        state.pi_command_input = "/ask".into();
+        assert!(route_pi_command_commit_key(
+            &mut state,
+            KeyCode::Enter,
+            &mut worker
+        ));
+        assert_eq!(state.composer_run_mode, crate::AgentTurnMode::Ask);
+        assert!(state.composer_mode);
+        assert_eq!(state.composer_input, "review this\nkeep the draft");
+        assert_eq!(state.composer_cursor, 9);
+
+        drop(worker);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
     }
 
     fn test_visual_runtime(path: VisualPath) -> VisualRuntime {

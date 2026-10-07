@@ -73,6 +73,10 @@ changes are insufficient where the issue names multiple entry points.
    F19's browser-crash recovery overlay is tracked in the
    [browser recovery task](../tasks/issue60-p1-browser-crash-overlay-001.md):
    recovery must preserve the selected surface and wait behind existing UI.
+   F20's debugger detail lifecycle is tracked in the
+   [debug-variable status task](../tasks/issue60-p1-debug-variable-status-001.md):
+   stale scopes/variables requests must resolve their owned loading state, and
+   invalid variable references must end in an explicit no-expandable state.
 5. **P2 functional/UX contracts, then P3 consistency.** Align surfaces,
    layout/pointer behavior, help, CLI aliases, and low-risk presentation.
 

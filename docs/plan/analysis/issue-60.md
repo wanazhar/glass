@@ -77,6 +77,10 @@ changes are insufficient where the issue names multiple entry points.
    [debug-variable status task](../tasks/issue60-p1-debug-variable-status-001.md):
    stale scopes/variables requests must resolve their owned loading state, and
    invalid variable references must end in an explicit no-expandable state.
+   TUI-1's Pi slash-command entry points and composer modal return are tracked
+   in the [Pi draft-routing task](../tasks/issue60-p1-tui-pi-draft-routing-001.md):
+   typed and pasted `/ask PROMPT` share Ask-mode dispatch, and modal open/close
+   preserves the complete composer draft and cursor.
 5. **P2 functional/UX contracts, then P3 consistency.** Align surfaces,
    layout/pointer behavior, help, CLI aliases, and low-risk presentation.
 

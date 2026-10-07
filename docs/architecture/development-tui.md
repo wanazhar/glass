@@ -192,7 +192,7 @@ mouse, paste, or surface input while a higher-priority overlay is active.
 | Up/Down, `j`/`k` | focused list movement; otherwise the current surface scrolls |
 | PageUp/PageDown, Home/End | surface scroll/page or bounds |
 | `a` outside Agent | open the current surface command center; `:` opens the filtered palette |
-| `/` on Agent | open Pi's native slash-command modal; `:` remains the Glass command palette |
+| `/` on Agent | open Pi's slash-command modal, including while a composer draft is non-empty; `:` remains the Glass command palette |
 | `Ctrl-L` | open the shared composer dock on the current surface |
 | `Ctrl-P` | open the file picker; in the composer or palette, it keeps its local history behavior |
 | `Ctrl-K` / `Ctrl-Shift-P` | open the command palette from the normal surface view |
@@ -306,14 +306,31 @@ contains all 23 built-ins from the pinned Pi SDK: `/settings`, `/model`,
 `/quit`. Arrow keys or `j`/`k` select, `Tab` completes, `Ctrl-U` clears, and
 `Enter` dispatches the command with its typed arguments.
 
-The TUI queues the command on the resident Pi worker so the input loop stays
-responsive. Pi emits a structured slash-result event; Glass renders it in the
-Agent transcript and keeps the detailed result on More. Extension commands,
-prompt templates, and enabled skill commands are accepted when typed after
-their resources load. `/login` temporarily gives the terminal to Pi for its
-interactive provider flow, and `/quit` enters the normal Glass quit path. See
-the [native runtime guide](../pi-sdk-runtime.md) for the runtime protocol and
-argument examples.
+When the Agent composer is focused, typing `/` opens the modal regardless of
+whether the draft is empty. The modal keeps the composer text and cursor; Esc
+returns focus to the composer with both unchanged. Opening the modal from the
+Agent surface without composer focus returns to that surface without opening
+the composer.
+
+A paste into the focused composer that starts with `/` is extracted as the
+complete modal command input, including any newline arguments; the current
+composer draft remains unchanged. Ordinary pasted text still inserts into the
+composer. Pasting into an already-open slash modal inserts into its command
+input. Typed modal input, slash-command paste, and slash text submitted from an
+existing composer draft share one resolver and dispatch path. A command that
+closes the modal returns to the composer when it opened there. Mutation
+confirmation temporarily owns input; denying the confirmation returns to the
+same composer draft and cursor. Typed and pasted modal input is capped at 4 KiB;
+the UI reports when additional input exceeds that limit.
+
+The TUI queues native commands on the resident Pi worker so the input loop
+stays responsive. Pi emits a structured slash-result event; Glass renders it
+in the Agent transcript and keeps the detailed result on More. Extension
+commands, prompt templates, and enabled skill commands are accepted when typed
+after their resources load. `/login` temporarily gives the terminal to Pi for
+its interactive provider flow, and `/quit` enters the normal Glass quit path.
+See the [native runtime guide](../pi-sdk-runtime.md) for the runtime protocol
+and argument examples.
 
 ## First launch and agent composer
 
@@ -332,9 +349,15 @@ record and is shown in the header. It does not create a second workspace.
 The shared composer dock is a local draft with a character cursor. `Ctrl-L`
 opens it on any surface. `i`, Enter on the Agent surface, or typing a
 non-digit Agent character also opens it. Default mode is Agent. `Ctrl-Shift-A`
-cycles Ask, Plan, and Agent; the legacy composer aliases `/ask`, `/plan`,
-`/agent`, and `/todo` set the mode or checklist view when entered in the
-composer. Native Pi commands use the dedicated `/` modal. Ask inspects only.
+cycles Ask, Plan, and Agent. Legacy `/ask`, `/plan`, and `/agent` aliases use
+the same slash resolver whether typed in the modal or pasted into the
+composer: their arguments are the prompt sent in the selected mode, and any
+pre-existing composer draft remains intact. An alias without a prompt changes
+the mode and returns to the composer. `/todo` opens the Tasks surface without
+replacing the composer draft. `/stats` and `/sessions` keep their Glass
+workspace-tool routes, and `/think LEVEL` keeps its Glass thinking-level tool
+route. Native Pi `/thinking` and extension commands use the dedicated `/`
+modal. Ask inspects only.
 Plan writes a bounded numbered plan. Only Agent may mutate. `Enter` submits
 immediately and keeps the composer open; submitted text is rendered optimistically, while the worker/event stream appends
 assistant deltas and tool activity. `Ctrl-D` toggles steer mode for an active

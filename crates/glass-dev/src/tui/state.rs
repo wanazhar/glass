@@ -467,6 +467,32 @@ impl ProductMode {
     }
 }
 
+enum PiSlashRoute {
+    ComposerMode(crate::AgentTurnMode),
+    Tasks,
+    WorkspaceTool(&'static str),
+    Thinking,
+    NativePi,
+    Extension,
+}
+
+const PI_COMMAND_INPUT_LIMIT: usize = 4 * 1024;
+const PI_COMMAND_INPUT_LIMIT_STATUS: &str = "Pi command input limit reached (4 KiB)";
+
+fn resolve_pi_slash_route(command: &str) -> PiSlashRoute {
+    match command {
+        "ask" => PiSlashRoute::ComposerMode(crate::AgentTurnMode::Ask),
+        "plan" => PiSlashRoute::ComposerMode(crate::AgentTurnMode::Plan),
+        "agent" => PiSlashRoute::ComposerMode(crate::AgentTurnMode::Agent),
+        "todo" => PiSlashRoute::Tasks,
+        "stats" => PiSlashRoute::WorkspaceTool("glass.agent.stats"),
+        "sessions" => PiSlashRoute::WorkspaceTool("glass.agent.sessions"),
+        "think" => PiSlashRoute::Thinking,
+        _ if super::pi_commands::is_builtin(command) => PiSlashRoute::NativePi,
+        _ => PiSlashRoute::Extension,
+    }
+}
+
 pub struct DevTuiState {
     pub workspace: SharedDevelopmentWorkspace,
     /// Cloned directly so modal status/control never needs the workspace lock.
@@ -491,6 +517,8 @@ pub struct DevTuiState {
     pub pi_command_cursor: usize,
     pub pi_command_selection: usize,
     pub pi_command_scroll: u16,
+    /// Whether closing the Pi slash modal should return focus to the composer.
+    pub pi_command_return_to_composer: bool,
     pub pi_command_pending: Option<String>,
     pub pi_command_pending_args: String,
     pub menu_open: bool,
@@ -813,6 +841,7 @@ impl DevTuiState {
             pi_command_cursor: 0,
             pi_command_selection: 0,
             pi_command_scroll: 0,
+            pi_command_return_to_composer: false,
             pi_command_pending: None,
             pi_command_pending_args: String::new(),
             menu_open: false,
@@ -1545,6 +1574,7 @@ impl DevTuiState {
     pub(crate) fn open_pi_command_palette(&mut self) {
         self.close_file_picker();
         self.command_mode = false;
+        self.pi_command_return_to_composer = self.composer_mode;
         self.composer_mode = false;
         self.pi_command_mode = true;
         self.pi_command_input.clear();
@@ -1555,12 +1585,19 @@ impl DevTuiState {
     }
 
     pub(crate) fn close_pi_command_palette(&mut self) {
+        let return_to_composer = self.pi_command_return_to_composer;
+        self.pi_command_return_to_composer = false;
         self.pi_command_mode = false;
+        self.composer_mode = return_to_composer;
         self.pi_command_input.clear();
         self.pi_command_cursor = 0;
         self.pi_command_selection = 0;
         self.pi_command_scroll = 0;
-        self.status = "Pi command surface closed · press / on Agent".into();
+        self.status = if return_to_composer {
+            "Pi commands closed · composer draft restored".into()
+        } else {
+            "Pi command surface closed · press / on Agent".into()
+        };
     }
 
     pub(crate) fn pi_command_indices(&self) -> Vec<usize> {
@@ -1610,7 +1647,11 @@ impl DevTuiState {
     }
 
     pub(crate) fn insert_pi_command_char(&mut self, character: char) {
-        if character.is_control() || self.pi_command_input.len() >= 4 * 1024 {
+        if character.is_control() {
+            return;
+        }
+        if self.pi_command_input.len() + character.len_utf8() > PI_COMMAND_INPUT_LIMIT {
+            self.status = PI_COMMAND_INPUT_LIMIT_STATUS.into();
             return;
         }
         self.pi_command_input
@@ -1618,6 +1659,31 @@ impl DevTuiState {
         self.pi_command_cursor += character.len_utf8();
         self.pi_command_selection = 0;
         self.pi_command_scroll = 0;
+    }
+
+    pub(crate) fn insert_pi_command_text(&mut self, text: &str) {
+        let mut accepted = String::new();
+        let mut overflowed = false;
+        for character in text.chars() {
+            if character.is_control() && character != '\n' {
+                continue;
+            }
+            if self.pi_command_input.len() + accepted.len() + character.len_utf8()
+                > PI_COMMAND_INPUT_LIMIT
+            {
+                overflowed = true;
+                break;
+            }
+            accepted.push(character);
+        }
+        self.pi_command_input
+            .insert_str(self.pi_command_cursor, &accepted);
+        self.pi_command_cursor += accepted.len();
+        self.pi_command_selection = 0;
+        self.pi_command_scroll = 0;
+        if overflowed {
+            self.status = PI_COMMAND_INPUT_LIMIT_STATUS.into();
+        }
     }
 
     pub(crate) fn pi_command_backspace(&mut self) {
@@ -1677,12 +1743,7 @@ impl DevTuiState {
         );
     }
 
-    pub(crate) fn submit_pi_command(&mut self) {
-        if self.background_action_running() {
-            self.status =
-                "Pi command kept in the modal · another background action is running".into();
-            return;
-        }
+    pub(crate) fn submit_pi_command(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let typed = self.pi_command_input.trim().to_string();
         let typed = typed.strip_prefix('/').unwrap_or(&typed).trim();
         let command = typed
@@ -1694,6 +1755,42 @@ impl DevTuiState {
             return;
         };
         let args = typed.strip_prefix(command).unwrap_or("").trim().to_string();
+
+        match resolve_pi_slash_route(command) {
+            PiSlashRoute::ComposerMode(mode) => {
+                self.close_pi_command_palette();
+                self.composer_mode = true;
+                self.set_composer_run_mode(mode);
+                if args.is_empty() {
+                    self.status = format!("{} mode · composer draft restored", mode.label());
+                    return;
+                }
+                self.submit_composer_prompt(&args, false, worker);
+                return;
+            }
+            PiSlashRoute::Tasks => {
+                self.close_pi_command_palette();
+                self.surface = DevSurface::Tasks;
+                self.status = "Tasks selected · composer draft preserved".into();
+                return;
+            }
+            PiSlashRoute::WorkspaceTool(tool) => {
+                self.submit_pi_workspace_tool(tool, worker);
+                return;
+            }
+            PiSlashRoute::Thinking => {
+                self.submit_pi_thinking_tool(&args, worker);
+                return;
+            }
+            PiSlashRoute::NativePi | PiSlashRoute::Extension => {}
+        }
+
+        if self.background_action_running() {
+            self.status =
+                "Pi command kept in the modal · another background action is running".into();
+            return;
+        }
+
         let mut arguments = serde_json::json!({
             "name": command,
             "args": args,
@@ -1710,11 +1807,7 @@ impl DevTuiState {
         };
         self.pi_command_pending = Some(command.to_string());
         self.pi_command_pending_args = args;
-        self.pi_command_mode = false;
-        self.pi_command_input.clear();
-        self.pi_command_cursor = 0;
-        self.pi_command_selection = 0;
-        self.pi_command_scroll = 0;
+        self.close_pi_command_palette();
         match self.queue_or_confirm(call, context, format!("Run Pi /{command}")) {
             Ok(true) => {
                 self.status = format!("Pi /{command} queued");
@@ -1728,6 +1821,67 @@ impl DevTuiState {
                 self.pi_command_pending_args.clear();
                 self.status = format!("Pi /{command} failed to start: {error}");
             }
+        }
+    }
+
+    fn submit_pi_workspace_tool(
+        &mut self,
+        tool: &str,
+        worker: &mut super::snapshot::SnapshotWorker,
+    ) {
+        let command = self.pi_command_input.trim().to_string();
+        let mut arguments = serde_json::json!({});
+        if let Some(agent) = self.selected_agent.as_ref() {
+            arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
+        }
+        let (call, context) = match self.tool_request(tool, arguments, false) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = format!("{tool} unavailable: {error}");
+                return;
+            }
+        };
+        self.close_pi_command_palette();
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.remember_composer_history(&command);
+                self.status = format!("{tool} · queued from composer");
+            }
+            Err(error) => self.status = format!("{tool} failed: {error}"),
+        }
+    }
+
+    fn submit_pi_thinking_tool(
+        &mut self,
+        args: &str,
+        worker: &mut super::snapshot::SnapshotWorker,
+    ) {
+        let Some(level) = args.split_whitespace().next() else {
+            self.status = "/think requires LEVEL".into();
+            return;
+        };
+        let mut arguments = serde_json::json!({"level": level});
+        if let Some(agent) = self.selected_agent.as_ref() {
+            arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
+        }
+        let (call, context) = match self.tool_request("glass.agent.thinking", arguments, true) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = format!("glass.agent.thinking unavailable: {error}");
+                return;
+            }
+        };
+        let command = self.pi_command_input.trim().to_string();
+        self.agent_thinking = level.into();
+        self.close_pi_command_palette();
+        match worker.submit_tool(call, context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.remember_composer_history(&command);
+                self.status = "glass.agent.thinking · queued from composer".into();
+            }
+            Err(error) => self.status = format!("glass.agent.thinking failed: {error}"),
         }
     }
 
@@ -3661,6 +3815,16 @@ impl DevTuiState {
             self.submit_composer_slash(worker);
             return;
         }
+        let prompt = self.composer_input.clone();
+        self.submit_composer_prompt(&prompt, true, worker);
+    }
+
+    fn submit_composer_prompt(
+        &mut self,
+        prompt: &str,
+        consume_draft: bool,
+        worker: &mut super::snapshot::SnapshotWorker,
+    ) {
         if self.composer_send_blocked() {
             self.status = "Background operation running · message kept in composer".into();
             return;
@@ -3675,7 +3839,7 @@ impl DevTuiState {
             self.status = "Pi is not ready · use :agent setup or :agent setup login".into();
             return;
         }
-        if self.composer_input.trim().is_empty() {
+        if prompt.trim().is_empty() {
             self.status = "Message is empty · type a prompt, then press Enter".into();
             return;
         }
@@ -3684,8 +3848,12 @@ impl DevTuiState {
         } else {
             self.files.get(self.selected_file).map(String::as_str)
         };
-        let display_text = expand_mentions(&self.composer_input, file);
-        let text = expand_mentions(&std::mem::take(&mut self.composer_input), file);
+        let display_text = expand_mentions(prompt, file);
+        let text = display_text.clone();
+        if consume_draft {
+            self.composer_input.clear();
+            self.composer_cursor = 0;
+        }
         self.remember_composer_history(&text);
         if self.composer_run_mode == crate::AgentTurnMode::Plan {
             self.capture_plan_from_goal(&text);
@@ -3693,7 +3861,6 @@ impl DevTuiState {
         let prove = compile_prove_it(&text);
         let steer = self.composer_steer;
         let queued_follow_up = self.agent_send_job.is_some();
-        self.composer_cursor = 0;
         self.composer_steer = false;
         self.composer_mode = true;
         let _ = self.ws_mut().map(|mut workspace| {
@@ -3766,8 +3933,10 @@ impl DevTuiState {
         });
         if let Some(prove) = prove {
             if !self.auto_checkpoint("before-prove-it") {
-                self.composer_input = display_text;
-                self.composer_cursor = self.composer_input.len();
+                if consume_draft {
+                    self.composer_input = display_text;
+                    self.composer_cursor = self.composer_input.len();
+                }
                 return;
             }
             arguments["verify"] = prove.verify.clone();
@@ -3792,8 +3961,10 @@ impl DevTuiState {
         let (call, context) = match self.tool_request("glass.agent.send", arguments, true) {
             Ok(request) => request,
             Err(error) => {
-                self.composer_input = display_text;
-                self.composer_cursor = self.composer_input.len();
+                if consume_draft {
+                    self.composer_input = display_text;
+                    self.composer_cursor = self.composer_input.len();
+                }
                 self.status = format!("Message unavailable · edit and retry: {error}");
                 return;
             }
@@ -3820,8 +3991,10 @@ impl DevTuiState {
                 worker.request_conversation();
             }
             Err(error) => {
-                self.composer_input = display_text;
-                self.composer_cursor = self.composer_input.len();
+                if consume_draft {
+                    self.composer_input = display_text;
+                    self.composer_cursor = self.composer_input.len();
+                }
                 self.status = format!("Message unavailable · edit and retry: {error}");
             }
         }
@@ -3829,115 +4002,16 @@ impl DevTuiState {
 
     fn submit_composer_slash(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let raw = self.composer_input.trim().to_string();
-        let mut parts = raw.trim_start_matches('/').split_whitespace();
-        let Some(command) = parts.next() else {
+        if raw.trim_start_matches('/').trim().is_empty() {
             self.status = "Empty slash command".into();
             return;
-        };
-        if super::pi_commands::is_builtin(command) {
-            self.composer_mode = false;
-            self.pi_command_input = raw;
-            self.pi_command_cursor = self.pi_command_input.len();
-            self.composer_input.clear();
-            self.submit_pi_command();
-            return;
         }
-        let rest = parts.collect::<Vec<_>>();
-        let mut arguments = serde_json::json!({});
-        if let Some(agent) = self.selected_agent.as_ref() {
-            arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
-        }
-        let (tool, mutating) = match command {
-            "compact" => {
-                if !rest.is_empty() {
-                    arguments["instructions"] = serde_json::Value::String(rest.join(" "));
-                }
-                ("glass.agent.compact", true)
-            }
-            "model" => {
-                let provider = rest.first().copied().unwrap_or("");
-                let model = rest.get(1).copied().unwrap_or("");
-                if provider.is_empty() || model.is_empty() {
-                    self.status = "/model requires PROVIDER MODEL".into();
-                    return;
-                }
-                arguments["provider"] = serde_json::Value::String(provider.into());
-                arguments["modelId"] = serde_json::Value::String(model.into());
-                self.agent_model = format!("{provider}/{model}");
-                ("glass.agent.model", true)
-            }
-            "think" | "thinking" => {
-                let level = rest.first().copied().unwrap_or("");
-                if level.is_empty() {
-                    self.status = "/think requires LEVEL".into();
-                    return;
-                }
-                arguments["level"] = serde_json::Value::String(level.into());
-                self.agent_thinking = level.into();
-                ("glass.agent.thinking", true)
-            }
-            "new" => ("glass.agent.new-session", true),
-            "clone" => ("glass.agent.clone-session", true),
-            "name" => {
-                let name = rest.join(" ");
-                if name.is_empty() {
-                    self.status = "/name requires TITLE".into();
-                    return;
-                }
-                arguments["name"] = serde_json::Value::String(name.clone());
-                self.agent_session_name = name;
-                ("glass.agent.name", true)
-            }
-            "stats" => ("glass.agent.stats", false),
-            "sessions" => ("glass.agent.sessions", false),
-            "tree" => ("glass.agent.tree", false),
-            "todo" => {
-                self.composer_input = self.session_todos.render();
-                self.composer_cursor = 0;
-                self.status = "Session todos · edit or Esc".into();
-                return;
-            }
-            "ask" | "plan" | "agent" => {
-                let mode = match command {
-                    "ask" => crate::AgentTurnMode::Ask,
-                    "plan" => crate::AgentTurnMode::Plan,
-                    _ => crate::AgentTurnMode::Agent,
-                };
-                self.set_composer_run_mode(mode);
-                self.remember_composer_history(&raw);
-                self.composer_input = rest.join(" ");
-                self.composer_cursor = self.composer_input.len();
-                if self.composer_input.trim().is_empty() {
-                    return;
-                }
-                self.submit_composer(worker);
-                return;
-            }
-            _ => {
-                // Extension commands, prompt templates, and skills are loaded
-                // by Pi at runtime, so unknown-to-Glass names must still reach
-                // the native Pi command dispatcher.
-                self.composer_mode = false;
-                self.pi_command_input = raw;
-                self.pi_command_cursor = self.pi_command_input.len();
-                self.composer_input.clear();
-                self.submit_pi_command();
-                return;
-            }
-        };
-        match self.tool_request(tool, arguments, mutating) {
-            Ok((call, context)) => match worker.submit_tool(call, context) {
-                Ok(id) => {
-                    self.running_tool_job = Some(id);
-                    self.remember_composer_history(&raw);
-                    self.composer_input.clear();
-                    self.composer_cursor = 0;
-                    self.status = format!("{tool} · queued from composer");
-                }
-                Err(error) => self.status = format!("{tool} failed: {error}"),
-            },
-            Err(error) => self.status = format!("{tool} unavailable: {error}"),
-        }
+        self.composer_input.clear();
+        self.composer_cursor = 0;
+        self.open_pi_command_palette();
+        self.pi_command_input = raw;
+        self.pi_command_cursor = self.pi_command_input.len();
+        self.submit_pi_command(worker);
     }
 
     pub fn approve_confirmation_async(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
@@ -10758,9 +10832,15 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create temporary workspace");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.surface = DevSurface::Agent;
+        state.open_composer();
+        state.composer_input = "keep this multiline\ndraft".into();
+        state.composer_cursor = 7;
+        state.open_pi_command_palette();
         state.pi_command_input = "/new".into();
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
 
-        state.submit_pi_command();
+        state.submit_pi_command(&mut worker);
 
         let pending = state
             .pending_confirmation
@@ -10771,13 +10851,314 @@ mod tests {
         assert!(pending.context.authorization.permits_mutation());
         assert_eq!(state.pi_command_pending.as_deref(), Some("new"));
         assert!(state.queued_tool_request.is_none());
+        assert!(!state.pi_command_mode);
+        assert!(state.composer_mode);
+        assert_eq!(state.composer_input, "keep this multiline\ndraft");
+        assert_eq!(state.composer_cursor, 7);
 
         state.deny_confirmation();
         assert!(state.pending_confirmation.is_none());
         assert!(state.pi_command_pending.is_none());
         assert!(state.pi_command_pending_args.is_empty());
+        assert!(state.composer_mode);
+        assert_eq!(state.composer_input, "keep this multiline\ndraft");
+        assert_eq!(state.composer_cursor, 7);
 
+        drop(worker);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn pi_modal_open_and_escape_restore_plain_and_multiline_composer_drafts() {
+        let (mut state, root) = routed_state("pi-draft-return");
+        state.surface = DevSurface::Agent;
+        state.open_composer();
+
+        for (draft, cursor) in [
+            ("plain draft to keep", 8),
+            ("review these changes\nand preserve this line", 25),
+        ] {
+            state.composer_input = draft.into();
+            state.composer_cursor = cursor;
+            state.open_pi_command_palette();
+            assert!(state.pi_command_mode);
+            assert!(!state.composer_mode);
+            assert_eq!(state.composer_input, draft);
+            assert_eq!(state.composer_cursor, cursor);
+
+            state.close_pi_command_palette();
+            assert!(!state.pi_command_mode);
+            assert!(state.composer_mode);
+            assert_eq!(state.composer_input, draft);
+            assert_eq!(state.composer_cursor, cursor);
+        }
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn typed_and_pasted_ask_commands_submit_the_same_prompt_and_keep_the_draft() {
+        fn ready_composer(label: &str) -> (DevTuiState, std::path::PathBuf) {
+            let (mut state, root) = routed_state(label);
+            state.surface = DevSurface::Agent;
+            state.agent_readiness = format!(
+                "✓ Ready · Node ✓ · SDK {} · auth ✓",
+                crate::pi_runtime::PINNED_PI_SDK_VERSION
+            );
+            state.open_composer();
+            state.composer_input = "review this first\nkeep the second line".into();
+            state.composer_cursor = 11;
+            (state, root)
+        }
+
+        let draft = "review this first\nkeep the second line";
+        let mut typed = ready_composer("pi-ask-typed");
+        let mut typed_worker = super::super::snapshot::SnapshotWorker::spawn(&typed.0);
+        typed.0.open_pi_command_palette();
+        for character in "/ask what is this".chars() {
+            typed.0.insert_pi_command_char(character);
+        }
+        typed.0.submit_pi_command(&mut typed_worker);
+        let typed_message = typed
+            .0
+            .pending_chat_messages
+            .last()
+            .expect("typed /ask queues a prompt");
+        assert_eq!(typed.0.composer_run_mode, crate::AgentTurnMode::Ask);
+        assert_eq!(typed_message.text, "what is this");
+        assert_eq!(typed.0.composer_input, draft);
+        assert_eq!(typed.0.composer_cursor, 11);
+        assert!(typed.0.composer_mode);
+        drop(typed_worker);
+        drop(typed.0);
+        std::fs::remove_dir_all(typed.1).expect("remove typed workspace");
+
+        let mut pasted = ready_composer("pi-ask-pasted");
+        let mut pasted_worker = super::super::snapshot::SnapshotWorker::spawn(&pasted.0);
+        super::super::route_paste(&mut pasted.0, "/ask what is this");
+        assert!(pasted.0.pi_command_mode);
+        assert_eq!(pasted.0.pi_command_input, "/ask what is this");
+        assert_eq!(pasted.0.composer_input, draft);
+        pasted.0.submit_pi_command(&mut pasted_worker);
+        let pasted_message = pasted
+            .0
+            .pending_chat_messages
+            .last()
+            .expect("pasted /ask queues a prompt");
+        assert_eq!(pasted.0.composer_run_mode, crate::AgentTurnMode::Ask);
+        assert_eq!(pasted_message.text, "what is this");
+        assert_eq!(pasted.0.composer_input, draft);
+        assert_eq!(pasted.0.composer_cursor, 11);
+        assert!(pasted.0.composer_mode);
+        drop(pasted_worker);
+        drop(pasted.0);
+        std::fs::remove_dir_all(pasted.1).expect("remove pasted workspace");
+    }
+
+    #[test]
+    fn ask_without_arguments_returns_to_composer_and_native_command_close_restores_focus() {
+        let (mut state, root) = routed_state("pi-ask-mode-only");
+        state.surface = DevSurface::Agent;
+        state.open_composer();
+        state.composer_input = "keep my draft".into();
+        state.composer_cursor = 5;
+        state.open_pi_command_palette();
+        state.pi_command_input = "/ask".into();
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.submit_pi_command(&mut worker);
+        assert_eq!(state.composer_run_mode, crate::AgentTurnMode::Ask);
+        assert!(state.composer_mode);
+        assert!(!state.pi_command_mode);
+        assert_eq!(state.composer_input, "keep my draft");
+        assert_eq!(state.composer_cursor, 5);
+        drop(worker);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn slash_paste_preserves_multiline_arguments_and_ordinary_paste_stays_in_composer() {
+        let (mut state, root) = routed_state("pi-slash-multiline-paste");
+        state.surface = DevSurface::Agent;
+        state.open_composer();
+        state.composer_input = "existing draft".into();
+        state.composer_cursor = 4;
+        super::super::route_paste(&mut state, " ordinary paste");
+        assert_eq!(state.composer_input, "exis ordinary pasteting draft");
+        state.composer_input = "existing draft".into();
+        state.composer_cursor = 4;
+        super::super::route_paste(&mut state, "/ask first line\nsecond line");
+        assert!(state.pi_command_mode);
+        assert_eq!(state.pi_command_input, "/ask first line\nsecond line");
+        assert_eq!(state.composer_input, "existing draft");
+        assert_eq!(state.composer_cursor, 4);
+
+        state.agent_readiness = format!(
+            "✓ Ready · Node ✓ · SDK {} · auth ✓",
+            crate::pi_runtime::PINNED_PI_SDK_VERSION
+        );
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.submit_pi_command(&mut worker);
+        assert_eq!(
+            state
+                .pending_chat_messages
+                .last()
+                .expect("multiline prompt queued")
+                .text,
+            "first line\nsecond line"
+        );
+        assert_eq!(state.composer_input, "existing draft");
+        assert_eq!(state.composer_cursor, 4);
+
+        drop(worker);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn paste_into_open_pi_modal_keeps_multiline_arguments_within_the_input_bound() {
+        let (mut state, root) = routed_state("pi-modal-multiline-paste");
+        state.surface = DevSurface::Agent;
+        state.open_composer();
+        state.composer_input = "preserved draft".into();
+        state.composer_cursor = 6;
+        state.open_pi_command_palette();
+        for character in "/ask ".chars() {
+            state.insert_pi_command_char(character);
+        }
+        super::super::route_paste(&mut state, "first line\nsecond line");
+        assert_eq!(state.pi_command_input, "/ask first line\nsecond line");
+        assert_eq!(state.composer_input, "preserved draft");
+        assert_eq!(state.composer_cursor, 6);
+
+        state.agent_readiness = format!(
+            "✓ Ready · Node ✓ · SDK {} · auth ✓",
+            crate::pi_runtime::PINNED_PI_SDK_VERSION
+        );
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.submit_pi_command(&mut worker);
+        assert_eq!(
+            state
+                .pending_chat_messages
+                .last()
+                .expect("multiline modal prompt queued")
+                .text,
+            "first line\nsecond line"
+        );
+        assert_eq!(state.composer_input, "preserved draft");
+        assert_eq!(state.composer_cursor, 6);
+
+        drop(worker);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn typed_and_pasted_pi_input_report_the_four_kibibyte_limit() {
+        let (mut state, root) = routed_state("pi-input-limit");
+        state.pi_command_mode = true;
+        state.pi_command_input = "x".repeat(4 * 1024 - 1);
+        state.pi_command_cursor = state.pi_command_input.len();
+
+        state.insert_pi_command_text("ab");
+        assert_eq!(state.pi_command_input.len(), 4 * 1024);
+        assert!(state.status.contains("4 KiB"));
+
+        let bounded = state.pi_command_input.clone();
+        state.insert_pi_command_char('c');
+        assert_eq!(state.pi_command_input, bounded);
+        assert!(state.status.contains("4 KiB"));
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn pasted_stats_and_sessions_keep_their_existing_workspace_tool_routes() {
+        for (label, command, tool) in [
+            ("pi-stats-route", "/stats", "glass.agent.stats"),
+            ("pi-sessions-route", "/sessions", "glass.agent.sessions"),
+        ] {
+            let (mut state, root) = routed_state(label);
+            state.surface = DevSurface::Agent;
+            state.open_composer();
+            state.composer_input = "retain this draft".into();
+            state.composer_cursor = 7;
+            super::super::route_paste(&mut state, command);
+            let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+            state.submit_pi_command(&mut worker);
+
+            assert!(state.running_tool_job.is_some(), "{tool} is queued");
+            assert_eq!(state.status, format!("{tool} · queued from composer"));
+            assert!(state.composer_mode);
+            assert_eq!(state.composer_input, "retain this draft");
+            assert_eq!(state.composer_cursor, 7);
+
+            drop(worker);
+            drop(state);
+            std::fs::remove_dir_all(root).expect("remove temporary workspace");
+        }
+    }
+
+    #[test]
+    fn pasted_todo_opens_tasks_without_changing_composer_draft_or_cursor() {
+        let (mut state, root) = routed_state("pi-todo-route");
+        state.surface = DevSurface::Agent;
+        state.open_composer();
+        state.composer_input = "first line\nsecond line".into();
+        state.composer_cursor = 13;
+        super::super::route_paste(&mut state, "/todo");
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.submit_pi_command(&mut worker);
+
+        assert_eq!(state.surface, DevSurface::Tasks);
+        assert!(state.composer_mode);
+        assert_eq!(state.composer_input, "first line\nsecond line");
+        assert_eq!(state.composer_cursor, 13);
+        assert_eq!(state.status, "Tasks selected · composer draft preserved");
+
+        drop(worker);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove todo workspace");
+    }
+
+    #[test]
+    fn pasted_think_uses_glass_level_tool_and_thinking_uses_native_pi_dispatch() {
+        let (mut state, root) = routed_state("pi-think-route");
+        state.surface = DevSurface::Agent;
+        state.open_composer();
+        state.composer_input = "keep draft".into();
+        state.composer_cursor = 4;
+        super::super::route_paste(&mut state, "/think high");
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.submit_pi_command(&mut worker);
+        assert_eq!(state.agent_thinking, "high");
+        assert!(state.running_tool_job.is_some());
+        assert_eq!(state.status, "glass.agent.thinking · queued from composer");
+        assert!(state.composer_mode);
+        assert_eq!(state.composer_input, "keep draft");
+        assert_eq!(state.composer_cursor, 4);
+        drop(worker);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove thinking workspace");
+
+        let (mut state, root) = routed_state("pi-thinking-native-route");
+        state.surface = DevSurface::Agent;
+        state.open_composer();
+        super::super::route_paste(&mut state, "/thinking medium");
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.submit_pi_command(&mut worker);
+        let pending = state
+            .pending_confirmation
+            .as_ref()
+            .expect("native Pi /thinking uses slash dispatcher");
+        assert_eq!(pending.call.name, "glass.agent.slash");
+        assert_eq!(pending.call.arguments["name"], "thinking");
+
+        drop(worker);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove native thinking workspace");
     }
 
     #[test]

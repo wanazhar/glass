@@ -64,6 +64,9 @@ result to its current selection owner:
 The F9 visual-state slice pauses browser screenshot work while the rendered App
 pane is hidden and rejects hidden in-flight frames:
 [task record](tasks/issue60-p1-tui-visual-state-001.md).
+The F19 browser-crash slice preserves the active surface and lets recovery wait
+behind already-active overlays:
+[task record](tasks/issue60-p1-browser-crash-overlay-001.md).
 
 ## Active plan: Glass native browser engine (issue #40)
 

@@ -4467,14 +4467,13 @@ impl DevTuiState {
                     self.last_proof_ok = Some(false);
                     self.last_verify = Some(evidence_card("live page", 0, None, &error, false));
                 }
-                if result.tool.starts_with("glass.browser") {
-                    self.note_browser_failure(&result.tool, &error);
-                }
+                let recovery_offered = result.tool.starts_with("glass.browser")
+                    && self.note_browser_failure(&result.tool, &error);
                 if result.tool == "glass.git.diff" {
                     self.git_diff = format!("Git diff unavailable: {error}");
                     self.git_diff_open = true;
                 }
-                if publish_preview_status {
+                if publish_preview_status && !recovery_offered {
                     self.status = format!("{} failed: {error}", result.tool);
                 }
             }
@@ -8142,6 +8141,7 @@ impl DevTuiState {
     /// Apply one background snapshot without touching UI-only fields.
     pub fn apply_snapshot(&mut self, snapshot: &super::snapshot::DisplaySnapshot) {
         let was_waiting_for_snapshot = !self.snapshot_ready;
+        let mut browser_recovery_status = None;
         self.snapshot_ready = true;
         self.refresh_latency_ms = snapshot.duration.as_millis() as u64;
         let selected_agent_status = self.selected_agent.as_ref().and_then(|selected| {
@@ -8163,16 +8163,11 @@ impl DevTuiState {
             let revision_label = last_revision
                 .map(|revision| revision.to_string())
                 .unwrap_or_else(|| "none".into());
-            self.surface = DevSurface::App;
-            self.browser_recovery = Some(BrowserRecoveryOffer::from_error(
-                &format!(
-                    "browser endpoint crashed unexpectedly (pid {pid_label}, last revision {revision_label})"
-                ),
-                9222,
-            ));
-            self.browser_workspace
-                .disconnected("browser endpoint crashed".to_string(), true);
-            self.status = "Browser endpoint crashed · recovery choices below".into();
+            let reason = format!(
+                "browser endpoint crashed unexpectedly (pid {pid_label}, last revision {revision_label})"
+            );
+            self.offer_browser_recovery(&reason, 9222);
+            browser_recovery_status = Some(self.status.clone());
         }
         self.harnesses = snapshot.harnesses.clone();
         if let Ok(list) = self.ws().map(|workspace| workspace.todos()) {
@@ -8331,6 +8326,9 @@ impl DevTuiState {
         }
         if was_waiting_for_snapshot && self.browser_recovery.is_none() {
             self.status = "Workspace ready · Enter chat · Ctrl-P files · : actions".into();
+        }
+        if let Some(status) = browser_recovery_status {
+            self.status = status;
         }
     }
 
@@ -9777,7 +9775,7 @@ impl DevTuiState {
 
     /// Offer in-TUI recovery whenever a browser tool fails with a launch or
     /// connection error, so a port collision never strands the session.
-    pub fn note_browser_failure(&mut self, tool: &str, error: &str) {
+    pub fn note_browser_failure(&mut self, tool: &str, error: &str) -> bool {
         let lower = error.to_ascii_lowercase();
         if tool.contains("browser")
             && (lower.contains("occupied")
@@ -9787,17 +9785,31 @@ impl DevTuiState {
                 || lower.contains("timeout")
                 || lower.contains("devtools"))
         {
-            self.browser_target_picker = false;
-            self.browser_target_picker_requested = false;
-            self.surface = DevSurface::App;
-            self.browser_recovery = Some(BrowserRecoveryOffer::from_error(
-                error,
-                self.browser_recovery
-                    .as_ref()
-                    .map_or(9222, |offer| offer.port),
-            ));
-            self.browser_workspace.disconnected(error.to_string(), true);
+            let port = self
+                .browser_recovery
+                .as_ref()
+                .map_or(9222, |offer| offer.port);
+            self.offer_browser_recovery(error, port);
+            true
+        } else {
+            false
         }
+    }
+
+    fn offer_browser_recovery(&mut self, reason: &str, port: u16) {
+        self.browser_recovery = Some(BrowserRecoveryOffer::from_error(reason, port));
+        self.browser_workspace
+            .disconnected(reason.to_string(), true);
+        self.status = "Browser recovery available · current surface preserved".into();
+    }
+
+    pub fn dismiss_browser_recovery(&mut self) {
+        self.browser_recovery = None;
+        self.pending_browser_navigation = None;
+        self.status = format!(
+            "Browser recovery dismissed · {} remains active",
+            self.surface.label()
+        );
     }
 
     /// Queue a recovery choice without blocking the terminal on browser launch.
@@ -11024,6 +11036,112 @@ mod tests {
         assert!(attach.compatible_endpoint);
         assert_eq!(attach.actions().len(), 4);
         assert!(attach.guidance().contains("Attach"));
+    }
+
+    fn crashed_browser_snapshot(state: &DevTuiState) -> super::super::snapshot::DisplaySnapshot {
+        super::super::snapshot::DisplaySnapshot {
+            root: state.snapshot_root.clone(),
+            browser_health: super::super::snapshot::BrowserHealth::Crashed {
+                last_process_id: Some(314),
+                last_revision: Some(9),
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn crashed_snapshot_preserves_surfaces_and_defers_recovery_behind_active_ui() {
+        use super::super::overlay::{ActiveOverlay, active_overlay};
+
+        for (label, surface, overlay) in [
+            ("trust", DevSurface::Trust, "trust"),
+            ("code", DevSurface::Code, "code"),
+            ("help", DevSurface::More, "help"),
+            ("quit", DevSurface::Git, "quit"),
+            ("regular", DevSurface::Terminal, "regular"),
+        ] {
+            let (mut state, root) = routed_state(label);
+            state.surface = surface;
+            match overlay {
+                "code" => state.code_edit_mode = true,
+                "help" => state.help_open = true,
+                "quit" => state.quit_confirmation = true,
+                _ => {}
+            }
+
+            let snapshot = crashed_browser_snapshot(&state);
+            state.apply_snapshot(&snapshot);
+
+            assert_eq!(state.surface, surface, "{label} surface changed");
+            assert!(state.browser_recovery.is_some(), "{label} recovery missing");
+            assert!(state.status.contains("Browser recovery available"));
+            let expected = match overlay {
+                "code" => Some(ActiveOverlay::FullscreenEditor),
+                "help" => Some(ActiveOverlay::Help),
+                "quit" => Some(ActiveOverlay::QuitConfirmation),
+                _ => Some(ActiveOverlay::BrowserRecovery),
+            };
+            assert_eq!(active_overlay(&state), expected, "{label} overlay priority");
+
+            match overlay {
+                "code" => state.code_edit_mode = false,
+                "help" => state.help_open = false,
+                "quit" => state.quit_confirmation = false,
+                _ => {}
+            }
+            if overlay != "regular" && overlay != "trust" {
+                assert_eq!(active_overlay(&state), Some(ActiveOverlay::BrowserRecovery));
+            }
+            state.dismiss_browser_recovery();
+            assert_eq!(state.surface, surface, "{label} dismissal changed surface");
+            assert!(state.browser_recovery.is_none());
+            assert!(state.status.contains(surface.label()));
+            drop(state);
+            std::fs::remove_dir_all(root).expect("remove temporary workspace");
+        }
+    }
+
+    #[test]
+    fn browser_tool_failure_preserves_picker_and_overlay_state() {
+        use super::super::overlay::{ActiveOverlay, active_overlay};
+
+        let (mut state, root) = routed_state("browser-failure-preserves-ui");
+        state.surface = DevSurface::Trust;
+        state.browser_target_picker = true;
+        state.browser_target_picker_requested = true;
+        state.browser_target_query = "docs".into();
+        state.help_open = true;
+        state.running_tool_job = Some(41);
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 41,
+            tool: "glass.browser.start".into(),
+            result: Err("DevTools connection refused".into()),
+        });
+
+        assert_eq!(state.surface, DevSurface::Trust);
+        assert!(state.browser_target_picker);
+        assert!(state.browser_target_picker_requested);
+        assert_eq!(state.browser_target_query, "docs");
+        assert!(state.browser_recovery.is_some());
+        assert_eq!(active_overlay(&state), Some(ActiveOverlay::Help));
+        assert_eq!(
+            state.status,
+            "Browser recovery available · current surface preserved"
+        );
+
+        state.help_open = false;
+        assert_eq!(
+            active_overlay(&state),
+            Some(ActiveOverlay::BrowserTargetPicker)
+        );
+        state.close_browser_target_picker();
+        assert_eq!(active_overlay(&state), Some(ActiveOverlay::BrowserRecovery));
+        state.dismiss_browser_recovery();
+        assert_eq!(state.surface, DevSurface::Trust);
+        assert!(state.browser_recovery.is_none());
+        assert!(state.status.contains("Trust remains active"));
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 
     #[test]

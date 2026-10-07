@@ -139,16 +139,26 @@ a second keybinding or state owner.
 One active-overlay resolver owns keyboard, mouse, and terminal-overlay
 precedence. From highest priority to lowest it selects quit confirmation,
 editor exit prompt, native browser JavaScript dialog, help, command-center menu,
-browser target picker, file picker, session picker, browser recovery, agent
-approval, mutation confirmation, full-screen editor, Pi slash-command modal,
-composer dock, and Glass command palette. If no modal is active, ordinary
-surface input owns the event, including Git workbench keys. Ctrl-C remains a
-global quit request after the unsaved-editor prompt and before ordinary overlay
-dispatch. A picker or modal consumes its input; clicks and wheel events cannot
-reach the covered surface. The command-center menu accepts pointer selection,
-and help accepts its documented wheel scrolling. `Esc` closes the active
-modal/overlay; it does not cancel a running worker job. Git keys stay live while
-a diff is open, but they do not trap confirm or palette input.
+browser target picker, file picker, session picker, agent approval, mutation
+confirmation, full-screen editor, Pi slash-command modal, composer dock, Glass
+command palette, and browser recovery. Recovery is the lowest-priority overlay
+so it cannot replace an already active modal or editor. If no modal is active,
+ordinary surface input owns the event, including Git workbench keys. Ctrl-C
+remains a global quit request after the unsaved-editor prompt and before
+ordinary overlay dispatch. A picker or modal consumes its input; clicks and
+wheel events cannot reach the covered surface. The command-center menu accepts
+pointer selection, and help accepts its documented wheel scrolling. `Esc`
+closes the active modal/overlay; it does not cancel a running worker job. Git
+keys stay live while a diff is open, but they do not trap confirm or palette
+input.
+
+A browser crash snapshot or qualifying browser tool failure installs an
+explicit recovery offer without changing the selected surface or closing its
+pickers. The recovery offer waits behind any active overlay, including Help,
+Quit, and the full-screen editor; it becomes active after that overlay closes.
+Dismissal clears only the offer and pending browser navigation, leaving the
+original surface and other UI state intact. The status line identifies that
+browser recovery is available while the offer is pending.
 
 The full-screen editor owns key input while `code_edit_mode` is active unless
 the composer dock is open; then the composer owns key input and the editor stays
@@ -413,7 +423,9 @@ through `SnapshotWorker` tool requests. Target selection and actions carry the
 expected browser revision; stale references fail closed and require a fresh
 observation. Browser start failures expose a recovery sheet: attach a compatible
 endpoint, launch an isolated automatic port, retry the preferred port (where
-applicable), or dismiss. Project and agent state survive browser recovery.
+applicable), or dismiss. The recovery offer preserves the current TUI surface
+and waits below existing overlays; dismissing it restores that same surface.
+Project and agent state survive browser recovery.
 
 `browser view` from typed palette input, the App action menu, or a selected
 palette action toggles live presentation through one queued runtime request;

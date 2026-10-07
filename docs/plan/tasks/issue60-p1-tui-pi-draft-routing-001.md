@@ -136,3 +136,19 @@ still preserve an unrelated existing draft as before.
 - `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib composer_todo_route_restores_exact_command_and_cursor_on_tasks --locked` — passed (1 test).
 - `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib ask_without_arguments_returns_to_composer_and_native_command_close_restores_focus --locked` — passed (1 test), retaining modal-origin unrelated-draft behavior.
 - `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib pasted_todo_opens_tasks_without_changing_composer_draft_or_cursor --locked` — passed (1 test), retaining modal-origin `/todo` behavior.
+
+## Review 03 follow-up
+
+Review 03 found that modal-origin or pasted `/todo` input kept the Composer
+overlay active because there was no composer-origin snapshot to restore. The
+Tasks route now clears composer focus unconditionally after closing and
+restoring, while retaining the existing text/cursor for both modal-origin and
+direct composer-origin commands. Both regressions require Tasks to own input
+and check the retained buffer.
+
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib composer_todo_route_restores_exact_command_and_cursor_on_tasks --locked` — passed (1 test).
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib pasted_todo_opens_tasks_without_changing_composer_draft_or_cursor --locked` — passed (1 test), including `active_overlay != Composer`.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib composer_ask_without_arguments_restores_exact_command_and_cursor --locked` — passed (1 test), preserving `/ask` composer focus behavior.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check --manifest-path Cargo.toml -p glass-dev --lib --bins --locked` — passed; `glass-browser` reports 72 existing dead-code warnings and `glass-dev` has no new warnings.
+- `cargo fmt --all -- --check` and `git diff --check` — passed.
+- `python3 scripts/check-documentation-depth.py`, `python3 scripts/check-release-documentation.py --require-previous-version`, and `python3 scripts/check-tui-shortcuts.py` — passed (93 guides/19 contracts; 1,565 Markdown documents with 0 current-claim failures; 15 implementation keys/63 documentation markers).

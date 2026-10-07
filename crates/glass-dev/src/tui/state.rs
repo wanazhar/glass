@@ -1805,6 +1805,7 @@ impl DevTuiState {
                 self.surface = DevSurface::Tasks;
                 self.status = "Tasks selected · composer draft preserved".into();
                 self.restore_pi_composer_origin();
+                self.composer_mode = false;
                 return;
             }
             PiSlashRoute::WorkspaceTool(tool) => {
@@ -11348,7 +11349,12 @@ mod tests {
         state.submit_pi_command(&mut worker);
 
         assert_eq!(state.surface, DevSurface::Tasks);
-        assert!(state.composer_mode);
+        assert!(!state.composer_mode);
+        assert!(!state.pi_command_mode);
+        assert_ne!(
+            super::super::overlay::active_overlay(&state),
+            Some(super::super::overlay::ActiveOverlay::Composer)
+        );
         assert_eq!(state.composer_input, "first line\nsecond line");
         assert_eq!(state.composer_cursor, 13);
         assert_eq!(state.status, "Tasks selected · composer draft preserved");

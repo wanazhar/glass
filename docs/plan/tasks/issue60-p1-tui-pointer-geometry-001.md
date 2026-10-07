@@ -76,3 +76,26 @@ entities that are not visible or do not exist.
   `crates/glass-dev/tests/fixtures/client-conformance-v1.json`; the schema budget lacks
   `| Negotiated tools | 177 |` and ``| Serialized `tools` array | 76,967 UTF-8 bytes |``.
   This TUI-only F5 change does not touch the MCP inventory or schema budget.
+
+## Review follow-up: shared More and fullscreen-editor geometry
+
+- Independent review `docs/plan/reviews/issue60-p1-tui-pointer-geometry-001-01.md`
+  was committed as `8f3aca10` and blocked on the two geometry gaps below; this
+  follow-up addresses both findings and leaves the task `in-progress` pending
+  another review.
+- More route panel placement, padded content bounds, and scroll offset are now
+  derived once and consumed by both rendering and pointer hit testing. The
+  route regression checks every selected row on phone and desktop, exercises a
+  short phone viewport with a nonzero route scroll offset, and rejects panel
+  borders and horizontal padding.
+- Fullscreen-editor rendering and pointer hit testing now share the same row
+  split, including the Composer dock's four-row minimum. A one-line Composer
+  over the fullscreen Code editor regression checks that the first rendered
+  dock row maps to `Dock`.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-dev tui::pointer::tests --lib --locked` — 19 passed after the review fixes.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p glass-dev --lib --bins --locked` — passed; only existing `glass-browser` dead-code warnings.
+- `cargo fmt --all -- --check` and `git diff --check` — passed.
+- `python3 scripts/check-release-documentation.py --require-previous-version --report /tmp/glass-issue60-f5-review-documentation.json` — passed; 0 current-claim failures.
+- `python3 scripts/check-documentation-depth.py` — passed; 93 current guides routed/audited and 19 substantive contracts.
+- `python3 scripts/check-tui-shortcuts.py` — passed; 15 implementation keys and 63 documentation markers.
+- `python3 scripts/check-documentation-coverage.py --glass /home/ubuntu/work/glass/target/debug/glass --glass-browser /home/ubuntu/work/glass/target/debug/glass-browser` — remains blocked by the same MCP fixture/schema-budget drift listed above; the live measurements remain 177 tools and 76,967 serialized bytes.

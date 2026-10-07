@@ -644,20 +644,7 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
     }
 }
 fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(4),
-            Constraint::Length(
-                if overlay::active_overlay(state) == Some(ActiveOverlay::Composer) {
-                    footer_height(state).max(4)
-                } else {
-                    4
-                },
-            ),
-        ])
-        .split(area);
+    let rows = fullscreen_editor_rows(state, area);
     let content = state.focused_editor_content.as_str();
     let line_count = content.split('\n').count().max(1);
     let dirty = if state.focused_editor_dirty {
@@ -908,6 +895,32 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
                 .block(surface_block(" NOTE ", ACCENT)),
             modal,
         );
+    }
+}
+
+pub(super) fn fullscreen_editor_rows(state: &DevTuiState, area: Rect) -> [Rect; 3] {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(4),
+            Constraint::Length(
+                if overlay::active_overlay(state) == Some(ActiveOverlay::Composer) {
+                    footer_height(state).max(4)
+                } else {
+                    4
+                },
+            ),
+        ])
+        .split(area);
+    [rows[0], rows[1], rows[2]]
+}
+
+pub(super) fn pointer_footer_area(state: &DevTuiState, area: Rect) -> Rect {
+    if state.code_edit_mode && overlay::active_overlay(state) == Some(ActiveOverlay::Composer) {
+        fullscreen_editor_rows(state, area)[2]
+    } else {
+        screen_geometry(state, area).footer
     }
 }
 
@@ -3842,7 +3855,17 @@ fn more_phone_layout(state: &DevTuiState, area: Rect) -> bool {
     ) && area.width < 80
 }
 
-fn more_route_panel_area(state: &DevTuiState, area: Rect) -> Rect {
+#[derive(Debug, Clone, Copy)]
+struct MoreSurfaceGeometry {
+    phone: bool,
+    narrow: bool,
+    summary: Rect,
+    pi: Rect,
+    experiments: Option<Rect>,
+    routes: Rect,
+}
+
+fn more_surface_geometry(state: &DevTuiState, area: Rect) -> MoreSurfaceGeometry {
     let phone = more_phone_layout(state, area);
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -3852,10 +3875,18 @@ fn more_route_panel_area(state: &DevTuiState, area: Rect) -> Rect {
         ])
         .split(area);
     if phone {
-        Layout::default()
+        let columns = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(3), Constraint::Min(7)])
-            .split(rows[1])[1]
+            .split(rows[1]);
+        MoreSurfaceGeometry {
+            phone,
+            narrow: true,
+            summary: rows[0],
+            pi: columns[0],
+            experiments: None,
+            routes: columns[1],
+        }
     } else {
         let narrow = area.width < 60;
         let columns = if narrow {
@@ -3877,13 +3908,42 @@ fn more_route_panel_area(state: &DevTuiState, area: Rect) -> Rect {
                 ])
                 .split(rows[1])
         };
-        columns[2]
+        MoreSurfaceGeometry {
+            phone,
+            narrow,
+            summary: rows[0],
+            pi: columns[0],
+            experiments: Some(columns[1]),
+            routes: columns[2],
+        }
     }
 }
 
 fn more_route_scroll(selected: usize, viewport_height: usize) -> usize {
     let viewport_height = viewport_height.max(1);
     selected.saturating_sub(viewport_height.saturating_sub(1))
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct MoreRouteGeometry {
+    pub panel: Rect,
+    pub content: Rect,
+    pub scroll_offset: usize,
+}
+
+fn more_route_geometry(state: &DevTuiState, panel: Rect) -> MoreRouteGeometry {
+    let content = panel_content_area(panel);
+    let scroll_offset = more_route_scroll(state.selected_more, usize::from(content.height));
+    MoreRouteGeometry {
+        panel,
+        content,
+        scroll_offset,
+    }
+}
+
+pub(super) fn more_route_hit_geometry(state: &DevTuiState, screen: Rect) -> MoreRouteGeometry {
+    let surface = surface_area(state, screen);
+    more_route_geometry(state, more_surface_geometry(state, surface).routes)
 }
 
 pub(crate) fn more_route_at(state: &DevTuiState, column: u16, row: u16) -> Option<usize> {
@@ -3896,31 +3956,23 @@ pub(crate) fn more_route_at(state: &DevTuiState, column: u16, row: u16) -> Optio
         state.terminal_width.max(1),
         state.terminal_height.max(1),
     );
-    let route_area = more_route_panel_area(state, surface_area(state, area));
-    let right = route_area.x.saturating_add(route_area.width);
-    let content_top = route_area.y.saturating_add(1);
-    let content_bottom = route_area
-        .y
-        .saturating_add(route_area.height.saturating_sub(1));
-    if column < route_area.x || column >= right || row < content_top || row >= content_bottom {
+    let route = more_route_hit_geometry(state, area);
+    if column < route.content.x
+        || column >= route.content.right()
+        || row < route.content.y
+        || row >= route.content.bottom()
+    {
         return None;
     }
-    let viewport_height = usize::from(content_bottom.saturating_sub(content_top));
-    let scroll = more_route_scroll(state.selected_more, viewport_height);
-    let index = usize::from(row - content_top).saturating_add(scroll);
+    let index = usize::from(row - route.content.y).saturating_add(route.scroll_offset);
     (index < DevTuiState::MORE_ROUTES.len()).then_some(index)
 }
 
 fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let phone = more_phone_layout(state, area);
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(if phone { 3 } else { 5 }),
-            Constraint::Min(5),
-        ])
-        .split(area);
-    let narrow = area.width < 60 || phone;
+    let geometry = more_surface_geometry(state, area);
+    let route_geometry = more_route_geometry(state, geometry.routes);
+    let phone = geometry.phone;
+    let narrow = geometry.narrow;
     let kernel_count = status_line_count(&state.kernels);
     let latest_result = state
         .more_result
@@ -3950,13 +4002,15 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             state.private_cockpit_status(),
         )
     };
-    let summary = compact_multiline(&summary, rows[0].width.saturating_sub(4));
-    render_panel(frame, rows[0], " SERVICES ", summary, ACCENT_BRIGHT);
+    let summary = compact_multiline(&summary, geometry.summary.width.saturating_sub(4));
+    render_panel(
+        frame,
+        geometry.summary,
+        " SERVICES ",
+        summary,
+        ACCENT_BRIGHT,
+    );
     if phone {
-        let columns = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(7)])
-            .split(rows[1]);
         let pi_content = compact_multiline(
             &if state.snapshot_ready {
                 format!(
@@ -3973,12 +4027,12 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             } else {
                 "Loading workspace snapshot…".to_string()
             },
-            columns[0].width.saturating_sub(4),
+            geometry.pi.width.saturating_sub(4),
         );
-        render_panel(frame, columns[0], " PI · WORKSPACE ", pi_content, PURPLE);
+        render_panel(frame, geometry.pi, " PI · WORKSPACE ", pi_content, PURPLE);
         let route_content = compact_multiline(
             &more_route_lines(state).join("\n"),
-            columns[1].width.saturating_sub(4),
+            route_geometry.content.width,
         );
         let route_title = format!(
             " ROUTES · {}/{} ",
@@ -3987,36 +4041,14 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         );
         render_scrolled_panel(
             frame,
-            columns[1],
+            route_geometry.panel,
             route_title,
             route_content,
             WARNING,
-            more_route_scroll(
-                state.selected_more,
-                usize::from(columns[1].height.saturating_sub(2)),
-            ),
+            route_geometry.scroll_offset,
         );
         return;
     }
-    let columns = if narrow {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(38),
-                Constraint::Percentage(31),
-                Constraint::Percentage(31),
-            ])
-            .split(rows[1])
-    } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(34),
-                Constraint::Percentage(33),
-                Constraint::Min(24),
-            ])
-            .split(rows[1])
-    };
     let pi_content = compact_multiline(
         &if state.snapshot_ready {
             format!(
@@ -4031,16 +4063,23 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         } else {
             "Loading workspace snapshot…".to_string()
         },
-        columns[0].width.saturating_sub(4),
+        geometry.pi.width.saturating_sub(4),
     );
-    render_panel(frame, columns[0], " PI ", pi_content, PURPLE);
+    render_panel(frame, geometry.pi, " PI ", pi_content, PURPLE);
     let experiments_content = compact_multiline(
         &more_experiment_content(state),
-        columns[1].width.saturating_sub(4),
+        geometry
+            .experiments
+            .expect("non-phone More layout has an experiments panel")
+            .width
+            .saturating_sub(4),
     );
+    let experiments_area = geometry
+        .experiments
+        .expect("non-phone More layout has an experiments panel");
     render_panel(
         frame,
-        columns[1],
+        experiments_area,
         " EXPERIMENTS ",
         experiments_content,
         ACCENT_BRIGHT,
@@ -4062,8 +4101,15 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             installed_harnesses
         });
     }
-    let routes_content = compact_multiline(&routes.join("\n"), columns[2].width.saturating_sub(4));
-    render_panel(frame, columns[2], " ROUTES ", routes_content, WARNING);
+    let routes_content = compact_multiline(&routes.join("\n"), route_geometry.content.width);
+    render_scrolled_panel(
+        frame,
+        route_geometry.panel,
+        " ROUTES ",
+        routes_content,
+        WARNING,
+        route_geometry.scroll_offset,
+    );
 }
 
 fn more_experiment_content(state: &DevTuiState) -> String {

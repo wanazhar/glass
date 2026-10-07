@@ -192,6 +192,10 @@ Navigation and dock hits follow their rendered content area, including the
 composer's dynamic footer height. Panel borders, summary/diff/log panes, unused
 list rows, empty collections, and wrapped or otherwise ambiguous text do not
 produce item selections.
+More-route hits use the rendered route panel's padded content rectangle and
+the same scroll offset as its visible route rows. When the full-screen Code
+editor stays visible behind Composer, its four-row minimum dock is shared with
+pointer hit testing.
 
 The command center lists actions for the current surface plus Search commands and
 Quit. Search accepts a typed route, including expert commands such as

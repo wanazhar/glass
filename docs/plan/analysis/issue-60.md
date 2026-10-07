@@ -70,6 +70,9 @@ changes are insufficient where the issue names multiple entry points.
    label; its live screenshot lifecycle is tracked in the
    [visual-state task](../tasks/issue60-p1-tui-visual-state-001.md), including
    capture visibility, hidden in-flight result rejection, and pause/resume.
+   F19's browser-crash recovery overlay is tracked in the
+   [browser recovery task](../tasks/issue60-p1-browser-crash-overlay-001.md):
+   recovery must preserve the selected surface and wait behind existing UI.
 5. **P2 functional/UX contracts, then P3 consistency.** Align surfaces,
    layout/pointer behavior, help, CLI aliases, and low-risk presentation.
 

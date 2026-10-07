@@ -591,11 +591,7 @@ pub(crate) fn run_with_browser_policy(
                         }
                     } else if active_overlay == Some(overlay::ActiveOverlay::BrowserRecovery) {
                         match key.code {
-                            KeyCode::Esc => {
-                                state.browser_recovery = None;
-                                state.pending_browser_navigation = None;
-                                state.status = "Recovery dismissed".into();
-                            }
+                            KeyCode::Esc => state.dismiss_browser_recovery(),
                             KeyCode::Char('1') => state.accept_browser_recovery(0, &mut worker),
                             KeyCode::Char('2') => state.accept_browser_recovery(1, &mut worker),
                             KeyCode::Char('3')

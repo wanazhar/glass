@@ -14,13 +14,13 @@ pub(super) enum ActiveOverlay {
     BrowserTargetPicker = 5,
     FilePicker = 6,
     SessionPicker = 7,
-    BrowserRecovery = 8,
-    AgentApproval = 9,
-    MutationConfirmation = 10,
-    FullscreenEditor = 11,
-    PiSlashCommand = 12,
-    Composer = 13,
-    CommandPalette = 14,
+    AgentApproval = 8,
+    MutationConfirmation = 9,
+    FullscreenEditor = 10,
+    PiSlashCommand = 11,
+    Composer = 12,
+    CommandPalette = 13,
+    BrowserRecovery = 14,
 }
 
 impl ActiveOverlay {
@@ -51,8 +51,6 @@ pub(super) fn active_overlay(state: &DevTuiState) -> Option<ActiveOverlay> {
         Some(ActiveOverlay::FilePicker)
     } else if state.session_picker_open {
         Some(ActiveOverlay::SessionPicker)
-    } else if state.browser_recovery.is_some() {
-        Some(ActiveOverlay::BrowserRecovery)
     } else if state.pending_agent_approval.is_some() {
         Some(ActiveOverlay::AgentApproval)
     } else if state.pending_confirmation.is_some() {
@@ -65,6 +63,8 @@ pub(super) fn active_overlay(state: &DevTuiState) -> Option<ActiveOverlay> {
         Some(ActiveOverlay::Composer)
     } else if state.command_mode {
         Some(ActiveOverlay::CommandPalette)
+    } else if state.browser_recovery.is_some() {
+        Some(ActiveOverlay::BrowserRecovery)
     } else {
         None
     }
@@ -129,6 +129,105 @@ mod tests {
         assert_eq!(
             active_overlay(&state),
             Some(ActiveOverlay::EditorExitPrompt)
+        );
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn browser_recovery_waits_behind_every_active_overlay() {
+        let (mut state, root) = state();
+        state.browser_recovery = Some(super::super::state::BrowserRecoveryOffer::from_error(
+            "browser endpoint crashed",
+            9222,
+        ));
+        assert_eq!(active_overlay(&state), Some(ActiveOverlay::BrowserRecovery));
+
+        state.command_mode = true;
+        assert_eq!(active_overlay(&state), Some(ActiveOverlay::CommandPalette));
+        state.command_mode = false;
+        state.composer_mode = true;
+        assert_eq!(active_overlay(&state), Some(ActiveOverlay::Composer));
+        state.composer_mode = false;
+        state.pi_command_mode = true;
+        assert_eq!(active_overlay(&state), Some(ActiveOverlay::PiSlashCommand));
+        state.pi_command_mode = false;
+        state.code_edit_mode = true;
+        assert_eq!(
+            active_overlay(&state),
+            Some(ActiveOverlay::FullscreenEditor)
+        );
+        state.code_edit_mode = false;
+        state.editor_exit_prompt = Some(super::super::state::EditorExitPrompt::Unsaved);
+        assert_eq!(
+            active_overlay(&state),
+            Some(ActiveOverlay::EditorExitPrompt)
+        );
+        state.editor_exit_prompt = None;
+        let (call, context) = state
+            .tool_request("glass.git.stage", serde_json::json!({}), true)
+            .expect("build pending mutation request");
+        state.pending_confirmation = Some(super::super::state::PendingConfirmation {
+            call,
+            context,
+            summary: "Stage file".into(),
+        });
+        assert_eq!(
+            active_overlay(&state),
+            Some(ActiveOverlay::MutationConfirmation)
+        );
+        state.pending_confirmation = None;
+        state.pending_agent_approval = Some(super::super::state::PendingAgentApproval {
+            agent_id: "agent-1".into(),
+            frame_id: "frame-1".into(),
+            tool_name: "glass.git.stage".into(),
+            arguments: serde_json::json!({}),
+        });
+        assert_eq!(active_overlay(&state), Some(ActiveOverlay::AgentApproval));
+        state.pending_agent_approval = None;
+        state.session_picker_open = true;
+        assert_eq!(active_overlay(&state), Some(ActiveOverlay::SessionPicker));
+        state.session_picker_open = false;
+        state.file_picker_open = true;
+        assert_eq!(active_overlay(&state), Some(ActiveOverlay::FilePicker));
+        state.file_picker_open = false;
+        state.browser_target_picker = true;
+        assert_eq!(
+            active_overlay(&state),
+            Some(ActiveOverlay::BrowserTargetPicker)
+        );
+        state.browser_target_picker = false;
+        state.menu_open = true;
+        assert_eq!(
+            active_overlay(&state),
+            Some(ActiveOverlay::CommandCenterMenu)
+        );
+        state.menu_open = false;
+        state.browser_dialog = Some(super::super::state::BrowserDialogPrompt {
+            pending: glass_browser::browser::NativePendingDialog {
+                id: "dialog-1".into(),
+                context_id: "context-1".into(),
+                frame_id: "frame-1".into(),
+                dialog: glass_browser::browser::session::PendingDialog {
+                    dialog_type: "confirm".into(),
+                    message: "Continue?".into(),
+                    default_value: None,
+                    url: "https://example.test".into(),
+                },
+            },
+            prompt_input: String::new(),
+            prompt_cursor: 0,
+            error: None,
+        });
+        assert_eq!(active_overlay(&state), Some(ActiveOverlay::BrowserDialog));
+        state.browser_dialog = None;
+        state.help_open = true;
+        assert_eq!(active_overlay(&state), Some(ActiveOverlay::Help));
+        state.help_open = false;
+        state.quit_confirmation = true;
+        assert_eq!(
+            active_overlay(&state),
+            Some(ActiveOverlay::QuitConfirmation)
         );
         drop(state);
         std::fs::remove_dir_all(root).expect("remove test workspace");

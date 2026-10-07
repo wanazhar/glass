@@ -1,8 +1,9 @@
 //! Pointer hit-testing. Mouse and terminal-touch call the same reducers as keys.
 
 use super::overlay::{self, ActiveOverlay};
-use super::state::{DevSurface, DevTuiState, ResponsiveClass};
+use super::state::{DevSurface, DevTuiState};
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 use std::time::{Duration, Instant};
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -180,7 +181,11 @@ impl PointerState {
 pub fn hit_test(state: &DevTuiState, column: u16, row: u16) -> HitRegion {
     let width = state.terminal_width.max(1);
     let height = state.terminal_height.max(1);
-    let footer = footer_rows(state);
+    let screen = Rect::new(0, 0, width, height);
+    if column >= width || row >= height {
+        return HitRegion::Other;
+    }
+    let geometry = super::render::screen_geometry(state, screen);
     match overlay::active_overlay(state) {
         Some(ActiveOverlay::Help) => return HitRegion::Help,
         Some(ActiveOverlay::CommandCenterMenu) => {
@@ -189,7 +194,7 @@ pub fn hit_test(state: &DevTuiState, column: u16, row: u16) -> HitRegion {
                 .unwrap_or(HitRegion::Other);
         }
         Some(ActiveOverlay::Composer) => {
-            return if row >= height.saturating_sub(footer) {
+            return if contains(geometry.footer, column, row) {
                 HitRegion::Dock
             } else {
                 HitRegion::Other
@@ -198,85 +203,39 @@ pub fn hit_test(state: &DevTuiState, column: u16, row: u16) -> HitRegion {
         Some(_) => return HitRegion::Other,
         None => {}
     }
-    if row >= height.saturating_sub(footer) {
+    if contains(geometry.footer, column, row) {
         return HitRegion::Dock;
     }
-    if let Some(surface) = navigation_surface_at(
-        state.responsive_class(width, height),
-        header_rows(state),
-        column,
-        row,
-        state.surface == DevSurface::Trust,
-    ) {
+    if let Some(surface) = super::render::navigation_surface_at(state, screen, column, row) {
         return HitRegion::Surface(surface);
     }
     if let Some(index) = super::render::more_route_at(state, column, row) {
         return HitRegion::MoreRoute(index);
     }
     match state.surface {
-        DevSurface::Code if !state.files.is_empty() => {
-            let index = list_index(state, row, state.files.len());
-            HitRegion::File(index)
+        DevSurface::Code => super::render::file_hit_at(state, geometry.surface, column, row)
+            .map(HitRegion::File)
+            .unwrap_or(HitRegion::Other),
+        DevSurface::Git => super::render::git_file_hit_at(state, geometry.surface, column, row)
+            .map(HitRegion::Git)
+            .unwrap_or(HitRegion::Other),
+        DevSurface::Terminal => super::render::process_hit_at(state, geometry.surface, column, row)
+            .map(HitRegion::Process)
+            .unwrap_or(HitRegion::Other),
+        DevSurface::Debug => {
+            super::render::debug_session_hit_at(state, geometry.surface, column, row)
+                .map(HitRegion::Debug)
+                .unwrap_or(HitRegion::Other)
         }
-        DevSurface::Git if !state.git_entries.is_empty() => {
-            let index = list_index(state, row, state.git_entries.len());
-            HitRegion::Git(index)
-        }
-        DevSurface::Terminal if !state.process_entries.is_empty() => {
-            let index = list_index(state, row, state.process_entries.len());
-            HitRegion::Process(index)
-        }
-        DevSurface::Debug if !state.debug_sessions.is_empty() => {
-            let index = list_index(state, row, state.debug_sessions.len());
-            HitRegion::Debug(index)
-        }
-        DevSurface::App => {
-            let count = state.browser_workspace.state().entities.len().max(1);
-            HitRegion::Entity(list_index(state, row, count))
-        }
+        DevSurface::App => super::render::browser_entity_at(state, geometry.surface, column, row)
+            .map(HitRegion::Entity)
+            .unwrap_or(HitRegion::Other),
         _ => HitRegion::Other,
     }
 }
 
-fn header_rows(_state: &DevTuiState) -> u16 {
-    2
-}
-
-fn footer_rows(state: &DevTuiState) -> u16 {
-    super::render::footer_height(state)
-}
-
-fn list_index(state: &DevTuiState, row: u16, len: usize) -> usize {
-    let start = header_rows(state).saturating_add(1);
-    usize::from(row.saturating_sub(start)).min(len.saturating_sub(1))
-}
-
-fn navigation_surface_at(
-    responsive: ResponsiveClass,
-    header_height: u16,
-    column: u16,
-    row: u16,
-    trust_surface: bool,
-) -> Option<DevSurface> {
-    let nav_width = match responsive {
-        ResponsiveClass::Desktop => 24,
-        ResponsiveClass::Compact => 22,
-        ResponsiveClass::Phone => return None,
-    };
-    let first_item_row = header_height.saturating_add(1);
-    if column >= nav_width || row < first_item_row {
-        return None;
-    }
-    let index = usize::from(row - first_item_row);
-    if trust_surface {
-        if index == 0 {
-            Some(DevSurface::Trust)
-        } else {
-            DevSurface::PRIMARY.get(index - 1).copied()
-        }
-    } else {
-        DevSurface::PRIMARY.get(index).copied()
-    }
+fn contains(area: Rect, column: u16, row: u16) -> bool {
+    column >= area.x && column < area.right() && row >= area.y && row < area.bottom()
 }
 
 fn apply_select(state: &mut DevTuiState, hit: &HitRegion) {
@@ -398,6 +357,350 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create test workspace");
         let state = DevTuiState::open(&root, TuiLayout::Desktop).expect("open TUI state");
         (state, root)
+    }
+
+    fn screen(state: &DevTuiState) -> Rect {
+        Rect::new(
+            0,
+            0,
+            state.terminal_width.max(1),
+            state.terminal_height.max(1),
+        )
+    }
+
+    fn first_content_point(area: Rect) -> (u16, u16) {
+        let content = super::super::render::panel_content_area(area);
+        assert!(
+            content.width > 0 && content.height > 0,
+            "panel has no content"
+        );
+        (content.x, content.y)
+    }
+
+    fn set_viewport(state: &mut DevTuiState, layout: TuiLayout, width: u16, height: u16) {
+        state.layout = layout;
+        state.terminal_width = width;
+        state.terminal_height = height;
+    }
+
+    #[test]
+    fn code_file_hits_follow_rendered_list_bounds_and_scroll_on_each_layout() {
+        for (layout, width, height) in [
+            (TuiLayout::Desktop, 140, 40),
+            (TuiLayout::Compact, 96, 32),
+            (TuiLayout::Mobile, 48, 26),
+        ] {
+            let (mut state, root) = overlay_state();
+            set_viewport(&mut state, layout, width, height);
+            state.surface = DevSurface::Code;
+            state.files = (0..12)
+                .map(|index| format!("src/file-{index}.rs"))
+                .collect();
+            state.selected_file = 7;
+
+            let geometry = super::super::render::screen_geometry(&state, screen(&state));
+            let files = super::super::render::code_file_list_area(&state, geometry.surface);
+            let content = super::super::render::panel_content_area(files);
+            assert!(
+                content.height > 0,
+                "file list should have visible rows for {layout:?}"
+            );
+            let first_visible = 7usize
+                .saturating_add(1)
+                .saturating_sub(usize::from(content.height));
+            let selected_row = content.y + u16::try_from(7 - first_visible).unwrap();
+            assert_eq!(
+                hit_test(&state, content.x, selected_row),
+                HitRegion::File(7),
+                "scrolled selected file should match the visible list row for {layout:?}: screen={:?}, surface={:?}, files={files:?}, content={content:?}, direct={:?}",
+                screen(&state),
+                geometry.surface,
+                super::super::render::file_hit_at(
+                    &state,
+                    geometry.surface,
+                    content.x,
+                    selected_row
+                )
+            );
+            assert_eq!(hit_test(&state, files.x, files.y), HitRegion::Other);
+            let adjacent_panel_point = if files.right() < geometry.surface.right() {
+                (files.right(), content.y)
+            } else {
+                (content.x, files.bottom())
+            };
+            assert_eq!(
+                hit_test(&state, adjacent_panel_point.0, adjacent_panel_point.1),
+                HitRegion::Other,
+                "the adjacent editor panel is outside the file list for {layout:?}"
+            );
+
+            state.files.truncate(1);
+            state.selected_file = 0;
+            let content = super::super::render::panel_content_area(files);
+            if content.height > 1 {
+                assert_eq!(hit_test(&state, content.x, content.y + 1), HitRegion::Other);
+            }
+            state.files.clear();
+            assert_eq!(hit_test(&state, content.x, content.y), HitRegion::Other);
+            drop(state);
+            std::fs::remove_dir_all(root).expect("remove test workspace");
+        }
+    }
+
+    #[test]
+    fn git_file_hits_reject_summary_diff_and_unused_rows() {
+        let (mut state, root) = overlay_state();
+        set_viewport(&mut state, TuiLayout::Desktop, 160, 32);
+        state.surface = DevSurface::Git;
+        state.snapshot_ready = true;
+        state.git_entries = (0..30)
+            .map(|index| crate::git::GitStatusEntry {
+                path: format!("src/file-{index}.rs"),
+                original_path: None,
+                index_status: ' ',
+                worktree_status: 'M',
+                untracked: false,
+            })
+            .collect();
+        state.selected_git_file = 24;
+        state.git_diff_open = true;
+
+        let geometry = super::super::render::screen_geometry(&state, screen(&state));
+        let files = super::super::render::git_file_list_area(&state, geometry.surface);
+        let (column, first_row) = first_content_point(files);
+        let content = super::super::render::panel_content_area(files);
+        let first_visible = 24usize
+            .saturating_add(1)
+            .saturating_sub(usize::from(content.height));
+        assert_eq!(
+            hit_test(&state, column, first_row),
+            HitRegion::Git(first_visible)
+        );
+        assert_eq!(
+            hit_test(&state, column, content.bottom() - 1),
+            HitRegion::Git(24),
+            "selected Git row should use the same rendered scroll offset"
+        );
+        assert_eq!(
+            hit_test(&state, geometry.surface.x, geometry.surface.y),
+            HitRegion::Other
+        );
+        assert_eq!(
+            hit_test(&state, geometry.surface.right() - 1, first_row),
+            HitRegion::Other,
+            "diff panel must not select a file"
+        );
+        state.git_entries.truncate(1);
+        state.selected_git_file = 0;
+        if content.height > 1 {
+            assert_eq!(hit_test(&state, column, first_row + 1), HitRegion::Other);
+        }
+        state.git_entries.clear();
+        assert_eq!(hit_test(&state, column, first_row), HitRegion::Other);
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn terminal_process_hits_reject_summary_logs_and_stale_empty_state() {
+        let (mut state, root) = overlay_state();
+        set_viewport(&mut state, TuiLayout::Desktop, 160, 32);
+        state.surface = DevSurface::Terminal;
+        state.snapshot_ready = true;
+        state.process_entries = (0..30)
+            .map(|index| super::super::state::ProcessRow {
+                name: format!("dev-{index}"),
+                command: "cargo run".into(),
+                pid: Some(42),
+                health: crate::development::ProcessHealth::Healthy,
+                url: None,
+            })
+            .collect();
+        state.selected_process = 24;
+
+        let geometry = super::super::render::screen_geometry(&state, screen(&state));
+        let processes = super::super::render::terminal_process_list_area(geometry.surface);
+        let (column, first_row) = first_content_point(processes);
+        let content = super::super::render::panel_content_area(processes);
+        let first_visible = 24usize
+            .saturating_add(1)
+            .saturating_sub(usize::from(content.height));
+        assert_eq!(
+            hit_test(&state, column, first_row),
+            HitRegion::Process(first_visible)
+        );
+        assert_eq!(
+            hit_test(&state, column, content.bottom() - 1),
+            HitRegion::Process(24),
+            "selected process row should use the same rendered scroll offset"
+        );
+        assert_eq!(
+            hit_test(&state, geometry.surface.x, geometry.surface.y),
+            HitRegion::Other
+        );
+        assert_eq!(
+            hit_test(&state, column, processes.bottom()),
+            HitRegion::Other,
+            "logs panel must not select a process"
+        );
+
+        state.process_entries.clear();
+        assert_eq!(hit_test(&state, column, first_row), HitRegion::Other);
+        state.process_entries.push(super::super::state::ProcessRow {
+            name: "stale".into(),
+            command: "sleep".into(),
+            pid: Some(42),
+            health: crate::development::ProcessHealth::Healthy,
+            url: None,
+        });
+        state.snapshot_ready = false;
+        assert_eq!(hit_test(&state, column, first_row), HitRegion::Other);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn debug_hits_are_limited_to_visible_unwrapped_session_rows() {
+        let (mut state, root) = overlay_state();
+        set_viewport(&mut state, TuiLayout::Mobile, 80, 32);
+        state.surface = DevSurface::Debug;
+        state.debug_sessions = vec![super::super::state::DebugSessionRow {
+            name: "api".into(),
+            state: crate::debugger::DebugSessionState::Stopped,
+            pid: 7,
+            breakpoints: 0,
+            watches: 0,
+        }];
+
+        let geometry = super::super::render::screen_geometry(&state, screen(&state));
+        let sessions = super::super::render::debug_session_area(&state, geometry.surface);
+        let (column, row) = first_content_point(sessions);
+        assert_eq!(hit_test(&state, column, row), HitRegion::Debug(0));
+        let adjacent_panel_point = if sessions.right() < geometry.surface.right() {
+            (sessions.right(), row)
+        } else {
+            (column, sessions.bottom())
+        };
+        assert_eq!(
+            hit_test(&state, adjacent_panel_point.0, adjacent_panel_point.1),
+            HitRegion::Other,
+            "other debugger panels are not session rows"
+        );
+
+        state.debug_sessions[0].name = "long".repeat(40);
+        assert_eq!(hit_test(&state, column, row), HitRegion::Other);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn app_entity_hits_require_a_visible_unambiguous_inspector_row() {
+        let (mut state, root) = overlay_state();
+        set_viewport(&mut state, TuiLayout::Desktop, 240, 45);
+        state.surface = DevSurface::App;
+        let browser = state.browser_workspace.state_mut();
+        browser.title = "Example".into();
+        browser.url = "https://example.test".into();
+        browser.entities = vec![glass_browser::browser_workspace::BrowserWorkspaceEntity {
+            reference: "submit".into(),
+            role: "button".into(),
+            name: "Sign in".into(),
+            actionable: true,
+            revision: 1,
+        }];
+
+        let geometry = super::super::render::screen_geometry(&state, screen(&state));
+        let inspector = super::super::render::browser_inspector_area(&state, geometry.surface)
+            .expect("desktop inspector panel");
+        let content = super::super::render::panel_content_area(inspector);
+        let entity_point = (content.y..content.bottom())
+            .find_map(|row| {
+                super::super::render::browser_entity_at(&state, geometry.surface, content.x, row)
+                    .map(|index| (content.x, row, index))
+            })
+            .expect("visible entity row");
+        assert_eq!(entity_point.2, 0);
+        assert_eq!(
+            hit_test(&state, entity_point.0, entity_point.1),
+            HitRegion::Entity(0)
+        );
+        assert_eq!(hit_test(&state, inspector.x, inspector.y), HitRegion::Other);
+
+        state.browser_workspace.state_mut().entities.clear();
+        assert_eq!(
+            hit_test(&state, entity_point.0, entity_point.1),
+            HitRegion::Other
+        );
+
+        let browser = state.browser_workspace.state_mut();
+        browser.title = "A".repeat(200);
+        browser.entities = vec![glass_browser::browser_workspace::BrowserWorkspaceEntity {
+            reference: "submit".into(),
+            role: "button".into(),
+            name: "Sign in".into(),
+            actionable: true,
+            revision: 1,
+        }];
+        assert_eq!(
+            hit_test(&state, entity_point.0, entity_point.1),
+            HitRegion::Other
+        );
+
+        state.layout = TuiLayout::Mobile;
+        state.terminal_width = 48;
+        state.terminal_height = 20;
+        let phone = super::super::render::screen_geometry(&state, screen(&state));
+        assert!(super::super::render::browser_inspector_area(&state, phone.surface).is_none());
+        assert_eq!(hit_test(&state, 10, phone.surface.y), HitRegion::Other);
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn pointer_hits_outside_terminal_bounds_are_rejected() {
+        let (mut state, root) = overlay_state();
+        set_viewport(&mut state, TuiLayout::Desktop, 100, 30);
+        state.surface = DevSurface::More;
+        assert_eq!(hit_test(&state, state.terminal_width, 10), HitRegion::Other);
+        assert_eq!(
+            hit_test(&state, 10, state.terminal_height),
+            HitRegion::Other
+        );
+        assert_eq!(hit_test(&state, u16::MAX, u16::MAX), HitRegion::Other);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn composer_footer_hit_region_tracks_dynamic_rendered_height() {
+        let (mut state, root) = overlay_state();
+        set_viewport(&mut state, TuiLayout::Desktop, 140, 40);
+        state.surface = DevSurface::Code;
+        let screen = screen(&state);
+        let short_footer = super::super::render::screen_geometry(&state, screen).footer;
+
+        state.composer_mode = true;
+        state.composer_input = "one\ntwo\nthree\nfour\nfive\nsix".into();
+        let geometry = super::super::render::screen_geometry(&state, screen);
+        assert!(geometry.footer.height > short_footer.height);
+        assert_eq!(hit_test(&state, 0, geometry.footer.y), HitRegion::Dock);
+        assert_eq!(
+            hit_test(
+                &state,
+                state.terminal_width - 1,
+                geometry.footer.bottom() - 1
+            ),
+            HitRegion::Dock
+        );
+        assert_eq!(
+            hit_test(&state, 10, geometry.footer.y - 1),
+            HitRegion::Other
+        );
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
     }
 
     #[test]

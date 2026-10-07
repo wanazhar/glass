@@ -1332,37 +1332,6 @@ fn dispatch_file_picker_key(
     true
 }
 
-/// Map a left-click on the desktop or compact navigation column to a surface.
-/// The caller supplies the rendered header height so composer mode stays aligned.
-#[cfg(test)]
-fn navigation_surface_at(
-    responsive: ResponsiveClass,
-    header_height: u16,
-    column: u16,
-    row: u16,
-    trust_surface: bool,
-) -> Option<DevSurface> {
-    let nav_width = match responsive {
-        ResponsiveClass::Desktop => 24,
-        ResponsiveClass::Compact => 22,
-        ResponsiveClass::Phone => return None,
-    };
-    let first_item_row = header_height.saturating_add(1);
-    if column >= nav_width || row < first_item_row {
-        return None;
-    }
-    let index = usize::from(row - first_item_row);
-    if trust_surface {
-        if index == 0 {
-            Some(DevSurface::Trust)
-        } else {
-            DevSurface::PRIMARY.get(index - 1).copied()
-        }
-    } else {
-        DevSurface::PRIMARY.get(index).copied()
-    }
-}
-
 fn visual_png(result: &snapshot::VisualJobResult) -> Result<Vec<u8>, String> {
     let value = result.result.as_ref().map_err(|error| error.clone())?;
     let encoded = value
@@ -1952,43 +1921,68 @@ mod tests {
     }
 
     #[test]
-    fn mouse_navigation_maps_rows_inside_the_visible_list() {
+    fn mouse_navigation_hits_use_the_rendered_panel_on_responsive_layouts() {
+        let (mut state, root) = overlay_test_state();
+        for (layout, width, height) in [
+            (TuiLayout::Desktop, 140, 40),
+            (TuiLayout::Compact, 96, 32),
+            (TuiLayout::Mobile, 48, 20),
+        ] {
+            state.layout = layout;
+            state.terminal_width = width;
+            state.terminal_height = height;
+            state.surface = DevSurface::Agent;
+            let screen = Rect::new(0, 0, width, height);
+            let geometry = render::screen_geometry(&state, screen);
+            if let Some(navigation) = geometry.navigation {
+                let content = render::panel_content_area(navigation);
+                assert_eq!(
+                    pointer::hit_test(&state, content.x, content.y),
+                    pointer::HitRegion::Surface(DevSurface::Agent),
+                    "first visible row should select Agent for {layout:?}"
+                );
+                assert_eq!(
+                    pointer::hit_test(&state, navigation.x, navigation.y),
+                    pointer::HitRegion::Other,
+                    "navigation border should not select a surface for {layout:?}"
+                );
+                if navigation.right() < width {
+                    assert_eq!(
+                        pointer::hit_test(&state, navigation.right(), content.y),
+                        pointer::HitRegion::Other,
+                        "coordinates outside the navigation panel should not select a surface"
+                    );
+                }
+            } else {
+                assert_eq!(
+                    pointer::hit_test(&state, 2, 3),
+                    pointer::HitRegion::Other,
+                    "phone layout has no navigation panel"
+                );
+            }
+        }
+
+        state.layout = TuiLayout::Desktop;
+        state.terminal_width = 140;
+        state.terminal_height = 40;
+        state.surface = DevSurface::Trust;
+        let navigation = render::screen_geometry(
+            &state,
+            Rect::new(0, 0, state.terminal_width, state.terminal_height),
+        )
+        .navigation
+        .expect("desktop navigation panel");
+        let content = render::panel_content_area(navigation);
         assert_eq!(
-            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 3, false),
-            Some(DevSurface::Agent)
+            pointer::hit_test(&state, content.x, content.y),
+            pointer::HitRegion::Surface(DevSurface::Trust)
         );
         assert_eq!(
-            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 4, false),
-            Some(DevSurface::Code)
+            pointer::hit_test(&state, content.x, content.y + 1),
+            pointer::HitRegion::Surface(DevSurface::Agent)
         );
-        assert_eq!(
-            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 9, false),
-            Some(DevSurface::Debug)
-        );
-        assert_eq!(
-            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 2, false),
-            None
-        );
-        assert_eq!(
-            navigation_surface_at(ResponsiveClass::Desktop, 2, 24, 3, false),
-            None
-        );
-        assert_eq!(
-            navigation_surface_at(ResponsiveClass::Phone, 2, 2, 3, false),
-            None
-        );
-        assert_eq!(
-            navigation_surface_at(ResponsiveClass::Compact, 3, 2, 4, false),
-            Some(DevSurface::Agent)
-        );
-        assert_eq!(
-            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 3, true),
-            Some(DevSurface::Trust)
-        );
-        assert_eq!(
-            navigation_surface_at(ResponsiveClass::Desktop, 2, 2, 4, true),
-            Some(DevSurface::Agent)
-        );
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
     }
 
     #[test]

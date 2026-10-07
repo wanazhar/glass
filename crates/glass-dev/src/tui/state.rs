@@ -639,6 +639,7 @@ pub struct DevTuiState {
     pub debug_scopes: Vec<DebugScopeRow>,
     pub selected_debug_scope: usize,
     pub debug_variables: Vec<DebugVariableRow>,
+    pub debug_variables_notice: Option<String>,
     pub debug_scopes_requested: bool,
     pub debug_variables_requested: bool,
     pub selected_todo: usize,
@@ -947,6 +948,7 @@ impl DevTuiState {
             debug_scopes: Vec::new(),
             selected_debug_scope: 0,
             debug_variables: Vec::new(),
+            debug_variables_notice: None,
             debug_scopes_requested: false,
             debug_variables_requested: false,
             selected_todo: 0,
@@ -2209,6 +2211,68 @@ impl DevTuiState {
         }
     }
 
+    fn finish_stale_debug_preview(&mut self, key: &SelectionPreviewKey, label: &str, queued: bool) {
+        let message = match &key.target {
+            SelectionPreviewTarget::DebugScopes { .. } => {
+                "Debug scopes preview stale · select a frame to retry"
+            }
+            SelectionPreviewTarget::DebugVariables { .. } => {
+                "Debug variables preview stale · select a scope to retry"
+            }
+            _ => return,
+        };
+        if !key.publishes_status_on(self.surface) {
+            return;
+        }
+        let expected = if queued {
+            format!("Queued {label} · latest selection will load when the worker is free")
+        } else {
+            format!("Loading {label}…")
+        };
+        // Status is shared with direct user actions. Only resolve the message
+        // while it still belongs to this preview; a newer action owns any
+        // different status string.
+        if self.status == expected {
+            self.debug_variables_notice = Some(message.into());
+            self.status = message.into();
+        }
+    }
+
+    fn set_debug_variables_notice(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.debug_variables_notice = Some(message.clone());
+        if self.surface == DevSurface::Debug {
+            self.status = message;
+        }
+    }
+
+    fn reconcile_stale_debug_previews(&mut self) {
+        let stale_pending = self.pending_selection_preview.as_ref().and_then(|pending| {
+            (matches!(
+                &pending.key.target,
+                SelectionPreviewTarget::DebugScopes { .. }
+                    | SelectionPreviewTarget::DebugVariables { .. }
+            ) && !self.selection_preview_key_is_current(&pending.key))
+            .then(|| (pending.key.clone(), pending.label.clone()))
+        });
+        if let Some((key, label)) = stale_pending {
+            self.pending_selection_preview = None;
+            self.finish_stale_debug_preview(&key, &label, true);
+        }
+
+        let stale_active = self.active_selection_preview.as_ref().and_then(|active| {
+            (matches!(
+                &active.key.target,
+                SelectionPreviewTarget::DebugScopes { .. }
+                    | SelectionPreviewTarget::DebugVariables { .. }
+            ) && !self.selection_preview_key_is_current(&active.key))
+            .then(|| (active.key.clone(), active.label.clone()))
+        });
+        if let Some((key, label)) = stale_active {
+            self.finish_stale_debug_preview(&key, &label, false);
+        }
+    }
+
     fn queue_selection_preview(
         &mut self,
         worker: &mut super::snapshot::SnapshotWorker,
@@ -2256,6 +2320,7 @@ impl DevTuiState {
             return;
         };
         if !self.selection_preview_key_is_current(&pending.key) {
+            self.finish_stale_debug_preview(&pending.key, &pending.label, true);
             return;
         }
         let publish_status = pending.key.publishes_status_on(self.surface);
@@ -4170,9 +4235,11 @@ impl DevTuiState {
                 return;
             }
             self.running_tool_job = None;
-            if active.key.tool_name() != result.tool
-                || !self.selection_preview_key_is_current(&active.key)
-            {
+            if active.key.tool_name() != result.tool {
+                return;
+            }
+            if !self.selection_preview_key_is_current(&active.key) {
+                self.finish_stale_debug_preview(&active.key, &active.label, false);
                 return;
             }
             publish_preview_status = active.key.publishes_status_on(self.surface);
@@ -4306,6 +4373,7 @@ impl DevTuiState {
                     self.debug_scopes = parse_debug_scopes(&value);
                     self.selected_debug_scope = 0;
                     self.debug_variables.clear();
+                    self.debug_variables_notice = None;
                     if !self.debug_scopes.is_empty() {
                         self.debug_variables_requested = true;
                     }
@@ -4314,6 +4382,7 @@ impl DevTuiState {
                     }
                 } else if result.tool == "glass.debug.variables" {
                     self.debug_variables = parse_debug_variables(&value);
+                    self.debug_variables_notice = None;
                     if publish_preview_status {
                         self.status = format!("{} variable(s)", self.debug_variables.len());
                     }
@@ -5349,12 +5418,14 @@ impl DevTuiState {
 
     pub fn queue_debug_scopes(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            self.set_debug_variables_notice("Debug scopes unavailable · select a debugger session");
             return;
         };
         let Some((frame_id, frame_path)) = self
             .selected_debug_frame()
             .map(|frame| (frame.id, frame.path.clone()))
         else {
+            self.set_debug_variables_notice("Debug scopes unavailable · load a stack frame first");
             return;
         };
         let source_path = (self.surface == DevSurface::Code
@@ -5365,8 +5436,10 @@ impl DevTuiState {
             serde_json::json!({"session": session, "frameId": frame_id}),
             false,
         ) else {
+            self.set_debug_variables_notice("Debug scopes unavailable · could not build request");
             return;
         };
+        self.debug_variables_notice = None;
         self.queue_selection_preview(
             worker,
             SelectionPreviewKey {
@@ -5387,21 +5460,35 @@ impl DevTuiState {
 
     pub fn queue_debug_variables(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
+            self.set_debug_variables_notice(
+                "Debug variables unavailable · select a debugger session",
+            );
             return;
         };
         let Some((frame_id, frame_path)) = self
             .selected_debug_frame()
             .map(|frame| (frame.id, frame.path.clone()))
         else {
+            self.set_debug_variables_notice(
+                "Debug variables unavailable · load a stack frame first",
+            );
             return;
         };
         let Some(scope) = self.debug_scopes.get(self.selected_debug_scope) else {
+            self.set_debug_variables_notice("Debug variables unavailable · load scopes first");
             return;
         };
         let scope_index = self.selected_debug_scope;
         let scope_name = scope.name.clone();
         let reference = scope.variables_reference;
-        if reference <= 0 {
+        if reference == 0 {
+            self.set_debug_variables_notice(
+                "No expandable variables · selected scope has no variable reference",
+            );
+            return;
+        }
+        if reference < 0 {
+            self.set_debug_variables_notice("Invalid variables reference · select another scope");
             return;
         }
         let source_path = (self.surface == DevSurface::Code
@@ -5412,8 +5499,12 @@ impl DevTuiState {
             serde_json::json!({"session": session, "variablesReference": reference}),
             false,
         ) else {
+            self.set_debug_variables_notice(
+                "Debug variables unavailable · could not build request",
+            );
             return;
         };
+        self.debug_variables_notice = None;
         self.queue_selection_preview(
             worker,
             SelectionPreviewKey {
@@ -8287,6 +8378,14 @@ impl DevTuiState {
             self.selected_debug_session = 0;
             self.debug_threads.clear();
             self.debug_frames.clear();
+            self.debug_scopes.clear();
+            self.debug_variables.clear();
+            self.selected_debug_thread = 0;
+            self.selected_debug_frame = 0;
+            self.selected_debug_scope = 0;
+            self.debug_scopes_requested = false;
+            self.debug_variables_requested = false;
+            self.debug_variables_notice = None;
         } else {
             self.selected_debug_session = self
                 .selected_debug_session
@@ -8297,10 +8396,17 @@ impl DevTuiState {
             if previous_debug != current {
                 self.debug_threads.clear();
                 self.debug_frames.clear();
+                self.debug_scopes.clear();
+                self.debug_variables.clear();
                 self.selected_debug_thread = 0;
                 self.selected_debug_frame = 0;
+                self.selected_debug_scope = 0;
+                self.debug_scopes_requested = false;
+                self.debug_variables_requested = false;
+                self.debug_variables_notice = None;
             }
         }
+        self.reconcile_stale_debug_previews();
         self.replay = snapshot.replay.clone();
         self.workflow = snapshot.workflow.clone();
         self.workspace_status = snapshot.workspace_status.clone();
@@ -13346,6 +13452,246 @@ mod tests {
         assert_eq!(state.status, "Sessions pane selected by user");
         assert!(state.debug_frames.is_empty());
         assert!(!state.debug_scopes_requested);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn stale_debug_scope_preview_resolves_loading_status_after_snapshot_removes_session() {
+        let (mut state, root) = routed_state("selection-preview-stale-scopes");
+        state.snapshot_ready = true;
+        state.surface = DevSurface::Debug;
+        state.debug_pane = DebugPane::Frames;
+        state.debug_sessions = vec![DebugSessionRow {
+            name: "debug-a".into(),
+            state: crate::debugger::DebugSessionState::Stopped,
+            pid: 10,
+            breakpoints: 0,
+            watches: 0,
+        }];
+        state.debug_frames = vec![DebugFrameRow {
+            id: 44,
+            name: "main".into(),
+            path: Some("src/main.rs".into()),
+            line: Some(1),
+        }];
+        state.status = "Loading debug scopes…".into();
+        state.running_tool_job = Some(744);
+        state.active_selection_preview = Some(ActiveSelectionPreview {
+            id: 744,
+            key: SelectionPreviewKey {
+                surface: DevSurface::Debug,
+                expected_debug_pane: Some(DebugPane::Frames),
+                target: SelectionPreviewTarget::DebugScopes {
+                    session: "debug-a".into(),
+                    frame_id: 44,
+                    frame_path: Some("src/main.rs".into()),
+                    source_path: None,
+                },
+            },
+            label: "debug scopes".into(),
+        });
+
+        state.apply_snapshot(&super::super::snapshot::DisplaySnapshot::default());
+
+        assert!(state.debug_sessions.is_empty());
+        assert!(state.debug_frames.is_empty());
+        assert_eq!(
+            state.status,
+            "Debug scopes preview stale · select a frame to retry"
+        );
+        assert_eq!(
+            state.debug_variables_notice.as_deref(),
+            Some("Debug scopes preview stale · select a frame to retry")
+        );
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 744,
+            tool: "glass.debug.scopes".into(),
+            result: Ok(serde_json::json!({
+                "scopes": [{"name": "Locals", "variablesReference": 1}]
+            })),
+        });
+        assert!(state.debug_scopes.is_empty());
+        assert_eq!(
+            state.status,
+            "Debug scopes preview stale · select a frame to retry"
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn stale_debug_variable_preview_resolves_loading_status_and_preserves_newer_status() {
+        let (mut state, root) = routed_state("selection-preview-stale-variables");
+        state.snapshot_ready = true;
+        state.surface = DevSurface::Debug;
+        state.debug_pane = DebugPane::Frames;
+        state.debug_sessions = vec![DebugSessionRow {
+            name: "debug-a".into(),
+            state: crate::debugger::DebugSessionState::Stopped,
+            pid: 11,
+            breakpoints: 0,
+            watches: 0,
+        }];
+        state.debug_frames = vec![DebugFrameRow {
+            id: 45,
+            name: "main".into(),
+            path: Some("src/main.rs".into()),
+            line: Some(1),
+        }];
+        state.debug_scopes = vec![DebugScopeRow {
+            name: "Locals".into(),
+            variables_reference: 19,
+        }];
+        state.status = "Loading debug variables…".into();
+        state.running_tool_job = Some(745);
+        state.active_selection_preview = Some(ActiveSelectionPreview {
+            id: 745,
+            key: SelectionPreviewKey {
+                surface: DevSurface::Debug,
+                expected_debug_pane: Some(DebugPane::Frames),
+                target: SelectionPreviewTarget::DebugVariables {
+                    session: "debug-a".into(),
+                    frame_id: 45,
+                    frame_path: Some("src/main.rs".into()),
+                    source_path: None,
+                    scope_index: 0,
+                    scope_name: "Locals".into(),
+                    reference: 19,
+                },
+            },
+            label: "debug variables".into(),
+        });
+
+        state.apply_snapshot(&super::super::snapshot::DisplaySnapshot::default());
+
+        assert!(state.debug_sessions.is_empty());
+        assert!(state.debug_frames.is_empty());
+        assert!(state.debug_scopes.is_empty());
+        assert_eq!(
+            state.status,
+            "Debug variables preview stale · select a scope to retry"
+        );
+        assert_eq!(
+            state.debug_variables_notice.as_deref(),
+            Some("Debug variables preview stale · select a scope to retry")
+        );
+        state.status = "Newer user action owns this status".into();
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 745,
+            tool: "glass.debug.variables".into(),
+            result: Ok(serde_json::json!({
+                "variables": [{"name": "answer", "value": "42"}]
+            })),
+        });
+        assert!(state.debug_variables.is_empty());
+        assert_eq!(state.status, "Newer user action owns this status");
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn stale_queued_debug_variable_preview_resolves_queued_status_without_submission() {
+        let (mut state, root) = routed_state("selection-preview-queued-stale-variables");
+        state.surface = DevSurface::Debug;
+        state.debug_pane = DebugPane::Frames;
+        state.debug_sessions = vec![DebugSessionRow {
+            name: "debug-a".into(),
+            state: crate::debugger::DebugSessionState::Stopped,
+            pid: 12,
+            breakpoints: 0,
+            watches: 0,
+        }];
+        state.debug_frames = vec![DebugFrameRow {
+            id: 46,
+            name: "main".into(),
+            path: Some("src/main.rs".into()),
+            line: Some(1),
+        }];
+        state.debug_scopes = vec![DebugScopeRow {
+            name: "Locals".into(),
+            variables_reference: 20,
+        }];
+        state.running_tool_job = Some(746);
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.queue_debug_variables(&mut worker);
+        assert!(matches!(
+            state
+                .pending_selection_preview
+                .as_ref()
+                .map(|pending| &pending.key.target),
+            Some(SelectionPreviewTarget::DebugVariables { reference: 20, .. })
+        ));
+        assert!(state.status.starts_with("Queued debug variables"));
+
+        state.running_tool_job = None;
+        state.debug_sessions.clear();
+        state.debug_frames.clear();
+        state.debug_scopes.clear();
+        state.flush_pending_selection_preview(&mut worker);
+
+        assert!(state.pending_selection_preview.is_none());
+        assert!(state.active_selection_preview.is_none());
+        assert!(state.running_tool_job.is_none());
+        assert_eq!(
+            state.status,
+            "Debug variables preview stale · select a scope to retry"
+        );
+        drop(worker);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn invalid_debug_variable_references_are_terminal_without_overwriting_code_status() {
+        let (mut state, root) = routed_state("selection-preview-invalid-variable-reference");
+        state.surface = DevSurface::Debug;
+        state.debug_pane = DebugPane::Frames;
+        state.debug_sessions = vec![DebugSessionRow {
+            name: "debug-a".into(),
+            state: crate::debugger::DebugSessionState::Stopped,
+            pid: 13,
+            breakpoints: 0,
+            watches: 0,
+        }];
+        state.debug_frames = vec![DebugFrameRow {
+            id: 47,
+            name: "main".into(),
+            path: Some("src/main.rs".into()),
+            line: Some(1),
+        }];
+        state.debug_scopes = vec![DebugScopeRow {
+            name: "Empty".into(),
+            variables_reference: 0,
+        }];
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+
+        state.queue_debug_variables(&mut worker);
+
+        assert!(state.pending_selection_preview.is_none());
+        assert!(state.active_selection_preview.is_none());
+        assert!(state.running_tool_job.is_none());
+        assert_eq!(
+            state.status,
+            "No expandable variables · selected scope has no variable reference"
+        );
+
+        state.debug_scopes[0].variables_reference = -1;
+        state.queue_debug_variables(&mut worker);
+        assert_eq!(
+            state.status,
+            "Invalid variables reference · select another scope"
+        );
+        assert!(state.active_selection_preview.is_none());
+
+        state.surface = DevSurface::Code;
+        state.status = "Code source location · preserved".into();
+        state.debug_scopes[0].variables_reference = 0;
+        state.queue_debug_variables(&mut worker);
+        assert_eq!(state.status, "Code source location · preserved");
+        assert_eq!(
+            state.debug_variables_notice.as_deref(),
+            Some("No expandable variables · selected scope has no variable reference")
+        );
+        assert!(state.active_selection_preview.is_none());
+        assert!(state.running_tool_job.is_none());
+        drop(worker);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 

@@ -52,6 +52,15 @@ only after it resolves inside the current workspace; preview ownership keeps
 the original frame path separate from Code's normalized focused path. Direct
 user operations keep their normal execution and confirmation behavior.
 
+Debugger scope and variable previews also own their visible `Loading` or
+`Queued` status. If snapshot or selection reconciliation invalidates that
+session, frame, or scope before the result arrives, the matching owned message
+ends in a stale-preview state; the result is ignored. A newer user status and a
+Code source-jump status remain untouched. A scope with variables reference zero
+shows an explicit no-expandable-variables state in the Debug detail panel, and
+a negative reference shows an invalid-reference state. Neither value submits a
+variables request.
+
 The worker requests are `Refresh`, `RefreshConversation`, `Tool`,
 `Screenshot`, and `ShutDown`. Refresh covers file listing, Git, agent history,
 processes, tests and the other resident projections. Conversation refresh is a

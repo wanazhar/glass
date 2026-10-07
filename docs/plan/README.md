@@ -67,6 +67,9 @@ pane is hidden and rejects hidden in-flight frames:
 The F19 browser-crash slice preserves the active surface and lets recovery wait
 behind already-active overlays:
 [task record](tasks/issue60-p1-browser-crash-overlay-001.md).
+The F20 debugger-variable slice gives stale scope/variable previews terminal
+status and reports scopes without expandable variables:
+[task record](tasks/issue60-p1-debug-variable-status-001.md).
 
 ## Active plan: Glass native browser engine (issue #40)
 

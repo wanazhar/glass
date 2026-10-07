@@ -3632,7 +3632,9 @@ fn render_debug_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
 }
 
 fn debug_variable_lines(state: &DevTuiState) -> Vec<String> {
-    if state.debug_variables.is_empty() {
+    if let Some(notice) = &state.debug_variables_notice {
+        vec![notice.clone()]
+    } else if state.debug_variables.is_empty() {
         if state.debug_scopes.is_empty() {
             vec!["Enter a frame to load scopes".into()]
         } else {

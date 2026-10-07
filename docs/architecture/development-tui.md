@@ -434,8 +434,9 @@ restart the stream, so a new TUI runtime is required to retry it. Visual
 requests are coalesced and do not block key handling.
 
 Live browser screenshot scheduling and result application use the same
-rendered App visual-pane geometry, including the Workflow footer bounds. The
-pane remains available under Composer;
+rendered App visual-pane geometry, including the Workflow footer bounds. ANSI
+pixels and Kitty frames use the same one-cell border inset within that visual
+panel. The pane remains available under Composer;
 an occluding overlay, another surface, or an empty pane pauses capture. A
 capture that was in flight when the pane became hidden is discarded even if
 the pane returns before the result arrives. Hiding clears the cached ANSI frame

@@ -383,8 +383,17 @@ pub fn browser_visual_area(state: &DevTuiState, area: Rect) -> Option<Rect> {
     }
 
     let visual = app_surface_geometry(state, surface_area(state, area)).visual;
-    let inner = panel_content_area(visual);
+    let inner = visual_pixel_area(visual);
     (inner.width > 0 && inner.height > 0).then_some(inner)
+}
+
+fn visual_pixel_area(area: Rect) -> Rect {
+    Rect {
+        x: area.x.saturating_add(1),
+        y: area.y.saturating_add(1),
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    }
 }
 
 fn render_native_browser_dialog(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -4423,12 +4432,7 @@ fn draw_ansi_pane(
     }
     let frame_block = surface_block(" VISUAL PLANE · live pixels ", ACCENT_BRIGHT);
     frame.render_widget(frame_block, area);
-    let inner = Rect {
-        x: area.x.saturating_add(1),
-        y: area.y.saturating_add(1),
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    };
+    let inner = visual_pixel_area(area);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
@@ -5053,7 +5057,7 @@ mod tests {
         let rendered = app_surface_geometry(&state, surface_area(&state, area));
         assert_eq!(
             browser_visual_area(&state, area),
-            Some(panel_content_area(rendered.visual))
+            Some(visual_pixel_area(rendered.visual))
         );
         assert!(
             browser_visual_area(&state, area)

@@ -250,9 +250,9 @@ impl SnapshotWorker {
         }
     }
 
-    pub fn submit_screenshot(&mut self, columns: u16, rows: u16) {
+    pub fn submit_screenshot(&mut self, columns: u16, rows: u16) -> Option<u64> {
         if self.visual_requested.swap(true, Ordering::AcqRel) {
-            return;
+            return None;
         }
         let id = self.next_visual_id;
         self.next_visual_id = self.next_visual_id.saturating_add(1);
@@ -262,7 +262,9 @@ impl SnapshotWorker {
             .is_err()
         {
             self.visual_requested.store(false, Ordering::Release);
+            return None;
         }
+        Some(id)
     }
 
     pub fn try_visual_result(&self) -> Result<Option<VisualJobResult>, String> {

@@ -158,7 +158,10 @@ pickers. The recovery offer waits behind any active overlay, including Help,
 Quit, and the full-screen editor; it becomes active after that overlay closes.
 Dismissal clears only the offer and pending browser navigation, leaving the
 original surface and other UI state intact. The status line identifies that
-browser recovery is available while the offer is pending.
+browser recovery is available while the offer is pending. Installing recovery
+invalidates the last browser frame revision so a delayed Herdr connection
+cannot claim stale pixels as current. Herdr failure still disables and
+reconciles its runtime, while keeping the recovery status visible.
 
 The full-screen editor owns key input while `code_edit_mode` is active unless
 the composer dock is open; then the composer owns key input and the editor stays

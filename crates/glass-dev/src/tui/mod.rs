@@ -360,6 +360,12 @@ const VISUAL_RESUMING_STATUS: &str = "Live view resuming · waiting for a fresh 
 const VISUAL_PAUSED_REASON: &str = "Live view paused while the browser pane is hidden";
 const VISUAL_RESUMING_REASON: &str = "Live view resuming; waiting for a fresh visible frame";
 
+fn preserve_browser_recovery_status(state: &mut DevTuiState) {
+    if state.browser_recovery.is_some() {
+        state.status = state::BROWSER_RECOVERY_STATUS.into();
+    }
+}
+
 fn rendered_browser_visual_area(state: &DevTuiState) -> Option<Rect> {
     render::browser_visual_area(
         state,
@@ -1460,7 +1466,7 @@ fn apply_ansi_visual_result(
 
 fn handle_herdr_event(state: &mut DevTuiState, visual: &mut VisualRuntime, event: HerdrEvent) {
     match event {
-        HerdrEvent::Connected if visual.live => {
+        HerdrEvent::Connected if visual.live && state.browser_recovery.is_none() => {
             let browser = state.browser_workspace.state();
             let has_current_frame = browser
                 .frame_revision
@@ -1479,6 +1485,7 @@ fn handle_herdr_event(state: &mut DevTuiState, visual: &mut VisualRuntime, event
                 state.request_browser_visual_failure(failure);
                 reconcile_browser_visual_request(state, visual);
             }
+            preserve_browser_recovery_status(state);
         }
         HerdrEvent::Stopped => {
             let reason = "Herdr pane graphics stream stopped";
@@ -1490,6 +1497,7 @@ fn handle_herdr_event(state: &mut DevTuiState, visual: &mut VisualRuntime, event
                 reconcile_browser_visual_request(state, visual);
                 state.browser_workspace.state_mut().presentation_reason = Some(reason.into());
             }
+            preserve_browser_recovery_status(state);
         }
         HerdrEvent::Connected => {}
     }
@@ -1722,6 +1730,18 @@ mod tests {
         (state, root, visual)
     }
 
+    fn offer_crashed_browser_recovery(state: &mut DevTuiState) {
+        let snapshot = snapshot::DisplaySnapshot {
+            root: state.snapshot_root.clone(),
+            browser_health: snapshot::BrowserHealth::Crashed {
+                last_process_id: Some(314),
+                last_revision: Some(42),
+            },
+            ..Default::default()
+        };
+        state.apply_snapshot(&snapshot);
+    }
+
     fn fixture_png() -> Vec<u8> {
         use base64::Engine as _;
 
@@ -1906,6 +1926,94 @@ mod tests {
             Some(VISUAL_RESUMING_REASON)
         );
         assert_eq!(state.browser_workspace.state().frame_revision, None);
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn delayed_herdr_connection_cannot_replace_pending_browser_recovery_status() {
+        let (mut state, root, mut visual) = active_visual_state();
+        state.composer_mode = true;
+        visual.path = VisualPath::Herdr;
+        visual.live = true;
+        state.browser_workspace.state_mut().presentation =
+            glass_browser::browser_workspace::BrowserPresentationPath::Herdr;
+        state.browser_workspace.state_mut().frame_revision = Some(42);
+
+        offer_crashed_browser_recovery(&mut state);
+        assert!(state.browser_recovery.is_some());
+        assert_eq!(
+            state.browser_workspace.state().frame_revision,
+            None,
+            "crash recovery invalidates the old frame owner"
+        );
+        assert_eq!(state.status, state::BROWSER_RECOVERY_STATUS);
+        let presentation_reason = state.browser_workspace.state().presentation_reason.clone();
+
+        handle_herdr_event(&mut state, &mut visual, HerdrEvent::Connected);
+
+        assert_eq!(state.status, state::BROWSER_RECOVERY_STATUS);
+        assert_eq!(state.browser_workspace.state().frame_revision, None);
+        assert_eq!(
+            state
+                .browser_workspace
+                .state()
+                .presentation_reason
+                .as_deref(),
+            presentation_reason.as_deref()
+        );
+        assert!(state.composer_mode);
+        assert!(state.browser_recovery.is_some());
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn delayed_herdr_failure_reconciles_runtime_but_preserves_browser_recovery_status() {
+        let (mut state, root, mut visual) = active_visual_state();
+        state.composer_mode = true;
+        visual.path = VisualPath::Herdr;
+        visual.live = true;
+        state.browser_workspace.state_mut().presentation =
+            glass_browser::browser_workspace::BrowserPresentationPath::Herdr;
+        state.browser_workspace.state_mut().frame_revision = Some(42);
+
+        offer_crashed_browser_recovery(&mut state);
+        handle_herdr_event(
+            &mut state,
+            &mut visual,
+            HerdrEvent::Failed("socket closed".into()),
+        );
+
+        assert!(state.browser_recovery.is_some());
+        assert_eq!(state.status, state::BROWSER_RECOVERY_STATUS);
+        assert!(!visual.live);
+        assert!(matches!(
+            visual.path,
+            VisualPath::SemanticOnly { ref reason }
+                if reason == "Herdr graphics unavailable: socket closed"
+        ));
+        assert!(!state.browser_visual_live);
+        assert_eq!(
+            state.browser_workspace.state().presentation,
+            glass_browser::browser_workspace::BrowserPresentationPath::SemanticOnly
+        );
+        assert_eq!(
+            state
+                .browser_workspace
+                .state()
+                .presentation_reason
+                .as_deref(),
+            Some("Herdr graphics unavailable: socket closed")
+        );
+        assert!(state.take_browser_visual_request().is_none());
+        assert!(state.composer_mode);
+
+        handle_herdr_event(&mut state, &mut visual, HerdrEvent::Stopped);
+        assert_eq!(state.status, state::BROWSER_RECOVERY_STATUS);
+        assert!(state.browser_recovery.is_some());
 
         drop(state);
         std::fs::remove_dir_all(root).expect("remove test workspace");

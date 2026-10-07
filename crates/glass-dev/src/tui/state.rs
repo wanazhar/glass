@@ -29,6 +29,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_BROWSER_TOOL: AtomicU64 = AtomicU64::new(1);
 static NEXT_CHAT_MESSAGE: AtomicU64 = AtomicU64::new(1);
+pub(super) const BROWSER_RECOVERY_STATUS: &str =
+    "Browser recovery available · current surface preserved";
 
 pub struct PendingConfirmation {
     pub call: crate::development::ToolCall,
@@ -9800,7 +9802,9 @@ impl DevTuiState {
         self.browser_recovery = Some(BrowserRecoveryOffer::from_error(reason, port));
         self.browser_workspace
             .disconnected(reason.to_string(), true);
-        self.status = "Browser recovery available · current surface preserved".into();
+        self.browser_workspace.state_mut().frame_revision = None;
+        self.browser_pane = None;
+        self.status = BROWSER_RECOVERY_STATUS.into();
     }
 
     pub fn dismiss_browser_recovery(&mut self) {
@@ -11062,6 +11066,7 @@ mod tests {
         ] {
             let (mut state, root) = routed_state(label);
             state.surface = surface;
+            state.pending_browser_navigation = Some("https://example.test/after-recovery".into());
             match overlay {
                 "code" => state.code_edit_mode = true,
                 "help" => state.help_open = true,
@@ -11075,6 +11080,10 @@ mod tests {
             assert_eq!(state.surface, surface, "{label} surface changed");
             assert!(state.browser_recovery.is_some(), "{label} recovery missing");
             assert!(state.status.contains("Browser recovery available"));
+            assert_eq!(
+                state.pending_browser_navigation.as_deref(),
+                Some("https://example.test/after-recovery")
+            );
             let expected = match overlay {
                 "code" => Some(ActiveOverlay::FullscreenEditor),
                 "help" => Some(ActiveOverlay::Help),
@@ -11095,6 +11104,7 @@ mod tests {
             state.dismiss_browser_recovery();
             assert_eq!(state.surface, surface, "{label} dismissal changed surface");
             assert!(state.browser_recovery.is_none());
+            assert!(state.pending_browser_navigation.is_none());
             assert!(state.status.contains(surface.label()));
             drop(state);
             std::fs::remove_dir_all(root).expect("remove temporary workspace");

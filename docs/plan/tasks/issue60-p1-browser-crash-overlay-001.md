@@ -33,6 +33,9 @@ dismissal must return to the original surface.
 - Once higher-priority UI closes, the pending recovery offer becomes visible.
   Dismissing it clears the offer and pending navigation without changing the
   surface that was active before recovery was offered.
+- Recovery invalidates the last browser frame revision. Delayed Herdr
+  connection/failure events cannot replace the recovery status; failure still
+  disables and reconciles the visual runtime.
 - Trust, Code/full-screen editor, Help, Quit, and a regular surface receive
   focused regression coverage where practical.
 
@@ -63,13 +66,19 @@ dismissal must return to the original surface.
 ## Validation evidence
 
 - `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-dev
-  --lib --locked browser_recovery`: passed, 3 tests, including the recovery
+  --lib --locked delayed_herdr`: passed, 3 tests, including delayed Connected
+  and Failed events while App + Composer and browser recovery are active. Failed
+  still disables Herdr and reconciles presentation to Semantic-only; Stopped
+  also preserves recovery status.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-dev
+  --lib --locked browser_recovery`: passed, 5 tests, including the recovery
   precedence regression across all active overlay kinds.
 - `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-dev
   --lib --locked
   crashed_snapshot_preserves_surfaces_and_defers_recovery_behind_active_ui`:
   passed, 1 test covering Trust, Code/full-screen editor, Help, Quit, and a
-  regular Terminal surface, including dismissal.
+  regular Terminal surface, including queued-navigation retention on offer and
+  clearing on dismissal.
 - `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-dev
   --lib --locked browser_tool_failure_preserves_picker_and_overlay_state`:
   passed, 1 test covering browser failure with Help and the target picker active.
@@ -90,3 +99,9 @@ dismissal must return to the original surface.
   in `docs/mcp-schema-budget.md` (`177` negotiated tools and a `76,967`-byte
   serialized `tools` array). The browser recovery task does not change MCP
   inventory or schema data.
+- Independent review 01 (report commit `3219ca2d`) found a blocking
+  delayed-Herdr status overwrite and a non-blocking queued URL assertion gap.
+  The follow-up invalidates stale frame ownership, keeps Connected events from
+  promoting a pending recovery, preserves recovery status after Herdr
+  failure/stop while still reconciling the runtime, and covers queued URL
+  retention and dismissal clearing.

@@ -1117,6 +1117,7 @@ pub(crate) fn run_with_browser_policy(
         {
             state.submit_queued_tool(&mut worker);
         }
+        state.flush_pending_selection_preview(&mut worker);
         if state.tick_pair_apply() {
             render_requested = true;
             last_render = Instant::now()
@@ -1169,6 +1170,7 @@ pub(crate) fn run_with_browser_policy(
                 state.queue_browser_observe(&mut worker);
             }
         }
+        state.flush_pending_selection_preview(&mut worker);
         if let Ok(Some(result)) = worker.try_visual_result() {
             render_requested = true;
             match &visual.path {

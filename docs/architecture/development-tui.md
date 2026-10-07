@@ -40,6 +40,12 @@ jobs. It publishes the latest versioned `DisplaySnapshot`; rendering never
 waits for a refresh. UI callbacks use `try_lock`; a workspace lock held by an
 actor becomes a visible wait/error status rather than a terminal freeze.
 
+Git diff, process log, and debugger selection previews use one active request
+and one replaceable pending request. Each result belongs to its captured job
+ID and selected item; switching selection or surface makes an older result
+inapplicable. Direct user operations keep their normal execution and
+confirmation behavior.
+
 The worker requests are `Refresh`, `RefreshConversation`, `Tool`,
 `Screenshot`, and `ShutDown`. Refresh covers file listing, Git, agent history,
 processes, tests and the other resident projections. Conversation refresh is a

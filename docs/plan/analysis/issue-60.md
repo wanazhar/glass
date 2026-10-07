@@ -63,7 +63,9 @@ changes are insufficient where the issue names multiple entry points.
    Continue with pointer hit geometry in the
    [F5 task](../tasks/issue60-p1-tui-pointer-geometry-001.md), then resolve
    stale revisions, orphaned jobs, snapshot state, editor metadata, browser
-   identity, schemas, and persistent option forwarding.
+   identity, schemas, and persistent option forwarding. F7's selection-preview
+   ownership and latest-wins behavior is scoped in the
+   [worker request-coalescing task](../tasks/issue60-p1-worker-request-coalescing-001.md).
 5. **P2 functional/UX contracts, then P3 consistency.** Align surfaces,
    layout/pointer behavior, help, CLI aliases, and low-risk presentation.
 

@@ -353,8 +353,9 @@ cycles Ask, Plan, and Agent. Legacy `/ask`, `/plan`, and `/agent` aliases use
 the same slash resolver whether typed in the modal or pasted into the
 composer: their arguments are the prompt sent in the selected mode, and any
 pre-existing composer draft remains intact. An alias without a prompt changes
-the mode and returns to the composer. `/todo` opens the Tasks surface without
-replacing the composer draft. `/stats` and `/sessions` keep their Glass
+the mode and returns to the composer. `/todo` opens the Tasks surface while
+retaining the composer text and cursor; composer focus becomes inactive so
+Tasks owns keyboard input. `/stats` and `/sessions` keep their Glass
 workspace-tool routes, and `/think LEVEL` keeps its Glass thinking-level tool
 route. Native Pi `/thinking` and extension commands use the dedicated `/`
 modal. Ask inspects only.

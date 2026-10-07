@@ -1614,7 +1614,7 @@ impl DevTuiState {
         self.composer_mode = true;
         self.composer_input = draft;
         self.composer_cursor = cursor;
-        if self.surface == DevSurface::Trust {
+        if matches!(self.surface, DevSurface::Trust | DevSurface::Tasks) {
             self.composer_mode = false;
         }
         self.status = status;
@@ -1783,8 +1783,8 @@ impl DevTuiState {
                 self.composer_mode = true;
                 self.set_composer_run_mode(mode);
                 if args.is_empty() {
-                    self.pi_command_composer_origin = None;
                     self.status = format!("{} mode · composer draft restored", mode.label());
+                    self.restore_pi_composer_origin();
                     return;
                 }
                 if let Some((draft, cursor)) = self.pi_command_composer_origin.clone() {
@@ -1802,9 +1802,9 @@ impl DevTuiState {
             }
             PiSlashRoute::Tasks => {
                 self.close_pi_command_palette();
-                self.pi_command_composer_origin = None;
                 self.surface = DevSurface::Tasks;
                 self.status = "Tasks selected · composer draft preserved".into();
+                self.restore_pi_composer_origin();
                 return;
             }
             PiSlashRoute::WorkspaceTool(tool) => {
@@ -11152,6 +11152,61 @@ mod tests {
         assert!(!state.pi_command_mode);
         assert_eq!(state.composer_input, "keep my draft");
         assert_eq!(state.composer_cursor, 5);
+        drop(worker);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn composer_ask_without_arguments_restores_exact_command_and_cursor() {
+        let (mut state, root) = routed_state("composer-ask-mode-only");
+        state.surface = DevSurface::Agent;
+        state.open_composer();
+        let original = "/ask";
+        let cursor = 2;
+        state.composer_input = original.into();
+        state.composer_cursor = cursor;
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+
+        state.submit_composer(&mut worker);
+
+        assert_eq!(state.surface, DevSurface::Agent);
+        assert_eq!(state.composer_run_mode, crate::AgentTurnMode::Ask);
+        assert!(state.composer_mode);
+        assert!(!state.pi_command_mode);
+        assert_eq!(state.composer_input, original);
+        assert_eq!(state.composer_cursor, cursor);
+        assert!(state.pi_command_composer_origin.is_none());
+
+        drop(worker);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn composer_todo_route_restores_exact_command_and_cursor_on_tasks() {
+        let (mut state, root) = routed_state("composer-todo-route");
+        state.surface = DevSurface::Agent;
+        state.open_composer();
+        let original = "/todo";
+        let cursor = 3;
+        state.composer_input = original.into();
+        state.composer_cursor = cursor;
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+
+        state.submit_composer(&mut worker);
+
+        assert_eq!(state.surface, DevSurface::Tasks);
+        assert!(!state.composer_mode);
+        assert!(!state.pi_command_mode);
+        assert_ne!(
+            super::super::overlay::active_overlay(&state),
+            Some(super::super::overlay::ActiveOverlay::Composer)
+        );
+        assert_eq!(state.composer_input, original);
+        assert_eq!(state.composer_cursor, cursor);
+        assert!(state.pi_command_composer_origin.is_none());
+
         drop(worker);
         drop(state);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");

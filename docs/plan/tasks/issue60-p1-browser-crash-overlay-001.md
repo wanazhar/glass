@@ -1,7 +1,7 @@
 ---
 id: issue60-p1-browser-crash-overlay-001
 scope: glass-dev/tui-browser-crash-recovery-overlay
-status: in-progress
+status: complete
 depends-on: [issue60-p1-tui-overlay-priority-001]
 ---
 
@@ -105,3 +105,6 @@ dismissal must return to the original surface.
   promoting a pending recovery, preserves recovery status after Herdr
   failure/stop while still reconciling the runtime, and covers queued URL
   retention and dismissal clearing.
+- Independent [review 01](../reviews/issue60-p1-browser-crash-overlay-001-01.md)
+  recorded the initial P2 blocker; follow-up [review 02](../reviews/issue60-p1-browser-crash-overlay-001-02.md)
+  passed at implementation commit `2496ee32` with no blocking findings.

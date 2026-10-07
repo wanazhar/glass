@@ -154,23 +154,105 @@ fn shell_rows(state: &DevTuiState, area: Rect) -> [Rect; 3] {
     [rows[0], rows[1], rows[2]]
 }
 
-fn surface_area(state: &DevTuiState, area: Rect) -> Rect {
-    let rows = shell_rows(state, area);
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ScreenGeometry {
+    pub header: Rect,
+    pub body: Rect,
+    pub footer: Rect,
+    pub navigation: Option<Rect>,
+    pub surface: Rect,
+    pub context: Option<Rect>,
+}
+
+pub(crate) fn screen_geometry(state: &DevTuiState, area: Rect) -> ScreenGeometry {
+    let [header, body, footer] = shell_rows(state, area);
     match state.responsive_class(area.width, area.height) {
-        ResponsiveClass::Desktop => Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(24),
-                Constraint::Percentage(55),
-                Constraint::Min(30),
-            ])
-            .split(rows[1])[1],
-        ResponsiveClass::Compact => Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(22), Constraint::Min(36)])
-            .split(rows[1])[1],
-        ResponsiveClass::Phone => rows[1],
+        ResponsiveClass::Desktop => {
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(24),
+                    Constraint::Percentage(55),
+                    Constraint::Min(30),
+                ])
+                .split(body);
+            ScreenGeometry {
+                header,
+                body,
+                footer,
+                navigation: Some(columns[0]),
+                surface: columns[1],
+                context: Some(columns[2]),
+            }
+        }
+        ResponsiveClass::Compact => {
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(22), Constraint::Min(36)])
+                .split(body);
+            ScreenGeometry {
+                header,
+                body,
+                footer,
+                navigation: Some(columns[0]),
+                surface: columns[1],
+                context: None,
+            }
+        }
+        ResponsiveClass::Phone => ScreenGeometry {
+            header,
+            body,
+            footer,
+            navigation: None,
+            surface: body,
+            context: None,
+        },
     }
+}
+
+fn surface_area(state: &DevTuiState, area: Rect) -> Rect {
+    screen_geometry(state, area).surface
+}
+
+fn navigation_surfaces(state: &DevTuiState) -> Vec<DevSurface> {
+    if state.surface == DevSurface::Trust {
+        std::iter::once(DevSurface::Trust)
+            .chain(DevSurface::PRIMARY)
+            .collect()
+    } else {
+        DevSurface::PRIMARY.to_vec()
+    }
+}
+
+fn navigation_block() -> Block<'static> {
+    Block::default()
+        .title(" SURFACES ")
+        .title_style(
+            Style::default()
+                .fg(ACCENT_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        )
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(PANEL_BORDER))
+        .padding(Padding::horizontal(1))
+}
+
+pub(crate) fn navigation_surface_at(
+    state: &DevTuiState,
+    area: Rect,
+    column: u16,
+    row: u16,
+) -> Option<DevSurface> {
+    let navigation = screen_geometry(state, area).navigation?;
+    let items = navigation_surfaces(state);
+    let inner = navigation_block().inner(navigation);
+    let index = row.checked_sub(inner.y)? as usize;
+    (column >= inner.x
+        && column < inner.x.saturating_add(inner.width)
+        && row < inner.y.saturating_add(inner.height))
+    .then(|| items.get(index).copied())
+    .flatten()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1485,41 +1567,35 @@ fn render_factory_home(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 }
 
 fn render_desktop(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let rows = shell_rows(state, area);
-    render_header(frame, state, rows[0], "desktop");
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(24),
-            Constraint::Percentage(55),
-            Constraint::Min(30),
-        ])
-        .split(rows[1]);
-    render_navigation(frame, state, columns[0]);
-    render_surface(frame, state, columns[1]);
-    render_context(frame, state, columns[2]);
-    render_status(frame, state, rows[2]);
+    let geometry = screen_geometry(state, area);
+    render_header(frame, state, geometry.header, "desktop");
+    if let Some(navigation) = geometry.navigation {
+        render_navigation(frame, state, navigation);
+    }
+    render_surface(frame, state, geometry.surface);
+    if let Some(context) = geometry.context {
+        render_context(frame, state, context);
+    }
+    render_status(frame, state, geometry.footer);
 }
 
 fn render_compact(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let rows = shell_rows(state, area);
-    render_header(frame, state, rows[0], "compact");
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(22), Constraint::Min(36)])
-        .split(rows[1]);
-    render_navigation(frame, state, columns[0]);
-    render_surface(frame, state, columns[1]);
-    render_status(frame, state, rows[2]);
+    let geometry = screen_geometry(state, area);
+    render_header(frame, state, geometry.header, "compact");
+    if let Some(navigation) = geometry.navigation {
+        render_navigation(frame, state, navigation);
+    }
+    render_surface(frame, state, geometry.surface);
+    render_status(frame, state, geometry.footer);
 }
 fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let rows = shell_rows(state, area);
-    render_header(frame, state, rows[0], "phone cockpit");
-    render_surface(frame, state, rows[1]);
+    let geometry = screen_geometry(state, area);
+    render_header(frame, state, geometry.header, "phone cockpit");
+    render_surface(frame, state, geometry.body);
     let active = overlay::active_overlay(state);
     let footer_lines = if active == Some(ActiveOverlay::Composer) {
-        let mut lines = composer_input_lines(state, rows[2].width.saturating_sub(6));
-        lines.push(status_line(state, rows[2].width.saturating_sub(2)));
+        let mut lines = composer_input_lines(state, geometry.footer.width.saturating_sub(6));
+        lines.push(status_line(state, geometry.footer.width.saturating_sub(2)));
         lines
     } else if active == Some(ActiveOverlay::FilePicker) {
         vec![
@@ -1530,9 +1606,9 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                     .add_modifier(Modifier::BOLD),
                 &state.file_picker_query,
                 state.file_picker_cursor,
-                rows[2].width.saturating_sub(8),
+                geometry.footer.width.saturating_sub(8),
             )),
-            status_line(state, rows[2].width.saturating_sub(2)),
+            status_line(state, geometry.footer.width.saturating_sub(2)),
         ]
     } else if active == Some(ActiveOverlay::PiSlashCommand) {
         let mut spans = input_spans(
@@ -1540,7 +1616,7 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
             &state.pi_command_input,
             state.pi_command_cursor,
-            area.width.saturating_sub(8),
+            geometry.footer.width.saturating_sub(8),
         );
         let hint = if state.pi_command_input.trim().is_empty() {
             "  ↑↓ select · Tab complete · Enter run · Esc cancel"
@@ -1562,20 +1638,20 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                     .add_modifier(Modifier::BOLD),
                 input,
                 cursor,
-                rows[2].width.saturating_sub(6),
+                geometry.footer.width.saturating_sub(6),
             )),
-            status_line(state, rows[2].width.saturating_sub(2)),
+            status_line(state, geometry.footer.width.saturating_sub(2)),
         ]
     } else {
         vec![
             Line::from(Span::styled(
                 compact_line(
                     "Tab surfaces · 1-5 jump · a actions · ? help",
-                    rows[2].width.saturating_sub(2),
+                    geometry.footer.width.saturating_sub(2),
                 ),
                 Style::default().fg(MUTED),
             )),
-            status_line(state, rows[2].width.saturating_sub(2)),
+            status_line(state, geometry.footer.width.saturating_sub(2)),
         ]
     };
     frame.render_widget(
@@ -1588,7 +1664,7 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                     .padding(Padding::horizontal(1)),
             )
             .wrap(Wrap { trim: true }),
-        rows[2],
+        geometry.footer,
     );
 }
 
@@ -1707,14 +1783,7 @@ fn compact_multiline(text: &str, width: u16) -> String {
 }
 
 fn render_navigation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let surfaces = if state.surface == DevSurface::Trust {
-        std::iter::once(DevSurface::Trust)
-            .chain(DevSurface::PRIMARY)
-            .collect::<Vec<_>>()
-    } else {
-        DevSurface::PRIMARY.to_vec()
-    };
-    let items = surfaces
+    let items = navigation_surfaces(state)
         .into_iter()
         .map(|surface| {
             let selected = surface == state.surface;
@@ -1740,19 +1809,7 @@ fn render_navigation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     frame.render_widget(
         List::new(items)
             .style(Style::default().bg(PANEL_BACKGROUND))
-            .block(
-                Block::default()
-                    .title(" SURFACES ")
-                    .title_style(
-                        Style::default()
-                            .fg(ACCENT_BRIGHT)
-                            .add_modifier(Modifier::BOLD),
-                    )
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Plain)
-                    .border_style(Style::default().fg(PANEL_BORDER))
-                    .padding(Padding::horizontal(1)),
-            ),
+            .block(navigation_block()),
         area,
     );
 }
@@ -1769,6 +1826,70 @@ fn surface_block(title: impl Into<String>, title_color: Color) -> Block<'static>
         .border_type(BorderType::Plain)
         .border_style(Style::default().fg(PANEL_BORDER))
         .padding(Padding::horizontal(1))
+}
+
+pub(super) fn panel_content_area(area: Rect) -> Rect {
+    surface_block("", ACCENT_BRIGHT).inner(area)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IndexedListGeometry {
+    content: Rect,
+    item_count: usize,
+    first_item: usize,
+    selected: Option<usize>,
+}
+
+fn indexed_list_geometry(area: Rect, item_count: usize, selected: usize) -> IndexedListGeometry {
+    let content = panel_content_area(area);
+    let selected = (selected < item_count).then_some(selected);
+    let visible_rows = usize::from(content.height);
+    let first_item = match selected {
+        Some(selected) if visible_rows > 0 => {
+            selected.saturating_add(1).saturating_sub(visible_rows)
+        }
+        _ => 0,
+    };
+    IndexedListGeometry {
+        content,
+        item_count,
+        first_item,
+        selected,
+    }
+}
+
+impl IndexedListGeometry {
+    fn hit(&self, column: u16, row: u16) -> Option<usize> {
+        if self.item_count == 0
+            || self.content.width == 0
+            || self.content.height == 0
+            || column < self.content.x
+            || column >= self.content.right()
+            || row < self.content.y
+            || row >= self.content.bottom()
+        {
+            return None;
+        }
+        let index = self
+            .first_item
+            .saturating_add(usize::from(row - self.content.y));
+        (index < self.item_count).then_some(index)
+    }
+
+    fn apply_to_list_state(self, state: &mut ListState) {
+        *state.offset_mut() = self.first_item;
+        state.select(self.selected);
+    }
+}
+
+fn indexed_list_hit(
+    area: Rect,
+    item_count: usize,
+    selected: usize,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    indexed_list_geometry(area, item_count, selected).hit(column, row)
 }
 
 fn render_panel(
@@ -2386,10 +2507,10 @@ fn render_file_tree(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         .get(state.selected_file)
         .map(|path| compact_path(path, area.width.saturating_sub(18)))
         .unwrap_or_else(|| "none".into());
+    let list_geometry =
+        indexed_list_geometry(area, state.files.len().min(128), state.selected_file);
     let mut list_state = ListState::default();
-    if !state.files.is_empty() {
-        list_state.select(Some(state.selected_file));
-    }
+    list_geometry.apply_to_list_state(&mut list_state);
     frame.render_stateful_widget(
         List::new(items)
             .style(Style::default().bg(PANEL_BACKGROUND))
@@ -2523,7 +2644,15 @@ fn render_editor_lsp(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     );
 }
 
-fn render_code_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+#[derive(Debug, Clone, Copy)]
+struct CodeSurfaceGeometry {
+    files: Rect,
+    editor: Rect,
+    collaboration: Option<Rect>,
+    lsp: Option<Rect>,
+}
+
+fn code_surface_geometry(state: &DevTuiState, area: Rect) -> CodeSurfaceGeometry {
     if stack_for_phone(state, area) {
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -2533,19 +2662,24 @@ fn render_code_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 Constraint::Percentage(20),
             ])
             .split(area);
-        render_file_tree(frame, state, rows[0]);
-        render_code_editor(frame, state, rows[1]);
-        render_editor_collaboration(frame, state, rows[2]);
-        return;
+        return CodeSurfaceGeometry {
+            files: rows[0],
+            editor: rows[1],
+            collaboration: Some(rows[2]),
+            lsp: None,
+        };
     }
     if area.width < 96 {
         let columns = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(24), Constraint::Min(28)])
             .split(area);
-        render_file_tree(frame, state, columns[0]);
-        render_code_editor(frame, state, columns[1]);
-        return;
+        return CodeSurfaceGeometry {
+            files: columns[0],
+            editor: columns[1],
+            collaboration: None,
+            lsp: None,
+        };
     }
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -2555,14 +2689,42 @@ fn render_code_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             Constraint::Length(28),
         ])
         .split(area);
-    render_file_tree(frame, state, columns[0]);
-    render_code_editor(frame, state, columns[1]);
     let side = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(54), Constraint::Percentage(46)])
         .split(columns[2]);
-    render_editor_collaboration(frame, state, side[0]);
-    render_editor_lsp(frame, state, side[1]);
+    CodeSurfaceGeometry {
+        files: columns[0],
+        editor: columns[1],
+        collaboration: Some(side[0]),
+        lsp: Some(side[1]),
+    }
+}
+
+pub(super) fn code_file_list_area(state: &DevTuiState, area: Rect) -> Rect {
+    code_surface_geometry(state, area).files
+}
+
+pub(super) fn file_hit_at(state: &DevTuiState, area: Rect, column: u16, row: u16) -> Option<usize> {
+    indexed_list_hit(
+        code_file_list_area(state, area),
+        state.files.len().min(128),
+        state.selected_file,
+        column,
+        row,
+    )
+}
+
+fn render_code_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let geometry = code_surface_geometry(state, area);
+    render_file_tree(frame, state, geometry.files);
+    render_code_editor(frame, state, geometry.editor);
+    if let Some(collaboration) = geometry.collaboration {
+        render_editor_collaboration(frame, state, collaboration);
+    }
+    if let Some(lsp) = geometry.lsp {
+        render_editor_lsp(frame, state, lsp);
+    }
 }
 
 fn render_browser_visual(
@@ -2611,53 +2773,72 @@ fn render_browser_inspector(
     area: Rect,
     browser: &glass_browser::browser_workspace::BrowserWorkspaceState,
 ) {
-    let entities = if browser.entities.is_empty() {
-        "No semantic entities".into()
-    } else {
-        browser
-            .entities
-            .iter()
-            .enumerate()
-            .take(18)
-            .map(|(index, entity)| {
-                format!(
-                    "{} [{}] {} · {}",
-                    if Some(index) == browser.selected_entity {
-                        "›"
-                    } else {
-                        " "
-                    },
-                    index + 1,
-                    entity.name,
-                    entity.role
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    render_panel(
-        frame,
-        area,
-        " INSPECTOR ",
-        format!(
-            "{}\n{}\n\n{} · rev {}\n{} · focus {}\n\n{}\n\n{}",
-            browser.title,
-            compact_path(&browser.url, area.width.saturating_sub(6)),
-            browser.connection_label(),
-            browser
-                .browser_revision
-                .map_or_else(|| "—".into(), |revision| revision.to_string()),
-            browser.input_owner_label(),
-            browser.focus_label(),
-            entities,
-            state.browser_detail,
-        ),
-        ACCENT_BRIGHT,
-    );
+    let content = browser_inspector_content(state, area, browser);
+    render_panel(frame, area, " INSPECTOR ", content.rendered, ACCENT_BRIGHT);
 }
 
-fn render_app_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let browser = state.browser_workspace.state();
+struct BrowserInspectorContent {
+    prefix: String,
+    entity_lines: Vec<String>,
+    rendered: String,
+}
+
+fn browser_inspector_content(
+    state: &DevTuiState,
+    area: Rect,
+    browser: &glass_browser::browser_workspace::BrowserWorkspaceState,
+) -> BrowserInspectorContent {
+    let entity_lines = browser
+        .entities
+        .iter()
+        .enumerate()
+        .take(18)
+        .map(|(index, entity)| {
+            format!(
+                "{} [{}] {} · {}",
+                if Some(index) == browser.selected_entity {
+                    "›"
+                } else {
+                    " "
+                },
+                index + 1,
+                entity.name,
+                entity.role
+            )
+        })
+        .collect::<Vec<_>>();
+    let prefix = format!(
+        "{}\n{}\n\n{} · rev {}\n{} · focus {}\n\n",
+        browser.title,
+        compact_path(&browser.url, area.width.saturating_sub(6)),
+        browser.connection_label(),
+        browser
+            .browser_revision
+            .map_or_else(|| "—".into(), |revision| revision.to_string()),
+        browser.input_owner_label(),
+        browser.focus_label(),
+    );
+    let entities = if entity_lines.is_empty() {
+        "No semantic entities".into()
+    } else {
+        entity_lines.join("\n")
+    };
+    BrowserInspectorContent {
+        rendered: format!("{prefix}{entities}\n\n{}", state.browser_detail),
+        prefix,
+        entity_lines,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AppSurfaceGeometry {
+    toolbar: Rect,
+    visual: Rect,
+    inspector: Option<Rect>,
+    workflow: Rect,
+}
+
+fn app_surface_geometry(state: &DevTuiState, area: Rect) -> AppSurfaceGeometry {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -2666,10 +2847,76 @@ fn render_app_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             Constraint::Length(4),
         ])
         .split(area);
+    if stack_for_phone(state, rows[1]) {
+        return AppSurfaceGeometry {
+            toolbar: rows[0],
+            visual: rows[1],
+            inspector: None,
+            workflow: rows[2],
+        };
+    }
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(68), Constraint::Min(30)])
+        .split(rows[1]);
+    AppSurfaceGeometry {
+        toolbar: rows[0],
+        visual: columns[0],
+        inspector: Some(columns[1]),
+        workflow: rows[2],
+    }
+}
+
+pub(super) fn browser_inspector_area(state: &DevTuiState, area: Rect) -> Option<Rect> {
+    app_surface_geometry(state, area).inspector
+}
+
+pub(super) fn browser_entity_at(
+    state: &DevTuiState,
+    area: Rect,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    let browser = state.browser_workspace.state();
+    let inspector = browser_inspector_area(state, area)?;
+    if browser.entities.is_empty() || inspector.width < 2 || inspector.height < 2 {
+        return None;
+    }
+    let inner = panel_content_area(inspector);
+    if inner.width == 0 || inner.height == 0 || column < inner.x || column >= inner.right() {
+        return None;
+    }
+    let content = browser_inspector_content(state, inspector, browser);
+    let prefix_lines = panel_text(&content.prefix).lines;
+    if prefix_lines
+        .iter()
+        .any(|line| line.width() > usize::from(inner.width))
+    {
+        return None;
+    }
+    let mut item_row = inner
+        .y
+        .saturating_add(prefix_lines.len().min(u16::MAX as usize) as u16);
+    for (index, entity) in content.entity_lines.iter().enumerate() {
+        let lines = panel_text(entity).lines;
+        if lines.len() != 1 || lines[0].width() > usize::from(inner.width) {
+            return None;
+        }
+        if row == item_row && row < inner.bottom() {
+            return Some(index);
+        }
+        item_row = item_row.saturating_add(1);
+    }
+    None
+}
+
+fn render_app_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let browser = state.browser_workspace.state();
+    let geometry = app_surface_geometry(state, area);
     let address = if browser.url.is_empty() {
         "No page yet · :browser navigate URL".into()
     } else {
-        compact_path(&browser.url, rows[0].width.saturating_sub(18))
+        compact_path(&browser.url, geometry.toolbar.width.saturating_sub(18))
     };
     let toolbar = format!(
         "{} · {}\n{}",
@@ -2677,19 +2924,19 @@ fn render_app_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         browser.connection_label(),
         address,
     );
-    render_panel(frame, rows[0], " BROWSER ", toolbar, ACCENT_BRIGHT);
+    render_panel(frame, geometry.toolbar, " BROWSER ", toolbar, ACCENT_BRIGHT);
 
-    if stack_for_phone(state, rows[1]) {
-        render_browser_visual(frame, state, rows[1], browser);
-    } else {
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(68), Constraint::Min(30)])
-            .split(rows[1]);
-        render_browser_visual(frame, state, columns[0], browser);
-        render_browser_inspector(frame, state, columns[1], browser);
+    render_browser_visual(frame, state, geometry.visual, browser);
+    if let Some(inspector) = geometry.inspector {
+        render_browser_inspector(frame, state, inspector, browser);
     }
-    render_panel(frame, rows[2], " WORKFLOW ", &state.workflow, PURPLE);
+    render_panel(
+        frame,
+        geometry.workflow,
+        " WORKFLOW ",
+        &state.workflow,
+        PURPLE,
+    );
 }
 
 fn status_line_count(content: &str) -> usize {
@@ -2704,7 +2951,14 @@ fn status_line_count(content: &str) -> usize {
         .count()
 }
 
-fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+#[derive(Debug, Clone, Copy)]
+struct TerminalSurfaceGeometry {
+    summary: Rect,
+    processes: Rect,
+    logs: Rect,
+}
+
+fn terminal_surface_geometry(area: Rect) -> TerminalSurfaceGeometry {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -2713,6 +2967,39 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
             Constraint::Min(6),
         ])
         .split(area);
+    TerminalSurfaceGeometry {
+        summary: rows[0],
+        processes: rows[1],
+        logs: rows[2],
+    }
+}
+
+pub(super) fn terminal_process_list_area(area: Rect) -> Rect {
+    terminal_surface_geometry(area).processes
+}
+
+pub(super) fn process_hit_at(
+    state: &DevTuiState,
+    area: Rect,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    let item_count = if state.snapshot_ready {
+        state.process_entries.len()
+    } else {
+        0
+    };
+    indexed_list_hit(
+        terminal_process_list_area(area),
+        item_count,
+        state.selected_process,
+        column,
+        row,
+    )
+}
+
+fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let geometry = terminal_surface_geometry(area);
     let process_count = state.process_entries.len();
     let healthy_count = state
         .process_entries
@@ -2739,7 +3026,7 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
     };
     render_panel(
         frame,
-        rows[0],
+        geometry.summary,
         " TERMINAL ",
         format!("{process_count_label} processes · {healthy_count_label} healthy · {selected}"),
         ACCENT_BRIGHT,
@@ -2747,7 +3034,7 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
     if !state.snapshot_ready {
         render_panel(
             frame,
-            rows[1],
+            geometry.processes,
             " PROCESSES ",
             "Loading workspace snapshot…",
             ACCENT_BRIGHT,
@@ -2760,7 +3047,13 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
         } else {
             format!("No managed processes yet\n{}", state.processes.trim())
         };
-        render_panel(frame, rows[1], " PROCESSES ", empty_state, ACCENT_BRIGHT);
+        render_panel(
+            frame,
+            geometry.processes,
+            " PROCESSES ",
+            empty_state,
+            ACCENT_BRIGHT,
+        );
     } else {
         let items = state
             .process_entries
@@ -2804,8 +3097,13 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
                 .style(style)
             })
             .collect::<Vec<_>>();
+        let list_geometry = indexed_list_geometry(
+            geometry.processes,
+            state.process_entries.len(),
+            state.selected_process,
+        );
         let mut list_state = ListState::default();
-        list_state.select(Some(state.selected_process));
+        list_geometry.apply_to_list_state(&mut list_state);
         frame.render_stateful_widget(
             List::new(items)
                 .style(Style::default().bg(PANEL_BACKGROUND))
@@ -2813,7 +3111,7 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
                     format!(" PROCESSES · {} ", process_count),
                     ACCENT_BRIGHT,
                 )),
-            rows[1],
+            geometry.processes,
             &mut list_state,
         );
     }
@@ -2823,7 +3121,7 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
     } else {
         state.process_logs.clone()
     };
-    render_panel(frame, rows[2], " LOGS ", logs, PURPLE);
+    render_panel(frame, geometry.logs, " LOGS ", logs, PURPLE);
 }
 
 fn render_task_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -3053,10 +3351,14 @@ fn render_git_file_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
             })
             .collect::<Vec<_>>()
     };
+    let item_count = if state.snapshot_ready {
+        state.git_entries.len()
+    } else {
+        0
+    };
+    let list_geometry = indexed_list_geometry(area, item_count, state.selected_git_file);
     let mut list_state = ListState::default();
-    if !state.git_entries.is_empty() {
-        list_state.select(Some(state.selected_git_file));
-    }
+    list_geometry.apply_to_list_state(&mut list_state);
     frame.render_stateful_widget(
         List::new(items)
             .style(Style::default().bg(PANEL_BACKGROUND))
@@ -3134,7 +3436,62 @@ fn render_git_diff_panel(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect)
     );
 }
 
+#[derive(Debug, Clone, Copy)]
+struct GitSurfaceGeometry {
+    summary: Rect,
+    files: Rect,
+    diff: Rect,
+}
+
+fn git_surface_geometry(state: &DevTuiState, area: Rect) -> GitSurfaceGeometry {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(4), Constraint::Min(5)])
+        .split(area);
+    let columns = if stack_for_phone(state, rows[1]) {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+            .split(rows[1])
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(38), Constraint::Min(40)])
+            .split(rows[1])
+    };
+    GitSurfaceGeometry {
+        summary: rows[0],
+        files: columns[0],
+        diff: columns[1],
+    }
+}
+
+pub(super) fn git_file_list_area(state: &DevTuiState, area: Rect) -> Rect {
+    git_surface_geometry(state, area).files
+}
+
+pub(super) fn git_file_hit_at(
+    state: &DevTuiState,
+    area: Rect,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    let item_count = if state.snapshot_ready {
+        state.git_entries.len()
+    } else {
+        0
+    };
+    indexed_list_hit(
+        git_file_list_area(state, area),
+        item_count,
+        state.selected_git_file,
+        column,
+        row,
+    )
+}
+
 fn render_git_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let geometry = git_surface_geometry(state, area);
     let branch = if state.snapshot_ready {
         state.git_branch.as_str()
     } else {
@@ -3155,10 +3512,6 @@ fn render_git_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     } else {
         "workspace snapshot pending"
     };
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(4), Constraint::Min(5)])
-        .split(area);
     let conflicts = if state.git_conflicts.is_empty() {
         String::new()
     } else {
@@ -3166,7 +3519,7 @@ fn render_git_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     };
     render_panel(
         frame,
-        rows[0],
+        geometry.summary,
         format!(
             " GIT · {branch} ↑{} ↓{} ",
             state.git_ahead, state.git_behind
@@ -3184,31 +3537,17 @@ fn render_git_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         ),
         PURPLE,
     );
-    let columns = if stack_for_phone(state, rows[1]) {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-            .split(rows[1])
-    } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(38), Constraint::Min(40)])
-            .split(rows[1])
-    };
-    render_git_file_list(frame, state, columns[0]);
-    render_git_diff_panel(frame, state, columns[1]);
+    render_git_file_list(frame, state, geometry.files);
+    render_git_diff_panel(frame, state, geometry.diff);
 }
 
 fn render_debug_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let geometry = debug_surface_geometry(state, area);
     let session_count = state.debug_sessions.len();
     if session_count == 0 {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(8), Constraint::Min(6)])
-            .split(area);
         render_panel(
             frame,
-            rows[0],
+            geometry.sessions,
             if state.snapshot_ready {
                 " DEBUG · 0 ".to_string()
             } else {
@@ -3221,117 +3560,57 @@ fn render_debug_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
             },
             ACCENT_BRIGHT,
         );
-        let bottom = if stack_for_phone(state, area) {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(rows[1])
-        } else {
-            Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(58), Constraint::Min(18)])
-                .split(rows[1])
-        };
         render_panel(
             frame,
-            bottom[0],
+            geometry.variables,
             " VARIABLES ",
             "Starts after a session is selected",
             ACCENT_BRIGHT,
         );
-        render_status_list(frame, bottom[1], " TESTS ", &state.tests, "No test runs");
+        render_status_list(
+            frame,
+            geometry.tests,
+            " TESTS ",
+            &state.tests,
+            "No test runs",
+        );
         return;
     }
-    let rows = if stack_for_phone(state, area) {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(22),
-                Constraint::Percentage(18),
-                Constraint::Percentage(20),
-                Constraint::Percentage(20),
-                Constraint::Percentage(20),
-            ])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(72), Constraint::Min(6)])
-            .split(area)
-    };
-    if stack_for_phone(state, area) {
-        render_debug_list(
-            frame,
-            rows[0],
-            format!(" DEBUG · {session_count} "),
-            &debug_session_lines(state),
-            state.debug_pane == super::state::DebugPane::Sessions,
-        );
-        render_debug_list(
-            frame,
-            rows[1],
-            " THREADS ",
-            &debug_thread_lines(state),
-            state.debug_pane == super::state::DebugPane::Threads,
-        );
-        render_debug_list(
-            frame,
-            rows[2],
-            " FRAMES ",
-            &debug_frame_lines(state),
-            state.debug_pane == super::state::DebugPane::Frames,
-        );
-        render_panel(
-            frame,
-            rows[3],
-            " VARIABLES ",
-            debug_variable_lines(state).join("\n"),
-            ACCENT_BRIGHT,
-        );
-        render_status_list(frame, rows[4], " TESTS ", &state.tests, "No test runs");
-        return;
-    }
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(28),
-            Constraint::Percentage(28),
-            Constraint::Min(24),
-        ])
-        .split(rows[0]);
     render_debug_list(
         frame,
-        columns[0],
+        geometry.sessions,
         format!(" DEBUG · {session_count} "),
         &debug_session_lines(state),
         state.debug_pane == super::state::DebugPane::Sessions,
     );
     render_debug_list(
         frame,
-        columns[1],
+        geometry.threads.expect("debug thread panel geometry"),
         " THREADS ",
         &debug_thread_lines(state),
         state.debug_pane == super::state::DebugPane::Threads,
     );
     render_debug_list(
         frame,
-        columns[2],
+        geometry.frames.expect("debug frame panel geometry"),
         " FRAMES ",
         &debug_frame_lines(state),
         state.debug_pane == super::state::DebugPane::Frames,
     );
-    let bottom = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(58), Constraint::Min(18)])
-        .split(rows[1]);
     render_panel(
         frame,
-        bottom[0],
+        geometry.variables,
         " VARIABLES ",
         debug_variable_lines(state).join("\n"),
         ACCENT_BRIGHT,
     );
-    render_status_list(frame, bottom[1], " TESTS ", &state.tests, "No test runs");
+    render_status_list(
+        frame,
+        geometry.tests,
+        " TESTS ",
+        &state.tests,
+        "No test runs",
+    );
 }
 
 fn debug_variable_lines(state: &DevTuiState) -> Vec<String> {
@@ -3436,6 +3715,113 @@ fn debug_frame_lines(state: &DevTuiState) -> Vec<String> {
             )
         })
         .collect()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DebugSurfaceGeometry {
+    sessions: Rect,
+    threads: Option<Rect>,
+    frames: Option<Rect>,
+    variables: Rect,
+    tests: Rect,
+}
+
+fn debug_surface_geometry(state: &DevTuiState, area: Rect) -> DebugSurfaceGeometry {
+    if state.debug_sessions.is_empty() {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(8), Constraint::Min(6)])
+            .split(area);
+        let bottom = if stack_for_phone(state, area) {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(rows[1])
+        } else {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(58), Constraint::Min(18)])
+                .split(rows[1])
+        };
+        return DebugSurfaceGeometry {
+            sessions: rows[0],
+            threads: None,
+            frames: None,
+            variables: bottom[0],
+            tests: bottom[1],
+        };
+    }
+    if stack_for_phone(state, area) {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(22),
+                Constraint::Percentage(18),
+                Constraint::Percentage(20),
+                Constraint::Percentage(20),
+                Constraint::Percentage(20),
+            ])
+            .split(area);
+        return DebugSurfaceGeometry {
+            sessions: rows[0],
+            threads: Some(rows[1]),
+            frames: Some(rows[2]),
+            variables: rows[3],
+            tests: rows[4],
+        };
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(72), Constraint::Min(6)])
+        .split(area);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(28),
+            Constraint::Percentage(28),
+            Constraint::Min(24),
+        ])
+        .split(rows[0]);
+    let bottom = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Min(18)])
+        .split(rows[1]);
+    DebugSurfaceGeometry {
+        sessions: columns[0],
+        threads: Some(columns[1]),
+        frames: Some(columns[2]),
+        variables: bottom[0],
+        tests: bottom[1],
+    }
+}
+
+pub(super) fn debug_session_area(state: &DevTuiState, area: Rect) -> Rect {
+    debug_surface_geometry(state, area).sessions
+}
+
+pub(super) fn debug_session_hit_at(
+    state: &DevTuiState,
+    area: Rect,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    if state.debug_sessions.is_empty() {
+        return None;
+    }
+    let panel = debug_session_area(state, area);
+    let inner = panel_content_area(panel);
+    if inner.width == 0 || inner.height == 0 || column < inner.x || column >= inner.right() {
+        return None;
+    }
+    let rendered_lines = panel_text(&debug_session_lines(state).join("\n")).lines;
+    if rendered_lines
+        .iter()
+        .any(|line| line.width() > usize::from(inner.width))
+    {
+        return None;
+    }
+    let index = usize::from(row.checked_sub(inner.y)?);
+    (row < inner.bottom() && index < state.debug_sessions.len()).then_some(index)
 }
 
 fn render_debug_list(

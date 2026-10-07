@@ -185,6 +185,14 @@ mouse, paste, or surface input while a higher-priority overlay is active.
 | mouse left-click | select a navigation tab or the dock; double-click opens; right-click/long-press opens actions; wheel scrolls |
 | paste/focus/resize | accepted while terminal modes are enabled; focus loss closes browser overlays |
 
+Pointer hit testing uses the same responsive shell and panel rectangles as
+rendering. It selects only visible rows in the Code file list, Git change list,
+Terminal process list, Debug session list, and App inspector entity list.
+Navigation and dock hits follow their rendered content area, including the
+composer's dynamic footer height. Panel borders, summary/diff/log panes, unused
+list rows, empty collections, and wrapped or otherwise ambiguous text do not
+produce item selections.
+
 The command center lists actions for the current surface plus Search commands and
 Quit. Search accepts a typed route, including expert commands such as
 `help`/`quit`; action placeholders are prefilled without `NAME`, `PATH`, or

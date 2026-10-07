@@ -69,7 +69,7 @@ A full refresh projects files (at most 512 displayed file paths), harness availa
 
 ## Queues, backpressure, and jobs
 
-The worker's internal `ActorRequest` channel is an ordinary multi-producer channel. It is not a fixed-size queue, so callers must use the provided coalescing methods for refreshes. Tool jobs are sent as requests and return a `ToolJobResult`; the worker executes the governed call while holding the workspace ownership path, not in the render task. A job result contains the job ID, tool name, and typed success/error value.
+The worker's internal `ActorRequest` channel is an ordinary multi-producer channel. It is not a fixed-size queue, so callers must use the provided coalescing methods for refreshes. Tool jobs are sent as requests and return a `ToolJobResult`; the worker executes the governed call while holding the workspace ownership path, not in the render task. A job result contains the job ID, tool name, and typed success/error value. The TUI keeps Git diff, process log, and debugger selection previews in a separate latest-wins lane: at most one such request is active and one current-selection request is pending. Preview results carry their job and selection owner and are discarded after the selection changes. Direct user operations retain their ordinary submission and confirmation path.
 
 Screenshot requests use a separate visual-request flag. While one screenshot request is pending, additional screenshot requests are ignored. Results contain request ID, requested columns/rows, and a typed result. The worker does not retain an unbounded frame history. Visual capture is explicit and does not make browser pixels authoritative over semantic revisions.
 

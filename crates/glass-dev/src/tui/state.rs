@@ -36,6 +36,68 @@ pub struct PendingConfirmation {
     pub summary: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SelectionPreviewTarget {
+    GitDiff {
+        path: Option<String>,
+        staged: bool,
+    },
+    ProcessLogs {
+        name: String,
+    },
+    DebugThreads {
+        session: String,
+    },
+    DebugStack {
+        session: String,
+        thread_id: i64,
+    },
+    DebugScopes {
+        session: String,
+        frame_id: i64,
+    },
+    DebugVariables {
+        session: String,
+        frame_id: i64,
+        scope_index: usize,
+        scope_name: String,
+        reference: i64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectionPreviewKey {
+    surface: DevSurface,
+    target: SelectionPreviewTarget,
+}
+
+struct PendingSelectionPreview {
+    key: SelectionPreviewKey,
+    call: crate::development::ToolCall,
+    context: crate::tools::DevelopmentToolContext,
+    label: String,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveSelectionPreview {
+    id: u64,
+    key: SelectionPreviewKey,
+    label: String,
+}
+
+impl SelectionPreviewKey {
+    fn tool_name(&self) -> &'static str {
+        match &self.target {
+            SelectionPreviewTarget::GitDiff { .. } => "glass.git.diff",
+            SelectionPreviewTarget::ProcessLogs { .. } => "glass.process.logs",
+            SelectionPreviewTarget::DebugThreads { .. } => "glass.debug.threads",
+            SelectionPreviewTarget::DebugStack { .. } => "glass.debug.stack",
+            SelectionPreviewTarget::DebugScopes { .. } => "glass.debug.scopes",
+            SelectionPreviewTarget::DebugVariables { .. } => "glass.debug.variables",
+        }
+    }
+}
+
 /// Focused TUI editor for one exact native JavaScript dialog identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserDialogPrompt {
@@ -468,6 +530,8 @@ pub struct DevTuiState {
         crate::tools::DevelopmentToolContext,
     )>,
     pub running_tool_job: Option<u64>,
+    active_selection_preview: Option<ActiveSelectionPreview>,
+    pending_selection_preview: Option<PendingSelectionPreview>,
     pub surface_scroll: std::collections::BTreeMap<DevSurface, usize>,
     pub terminal_width: u16,
     pub terminal_height: u16,
@@ -782,6 +846,8 @@ impl DevTuiState {
             process_urls: Vec::new(),
             queued_tool_request: None,
             running_tool_job: None,
+            active_selection_preview: None,
+            pending_selection_preview: None,
             surface_scroll: std::collections::BTreeMap::new(),
             terminal_width: 80,
             terminal_height: 24,
@@ -2010,6 +2076,144 @@ impl DevTuiState {
             || self.running_tool_job.is_some()
             || self.queued_tool_request.is_some()
             || self.agent_send_job.is_some()
+    }
+
+    fn selection_preview_key_is_current(&self, key: &SelectionPreviewKey) -> bool {
+        if self.surface != key.surface {
+            return false;
+        }
+        match &key.target {
+            SelectionPreviewTarget::GitDiff { path, staged } => {
+                if !self.git_diff_open {
+                    return false;
+                }
+                let selected = self.selected_git_entry();
+                if selected.is_some_and(|entry| entry.untracked) {
+                    return false;
+                }
+                let current_path = selected.map(|entry| entry.path.clone());
+                let current_staged = selected
+                    .is_some_and(|entry| entry.index_status != ' ' && entry.worktree_status == ' ');
+                &current_path == path && current_staged == *staged
+            }
+            SelectionPreviewTarget::ProcessLogs { name } => {
+                self.surface == DevSurface::Terminal
+                    && self
+                        .selected_process_entry()
+                        .is_some_and(|entry| entry.name == *name)
+            }
+            SelectionPreviewTarget::DebugThreads { session } => {
+                self.surface == DevSurface::Debug
+                    && self
+                        .selected_debug_session()
+                        .is_some_and(|selected| selected.name == *session)
+            }
+            SelectionPreviewTarget::DebugStack { session, thread_id } => {
+                self.surface == DevSurface::Debug
+                    && self
+                        .selected_debug_session()
+                        .is_some_and(|selected| selected.name == *session)
+                    && self
+                        .selected_debug_thread()
+                        .is_some_and(|selected| selected.id == *thread_id)
+            }
+            SelectionPreviewTarget::DebugScopes { session, frame_id } => {
+                self.surface == DevSurface::Debug
+                    && self
+                        .selected_debug_session()
+                        .is_some_and(|selected| selected.name == *session)
+                    && self
+                        .selected_debug_frame()
+                        .is_some_and(|selected| selected.id == *frame_id)
+            }
+            SelectionPreviewTarget::DebugVariables {
+                session,
+                frame_id,
+                scope_index,
+                scope_name,
+                reference,
+            } => {
+                self.surface == DevSurface::Debug
+                    && self
+                        .selected_debug_session()
+                        .is_some_and(|selected| selected.name == *session)
+                    && self
+                        .selected_debug_frame()
+                        .is_some_and(|selected| selected.id == *frame_id)
+                    && self.selected_debug_scope == *scope_index
+                    && self
+                        .debug_scopes
+                        .get(self.selected_debug_scope)
+                        .is_some_and(|scope| {
+                            scope.variables_reference == *reference && scope.name == *scope_name
+                        })
+            }
+        }
+    }
+
+    fn queue_selection_preview(
+        &mut self,
+        worker: &mut super::snapshot::SnapshotWorker,
+        key: SelectionPreviewKey,
+        call: crate::development::ToolCall,
+        context: crate::tools::DevelopmentToolContext,
+        label: String,
+    ) {
+        if self
+            .active_selection_preview
+            .as_ref()
+            .is_some_and(|active| active.key == key && self.running_tool_job == Some(active.id))
+        {
+            // Returning to the active selection makes an older pending target
+            // obsolete; the in-flight result will again match the UI.
+            self.pending_selection_preview = None;
+            if let Some(active) = &self.active_selection_preview {
+                self.status = format!("Loading {}…", active.label);
+            }
+            return;
+        }
+
+        self.pending_selection_preview = Some(PendingSelectionPreview {
+            key,
+            call,
+            context,
+            label: label.clone(),
+        });
+        self.flush_pending_selection_preview(worker);
+        if self.pending_selection_preview.is_some() {
+            self.status =
+                format!("Queued {label} · latest selection will load when the worker is free");
+        }
+    }
+
+    pub(super) fn flush_pending_selection_preview(
+        &mut self,
+        worker: &mut super::snapshot::SnapshotWorker,
+    ) {
+        if self.background_action_running() {
+            return;
+        }
+        let Some(pending) = self.pending_selection_preview.take() else {
+            return;
+        };
+        if !self.selection_preview_key_is_current(&pending.key) {
+            return;
+        }
+        match worker.submit_tool(pending.call, pending.context) {
+            Ok(id) => {
+                self.running_tool_job = Some(id);
+                self.active_selection_preview = Some(ActiveSelectionPreview {
+                    id,
+                    key: pending.key,
+                    label: pending.label.clone(),
+                });
+                self.status = format!("Loading {}…", pending.label);
+            }
+            Err(error) => {
+                self.active_selection_preview = None;
+                self.status = format!("{} unavailable: {error}", pending.label);
+            }
+        }
     }
 
     pub fn agent_browser_context(&self) -> serde_json::Value {
@@ -3888,10 +4092,30 @@ impl DevTuiState {
             return;
         }
 
-        if self.running_tool_job != Some(result.id) {
-            return;
+        if self
+            .active_selection_preview
+            .as_ref()
+            .is_some_and(|active| active.id == result.id)
+        {
+            let active = self
+                .active_selection_preview
+                .take()
+                .expect("matching active selection preview");
+            if self.running_tool_job != Some(result.id) {
+                return;
+            }
+            self.running_tool_job = None;
+            if active.key.tool_name() != result.tool
+                || !self.selection_preview_key_is_current(&active.key)
+            {
+                return;
+            }
+        } else {
+            if self.running_tool_job != Some(result.id) {
+                return;
+            }
+            self.running_tool_job = None;
         }
-        self.running_tool_job = None;
         match result.result {
             Ok(value) => {
                 if result.tool == "glass.agent.slash" {
@@ -4718,10 +4942,6 @@ impl DevTuiState {
             self.status = "Select a process · j/k then Enter logs".into();
             return;
         };
-        if self.background_action_running() {
-            self.status = "Process logs wait for the current background operation".into();
-            return;
-        }
         let (call, context) = match self.tool_request(
             "glass.process.logs",
             serde_json::json!({"name": name}),
@@ -4733,13 +4953,16 @@ impl DevTuiState {
                 return;
             }
         };
-        match worker.submit_tool(call, context) {
-            Ok(id) => {
-                self.running_tool_job = Some(id);
-                self.status = format!("Loading logs for {name}…");
-            }
-            Err(error) => self.status = format!("Process logs unavailable: {error}"),
-        }
+        self.queue_selection_preview(
+            worker,
+            SelectionPreviewKey {
+                surface: self.surface,
+                target: SelectionPreviewTarget::ProcessLogs { name: name.clone() },
+            },
+            call,
+            context,
+            format!("logs for {name}"),
+        );
     }
 
     pub fn restart_selected_process(&mut self) {
@@ -4828,6 +5051,7 @@ impl DevTuiState {
                         session.name,
                         session.state.label()
                     );
+                    self.debug_threads_requested = true;
                 }
             }
             DebugPane::Threads => {
@@ -4840,6 +5064,7 @@ impl DevTuiState {
                     as usize;
                 if let Some(thread) = self.selected_debug_thread() {
                     self.status = format!("{} · Enter stack · Space continue", thread.name);
+                    self.debug_stack_requested = true;
                 }
             }
             DebugPane::Frames => {
@@ -4856,6 +5081,7 @@ impl DevTuiState {
                         frame.name,
                         frame.path.as_deref().unwrap_or("source")
                     );
+                    self.debug_scopes_requested = true;
                 }
             }
         }
@@ -4886,10 +5112,6 @@ impl DevTuiState {
             self.status = "Start a debugger with :debug start NAME COMMAND".into();
             return;
         };
-        if self.background_action_running() {
-            self.status = "Debug threads wait for the current background operation".into();
-            return;
-        }
         let (call, context) = match self.tool_request(
             "glass.debug.threads",
             serde_json::json!({"session": session}),
@@ -4901,13 +5123,18 @@ impl DevTuiState {
                 return;
             }
         };
-        match worker.submit_tool(call, context) {
-            Ok(id) => {
-                self.running_tool_job = Some(id);
-                self.status = format!("Loading threads for {session}…");
-            }
-            Err(error) => self.status = format!("Debug threads unavailable: {error}"),
-        }
+        self.queue_selection_preview(
+            worker,
+            SelectionPreviewKey {
+                surface: self.surface,
+                target: SelectionPreviewTarget::DebugThreads {
+                    session: session.clone(),
+                },
+            },
+            call,
+            context,
+            format!("threads for {session}"),
+        );
     }
 
     pub fn queue_debug_stack(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
@@ -4919,10 +5146,6 @@ impl DevTuiState {
             self.status = "Select a thread · Enter on a session first".into();
             return;
         };
-        if self.background_action_running() {
-            self.status = "Debug stack waits for the current background operation".into();
-            return;
-        }
         let (call, context) = match self.tool_request(
             "glass.debug.stack",
             serde_json::json!({"session": session, "threadId": thread_id}),
@@ -4934,13 +5157,19 @@ impl DevTuiState {
                 return;
             }
         };
-        match worker.submit_tool(call, context) {
-            Ok(id) => {
-                self.running_tool_job = Some(id);
-                self.status = format!("Loading stack for thread {thread_id}…");
-            }
-            Err(error) => self.status = format!("Debug stack unavailable: {error}"),
-        }
+        self.queue_selection_preview(
+            worker,
+            SelectionPreviewKey {
+                surface: self.surface,
+                target: SelectionPreviewTarget::DebugStack {
+                    session: session.clone(),
+                    thread_id,
+                },
+            },
+            call,
+            context,
+            format!("stack for thread {thread_id}"),
+        );
     }
 
     pub fn continue_selected_debug(&mut self) {
@@ -5051,9 +5280,6 @@ impl DevTuiState {
         let Some(frame_id) = self.selected_debug_frame().map(|frame| frame.id) else {
             return;
         };
-        if self.background_action_running() {
-            return;
-        }
         let Ok((call, context)) = self.tool_request(
             "glass.debug.scopes",
             serde_json::json!({"session": session, "frameId": frame_id}),
@@ -5061,24 +5287,32 @@ impl DevTuiState {
         ) else {
             return;
         };
-        if let Ok(id) = worker.submit_tool(call, context) {
-            self.running_tool_job = Some(id);
-            self.status = "Loading scopes…".into();
-        }
+        self.queue_selection_preview(
+            worker,
+            SelectionPreviewKey {
+                surface: self.surface,
+                target: SelectionPreviewTarget::DebugScopes { session, frame_id },
+            },
+            call,
+            context,
+            "debug scopes".into(),
+        );
     }
 
     pub fn queue_debug_variables(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
             return;
         };
-        let Some(reference) = self
-            .debug_scopes
-            .get(self.selected_debug_scope)
-            .map(|scope| scope.variables_reference)
-        else {
+        let Some(frame_id) = self.selected_debug_frame().map(|frame| frame.id) else {
             return;
         };
-        if reference <= 0 || self.background_action_running() {
+        let Some(scope) = self.debug_scopes.get(self.selected_debug_scope) else {
+            return;
+        };
+        let scope_index = self.selected_debug_scope;
+        let scope_name = scope.name.clone();
+        let reference = scope.variables_reference;
+        if reference <= 0 {
             return;
         }
         let Ok((call, context)) = self.tool_request(
@@ -5088,10 +5322,22 @@ impl DevTuiState {
         ) else {
             return;
         };
-        if let Ok(id) = worker.submit_tool(call, context) {
-            self.running_tool_job = Some(id);
-            self.status = "Loading variables…".into();
-        }
+        self.queue_selection_preview(
+            worker,
+            SelectionPreviewKey {
+                surface: self.surface,
+                target: SelectionPreviewTarget::DebugVariables {
+                    session,
+                    frame_id,
+                    scope_index,
+                    scope_name,
+                    reference,
+                },
+            },
+            call,
+            context,
+            "debug variables".into(),
+        );
     }
 
     pub fn jump_selected_debug_frame(&mut self) {
@@ -5344,10 +5590,6 @@ impl DevTuiState {
 
     /// Load the current Git diff without blocking key handling.
     pub fn queue_git_diff(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
-        if self.background_action_running() {
-            self.status = "Git diff waits for the current background operation".into();
-            return;
-        }
         let selected = self.selected_git_entry().map(|entry| {
             (
                 entry.path.clone(),
@@ -5357,6 +5599,10 @@ impl DevTuiState {
             )
         });
         if let Some((path, true, _, _)) = selected.as_ref() {
+            // An untracked selection is a local placeholder, not a Git diff
+            // request. Invalidate any queued preview so an older tracked diff
+            // cannot replace this state when it completes.
+            self.pending_selection_preview = None;
             self.git_diff_path = Some(path.clone());
             self.git_diff = format!(
                 "{path}\n\nUntracked file · Git has no tracked diff yet.\nUse Enter on Code to inspect the file."
@@ -5380,21 +5626,28 @@ impl DevTuiState {
                 return;
             }
         };
-        match worker.submit_tool(call, context) {
-            Ok(id) => {
-                self.running_tool_job = Some(id);
-                self.git_diff_path = selected.map(|(path, _, _, _)| path);
-                self.git_diff_open = true;
-                self.surface_scroll.insert(DevSurface::Git, 0);
-                self.git_diff = "Loading Git diff…".into();
-                self.status = self
-                    .git_diff_path
-                    .as_deref()
-                    .map(|path| format!("Loading diff for {path} in background…"))
-                    .unwrap_or_else(|| "Loading full worktree diff in background…".into());
-            }
-            Err(error) => self.status = format!("Git diff unavailable: {error}"),
-        }
+        self.git_diff_path = selected.map(|(path, _, _, _)| path);
+        self.git_diff_open = true;
+        self.surface_scroll.insert(DevSurface::Git, 0);
+        self.git_diff = "Loading Git diff…".into();
+        let label = self
+            .git_diff_path
+            .as_deref()
+            .map(|path| format!("diff for {path}"))
+            .unwrap_or_else(|| "full worktree diff".into());
+        self.queue_selection_preview(
+            worker,
+            SelectionPreviewKey {
+                surface: self.surface,
+                target: SelectionPreviewTarget::GitDiff {
+                    path: self.git_diff_path.clone(),
+                    staged,
+                },
+            },
+            call,
+            context,
+            label,
+        );
     }
 
     /// Synchronous helper retained for callers outside the terminal event loop.
@@ -12558,6 +12811,224 @@ mod tests {
         assert!(state.git_diff_open);
         assert!(state.git_diff.contains("Loading"));
         assert_eq!(state.git_diff_path.as_deref(), Some("notes.txt"));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn selection_preview_bursts_keep_one_latest_git_process_or_debug_target() {
+        let (mut state, root) = routed_state("selection-preview-burst");
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.surface = DevSurface::Git;
+        state.git_entries = vec![
+            crate::git::GitStatusEntry {
+                path: "first.rs".into(),
+                original_path: None,
+                index_status: ' ',
+                worktree_status: 'M',
+                untracked: false,
+            },
+            crate::git::GitStatusEntry {
+                path: "latest.rs".into(),
+                original_path: None,
+                index_status: ' ',
+                worktree_status: 'M',
+                untracked: false,
+            },
+        ];
+        state.git_diff_open = true;
+        state.git_diff_path = Some("first.rs".into());
+        state.git_diff = "Loading first diff".into();
+        state.active_selection_preview = Some(ActiveSelectionPreview {
+            id: 100,
+            key: SelectionPreviewKey {
+                surface: DevSurface::Git,
+                target: SelectionPreviewTarget::GitDiff {
+                    path: Some("first.rs".into()),
+                    staged: false,
+                },
+            },
+            label: "diff for first.rs".into(),
+        });
+        state.running_tool_job = Some(100);
+
+        state.selected_git_file = 1;
+        state.queue_git_diff(&mut worker);
+        assert!(matches!(
+            state.pending_selection_preview.as_ref().map(|request| &request.key.target),
+            Some(SelectionPreviewTarget::GitDiff { path: Some(path), .. }) if path == "latest.rs"
+        ));
+
+        // Returning to the active selection cancels the pending target and
+        // restores the active preview status instead of leaving a stale queue
+        // message behind.
+        state.selected_git_file = 0;
+        state.queue_git_diff(&mut worker);
+        assert!(state.pending_selection_preview.is_none());
+        assert_eq!(state.status, "Loading diff for first.rs…");
+
+        // A burst that crosses surfaces continually replaces the same pending
+        // slot; the latest debugger session wins over Git and process previews.
+        state.selected_git_file = 1;
+        state.queue_git_diff(&mut worker);
+        state.surface = DevSurface::Terminal;
+        state.process_entries = vec![
+            ProcessRow {
+                name: "api".into(),
+                command: "api".into(),
+                pid: Some(1),
+                health: crate::development::ProcessHealth::Healthy,
+                url: None,
+            },
+            ProcessRow {
+                name: "web".into(),
+                command: "web".into(),
+                pid: Some(2),
+                health: crate::development::ProcessHealth::Healthy,
+                url: None,
+            },
+        ];
+        state.move_process_selection(1);
+        state.queue_selected_process_logs(&mut worker);
+        assert!(matches!(
+            state.pending_selection_preview.as_ref().map(|request| &request.key.target),
+            Some(SelectionPreviewTarget::ProcessLogs { name }) if name == "web"
+        ));
+
+        state.surface = DevSurface::Debug;
+        state.debug_pane = DebugPane::Sessions;
+        state.debug_sessions = vec![
+            DebugSessionRow {
+                name: "debug-a".into(),
+                state: crate::debugger::DebugSessionState::Stopped,
+                pid: 3,
+                breakpoints: 0,
+                watches: 0,
+            },
+            DebugSessionRow {
+                name: "debug-b".into(),
+                state: crate::debugger::DebugSessionState::Stopped,
+                pid: 4,
+                breakpoints: 0,
+                watches: 0,
+            },
+        ];
+        state.move_debug_selection(1);
+        state.queue_debug_threads(&mut worker);
+        assert!(matches!(
+            state.pending_selection_preview.as_ref().map(|request| &request.key.target),
+            Some(SelectionPreviewTarget::DebugThreads { session }) if session == "debug-b"
+        ));
+
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 99,
+            tool: "glass.git.diff".into(),
+            result: Ok(serde_json::json!("UNOWNED DIFF")),
+        });
+        assert_eq!(state.running_tool_job, Some(100));
+        assert_eq!(
+            state
+                .active_selection_preview
+                .as_ref()
+                .map(|active| active.id),
+            Some(100)
+        );
+        assert!(!state.git_diff.contains("UNOWNED DIFF"));
+
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 100,
+            tool: "glass.git.diff".into(),
+            result: Ok(serde_json::json!("STALE FIRST DIFF")),
+        });
+        assert!(!state.git_diff.contains("STALE FIRST DIFF"));
+        assert!(state.running_tool_job.is_none());
+        assert!(state.active_selection_preview.is_none());
+        assert!(matches!(
+            state.pending_selection_preview.as_ref().map(|request| &request.key.target),
+            Some(SelectionPreviewTarget::DebugThreads { session }) if session == "debug-b"
+        ));
+
+        state.flush_pending_selection_preview(&mut worker);
+        assert!(state.pending_selection_preview.is_none());
+        assert!(matches!(
+            state.active_selection_preview.as_ref().map(|active| &active.key.target),
+            Some(SelectionPreviewTarget::DebugThreads { session }) if session == "debug-b"
+        ));
+        let queued_id = state.running_tool_job.expect("latest preview submitted");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut completed = false;
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(result)) = worker.try_job_result() {
+                assert_eq!(result.id, queued_id);
+                state.apply_tool_job_result(result);
+                completed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            completed,
+            "latest preview should eventually return a result"
+        );
+        drop(worker);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn stale_git_diff_cannot_replace_untracked_placeholder() {
+        let (mut state, root) = routed_state("selection-preview-untracked");
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.surface = DevSurface::Git;
+        state.git_entries = vec![
+            crate::git::GitStatusEntry {
+                path: "tracked.rs".into(),
+                original_path: None,
+                index_status: ' ',
+                worktree_status: 'M',
+                untracked: false,
+            },
+            crate::git::GitStatusEntry {
+                path: "new.rs".into(),
+                original_path: None,
+                index_status: '?',
+                worktree_status: '?',
+                untracked: true,
+            },
+        ];
+        state.git_diff_open = true;
+        state.git_diff_path = Some("tracked.rs".into());
+        state.git_diff = "Loading Git diff…".into();
+        state.running_tool_job = Some(55);
+        state.active_selection_preview = Some(ActiveSelectionPreview {
+            id: 55,
+            key: SelectionPreviewKey {
+                surface: DevSurface::Git,
+                target: SelectionPreviewTarget::GitDiff {
+                    path: Some("tracked.rs".into()),
+                    staged: false,
+                },
+            },
+            label: "diff for tracked.rs".into(),
+        });
+
+        state.selected_git_file = 1;
+        state.queue_git_diff(&mut worker);
+        let placeholder = state.git_diff.clone();
+        let placeholder_status = state.status.clone();
+        assert!(placeholder.contains("Untracked file"));
+        assert!(placeholder_status.contains("new.rs is untracked"));
+        assert!(state.pending_selection_preview.is_none());
+
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 55,
+            tool: "glass.git.diff".into(),
+            result: Ok(serde_json::json!("STALE TRACKED DIFF")),
+        });
+        assert_eq!(state.git_diff, placeholder);
+        assert_eq!(state.status, placeholder_status);
+        assert!(state.git_diff.contains("Untracked file"));
+        assert!(state.running_tool_job.is_none());
+        assert!(state.active_selection_preview.is_none());
+        drop(worker);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 }

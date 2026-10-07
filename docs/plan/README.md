@@ -56,8 +56,11 @@ The first TUI P1 slice centralizes overlay precedence across input, pointer, and
 rendering paths: [task record](tasks/issue60-p1-tui-overlay-priority-001.md).
 The completed F3 slice unifies typed command, palette action, menu, and
 live-browser dispatch: [task record](tasks/issue60-p1-tui-command-routing-001.md).
-The next P1 slice derives pointer hit regions from rendered layout geometry:
-[task record](tasks/issue60-p1-tui-pointer-geometry-001.md).
+The completed F5 slice derives pointer hit regions from rendered layout
+geometry: [task record](tasks/issue60-p1-tui-pointer-geometry-001.md). The F7
+worker-selection slice bounds Git/process/debug previews and assigns each
+result to its current selection owner:
+[task record](tasks/issue60-p1-worker-request-coalescing-001.md).
 
 ## Active plan: Glass native browser engine (issue #40)
 

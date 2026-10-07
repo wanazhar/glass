@@ -355,6 +355,86 @@ impl VisualRuntime {
     }
 }
 
+const VISUAL_PAUSED_STATUS: &str = "Live view paused · browser pane hidden";
+const VISUAL_RESUMING_STATUS: &str = "Live view resuming · waiting for a fresh frame";
+const VISUAL_PAUSED_REASON: &str = "Live view paused while the browser pane is hidden";
+const VISUAL_RESUMING_REASON: &str = "Live view resuming; waiting for a fresh visible frame";
+
+fn rendered_browser_visual_area(state: &DevTuiState) -> Option<Rect> {
+    render::browser_visual_area(
+        state,
+        Rect::new(0, 0, state.terminal_width, state.terminal_height),
+    )
+}
+
+fn visual_capture_area(state: &DevTuiState, visual: &VisualRuntime) -> Option<Rect> {
+    (visual.live
+        && state.browser_visual_live
+        && state.browser_workspace.state().connection == BrowserConnectionPhase::Connected)
+        .then(|| rendered_browser_visual_area(state))
+        .flatten()
+}
+
+fn reconcile_visual_pane_visibility(
+    state: &mut DevTuiState,
+    visual: &VisualRuntime,
+    previous_visible: &mut Option<bool>,
+    has_pending_job: bool,
+    pending_job_hidden: &mut bool,
+) -> Option<Rect> {
+    let live = visual.live && state.browser_visual_live;
+    let area = live.then(|| rendered_browser_visual_area(state)).flatten();
+    if !live {
+        if previous_visible.take() == Some(true) && has_pending_job {
+            *pending_job_hidden = true;
+        }
+        return None;
+    }
+
+    let visible = area.is_some();
+    if !visible {
+        if *previous_visible != Some(false) {
+            if *previous_visible == Some(true) && has_pending_job {
+                *pending_job_hidden = true;
+            }
+            let browser = state.browser_workspace.state_mut();
+            browser.frame_revision = None;
+            browser.presentation_reason = Some(VISUAL_PAUSED_REASON.into());
+            state.browser_pane = None;
+            if state.status.starts_with("Live view") {
+                state.status = VISUAL_PAUSED_STATUS.into();
+            }
+        }
+    } else if *previous_visible == Some(false) {
+        let browser = state.browser_workspace.state_mut();
+        if browser.presentation_reason.as_deref() == Some(VISUAL_PAUSED_REASON) {
+            browser.presentation_reason = Some(VISUAL_RESUMING_REASON.into());
+        }
+        if state.status == VISUAL_PAUSED_STATUS {
+            state.status = VISUAL_RESUMING_STATUS.into();
+        }
+    }
+    *previous_visible = Some(visible);
+    area
+}
+
+fn take_visual_result_if_current(
+    result_id: u64,
+    pending_job: &mut Option<u64>,
+    pending_job_hidden: &mut bool,
+    pane_available: bool,
+) -> bool {
+    let belongs_to_pending = *pending_job == Some(result_id);
+    if belongs_to_pending {
+        *pending_job = None;
+    }
+    let accepted = belongs_to_pending && !*pending_job_hidden && pane_available;
+    if belongs_to_pending {
+        *pending_job_hidden = false;
+    }
+    accepted
+}
+
 fn reconcile_browser_visual_request(state: &mut DevTuiState, visual: &mut VisualRuntime) {
     let Some(request) = state.take_browser_visual_request() else {
         return;
@@ -399,6 +479,9 @@ pub(crate) fn run_with_browser_policy(
     let mut previous_overlay_mask = 0_u32;
     let mut previous_active_overlay = overlay::active_overlay(&state);
     let mut pointer = pointer::PointerState::default();
+    let mut previous_visual_pane_visible = None;
+    let mut pending_visual_job = None;
+    let mut pending_visual_job_hidden = false;
     loop {
         let size = guard.terminal.size()?;
         render_requested |= state.poll_native_browser_dialog();
@@ -414,9 +497,15 @@ pub(crate) fn run_with_browser_policy(
         let resized = state.terminal_width != size.width || state.terminal_height != size.height;
         state.set_terminal_size(size.width, size.height);
         render_requested |= resized;
+        let visual_area = reconcile_visual_pane_visibility(
+            &mut state,
+            &visual,
+            &mut previous_visual_pane_visible,
+            pending_visual_job.is_some(),
+            &mut pending_visual_job_hidden,
+        );
         let kitty_area =
-            render::browser_visual_area(&state, Rect::new(0, 0, size.width, size.height))
-                .map(|area| PaneArea::new(area.x, area.y, area.width, area.height));
+            visual_area.map(|area| PaneArea::new(area.x, area.y, area.width, area.height));
         visual.sync_kitty_area(kitty_area, &mut guard)?;
         let render_interval = if state.browser_visual_live && visual.live {
             Duration::from_millis(33)
@@ -1065,6 +1154,16 @@ pub(crate) fn run_with_browser_policy(
         pointer.poll(&mut state, Instant::now());
         reset_pointer_on_overlay_transition(&state, &mut pointer, &mut previous_active_overlay);
         reconcile_browser_visual_request(&mut state, &mut visual);
+        let visual_area = reconcile_visual_pane_visibility(
+            &mut state,
+            &visual,
+            &mut previous_visual_pane_visible,
+            pending_visual_job.is_some(),
+            &mut pending_visual_job_hidden,
+        );
+        let kitty_area =
+            visual_area.map(|area| PaneArea::new(area.x, area.y, area.width, area.height));
+        visual.sync_kitty_area(kitty_area, &mut guard)?;
         render_requested |= menu_was_open != state.menu_open;
         if state.agent_login_requested {
             state.agent_login_requested = false;
@@ -1138,21 +1237,17 @@ pub(crate) fn run_with_browser_policy(
             worker.request_conversation();
             state.conversation_cursor = worker.conversation_cursor();
         }
-        if state.browser_visual_live
-            && visual.live
-            && matches!(
-                state.browser_workspace.state().connection,
-                BrowserConnectionPhase::Connected
-            )
+        if pending_visual_job.is_none()
+            && visual_capture_area(&state, &visual).is_some()
             && last_visual.elapsed() >= Duration::from_millis(frame_interval_ms(visual.quality))
         {
-            let available = (
-                state.terminal_width.saturating_sub(42),
-                state.terminal_height.saturating_sub(12),
-            );
+            let area = visual_capture_area(&state, &visual).expect("checked visual capture area");
+            let available = (area.width, area.height);
             let (columns, rows) = pane_size(visual.quality, available);
-            worker.submit_screenshot(columns, rows);
-            last_visual = Instant::now();
+            pending_visual_job = worker.submit_screenshot(columns, rows);
+            if pending_visual_job.is_some() {
+                last_visual = Instant::now();
+            }
         }
         if let Ok(Some(result)) = worker.try_job_result() {
             render_requested = true;
@@ -1173,71 +1268,78 @@ pub(crate) fn run_with_browser_policy(
         state.flush_pending_selection_preview(&mut worker);
         if let Ok(Some(result)) = worker.try_visual_result() {
             render_requested = true;
-            match &visual.path {
-                VisualPath::Herdr if visual.live => match visual_png(&result) {
-                    Ok(png) => {
-                        if visual.submit_herdr(png, result.columns, result.rows) {
-                            let browser = state.browser_workspace.state_mut();
-                            browser.presentation =
+            if take_visual_result_if_current(
+                result.id,
+                &mut pending_visual_job,
+                &mut pending_visual_job_hidden,
+                visual_capture_area(&state, &visual).is_some(),
+            ) {
+                match &visual.path {
+                    VisualPath::Herdr if visual.live => match visual_png(&result) {
+                        Ok(png) => {
+                            if visual.submit_herdr(png, result.columns, result.rows) {
+                                let browser = state.browser_workspace.state_mut();
+                                browser.presentation =
                                 glass_browser::browser_workspace::BrowserPresentationPath::Herdr;
-                            browser.frame_revision = browser.browser_revision;
-                            browser.presentation_reason =
-                                Some("Herdr pane graphics frame queued".into());
-                            state.status = "Live view updated · Herdr pane".into();
+                                browser.frame_revision = browser.browser_revision;
+                                browser.presentation_reason =
+                                    Some("Herdr pane graphics frame queued".into());
+                                state.status = "Live view updated · Herdr pane".into();
+                            }
                         }
-                    }
-                    Err(error) => {
-                        state.request_browser_visual_failure(error);
-                        reconcile_browser_visual_request(&mut state, &mut visual);
-                    }
-                },
-                VisualPath::Kitty if visual.live => match visual_png(&result) {
-                    Ok(png) => {
-                        let pane = render::browser_visual_area(
-                            &state,
-                            Rect::new(0, 0, state.terminal_width, state.terminal_height),
-                        )
-                        .map(|area| PaneArea::new(area.x, area.y, area.width, area.height));
-                        if let Some(pane) = pane {
-                            let browser_revision = state
-                                .browser_workspace
-                                .state()
-                                .browser_revision
-                                .unwrap_or(0);
-                            match visual.submit_kitty(&png, pane, browser_revision) {
-                                Ok(bytes) => {
-                                    guard.write_bytes(&bytes)?;
-                                    visual.mark_kitty_drawn();
-                                    let browser = state.browser_workspace.state_mut();
-                                    browser.presentation =
+                        Err(error) => {
+                            state.request_browser_visual_failure(error);
+                            reconcile_browser_visual_request(&mut state, &mut visual);
+                        }
+                    },
+                    VisualPath::Kitty if visual.live => match visual_png(&result) {
+                        Ok(png) => {
+                            let pane = render::browser_visual_area(
+                                &state,
+                                Rect::new(0, 0, state.terminal_width, state.terminal_height),
+                            )
+                            .map(|area| PaneArea::new(area.x, area.y, area.width, area.height));
+                            if let Some(pane) = pane {
+                                let browser_revision = state
+                                    .browser_workspace
+                                    .state()
+                                    .browser_revision
+                                    .unwrap_or(0);
+                                match visual.submit_kitty(&png, pane, browser_revision) {
+                                    Ok(bytes) => {
+                                        guard.write_bytes(&bytes)?;
+                                        visual.mark_kitty_drawn();
+                                        let browser = state.browser_workspace.state_mut();
+                                        browser.presentation =
                                         glass_browser::browser_workspace::BrowserPresentationPath::Kitty;
-                                    browser.frame_revision = browser.browser_revision;
-                                    browser.presentation_reason = Some(
+                                        browser.frame_revision = browser.browser_revision;
+                                        browser.presentation_reason = Some(
                                         "Kitty terminal graphics frame emitted · semantic controls remain authoritative"
                                             .into(),
                                     );
-                                    state.status = "Live view updated · Kitty graphics".into();
-                                }
-                                Err(error) => {
-                                    state.request_browser_visual_failure(error.clone());
-                                    reconcile_browser_visual_request(&mut state, &mut visual);
-                                    visual.sync_kitty_area(None, &mut guard)?;
+                                        state.status = "Live view updated · Kitty graphics".into();
+                                    }
+                                    Err(error) => {
+                                        state.request_browser_visual_failure(error.clone());
+                                        reconcile_browser_visual_request(&mut state, &mut visual);
+                                        visual.sync_kitty_area(None, &mut guard)?;
+                                    }
                                 }
                             }
                         }
-                    }
-                    Err(error) => {
-                        state.request_browser_visual_failure(error.clone());
-                        reconcile_browser_visual_request(&mut state, &mut visual);
-                        visual.sync_kitty_area(None, &mut guard)?;
-                    }
-                },
-                VisualPath::Kitty => {}
-                VisualPath::Ansi => apply_ansi_visual_result(&mut state, &visual, result),
-                VisualPath::SemanticOnly { .. } => {}
-                VisualPath::Herdr => {}
+                        Err(error) => {
+                            state.request_browser_visual_failure(error.clone());
+                            reconcile_browser_visual_request(&mut state, &mut visual);
+                            visual.sync_kitty_area(None, &mut guard)?;
+                        }
+                    },
+                    VisualPath::Kitty => {}
+                    VisualPath::Ansi => apply_ansi_visual_result(&mut state, &visual, result),
+                    VisualPath::SemanticOnly { .. } => {}
+                    VisualPath::Herdr => {}
+                }
+                reconcile_browser_visual_request(&mut state, &mut visual);
             }
-            reconcile_browser_visual_request(&mut state, &mut visual);
         }
         if let Some(snapshot) = worker.take_pending() {
             state.apply_snapshot(&snapshot);
@@ -1351,7 +1453,7 @@ fn apply_ansi_visual_result(
     visual: &VisualRuntime,
     result: snapshot::VisualJobResult,
 ) {
-    if visual.live {
+    if visual_capture_area(state, visual).is_some() {
         state.apply_visual_job_result_with_fit(result, frame_fit(visual.fit));
     }
 }
@@ -1359,11 +1461,13 @@ fn apply_ansi_visual_result(
 fn handle_herdr_event(state: &mut DevTuiState, visual: &mut VisualRuntime, event: HerdrEvent) {
     match event {
         HerdrEvent::Connected if visual.live => {
-            state.browser_workspace.state_mut().presentation =
-                glass_browser::browser_workspace::BrowserPresentationPath::Herdr;
-            state.browser_workspace.state_mut().presentation_reason =
-                Some("Herdr pane graphics stream connected".into());
-            state.status = "Live view ready · Herdr pane graphics".into();
+            if rendered_browser_visual_area(state).is_some() {
+                state.browser_workspace.state_mut().presentation =
+                    glass_browser::browser_workspace::BrowserPresentationPath::Herdr;
+                state.browser_workspace.state_mut().presentation_reason =
+                    Some("Herdr pane graphics stream connected".into());
+                state.status = "Live view ready · Herdr pane graphics".into();
+            }
         }
         HerdrEvent::Failed(reason) => {
             let failure = format!("Herdr graphics unavailable: {reason}");
@@ -1595,6 +1699,184 @@ mod tests {
             kitty_pane: None,
             kitty_drawn: false,
         }
+    }
+
+    fn active_visual_state() -> (DevTuiState, std::path::PathBuf, VisualRuntime) {
+        let (mut state, root) = overlay_test_state();
+        state.set_terminal_size(120, 32);
+        state.surface = DevSurface::App;
+        state.browser_visual_live = true;
+        let browser = state.browser_workspace.state_mut();
+        browser.connection = BrowserConnectionPhase::Connected;
+        browser.browser_revision = Some(42);
+        browser.frame_revision = Some(41);
+        browser.presentation = glass_browser::browser_workspace::BrowserPresentationPath::Ansi;
+        browser.presentation_reason = Some("previous visible ANSI frame".into());
+        state.status = "Live view updated · ANSI half-block".into();
+        let mut visual = test_visual_runtime(VisualPath::Ansi);
+        visual.live = true;
+        (state, root, visual)
+    }
+
+    fn fixture_png() -> Vec<u8> {
+        use base64::Engine as _;
+
+        base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
+            .expect("decode PNG fixture")
+    }
+
+    fn fixture_ansi_pane() -> glass_browser::tui::live_view::AnsiPane {
+        let png = fixture_png();
+        let mut canvas = glass_browser::terminal_graphics::AnsiCanvas::default();
+        glass_browser::tui::live_view::AnsiPane::from_png(
+            &mut canvas,
+            &png,
+            8,
+            4,
+            glass_browser::terminal_graphics::FrameFit::Contain,
+        )
+        .expect("fixture is a successful ANSI screenshot")
+    }
+
+    #[test]
+    fn visual_capture_uses_rendered_app_pane_and_keeps_composer_visible() {
+        let (mut state, root, visual) = active_visual_state();
+        assert!(visual_capture_area(&state, &visual).is_some());
+
+        state.composer_mode = true;
+        assert!(visual_capture_area(&state, &visual).is_some());
+
+        state.file_picker_open = true;
+        assert!(visual_capture_area(&state, &visual).is_none());
+
+        state.file_picker_open = false;
+        state.surface = DevSurface::Code;
+        assert!(visual_capture_area(&state, &visual).is_none());
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn hidden_visual_pane_pauses_resumes_and_discards_hidden_in_flight_frame() {
+        use base64::Engine as _;
+
+        let (mut state, root, visual) = active_visual_state();
+        state.browser_pane = Some(fixture_ansi_pane());
+        let mut previous_visible = None;
+        let mut pending_hidden = false;
+        let mut pending_job = Some(7);
+        assert!(
+            reconcile_visual_pane_visibility(
+                &mut state,
+                &visual,
+                &mut previous_visible,
+                true,
+                &mut pending_hidden,
+            )
+            .is_some()
+        );
+
+        state.file_picker_open = true;
+        assert!(
+            reconcile_visual_pane_visibility(
+                &mut state,
+                &visual,
+                &mut previous_visible,
+                true,
+                &mut pending_hidden,
+            )
+            .is_none()
+        );
+        assert!(pending_hidden);
+        assert!(state.browser_visual_live);
+        assert_eq!(
+            state.browser_workspace.state().presentation,
+            glass_browser::browser_workspace::BrowserPresentationPath::Ansi,
+            "pause must preserve the selected backend for resume"
+        );
+        assert!(state.browser_pane.is_none());
+        assert_eq!(
+            state.browser_workspace.state().frame_revision,
+            None,
+            "hidden frames must not remain advertised as current"
+        );
+        assert_eq!(state.status, VISUAL_PAUSED_STATUS);
+        assert_eq!(
+            state
+                .browser_workspace
+                .state()
+                .presentation_reason
+                .as_deref(),
+            Some(VISUAL_PAUSED_REASON)
+        );
+
+        state.file_picker_open = false;
+        assert!(
+            reconcile_visual_pane_visibility(
+                &mut state,
+                &visual,
+                &mut previous_visible,
+                true,
+                &mut pending_hidden,
+            )
+            .is_some()
+        );
+        assert!(state.browser_visual_live);
+        assert_eq!(
+            state.browser_workspace.state().presentation,
+            glass_browser::browser_workspace::BrowserPresentationPath::Ansi
+        );
+        assert_eq!(state.status, VISUAL_RESUMING_STATUS);
+        assert_eq!(
+            state
+                .browser_workspace
+                .state()
+                .presentation_reason
+                .as_deref(),
+            Some(VISUAL_RESUMING_REASON)
+        );
+        assert!(!take_visual_result_if_current(
+            7,
+            &mut pending_job,
+            &mut pending_hidden,
+            visual_capture_area(&state, &visual).is_some(),
+        ));
+        assert_eq!(state.status, VISUAL_RESUMING_STATUS);
+        assert_eq!(
+            state
+                .browser_workspace
+                .state()
+                .presentation_reason
+                .as_deref(),
+            Some(VISUAL_RESUMING_REASON)
+        );
+
+        let mut fresh_job = Some(8);
+        let mut fresh_job_hidden = false;
+        assert!(take_visual_result_if_current(
+            8,
+            &mut fresh_job,
+            &mut fresh_job_hidden,
+            visual_capture_area(&state, &visual).is_some(),
+        ));
+        let png = base64::engine::general_purpose::STANDARD.encode(fixture_png());
+        apply_ansi_visual_result(
+            &mut state,
+            &visual,
+            snapshot::VisualJobResult {
+                id: 8,
+                columns: 8,
+                rows: 4,
+                result: Ok(serde_json::json!({ "base64": png })),
+            },
+        );
+        assert_eq!(state.status, "Live view updated · ANSI half-block");
+        assert_eq!(state.browser_workspace.state().frame_revision, Some(42));
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
     }
 
     #[test]

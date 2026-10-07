@@ -61,6 +61,9 @@ geometry: [task record](tasks/issue60-p1-tui-pointer-geometry-001.md). The F7
 worker-selection slice bounds Git/process/debug previews and assigns each
 result to its current selection owner:
 [task record](tasks/issue60-p1-worker-request-coalescing-001.md).
+The F9 visual-state slice pauses browser screenshot work while the rendered App
+pane is hidden and rejects hidden in-flight frames:
+[task record](tasks/issue60-p1-tui-visual-state-001.md).
 
 ## Active plan: Glass native browser engine (issue #40)
 

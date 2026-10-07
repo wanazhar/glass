@@ -2746,6 +2746,23 @@ fn render_browser_visual(
     area: Rect,
     browser: &glass_browser::browser_workspace::BrowserWorkspaceState,
 ) {
+    if browser
+        .presentation_reason
+        .as_deref()
+        .is_some_and(|reason| {
+            reason.starts_with("Live view paused") || reason.starts_with("Live view resuming")
+        })
+    {
+        let reason = browser.presentation_reason.as_deref().unwrap_or_default();
+        render_panel(
+            frame,
+            area,
+            " LIVE VIEW · PAUSED ",
+            format!("{}\n{}", browser_progress(state, browser), reason),
+            WARNING,
+        );
+        return;
+    }
     if state.browser_visual_live {
         if let Some(pane) = state.browser_pane.as_ref() {
             draw_ansi_pane(frame, area, pane);
@@ -5045,6 +5062,27 @@ mod tests {
             Some(ActiveOverlay::SessionPicker)
         );
         assert!(browser_visual_area(&state, area).is_none());
+    }
+
+    #[test]
+    fn paused_visual_reason_overrides_selected_backend_active_placeholder() {
+        let (mut state, root) = overlay_state();
+        state.surface = DevSurface::App;
+        state.browser_visual_live = true;
+        let browser = state.browser_workspace.state_mut();
+        browser.presentation = glass_browser::browser_workspace::BrowserPresentationPath::Kitty;
+        browser.presentation_reason =
+            Some("Live view paused while the browser pane is hidden".into());
+        browser.frame_revision = None;
+
+        let output = rendered(&state, 120, 32);
+        assert!(output.contains("LIVE VIEW · PAUSED"));
+        assert!(output.contains("Live view paused while the"));
+        assert!(output.contains("browser pane is hidden"));
+        assert!(!output.contains("Live browser view is active"));
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

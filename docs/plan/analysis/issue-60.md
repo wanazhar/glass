@@ -66,6 +66,10 @@ changes are insufficient where the issue names multiple entry points.
    identity, schemas, and persistent option forwarding. F7's selection-preview
    ownership and latest-wins behavior is scoped in the
    [worker request-coalescing task](../tasks/issue60-p1-worker-request-coalescing-001.md).
+   F9's pair-apply label claim is already handled by the Factory Home mode
+   label; its live screenshot lifecycle is tracked in the
+   [visual-state task](../tasks/issue60-p1-tui-visual-state-001.md), including
+   capture visibility, hidden in-flight result rejection, and pause/resume.
 5. **P2 functional/UX contracts, then P3 consistency.** Align surfaces,
    layout/pointer behavior, help, CLI aliases, and low-risk presentation.
 

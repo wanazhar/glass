@@ -434,15 +434,21 @@ restart the stream, so a new TUI runtime is required to retry it. Visual
 requests are coalesced and do not block key handling.
 
 Live browser screenshot scheduling and result application use the same
-rendered App visual-pane geometry. The pane remains available under Composer;
+rendered App visual-pane geometry, including the Workflow footer bounds. The
+pane remains available under Composer;
 an occluding overlay, another surface, or an empty pane pauses capture. A
 capture that was in flight when the pane became hidden is discarded even if
 the pane returns before the result arrives. Hiding clears the cached ANSI frame
 and current frame revision, marks the presentation paused, and keeps the live
 toggle enabled. Returning to the pane marks it as resuming until a fresh frame
-arrives. The presentation-path field continues to name the selected backend;
+arrives. An explicit live-view toggle off also clears cached frame state and
+discards its in-flight capture before a later re-enable. A delayed Herdr
+connection event cannot mark the pane ready until its frame revision matches
+the current browser revision. The presentation-path field continues to name the selected backend;
 the paused reason and absent frame revision indicate that no current frame is
-being presented. Capture dimensions follow the rendered pane bounds.
+being presented. The panel title and reason show paused/resuming state while
+unrelated global status messages remain intact. Capture dimensions follow the
+rendered pane bounds.
 
 Terminal process actions are governed and bounded: `s` queues the detected
 project dev command, while palette routes can start a custom command, inspect

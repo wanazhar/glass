@@ -41,7 +41,12 @@ but its workspace presentation and frame revision remain advertised as fresh.
   when the current pane is unavailable or the visual runtime is no longer live.
 - On hide, clear the cached ANSI pane and current frame revision, mark the
   presentation/status paused, and preserve the live toggle. On return, show a
-  resuming state until a new visible frame is accepted.
+  resuming state until a new visible frame is accepted. If the user explicitly
+  switches live view off, clear the same cached frame state and reject its
+  outstanding capture before a later re-enable.
+- Preserve unrelated status-line messages rather than replacing them with a
+  visual lifecycle message; the browser panel title and reason are the
+  dedicated paused/resuming indicator.
 - Keep the selected backend in the presentation-path field while paused. The
   paused/resuming reason, absent frame revision, and cleared ANSI pane describe
   freshness; retaining the backend lets live presentation resume without
@@ -66,13 +71,18 @@ but its workspace presentation and frame revision remain advertised as fresh.
   returning to App displays a resuming state.
 - Verify a result captured before hide is discarded after resume and a fresh
   visible capture clears the pause state.
+- Verify a delayed Herdr connection event cannot claim readiness before the
+  current browser frame is accepted, and manual off/on cannot show a stale
+  cached frame.
 - Run focused TUI visual tests, the glass-dev package check, formatting, and
   documentation checks. Record any unrelated documentation-coverage drift.
 - Obtain an independent review before merge.
 
 ## Validation evidence
 
-- `cargo test -p glass-dev --lib --locked visual_`: passed, 9 tests.
+- `cargo test -p glass-dev --lib --locked visual_`: passed, 12 tests,
+  including Workflow-aware geometry, delayed Herdr connection handling before
+  a fresh frame, and explicit live toggle off/on.
 - `cargo test -p glass-dev --lib --locked
   paused_visual_reason_overrides_selected_backend_active_placeholder --
   --nocapture`: passed, 1 test.

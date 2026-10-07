@@ -385,8 +385,12 @@ fn reconcile_visual_pane_visibility(
     let live = visual.live && state.browser_visual_live;
     let area = live.then(|| rendered_browser_visual_area(state)).flatten();
     if !live {
-        if previous_visible.take() == Some(true) && has_pending_job {
-            *pending_job_hidden = true;
+        if previous_visible.take() == Some(true) {
+            if has_pending_job {
+                *pending_job_hidden = true;
+            }
+            state.browser_pane = None;
+            state.browser_workspace.state_mut().frame_revision = None;
         }
         return None;
     }
@@ -1461,7 +1465,11 @@ fn apply_ansi_visual_result(
 fn handle_herdr_event(state: &mut DevTuiState, visual: &mut VisualRuntime, event: HerdrEvent) {
     match event {
         HerdrEvent::Connected if visual.live => {
-            if rendered_browser_visual_area(state).is_some() {
+            let browser = state.browser_workspace.state();
+            let has_current_frame = browser
+                .frame_revision
+                .is_some_and(|revision| Some(revision) == browser.browser_revision);
+            if rendered_browser_visual_area(state).is_some() && has_current_frame {
                 state.browser_workspace.state_mut().presentation =
                     glass_browser::browser_workspace::BrowserPresentationPath::Herdr;
                 state.browser_workspace.state_mut().presentation_reason =
@@ -1874,6 +1882,86 @@ mod tests {
         );
         assert_eq!(state.status, "Live view updated · ANSI half-block");
         assert_eq!(state.browser_workspace.state().frame_revision, Some(42));
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn resuming_visual_state_survives_delayed_herdr_connection_until_fresh_frame() {
+        let (mut state, root, mut visual) = active_visual_state();
+        visual.path = VisualPath::Herdr;
+        state.browser_workspace.state_mut().presentation =
+            glass_browser::browser_workspace::BrowserPresentationPath::Herdr;
+        state.browser_workspace.state_mut().frame_revision = None;
+        state.browser_workspace.state_mut().presentation_reason =
+            Some(VISUAL_RESUMING_REASON.into());
+        state.status = VISUAL_RESUMING_STATUS.into();
+
+        handle_herdr_event(&mut state, &mut visual, HerdrEvent::Connected);
+
+        assert_eq!(state.status, VISUAL_RESUMING_STATUS);
+        assert_eq!(
+            state
+                .browser_workspace
+                .state()
+                .presentation_reason
+                .as_deref(),
+            Some(VISUAL_RESUMING_REASON)
+        );
+        assert_eq!(state.browser_workspace.state().frame_revision, None);
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn visual_manual_toggle_off_clears_cached_frame_and_rejects_in_flight_result() {
+        let (mut state, root, mut visual) = active_visual_state();
+        state.browser_pane = Some(fixture_ansi_pane());
+        let mut previous_visible = Some(true);
+        let mut pending_job_hidden = false;
+        let mut pending_job = Some(17);
+
+        visual.live = false;
+        state.browser_visual_live = false;
+        state.status = "Live view stopped · semantic inspection remains available".into();
+        assert!(
+            reconcile_visual_pane_visibility(
+                &mut state,
+                &visual,
+                &mut previous_visible,
+                true,
+                &mut pending_job_hidden,
+            )
+            .is_none()
+        );
+        assert!(state.browser_pane.is_none());
+        assert_eq!(state.browser_workspace.state().frame_revision, None);
+        assert_eq!(
+            state.status,
+            "Live view stopped · semantic inspection remains available"
+        );
+
+        visual.live = true;
+        state.browser_visual_live = true;
+        assert!(
+            reconcile_visual_pane_visibility(
+                &mut state,
+                &visual,
+                &mut previous_visible,
+                true,
+                &mut pending_job_hidden,
+            )
+            .is_some()
+        );
+        assert!(!take_visual_result_if_current(
+            17,
+            &mut pending_job,
+            &mut pending_job_hidden,
+            visual_capture_area(&state, &visual).is_some(),
+        ));
+        assert!(state.browser_pane.is_none());
 
         drop(state);
         std::fs::remove_dir_all(root).expect("remove test workspace");

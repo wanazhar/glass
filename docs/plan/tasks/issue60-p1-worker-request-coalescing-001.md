@@ -1,7 +1,7 @@
 ---
 id: issue60-p1-worker-request-coalescing-001
 scope: glass-dev/tui-selection-previews
-status: in-progress
+status: complete
 depends-on: [issue60-p1-tui-pointer-geometry-001]
 ---
 
@@ -60,6 +60,7 @@ result still owned by the current visible selection can update TUI state.
 - `docs/plan/tasks/issue60-p1-worker-request-coalescing-001.md`
 - `docs/plan/reviews/issue60-p1-worker-request-coalescing-001-01.md`
 - `docs/plan/reviews/issue60-p1-worker-request-coalescing-001-02.md`
+- `docs/plan/reviews/issue60-p1-worker-request-coalescing-001-03.md`
 
 ## Verification
 
@@ -99,6 +100,9 @@ result still owned by the current visible selection can update TUI state.
   source outside the project. The added regression verifies rejection before
   entering Code, opening a buffer, or changing the file inventory, and checks
   the confinement error in status.
+- Review 03 (`docs/plan/reviews/issue60-p1-worker-request-coalescing-001-03.md`)
+  passed and confirmed the outside-workspace regression exercises the
+  canonical containment guard without changing the reviewed implementation.
 - `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-dev --lib --locked debug_` — passed (8 tests), including both new debugger-pane and source-jump regressions.
 - `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-dev --lib --locked stale_git_diff_cannot_replace_untracked_placeholder` — passed (1 test).
 - `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-dev --lib --locked debug_jump_rejects_absolute_source_outside_workspace` — passed (1 test); an existing absolute source outside the project leaves the TUI on Debug, does not add a file or buffer, and reports the workspace confinement error.
@@ -109,4 +113,5 @@ result still owned by the current visible selection can update TUI state.
 - `python3 scripts/check-release-documentation.py --require-previous-version --report /tmp/glass-issue60-f7-followup-release-documentation.json` — passed; 0 current-claim failures.
 - `python3 scripts/check-tui-shortcuts.py` — passed; 15 implementation keys and 63 documentation markers.
 - `python3 scripts/check-documentation-coverage.py --glass /home/ubuntu/work/glass/target/debug/glass --glass-browser /home/ubuntu/work/glass/target/debug/glass-browser` — the known MCP fixture/schema drift remains: 177 live tools and 76,967 serialized bytes are absent from the fixture/budget. This F7 change does not touch MCP.
-- Task status remains `in-progress` pending independent re-review.
+
+Finding F7 is complete.

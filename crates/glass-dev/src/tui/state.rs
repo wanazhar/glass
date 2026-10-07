@@ -13322,4 +13322,58 @@ mod tests {
         drop(worker);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
+
+    #[test]
+    fn debug_jump_rejects_absolute_source_outside_workspace() {
+        let (mut state, root) = routed_state("selection-preview-debug-outside-source");
+        let outside_path = root.with_file_name(format!(
+            "outside-{}.rs",
+            root.file_name()
+                .expect("temporary workspace name")
+                .to_string_lossy()
+        ));
+        std::fs::write(&outside_path, "fn outside() {}\n").expect("write outside source file");
+        state.surface = DevSurface::Debug;
+        state.debug_pane = DebugPane::Frames;
+        state.debug_sessions = vec![DebugSessionRow {
+            name: "debug-a".into(),
+            state: crate::debugger::DebugSessionState::Stopped,
+            pid: 9,
+            breakpoints: 0,
+            watches: 0,
+        }];
+        state.debug_frames = vec![DebugFrameRow {
+            id: 43,
+            name: "outside".into(),
+            path: Some(outside_path.display().to_string()),
+            line: Some(1),
+        }];
+        let files_before = state.files.clone();
+
+        state.jump_selected_debug_frame();
+
+        assert_eq!(state.surface, DevSurface::Debug);
+        assert!(state.focused_editor_path.is_empty());
+        assert_eq!(state.files, files_before);
+        assert!(
+            state
+                .status
+                .contains("source path is outside this workspace"),
+            "unexpected status: {}",
+            state.status
+        );
+        assert!(
+            state
+                .ws()
+                .expect("workspace lock")
+                .project()
+                .buffers()
+                .next()
+                .is_none(),
+            "outside source must not be opened into a project buffer"
+        );
+
+        std::fs::remove_file(outside_path).expect("remove outside source file");
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
 }

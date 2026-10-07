@@ -59,6 +59,7 @@ result still owned by the current visible selection can update TUI state.
 - `docs/plan/analysis/issue-60.md`
 - `docs/plan/tasks/issue60-p1-worker-request-coalescing-001.md`
 - `docs/plan/reviews/issue60-p1-worker-request-coalescing-001-01.md`
+- `docs/plan/reviews/issue60-p1-worker-request-coalescing-001-02.md`
 
 ## Verification
 
@@ -85,16 +86,23 @@ result still owned by the current visible selection can update TUI state.
 ## Review follow-up
 
 - Review 01 (`docs/plan/reviews/issue60-p1-worker-request-coalescing-001-01.md`)
-  is blocked on pane ownership for thread/stack results and scopes being
-  discarded after a source jump. The follow-up adds pane/view ownership,
-  result-status suppression in Code, and focused regressions
+  reported pane ownership and source-jump completion blockers. Commit
+  `47830a38` added pane/view ownership, result-status suppression in Code, and
+  focused regressions
   `stale_debug_thread_and_stack_previews_do_not_take_over_new_pane` and
   `debug_scopes_and_variables_finish_after_source_jump_without_replacing_code_status`.
 - The Code-source regression uses an absolute DAP path under the temporary
   project, verifies the focused path normalizes to `src/main.rs`, and checks
   the original DAP path remains part of preview ownership.
+- Review 02 (`docs/plan/reviews/issue60-p1-worker-request-coalescing-001-02.md`)
+  passed and recommended a focused regression for an existing absolute DAP
+  source outside the project. The added regression verifies rejection before
+  entering Code, opening a buffer, or changing the file inventory, and checks
+  the confinement error in status.
 - `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-dev --lib --locked debug_` — passed (8 tests), including both new debugger-pane and source-jump regressions.
 - `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-dev --lib --locked stale_git_diff_cannot_replace_untracked_placeholder` — passed (1 test).
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test -p glass-dev --lib --locked debug_jump_rejects_absolute_source_outside_workspace` — passed (1 test); an existing absolute source outside the project leaves the TUI on Debug, does not add a file or buffer, and reports the workspace confinement error.
+- `cargo fmt --all -- --check` and `git diff --check` — passed.
 - `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check -p glass-dev --lib --bins --locked` — passed; 72 existing dead-code warnings in `glass-browser`, no new `glass-dev` warnings.
 - `cargo fmt --all -- --check` and `git diff --check` — passed.
 - `python3 scripts/check-documentation-depth.py` — passed; 93 current guides routed/audited and 19 substantive contracts.

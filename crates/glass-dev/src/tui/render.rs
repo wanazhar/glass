@@ -382,29 +382,8 @@ pub fn browser_visual_area(state: &DevTuiState, area: Rect) -> Option<Rect> {
         return None;
     }
 
-    let app_area = surface_area(state, area);
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(6),
-            Constraint::Length(2),
-        ])
-        .split(app_area);
-    let visual = if stack_for_phone(state, rows[1]) {
-        rows[1]
-    } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(68), Constraint::Min(30)])
-            .split(rows[1])[0]
-    };
-    let inner = Rect {
-        x: visual.x.saturating_add(1),
-        y: visual.y.saturating_add(1),
-        width: visual.width.saturating_sub(2),
-        height: visual.height.saturating_sub(2),
-    };
+    let visual = app_surface_geometry(state, surface_area(state, area)).visual;
+    let inner = panel_content_area(visual);
     (inner.width > 0 && inner.height > 0).then_some(inner)
 }
 
@@ -5062,6 +5041,27 @@ mod tests {
             Some(ActiveOverlay::SessionPicker)
         );
         assert!(browser_visual_area(&state, area).is_none());
+    }
+
+    #[test]
+    fn browser_visual_area_uses_the_rendered_workflow_aware_app_geometry() {
+        let (mut state, root) = overlay_state();
+        let area = Rect::new(0, 0, 120, 32);
+        state.surface = DevSurface::App;
+        state.browser_visual_live = true;
+
+        let rendered = app_surface_geometry(&state, surface_area(&state, area));
+        assert_eq!(
+            browser_visual_area(&state, area),
+            Some(panel_content_area(rendered.visual))
+        );
+        assert!(
+            browser_visual_area(&state, area)
+                .is_some_and(|visual| visual.bottom() <= rendered.workflow.y)
+        );
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

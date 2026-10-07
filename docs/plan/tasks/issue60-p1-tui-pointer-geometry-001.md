@@ -101,6 +101,7 @@ entities that are not visible or do not exist.
 - `python3 scripts/check-documentation-depth.py` — passed; 93 current guides routed/audited and 19 substantive contracts.
 - `python3 scripts/check-tui-shortcuts.py` — passed; 15 implementation keys and 63 documentation markers.
 - `python3 scripts/check-documentation-coverage.py --glass /home/ubuntu/work/glass/target/debug/glass --glass-browser /home/ubuntu/work/glass/target/debug/glass-browser` — remains blocked by the same MCP fixture/schema-budget drift listed above; the live measurements remain 177 tools and 76,967 serialized bytes.
+- Post-merge `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --all-targets --locked` did not complete. In the unchanged `glass-browser` crate, `content_process_font_destination_uses_the_native_font_loader` failed at `content_process.rs:25757` (0 resources, expected 1), and `script_text_content_replaces_subtree_and_detaches_old_nodes` failed at `dom.rs:16896` (4 elements, expected 2). The run then aborted on stack overflow in `cli::args::tests::agent_readiness_commands_are_explicit`; that isolated test passes with `RUST_MIN_STACK=8388608`. These paths are outside the F5 TUI diff. Focused F5 tests and independent review passed.
 
 ## Independent review
 

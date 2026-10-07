@@ -43,8 +43,14 @@ actor becomes a visible wait/error status rather than a terminal freeze.
 Git diff, process log, and debugger selection previews use one active request
 and one replaceable pending request. Each result belongs to its captured job
 ID and selected item; switching selection or surface makes an older result
-inapplicable. Direct user operations keep their normal execution and
-confirmation behavior.
+inapplicable. Debug thread and stack previews also belong to the pane that
+requested them. Scopes and variables belong to the selected frame and either
+the Debug/Frames pane or Code focused on that frame's source path. A valid
+Code-side result updates debugger data without replacing Code's status or
+changing the active surface. An absolute DAP source path is opened from Code
+only after it resolves inside the current workspace; preview ownership keeps
+the original frame path separate from Code's normalized focused path. Direct
+user operations keep their normal execution and confirmation behavior.
 
 The worker requests are `Refresh`, `RefreshConversation`, `Tool`,
 `Screenshot`, and `ShutDown`. Refresh covers file listing, Git, agent history,

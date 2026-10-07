@@ -69,6 +69,10 @@ open and close.
 
 - Cover plain and multiline composer draft/cursor preservation through typed
   modal open and Esc close.
+- Submit `/new keep this draft` directly from the composer, deny it, and verify
+  the exact command text/cursor returns. Also verify retryable slash input is
+  kept on dispatch failure or while another job runs, and a Trust redirect
+  stays on Trust with the draft.
 - Compare typed and pasted `/ask what is this`: both select Ask mode, submit
   the same prompt, and preserve the composer draft. Cover `/ask` without
   arguments, existing `/stats`, `/sessions`, and `/think LEVEL` routes, and a
@@ -94,3 +98,24 @@ open and close.
 - `python3 scripts/check-release-documentation.py --require-previous-version --report /tmp/glass-issue60-tui-pi-draft-release-documentation.json` — passed (1,563 Markdown documents scanned; 0 current-claim failures).
 - `python3 scripts/check-tui-shortcuts.py` — passed (15 implementation keys; 63 documentation markers).
 - `python3 scripts/check-documentation-coverage.py --glass /home/ubuntu/work/glass/target/debug/glass --glass-browser /home/ubuntu/work/glass/target/debug/glass-browser` — reports unchanged MCP inventory drift: live Glass tools differ from `crates/glass-dev/tests/fixtures/client-conformance-v1.json`; `docs/mcp-schema-budget.md` omits `| Negotiated tools | 177 |` and `| Serialized `tools` array | 76,967 UTF-8 bytes |`. This task does not change MCP tools or their schema.
+
+## Review 01 follow-up
+
+Review 01 found that submitting a native Pi command from composer input cleared
+the source text before confirmation; denial therefore returned an empty draft.
+The follow-up retains the composer-origin text and byte cursor while the
+confirmation is pending, restores them on denial or failed submission, and
+consumes that snapshot after a successful immediate queue. A modal opened with
+an unrelated composer draft has no origin snapshot and retains its prior
+behavior. Ask-mode failure restores the command while keeping the Trust surface
+active if execution is redirected there.
+
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib composer_native_slash_denial_restores_exact_command_and_cursor --locked` — passed (1 test).
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib composer_slash_submit_failure_keeps_exact_input_for_retry --locked` — passed (1 test).
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib composer_native_slash_blocked_by_background_restores_exact_input --locked` — passed (1 test).
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib composer_ask_trust_redirect_keeps_input_on_trust_surface --locked` — passed (1 test).
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib pi_slash_command_waits_for_mutation_confirmation --locked` — passed (1 test), retaining separate-modal/unrelated-draft behavior.
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check --manifest-path Cargo.toml -p glass-dev --lib --bins --locked` — passed; `glass-browser` reports the existing 72 dead-code warnings, with no new `glass-dev` warnings.
+- `cargo fmt --all -- --check` and `git diff --check` — passed.
+- `python3 scripts/check-documentation-depth.py` — passed (93 current guides routed/audited; 19 substantive contracts).
+- `python3 scripts/check-release-documentation.py --require-previous-version` — passed (1,564 Markdown documents; 0 current-claim failures).

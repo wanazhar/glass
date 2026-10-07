@@ -1,7 +1,7 @@
 ---
 id: issue60-p1-tui-pointer-geometry-001
 scope: glass-dev/tui-pointer-geometry
-status: in-progress
+status: complete
 depends-on: [issue60-p1-tui-overlay-priority-001]
 ---
 
@@ -49,6 +49,8 @@ entities that are not visible or do not exist.
 - `docs/plan/README.md`
 - `docs/plan/analysis/issue-60.md`
 - `docs/plan/tasks/issue60-p1-tui-pointer-geometry-001.md`
+- `docs/plan/reviews/issue60-p1-tui-pointer-geometry-001-01.md`
+- `docs/plan/reviews/issue60-p1-tui-pointer-geometry-001-02.md`
 
 ## Verification
 
@@ -99,3 +101,13 @@ entities that are not visible or do not exist.
 - `python3 scripts/check-documentation-depth.py` — passed; 93 current guides routed/audited and 19 substantive contracts.
 - `python3 scripts/check-tui-shortcuts.py` — passed; 15 implementation keys and 63 documentation markers.
 - `python3 scripts/check-documentation-coverage.py --glass /home/ubuntu/work/glass/target/debug/glass --glass-browser /home/ubuntu/work/glass/target/debug/glass-browser` — remains blocked by the same MCP fixture/schema-budget drift listed above; the live measurements remain 177 tools and 76,967 serialized bytes.
+
+## Independent review
+
+- Review 01 found two blocking geometry mismatches. Both were fixed in
+  `c278afc6` and independently rechecked in
+  [review 02](../reviews/issue60-p1-tui-pointer-geometry-001-02.md), which
+  passed. Review 02 records a non-blocking P3 note that the More-route test
+  lacks an explicit Compact-only case; rendering and hit testing use the same
+  geometry helpers for that layout.
+- Finding F5 is complete.

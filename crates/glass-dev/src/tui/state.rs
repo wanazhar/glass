@@ -55,10 +55,14 @@ enum SelectionPreviewTarget {
     DebugScopes {
         session: String,
         frame_id: i64,
+        frame_path: Option<String>,
+        source_path: Option<String>,
     },
     DebugVariables {
         session: String,
         frame_id: i64,
+        frame_path: Option<String>,
+        source_path: Option<String>,
         scope_index: usize,
         scope_name: String,
         reference: i64,
@@ -68,6 +72,7 @@ enum SelectionPreviewTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SelectionPreviewKey {
     surface: DevSurface,
+    expected_debug_pane: Option<DebugPane>,
     target: SelectionPreviewTarget,
 }
 
@@ -94,6 +99,16 @@ impl SelectionPreviewKey {
             SelectionPreviewTarget::DebugStack { .. } => "glass.debug.stack",
             SelectionPreviewTarget::DebugScopes { .. } => "glass.debug.scopes",
             SelectionPreviewTarget::DebugVariables { .. } => "glass.debug.variables",
+        }
+    }
+
+    fn publishes_status_on(&self, surface: DevSurface) -> bool {
+        match &self.target {
+            SelectionPreviewTarget::DebugScopes { .. }
+            | SelectionPreviewTarget::DebugVariables { .. } => {
+                surface == DevSurface::Debug && self.surface == DevSurface::Debug
+            }
+            _ => true,
         }
     }
 }
@@ -2078,13 +2093,37 @@ impl DevTuiState {
             || self.agent_send_job.is_some()
     }
 
-    fn selection_preview_key_is_current(&self, key: &SelectionPreviewKey) -> bool {
-        if self.surface != key.surface {
+    fn debug_frame_preview_view_is_current(
+        &self,
+        key: &SelectionPreviewKey,
+        source_path: Option<&str>,
+    ) -> bool {
+        if key.expected_debug_pane != Some(DebugPane::Frames)
+            || self.debug_pane != DebugPane::Frames
+        {
             return false;
         }
+        match key.surface {
+            DevSurface::Debug => self.surface == DevSurface::Debug,
+            DevSurface::Code => {
+                self.surface == DevSurface::Code
+                    && source_path.is_some_and(|path| {
+                        !self.focused_editor_path.is_empty()
+                            && path == self.focused_editor_path.as_str()
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    fn selection_preview_key_is_current(&self, key: &SelectionPreviewKey) -> bool {
         match &key.target {
             SelectionPreviewTarget::GitDiff { path, staged } => {
-                if !self.git_diff_open {
+                if key.surface != DevSurface::Git
+                    || key.expected_debug_pane.is_some()
+                    || self.surface != key.surface
+                    || !self.git_diff_open
+                {
                     return false;
                 }
                 let selected = self.selected_git_entry();
@@ -2097,19 +2136,27 @@ impl DevTuiState {
                 &current_path == path && current_staged == *staged
             }
             SelectionPreviewTarget::ProcessLogs { name } => {
-                self.surface == DevSurface::Terminal
+                key.surface == DevSurface::Terminal
+                    && key.expected_debug_pane.is_none()
+                    && self.surface == DevSurface::Terminal
                     && self
                         .selected_process_entry()
                         .is_some_and(|entry| entry.name == *name)
             }
             SelectionPreviewTarget::DebugThreads { session } => {
-                self.surface == DevSurface::Debug
+                key.surface == DevSurface::Debug
+                    && key.expected_debug_pane == Some(DebugPane::Sessions)
+                    && self.surface == DevSurface::Debug
+                    && self.debug_pane == DebugPane::Sessions
                     && self
                         .selected_debug_session()
                         .is_some_and(|selected| selected.name == *session)
             }
             SelectionPreviewTarget::DebugStack { session, thread_id } => {
-                self.surface == DevSurface::Debug
+                key.surface == DevSurface::Debug
+                    && key.expected_debug_pane == Some(DebugPane::Threads)
+                    && self.surface == DevSurface::Debug
+                    && self.debug_pane == DebugPane::Threads
                     && self
                         .selected_debug_session()
                         .is_some_and(|selected| selected.name == *session)
@@ -2117,29 +2164,38 @@ impl DevTuiState {
                         .selected_debug_thread()
                         .is_some_and(|selected| selected.id == *thread_id)
             }
-            SelectionPreviewTarget::DebugScopes { session, frame_id } => {
-                self.surface == DevSurface::Debug
+            SelectionPreviewTarget::DebugScopes {
+                session,
+                frame_id,
+                frame_path,
+                source_path,
+            } => {
+                self.debug_frame_preview_view_is_current(key, source_path.as_deref())
                     && self
                         .selected_debug_session()
                         .is_some_and(|selected| selected.name == *session)
-                    && self
-                        .selected_debug_frame()
-                        .is_some_and(|selected| selected.id == *frame_id)
+                    && self.selected_debug_frame().is_some_and(|selected| {
+                        selected.id == *frame_id
+                            && selected.path.as_deref() == frame_path.as_deref()
+                    })
             }
             SelectionPreviewTarget::DebugVariables {
                 session,
                 frame_id,
+                frame_path,
+                source_path,
                 scope_index,
                 scope_name,
                 reference,
             } => {
-                self.surface == DevSurface::Debug
+                self.debug_frame_preview_view_is_current(key, source_path.as_deref())
                     && self
                         .selected_debug_session()
                         .is_some_and(|selected| selected.name == *session)
-                    && self
-                        .selected_debug_frame()
-                        .is_some_and(|selected| selected.id == *frame_id)
+                    && self.selected_debug_frame().is_some_and(|selected| {
+                        selected.id == *frame_id
+                            && selected.path.as_deref() == frame_path.as_deref()
+                    })
                     && self.selected_debug_scope == *scope_index
                     && self
                         .debug_scopes
@@ -2159,6 +2215,7 @@ impl DevTuiState {
         context: crate::tools::DevelopmentToolContext,
         label: String,
     ) {
+        let publish_status = key.publishes_status_on(self.surface);
         if self
             .active_selection_preview
             .as_ref()
@@ -2167,7 +2224,7 @@ impl DevTuiState {
             // Returning to the active selection makes an older pending target
             // obsolete; the in-flight result will again match the UI.
             self.pending_selection_preview = None;
-            if let Some(active) = &self.active_selection_preview {
+            if publish_status && let Some(active) = &self.active_selection_preview {
                 self.status = format!("Loading {}…", active.label);
             }
             return;
@@ -2180,7 +2237,7 @@ impl DevTuiState {
             label: label.clone(),
         });
         self.flush_pending_selection_preview(worker);
-        if self.pending_selection_preview.is_some() {
+        if publish_status && self.pending_selection_preview.is_some() {
             self.status =
                 format!("Queued {label} · latest selection will load when the worker is free");
         }
@@ -2199,6 +2256,7 @@ impl DevTuiState {
         if !self.selection_preview_key_is_current(&pending.key) {
             return;
         }
+        let publish_status = pending.key.publishes_status_on(self.surface);
         match worker.submit_tool(pending.call, pending.context) {
             Ok(id) => {
                 self.running_tool_job = Some(id);
@@ -2207,11 +2265,15 @@ impl DevTuiState {
                     key: pending.key,
                     label: pending.label.clone(),
                 });
-                self.status = format!("Loading {}…", pending.label);
+                if publish_status {
+                    self.status = format!("Loading {}…", pending.label);
+                }
             }
             Err(error) => {
                 self.active_selection_preview = None;
-                self.status = format!("{} unavailable: {error}", pending.label);
+                if publish_status {
+                    self.status = format!("{} unavailable: {error}", pending.label);
+                }
             }
         }
     }
@@ -4033,6 +4095,7 @@ impl DevTuiState {
     }
 
     pub fn apply_tool_job_result(&mut self, result: super::snapshot::ToolJobResult) {
+        let mut publish_preview_status = true;
         if result.tool == "glass.agent.send" && self.agent_send_job == Some(result.id) {
             self.agent_send_job = None;
             match result.result {
@@ -4110,6 +4173,7 @@ impl DevTuiState {
             {
                 return;
             }
+            publish_preview_status = active.key.publishes_status_on(self.surface);
         } else {
             if self.running_tool_job != Some(result.id) {
                 return;
@@ -4243,10 +4307,14 @@ impl DevTuiState {
                     if !self.debug_scopes.is_empty() {
                         self.debug_variables_requested = true;
                     }
-                    self.status = format!("{} scope(s)", self.debug_scopes.len());
+                    if publish_preview_status {
+                        self.status = format!("{} scope(s)", self.debug_scopes.len());
+                    }
                 } else if result.tool == "glass.debug.variables" {
                     self.debug_variables = parse_debug_variables(&value);
-                    self.status = format!("{} variable(s)", self.debug_variables.len());
+                    if publish_preview_status {
+                        self.status = format!("{} variable(s)", self.debug_variables.len());
+                    }
                 } else if result.tool == "glass.git.diff" {
                     let empty = value.as_str().is_none_or(|diff| diff.trim().is_empty());
                     self.git_diff = if empty {
@@ -4406,7 +4474,9 @@ impl DevTuiState {
                     self.git_diff = format!("Git diff unavailable: {error}");
                     self.git_diff_open = true;
                 }
-                self.status = format!("{} failed: {error}", result.tool);
+                if publish_preview_status {
+                    self.status = format!("{} failed: {error}", result.tool);
+                }
             }
         }
     }
@@ -4957,6 +5027,7 @@ impl DevTuiState {
             worker,
             SelectionPreviewKey {
                 surface: self.surface,
+                expected_debug_pane: None,
                 target: SelectionPreviewTarget::ProcessLogs { name: name.clone() },
             },
             call,
@@ -5127,6 +5198,7 @@ impl DevTuiState {
             worker,
             SelectionPreviewKey {
                 surface: self.surface,
+                expected_debug_pane: Some(DebugPane::Sessions),
                 target: SelectionPreviewTarget::DebugThreads {
                     session: session.clone(),
                 },
@@ -5161,6 +5233,7 @@ impl DevTuiState {
             worker,
             SelectionPreviewKey {
                 surface: self.surface,
+                expected_debug_pane: Some(DebugPane::Threads),
                 target: SelectionPreviewTarget::DebugStack {
                     session: session.clone(),
                     thread_id,
@@ -5277,9 +5350,15 @@ impl DevTuiState {
         let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
             return;
         };
-        let Some(frame_id) = self.selected_debug_frame().map(|frame| frame.id) else {
+        let Some((frame_id, frame_path)) = self
+            .selected_debug_frame()
+            .map(|frame| (frame.id, frame.path.clone()))
+        else {
             return;
         };
+        let source_path = (self.surface == DevSurface::Code
+            && !self.focused_editor_path.is_empty())
+        .then(|| self.focused_editor_path.clone());
         let Ok((call, context)) = self.tool_request(
             "glass.debug.scopes",
             serde_json::json!({"session": session, "frameId": frame_id}),
@@ -5291,7 +5370,13 @@ impl DevTuiState {
             worker,
             SelectionPreviewKey {
                 surface: self.surface,
-                target: SelectionPreviewTarget::DebugScopes { session, frame_id },
+                expected_debug_pane: Some(DebugPane::Frames),
+                target: SelectionPreviewTarget::DebugScopes {
+                    session,
+                    frame_id,
+                    frame_path,
+                    source_path,
+                },
             },
             call,
             context,
@@ -5303,7 +5388,10 @@ impl DevTuiState {
         let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
             return;
         };
-        let Some(frame_id) = self.selected_debug_frame().map(|frame| frame.id) else {
+        let Some((frame_id, frame_path)) = self
+            .selected_debug_frame()
+            .map(|frame| (frame.id, frame.path.clone()))
+        else {
             return;
         };
         let Some(scope) = self.debug_scopes.get(self.selected_debug_scope) else {
@@ -5315,6 +5403,9 @@ impl DevTuiState {
         if reference <= 0 {
             return;
         }
+        let source_path = (self.surface == DevSurface::Code
+            && !self.focused_editor_path.is_empty())
+        .then(|| self.focused_editor_path.clone());
         let Ok((call, context)) = self.tool_request(
             "glass.debug.variables",
             serde_json::json!({"session": session, "variablesReference": reference}),
@@ -5326,9 +5417,12 @@ impl DevTuiState {
             worker,
             SelectionPreviewKey {
                 surface: self.surface,
+                expected_debug_pane: Some(DebugPane::Frames),
                 target: SelectionPreviewTarget::DebugVariables {
                     session,
                     frame_id,
+                    frame_path,
+                    source_path,
                     scope_index,
                     scope_name,
                     reference,
@@ -5349,7 +5443,14 @@ impl DevTuiState {
             self.status = format!("{} has no source path", frame.name);
             return;
         };
-        match self.open_path(&path) {
+        let source_path = match self.debug_frame_source_path(&path) {
+            Ok(path) => path,
+            Err(error) => {
+                self.status = format!("Could not open {path}: {error}");
+                return;
+            }
+        };
+        match self.open_path(&source_path) {
             Ok(_) => {
                 if let Some(line) = frame.line {
                     let _ = self.set_editor_cursor(
@@ -5365,7 +5466,7 @@ impl DevTuiState {
                 self.status = format!(
                     "Debug {} · {}{}",
                     frame.name,
-                    path,
+                    source_path,
                     frame
                         .line
                         .map(|line| format!(":{line}"))
@@ -5375,6 +5476,21 @@ impl DevTuiState {
             }
             Err(error) => self.status = format!("Could not open {path}: {error}"),
         }
+    }
+
+    fn debug_frame_source_path(&self, path: &str) -> Result<String, String> {
+        let path = Path::new(path);
+        if !path.is_absolute() {
+            return Ok(path.to_string_lossy().into_owned());
+        }
+        let root = std::fs::canonicalize(&self.snapshot_root)
+            .map_err(|error| format!("workspace root unavailable: {error}"))?;
+        let source = std::fs::canonicalize(path)
+            .map_err(|error| format!("source path unavailable: {error}"))?;
+        let relative = source
+            .strip_prefix(&root)
+            .map_err(|_| "source path is outside this workspace".to_string())?;
+        Ok(relative.to_string_lossy().into_owned())
     }
 
     pub fn move_todo_selection(&mut self, delta: i32) {
@@ -5639,6 +5755,7 @@ impl DevTuiState {
             worker,
             SelectionPreviewKey {
                 surface: self.surface,
+                expected_debug_pane: None,
                 target: SelectionPreviewTarget::GitDiff {
                     path: self.git_diff_path.clone(),
                     staged,
@@ -12842,6 +12959,7 @@ mod tests {
             id: 100,
             key: SelectionPreviewKey {
                 surface: DevSurface::Git,
+                expected_debug_pane: None,
                 target: SelectionPreviewTarget::GitDiff {
                     path: Some("first.rs".into()),
                     staged: false,
@@ -13002,6 +13120,7 @@ mod tests {
             id: 55,
             key: SelectionPreviewKey {
                 surface: DevSurface::Git,
+                expected_debug_pane: None,
                 target: SelectionPreviewTarget::GitDiff {
                     path: Some("tracked.rs".into()),
                     staged: false,
@@ -13028,6 +13147,178 @@ mod tests {
         assert!(state.git_diff.contains("Untracked file"));
         assert!(state.running_tool_job.is_none());
         assert!(state.active_selection_preview.is_none());
+        drop(worker);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn stale_debug_thread_and_stack_previews_do_not_take_over_new_pane() {
+        let (mut state, root) = routed_state("selection-preview-debug-pane");
+        state.surface = DevSurface::Debug;
+        state.debug_sessions = vec![DebugSessionRow {
+            name: "debug-a".into(),
+            state: crate::debugger::DebugSessionState::Stopped,
+            pid: 7,
+            breakpoints: 0,
+            watches: 0,
+        }];
+        state.debug_pane = DebugPane::Sessions;
+        state.active_selection_preview = Some(ActiveSelectionPreview {
+            id: 701,
+            key: SelectionPreviewKey {
+                surface: DevSurface::Debug,
+                expected_debug_pane: Some(DebugPane::Sessions),
+                target: SelectionPreviewTarget::DebugThreads {
+                    session: "debug-a".into(),
+                },
+            },
+            label: "threads for debug-a".into(),
+        });
+        state.running_tool_job = Some(701);
+
+        state.debug_pane = DebugPane::Frames;
+        state.status = "Frames pane selected by user".into();
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 701,
+            tool: "glass.debug.threads".into(),
+            result: Ok(serde_json::json!({"threads": [{"id": 1, "name": "main"}]})),
+        });
+        assert_eq!(state.debug_pane, DebugPane::Frames);
+        assert_eq!(state.status, "Frames pane selected by user");
+        assert!(state.debug_threads.is_empty());
+        assert!(!state.debug_stack_requested);
+
+        state.debug_threads = vec![DebugThreadRow {
+            id: 1,
+            name: "main".into(),
+        }];
+        state.debug_pane = DebugPane::Threads;
+        state.active_selection_preview = Some(ActiveSelectionPreview {
+            id: 702,
+            key: SelectionPreviewKey {
+                surface: DevSurface::Debug,
+                expected_debug_pane: Some(DebugPane::Threads),
+                target: SelectionPreviewTarget::DebugStack {
+                    session: "debug-a".into(),
+                    thread_id: 1,
+                },
+            },
+            label: "stack for thread 1".into(),
+        });
+        state.running_tool_job = Some(702);
+
+        state.debug_pane = DebugPane::Sessions;
+        state.status = "Sessions pane selected by user".into();
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 702,
+            tool: "glass.debug.stack".into(),
+            result: Ok(serde_json::json!({"frames": [{"id": 3, "name": "main"}]})),
+        });
+        assert_eq!(state.debug_pane, DebugPane::Sessions);
+        assert_eq!(state.status, "Sessions pane selected by user");
+        assert!(state.debug_frames.is_empty());
+        assert!(!state.debug_scopes_requested);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn debug_scopes_and_variables_finish_after_source_jump_without_replacing_code_status() {
+        let (mut state, root) = routed_state("selection-preview-debug-source");
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write source file");
+        let dap_frame_path = root.join("src/main.rs").display().to_string();
+        state.surface = DevSurface::Debug;
+        state.debug_pane = DebugPane::Frames;
+        state.debug_sessions = vec![DebugSessionRow {
+            name: "debug-a".into(),
+            state: crate::debugger::DebugSessionState::Stopped,
+            pid: 8,
+            breakpoints: 0,
+            watches: 0,
+        }];
+        state.debug_frames = vec![DebugFrameRow {
+            id: 42,
+            name: "main".into(),
+            path: Some(dap_frame_path.clone()),
+            line: Some(1),
+        }];
+
+        state.jump_selected_debug_frame();
+        assert_eq!(state.surface, DevSurface::Code);
+        assert_eq!(state.focused_editor_path, "src/main.rs");
+        assert_eq!(state.debug_pane, DebugPane::Frames);
+        let code_status = state.status.clone();
+
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.queue_debug_scopes(&mut worker);
+        let scopes_id = state.running_tool_job.expect("scope preview submitted");
+        assert!(matches!(
+            state.active_selection_preview.as_ref().map(|active| &active.key),
+            Some(SelectionPreviewKey {
+                surface: DevSurface::Code,
+                expected_debug_pane: Some(DebugPane::Frames),
+                target: SelectionPreviewTarget::DebugScopes {
+                    session,
+                    frame_id: 42,
+                    frame_path: Some(frame_path),
+                    source_path: Some(source_path),
+                },
+            }) if session == "debug-a"
+                && frame_path == &dap_frame_path
+                && source_path == "src/main.rs"
+        ));
+        assert_eq!(state.status, code_status);
+
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: scopes_id,
+            tool: "glass.debug.scopes".into(),
+            result: Ok(serde_json::json!({
+                "scopes": [{"name": "Locals", "variablesReference": 17}]
+            })),
+        });
+        assert_eq!(state.surface, DevSurface::Code);
+        assert_eq!(state.debug_pane, DebugPane::Frames);
+        assert_eq!(state.status, code_status);
+        assert_eq!(state.debug_scopes.len(), 1);
+        assert!(state.debug_variables_requested);
+
+        state.debug_variables_requested = false;
+        state.queue_debug_variables(&mut worker);
+        let variables_id = state
+            .running_tool_job
+            .expect("automatic variable preview submitted");
+        assert!(matches!(
+            state.active_selection_preview.as_ref().map(|active| &active.key),
+            Some(SelectionPreviewKey {
+                surface: DevSurface::Code,
+                expected_debug_pane: Some(DebugPane::Frames),
+                target: SelectionPreviewTarget::DebugVariables {
+                    session,
+                    frame_id: 42,
+                    frame_path: Some(frame_path),
+                    source_path: Some(source_path),
+                    scope_index: 0,
+                    scope_name,
+                    reference: 17,
+                },
+            }) if session == "debug-a"
+                && frame_path == &dap_frame_path
+                && source_path == "src/main.rs"
+                && scope_name == "Locals"
+        ));
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: variables_id,
+            tool: "glass.debug.variables".into(),
+            result: Ok(serde_json::json!({
+                "variables": [{"name": "answer", "value": "42"}]
+            })),
+        });
+        assert_eq!(state.surface, DevSurface::Code);
+        assert_eq!(state.debug_pane, DebugPane::Frames);
+        assert_eq!(state.status, code_status);
+        assert_eq!(state.debug_variables.len(), 1);
+        assert_eq!(state.debug_variables[0].name, "answer");
+
         drop(worker);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }

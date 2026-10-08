@@ -671,12 +671,13 @@ impl<'a> Agent<'a> {
         };
 
         if let Some(live) = self.live.as_mut() {
-            let turn = self
-                .session
-                .records
-                .iter()
-                .filter(|r| matches!(r, Record::User(_)))
-                .count() as u64;
+            let turn = self.session.raw_turns().unwrap_or_else(|_| {
+                self.session
+                    .records
+                    .iter()
+                    .filter(|r| matches!(r, Record::User(_)))
+                    .count()
+            }) as u64;
             live.begin_turn(turn);
         }
         self.overflow_recovered = false;

@@ -23,8 +23,13 @@ exports, and accounting keep the original.
   append-only log implies.
 - `Session::messages()` applies edits to the **raw** records before
   compaction projects them, because turn numbers must match `/branch` and
-  the transcript, which both count raw-log turns. Without edits the fast
-  in-memory path is unchanged.
+  the transcript, which both count raw-log turns. Active edits are read from
+  raw history so compaction cannot drop their metadata. Edits to a turn
+  before the latest compaction marker invalidate its derived summary and
+  state notes. The model then receives the first surviving task and a
+  bounded suffix of whole edited turns, preserving tool pairs. Edits to
+  later turns retain the existing compaction projection. Without edits the
+  in-memory projection is unchanged.
 - Deliberate difference from pi: no session tree, so "navigating before the
   edit reveals the original" does not apply; the raw log is the escape
   hatch, and edits are branch-relative only in the sense that forks copy the

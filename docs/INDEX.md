@@ -49,3 +49,6 @@
 - [October 8 regression fixes](plan/tasks/oct8-regressions-001.md): LSP deadlines, buffered diagnostics and child cleanup.
 - [MCP HTTP regression fixes](plan/tasks/mcp-http-regressions-001.md): session negotiation, bounded SSE replies and loopback validation.
 - [October 8 verification review](plan/reviews/oct8-regressions-001-01.md): release smoke results and constrained PTY evidence.
+
+- [Pi shipping regression review](plan/tasks/pi-shipping-001.md): durability recovery and compaction-aware context edit fixes.
+- [Pi shipping verification](plan/reviews/pi-shipping-001-01.md): final regression tests and small-screen PTY evidence.

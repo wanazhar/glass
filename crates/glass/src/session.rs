@@ -272,6 +272,9 @@ impl Record {
 #[derive(Debug, PartialEq, Eq)]
 enum Repair {
     None,
+    /// A valid final record lacked its line separator; one was appended so
+    /// the next record cannot be concatenated with it.
+    AddedSeparator,
     /// A torn final line (no trailing newline) was truncated away.
     TruncatedTail,
     /// Complete but unreadable lines were dropped; the original log is kept
@@ -308,30 +311,52 @@ fn repair_log(path: &Path) -> std::io::Result<Repair> {
     if bytes.is_empty() {
         return Ok(Repair::None);
     }
-    let text = String::from_utf8_lossy(&bytes);
     let trailing_newline = bytes.last() == Some(&b'\n');
-    let raw: Vec<&str> = if trailing_newline {
-        let mut v: Vec<&str> = text.split('\n').collect();
-        v.pop(); // the empty tail created by the final newline
-        v
-    } else {
-        text.split('\n').collect()
-    };
+    // Keep byte offsets alongside lines. Re-serializing parsed lines here
+    // changes CRLF and blank-line bytes, so a normalized length is not a safe
+    // truncation boundary.
+    let mut raw: Vec<(usize, &[u8])> = Vec::new();
+    let mut start = 0;
+    for (i, byte) in bytes.iter().enumerate() {
+        if *byte == b'\n' {
+            raw.push((start, &bytes[start..i]));
+            start = i + 1;
+        }
+    }
+    if start < bytes.len() {
+        raw.push((start, &bytes[start..]));
+    }
     let last = raw.len().saturating_sub(1);
-    let mut kept: Vec<&str> = Vec::new();
     let mut torn = false;
+    let mut torn_offset = 0usize;
+    let mut final_valid_without_newline = false;
     let mut first_bad = 0usize;
     let mut bad = 0usize;
-    for (i, line) in raw.iter().enumerate() {
+    for (i, (offset, line)) in raw.iter().enumerate() {
+        let Ok(line) = std::str::from_utf8(line) else {
+            if i == last && !trailing_newline {
+                torn = true;
+                torn_offset = *offset;
+            } else {
+                bad += 1;
+                if first_bad == 0 {
+                    first_bad = i + 1;
+                }
+            }
+            continue;
+        };
         if line.trim().is_empty() {
             continue;
         }
         if serde_json::from_str::<serde_json::Value>(line).is_ok() {
-            kept.push(line);
+            if i == last && !trailing_newline {
+                final_valid_without_newline = true;
+            }
             continue;
         }
         if i == last && !trailing_newline {
             torn = true;
+            torn_offset = *offset;
         } else {
             bad += 1;
             if first_bad == 0 {
@@ -339,16 +364,32 @@ fn repair_log(path: &Path) -> std::io::Result<Repair> {
             }
         }
     }
+    if !torn && bad == 0 && final_valid_without_newline {
+        OpenOptions::new()
+            .append(true)
+            .open(path)?
+            .write_all(b"\n")?;
+        return Ok(Repair::AddedSeparator);
+    }
     if !torn && bad == 0 {
         return Ok(Repair::None);
     }
-    let rewritten: String = kept.iter().map(|line| format!("{line}\n")).collect();
     if bad == 0 {
-        // Pure torn tail: truncate in place, keeping every complete record.
+        // Truncate at the exact start of the torn bytes. This retains any
+        // valid blank lines and original CRLF separators before the fragment.
         let file = OpenOptions::new().write(true).open(path)?;
-        file.set_len(rewritten.len() as u64)?;
+        file.set_len(torn_offset as u64)?;
         return Ok(Repair::TruncatedTail);
     }
+    let rewritten: String = raw
+        .iter()
+        .filter_map(|(_, line)| {
+            std::str::from_utf8(line).ok().filter(|line| {
+                !line.trim().is_empty() && serde_json::from_str::<serde_json::Value>(line).is_ok()
+            })
+        })
+        .map(|line| format!("{line}\n"))
+        .collect();
     let backup = PathBuf::from(format!(
         "{}.corrupt-{}",
         path.display(),
@@ -494,6 +535,7 @@ impl Session {
         let repair = repair_log(&path)?;
         match &repair {
             Repair::None => {}
+            Repair::AddedSeparator => {}
             Repair::TruncatedTail => eprintln!(
                 "glass-core: repaired a truncated session log (killed mid-write): {}",
                 path.display()
@@ -544,10 +586,19 @@ impl Session {
         // records on disk are the immutable log; `records` is the projection
         // the model sees, and they are allowed to differ.
         let repairs = interrupted_calls(&records);
-        let last_assistant = records.iter().rev().find_map(|r| match r {
-            Record::Assistant(t) => Some(t.clone()),
-            _ => None,
-        });
+        let mut raw_turn = 0u64;
+        let mut assistants_by_turn: HashMap<u64, Vec<String>> = HashMap::new();
+        for record in &records {
+            if matches!(record, Record::User(_)) {
+                raw_turn += 1;
+            }
+            if let Record::Assistant(text) = record {
+                assistants_by_turn
+                    .entry(raw_turn)
+                    .or_default()
+                    .push(text.clone());
+            }
+        }
         let live = crate::partial::load(&path);
         let live_file = crate::partial::path(&path);
         let log_len = records.len();
@@ -583,13 +634,12 @@ impl Session {
         // mid-response. The recovered text is recorded as the assistant
         // message it was going to be, so `/retry` continues instead of
         // pretending the turn never happened.
-        if let Some(recovered) =
-            live.and_then(|live| crate::partial::recover(&live_file, live, last_assistant.as_deref()))
-        {
-            session.append(Record::Meta(recovered.meta));
-            if let Some(partial) = recovered.partial {
-                session.append(Record::Assistant(partial));
-            }
+        if let Some(live) = live {
+            let completed = assistants_by_turn
+                .get(&live.turn)
+                .and_then(|answers| answers.iter().find(|text| text.contains(&live.text)))
+                .map(String::as_str);
+            session.recover_partial(&live_file, live, completed)?;
         }
         Ok(session)
     }
@@ -679,13 +729,81 @@ impl Session {
         self.log_len += 1;
     }
 
+    /// Append a recovery group and report write failures so its sidecar can
+    /// remain available for another resume attempt.
+    fn append_checked(&mut self, records: &[Record]) -> std::io::Result<()> {
+        let mut bytes = Vec::new();
+        for record in records {
+            serde_json::to_writer(&mut bytes, &record.to_json()).map_err(std::io::Error::other)?;
+            bytes.push(b'\n');
+        }
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("session file closed"))?;
+        file.write_all(&bytes)?;
+        file.flush()?;
+        if LOG_FSYNC.load(std::sync::atomic::Ordering::Relaxed) {
+            file.sync_data()?;
+        }
+        self.records.extend_from_slice(records);
+        self.log_len += records.len();
+        Ok(())
+    }
+
+    fn recover_partial(
+        &mut self,
+        sidecar: &Path,
+        live: crate::partial::Live,
+        assistant_for_turn: Option<&str>,
+    ) -> std::io::Result<()> {
+        if let Some(recovered) = crate::partial::recover(live, assistant_for_turn) {
+            let mut additions = vec![Record::Meta(recovered.meta)];
+            if let Some(partial) = recovered.partial {
+                additions.push(Record::Assistant(partial));
+            }
+            self.append_checked(&additions)?;
+        }
+        // A failed checked append returns above, leaving the sidecar for the
+        // next resume; successful and stale recovery can consume it.
+        let _ = fs::remove_file(sidecar);
+        Ok(())
+    }
+
     /// The conversation as the model should see it.
     pub fn messages(&self) -> Vec<Message> {
         match self.context_edits() {
             // Turn numbers must match `/branch` and the transcript, which both
             // count raw log turns; edits therefore apply to the raw records
             // and compaction projects afterwards.
-            Some(edits) => crate::compact::project(&apply_edits(&self.read_history_records(), &edits)),
+            Some(edits) => {
+                let raw = self.read_history_records();
+                let last_epoch = raw
+                    .iter()
+                    .rposition(|r| matches!(r, Record::Compacted { .. }));
+                let edit_invalidates_summary = last_epoch.is_some_and(|epoch| {
+                    let mut turn = 0usize;
+                    let mut user_record_indices = HashMap::new();
+                    for (index, record) in raw.iter().enumerate() {
+                        if matches!(record, Record::User(_)) {
+                            turn += 1;
+                            user_record_indices.insert(turn, index);
+                        }
+                    }
+                    edits.keys().any(|edited_turn| {
+                        user_record_indices
+                            .get(edited_turn)
+                            .is_some_and(|index| *index < epoch)
+                    })
+                });
+                if edit_invalidates_summary {
+                    crate::compact::project(&bounded_edited_context(&raw, &edits))
+                } else {
+                    let edited = apply_edits(&raw, &edits);
+                    let (projected, _) = apply_projection(edited);
+                    crate::compact::project(&projected)
+                }
+            }
             None => crate::compact::project(&self.records),
         }
     }
@@ -694,7 +812,7 @@ impl Session {
     /// word wins exactly like an append-only log implies.
     fn context_edits(&self) -> Option<HashMap<usize, (String, Option<String>)>> {
         let mut edits: HashMap<usize, (String, Option<String>)> = HashMap::new();
-        for record in &self.records {
+        for record in &self.read_history_records() {
             if let Record::ContextEdit { turn, mode, text } = record {
                 if mode == "restore" {
                     edits.remove(turn);
@@ -831,10 +949,81 @@ impl Session {
     }
 }
 
+/// A changed turn may have contributed to a compacted summary or state note.
+/// In that case those derived records cannot safely be reused. Keep the
+/// opening task and a bounded suffix of whole raw turns, preserving tool
+/// call/result groups and their original turn ordering.
+fn bounded_edited_context(
+    records: &[Record],
+    edits: &HashMap<usize, (String, Option<String>)>,
+) -> Vec<Record> {
+    let mut groups: Vec<(usize, Vec<Record>)> = Vec::new();
+    let mut turn = 0usize;
+    for record in records {
+        if matches!(record, Record::User(_)) {
+            turn += 1;
+            groups.push((turn, Vec::new()));
+        }
+        if matches!(
+            record,
+            Record::ContextEdit { .. } | Record::Compacted { .. } | Record::State(_)
+        ) {
+            continue;
+        }
+        let Some((_, group)) = groups.last_mut() else {
+            continue;
+        };
+        match edits.get(&turn) {
+            Some((mode, _)) if mode == "hide" => continue,
+            Some((mode, replacement)) if mode == "replace" => {
+                if matches!(record, Record::User(_)) {
+                    if let Some(replacement) = replacement {
+                        group.push(Record::User(replacement.clone()));
+                    }
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        group.push(record.clone());
+    }
+    let Some((opening_turn, opening_group)) = groups.iter().find(|(_, group)| !group.is_empty())
+    else {
+        return Vec::new();
+    };
+    let opening_turn = *opening_turn;
+    let opening = opening_group[0].clone();
+    let mut selected = Vec::new();
+    let mut count = 0;
+    for (turn, group) in groups.into_iter().rev() {
+        if group.is_empty() {
+            continue;
+        }
+        count += group.len();
+        selected.push((turn, group));
+        if count >= crate::compact::KEEP_RECENT {
+            break;
+        }
+    }
+    selected.reverse();
+    let mut out = vec![opening];
+    for (turn, group) in selected {
+        if turn == opening_turn {
+            out.extend(group.into_iter().skip(1));
+        } else {
+            out.extend(group);
+        }
+    }
+    out
+}
+
 /// Apply context edits to a record list: hidden turns vanish entirely,
 /// replaced turns keep their assistant/tool records with a substituted user
 /// message, and everything else passes through untouched.
-fn apply_edits(records: &[Record], edits: &HashMap<usize, (String, Option<String>)>) -> Vec<Record> {
+fn apply_edits(
+    records: &[Record],
+    edits: &HashMap<usize, (String, Option<String>)>,
+) -> Vec<Record> {
     let mut out = Vec::with_capacity(records.len());
     let mut turn = 0usize;
     for record in records {
@@ -1558,8 +1747,61 @@ mod tests {
         s.append(Record::User("second".into()));
         drop(s);
         let reopened = Session::open(&dir, "crashed").unwrap();
-        assert_eq!(reopened.records.len(), 2, "the next append is a clean record");
+        assert_eq!(
+            reopened.records.len(),
+            2,
+            "the next append is a clean record"
+        );
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn valid_final_record_without_newline_gets_a_separator_before_append() {
+        let dir = tmpdir("valid-no-lf");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        let first = b"{\"k\":\"user\",\"t\":\"first\"}";
+        fs::write(&path, first).unwrap();
+        let mut session = Session::open(&dir, "s").unwrap();
+        assert_eq!(session.records.len(), 1);
+        assert_eq!(fs::read(&path).unwrap(), [first.as_slice(), b"\n"].concat());
+        session.append(Record::User("second".into()));
+        drop(session);
+        let reopened = Session::open(&dir, "s").unwrap();
+        assert_eq!(reopened.records.len(), 2);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn torn_tail_truncation_preserves_original_blank_and_crlf_bytes() {
+        let dir = tmpdir("torn-byte-boundary");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        let prefix = b"{\"k\":\"user\",\"t\":\"one\"}\r\n\r\n";
+        fs::write(&path, [prefix.as_slice(), b"{\"k\":\"assistant\""].concat()).unwrap();
+        let session = Session::open(&dir, "s").unwrap();
+        assert_eq!(session.records.len(), 1);
+        drop(session);
+        assert_eq!(fs::read(&path).unwrap(), prefix);
+        // Repair is idempotent and leaves the exact retained bytes alone.
+        let session = Session::open(&dir, "s").unwrap();
+        drop(session);
+        assert_eq!(fs::read(&path).unwrap(), prefix);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn torn_non_utf8_tail_is_repaired_without_lossy_boundary_changes() {
+        let dir = tmpdir("torn-invalid-utf8");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        let prefix = b"{\"k\":\"user\",\"t\":\"caf\xc3\xa9\"}\n";
+        fs::write(&path, [prefix.as_slice(), b"{\xff"].concat()).unwrap();
+        let session = Session::open(&dir, "s").unwrap();
+        assert_eq!(session.records.len(), 1);
+        drop(session);
+        assert_eq!(fs::read(&path).unwrap(), prefix);
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -1621,7 +1863,13 @@ mod tests {
         let path = dir.join("s.jsonl");
         fs::write(&path, "{\"k\":\"user\",\"t\":\"one\"}\noops but newline\n").unwrap();
         let s = Session::open(&dir, "s").unwrap();
-        assert_eq!(s.records.iter().filter(|r| matches!(r, Record::User(_))).count(), 1);
+        assert_eq!(
+            s.records
+                .iter()
+                .filter(|r| matches!(r, Record::User(_)))
+                .count(),
+            1
+        );
         assert!(
             s.records
                 .iter()
@@ -1642,7 +1890,11 @@ mod tests {
         )
         .unwrap();
         let s = Session::open(&dir, "f").unwrap();
-        assert_eq!(s.records.len(), 1, "unknown kinds are skipped, not repaired");
+        assert_eq!(
+            s.records.len(),
+            1,
+            "unknown kinds are skipped, not repaired"
+        );
         assert_eq!(
             fs::read_dir(&dir)
                 .unwrap()
@@ -1729,6 +1981,114 @@ mod tests {
         assert!(!text.contains("run something"), "{text}");
         assert!(text.contains("next"), "{text}");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn edit_of_compacted_history_does_not_replay_summary_or_unbounded_raw_history() {
+        let dir = tmpdir("ctx-edit-compacted");
+        let mut s = Session::create(&dir).unwrap();
+        let id = s.id.clone();
+        s.append(Record::User("opening task".into()));
+        s.append(Record::Assistant("SECRET-OLD-ANSWER".into()));
+        for i in 2..=12 {
+            s.append(Record::User(format!("question {i}")));
+            s.append(Record::Assistant(format!("answer {i}")));
+        }
+        s.append(Record::State(vec!["SECRET-DERIVED-STATE".into()]));
+        let tail_start = s.log_len().saturating_sub(crate::compact::KEEP_RECENT);
+        s.append(Record::Compacted {
+            kept: crate::compact::KEEP_RECENT,
+            dropped: tail_start,
+            summary: Some("SUMMARY-CONTAINS-SECRET-OLD-ANSWER".into()),
+            tail_start,
+        });
+        s.context_command("forget", "1").unwrap();
+        let text = format!("{:?}", s.messages());
+        assert!(!text.contains("SECRET-OLD-ANSWER"), "{text}");
+        assert!(!text.contains("SUMMARY-CONTAINS"), "{text}");
+        assert!(!text.contains("SECRET-DERIVED-STATE"), "{text}");
+        assert!(
+            !text.contains("opening task") && text.contains("question 12"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("question 3"),
+            "fallback must stay bounded: {text}"
+        );
+        drop(s);
+        // Edits are recovered from the append-only raw log, even if a later
+        // projection excludes their metadata record.
+        let reopened = Session::open(&dir, &id).unwrap();
+        let text = format!("{:?}", reopened.messages());
+        assert!(!text.contains("SECRET-OLD-ANSWER"), "{text}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn partial_sidecar_survives_a_failed_checked_recovery_append() {
+        let dir = tmpdir("partial-write-fail");
+        let mut session = Session::create(&dir).unwrap();
+        let sidecar = crate::partial::path(&session.path);
+        fs::write(&sidecar, b"keep me").unwrap();
+        session.file.take();
+        assert!(
+            session
+                .recover_partial(
+                    &sidecar,
+                    crate::partial::Live {
+                        text: "partial".into(),
+                        at: crate::partial::now(),
+                        ..crate::partial::Live::default()
+                    },
+                    None,
+                )
+                .is_err()
+        );
+        assert_eq!(fs::read(&sidecar).unwrap(), b"keep me");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn partial_staleness_is_checked_against_the_same_raw_user_turn() {
+        let dir = tmpdir("partial-turn-match");
+        let mut session = Session::create(&dir).unwrap();
+        let id = session.id.clone();
+        session.append(Record::User("first".into()));
+        session.append(Record::Assistant("repeated partial text".into()));
+        session.append(Record::User("second".into()));
+        drop(session);
+        let sidecar = crate::partial::path(&dir.join(format!("{id}.jsonl")));
+        fs::write(
+            &sidecar,
+            serde_json::to_vec(&crate::partial::Live {
+                turn: 2,
+                text: "repeated partial text".into(),
+                at: crate::partial::now(),
+                ..crate::partial::Live::default()
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let reopened = Session::open(&dir, &id).unwrap();
+        assert!(
+            reopened.records.iter().any(
+                |r| matches!(r, Record::Meta(t) if t.contains("previous turn was interrupted"))
+            )
+        );
+        assert_eq!(
+            reopened
+                .records
+                .iter()
+                .filter(|r| matches!(r, Record::Assistant(t) if t == "repeated partial text"))
+                .count(),
+            2,
+            "the prior turn's matching assistant must not make the current sidecar stale"
+        );
+        assert!(
+            !sidecar.exists(),
+            "successful recovery consumes its sidecar"
+        );
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]

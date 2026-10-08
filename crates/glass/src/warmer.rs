@@ -12,8 +12,8 @@
 //! a net spend of about 0.35x the prefix. It is worth enabling only
 //! when a cold start is felt, which is why it ships disabled.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::ext::protocol::WarmerPolicy;
@@ -24,8 +24,14 @@ use glass_mod_api::Message;
 /// boundary — it is not `Send` — but a provider is cheap to
 /// construct from configuration, so the warmer makes its own
 /// rather than sharing the turn's.
-pub type ProviderFactory =
-    Arc<dyn Fn() -> Result<Box<dyn Provider>, String> + Send + Sync>;
+pub type ProviderFactory = Arc<dyn Fn() -> Result<Box<dyn Provider>, String> + Send + Sync>;
+
+/// A factory of per-model provider factories.
+///
+/// Delegated tasks may name their own model; each model needs its own
+/// construction path so the ledger and the rate card follow the model that
+/// actually serves the request.
+pub type ProviderForModel = Arc<dyn Fn(&str) -> ProviderFactory + Send + Sync>;
 
 /// The cacheable prefix of one turn, owned so a background
 /// thread can use it after the turn is gone.
@@ -81,8 +87,7 @@ impl Warmer {
         let spawned = std::thread::Builder::new()
             .name("glass-cache-warmer".into())
             .spawn(move || {
-                let deadline =
-                    Instant::now() + Duration::from_secs(policy.refresh_after_s);
+                let deadline = Instant::now() + Duration::from_secs(policy.refresh_after_s);
                 // Sleep in slices so a new turn cancels the refresh
                 // promptly instead of after the full delay.
                 while Instant::now() < deadline {
@@ -188,10 +193,7 @@ mod tests {
         // The refresh fires one second out, then the request
         // has to reach the provider.
         std::thread::sleep(Duration::from_millis(1600));
-        assert!(
-            calls.load(Ordering::SeqCst) >= 1,
-            "no refresh was sent"
-        );
+        assert!(calls.load(Ordering::SeqCst) >= 1, "no refresh was sent");
     }
 
     #[test]
@@ -240,11 +242,8 @@ mod tests {
         }
 
         let (tx, rx) = mpsc::channel();
-        let cap_factory: ProviderFactory = std::sync::Arc::new(move || {
-            Ok(Box::new(CapturingProvider {
-                tx: tx.clone(),
-            }))
-        });
+        let cap_factory: ProviderFactory =
+            std::sync::Arc::new(move || Ok(Box::new(CapturingProvider { tx: tx.clone() })));
 
         let warmer = Warmer::new(cap_factory);
         warmer.schedule(policy(1), snapshot());

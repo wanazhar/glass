@@ -9,7 +9,11 @@
 
 pub mod editor;
 pub mod layout;
+pub mod markdown;
+pub mod palette;
 pub mod term;
+pub mod text;
+pub mod theme;
 pub mod transcript;
 
 // Re-exported so the harness does not need its own crossterm/ratatui
@@ -19,8 +23,8 @@ pub use crossterm;
 pub use ratatui;
 
 pub use editor::{Edit, Editor};
-pub use transcript::wrap_width;
 pub use transcript::Transcript;
+pub use transcript::wrap_width;
 
 /// One renderable entry in the transcript.
 pub struct Entry {

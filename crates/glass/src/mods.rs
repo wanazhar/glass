@@ -7,7 +7,7 @@
 //! already served by hooks, extra tools, and skills.
 //!
 //! Adding a mod to the registry below is a one-line change, and a user can add
-//! their own `~/.config/glass/mods/*.md` skill without touching this file.
+//! their own `~/.config/glass-core/skills/*.md` skill without touching this file.
 
 use std::collections::BTreeMap;
 
@@ -23,6 +23,7 @@ use glass_mod_api::{Mod_, Overlay, ToolCall, ToolOutput, TurnContext};
 fn registry() -> BTreeMap<&'static str, fn() -> Box<dyn Mod_>> {
     let mut m: BTreeMap<&'static str, fn() -> Box<dyn Mod_>> = BTreeMap::new();
     m.insert("noisy", || Box::new(Noisy));
+    m.insert("redact", || Box::new(Redact));
     m
 }
 
@@ -41,10 +42,29 @@ pub fn load(names: &[String]) -> Result<Vec<Box<dyn Mod_>>, String> {
         }
         match reg.get(n) {
             Some(make) => out.push(make()),
-            None => eprintln!("\x1b[33mglass: unknown mod `{n}`, skipping\x1b[0m"),
+            None => eprintln!("\x1b[33mglass-core: unknown mod `{n}`, skipping\x1b[0m"),
         }
     }
     Ok(out)
+}
+
+/// A focused output-redaction mod with no extra tools or render hooks.
+struct Redact;
+impl Mod_ for Redact {
+    fn name(&self) -> &str {
+        "redact"
+    }
+    fn on_tool_result(&self, _call: &ToolCall, output: &mut ToolOutput) {
+        let clean = redact(&output.body);
+        if clean != output.body {
+            output.body = clean;
+            output.rewritten = true;
+        }
+    }
+}
+
+pub fn available() -> Vec<String> {
+    registry().keys().map(|name| (*name).to_string()).collect()
 }
 
 /// Example mod, present to prove the whole hook surface compiles and runs.
@@ -101,7 +121,9 @@ impl Mod_ for Noisy {
     }
 
     fn on_render(&self, overlay: &mut Overlay, _viewport: (u16, u16)) {
-        overlay.lines.push("\x1b[90mctrl-g transcript · enter collapse · f follow\x1b[0m".to_string());
+        overlay
+            .lines
+            .push("\x1b[90mctrl-g transcript · enter collapse · f follow\x1b[0m".to_string());
     }
 
     fn on_turn_end(&self, _ctx: &TurnContext, output: &str) {
@@ -140,7 +162,11 @@ mod tests {
     use super::*;
 
     fn ctx() -> TurnContext<'static> {
-        TurnContext { messages: &[], model: "test", turn_index: 0 }
+        TurnContext {
+            messages: &[],
+            model: "test",
+            turn_index: 0,
+        }
     }
 
     #[test]
@@ -171,18 +197,29 @@ mod tests {
     #[test]
     fn mod_redacts_credentials() {
         let m = Noisy;
-        let call = ToolCall { id: "1".into(), name: "bash".into(), arguments: "{}".into() };
+        let call = ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        };
         let mut out = ToolOutput::new("export KEY=AKIAIOSFODNN7EXAMPLE\nsafe line");
         m.on_tool_result(&call, &mut out);
         assert!(out.rewritten);
         assert!(!out.body.contains("AKIAIOSFODNN7EXAMPLE"));
-        assert!(out.body.contains("safe line"), "non-secret lines must survive");
+        assert!(
+            out.body.contains("safe line"),
+            "non-secret lines must survive"
+        );
     }
 
     #[test]
     fn mod_leaves_clean_output_untouched() {
         let m = Noisy;
-        let call = ToolCall { id: "1".into(), name: "bash".into(), arguments: "{}".into() };
+        let call = ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        };
         let mut out = ToolOutput::new("all clear");
         m.on_tool_result(&call, &mut out);
         assert!(!out.rewritten);
@@ -192,10 +229,18 @@ mod tests {
     #[test]
     fn mod_can_block_a_command() {
         let m = Noisy;
-        let bad = ToolCall { id: "1".into(), name: "bash".into(), arguments: r#"{"command":"rm -rf / --no-preserve-root"}"#.into() };
+        let bad = ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: r#"{"command":"rm -rf / --no-preserve-root"}"#.into(),
+        };
         assert!(m.authorize(&bad).is_err());
 
-        let ok = ToolCall { id: "2".into(), name: "bash".into(), arguments: r#"{"command":"ls"}"#.into() };
+        let ok = ToolCall {
+            id: "2".into(),
+            name: "bash".into(),
+            arguments: r#"{"command":"ls"}"#.into(),
+        };
         assert!(m.authorize(&ok).is_ok());
     }
 
@@ -217,7 +262,10 @@ mod tests {
 
     #[test]
     fn builtin_names_are_bash_and_state() {
-        let names: Vec<String> = crate::provider::builtin_tools().into_iter().map(|(n, _, _)| n).collect();
+        let names: Vec<String> = crate::provider::builtin_tools()
+            .into_iter()
+            .map(|(n, _, _)| n)
+            .collect();
         assert_eq!(names, vec!["bash".to_string(), "state".to_string()]);
     }
 }

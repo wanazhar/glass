@@ -6,6 +6,30 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::notify;
+use crate::pricing;
+use crate::sandbox;
+
+/// Whether workspace instructions need consent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Trust {
+    /// Ask once per workspace, keyed by content hash.
+    #[default]
+    Ask,
+    /// Load project instructions without asking (pre-gate behavior).
+    Always,
+}
+
+impl Trust {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "ask" | "prompt" => Some(Trust::Ask),
+            "always" => Some(Trust::Always),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub provider: String,
@@ -13,15 +37,31 @@ pub struct Config {
     pub model: String,
     /// Env var holding the key. Read at startup, never stored in the file.
     pub api_key_env: Option<String>,
+    /// Selected glass-core account; never inferred from another application.
+    pub connection: Option<String>,
     pub workspace: PathBuf,
     pub max_tokens: u32,
     pub reasoning_budget: Option<u32>,
+    pub cost_limit: Option<f64>,
+    /// Per-million token prices. `None` falls back to the built-in
+    /// table, which covers the Anthropic models; an unknown model
+    /// simply shows tokens, never a guessed price.
+    pub pricing: Option<pricing::RateCard>,
     /// Extra directory scanned for `skills/*.md`.
     pub skills_dir: Option<PathBuf>,
     /// Mods to load, by name.
     pub mods: Vec<String>,
     /// External extension executables to spawn, by path or PATH name.
     pub extensions: Vec<String>,
+    /// How a finished turn gets attention: auto, osc, bell, or off.
+    pub notify: notify::Mode,
+    /// Model ids to try, in order, when the primary fails before any event.
+    /// The same connection and endpoint serve every fallback.
+    pub fallback: Vec<String>,
+    /// Whether project instruction files need consent.
+    pub trust: Trust,
+    /// OS-level confinement for shell commands.
+    pub sandbox: sandbox::Policy,
     pub system_prompt: String,
 }
 
@@ -32,12 +72,19 @@ impl Default for Config {
             base_url: "https://api.anthropic.com".into(),
             model: "claude-opus-4-5".into(),
             api_key_env: Some("ANTHROPIC_API_KEY".into()),
+            connection: None,
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             max_tokens: 16_000,
             reasoning_budget: None,
+            cost_limit: None,
+            pricing: None,
             skills_dir: None,
             mods: Vec::new(),
             extensions: Vec::new(),
+            notify: notify::Mode::default(),
+            fallback: Vec::new(),
+            trust: Trust::default(),
+            sandbox: sandbox::Policy::default(),
             system_prompt: BASE_SYSTEM_PROMPT.to_string(),
         }
     }
@@ -66,6 +113,11 @@ short. Be concrete: \"auth check now lives in src/auth/verify.rs\" is useful,
 back.
 
 Working style:
+- Treat greetings, thanks, and ordinary conversation as conversation. Reply
+  directly without inspecting the workspace or using tools unless the user asks
+  for information or an action that needs them.
+- For coding and workspace tasks, inspect the relevant files, then act and
+  verify. Use a tool only when it helps answer or carry out the user's request.
 - Investigate before changing. Read the code you are about to edit.
 - Make the change, then verify it compiles and passes tests. Report what you ran.
 - Do not describe what you are about to do. Run it.
@@ -76,30 +128,32 @@ Working style:
 If a task is ambiguous in a way that changes the outcome, pick the most
 reasonable reading, do it, and say which reading you took.";
 
-/// Where config lives, respecting `XDG_CONFIG_HOME`.
+/// Configuration belongs exclusively to glass-core. The separate Glass
+/// project owns `glass`; never read or migrate its configuration or sessions.
 pub fn config_dir() -> PathBuf {
-    if let Ok(x) = std::env::var("XDG_CONFIG_HOME")
-        && !x.is_empty()
-    {
-        return PathBuf::from(x).join("glass");
+    if let Some(root) = xdg_root("XDG_CONFIG_HOME", &[".config"]) {
+        return root.join("glass-core");
     }
-    if let Ok(h) = std::env::var("HOME") {
-        return PathBuf::from(h).join(".config").join("glass");
-    }
-    PathBuf::from(".glass")
+    PathBuf::from(".glass-core").join("config")
 }
 
-/// Where sessions are written, respecting `XDG_DATA_HOME`.
+/// Session data, isolated from the separate Glass project's data tree.
 pub fn data_dir() -> PathBuf {
-    if let Ok(x) = std::env::var("XDG_DATA_HOME")
-        && !x.is_empty()
-    {
-        return PathBuf::from(x).join("glass");
+    if let Some(root) = xdg_root("XDG_DATA_HOME", &[".local", "share"]) {
+        return root.join("glass-core");
     }
-    if let Ok(h) = std::env::var("HOME") {
-        return PathBuf::from(h).join(".local").join("share").join("glass");
+    PathBuf::from(".glass-core").join("data")
+}
+
+fn xdg_root(variable: &str, home_suffix: &[&str]) -> Option<PathBuf> {
+    if let Some(x) = std::env::var_os(variable).filter(|x| !x.is_empty()) {
+        return Some(PathBuf::from(x));
     }
-    PathBuf::from(".glass")
+    let mut root = PathBuf::from(std::env::var_os("HOME").filter(|h| !h.is_empty())?);
+    for part in home_suffix {
+        root.push(part);
+    }
+    Some(root)
 }
 
 impl Config {
@@ -107,6 +161,21 @@ impl Config {
     pub fn api_key(&self) -> Option<String> {
         let name = self.api_key_env.as_deref()?;
         std::env::var(name).ok().filter(|s| !s.trim().is_empty())
+    }
+
+    /// The rate card in force: an explicit `[pricing]` section, else
+    /// the built-in table for the current model, else nothing.
+    pub fn rate_card(&self, model: &str) -> Option<pricing::RateCard> {
+        // API-key prices do not describe ChatGPT plan usage.
+        if crate::auth::is_chatgpt(self) {
+            return None;
+        }
+        self.pricing.or_else(|| {
+            (self.provider == "anthropic"
+                && self.base_url.trim_end_matches('/') == "https://api.anthropic.com")
+                .then(|| pricing::builtin(model))
+                .flatten()
+        })
     }
 }
 
@@ -145,12 +214,29 @@ struct Raw {
     workspace: Option<String>,
     max_tokens: Option<u32>,
     reasoning_budget: Option<u32>,
+    cost_limit: Option<f64>,
+    pricing: Option<PricingRaw>,
     system_prompt: Option<String>,
     mods: Option<Vec<String>>,
     extensions: Option<Vec<String>>,
+    notify: Option<String>,
+    fallback: Option<Vec<String>>,
+    trust: Option<String>,
+    sandbox: Option<String>,
 
     skills_dir: Option<String>,
     skills: Option<Vec<String>>,
+}
+
+/// `[pricing]` in config. All four fields are required: a partial
+/// card would misprice every request silently, which is worse than
+/// no card at all.
+#[derive(Debug, Default, serde::Deserialize)]
+struct PricingRaw {
+    input: Option<f64>,
+    cache_read: Option<f64>,
+    cache_write: Option<f64>,
+    output: Option<f64>,
 }
 
 /// Load config from `path`, falling back to defaults for absent fields.
@@ -183,20 +269,64 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
     }
     if let Some(v) = raw.workspace {
         let p = PathBuf::from(&v);
-        let p = if p.is_absolute() { p } else { cfg.workspace.join(p) };
+        let p = if p.is_absolute() {
+            p
+        } else {
+            cfg.workspace.join(p)
+        };
         if !p.is_dir() {
-            return Err(LoadError::Invalid(format!("workspace `{v}` is not a directory")));
+            return Err(LoadError::Invalid(format!(
+                "workspace `{v}` is not a directory"
+            )));
         }
         cfg.workspace = p;
     }
     if let Some(v) = raw.max_tokens {
         if v == 0 {
-            return Err(LoadError::Invalid("max_tokens must be greater than zero".into()));
+            return Err(LoadError::Invalid(
+                "max_tokens must be greater than zero".into(),
+            ));
         }
         cfg.max_tokens = v;
     }
     if let Some(v) = raw.reasoning_budget {
         cfg.reasoning_budget = Some(v);
+    }
+    if let Some(v) = raw.cost_limit {
+        if !v.is_finite() || v <= 0.0 {
+            return Err(LoadError::Invalid(
+                "cost_limit must be finite and positive".into(),
+            ));
+        }
+        cfg.cost_limit = Some(v);
+    }
+    if let Some(p) = raw.pricing {
+        let card = || {
+            Some(pricing::RateCard {
+                input: p.input?,
+                cache_read: p.cache_read?,
+                cache_write: p.cache_write?,
+                output: p.output?,
+            })
+        };
+        match card() {
+            Some(c) => {
+                if [c.input, c.cache_read, c.cache_write, c.output]
+                    .iter()
+                    .any(|v| !v.is_finite() || *v < 0.0)
+                {
+                    return Err(LoadError::Invalid(
+                        "pricing rates must be finite and nonnegative".into(),
+                    ));
+                }
+                cfg.pricing = Some(c);
+            }
+            None => {
+                return Err(LoadError::Invalid(
+                    "pricing needs input, cache_read, cache_write and output".into(),
+                ));
+            }
+        }
     }
     if let Some(v) = raw.system_prompt {
         if v.trim().is_empty() {
@@ -210,6 +340,31 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
     if let Some(v) = raw.extensions {
         cfg.extensions = v;
     }
+    if let Some(v) = raw.notify {
+        cfg.notify = notify::Mode::parse(&v).ok_or_else(|| {
+            LoadError::Invalid(format!("notify must be auto, osc, bell, or off (got `{v}`)"))
+        })?;
+    }
+    if let Some(v) = raw.fallback {
+        // Empty entries are dropped rather than rejected: a trailing comma
+        // in a hand-written list should not stop the session starting.
+        cfg.fallback = v
+            .into_iter()
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .collect();
+    }
+    if let Some(v) = raw.trust {
+        cfg.trust = Trust::parse(&v)
+            .ok_or_else(|| LoadError::Invalid(format!("trust must be ask or always (got `{v}`)")))?;
+    }
+    if let Some(v) = raw.sandbox {
+        cfg.sandbox = sandbox::Policy::parse(&v).ok_or_else(|| {
+            LoadError::Invalid(format!(
+                "sandbox must be off, workspace, or strict (got `{v}`)"
+            ))
+        })?;
+    }
 
     // `skills = [...]` in the default location narrows the set, so an empty
     // list is meaningful: it disables skills without needing a skills_dir.
@@ -217,7 +372,11 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
     cfg.skills_dir = match (raw.skills_dir, skills_list.is_empty()) {
         (Some(d), _) if !d.trim().is_empty() => {
             let p = PathBuf::from(&d);
-            Some(if p.is_absolute() { p } else { config_dir().join(p) })
+            Some(if p.is_absolute() {
+                p
+            } else {
+                config_dir().join(p)
+            })
         }
         (_, true) => None,
         (_, false) => {
@@ -274,7 +433,10 @@ mod tests {
         let d = scratch("nokey");
         let p = write(&d, "c.toml", "api_key_env = \"\"\n");
         let cfg = load(&p).unwrap();
-        assert!(cfg.api_key_env.is_none(), "empty string must disable the key, not look up \"\"");
+        assert!(
+            cfg.api_key_env.is_none(),
+            "empty string must disable the key, not look up \"\""
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -311,9 +473,78 @@ mod tests {
     }
 
     #[test]
+    fn notify_defaults_to_auto_and_parses_values() {
+        let d = scratch("notify");
+        let cfg = load(&d.join("none.toml")).unwrap();
+        assert_eq!(cfg.notify, notify::Mode::Auto);
+        let p = write(&d, "c.toml", "notify = \"bell\"\n");
+        assert_eq!(load(&p).unwrap().notify, notify::Mode::Bell);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn rejects_an_unknown_notify_value() {
+        let d = scratch("notify-bad");
+        let p = write(&d, "c.toml", "notify = \"loud\"\n");
+        let err = load(&p).unwrap_err().to_string();
+        assert!(err.contains("notify"), "{err}");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn fallback_defaults_empty_and_drops_blank_entries() {
+        let d = scratch("fallback");
+        assert!(load(&d.join("none.toml")).unwrap().fallback.is_empty());
+        let p = write(&d, "c.toml", "fallback = [\" model-b \", \"\", \"model-c\"]\n");
+        assert_eq!(load(&p).unwrap().fallback, vec!["model-b", "model-c"]);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn trust_defaults_to_ask_and_parses_values() {
+        let d = scratch("trust");
+        assert_eq!(load(&d.join("none.toml")).unwrap().trust, Trust::Ask);
+        let p = write(&d, "c.toml", "trust = \"always\"\n");
+        assert_eq!(load(&p).unwrap().trust, Trust::Always);
+        let p = write(&d, "bad.toml", "trust = \"maybe\"\n");
+        assert!(load(&p).unwrap_err().to_string().contains("trust"));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn sandbox_defaults_to_off_and_parses_values() {
+        let d = scratch("sandbox");
+        assert_eq!(load(&d.join("none.toml")).unwrap().sandbox, sandbox::Policy::Off);
+        let p = write(&d, "c.toml", "sandbox = \"workspace\"\n");
+        assert_eq!(load(&p).unwrap().sandbox, sandbox::Policy::Workspace);
+        let p = write(&d, "strict.toml", "sandbox = \"strict\"\n");
+        assert_eq!(load(&p).unwrap().sandbox, sandbox::Policy::Strict);
+        let p = write(&d, "bad.toml", "sandbox = \"jail\"\n");
+        assert!(load(&p).unwrap_err().to_string().contains("sandbox"));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
     fn base_prompt_names_both_tools() {
         assert!(BASE_SYSTEM_PROMPT.contains("`bash`"));
         assert!(BASE_SYSTEM_PROMPT.contains("`state`"));
+    }
+
+    #[test]
+    fn base_prompt_keeps_conversation_separate_from_workspace_work() {
+        assert!(
+            BASE_SYSTEM_PROMPT
+                .contains("Treat greetings, thanks, and ordinary conversation as conversation")
+        );
+        assert!(BASE_SYSTEM_PROMPT.contains("without inspecting the workspace or using tools"));
+        assert!(
+            BASE_SYSTEM_PROMPT
+                .contains("For coding and workspace tasks, inspect the relevant files")
+        );
+        assert!(
+            BASE_SYSTEM_PROMPT
+                .contains("Use a tool only when it helps answer or carry out the user's request.")
+        );
     }
 
     #[test]
@@ -321,6 +552,57 @@ mod tests {
         // Roughly 3.5 chars/token. A prompt that crept past a few hundred
         // tokens would be paid on every single request.
         let approx = BASE_SYSTEM_PROMPT.len() / 4;
-        assert!(approx < 600, "base prompt is ~{approx} tokens, expected under 600");
+        assert!(
+            approx < 600,
+            "base prompt is ~{approx} tokens, expected under 600"
+        );
+    }
+
+    #[test]
+    fn a_complete_pricing_section_loads() {
+        let d = scratch("pricing");
+        let p = write(
+            &d,
+            "c.toml",
+            "model = \"gpt-5\"\n[pricing]\ninput = 1.25\ncache_read = 0.125\ncache_write = 1.5\noutput = 10.0\n",
+        );
+        let cfg = load(&p).unwrap();
+        let card = cfg.pricing.expect("card must load");
+        assert_eq!(card.input, 1.25);
+        assert_eq!(card.output, 10.0);
+        // The explicit card wins over any built-in lookup.
+        assert!(cfg.rate_card("gpt-5").is_some());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_partial_pricing_section_is_rejected() {
+        let d = scratch("pricing-partial");
+        let p = write(&d, "c.toml", "[pricing]\ninput = 1.25\noutput = 10.0\n");
+        assert!(
+            matches!(load(&p), Err(LoadError::Invalid(_))),
+            "a partial card must be rejected, not silently mispriced"
+        );
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn an_opus_model_gets_a_builtin_card() {
+        let d = scratch("pricing-builtin");
+        let p = write(&d, "c.toml", "model = \"claude-opus-4-5\"\n");
+        let cfg = load(&p).unwrap();
+        let card = cfg.rate_card(&cfg.model).expect("opus has a built-in card");
+        assert_eq!(card.input, 5.0);
+        assert_eq!(card.output, 25.0);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn an_unknown_model_has_no_card() {
+        let d = scratch("pricing-none");
+        let p = write(&d, "c.toml", "model = \"some-local-llm\"\n");
+        let cfg = load(&p).unwrap();
+        assert!(cfg.rate_card(&cfg.model).is_none());
+        std::fs::remove_dir_all(&d).ok();
     }
 }

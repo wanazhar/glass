@@ -6,7 +6,7 @@
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use glass_mod_api::ToolCall;
@@ -44,12 +44,22 @@ pub struct Outcome {
 
 impl Outcome {
     fn ok(body: String) -> Self {
-        Self { body, truncated: false, exit_code: Some(0), spill: None }
+        Self {
+            body,
+            truncated: false,
+            exit_code: Some(0),
+            spill: None,
+        }
     }
 
     /// A tool that did not run, with a message for the model.
     pub fn err(msg: impl Into<String>) -> Self {
-        Self { body: msg.into(), truncated: false, exit_code: None, spill: None }
+        Self {
+            body: msg.into(),
+            truncated: false,
+            exit_code: None,
+            spill: None,
+        }
     }
 }
 
@@ -58,17 +68,33 @@ impl Outcome {
 /// Deliberately not a permission gate: glass ships no approval layer, and the
 /// `Mod::authorize` hook exists for anyone who wants one.
 pub fn bash(call: &ToolCall, workspace: &std::path::Path) -> Outcome {
+    bash_cancellable(call, workspace, &std::sync::atomic::AtomicBool::new(false))
+}
+pub fn bash_cancellable(
+    call: &ToolCall,
+    workspace: &std::path::Path,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Outcome {
     let Some(command) = call.arg_str("command") else {
         return Outcome::err("error: `command` is required and must be a string".to_string());
     };
     if command.trim().is_empty() {
         return Outcome::err("error: `command` is empty".to_string());
     }
+    if let Some(reason) = crate::sandbox::refusal() {
+        return Outcome::err(format!(
+            "error: sandbox = strict is not available ({reason}); refusing to run commands unsandboxed"
+        ));
+    }
 
     let cwd = match call.arg_str("cwd") {
         Some(rel) if !rel.trim().is_empty() => {
             let joined = workspace.join(rel.trim());
-            if joined.is_dir() { joined } else { workspace.to_path_buf() }
+            if joined.is_dir() {
+                joined
+            } else {
+                workspace.to_path_buf()
+            }
         }
         _ => workspace.to_path_buf(),
     };
@@ -88,9 +114,8 @@ pub fn bash(call: &ToolCall, workspace: &std::path::Path) -> Outcome {
         .unwrap_or(DEFAULT_TIMEOUT_MS)
         .clamp(100, MAX_TIMEOUT_MS);
 
-    let mut child = match Command::new("/bin/sh")
-        .arg("-c")
-        .arg(&command)
+    let mut builder = crate::sandbox::shell(&command);
+    builder
         .current_dir(&cwd)
         // Put the child in its own process group. Killing only the shell
         // leaves `sleep`, `cargo`, and `npm` running: the shell exits but its
@@ -100,9 +125,11 @@ pub fn bash(call: &ToolCall, workspace: &std::path::Path) -> Outcome {
         .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    // Kernel-level confinement, when a policy is active: applied after fork
+    // and before exec so the shell and everything it spawns inherits it.
+    crate::sandbox::harden(&mut builder);
+    let mut child = match builder.spawn() {
         Ok(c) => c,
         Err(e) => {
             return Outcome {
@@ -124,10 +151,16 @@ pub fn bash(call: &ToolCall, workspace: &std::path::Path) -> Outcome {
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout);
     let mut timed_out = false;
+    let mut cancelled = false;
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break Some(s),
             Ok(None) => {
+                if cancel.load(std::sync::atomic::Ordering::Acquire) {
+                    kill_group(&mut child);
+                    cancelled = true;
+                    break child.wait().ok();
+                }
                 if std::time::Instant::now() >= deadline {
                     kill_group(&mut child);
                     timed_out = true;
@@ -169,6 +202,9 @@ pub fn bash(call: &ToolCall, workspace: &std::path::Path) -> Outcome {
             p.display()
         ));
     }
+    if cancelled {
+        body.push_str("\n[command cancelled; owned process group stopped]\n");
+    }
     if timed_out {
         body.push_str(&format!("\n[command killed after {timeout}ms]\n"));
     }
@@ -189,7 +225,12 @@ pub fn bash(call: &ToolCall, workspace: &std::path::Path) -> Outcome {
     };
     prefix.push_str(&body);
 
-    Outcome { truncated: spill.is_some(), body: prefix, exit_code: code, spill }
+    Outcome {
+        truncated: spill.is_some(),
+        body: prefix,
+        exit_code: code,
+        spill,
+    }
 }
 
 /// Signal the child's entire process group.
@@ -235,7 +276,9 @@ fn kill_group(child: &mut Child) {
 /// re-running the command. Temp files are the OS's to reap, so a crashed session
 /// leaves nothing behind that needs cleaning up.
 fn read_capped(r: &mut Option<impl Read>) -> (String, Option<PathBuf>) {
-    let Some(reader) = r.as_mut() else { return (String::new(), None) };
+    let Some(reader) = r.as_mut() else {
+        return (String::new(), None);
+    };
 
     let mut head: Vec<u8> = Vec::new();
     let mut spill: Option<(std::fs::File, PathBuf)> = None;
@@ -269,7 +312,7 @@ fn read_capped(r: &mut Option<impl Read>) -> (String, Option<PathBuf>) {
 }
 
 fn spill_dir() -> PathBuf {
-    std::env::temp_dir().join("glass-out")
+    crate::config::data_dir().join("output")
 }
 
 /// Open a spill file, returning it with the path we will report to the model.
@@ -285,7 +328,13 @@ fn open_spill() -> Option<(std::fs::File, PathBuf)> {
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     let path = dir.join(format!("out-{}-{n}.log", std::process::id()));
 
-    let f = std::fs::File::create(&path).ok()?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let f = options.open(&path).ok()?;
     Some((f, path))
 }
 
@@ -315,8 +364,11 @@ impl State {
 
         match serde_json::from_str::<Vec<String>>(&raw) {
             Ok(items) => {
-                let cleaned: Vec<String> =
-                    items.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                let cleaned: Vec<String> = items
+                    .into_iter()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
                 if cleaned.is_empty() {
                     self.items.clear();
                     Outcome::ok("state cleared".to_string())
@@ -339,7 +391,11 @@ impl State {
         if self.items.is_empty() {
             return "(no state recorded)".to_string();
         }
-        self.items.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n")
+        self.items
+            .iter()
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Render as the system-visible block injected after compaction.
@@ -359,12 +415,19 @@ mod tests {
     use super::*;
 
     fn call(args: &str) -> ToolCall {
-        ToolCall { id: "t1".into(), name: "bash".into(), arguments: args.to_string() }
+        ToolCall {
+            id: "t1".into(),
+            name: "bash".into(),
+            arguments: args.to_string(),
+        }
     }
 
     #[test]
     fn runs_a_simple_command() {
-        let out = bash(&call(r#"{"command":"echo hello"}"#), std::path::Path::new("."));
+        let out = bash(
+            &call(r#"{"command":"echo hello"}"#),
+            std::path::Path::new("."),
+        );
         // The result always leads with the exit code so the model never has to
         // guess whether a command worked.
         assert_eq!(out.body, "[exit 0]\nhello\n");
@@ -374,7 +437,10 @@ mod tests {
 
     #[test]
     fn nonzero_exit_is_reported_in_the_body() {
-        let out = bash(&call(r#"{"command":"echo bad >&2; exit 2"}"#), std::path::Path::new("."));
+        let out = bash(
+            &call(r#"{"command":"echo bad >&2; exit 2"}"#),
+            std::path::Path::new("."),
+        );
         assert!(out.body.starts_with("[exit 2]"), "{}", out.body);
         assert_eq!(out.exit_code, Some(2));
     }
@@ -389,7 +455,10 @@ mod tests {
 
     #[test]
     fn captures_stderr() {
-        let out = bash(&call(r#"{"command":"echo oops >&2"}"#), std::path::Path::new("."));
+        let out = bash(
+            &call(r#"{"command":"echo oops >&2"}"#),
+            std::path::Path::new("."),
+        );
         assert!(out.body.contains("stderr:"));
         assert!(out.body.contains("oops"));
     }
@@ -423,7 +492,11 @@ mod tests {
         assert!(out.body.contains("killed"), "{}", out.body);
         assert!(out.exit_code.is_none() || out.exit_code != Some(0));
         // Proves the numeric timeout was honoured rather than defaulted to 120s.
-        assert!(started.elapsed() < std::time::Duration::from_secs(3), "took {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
@@ -471,7 +544,11 @@ mod tests {
             std::path::Path::new("."),
         );
         assert!(out.body.contains("killed"), "{}", out.body);
-        assert!(started.elapsed() < std::time::Duration::from_secs(3), "took {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
@@ -480,7 +557,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let out = bash(&call(r#"{"command":"pwd","cwd":"."}"#), &dir);
         // Compare canonically: macOS temp dirs are symlinked via /private.
-        let path = out.body.trim().strip_prefix("[exit 0]").unwrap_or(out.body.trim());
+        let path = out
+            .body
+            .trim()
+            .strip_prefix("[exit 0]")
+            .unwrap_or(out.body.trim());
         let got = std::fs::canonicalize(path.trim()).unwrap_or_else(|_| path.trim().into());
         let want = std::fs::canonicalize(&dir).unwrap();
         assert_eq!(got, want);
@@ -496,16 +577,26 @@ mod tests {
         assert!(out.truncated, "expected truncation");
         let spill = out.spill.as_ref().expect("overflow must spill to a file");
         let msg = std::fs::read_to_string(spill).expect("spill file must exist");
-        assert!(msg.contains("40000"), "the last line must be recoverable from the spill file");
+        assert!(
+            msg.contains("40000"),
+            "the last line must be recoverable from the spill file"
+        );
         // The inline body points the model at the file.
         assert!(out.body.contains("saved to"), "{}", out.body);
-        assert!(out.body.len() < MAX_OUTPUT_BYTES + 400, "body grew to {}", out.body.len());
+        assert!(
+            out.body.len() < MAX_OUTPUT_BYTES + 400,
+            "body grew to {}",
+            out.body.len()
+        );
         let _ = std::fs::remove_file(spill);
     }
 
     #[test]
     fn output_under_the_cap_does_not_spill() {
-        let out = bash(&call(r#"{"command":"echo small"}"#), std::path::Path::new("."));
+        let out = bash(
+            &call(r#"{"command":"echo small"}"#),
+            std::path::Path::new("."),
+        );
         assert!(!out.truncated);
         assert!(out.spill.is_none());
     }
@@ -520,22 +611,37 @@ mod tests {
         );
         let spill = out.spill.as_ref().unwrap();
         let tail = std::fs::read_to_string(spill).unwrap();
-        let head_lines = out.body.lines().filter(|l| l.chars().all(|c| c.is_ascii_digit()) && !l.is_empty()).count();
+        let head_lines = out
+            .body
+            .lines()
+            .filter(|l| l.chars().all(|c| c.is_ascii_digit()) && !l.is_empty())
+            .count();
         assert!(head_lines > 0, "head should carry some lines");
         assert!(tail.contains("40000"));
         // 40000 lines total; head + spill must account for all of them.
         let spill_lines = tail.lines().filter(|l| !l.trim().is_empty()).count();
-        assert!(head_lines + spill_lines >= 39999, "head {head_lines} + spill {spill_lines} lost lines");
+        assert!(
+            head_lines + spill_lines >= 39999,
+            "head {head_lines} + spill {spill_lines} lost lines"
+        );
         let _ = std::fs::remove_file(spill);
     }
 
     #[test]
     fn state_records_and_reads_back() {
         let mut s = State::new();
-        let c = ToolCall { id: "t".into(), name: "state".into(), arguments: r#"{"items":["a is b","c is d"]}"#.into() };
+        let c = ToolCall {
+            id: "t".into(),
+            name: "state".into(),
+            arguments: r#"{"items":["a is b","c is d"]}"#.into(),
+        };
         s.apply(&c);
         assert_eq!(s.items().len(), 2);
-        let read = ToolCall { id: "t".into(), name: "state".into(), arguments: "{}".into() };
+        let read = ToolCall {
+            id: "t".into(),
+            name: "state".into(),
+            arguments: "{}".into(),
+        };
         let out = s.apply(&read);
         assert!(out.body.contains("a is b"));
         assert!(out.body.contains("c is d"));
@@ -544,7 +650,11 @@ mod tests {
     #[test]
     fn state_rejects_non_array_items() {
         let mut s = State::new();
-        let c = ToolCall { id: "t".into(), name: "state".into(), arguments: r#"{"items":"nope"}"#.into() };
+        let c = ToolCall {
+            id: "t".into(),
+            name: "state".into(),
+            arguments: r#"{"items":"nope"}"#.into(),
+        };
         let out = s.apply(&c);
         assert!(out.body.contains("array of strings"));
         assert!(s.items().is_empty());

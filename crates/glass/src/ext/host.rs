@@ -4,16 +4,20 @@
 //! Every exchange is bounded by a timeout and a byte cap, so a wedged or
 //! hostile extension degrades into a warning rather than a hung session.
 
-use std::io::{BufReader, Write};
+use std::io::{BufReader, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use super::protocol::{self, is_nested_call, is_subagent_call, Manifest, Request, MAX_REPLY_BYTES, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS};
 use super::protocol::parse_manifest;
+use super::protocol::{
+    self, MAX_REPLY_BYTES, Manifest, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS, Request, SubagentTask,
+    is_nested_call, is_subagent_call, is_subagents_call, parse_subagent_tasks,
+};
 
 /// Callback the host uses to run a tool an extension asked for.
 pub type HostToolBridge<'a> = dyn FnMut(&str, &str) -> String + 'a;
 
-/// Callback the host uses to run a delegated task in a fresh context.
+/// Callback the host uses to run delegated tasks in fresh contexts.
 ///
 /// The subagent loop needs the provider and the workspace, which belong
 /// to the REPL. Rather than hand the extension a borrow of them — the
@@ -21,13 +25,40 @@ pub type HostToolBridge<'a> = dyn FnMut(&str, &str) -> String + 'a;
 /// installs a factory that builds what it needs on demand. The factory
 /// owns only an `Arc` provider factory and a `PathBuf`, so it is
 /// `'static` and the extension needs no lifetime parameter.
-pub type SubagentFn = Box<dyn FnMut(&str) -> String + Send + Sync>;
+///
+/// The callback takes a batch: one extension is one serial pipe, so
+/// fan-out cannot come from overlapping tool calls. A batch arrives as a
+/// single request, the host runs the tasks concurrently, and the reports
+/// come back in request order.
+pub type SubagentFn = Box<dyn FnMut(&[SubagentTask]) -> Vec<String> + Send + Sync>;
 
+/// Legacy whitespace commands or JSON argument vectors; never evaluated by a shell.
+pub fn arguments(spec: &str) -> Result<Vec<String>, String> {
+    let mut args: Vec<String> = if spec.trim_start().starts_with('[') {
+        serde_json::from_str(spec)
+            .map_err(|_| "Extension argument vector must contain only strings")?
+    } else {
+        spec.split_whitespace().map(str::to_string).collect()
+    };
+    if args.is_empty() || args[0].is_empty() {
+        return Err("Extension executable is empty".into());
+    }
+    for arg in &mut args {
+        if let Some(rest) = arg.strip_prefix("~/")
+            && let Ok(home) = std::env::var("HOME")
+        {
+            *arg = format!("{home}/{rest}");
+        }
+    }
+    Ok(args)
+}
 
 /// A running extension process.
 pub struct Extension {
     pub manifest: Manifest,
     child: Child,
+    stopped: bool,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     stdin: Option<ChildStdin>,
     stdout: Option<BufReader<ChildStdout>>,
     /// Raw stdout descriptor, used only for poll(2) readiness checks. `BufReader`
@@ -48,19 +79,41 @@ impl Extension {
     /// deliberate: an extension's interpreter is part of how it is invoked, and
     /// requiring every extension to be a self-contained executable would lock
     /// out the scripting most extensions actually want.
-    pub fn spawn(
+    pub fn spawn(cmd: &str, workspace: &str, model: &str) -> Result<Self, String> {
+        Self::spawn_cancellable(
+            cmd,
+            workspace,
+            model,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+    }
+    pub fn spawn_cancellable(
         cmd: &str,
         workspace: &str,
         model: &str,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<Self, String> {
-        let mut parts = cmd.split_whitespace();
-        let Some(program) = parts.next() else {
-            return Err(format!("extension command `{cmd}` is empty"));
-        };
-        let args: Vec<String> = parts.map(str::to_string).collect();
+        let parts = arguments(cmd)?;
+        let program = &parts[0];
+        let args = &parts[1..];
 
-        let mut child = Command::new(program)
-            .args(&args)
+        let mut command = Command::new(program);
+        // Extensions are local programs, but need not inherit provider secrets.
+        for (name, _) in std::env::vars_os() {
+            let upper = name.to_string_lossy().to_ascii_uppercase();
+            if upper.contains("TOKEN")
+                || upper.contains("SECRET")
+                || upper.contains("PASSWORD")
+                || upper.contains("API_KEY")
+                || upper == "AWS_ACCESS_KEY_ID"
+                || upper == "SSH_AUTH_SOCK"
+            {
+                command.env_remove(name);
+            }
+        }
+        let mut child = command
+            .process_group(0)
+            .args(args)
             .current_dir(workspace)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -79,6 +132,8 @@ impl Extension {
             next_id: 0,
             subagent: None,
             child,
+            stopped: false,
+            cancel,
         };
 
         let hello = Request::Hello {
@@ -89,9 +144,12 @@ impl Extension {
         let reply = ext
             .request(&hello, REQUEST_TIMEOUT_MS * 3, None)
             .ok_or_else(|| format!("extension `{cmd}` closed before the handshake"))?;
-        ext.manifest = parse_manifest(&reply)
-            .map_err(|e| format!("extension `{cmd}`: {e}"))?;
+        ext.manifest = parse_manifest(&reply).map_err(|e| format!("extension `{cmd}`: {e}"))?;
         Ok(ext)
+    }
+
+    pub fn finish_startup(&mut self) {
+        self.cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     }
 
     /// Install the callback that runs delegated tasks.
@@ -128,47 +186,83 @@ impl Extension {
         // read loop has to demultiplex: anything tagged `call_tool` is served
         // and its result written back, and only a non-nested message is the
         // answer we were waiting for.
+        //
+        // The deadline bounds one *waiting* stretch, not the whole request.
+        // Servicing nested work resets it: a delegated task or a nested tool
+        // chain can legitimately run for minutes, and expiring the wait while
+        // that work was making progress would turn a long subagent into
+        // "unavailable".
+        let mut deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
         loop {
-            let v = self.read_reply(timeout_ms)?;
-            if is_subagent_call(&v) {
-                // A delegated task. The host owns the nested agent
-                // loop; the extension process only asked for it. An
-                // extension with no runner installed is refused, not
-                // hung on, because a silent gap is worse than an error.
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            let v = self.read_reply(remaining.as_millis().max(1) as u64)?;
+            if is_subagent_call(&v) || is_subagents_call(&v) {
+                // Delegated work. The host owns the nested agent
+                // loops; the extension process only asked for them.
+                // An extension with no runner installed is refused,
+                // not hung on, because a silent gap is worse than an
+                // error.
+                let (tasks, batched) = if is_subagents_call(&v) {
+                    match parse_subagent_tasks(&v) {
+                        Ok(tasks) => (tasks, true),
+                        Err(e) => {
+                            let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
+                            self.reply(protocol::subagents_result_json(&call_id, &[], Some(&e)))?;
+                            deadline = std::time::Instant::now()
+                                + std::time::Duration::from_millis(timeout_ms);
+                            continue;
+                        }
+                    }
+                } else {
+                    let task = v
+                        .get("task")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    (
+                        vec![SubagentTask {
+                            task,
+                            ..SubagentTask::default()
+                        }],
+                        false,
+                    )
+                };
                 let runner = self.subagent.as_mut()?;
-                let task = v.get("task").and_then(|t| t.as_str()).unwrap_or("").to_string();
-                let out = runner(&task);
-
-                self.next_id += 1;
-                let id = self.next_id;
+                let outputs = runner(&tasks);
                 let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
-                let mut reply = protocol::subagent_result_json(&call_id, &out);
-                reply["id"] = serde_json::json!(id);
-                let mut line = serde_json::to_string(&reply).ok()?;
-                line.push('\n');
-                let stdin = self.stdin.as_mut()?;
-                stdin.write_all(line.as_bytes()).ok()?;
-                stdin.flush().ok()?;
+                if batched {
+                    self.reply(protocol::subagents_result_json(&call_id, &outputs, None))?;
+                } else {
+                    let out = outputs.first().cloned().unwrap_or_default();
+                    self.reply(protocol::subagent_result_json(&call_id, &out))?;
+                }
+                deadline =
+                    std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
                 continue;
             }
             if is_nested_call(&v) {
                 // No bridge means this extension tried to use a capability
                 // the caller did not grant it, which is a refusal, not a retry.
                 let bridge = host_tools.as_deref_mut()?;
-                let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-                let args = v.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}").to_string();
+                let name = v
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let args = v
+                    .get("arguments")
+                    .and_then(|a| a.as_str())
+                    .unwrap_or("{}")
+                    .to_string();
                 let out = bridge(&name, &args);
 
-                self.next_id += 1;
-                let id = self.next_id;
                 let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
-                let mut reply = protocol::nested_call_result_json(&call_id, &out);
-                reply["id"] = serde_json::json!(id);
-                let mut line = serde_json::to_string(&reply).ok()?;
-                line.push('\n');
-                let stdin = self.stdin.as_mut()?;
-                stdin.write_all(line.as_bytes()).ok()?;
-                stdin.flush().ok()?;
+                self.reply(protocol::nested_call_result_json(&call_id, &out))?;
+                deadline =
+                    std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
                 continue;
             }
             // A reply to an earlier fire-and-forget event. It is not the answer
@@ -183,64 +277,66 @@ impl Extension {
         }
     }
 
+    /// Write one reply line, assigning it the next id.
+    ///
+    /// Returns `None` when the pipe is gone; callers are already on a
+    /// best-effort path, and a closed pipe must not panic or hang.
+    fn reply(&mut self, mut v: serde_json::Value) -> Option<()> {
+        self.next_id += 1;
+        v["id"] = serde_json::json!(self.next_id);
+        let mut line = serde_json::to_string(&v).ok()?;
+        line.push('\n');
+        let stdin = self.stdin.as_mut()?;
+        stdin.write_all(line.as_bytes()).ok()?;
+        stdin.flush().ok()?;
+        Some(())
+    }
+
     /// Read one line, capped in both size and time.
     fn read_reply(&mut self, timeout_ms: u64) -> Option<serde_json::Value> {
         let stdout = self.stdout.as_mut()?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-        let mut total = 0usize;
-        let mut line = String::new();
-
+        let mut bytes = Vec::new();
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
+            if remaining.is_zero() || self.cancel.load(std::sync::atomic::Ordering::Acquire) {
                 return None;
             }
-
-            // `BufRead` has no timeout, so readiness is checked by polling for
-            // readable bytes and then doing a non-blocking-ish read via a
-            // short-lived worker. Simpler and portable: spawn nothing, use the
-            // fact that a well-behaved extension replies immediately and cap
-            // the wait with a polling loop on the fd.
-            if !fd_readable(self.raw_fd, remaining) {
-                return None;
+            if stdout.buffer().is_empty()
+                && !fd_readable(
+                    self.raw_fd,
+                    remaining.min(std::time::Duration::from_millis(50)),
+                )
+            {
+                continue;
             }
-
-            let mut chunk = String::new();
-            let n = read_line_limited(stdout, &mut chunk, MAX_REPLY_BYTES - total)?;
-            if n == 0 {
-                return None;
-            }
-            total += n;
-            if total > MAX_REPLY_BYTES {
-                return None;
-            }
-            line.push_str(&chunk);
-            if line.ends_with('\n') {
+            let mut byte = [0u8; 1];
+            stdout.read_exact(&mut byte).ok()?;
+            if byte[0] == b'\n' {
                 break;
             }
+            if bytes.len() >= MAX_REPLY_BYTES {
+                return None;
+            }
+            bytes.push(byte[0]);
         }
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        serde_json::from_str(trimmed).ok()
+        serde_json::from_slice(&bytes).ok()
     }
 
     /// Ask for the extension's system-prompt contribution.
     pub fn system_prompt(&mut self) -> Option<String> {
-        let v = self.request(&Request::SystemPrompt, REQUEST_TIMEOUT_MS, None)?;
-        v.get("text").and_then(|t| t.as_str()).map(str::to_string).filter(|s| !s.trim().is_empty())
+        self.request(&Request::SystemPrompt, REQUEST_TIMEOUT_MS, None)
+            .and_then(|v| v.get("text").and_then(|t| t.as_str()).map(str::to_string))
+            .filter(|text| !text.trim().is_empty())
+            .or_else(|| {
+                (!self.manifest.system_prompt.trim().is_empty())
+                    .then(|| self.manifest.system_prompt.clone())
+            })
     }
 
     /// Offer a tool result for rewriting. Returns `Some` only if the extension
     /// actually changed something.
-    pub fn rewrite_tool_result(
-        &mut self,
-        call_id: &str,
-        name: &str,
-        body: &str,
-    ) -> Option<String> {
+    pub fn rewrite_tool_result(&mut self, call_id: &str, name: &str, body: &str) -> Option<String> {
         let req = Request::ToolResult {
             call_id: call_id.to_string(),
             name: name.to_string(),
@@ -259,10 +355,17 @@ impl Extension {
             arguments: arguments.to_string(),
         };
         match self.request(&req, REQUEST_TIMEOUT_MS, None) {
-            // No answer means no opinion, which must not block the tool.
-            None => Ok(()),
+            // A configured authorization hook must explicitly allow execution.
+            None if !self.manifest.authorization_required => Ok(()),
+            None => Err(format!(
+                "{}: authorization unavailable; tool blocked",
+                self.manifest.name
+            )),
             Some(v) => {
-                if v.get("allow").and_then(|a| a.as_bool()).unwrap_or(true) {
+                if v.get("allow")
+                    .and_then(|a| a.as_bool())
+                    .unwrap_or(!self.manifest.authorization_required)
+                {
                     Ok(())
                 } else {
                     Err(v
@@ -287,9 +390,10 @@ impl Extension {
     /// answer, which is exactly the bug that made the agent appear to stop
     /// after one tool call.
     pub fn turn_end(&mut self, text: &str, cacheable_prefix_bytes: usize) {
-        self.send_only(
-            &Request::TurnEnd { text: text.to_string(), cacheable_prefix_bytes },
-        );
+        self.send_only(&Request::TurnEnd {
+            text: text.to_string(),
+            cacheable_prefix_bytes,
+        });
     }
 
     /// Write a request without reading a reply, so a silent extension costs
@@ -297,16 +401,23 @@ impl Extension {
     fn send_only(&mut self, req: &Request) {
         self.next_id += 1;
         let id = self.next_id;
-        let Ok(mut line) = serde_json::to_string(&req.to_json(id)) else { return };
+        let Ok(mut line) = serde_json::to_string(&req.to_json(id)) else {
+            return;
+        };
         line.push('\n');
-        let Some(stdin) = self.stdin.as_mut() else { return };
+        let Some(stdin) = self.stdin.as_mut() else {
+            return;
+        };
         let _ = stdin.write_all(line.as_bytes());
         let _ = stdin.flush();
     }
 
     /// Run a slash command. Returns the extension's output.
     pub fn run_command(&mut self, name: &str, args: &str) -> Option<String> {
-        let req = Request::Command { name: name.to_string(), args: args.to_string() };
+        let req = Request::Command {
+            name: name.to_string(),
+            args: args.to_string(),
+        };
         let v = self.request(&req, REQUEST_TIMEOUT_MS, None)?;
         v.get("output").and_then(|o| o.as_str()).map(str::to_string)
     }
@@ -326,7 +437,10 @@ impl Extension {
         if !self.manifest.tools.iter().any(|t| t.name == name) {
             return None;
         }
-        let req = Request::RunTool { name: name.to_string(), arguments: arguments.to_string() };
+        let req = Request::RunTool {
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        };
         self.request(&req, REQUEST_TIMEOUT_MS * 10, Some(host_tools))
             .and_then(|v| v.get("output").and_then(|o| o.as_str()).map(str::to_string))
             .filter(|s| !s.is_empty())
@@ -338,25 +452,44 @@ impl Extension {
 
     /// Shut the extension down, escalating to a kill if it ignores the request.
     pub fn shutdown(&mut self) {
+        if self.stopped {
+            return;
+        }
         let _ = self.request(&Request::Goodbye, 200, None);
         // Dropping stdin should let a well-behaved extension exit on EOF.
         self.stdin = None;
         for _ in 0..20 {
             match self.child.try_wait() {
-                Ok(Some(_)) => return,
+                Ok(Some(_)) => {
+                    unsafe {
+                        libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+                    }
+                    self.stopped = true;
+                    return;
+                }
                 Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
                 Err(_) => break,
             }
         }
+        unsafe {
+            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        self.stopped = true;
     }
 }
 
 impl Drop for Extension {
     fn drop(&mut self) {
+        if self.stopped {
+            return;
+        }
         // A killed harness must not leave orphaned extension processes holding
         // the workspace open.
+        unsafe {
+            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -374,30 +507,6 @@ fn fd_of(_s: &ChildStdout) -> i32 {
     -1
 }
 
-/// Read one line into `out`, returning how many bytes were consumed.
-///
-/// The limit is enforced by reading at most `limit` bytes, so an extension
-/// that never sends a newline cannot grow our buffer without bound.
-fn read_line_limited(r: &mut impl std::io::Read, out: &mut String, limit: usize) -> Option<usize> {
-    let mut buf = vec![0u8; 4096.min(limit.max(1))];
-    let mut filled = Vec::new();
-    loop {
-        let n = r.read(&mut buf).ok()?;
-        if n == 0 {
-            break;
-        }
-        filled.extend_from_slice(&buf[..n]);
-        if filled.len() >= limit || filled.contains(&b'\n') {
-            break;
-        }
-    }
-    if filled.is_empty() {
-        return None;
-    }
-    out.push_str(&String::from_utf8_lossy(&filled));
-    Some(filled.len())
-}
-
 /// Wait until the stream has bytes available, or the deadline passes.
 ///
 /// `BufReader` does not implement `AsFd`, so the raw stdout is kept alongside
@@ -405,7 +514,11 @@ fn read_line_limited(r: &mut impl std::io::Read, out: &mut String, limit: usize)
 #[cfg(unix)]
 fn fd_readable(fd: i32, timeout: std::time::Duration) -> bool {
     let ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-    let mut pfd = PollFd { fd, events: POLLIN, revents: 0 };
+    let mut pfd = PollFd {
+        fd,
+        events: POLLIN,
+        revents: 0,
+    };
     let rc = unsafe { poll(&mut pfd as *mut PollFd, 1, ms) };
     rc > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR)) != 0
 }

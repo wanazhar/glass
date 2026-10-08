@@ -21,8 +21,7 @@ pub enum Edit {
 
 pub struct Editor {
     buf: String,
-    /// Cursor position in grapheme-ish terms; we treat bytes as columns, which
-    /// is wrong for CJK but keeps the hot path branch-free.
+    /// UTF-8 byte offset of the insertion point; layout counts characters.
     cursor: usize,
     history: Vec<String>,
     hist_idx: Option<usize>,
@@ -31,11 +30,31 @@ pub struct Editor {
     /// consecutive up/down moves. `None` means the next
     /// vertical move uses the column the cursor is on.
     goal_col: Option<usize>,
+    painted: std::cell::Cell<usize>,
 }
 
 impl Editor {
     pub fn new() -> Self {
-        Self { buf: String::new(), cursor: 0, history: Vec::new(), hist_idx: None, draft: String::new(), goal_col: None }
+        Self {
+            buf: String::new(),
+            cursor: 0,
+            history: Vec::new(),
+            hist_idx: None,
+            draft: String::new(),
+            goal_col: None,
+            painted: std::cell::Cell::new(0),
+        }
+    }
+
+    /// Replace the recalled history, e.g. with prompts
+    /// persisted from earlier sessions.
+    pub fn set_history(&mut self, history: Vec<String>) {
+        self.history = history;
+        self.hist_idx = None;
+    }
+
+    pub fn cursor(&self) -> usize {
+        self.cursor
     }
 
     pub fn text(&self) -> &str {
@@ -58,16 +77,68 @@ impl Editor {
     pub fn key(&mut self, key: KeyEvent) -> Edit {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Enter if !ctrl => {
+            KeyCode::Enter
+                if ctrl
+                    || key.modifiers.contains(KeyModifiers::SHIFT)
+                    || key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.insert('\n');
+                Edit::Continue
+            }
+            KeyCode::Enter => {
                 let text = std::mem::take(&mut self.buf);
                 self.cursor = 0;
                 if !text.trim().is_empty()
-                    && (self.hist_idx.is_none() || self.history.last().map(String::as_str) != Some(text.as_str())) {
-                        self.history.push(text.clone());
-                    }
+                    && (self.hist_idx.is_none()
+                        || self.history.last().map(String::as_str) != Some(text.as_str()))
+                {
+                    self.history.push(text.clone());
+                }
                 self.hist_idx = None;
                 self.draft.clear();
                 Edit::Submit(text)
+            }
+            KeyCode::Char('a') if ctrl => {
+                self.cursor = 0;
+                Edit::Continue
+            }
+            KeyCode::Char('e') if ctrl => {
+                self.cursor = self.buf.len();
+                Edit::Continue
+            }
+            KeyCode::Char('u') if ctrl => {
+                self.buf.drain(..self.cursor);
+                self.cursor = 0;
+                self.goal_col = None;
+                Edit::Continue
+            }
+            KeyCode::Char('k') if ctrl => {
+                self.buf.truncate(self.cursor);
+                self.goal_col = None;
+                Edit::Continue
+            }
+            KeyCode::Char('w') if ctrl => {
+                let mut start = self.cursor;
+                while start > 0
+                    && self.buf[..start]
+                        .chars()
+                        .next_back()
+                        .is_some_and(char::is_whitespace)
+                {
+                    start = prev_boundary(&self.buf, start);
+                }
+                while start > 0
+                    && self.buf[..start]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| !c.is_whitespace())
+                {
+                    start = prev_boundary(&self.buf, start);
+                }
+                self.buf.drain(start..self.cursor);
+                self.cursor = start;
+                self.goal_col = None;
+                Edit::Continue
             }
             KeyCode::Char('c') if ctrl => Edit::Continue,
             KeyCode::Esc => {
@@ -94,7 +165,7 @@ impl Editor {
             }
             KeyCode::Delete => {
                 if self.cursor < self.buf.len() {
-                    let next = prev_boundary(&self.buf, self.cursor + 1);
+                    let next = next_boundary(&self.buf, self.cursor);
                     self.buf.replace_range(self.cursor..next, "");
                     self.goal_col = None;
                 }
@@ -168,6 +239,9 @@ impl Editor {
         let len = self.history.len();
         // `None` means "we are on the fresh draft", which sits just past the end.
         let current = self.hist_idx.unwrap_or(len);
+        if self.hist_idx.is_none() && delta < 0 {
+            self.draft = self.buf.clone();
+        }
         let next = (current as isize + delta).clamp(0, len as isize) as usize;
         self.hist_idx = if next >= len { None } else { Some(next) };
         self.buf = match self.hist_idx {
@@ -233,55 +307,100 @@ impl Editor {
         starts
     }
 
-    /// Draw the editor at `base_row`, wrapping at `width`. Returns rows used.
+    /// Draw one prompt frame, then flush before waiting for another key.
     pub fn render(&self, base_row: u16, width: u16, focused: bool) -> u16 {
-        let width = width.max(8) as usize;
-        let mut out = String::new();
-        let chunks = wrap(&self.buf, width);
-
-        // The cursor can sit one row past the last line of
-        // text, at the pending-wrap position. Draw that row
-        // too, or the cursor lands somewhere it was never
-        // cleared and leaves a ghost of the previous frame.
-        let cursor_row = cursor_position(&self.buf, self.cursor, width).0 as usize;
-        let total = chunks.len().max(cursor_row + 1).max(1);
-
-        for i in 0..total {
-            let row = base_row + i as u16;
-            // Position inside `out`, not with term::move_to:
-            // that prints straight to stdout, which would
-            // reorder ahead of the text below.
-            out.push_str(&format!("\x1b[{row};0H"));
-            let chunk = chunks.get(i).copied().unwrap_or("");
-            // Only the first row carries the prompt glyph;
-            // continuation rows are plain cleared lines.
-            let marker = if i == 0 { "\x1b[2K\x1b[90m❯\x1b[0m " } else { "\x1b[2K" };
-            out.push_str(&format!("{marker}{chunk}"));
-        }
-
-        if self.buf.is_empty() && !focused {
-            out.push_str(&format!("\x1b[{base_row};2H"));
-            out.push_str("\x1b[90mtype a message, /help for commands\x1b[0m");
-        }
-
-        let rows = total as u16;
-        self.draw_cursor(base_row, width, focused, &mut out);
-        print!("{out}");
-        let _ = io::stdout().flush();
-        rows
+        let mut stdout = crate::theme::TerminalWriter(io::stdout().lock());
+        self.render_into(&mut stdout, base_row, width, focused)
+            .unwrap_or(1)
     }
 
-    fn draw_cursor(&self, base_row: u16, width: usize, focused: bool, out: &mut String) {
-        if !focused {
-            return;
+    /// A single-row viewport while tools/providers own the neighboring output row.
+    pub fn render_limited(&self, base_row: u16, width: u16, focused: bool, rows: usize) -> u16 {
+        let mut stdout = crate::theme::TerminalWriter(io::stdout().lock());
+        self.render_into_limited(&mut stdout, base_row, width, focused, rows)
+            .unwrap_or(1)
+    }
+
+    /// Terminal cursor cell after rendering the editor in this viewport.
+    pub fn cursor_cell(&self, base_row: u16, width: u16, rows: usize) -> (u16, u16) {
+        let terminal_height = crossterm::terminal::size().unwrap_or((80, 24)).1.max(1);
+        let base_row = base_row.max(1).min(terminal_height);
+        let prefix = usize::from(width >= 3) * 2;
+        let content_width = usize::from(width.max(1)).saturating_sub(prefix).max(1);
+        let (cursor_row, cursor_col) = cursor_position(&self.buf, self.cursor, content_width);
+        let capacity = usize::from(terminal_height - base_row + 1).clamp(1, rows.clamp(1, 5));
+        let start = (cursor_row as usize).saturating_sub(capacity - 1);
+        (
+            base_row + cursor_row.saturating_sub(start as u16),
+            (usize::from(cursor_col) + prefix + 1).min(usize::from(width.max(1))) as u16,
+        )
+    }
+
+    pub fn render_into(
+        &self,
+        io: &mut impl Write,
+        base_row: u16,
+        width: u16,
+        focused: bool,
+    ) -> io::Result<u16> {
+        self.render_into_limited(io, base_row, width, focused, 5)
+    }
+    fn render_into_limited(
+        &self,
+        io: &mut impl Write,
+        base_row: u16,
+        width: u16,
+        focused: bool,
+        rows: usize,
+    ) -> io::Result<u16> {
+        let terminal_height = crossterm::terminal::size().unwrap_or((80, 24)).1.max(1);
+        let base_row = base_row.max(1).min(terminal_height);
+        let prefix = usize::from(width >= 3) * 2;
+        let content_width = usize::from(width.max(1)).saturating_sub(prefix).max(1);
+        let chunks = crate::text::wrap(&self.buf, content_width);
+        let (cursor_row, cursor_col) = cursor_position(&self.buf, self.cursor, content_width);
+        let total = chunks.len().max(cursor_row as usize + 1).max(1);
+        let capacity = usize::from(terminal_height - base_row + 1).clamp(1, rows.clamp(1, 5));
+        let start = (cursor_row as usize).saturating_sub(capacity - 1);
+        let visible = (total - start).min(capacity);
+        let previous = self.painted.replace(visible).min(capacity);
+        for i in 0..visible.max(previous) {
+            let chunk = chunks.get(start + i).map(String::as_str).unwrap_or("");
+            let marker = if prefix == 0 {
+                ""
+            } else if start + i == 0 {
+                "❯\x1b[0m "
+            } else {
+                "  "
+            };
+            write!(io, "\x1b[{};1H\x1b[2K", base_row + i as u16)?;
+            if i < visible {
+                if start + i == 0 && prefix > 0 {
+                    write!(io, "{}{marker}{chunk}", crate::theme::accent())?;
+                } else {
+                    write!(io, "{marker}{chunk}")?;
+                }
+            }
         }
-        let (row, col) = cursor_position(&self.buf, self.cursor, width);
-        out.push_str(&format!("\x1b[{};{}H\x1b[6m", base_row + row, col + 2));
-        match self.buf[self.cursor..].chars().next() {
-            Some(c) => out.push(c),
-            None => out.push(' '),
+        if self.buf.is_empty() && !focused {
+            let hint = crate::text::clip("type a message, / for commands", content_width);
+            write!(
+                io,
+                "\x1b[{base_row};{}H{}{hint}\x1b[0m",
+                prefix + 1,
+                crate::theme::ansi(crate::theme::Tone::Muted)
+            )?;
         }
-        out.push_str("\x1b[0m");
+        if focused {
+            write!(
+                io,
+                "\x1b[{};{}H\x1b[?25h",
+                base_row + cursor_row.saturating_sub(start as u16),
+                (usize::from(cursor_col) + prefix + 1).min(usize::from(width.max(1)))
+            )?;
+        }
+        io.flush()?;
+        Ok(visible as u16)
     }
 }
 
@@ -296,6 +415,7 @@ impl Default for Editor {
 /// its line breaks instead of being flattened or, worse,
 /// emitting a raw carriage return that desynchronizes the
 /// row accounting.
+#[cfg(test)]
 fn wrap(text: &str, width: usize) -> Vec<&str> {
     if text.is_empty() {
         return vec![""];
@@ -307,11 +427,15 @@ fn wrap(text: &str, width: usize) -> Vec<&str> {
             continue;
         }
         let mut start = 0;
-        for (i, _) in line.char_indices() {
-            if i - start >= width {
+        let mut cells = 0;
+        for (i, c) in line.char_indices() {
+            let n = crate::text::width(&c.to_string());
+            if cells + n > width {
                 lines.push(&line[start..i]);
                 start = i;
+                cells = 0;
             }
+            cells += n;
         }
         lines.push(&line[start..]);
     }
@@ -322,7 +446,9 @@ fn wrap(text: &str, width: usize) -> Vec<&str> {
 }
 
 fn prev_boundary(s: &str, at: usize) -> usize {
-    if at == 0 { return 0; }
+    if at == 0 {
+        return 0;
+    }
     let mut i = at - 1;
     while i > 0 && !s.is_char_boundary(i) {
         i -= 1;
@@ -331,7 +457,9 @@ fn prev_boundary(s: &str, at: usize) -> usize {
 }
 
 fn next_boundary(s: &str, at: usize) -> usize {
-    if at >= s.len() { return s.len(); }
+    if at >= s.len() {
+        return s.len();
+    }
     let mut i = at + 1;
     while i < s.len() && !s.is_char_boundary(i) {
         i += 1;
@@ -350,11 +478,12 @@ fn cursor_position(buf: &str, cursor: usize, width: usize) -> (u16, u16) {
         } else {
             // Wrap before placing, so a full row followed
             // by a newline advances one row, not two.
-            if col == width {
+            let cells = crate::text::width(&c.to_string());
+            if col + cells > width || col == width {
                 row += 1;
                 col = 0;
             }
-            col += 1;
+            col += cells;
         }
     }
     // A cursor left at the end of a full row sits at the
@@ -379,6 +508,52 @@ pub fn repaint_rows(base_row: u16, count: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_character_is_not_overwritten_by_a_cursor_cell() {
+        let mut e = Editor::new();
+        e.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        let mut out = Vec::new();
+        e.render_into(&mut out, 5, 80, true).unwrap();
+        let frame = String::from_utf8(out).unwrap();
+        assert!(frame.contains("❯\x1b[0m a"));
+        assert!(frame.ends_with("\x1b[5;4H\x1b[?25h"));
+        assert!(!frame.contains("\x1b[6m"), "cursor must not repaint text");
+        e.key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        let mut out = Vec::new();
+        e.render_into(&mut out, 5, 80, true).unwrap();
+        assert!(
+            String::from_utf8(out)
+                .unwrap()
+                .ends_with("\x1b[5;5H\x1b[?25h")
+        );
+    }
+
+    #[test]
+    fn rendered_wrap_reserves_prompt_columns_and_keeps_cursor_in_bounds() {
+        let mut e = Editor::new();
+        e.set_text("abcdefgh");
+        let mut out = Vec::new();
+        assert_eq!(e.render_into(&mut out, 5, 8, true).unwrap(), 2);
+        let frame = String::from_utf8(out).unwrap();
+        assert!(frame.contains("abcdef"));
+        assert!(frame.contains("  gh"));
+        assert!(frame.ends_with("\x1b[6;5H\x1b[?25h"));
+    }
+
+    #[test]
+    fn moving_cursor_within_text_does_not_write_an_extra_character() {
+        let mut e = Editor::new();
+        e.set_text("ab");
+        e.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        let mut out = Vec::new();
+        e.render_into(&mut out, 1, 80, true).unwrap();
+        assert!(
+            String::from_utf8(out)
+                .unwrap()
+                .ends_with("\x1b[1;4H\x1b[?25h")
+        );
+    }
 
     #[test]
     fn move_line_keeps_the_column() {
@@ -519,5 +694,21 @@ mod tests {
         // The row count the renderer uses must match
         // the newlines present.
         assert_eq!(wrap(e.text(), 80).len(), 2);
+    }
+    #[test]
+    fn busy_single_row_preserves_the_full_multiline_draft() {
+        let mut editor = Editor::new();
+        editor.set_text("first line\nsecond line\nlast line");
+        let mut output = Vec::new();
+        assert_eq!(
+            editor
+                .render_into_limited(&mut output, 6, 20, true, 1)
+                .unwrap(),
+            1
+        );
+        assert_eq!(editor.text(), "first line\nsecond line\nlast line");
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("last line"));
+        assert!(!output.contains("\x1b[7;1H"));
     }
 }

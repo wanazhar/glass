@@ -13,11 +13,37 @@ pub struct SseEvent {
 /// Incremental SSE decoder fed arbitrary byte-boundary chunks.
 pub struct SseDecoder {
     buf: String,
+    bytes: Vec<u8>,
 }
 
 impl SseDecoder {
     pub fn new() -> Self {
-        Self { buf: String::new() }
+        Self {
+            buf: String::new(),
+            bytes: Vec::new(),
+        }
+    }
+
+    /// Preserve UTF-8 characters split across socket reads.
+    pub fn push_bytes(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
+        self.bytes.extend_from_slice(chunk);
+        let mut out = Vec::new();
+        loop {
+            let length = match std::str::from_utf8(&self.bytes) {
+                Ok(_) => self.bytes.len(),
+                Err(e) => e.valid_up_to() + e.error_len().unwrap_or(0),
+            };
+            if length == 0 {
+                break;
+            }
+            let text = String::from_utf8_lossy(&self.bytes[..length]).into_owned();
+            self.bytes.drain(..length);
+            out.extend(self.push(&text));
+            if self.bytes.is_empty() {
+                break;
+            }
+        }
+        out
     }
 
     /// Feed a chunk and drain any complete events it produced.
@@ -86,7 +112,10 @@ fn parse_record(raw: &str) -> Option<SseEvent> {
     if data.is_empty() {
         return None;
     }
-    Some(SseEvent { event, data: data.join("\n") })
+    Some(SseEvent {
+        event,
+        data: data.join("\n"),
+    })
 }
 
 #[cfg(test)]
@@ -158,5 +187,21 @@ mod tests {
         let mut d = SseDecoder::new();
         let evs = d.push("data:{\"tight\":true}\n\n");
         assert_eq!(evs[0].data, "{\"tight\":true}");
+    }
+}
+
+#[cfg(test)]
+mod utf8_tests {
+    use super::*;
+    #[test]
+    fn every_utf8_split_preserves_streamed_text() {
+        let wire = "data: {\"text\":\"héllo 世界 🦀\"}\n\n";
+        for split in 0..wire.len() {
+            let mut d = SseDecoder::new();
+            let mut events = d.push_bytes(&wire.as_bytes()[..split]);
+            events.extend(d.push_bytes(&wire.as_bytes()[split..]));
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].data, "{\"text\":\"héllo 世界 🦀\"}");
+        }
     }
 }

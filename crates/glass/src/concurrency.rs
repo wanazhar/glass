@@ -72,25 +72,60 @@ pub fn classify_bash(command: &str, workspace: &Path) -> Class {
 /// prefix-only check silently classified it as a parallel read.
 fn is_exclusive(cmd: &str) -> bool {
     const EXCLUSIVE: &[&str] = &[
-        "rm", "mv", "cp", "chmod", "chown", "dd", "truncate", "sudo", "su",
-        "apt", "apt-get", "brew", "yum", "dnf", "pacman", "snap",
-        "pip", "npm", "yarn", "pnpm", "cargo", "go", "gem",
-        "docker", "kubectl", "helm", "terraform", "systemctl", "service",
-        "make", "shutdown", "reboot", "halt", "kill", "killall", "pkill",
-        "git", "hg", "svn",
+        "rm",
+        "mv",
+        "cp",
+        "chmod",
+        "chown",
+        "dd",
+        "truncate",
+        "sudo",
+        "su",
+        "apt",
+        "apt-get",
+        "brew",
+        "yum",
+        "dnf",
+        "pacman",
+        "snap",
+        "pip",
+        "npm",
+        "yarn",
+        "pnpm",
+        "cargo",
+        "go",
+        "gem",
+        "docker",
+        "kubectl",
+        "helm",
+        "terraform",
+        "systemctl",
+        "service",
+        "make",
+        "shutdown",
+        "reboot",
+        "halt",
+        "kill",
+        "killall",
+        "pkill",
+        "git",
+        "hg",
+        "svn",
     ];
     cmd.split_whitespace().any(|w| {
-        let word = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.');
+        let word =
+            w.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.');
         EXCLUSIVE.contains(&word)
     })
 }
 
 fn mutates_git(cmd: &str) -> bool {
     const MUTATING: &[&str] = &[
-        "add", "commit", "merge", "rebase", "reset", "checkout", "switch",
-        "stash", "rm", "mv", "apply", "am", "restore", "clean", "pull", "push",
+        "add", "commit", "merge", "rebase", "reset", "checkout", "switch", "stash", "rm", "mv",
+        "apply", "am", "restore", "clean", "pull", "push",
     ];
-    cmd.split_whitespace().any(|w| MUTATING.contains(&w.trim_matches(|c: char| !c.is_alphanumeric())))
+    cmd.split_whitespace()
+        .any(|w| MUTATING.contains(&w.trim_matches(|c: char| !c.is_alphanumeric())))
 }
 
 /// A plan for executing a batch.
@@ -162,7 +197,9 @@ impl Plan {
         if self.calls.len() < 2 {
             return false;
         }
-        self.calls.iter().any(|c| matches!(c.class, Class::Parallel))
+        self.calls
+            .iter()
+            .any(|c| matches!(c.class, Class::Parallel))
     }
 
     /// Force one call to run alone, whatever class it was inferred as.
@@ -214,10 +251,7 @@ where
                 scope.spawn(move || (i, f(i)))
             })
             .collect();
-        handles
-            .into_iter()
-            .filter_map(|h| h.join().ok())
-            .collect()
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
     })
 }
 
@@ -253,7 +287,10 @@ pub fn plan_bash(commands: &[(usize, String)], workspace: &Path) -> Plan {
     Plan::new(
         commands
             .iter()
-            .map(|(i, cmd)| Call { index: *i, class: classify_bash(cmd, workspace) })
+            .map(|(i, cmd)| Call {
+                index: *i,
+                class: classify_bash(cmd, workspace),
+            })
             .collect(),
     )
 }
@@ -312,7 +349,11 @@ mod tests {
         assert_eq!(classify_bash("cat a.txt", ws()), Class::Parallel);
         assert_eq!(classify_bash("rg foo src/", ws()), Class::Parallel);
         assert_eq!(classify_bash("ls -la", ws()), Class::Parallel);
-        assert_eq!(classify_bash("cargo test", ws()), Class::Serial, "builds are exclusive");
+        assert_eq!(
+            classify_bash("cargo test", ws()),
+            Class::Serial,
+            "builds are exclusive"
+        );
     }
 
     #[test]
@@ -330,8 +371,17 @@ mod tests {
 
     #[test]
     fn destructive_commands_are_always_serial() {
-        for c in ["rm -rf build", "sudo apt install x", "git commit -m x", "docker run x"] {
-            assert_eq!(classify_bash(c, ws()), Class::Serial, "{c} must be exclusive");
+        for c in [
+            "rm -rf build",
+            "sudo apt install x",
+            "git commit -m x",
+            "docker run x",
+        ] {
+            assert_eq!(
+                classify_bash(c, ws()),
+                Class::Serial,
+                "{c} must be exclusive"
+            );
         }
     }
 
@@ -388,7 +438,10 @@ mod tests {
     #[test]
     fn all_serial_batch_needs_no_thread() {
         let p = plan_bash(&[(0, "rm x".into()), (1, "rm y".into())], ws());
-        assert!(!p.needs_parallelism(), "nothing can overlap, so skip the machinery");
+        assert!(
+            !p.needs_parallelism(),
+            "nothing can overlap, so skip the machinery"
+        );
     }
 
     #[test]
@@ -419,7 +472,6 @@ mod tests {
         let b = canonical_key(Path::new("/w/a.txt"));
         assert_eq!(a, b, "two spellings of one file must share a key");
     }
-
 }
 
 #[cfg(test)]
@@ -477,10 +529,7 @@ mod exec_tests {
     fn same_path_writes_run_in_order() {
         let log = Mutex::new(Vec::new());
         let p = plan_bash(
-            &[
-                (0, "echo a > x.txt".into()),
-                (1, "echo b > x.txt".into()),
-            ],
+            &[(0, "echo a > x.txt".into()), (1, "echo b > x.txt".into())],
             Path::new("/w"),
         );
         let out = execute(&p, 8, |i| {
@@ -545,7 +594,11 @@ mod serial_tests {
         assert!(!p.needs_parallelism() || true);
         p = p.with_serial(Some(1));
         let waves = p.waves(8);
-        assert_eq!(waves, vec![vec![0], vec![1], vec![2]], "call 1 must run alone: {waves:?}");
+        assert_eq!(
+            waves,
+            vec![vec![0], vec![1], vec![2]],
+            "call 1 must run alone: {waves:?}"
+        );
     }
 
     #[test]

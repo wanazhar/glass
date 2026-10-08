@@ -62,11 +62,18 @@ fn parse(text: &str, path: PathBuf) -> Result<Skill, String> {
     if !trimmed.starts_with("---") {
         // No front matter: the file is all body, so there is no description for
         // the catalogue and the model cannot tell what it is for.
-        return Ok(Skill { name: stem, description: String::new(), path });
+        return Ok(Skill {
+            name: stem,
+            description: String::new(),
+            path,
+        });
     }
 
     let rest = trimmed.strip_prefix("---").ok_or("bad front matter")?;
-    let rest = rest.strip_prefix('\n').or_else(|| rest.strip_prefix("\r\n")).unwrap_or(rest);
+    let rest = rest
+        .strip_prefix('\n')
+        .or_else(|| rest.strip_prefix("\r\n"))
+        .unwrap_or(rest);
     let (front, _body) = rest
         .split_once("\n---")
         .ok_or_else(|| format!("unterminated front matter in {}", path.display()))?;
@@ -74,7 +81,9 @@ fn parse(text: &str, path: PathBuf) -> Result<Skill, String> {
     let mut name = stem;
     let mut description = String::new();
     for line in front.lines() {
-        let Some((k, v)) = line.split_once(':') else { continue };
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
         match k.trim() {
             "name" => name = v.trim().to_string(),
             "description" => description = v.trim().to_string(),
@@ -82,7 +91,11 @@ fn parse(text: &str, path: PathBuf) -> Result<Skill, String> {
         }
     }
 
-    Ok(Skill { name, description, path })
+    Ok(Skill {
+        name,
+        description,
+        path,
+    })
 }
 
 /// Render the catalogue injected into the system prompt.
@@ -98,7 +111,12 @@ pub fn catalogue(skills: &[Skill]) -> Option<String> {
          when the task calls for one. Read the file, then follow it:\n\n",
     );
     for s in skills {
-        out.push_str(&format!("- {} ({}): {}\n", s.path.display(), s.name, s.description));
+        out.push_str(&format!(
+            "- {} ({}): {}\n",
+            s.path.display(),
+            s.name,
+            s.description
+        ));
     }
     Some(out)
 }
@@ -139,8 +157,16 @@ mod tests {
     #[test]
     fn loads_and_sorts_by_name() {
         let d = scratch("sort");
-        std::fs::write(d.join("zeta.md"), "---\nname: zeta\ndescription: z\n---\nz body").unwrap();
-        std::fs::write(d.join("alpha.md"), "---\nname: alpha\ndescription: a\n---\na body").unwrap();
+        std::fs::write(
+            d.join("zeta.md"),
+            "---\nname: zeta\ndescription: z\n---\nz body",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("alpha.md"),
+            "---\nname: alpha\ndescription: a\n---\na body",
+        )
+        .unwrap();
         std::fs::write(d.join("notes.txt"), "ignored").unwrap();
 
         let skills = load_dir(&d);
@@ -153,7 +179,11 @@ mod tests {
     #[test]
     fn unparseable_file_does_not_stop_the_scan() {
         let d = scratch("bad");
-        std::fs::write(d.join("good.md"), "---\nname: good\ndescription: ok\n---\nbody").unwrap();
+        std::fs::write(
+            d.join("good.md"),
+            "---\nname: good\ndescription: ok\n---\nbody",
+        )
+        .unwrap();
         std::fs::write(d.join("broken.md"), "---\nname: broken\nnever ends").unwrap();
         let skills = load_dir(&d);
         assert_eq!(skills.len(), 1);
@@ -178,7 +208,10 @@ mod tests {
         let c = catalogue(&skills).unwrap();
         assert!(c.contains("does things"));
         assert!(c.contains("s.md"));
-        assert!(!c.contains("SECRET BODY MARKER"), "bodies must not be in the catalogue");
+        assert!(
+            !c.contains("SECRET BODY MARKER"),
+            "bodies must not be in the catalogue"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 

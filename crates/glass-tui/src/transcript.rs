@@ -1,8 +1,4 @@
-//! Fullscreen transcript viewer, entered with ctrl+g.
-//!
-//! This is the opt-in half of the dual renderer. It exists because people want
-//! to scroll and search history, but it is *not* the default view: the default
-//! view writes into the terminal's own scrollback and costs nothing.
+//! Transcript renderer shared by the fullscreen viewer and inline reader.
 //!
 //! The viewer never owns history. It renders through [`super::layout::Layout`],
 //! which wraps each entry once and hands back only the lines the viewport
@@ -26,16 +22,42 @@ pub struct Transcript {
     pub scroll: usize,
     pub follow: bool,
     collapsed: Vec<bool>,
+    original: Vec<(String, Role, usize)>,
+    inline_hint: Option<String>,
 }
 
 impl Transcript {
     pub fn new(entries: Vec<super::Entry>) -> Self {
-        let rows: Vec<(String, Role, usize)> =
-            entries.into_iter().map(|e| (e.text, e.role, e.turn)).collect();
+        let rows: Vec<(String, Role, usize)> = entries
+            .into_iter()
+            .map(|e| (e.text, e.role, e.turn))
+            .collect();
         let collapsed = vec![false; rows.len()];
-        let layout = Layout::new(rows);
+        let layout = Layout::new(rows.clone());
         let scroll = layout.total_lines().saturating_sub(1);
-        Self { layout, scroll, follow: true, collapsed }
+        Self {
+            layout,
+            scroll,
+            follow: true,
+            collapsed,
+            original: rows,
+            inline_hint: None,
+        }
+    }
+
+    /// Refresh live records without resetting the reader's scroll position.
+    pub fn replace_entries(&mut self, entries: Vec<super::Entry>) -> bool {
+        let rows: Vec<_> = entries
+            .into_iter()
+            .map(|e| (e.text, e.role, e.turn))
+            .collect();
+        if self.original == rows {
+            return false;
+        }
+        self.collapsed.resize(rows.len(), false);
+        self.original = rows;
+        self.rebuild();
+        true
     }
 
     pub fn len(&self) -> usize {
@@ -46,20 +68,38 @@ impl Transcript {
         self.layout.is_empty()
     }
 
+    /// Replace the fullscreen help footer with a compact pinned-reader hint.
+    pub fn set_inline_hint(&mut self, hint: Option<String>) {
+        self.inline_hint = hint;
+    }
+
+    /// Set the wrapping width before applying an initial page offset.
+    pub fn set_width(&mut self, width: u16) {
+        self.layout.set_width(width.max(1));
+        self.clamp(1);
+    }
+
     /// Clamp `scroll` so the viewport can always be filled.
     fn clamp(&mut self, height: u16) {
-        let max = self.layout.total_lines().saturating_sub(height.max(1) as usize);
+        let max = self
+            .layout
+            .total_lines()
+            .saturating_sub(height.max(1) as usize);
         self.scroll = self.scroll.min(max);
     }
 
     /// Scroll by whole lines.
     pub fn step(&mut self, delta: isize, height: u16) {
         self.scroll = (self.scroll as isize + delta).max(0) as usize;
-        self.follow = false;
         self.clamp(height);
+        self.follow = delta >= 0 && self.scroll
+            == self
+                .layout
+                .total_lines()
+                .saturating_sub(height.max(1) as usize);
     }
 
-    /// Scroll by half a viewport, which is what a page key should do here.
+    /// Scroll by half a viewport for the fullscreen transcript.
     pub fn page(&mut self, delta: isize, height: u16) {
         let step = (height as isize / 2).max(1);
         self.step(delta * step, height);
@@ -82,14 +122,19 @@ impl Transcript {
     /// Pin to the newest content.
     pub fn follow_tail(&mut self, height: u16) {
         self.follow = true;
-        self.scroll = self.layout.total_lines().saturating_sub(height.max(1) as usize);
+        self.scroll = self
+            .layout
+            .total_lines()
+            .saturating_sub(height.max(1) as usize);
         self.clamp(height);
     }
 
     /// Toggle collapse on the entry at the top of the viewport.
     pub fn toggle_collapse(&mut self) {
         let idx = self.layout.entry_at_line(self.scroll);
-        let Some(slot) = self.collapsed.get_mut(idx) else { return };
+        let Some(slot) = self.collapsed.get_mut(idx) else {
+            return;
+        };
         *slot = !*slot;
         self.rebuild();
     }
@@ -97,20 +142,30 @@ impl Transcript {
     /// Rebuild the line index after a collapse change, preserving scroll.
     fn rebuild(&mut self) {
         let keep = self.scroll;
+        let width = self.layout.width();
         let rows = self
-            .layout
-            .snapshot()
+            .original
+            .clone()
             .into_iter()
             .enumerate()
             .map(|(i, (text, role, turn))| {
                 if self.collapsed.get(i).copied().unwrap_or(false) {
-                    (text.to_string(), role, turn)
+                    (
+                        format!(
+                            "▸ {} · {} lines",
+                            crate::text::clip(text.lines().next().unwrap_or(""), 70),
+                            text.lines().count()
+                        ),
+                        Role::Meta,
+                        turn,
+                    )
                 } else {
                     (text, role, turn)
                 }
             })
             .collect();
         self.layout = Layout::new(rows);
+        self.layout.set_width(width);
         self.scroll = keep.min(self.layout.total_lines().saturating_sub(1));
     }
 
@@ -123,16 +178,28 @@ impl Transcript {
             .split(area);
 
         let view = chunks[0];
+        if self.follow {
+            self.follow_tail(view.height);
+        }
         self.clamp(view.height);
         let items = self.layout.visible(self.scroll, view);
 
+        let session_label = if area.width < 40 {
+            "Log"
+        } else {
+            session_label
+        };
         let title = format!(
             " {} — {} ",
             session_label,
             if self.follow {
                 "following".to_string()
             } else {
-                format!("line {}/{}", self.scroll + 1, self.layout.total_lines().max(1))
+                format!(
+                    "line {}/{}",
+                    self.scroll + 1,
+                    self.layout.total_lines().max(1)
+                )
             }
         );
 
@@ -158,6 +225,18 @@ impl Transcript {
             );
         }
 
+        let controls = if let Some(hint) = &self.inline_hint {
+            hint.as_str()
+        } else if area.width < 40 {
+            "↑↓ scroll · Esc close"
+        } else {
+            "↑↓ scroll · PgUp/PgDn page · Enter collapse · f follow · Esc close"
+        };
+        frame.render_widget(
+            Paragraph::new(crate::text::clip(controls, area.width as usize)),
+            chunks[1],
+        );
+
         // Mods paint last so an overlay always wins over harness chrome.
         let mut overlay = Overlay::default();
         for m in mods {
@@ -165,7 +244,12 @@ impl Transcript {
         }
         if !overlay.lines.is_empty() {
             let h = (overlay.lines.len() as u16).min(chunks[1].height);
-            let rect = Rect { x: view.x, y: chunks[1].y, width: view.width, height: h };
+            let rect = Rect {
+                x: view.x,
+                y: chunks[1].y,
+                width: view.width,
+                height: h,
+            };
             frame.render_widget(Paragraph::new(overlay.lines.join("\n")), rect);
         }
     }
@@ -174,10 +258,9 @@ impl Transcript {
 /// Wrap text to `width` columns on whitespace where possible, hard-splitting
 /// only for words that cannot fit.
 ///
-/// The minimum is 20 because wrapping a 40-column terminal down to 10 shreds
-/// every word into unreadable fragments.
+/// Respect the actual viewport, including narrow SSH terminals.
 pub fn wrap_width(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(20);
+    let width = width.max(1);
     let mut out = Vec::new();
     for para in text.lines() {
         if para.is_empty() {
@@ -188,7 +271,7 @@ pub fn wrap_width(text: &str, width: usize) -> Vec<String> {
         for word in para.split_whitespace() {
             if line.is_empty() {
                 line.push_str(word);
-            } else if line.chars().count() + 1 + word.chars().count() <= width {
+            } else if crate::text::width(&line) + 1 + crate::text::width(word) <= width {
                 line.push(' ');
                 line.push_str(word);
             } else {
@@ -197,9 +280,13 @@ pub fn wrap_width(text: &str, width: usize) -> Vec<String> {
             }
             // Hard-split a token that cannot fit on any line: a long path, a
             // base64 blob, a minified bundle.
-            while line.chars().count() > width {
-                let split: String = line.chars().take(width).collect();
-                let rest: String = line.chars().skip(width).collect();
+            while crate::text::width(&line) > width {
+                let split = crate::text::clip(&line, width);
+                if split.is_empty() {
+                    line = crate::text::wrap(&line, width).join("");
+                    break;
+                }
+                let rest = line[split.len()..].to_string();
                 out.push(split);
                 line = rest;
             }
@@ -215,10 +302,33 @@ pub fn wrap_width(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collapse_is_one_line_on_a_narrow_screen_and_restores_original() {
+        let mut viewer = Transcript::new(vec![crate::Entry {
+            role: Role::Tool,
+            text: "many tool output lines\n".repeat(20),
+            turn: 1,
+        }]);
+        viewer.layout.set_width(20);
+        let original = viewer.layout.total_lines();
+        viewer.top();
+        viewer.toggle_collapse();
+        assert_eq!(viewer.layout.total_lines(), 1);
+        viewer.toggle_collapse();
+        assert_eq!(viewer.layout.width(), 20);
+        assert_eq!(viewer.layout.total_lines(), original);
+    }
     use crate::Entry;
 
     fn entries(n: usize) -> Vec<Entry> {
-        (0..n).map(|i| Entry { role: Role::User, text: format!("message {i}"), turn: i }).collect()
+        (0..n)
+            .map(|i| Entry {
+                role: Role::User,
+                text: format!("message {i}"),
+                turn: i,
+            })
+            .collect()
     }
 
     const H: u16 = 20;
@@ -231,10 +341,9 @@ mod tests {
     }
 
     #[test]
-    fn never_wraps_below_minimum_width() {
-        // A 5-column request clamps to 20 rather than shredding every word.
+    fn narrow_wrap_never_loses_text_to_clipping() {
         let out = wrap_width("alpha beta gamma delta", 5);
-        assert_eq!(out, vec!["alpha beta gamma", "delta"]);
+        assert_eq!(out, vec!["alpha", "beta", "gamma", "delta"]);
     }
 
     #[test]
@@ -260,6 +369,7 @@ mod tests {
     #[test]
     fn step_up_stops_following() {
         let mut t = Transcript::new(entries(100));
+        t.follow_tail(H);
         t.step(-1, H);
         assert!(!t.follow);
     }
@@ -282,7 +392,10 @@ mod tests {
         let before = t.scroll;
         t.page(1, H);
         assert!(t.scroll > before, "page down must advance");
-        assert!(t.scroll - before <= H as usize + 1, "page must be about half a viewport");
+        assert!(
+            t.scroll - before <= H as usize + 1,
+            "page must be about half a viewport"
+        );
     }
 
     #[test]
@@ -300,6 +413,44 @@ mod tests {
         t.follow_tail(H);
         assert!(t.follow);
         assert!(t.scroll > 0);
+    }
+
+    #[test]
+    fn incoming_entries_preserve_a_paused_reader_position() {
+        let mut t = Transcript::new(entries(100));
+        t.top();
+        t.step(4, H);
+        let position = t.scroll;
+        t.replace_entries(entries(120));
+        assert!(!t.follow);
+        assert_eq!(t.scroll, position);
+    }
+
+    #[test]
+    fn identical_session_sync_is_not_a_new_update() {
+        let mut t = Transcript::new(entries(10));
+        assert!(!t.replace_entries(entries(10)));
+    }
+
+    #[test]
+    fn incoming_entries_keep_following_at_the_tail() {
+        let mut t = Transcript::new(entries(100));
+        t.replace_entries(entries(120));
+        t.follow_tail(H);
+        assert!(t.follow);
+        assert_eq!(t.scroll, t.layout.total_lines().saturating_sub(H as usize));
+    }
+
+    #[test]
+    fn scrolling_down_to_the_tail_resumes_following() {
+        let mut t = Transcript::new(entries(100));
+        t.top();
+        t.page(1_000, H);
+        assert!(t.follow);
+        let old_tail = t.scroll;
+        t.replace_entries(entries(120));
+        t.follow_tail(H);
+        assert!(t.scroll > old_tail);
     }
 
     #[test]

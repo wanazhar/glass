@@ -1,2 +1,6 @@
 target
 *.jsonl
+
+__pycache__/
+*.pyc
+dist/

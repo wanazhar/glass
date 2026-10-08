@@ -6,6 +6,7 @@
 //! from here. Keeping a single format is what stops the two code paths from
 //! drifting apart.
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -19,6 +20,11 @@ use glass_tui::Role;
 pub enum Record {
     User(String),
     Assistant(String),
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    },
     Reasoning(String),
     Bash {
         command: String,
@@ -30,7 +36,11 @@ pub enum Record {
         /// next session has never heard of.
         spill: Option<String>,
     },
-    ToolResult { name: String, call_id: String, body: String },
+    ToolResult {
+        name: String,
+        call_id: String,
+        body: String,
+    },
     State(Vec<String>),
     System(String),
     Meta(String),
@@ -54,29 +64,54 @@ impl Record {
         match self {
             Record::User(t) => json!({ "k": "user", "t": t }),
             Record::Assistant(t) => json!({ "k": "assistant", "t": t }),
+            Record::ToolCall {
+                id,
+                name,
+                arguments,
+            } => json!({"k":"call", "id":id, "name":name, "args":arguments}),
             Record::Reasoning(t) => json!({ "k": "reasoning", "t": t }),
-            Record::Bash { command, output, exit_code, truncated, spill } => json!({
+            Record::Bash {
+                command,
+                output,
+                exit_code,
+                truncated,
+                spill,
+            } => json!({
                 "k": "bash", "cmd": command, "out": output,
                 "code": exit_code, "trunc": truncated, "spill": spill
             }),
-            Record::ToolResult { name, call_id, body } => {
+            Record::ToolResult {
+                name,
+                call_id,
+                body,
+            } => {
                 json!({ "k": "tool", "name": name, "id": call_id, "t": body })
             }
             Record::State(items) => json!({ "k": "state", "items": items }),
             Record::System(t) => json!({ "k": "system", "t": t }),
             Record::Meta(t) => json!({ "k": "meta", "t": t }),
-            Record::Compacted { kept, dropped, summary, tail_start } => json!({
+            Record::Compacted {
+                kept,
+                dropped,
+                summary,
+                tail_start,
+            } => json!({
                 "k": "compacted", "kept": kept, "dropped": dropped,
                 "sum": summary, "tail": tail_start
             }),
         }
     }
 
-    fn from_json(v: &serde_json::Value) -> Option<Self> {
+    pub(crate) fn from_json(v: &serde_json::Value) -> Option<Self> {
         let s = |key: &str| v.get(key).and_then(|x| x.as_str()).map(str::to_string);
         Some(match v.get("k")?.as_str()? {
             "user" => Record::User(s("t")?),
             "assistant" => Record::Assistant(s("t")?),
+            "call" => Record::ToolCall {
+                id: s("id")?,
+                name: s("name")?,
+                arguments: s("args")?,
+            },
             "reasoning" => Record::Reasoning(s("t")?),
             "bash" => Record::Bash {
                 command: s("cmd").unwrap_or_default(),
@@ -93,7 +128,11 @@ impl Record {
             "state" => Record::State(
                 v.get("items")
                     .and_then(|x| x.as_array())
-                    .map(|a| a.iter().filter_map(|i| i.as_str().map(str::to_string)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|i| i.as_str().map(str::to_string))
+                            .collect()
+                    })
                     .unwrap_or_default(),
             ),
             "system" => Record::System(s("t")?),
@@ -109,11 +148,25 @@ impl Record {
     }
 
     /// Project into the model context. `None` means display-only.
-    fn to_message(&self) -> Option<Message> {
+    pub(crate) fn to_message(&self) -> Option<Message> {
         match self {
             Record::User(t) => Some(Message::User(t.clone())),
             Record::Assistant(t) => Some(Message::Assistant(t.clone())),
-            Record::ToolResult { name, call_id, body, .. } => Some(Message::ToolResult {
+            Record::ToolCall {
+                id,
+                name,
+                arguments,
+            } => Some(Message::ToolCall {
+                id: id.clone(),
+                name: name.clone(),
+                arguments: arguments.clone(),
+            }),
+            Record::ToolResult {
+                name,
+                call_id,
+                body,
+                ..
+            } => Some(Message::ToolResult {
                 call_id: call_id.clone(),
                 name: name.clone(),
                 body: body.clone(),
@@ -132,17 +185,28 @@ impl Record {
         match self {
             Record::User(t) => (Role::User, t.clone()),
             Record::Assistant(t) => (Role::Assistant, t.clone()),
+            Record::ToolCall {
+                name, arguments, ..
+            } => (Role::Tool, format!("{name} {arguments}")),
             Record::Reasoning(t) => (Role::Tool, t.clone()),
-            Record::Bash { command, output, .. } => {
-                (Role::Bash, format!("$ {command}\n{output}"))
-            }
+            Record::Bash {
+                command, output, ..
+            } => (Role::Bash, format!("$ {command}\n{output}")),
             Record::ToolResult { body, .. } => (Role::Tool, body.clone()),
-            Record::State(items) => (Role::Meta, items.iter().map(|s| format!("• {s}")).collect::<Vec<_>>().join("\n")),
+            Record::State(items) => (
+                Role::Meta,
+                items
+                    .iter()
+                    .map(|s| format!("• {s}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
             Record::System(t) => (Role::System, t.clone()),
             Record::Meta(t) => (Role::Meta, t.clone()),
-            Record::Compacted { kept, dropped, .. } => {
-                (Role::Meta, format!("context compacted: dropped {dropped}, kept {kept}"))
-            }
+            Record::Compacted { kept, dropped, .. } => (
+                Role::Meta,
+                format!("context compacted: dropped {dropped}, kept {kept}"),
+            ),
         }
     }
 }
@@ -176,8 +240,21 @@ impl Session {
         fs::create_dir_all(dir)?;
         let id = new_id();
         let path = dir.join(format!("{id}.jsonl"));
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        Ok(Self { id, path, file: Some(file), records: Vec::new(), turn: 0, log_len: 0 })
+        let mut options = OpenOptions::new();
+        options.create_new(true).append(true);
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&path)?;
+        Ok(Self {
+            id,
+            path,
+            file: Some(file),
+            records: Vec::new(),
+            turn: 0,
+            log_len: 0,
+        })
     }
 
     /// Reopen a session by id or path, replaying it into memory.
@@ -224,10 +301,67 @@ impl Session {
         let log_len = records.len();
         let (records, turn) = apply_projection(records);
 
-        Ok(Self { id, path, file: Some(file), records, turn, log_len })
+        Ok(Self {
+            id,
+            path,
+            file: Some(file),
+            records,
+            turn,
+            log_len,
+        })
+    }
+
+    pub fn raw_turns(&self) -> std::io::Result<usize> {
+        let mut count = 0;
+        for line in BufReader::new(File::open(&self.path)?).lines() {
+            let line = line?;
+            if serde_json::from_str::<serde_json::Value>(&line)
+                .ok()
+                .and_then(|v| v.get("k").and_then(|k| k.as_str()).map(|k| k == "user"))
+                .unwrap_or(false)
+            {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    /// Fork raw history through a completed user turn, preserving compaction indices.
+    pub fn branch(&self, dir: &Path, through: usize) -> std::io::Result<Self> {
+        if through == 0 {
+            return Err(std::io::Error::other("turn must be positive"));
+        }
+        let mut fork = Self::create(dir)?;
+        let mut turn = 0;
+        for line in BufReader::new(File::open(&self.path)?).lines() {
+            let line = line?;
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let Some(r) = Record::from_json(&v) else {
+                continue;
+            };
+            if matches!(r, Record::User(_)) {
+                turn += 1;
+            }
+            if turn > through {
+                break;
+            }
+            fork.append(r);
+        }
+        if turn < through {
+            fs::remove_file(&fork.path)?;
+            return Err(std::io::Error::other("turn does not exist"));
+        }
+        fork.append(Record::Meta(format!(
+            "branched from {} through turn {through}; workspace files unchanged",
+            self.id
+        )));
+        Self::open(dir, &fork.id)
     }
 
     /// Most recently modified session, if any.
+    #[cfg(test)]
     pub fn last(dir: &Path) -> Option<PathBuf> {
         let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = fs::read_dir(dir)
             .ok()?
@@ -261,25 +395,240 @@ impl Session {
 
     /// The conversation as the model should see it.
     pub fn messages(&self) -> Vec<Message> {
-        self.records.iter().filter_map(Record::to_message).collect()
+        crate::compact::project(&self.records)
+    }
+
+    /// Full append-only history for UI inspection, independent of model compaction.
+    pub fn history_entries(&self) -> Vec<glass_tui::Entry> {
+        let records = self.read_history_records();
+        canonical_entries(&records)
     }
 
     /// Records for the transcript viewer, with turn indices assigned.
+    #[cfg(test)]
     pub fn entries(&self) -> Vec<glass_tui::Entry> {
-        let mut out = Vec::with_capacity(self.records.len());
-        let mut turn = 0usize;
-        for r in &self.records {
-            if matches!(r, Record::User(_)) {
-                turn += 1;
-            }
-            let (role, text) = r.to_entry();
-            if text.is_empty() {
-                continue;
-            }
-            out.push(glass_tui::Entry { role, text, turn });
-        }
-        out
+        canonical_entries(&self.records)
     }
+
+    /// Public provider reasoning for the current user turn, kept out of the
+    /// main conversation and available only through the dedicated thinking view.
+    pub fn reasoning_history(&self) -> String {
+        let records = self.read_history_records();
+        latest_reasoning(&records)
+    }
+
+    fn read_history_records(&self) -> Vec<Record> {
+        let Ok(file) = File::open(&self.path) else {
+            return self.records.clone();
+        };
+        BufReader::new(file)
+            .lines()
+            .map_while(Result::ok)
+            .filter_map(|line| serde_json::from_str(&line).ok())
+            .filter_map(|value| Record::from_json(&value))
+            .collect()
+    }
+}
+
+fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
+    type Scope = (usize, usize);
+    type CallKey = (usize, usize, String);
+    let mut scopes = Vec::with_capacity(records.len());
+    let (mut turn, mut epoch) = (0usize, 0usize);
+    let mut call_counts: HashMap<CallKey, usize> = HashMap::new();
+    let mut result_counts: HashMap<CallKey, usize> = HashMap::new();
+    let mut bash_by_scope_and_command: HashMap<(Scope, String), VecDeque<CallKey>> = HashMap::new();
+    let mut paired_bash_calls = HashSet::new();
+    for record in records {
+        if matches!(record, Record::User(_)) {
+            turn += 1;
+        }
+        if matches!(record, Record::Compacted { .. }) {
+            epoch += 1;
+            bash_by_scope_and_command.clear();
+        }
+        let scope = (turn, epoch);
+        scopes.push(scope);
+        match record {
+            Record::ToolCall {
+                id,
+                name,
+                arguments,
+            } => {
+                let key = (turn, epoch, id.clone());
+                *call_counts.entry(key.clone()).or_default() += 1;
+                if name == "bash"
+                    && let Some(command) = tool_command(arguments)
+                {
+                    bash_by_scope_and_command
+                        .entry((scope, command))
+                        .or_default()
+                        .push_back(key);
+                }
+            }
+            Record::ToolResult { call_id, .. } => {
+                *result_counts
+                    .entry((turn, epoch, call_id.clone()))
+                    .or_default() += 1;
+            }
+            Record::Bash { command, .. } => {
+                if let Some(key) = bash_by_scope_and_command
+                    .get_mut(&(scope, command.clone()))
+                    .and_then(VecDeque::pop_front)
+                {
+                    paired_bash_calls.insert(key);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Associate only unambiguous IDs. Malformed duplicate IDs stay visible in
+    // full instead of silently hiding one of their records.
+    let mut results: HashMap<CallKey, (&str, &str)> = HashMap::new();
+    let (mut turn, mut epoch) = (0usize, 0usize);
+    for record in records {
+        if matches!(record, Record::User(_)) {
+            turn += 1;
+        }
+        if matches!(record, Record::Compacted { .. }) {
+            epoch += 1;
+        }
+        if let Record::ToolResult {
+            call_id,
+            name,
+            body,
+        } = record
+        {
+            let key = (turn, epoch, call_id.clone());
+            if call_counts.get(&key) == Some(&1) && result_counts.get(&key) == Some(&1) {
+                results.insert(key, (name.as_str(), body.as_str()));
+            }
+        }
+    }
+
+    let mut entries = Vec::new();
+    for (record, (turn, epoch)) in records.iter().zip(scopes) {
+        let key = |id: &str| (turn, epoch, id.to_owned());
+        let entry = match record {
+            Record::ToolCall {
+                id,
+                name,
+                arguments,
+            } => {
+                let call_key = key(id);
+                if call_counts.get(&call_key) == Some(&1) && paired_bash_calls.contains(&call_key) {
+                    continue;
+                }
+                let body = results.get(&call_key).map(|(_, body)| *body);
+                let heading = readable_tool_call(name, arguments);
+                let text = match body {
+                    Some(body) if !body.is_empty() => {
+                        format!("{heading}\n{}", readable_output(body))
+                    }
+                    _ => format!("{heading}\nNo result recorded."),
+                };
+                (glass_tui::Role::Tool, text)
+            }
+            Record::Bash {
+                command,
+                output,
+                exit_code,
+                truncated,
+                spill,
+            } => {
+                let status = exit_code
+                    .map_or_else(|| "exit unknown".to_string(), |code| format!("exit {code}"));
+                let mut text = format!("$ {command} ({status})\n{output}");
+                if *truncated {
+                    text.push_str("\n[output truncated]");
+                }
+                if let Some(path) = spill {
+                    text.push_str(&format!("\nFull output: {path}"));
+                }
+                (glass_tui::Role::Bash, text)
+            }
+            Record::ToolResult {
+                call_id,
+                name,
+                body,
+            } => {
+                let call_key = key(call_id);
+                if call_counts.get(&call_key) == Some(&1)
+                    && result_counts.get(&call_key) == Some(&1)
+                {
+                    continue;
+                }
+                (
+                    glass_tui::Role::Tool,
+                    format!("{name} result\n{}", readable_output(body)),
+                )
+            }
+            Record::Reasoning(_) => continue,
+            other => other.to_entry(),
+        };
+        if !entry.1.is_empty() {
+            entries.push(glass_tui::Entry {
+                role: entry.0,
+                text: entry.1,
+                turn,
+            });
+        }
+    }
+    entries
+}
+
+fn latest_reasoning(records: &[Record]) -> String {
+    let mut latest = String::new();
+    for record in records {
+        match record {
+            Record::User(_) => latest.clear(),
+            Record::Reasoning(text) => latest.push_str(text),
+            _ => {}
+        }
+    }
+    latest
+}
+
+fn tool_command(arguments: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()?
+        .get("command")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn readable_tool_call(name: &str, arguments: &str) -> String {
+    if name == "bash" {
+        return tool_command(arguments)
+            .map(|command| format!("$ {command}"))
+            .unwrap_or_else(|| format!("{name} [arguments unavailable]"));
+    }
+    let arguments = serde_json::from_str::<serde_json::Value>(arguments).ok();
+    let details = match arguments {
+        Some(serde_json::Value::Object(values)) if !values.is_empty() => values
+            .into_iter()
+            .map(|(key, value)| format!("{key}: {}", value_as_text(&value)))
+            .collect::<Vec<_>>()
+            .join(" · "),
+        Some(value) if !value.is_null() => value_as_text(&value),
+        _ => "[arguments unavailable]".into(),
+    };
+    format!("{name} · {details}")
+}
+
+fn value_as_text(value: &serde_json::Value) -> String {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn readable_output(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| serde_json::to_string_pretty(&value).ok())
+        .unwrap_or_else(|| body.to_owned())
 }
 
 /// Rebuild the model-facing projection from an append-only log.
@@ -291,13 +640,23 @@ impl Session {
 /// it here makes compaction idempotent across a resume instead of something
 /// that only exists for the life of one process.
 fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
-    let Some(epoch) = records.iter().rposition(|r| matches!(r, Record::Compacted { .. })) else {
-        let turn = records.iter().filter(|r| matches!(r, Record::User(_))).count();
+    let Some(epoch) = records
+        .iter()
+        .rposition(|r| matches!(r, Record::Compacted { .. }))
+    else {
+        let turn = records
+            .iter()
+            .filter(|r| matches!(r, Record::User(_)))
+            .count();
         return (records, turn);
     };
 
     let (summary, mut tail_start) = match &records[epoch] {
-        Record::Compacted { summary, tail_start, .. } => (summary.clone(), *tail_start),
+        Record::Compacted {
+            summary,
+            tail_start,
+            ..
+        } => (summary.clone(), *tail_start),
         _ => unreachable!("position matched a Compacted record"),
     };
     // Logs written before the tail index existed record 0, which would
@@ -313,7 +672,9 @@ fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
         out.push(first.clone());
     }
     if let Some(text) = summary {
-        out.push(Record::System(format!("Summary of earlier work in this session:\n{text}")));
+        out.push(Record::System(format!(
+            "Summary of earlier work in this session:\n{text}"
+        )));
     }
     // The model's own durable notes, taken from the last one it wrote.
     if let Some(state) = records.iter().rev().find_map(|r| match r {
@@ -351,7 +712,7 @@ fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
     (out, turn)
 }
 
-/// Sortable, collision-resistant session id: base-36 millis plus a counter.
+/// Sortable session id: base-36 millis, process ID, and a per-process counter.
 fn new_id() -> String {
     use std::sync::atomic::{AtomicU32, Ordering};
     static SEQ: AtomicU32 = AtomicU32::new(0);
@@ -368,7 +729,7 @@ fn new_id() -> String {
         v /= 36;
     }
     let reversed: String = id.chars().rev().collect();
-    format!("{reversed}-{:04x}", n)
+    format!("{reversed}-{:x}-{:04x}", std::process::id(), n)
 }
 
 #[cfg(test)]
@@ -381,9 +742,34 @@ mod tests {
     fn tmpdir(tag: &str) -> PathBuf {
         static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let d = std::env::temp_dir().join(format!("glass-session-{}-{tag}-{n}", std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("glass-session-{}-{tag}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn branch_uses_raw_turns_and_keeps_original_log_unchanged() {
+        let dir = tmpdir("branch");
+        let mut s = Session::create(&dir).unwrap();
+        for i in 1..=3 {
+            s.append(Record::User(format!("task {i}")));
+            s.append(Record::Assistant(format!("answer {i}")));
+        }
+        let original = fs::read(&s.path).unwrap();
+        // In-memory projection can contain fewer turns than the log.
+        s.records = vec![
+            Record::User("task 1".into()),
+            Record::Assistant("summary".into()),
+        ];
+        assert_eq!(s.raw_turns().unwrap(), 3);
+        let b = s.branch(&dir, 2).unwrap();
+        assert_eq!(b.raw_turns().unwrap(), 2);
+        assert!(b.messages().iter().any(|m| m.text() == "answer 2"));
+        assert!(!b.messages().iter().any(|m| m.text() == "task 3"));
+        assert_eq!(fs::read(&s.path).unwrap(), original);
+        assert!(s.branch(&dir, 4).is_err());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -392,12 +778,27 @@ mod tests {
             Record::User("u".into()),
             Record::Assistant("a".into()),
             Record::Reasoning("r".into()),
-            Record::Bash { command: "ls".into(), output: "x".into(), exit_code: Some(0), truncated: false, spill: None },
-            Record::ToolResult { name: "bash".into(), call_id: "c1".into(), body: "b".into() },
+            Record::Bash {
+                command: "ls".into(),
+                output: "x".into(),
+                exit_code: Some(0),
+                truncated: false,
+                spill: None,
+            },
+            Record::ToolResult {
+                name: "bash".into(),
+                call_id: "c1".into(),
+                body: "b".into(),
+            },
             Record::State(vec!["s1".into()]),
             Record::System("sy".into()),
             Record::Meta("m".into()),
-            Record::Compacted { kept: 3, dropped: 9, summary: Some("sum".into()), tail_start: 0 },
+            Record::Compacted {
+                kept: 3,
+                dropped: 9,
+                summary: Some("sum".into()),
+                tail_start: 0,
+            },
         ];
         for c in cases {
             let j = c.to_json();
@@ -408,10 +809,20 @@ mod tests {
 
     #[test]
     fn bash_record_preserves_exit_code_and_truncation() {
-        let r = Record::Bash { command: "c".into(), output: "o".into(), exit_code: Some(127), truncated: true, spill: None };
+        let r = Record::Bash {
+            command: "c".into(),
+            output: "o".into(),
+            exit_code: Some(127),
+            truncated: true,
+            spill: None,
+        };
         let back = Record::from_json(&r.to_json()).unwrap();
         match back {
-            Record::Bash { exit_code, truncated, .. } => {
+            Record::Bash {
+                exit_code,
+                truncated,
+                ..
+            } => {
                 assert_eq!(exit_code, Some(127));
                 assert!(truncated);
             }
@@ -421,18 +832,130 @@ mod tests {
 
     #[test]
     fn messages_excludes_display_only_records() {
-        let mut s = Session { id: "t".into(), path: "t".into(), file: None, records: vec![], turn: 0, log_len: 0 };
+        let mut s = Session {
+            id: "t".into(),
+            path: "t".into(),
+            file: None,
+            records: vec![],
+            turn: 0,
+            log_len: 0,
+        };
         s.records = vec![
             Record::User("hi".into()),
             Record::Reasoning("secret".into()),
-            Record::Bash { command: "ls".into(), output: "out".into(), exit_code: Some(0), truncated: false, spill: None },
+            Record::Bash {
+                command: "ls".into(),
+                output: "out".into(),
+                exit_code: Some(0),
+                truncated: false,
+                spill: None,
+            },
             Record::Assistant("hello".into()),
             Record::Meta("noise".into()),
-            Record::ToolResult { name: "bash".into(), call_id: "c".into(), body: "res".into() },
+            Record::ToolResult {
+                name: "bash".into(),
+                call_id: "c".into(),
+                body: "res".into(),
+            },
         ];
         let msgs = s.messages();
-        assert_eq!(msgs.len(), 3, "reasoning, bash echo and meta must not replay");
+        assert_eq!(
+            msgs.len(),
+            3,
+            "reasoning, bash echo and meta must not replay"
+        );
         assert!(!msgs.iter().any(|m| m.text().contains("secret")));
+    }
+
+    #[test]
+    fn history_projection_scopes_reused_call_ids_to_each_turn() {
+        let records = vec![
+            Record::User("first".into()),
+            Record::ToolCall {
+                id: "call_0".into(),
+                name: "search".into(),
+                arguments: r#"{"query":"alpha"}"#.into(),
+            },
+            Record::ToolResult {
+                name: "search".into(),
+                call_id: "call_0".into(),
+                body: "first result".into(),
+            },
+            Record::User("second".into()),
+            Record::ToolCall {
+                id: "call_0".into(),
+                name: "search".into(),
+                arguments: r#"{"query":"beta"}"#.into(),
+            },
+            Record::ToolResult {
+                name: "search".into(),
+                call_id: "call_0".into(),
+                body: "second result".into(),
+            },
+            Record::Reasoning("hidden summary".into()),
+            Record::Assistant("done".into()),
+        ];
+        let entries = canonical_entries(&records);
+        let tools: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.role == Role::Tool)
+            .collect();
+        assert_eq!(tools.len(), 2);
+        assert!(tools[0].text.contains("query: alpha"));
+        assert!(tools[0].text.contains("first result"));
+        assert!(tools[1].text.contains("query: beta"));
+        assert!(tools[1].text.contains("second result"));
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry.text.contains("hidden summary"))
+        );
+        assert_eq!(latest_reasoning(&records), "hidden summary");
+    }
+
+    #[test]
+    fn history_projection_keeps_repeated_bash_executions_once_each() {
+        let bash = |id: &str| Record::ToolCall {
+            id: id.into(),
+            name: "bash".into(),
+            arguments: r#"{"command":"pwd"}"#.into(),
+        };
+        let result = |id: &str| Record::ToolResult {
+            name: "bash".into(),
+            call_id: id.into(),
+            body: "duplicate output".into(),
+        };
+        let output = |text: &str| Record::Bash {
+            command: "pwd".into(),
+            output: text.into(),
+            exit_code: Some(0),
+            truncated: false,
+            spill: None,
+        };
+        let entries = canonical_entries(&[
+            Record::User("run twice".into()),
+            bash("a"),
+            bash("b"),
+            output("first"),
+            result("a"),
+            output("second"),
+            result("b"),
+            Record::User("legacy".into()),
+            output("legacy output"),
+        ]);
+        let bash_entries: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.role == Role::Bash)
+            .collect();
+        assert_eq!(bash_entries.len(), 3);
+        assert!(bash_entries[0].text.contains("first"));
+        assert!(bash_entries[1].text.contains("second"));
+        assert!(bash_entries[2].text.contains("legacy output"));
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry.text.contains("No result recorded"))
+        );
     }
 
     #[test]
@@ -502,20 +1025,41 @@ mod tests {
 
         // The opening task and the summary both survive.
         assert!(matches!(reopened.records.first(), Some(Record::User(_))));
-        assert!(reopened.records.iter().any(|r| matches!(r, Record::System(t) if t.contains("did the migration"))));
+        assert!(
+            reopened
+                .records
+                .iter()
+                .any(|r| matches!(r, Record::System(t) if t.contains("did the migration")))
+        );
 
         // The tail is intact and in order.
-        let tail: Vec<_> = reopened.records.iter()
-            .filter_map(|r| match r { Record::User(t) => Some(t.clone()), _ => None })
+        let tail: Vec<_> = reopened
+            .records
+            .iter()
+            .filter_map(|r| match r {
+                Record::User(t) => Some(t.clone()),
+                _ => None,
+            })
             .collect();
-        assert!(tail.contains(&"question 39".into()), "tail lost its last turn");
+        assert!(
+            tail.contains(&"question 39".into()),
+            "tail lost its last turn"
+        );
 
         // The dropped middle is gone from the projection.
-        assert!(!reopened.records.iter().any(|r| matches!(r, Record::Assistant(t) if t == "answer 5")));
+        assert!(
+            !reopened
+                .records
+                .iter()
+                .any(|r| matches!(r, Record::Assistant(t) if t == "answer 5"))
+        );
 
         // The log itself is untouched — compaction is not destructive.
         let raw = std::fs::read_to_string(&log_path).unwrap();
-        assert!(raw.contains("answer 5"), "the immutable log lost a dropped record");
+        assert!(
+            raw.contains("answer 5"),
+            "the immutable log lost a dropped record"
+        );
     }
 
     #[test]
@@ -552,11 +1096,21 @@ mod tests {
         let reopened = Session::open(&dir, &id).unwrap();
         // Only the most recent epoch applies, so the projection is a
         // single compaction's worth — not three stacked summaries.
-        assert!(reopened.records.len() <= crate::compact::KEEP_RECENT + 4,
-            "projection grew to {}", reopened.records.len());
+        assert!(
+            reopened.records.len() <= crate::compact::KEEP_RECENT + 4,
+            "projection grew to {}",
+            reopened.records.len()
+        );
         // Exactly one compaction epoch is reflected.
-        assert_eq!(reopened.records.iter().filter(|r| matches!(r, Record::Compacted{..})).count(), 0,
-            "the projection must not carry the marker itself");
+        assert_eq!(
+            reopened
+                .records
+                .iter()
+                .filter(|r| matches!(r, Record::Compacted { .. }))
+                .count(),
+            0,
+            "the projection must not carry the marker itself"
+        );
     }
 
     #[test]
@@ -566,7 +1120,11 @@ mod tests {
         let path = dir.join("crashed.jsonl");
         fs::write(&path, "{\"k\":\"user\",\"t\":\"first\"}\n{\"k\":\"assis").unwrap();
         let s = Session::open(&dir, "crashed").unwrap();
-        assert_eq!(s.records.len(), 1, "partial line is skipped, valid line kept");
+        assert_eq!(
+            s.records.len(),
+            1,
+            "partial line is skipped, valid line kept"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -589,8 +1147,19 @@ mod tests {
 
     #[test]
     fn entries_tag_roles_and_turns() {
-        let mut s = Session { id: "t".into(), path: "t".into(), file: None, records: vec![], turn: 0, log_len: 0 };
-        s.records = vec![Record::User("q1".into()), Record::Assistant("a1".into()), Record::User("q2".into())];
+        let mut s = Session {
+            id: "t".into(),
+            path: "t".into(),
+            file: None,
+            records: vec![],
+            turn: 0,
+            log_len: 0,
+        };
+        s.records = vec![
+            Record::User("q1".into()),
+            Record::Assistant("a1".into()),
+            Record::User("q2".into()),
+        ];
         let entries = s.entries();
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].role, Role::User);
@@ -600,7 +1169,13 @@ mod tests {
 
     #[test]
     fn compaction_marker_renders_a_summary_line() {
-        let (role, text) = Record::Compacted { kept: 2, dropped: 5, summary: None, tail_start: 0 }.to_entry();
+        let (role, text) = Record::Compacted {
+            kept: 2,
+            dropped: 5,
+            summary: None,
+            tail_start: 0,
+        }
+        .to_entry();
         assert_eq!(role, Role::Meta);
         assert!(text.contains("dropped 5"));
     }

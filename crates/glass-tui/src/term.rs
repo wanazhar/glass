@@ -1,9 +1,7 @@
 //! Terminal setup, raw mode, and a bounded differential backbuffer.
 //!
-//! The default glass view deliberately does not enter alt-screen. History
-//! belongs to the terminal, which already scrolls, searches, and selects for
-//! free. What we keep in memory is only enough to diff the next frame against
-//! the last one, and that buffer is hard-capped.
+//! Raw input leaves shell history untouched. The interactive application owns
+//! its alternate-screen lifecycle; this module handles terminal input modes.
 
 use std::io::{self, IsTerminal, Write};
 
@@ -21,25 +19,51 @@ pub fn stdin_is_tty() -> bool {
     io::stdin().is_terminal()
 }
 
-/// Put the terminal into raw mode with alternate screen disabled.
-///
-/// Alternate screen stays off on purpose: it is the single change that makes
-/// the harness feel native, and it is what keeps history memory-free.
+/// Put the terminal into raw mode without clearing shell output or scrollback.
 pub fn enter() -> io::Result<()> {
     use crossterm::event::EnableBracketedPaste;
-    use crossterm::{execute, terminal};
+    use crossterm::execute;
     execute!(io::stdout(), EnableBracketedPaste).ok();
-    terminal::enable_raw_mode()?;
-    // Clear scrollback so a fresh session starts at a known point.
-    execute!(io::stdout(), terminal::Clear(terminal::ClearType::All), terminal::Clear(terminal::ClearType::Purge)).ok();
+    enable_raw_input()?;
+    Ok(())
+}
+
+/// Raw keyboard input with normal newline output for the scrollback renderer.
+/// Crossterm clears OPOST; without restoring it, LF leaves the cursor in the
+/// previous column and streamed prose walks diagonally across SSH terminals.
+pub fn enable_raw_input() -> io::Result<()> {
+    crossterm::terminal::enable_raw_mode()?;
+    #[cfg(unix)]
+    {
+        let result = (|| {
+            let mut attrs = std::mem::MaybeUninit::<libc::termios>::uninit();
+            // SAFETY: stdout is a terminal; tcgetattr initializes attrs on success.
+            if unsafe { libc::tcgetattr(libc::STDOUT_FILENO, attrs.as_mut_ptr()) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut attrs = unsafe { attrs.assume_init() };
+            attrs.c_oflag |= libc::OPOST | libc::ONLCR;
+            attrs.c_oflag &= !(libc::OCRNL | libc::ONOCR | libc::ONLRET);
+            // SAFETY: attrs is an initialized termios value for this terminal.
+            if unsafe { libc::tcsetattr(libc::STDOUT_FILENO, libc::TCSANOW, &attrs) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = crossterm::terminal::disable_raw_mode();
+        }
+        result?;
+    }
+    let _ = crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture);
     Ok(())
 }
 
 /// Leave the terminal exactly as we found it. Must run on every exit path.
 pub fn leave() -> io::Result<()> {
-    use crossterm::event::DisableBracketedPaste;
+    use crossterm::event::{DisableBracketedPaste, DisableMouseCapture};
     use crossterm::{execute, terminal};
-    let _ = execute!(io::stdout(), DisableBracketedPaste);
+    let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
     let _ = terminal::disable_raw_mode();
     let _ = execute!(io::stdout(), crossterm::cursor::Show);
     Ok(())
@@ -74,7 +98,10 @@ pub struct BackBuffer {
 
 impl BackBuffer {
     pub fn new() -> Self {
-        Self { lines: Vec::new(), scroll: 0 }
+        Self {
+            lines: Vec::new(),
+            scroll: 0,
+        }
     }
 
     /// Append a logical line, evicting from the front when over budget.

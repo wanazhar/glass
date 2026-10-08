@@ -8,9 +8,9 @@
 use std::collections::VecDeque;
 use std::io::Read;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{http_agent, read_lossy, Error, Event, Provider, Request, Usage};
+use super::{Error, Event, Provider, Request, Usage, http_agent, read_lossy};
 use crate::sse::{SseDecoder, SseEvent};
 
 /// Default context window for models we do not recognise explicitly.
@@ -36,41 +36,48 @@ const LOOKBACK_BLOCKS: usize = 20;
 /// calls does exactly this — the next request's walk backward still finds a
 /// write instead of falling off the end and re-billing the whole conversation.
 fn mark_conversation_breakpoints(messages: &mut [Value]) {
-let Some(tail) = last_markable(messages) else { return };
-mark_block_end(&mut messages[tail]);
+    let Some(tail) = last_markable(messages) else {
+        return;
+    };
+    mark_block_end(&mut messages[tail]);
 
-// Cumulative block offsets, so the anchor can be placed by distance rather
-// than by message index. One message may hold several blocks.
-let mut offsets = Vec::with_capacity(messages.len());
-let mut running = 0usize;
-for m in messages.iter() {
-    running += block_count(m);
-    offsets.push(running);
-}
-let target = offsets[tail].saturating_sub(LOOKBACK_BLOCKS);
-if let Some(anchor) = (0..tail).rev().find(|&i| offsets[i] <= target && is_markable(&messages[i])) {
-    mark_block_end(&mut messages[anchor]);
-}
+    // Cumulative block offsets, so the anchor can be placed by distance rather
+    // than by message index. One message may hold several blocks.
+    let mut offsets = Vec::with_capacity(messages.len());
+    let mut running = 0usize;
+    for m in messages.iter() {
+        running += block_count(m);
+        offsets.push(running);
+    }
+    let target = offsets[tail].saturating_sub(LOOKBACK_BLOCKS);
+    if let Some(anchor) = (0..tail)
+        .rev()
+        .find(|&i| offsets[i] <= target && is_markable(&messages[i]))
+    {
+        mark_block_end(&mut messages[anchor]);
+    }
 }
 
 /// Number of content blocks in one message, treating a run of tool results as
 /// a single position the way the provider does.
 fn block_count(m: &Value) -> usize {
-match m.get("content").and_then(Value::as_array) {
-    Some(blocks) if !blocks.is_empty() => blocks.len(),
-    _ => 1,
-}
+    match m.get("content").and_then(Value::as_array) {
+        Some(blocks) if !blocks.is_empty() => blocks.len(),
+        _ => 1,
+    }
 }
 
 /// A markable message has content that can carry a cache marker.
 fn is_markable(m: &Value) -> bool {
-m.get("content")
-    .and_then(Value::as_array)
-    .is_some_and(|b| !b.is_empty())
+    m.get("content")
+        .and_then(Value::as_array)
+        .is_some_and(|b| !b.is_empty())
 }
 
 fn last_markable(messages: &[Value]) -> Option<usize> {
-(0..messages.len()).rev().find(|&i| is_markable(&messages[i]))
+    (0..messages.len())
+        .rev()
+        .find(|&i| is_markable(&messages[i]))
 }
 
 /// Put `cache_control` on the final block of a message.
@@ -78,15 +85,25 @@ fn last_markable(messages: &[Value]) -> Option<usize> {
 /// The marker goes on the last block rather than the message, because a
 /// breakpoint caches everything up to and including the block it sits on.
 fn mark_block_end(m: &mut Value) {
-let Some(blocks) = m.get_mut("content").and_then(Value::as_array_mut) else { return };
-if let Some(last) = blocks.last_mut() {
-    last["cache_control"] = json!({ "type": "ephemeral" });
-}
+    let Some(blocks) = m.get_mut("content").and_then(Value::as_array_mut) else {
+        return;
+    };
+    if let Some(last) = blocks.last_mut() {
+        last["cache_control"] = json!({ "type": "ephemeral" });
+    }
 }
 
 impl Anthropic {
-    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
-        Self { base_url: base_url.into(), api_key: api_key.into(), model: model.into() }
+    pub fn new(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        Self {
+            base_url: base_url.into(),
+            api_key: api_key.into(),
+            model: model.into(),
+        }
     }
 
     fn window_for(model: &str) -> u32 {
@@ -100,7 +117,7 @@ impl Anthropic {
         DEFAULT_WINDOW
     }
 
-/// Map a conversation onto the Anthropic message shape.
+    /// Map a conversation onto the Anthropic message shape.
     ///
     /// Two invariants matter: tool results must follow the assistant turn that
     /// requested them, and consecutive tool results belong in one user turn.
@@ -116,7 +133,21 @@ impl Anthropic {
                     out.push(json!({ "role": "user", "content": [{ "type": "text", "text": s }] }));
                 }
                 Message::Assistant(s) => {
-                    out.push(json!({ "role": "assistant", "content": [{ "type": "text", "text": s }] }));
+                    out.push(
+                        json!({ "role": "assistant", "content": [{ "type": "text", "text": s }] }),
+                    );
+                }
+                Message::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                } => {
+                    let block = json!({"type":"tool_use", "id":id, "name":name, "input":serde_json::from_str::<Value>(arguments).unwrap_or_else(|_| json!({}))});
+                    if let Some(last) = out.last_mut().filter(|v| v["role"] == "assistant") {
+                        last["content"].as_array_mut().unwrap().push(block);
+                    } else {
+                        out.push(json!({"role":"assistant", "content":[block]}));
+                    }
                 }
                 Message::System(s) => {
                     out.push(json!({ "role": "user", "content": [{ "type": "text", "text": s }] }));
@@ -148,7 +179,11 @@ fn is_tool_result_turn(v: &Value) -> bool {
     v.get("role").and_then(Value::as_str) == Some("user")
         && v.get("content")
             .and_then(Value::as_array)
-            .map(|blocks| blocks.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")))
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+            })
             .unwrap_or(false)
 }
 
@@ -156,7 +191,8 @@ fn build_tools(tools: &[(String, String, String)]) -> Vec<Value> {
     tools
         .iter()
         .map(|(name, desc, schema)| {
-            let parsed: Value = serde_json::from_str(schema).unwrap_or_else(|_| json!({ "type": "object" }));
+            let parsed: Value =
+                serde_json::from_str(schema).unwrap_or_else(|_| json!({ "type": "object" }));
             json!({
                 "name": name,
                 "description": desc,
@@ -215,7 +251,10 @@ impl Provider for Anthropic {
         let body = self.build_body(req);
 
         let resp = http_agent()
-            .post(format!("{}/v1/messages", self.base_url.trim_end_matches('/')))
+            .post(format!(
+                "{}/v1/messages",
+                self.base_url.trim_end_matches('/')
+            ))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .send_json(&body)
@@ -224,10 +263,20 @@ impl Provider for Anthropic {
         let mut reader = resp.into_body().into_reader();
         if !(200..300).contains(&status) {
             let text = read_lossy(&mut reader).unwrap_or_default();
-            return Err(Error::Status(status, extract_error(&text)));
+            return Err(Error::Status(
+                status,
+                if self.api_key.is_empty() {
+                    extract_error(&text)
+                } else {
+                    extract_error(&text).replace(&self.api_key, "[redacted]")
+                },
+            ));
         }
 
-        Ok(Box::new(StreamEvents::new(reader)))
+        let key = self.api_key.clone();
+        Ok(Box::new(
+            StreamEvents::new(reader).map(move |event| super::redact_event(event, Some(&key))),
+        ))
     }
 }
 
@@ -286,7 +335,12 @@ impl<R: Read> StreamEvents<R> {
     /// should see to `outbox`. Never returns early.
     fn process(&mut self, ev: SseEvent) {
         let kind = ev.event.unwrap_or_default();
-        let Ok(v) = serde_json::from_str::<Value>(&ev.data) else { return };
+        let Ok(v) = serde_json::from_str::<Value>(&ev.data) else {
+            self.done = true;
+            self.outbox
+                .push_back(Event::Error("Provider sent an invalid stream event".into()));
+            return;
+        };
 
         match kind.as_str() {
             "content_block_start" => {
@@ -295,20 +349,30 @@ impl<R: Read> StreamEvents<R> {
                 let btype = block.get("type").and_then(Value::as_str).unwrap_or("");
                 match btype {
                     "tool_use" => {
-                        let id = block.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-                        let name = block.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+                        let id = block
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        let name = block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
                         self.pending_tool = Some((index, id, name));
                         self.input_fragments.retain(|(i, _)| *i != index);
                     }
                     "text" => {
                         if let Some(t) = block.get("text").and_then(Value::as_str)
-                            && !t.is_empty() {
+                            && !t.is_empty()
+                        {
                             self.outbox.push_back(Event::Text(t.to_string()));
                         }
                     }
                     "thinking" => {
                         if let Some(t) = block.get("thinking").and_then(Value::as_str)
-                            && !t.is_empty() {
+                            && !t.is_empty()
+                        {
                             self.outbox.push_back(Event::Reasoning(t.to_string()));
                         }
                     }
@@ -322,13 +386,15 @@ impl<R: Read> StreamEvents<R> {
                 match dtype {
                     "text_delta" => {
                         if let Some(t) = delta.get("text").and_then(Value::as_str)
-                            && !t.is_empty() {
+                            && !t.is_empty()
+                        {
                             self.outbox.push_back(Event::Text(t.to_string()));
                         }
                     }
                     "thinking_delta" => {
                         if let Some(t) = delta.get("thinking").and_then(Value::as_str)
-                            && !t.is_empty() {
+                            && !t.is_empty()
+                        {
                             self.outbox.push_back(Event::Reasoning(t.to_string()));
                         }
                     }
@@ -343,14 +409,19 @@ impl<R: Read> StreamEvents<R> {
             "content_block_stop" => {
                 let index = v.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
                 if let Some((idx, id, name)) = self.pending_tool.take()
-                    && idx == index {
+                    && idx == index
+                {
                     let args: String = self
                         .input_fragments
                         .iter()
                         .filter(|(i, _)| *i == index)
                         .map(|(_, s)| s.as_str())
                         .collect();
-                    self.outbox.push_back(Event::ToolCall { id, name, arguments: args });
+                    self.outbox.push_back(Event::ToolCall {
+                        id,
+                        name,
+                        arguments: args,
+                    });
                 }
             }
             // `message_start` carries the whole prompt accounting:
@@ -360,9 +431,7 @@ impl<R: Read> StreamEvents<R> {
             "message_start" => {
                 let u = v.get("message").and_then(|m| m.get("usage")).cloned();
                 if let Some(u) = u {
-                    let get = |k: &str| {
-                        u.get(k).and_then(Value::as_u64).unwrap_or(0) as u32
-                    };
+                    let get = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0) as u32;
                     self.pending = Some(Usage {
                         input: get("input_tokens"),
                         cache_read: get("cache_read_input_tokens"),
@@ -389,7 +458,8 @@ impl<R: Read> StreamEvents<R> {
             }
             "error" => {
                 let text = extract_error(&v.to_string());
-                self.outbox.push_back(Event::Warning(format!("provider error event: {text}")));
+                self.outbox
+                    .push_back(Event::Error(format!("provider error event: {text}")));
             }
             _ => {}
         }
@@ -413,32 +483,25 @@ impl<R: Read> Iterator for StreamEvents<R> {
             let n = match self.reader.read(&mut chunk) {
                 Ok(0) => {
                     self.done = true;
-                    if let Some(ev) = self.decoder.finish() {
-                        let text = ev.data;
-                        if !text.trim().is_empty() {
-                            self.outbox.push_back(Event::Warning(format!(
-                                "truncated stream: {}",
-                                &text[..text.len().min(80)]
-                            )));
-                        }
-                    }
-                    self.outbox.push_back(Event::Done);
+                    self.outbox.push_back(Event::Error(
+                        "provider stream ended before message_stop".into(),
+                    ));
                     continue;
                 }
                 Ok(n) => n,
-                Err(_) => {
+                Err(e) => {
                     self.done = true;
-                    self.outbox.push_back(Event::Done);
+                    self.outbox
+                        .push_back(Event::Error(format!("provider stream read failed: {e}")));
                     continue;
                 }
             };
 
-            let text = String::from_utf8_lossy(&chunk[..n]);
             // Process every event in this chunk into the outbox.
             // Returning from inside this loop would discard the
             // events after the first, which is how usage reports
             // used to vanish.
-            for ev in self.decoder.push(&text) {
+            for ev in self.decoder.push_bytes(&chunk[..n]) {
                 self.process(ev);
                 if self.done {
                     break;
@@ -465,8 +528,16 @@ mod tests {
         let msgs = vec![
             Message::User("hi".into()),
             Message::Assistant("working".into()),
-            Message::ToolResult { call_id: "a".into(), name: "bash".into(), body: "one".into() },
-            Message::ToolResult { call_id: "b".into(), name: "bash".into(), body: "two".into() },
+            Message::ToolResult {
+                call_id: "a".into(),
+                name: "bash".into(),
+                body: "one".into(),
+            },
+            Message::ToolResult {
+                call_id: "b".into(),
+                name: "bash".into(),
+                body: "two".into(),
+            },
         ];
         let out = Anthropic::build_messages(&msgs);
         assert_eq!(out.len(), 3, "consecutive tool results must merge");
@@ -479,7 +550,11 @@ mod tests {
     fn tool_result_after_user_starts_new_turn() {
         let msgs = vec![
             Message::User("hi".into()),
-            Message::ToolResult { call_id: "a".into(), name: "bash".into(), body: "out".into() },
+            Message::ToolResult {
+                call_id: "a".into(),
+                name: "bash".into(),
+                body: "out".into(),
+            },
             Message::User("next".into()),
         ];
         let out = Anthropic::build_messages(&msgs);
@@ -490,7 +565,11 @@ mod tests {
 
     #[test]
     fn tool_result_carries_call_id() {
-        let msgs = vec![Message::ToolResult { call_id: "toolu_42".into(), name: "bash".into(), body: "ok".into() }];
+        let msgs = vec![Message::ToolResult {
+            call_id: "toolu_42".into(),
+            name: "bash".into(),
+            body: "ok".into(),
+        }];
         let out = Anthropic::build_messages(&msgs);
         assert_eq!(out[0]["content"][0]["tool_use_id"], "toolu_42");
     }
@@ -508,7 +587,11 @@ mod tests {
 
     #[test]
     fn tools_are_shaped_for_api() {
-        let tools = vec![("bash".to_string(), "run".to_string(), r#"{"type":"object"}"#.to_string())];
+        let tools = vec![(
+            "bash".to_string(),
+            "run".to_string(),
+            r#"{"type":"object"}"#.to_string(),
+        )];
         let out = build_tools(&tools);
         assert_eq!(out[0]["name"], "bash");
         assert_eq!(out[0]["input_schema"]["type"], "object");
@@ -542,19 +625,32 @@ mod cache_layout {
             json!({ "role": "assistant", "content": [{ "type": "text", "text": "hello" }] }),
         ];
         mark_conversation_breakpoints(&mut msgs);
-        assert_eq!(count_markers(&msgs), 1, "a short conversation needs one marker");
-        assert!(msgs[1]["content"][0]["cache_control"].is_object(), "the tail must be marked");
+        assert_eq!(
+            count_markers(&msgs),
+            1,
+            "a short conversation needs one marker"
+        );
+        assert!(
+            msgs[1]["content"][0]["cache_control"].is_object(),
+            "the tail must be marked"
+        );
     }
 
     #[test]
     fn long_conversation_gets_a_lookback_anchor() {
         // 40 messages of one block each: the anchor goes 20 blocks back.
         let mut msgs: Vec<Value> = (0..40)
-            .map(|i| json!({ "role": if i % 2 == 0 { "user" } else { "assistant" },
-                             "content": [{ "type": "text", "text": format!("m{i}") }] }))
+            .map(|i| {
+                json!({ "role": if i % 2 == 0 { "user" } else { "assistant" },
+                             "content": [{ "type": "text", "text": format!("m{i}") }] })
+            })
             .collect();
         mark_conversation_breakpoints(&mut msgs);
-        assert_eq!(count_markers(&msgs), 2, "long conversations need tail + anchor");
+        assert_eq!(
+            count_markers(&msgs),
+            2,
+            "long conversations need tail + anchor"
+        );
         // The anchor must be at most LOOKBACK_BLOCKS behind the tail.
         let marked: Vec<usize> = msgs
             .iter()
@@ -563,7 +659,10 @@ mod cache_layout {
             .map(|(i, _)| i)
             .collect();
         assert_eq!(marked.len(), 2);
-        assert!(marked[1] - marked[0] <= LOOKBACK_BLOCKS, "anchor too far back: {marked:?}");
+        assert!(
+            marked[1] - marked[0] <= LOOKBACK_BLOCKS,
+            "anchor too far back: {marked:?}"
+        );
     }
 
     #[test]
@@ -572,7 +671,9 @@ mod cache_layout {
         // marker misses. The anchor must still be within the window.
         let mut msgs: Vec<Value> = Vec::new();
         for i in 0..30 {
-            msgs.push(json!({ "role": "user", "content": [{ "type": "text", "text": format!("t{i}") }] }));
+            msgs.push(
+                json!({ "role": "user", "content": [{ "type": "text", "text": format!("t{i}") }] }),
+            );
         }
         // A burst of 12 tool results in one message, as a parallel batch produces.
         let burst: Vec<Value> = (0..12)
@@ -599,7 +700,10 @@ mod cache_layout {
             .map(|i| json!({ "role": "user", "content": [{ "type": "text", "text": format!("m{i}") }] }))
             .collect();
         mark_conversation_breakpoints(&mut msgs);
-        assert!(count_markers(&msgs) <= 2, "conversation markers must stay within budget");
+        assert!(
+            count_markers(&msgs) <= 2,
+            "conversation markers must stay within budget"
+        );
     }
 
     #[test]
@@ -611,7 +715,11 @@ mod cache_layout {
         // A message with string content has no blocks to mark.
         let mut plain = vec![json!({ "role": "user", "content": "just text" })];
         mark_conversation_breakpoints(&mut plain);
-        assert_eq!(count_markers(&plain), 0, "a string-content message cannot carry a marker");
+        assert_eq!(
+            count_markers(&plain),
+            0,
+            "a string-content message cannot carry a marker"
+        );
     }
 
     #[test]
@@ -627,7 +735,10 @@ mod cache_layout {
             "cache_control": { "type": "ephemeral" }
         }]);
         assert!(sys.is_array(), "system is an array of blocks");
-        assert!(sys[0]["cache_control"].is_object(), "the block carries the marker");
+        assert!(
+            sys[0]["cache_control"].is_object(),
+            "the block carries the marker"
+        );
     }
 
     #[test]
@@ -640,7 +751,10 @@ mod cache_layout {
         ] })];
         mark_conversation_breakpoints(&mut msgs);
         let blocks = msgs[0]["content"].as_array().unwrap();
-        assert!(blocks[0].get("cache_control").is_none(), "only the last block is marked");
+        assert!(
+            blocks[0].get("cache_control").is_none(),
+            "only the last block is marked"
+        );
         assert!(blocks[1]["cache_control"].is_object());
     }
 
@@ -650,7 +764,11 @@ mod cache_layout {
         let msgs = vec![
             Message::User("build the thing".into()),
             Message::Assistant("working".into()),
-            Message::ToolResult { call_id: "c1".into(), name: "bash".into(), body: "ok".into() },
+            Message::ToolResult {
+                call_id: "c1".into(),
+                name: "bash".into(),
+                body: "ok".into(),
+            },
         ];
         let mut out = Anthropic::build_messages(&msgs);
         mark_conversation_breakpoints(&mut out);
@@ -660,7 +778,10 @@ mod cache_layout {
             .filter(|(_, m)| count_markers(std::slice::from_ref(m)) > 0)
             .map(|(i, _)| i)
             .collect();
-        assert!(!marked.is_empty(), "a tool conversation must cache something");
+        assert!(
+            !marked.is_empty(),
+            "a tool conversation must cache something"
+        );
         assert_eq!(count_markers(&out), 1, "short conversation: tail only");
     }
 }
@@ -668,7 +789,7 @@ mod cache_layout {
 #[cfg(test)]
 mod wire_shape {
     use super::*;
-    use crate::provider::{builtin_tools, Request};
+    use crate::provider::{Request, builtin_tools};
 
     fn body_for(messages: &[glass_mod_api::Message]) -> Value {
         let p = Anthropic::new("https://x", "k", "claude-opus-5-5");
@@ -701,9 +822,14 @@ mod wire_shape {
         // panics in serde_json. It would also have been silently ignored by the
         // API, quietly disabling caching for the whole prefix.
         let body = body_for(&[glass_mod_api::Message::User("hi".into())]);
-        let system = body["system"].as_array().expect("system is an array of blocks");
+        let system = body["system"]
+            .as_array()
+            .expect("system is an array of blocks");
         assert_eq!(system.len(), 1);
-        assert!(system[0]["cache_control"].is_object(), "marker must be on the block");
+        assert!(
+            system[0]["cache_control"].is_object(),
+            "marker must be on the block"
+        );
     }
 
     #[test]
@@ -712,7 +838,10 @@ mod wire_shape {
         // The system one is what survives compaction.
         let body = body_for(&[glass_mod_api::Message::User("hi".into())]);
         let total = body.to_string().matches("cache_control").count();
-        assert!((2..=4).contains(&total), "expected 2-4 markers, found {total}");
+        assert!(
+            (2..=4).contains(&total),
+            "expected 2-4 markers, found {total}"
+        );
     }
 
     #[test]
@@ -737,7 +866,11 @@ mod wire_shape {
         let msgs = vec![
             glass_mod_api::Message::User("a".into()),
             glass_mod_api::Message::Assistant("b".into()),
-            glass_mod_api::Message::ToolResult { call_id: "c".into(), name: "bash".into(), body: "o".into() },
+            glass_mod_api::Message::ToolResult {
+                call_id: "c".into(),
+                name: "bash".into(),
+                body: "o".into(),
+            },
         ];
         let one = serde_json::to_string(&body_for(&msgs)).unwrap();
         let two = serde_json::to_string(&body_for(&msgs)).unwrap();
@@ -782,7 +915,10 @@ mod wire_shape {
         for (i, original) in m1.iter().enumerate() {
             let mut without_marker = original.clone();
             // Markers move between turns; compare content only.
-            if let Some(blocks) = without_marker.get_mut("content").and_then(Value::as_array_mut) {
+            if let Some(blocks) = without_marker
+                .get_mut("content")
+                .and_then(Value::as_array_mut)
+            {
                 for b in blocks.iter_mut() {
                     if let Some(o) = b.as_object_mut() {
                         o.remove("cache_control");
@@ -810,6 +946,9 @@ mod wire_shape {
         });
         let budget = body["thinking"]["budget_tokens"].as_u64().unwrap();
         let max = body["max_tokens"].as_u64().unwrap();
-        assert!(budget < max, "budget {budget} must be below max_tokens {max}");
+        assert!(
+            budget < max,
+            "budget {budget} must be below max_tokens {max}"
+        );
     }
 }

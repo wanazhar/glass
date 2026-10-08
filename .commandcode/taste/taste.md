@@ -1,0 +1,3 @@
+# Project Identity
+
+- **The command is `glass-core` (short alias `gc`), never `glass`** — the user ruled that the `glass` command belongs to a separate project (glass-dev), which also owns `~/.config/glass` (profiles, skills). Config lives at `~/.config/glass-core` and session data at `~/.local/share/glass-core`; a one-time copy-on-first-run migration moves `config.toml`, `ext/`, `skills/` and `.jsonl` session logs from the legacy `glass` dirs (copied, not moved, so a rollback loses nothing). Do not reintroduce `glass` as the binary, command, or config/data dir name; internal crate names (`glass-tui`, `glass-mod-api`) are unaffected. Confidence: 0.95

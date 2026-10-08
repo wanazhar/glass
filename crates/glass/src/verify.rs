@@ -35,13 +35,18 @@ const SYNTAX_CHECKS: &[(&str, &[&str])] = &[
     ("js", &["node", "--check"]),
     ("mjs", &["node", "--check"]),
     ("cjs", &["node", "--check"]),
-    ("ts", &["tsc", "--noEmit", "--allowJs", "false", "--skipLibCheck"]),
+    (
+        "ts",
+        &["tsc", "--noEmit", "--allowJs", "false", "--skipLibCheck"],
+    ),
     ("json", &["python3", "-m", "json.tool"]),
 ];
 
 /// Extension of `path`, lowercased.
 fn ext(path: &Path) -> Option<String> {
-    path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase)
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
 }
 
 /// Characters that delimit a shell token we care about. Stripping them lets a
@@ -74,10 +79,11 @@ pub fn written_paths(command: &str, workspace: &Path) -> Vec<PathBuf> {
 
         let attached = t.starts_with('>') && t.len() > 1;
         // `>` or `>>` standing alone as its own token.
-        let detached = idx > 0
-            && matches!(toks[idx - 1].trim_matches(TRIM), ">" | ">>" | "1>" | "2>");
+        let detached =
+            idx > 0 && matches!(toks[idx - 1].trim_matches(TRIM), ">" | ">>" | "1>" | "2>");
         let tee_prev = idx > 0 && toks[idx - 1].trim_matches(TRIM) == "tee";
-        let tee_flag = idx >= 2 && toks[idx - 1] == "-a" && toks[idx - 2].trim_matches(TRIM) == "tee";
+        let tee_flag =
+            idx >= 2 && toks[idx - 1] == "-a" && toks[idx - 2].trim_matches(TRIM) == "tee";
 
         let candidate = if attached {
             Some(t.trim_start_matches('>'))
@@ -137,7 +143,11 @@ pub fn written_paths(command: &str, workspace: &Path) -> Vec<PathBuf> {
 
 fn resolve(p: &str, workspace: &Path) -> PathBuf {
     let raw = Path::new(p);
-    if raw.is_absolute() { raw.to_path_buf() } else { workspace.join(raw) }
+    if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        workspace.join(raw)
+    }
 }
 
 /// Result of checking one file.
@@ -167,14 +177,21 @@ pub fn verify(path: &Path, tail_lines: usize) -> Option<Check> {
 
     // Syntax gate first: if the file does not parse, an echo-back of the broken
     // region is what actually helps the model fix it.
-    if let Some((_, cmd)) = SYNTAX_CHECKS.iter().find(|(e, _)| ext(path).as_deref() == Some(*e)) {
+    if let Some((_, cmd)) = SYNTAX_CHECKS
+        .iter()
+        .find(|(e, _)| ext(path).as_deref() == Some(*e))
+    {
         match run_parser(cmd, path) {
             Ok(()) => {
                 report.push_str("[syntax ok]\n");
             }
             Err(msg) => {
                 report.push_str(&format!("[syntax error] {msg}\n"));
-                return Some(Check { path: path.to_path_buf(), report, failed: true });
+                return Some(Check {
+                    path: path.to_path_buf(),
+                    report,
+                    failed: true,
+                });
             }
         }
     }
@@ -182,18 +199,27 @@ pub fn verify(path: &Path, tail_lines: usize) -> Option<Check> {
     let bytes = std::fs::read(path).ok()?;
     let text = String::from_utf8_lossy(&bytes);
     let total = text.lines().count();
-    let shown: Vec<&str> = text.lines().skip(total.saturating_sub(tail_lines)).collect();
+    let shown: Vec<&str> = text
+        .lines()
+        .skip(total.saturating_sub(tail_lines))
+        .collect();
 
     report.push_str(&format!("[wrote {} — {total} lines]\n", display(path)));
     for l in shown {
         report.push_str(l);
         report.push('\n');
     }
-    Some(Check { path: path.to_path_buf(), report, failed: false })
+    Some(Check {
+        path: path.to_path_buf(),
+        report,
+        failed: false,
+    })
 }
 
 fn display(p: &Path) -> String {
-    p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string())
+    p.file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.display().to_string())
 }
 
 /// Run a parser over a file, returning its stderr on rejection.
@@ -219,7 +245,9 @@ fn run_parser(cmd: &[&str], path: &Path) -> Result<(), String> {
         }
         // No parser available. Not a pass, but not a failure either: the caller
         // reports that the check could not run.
-        Err(_) => Err(String::from("_glass: no parser available, syntax unchecked")),
+        Err(_) => Err(String::from(
+            "_glass: no parser available, syntax unchecked",
+        )),
     }
 }
 
@@ -348,7 +376,10 @@ mod tests {
         let d = scratch("empty");
         let f = d.join("empty.txt");
         std::fs::write(&f, "").unwrap();
-        assert!(verify(&f, 5).is_none(), "an empty write has nothing to echo");
+        assert!(
+            verify(&f, 5).is_none(),
+            "an empty write has nothing to echo"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -367,7 +398,10 @@ mod tests {
         std::fs::write(&f, body).unwrap();
         let c = verify(&f, 5).expect("file exists");
         assert!(c.report.contains("line 499"));
-        assert!(!c.report.contains("line 0"), "echo must be bounded to the tail");
+        assert!(
+            !c.report.contains("line 0"),
+            "echo must be bounded to the tail"
+        );
         assert!(c.report.contains("500 lines"), "total count still reported");
         std::fs::remove_dir_all(&d).ok();
     }
@@ -426,11 +460,21 @@ mod integration {
         assert!(status.success(), "the shell command itself succeeds");
 
         let touched = written_paths(cmd, &d);
-        assert_eq!(touched, vec![d.join("out.py")], "heredoc target must be detected");
+        assert_eq!(
+            touched,
+            vec![d.join("out.py")],
+            "heredoc target must be detected"
+        );
 
         let note = report(&touched, &d, 40);
-        assert!(note.contains("syntax error"), "unclosed paren must surface: {note}");
-        assert!(note.contains("never closed"), "the parser's own message is kept: {note}");
+        assert!(
+            note.contains("syntax error"),
+            "unclosed paren must surface: {note}"
+        );
+        assert!(
+            note.contains("never closed"),
+            "the parser's own message is kept: {note}"
+        );
 
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -446,7 +490,12 @@ mod integration {
         std::fs::create_dir_all(&d).unwrap();
 
         let cmd = "cat > ok.py <<'EOF'\nx = 1\nprint(x)\nEOF";
-        Command::new("/bin/sh").arg("-c").arg(cmd).current_dir(&d).status().unwrap();
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(cmd)
+            .current_dir(&d)
+            .status()
+            .unwrap();
 
         let note = report(&written_paths(cmd, &d), &d, 40);
         assert!(note.contains("syntax ok"), "{note}");

@@ -14,7 +14,7 @@ idempotent submissions — plus the three latent bugs they exposed.
 ## Context
 
 **Log integrity (`session.rs`).** `repair_log` runs before every replay:
-a torn final line (no trailing newline) is truncated — without that, the
+an invalid torn final line (no trailing newline) is truncated at its exact original byte boundary, preserving blank lines and CRLF; a valid final record without a newline gets its missing separator — without that, the
 next append glued itself to the fragment and both records were lost
 silently; a complete unreadable line is corruption, so the original is
 backed up beside the log, the line is dropped, and a `Meta` records the
@@ -41,7 +41,9 @@ leave the last delta unwritten for exactly as long as the tool runs. The
 writer is dropped with the agent, so a file that survives means a kill; on
 open, `partial::recover` records the partial as the assistant message it
 was becoming (8 KB tail) plus a visible `Meta`, and a final-flush race is
-detected by containment in the last assistant text and discarded.
+detected by containment in an assistant text from the same raw user turn.
+Recoverable sidecars are removed after checked recovery writes succeed; a
+write failure aborts open and retains the sidecar.
 
 **Cursor reattach and dedupe (`serve.rs`).** `attach` accepts `since=<raw
 record count>`; the replay frame carries `cursor` and `reset` (no cursor,

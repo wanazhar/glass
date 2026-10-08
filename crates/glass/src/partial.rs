@@ -85,17 +85,17 @@ pub struct Recovered {
     pub partial: Option<String>,
 }
 
-/// Consume a leftover sidecar, returning what to record — or `None` for a
-/// stale file. Always deletes the file.
-pub fn recover(sidecar: &Path, live: Live, last_assistant: Option<&str>) -> Option<Recovered> {
-    let _ = std::fs::remove_file(sidecar);
+/// Interpret a leftover sidecar, returning what to record — or `None` for a
+/// stale file. The caller removes it only after the recovery records are
+/// durably appended.
+pub fn recover(live: Live, assistant_for_turn: Option<&str>) -> Option<Recovered> {
     if live.text.is_empty() && live.tool.is_none() && live.attempt == 0 {
         return None; // nothing had happened yet
     }
     // The final flush can lose the race with process death after the full
     // message was already recorded; that file is stale, not a partial.
     if !live.text.is_empty()
-        && last_assistant.is_some_and(|text| text.contains(live.text.as_str()))
+        && assistant_for_turn.is_some_and(|text| text.contains(live.text.as_str()))
     {
         return None;
     }
@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn recovery_reports_a_partial_and_always_removes_the_file() {
+    fn recovery_reports_a_partial_without_consuming_the_sidecar() {
         let dir = scratch("recover");
         let session = dir.join("s.jsonl");
         let live = Live {
@@ -291,14 +291,17 @@ mod tests {
             ..Live::default()
         };
         std::fs::write(path(&session), serde_json::to_vec(&live).unwrap()).unwrap();
-        let recovered = recover(&path(&session), live, Some("an earlier answer")).expect("recovered");
+        let recovered = recover(live, Some("an earlier answer")).expect("recovered");
         assert!(
             recovered.meta.contains("with `bash` running"),
             "{}",
             recovered.meta
         );
         assert_eq!(recovered.partial.as_deref(), Some("half a"));
-        assert!(!path(&session).exists());
+        assert!(
+            path(&session).exists(),
+            "the caller owns deletion after checked append"
+        );
 
         // A final flush that lost the race is stale, not a partial.
         let live = Live {
@@ -307,11 +310,10 @@ mod tests {
             ..Live::default()
         };
         std::fs::write(path(&session), b"{}").unwrap();
-        assert!(recover(&path(&session), live, Some("prefix the whole answer suffix")).is_none());
-        assert!(!path(&session).exists());
+        assert!(recover(live, Some("prefix the whole answer suffix")).is_none());
 
         // Nothing had happened: nothing to report.
-        assert!(recover(&path(&session), Live::default(), None).is_none());
+        assert!(recover(Live::default(), None).is_none());
 
         std::fs::remove_dir_all(&dir).ok();
     }

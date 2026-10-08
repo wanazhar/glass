@@ -27,6 +27,17 @@ argument; this bridge is an ordinary extension.
   silently.
 - stdio transport only. HTTP/SSE MCP servers are deliberately out of scope.
 
+### Agent Plugins
+
+The bridge also reads `mcp.json` from every installed
+[Agent Plugin](https://agent-plugins.org) (`~/.config/glass-core/plugins/*/
+mcp.json`), per the 1.0.0 spec: schema match required, `${PLUGIN_ROOT}` and
+`${PLUGIN_DATA}` expanded in `args`/`env`/`cwd`, `./command` and `cwd`
+containment-checked against the plugin root, and per-server failure
+isolation. Plugin servers appear namespaced as `<plugin>.<server>` (so a
+tool is `mcp__plugin.server__tool`), and each plugin gets a persistent
+`plugins/data/<name>/` directory.
+
 Startup is bounded: each server gets 8 seconds to initialize and list tools
 before the bridge's own handshake has to complete, so a wedged server cannot
 hold the session hostage. Offline check: `python3 scripts/smoke-mcp.py`.

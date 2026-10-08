@@ -18,20 +18,23 @@ mod export;
 mod ext;
 mod history;
 mod input;
+mod inbox;
 mod inspect;
 mod jobs;
 mod live;
+mod loops;
 mod modal;
 mod mods;
 mod notify;
 mod onboarding;
+mod plugins;
 mod polish;
 mod pricing;
 mod profiles;
 mod provider;
 mod queue;
-mod reader;
 mod readguard;
+mod reader;
 mod sandbox;
 mod serve;
 mod session;
@@ -44,6 +47,7 @@ mod tools;
 mod trust;
 mod verify;
 mod warmer;
+mod worktree;
 mod workflows;
 
 use std::io::Write;
@@ -77,6 +81,9 @@ glass-core — a minimal coding harness
   glass-core profiles|extensions [--json]    inspect saved settings
   glass-core export <id|--latest> [--out PATH] [--thinking] [--json]
   glass-core acp         Agent Client Protocol server (editors drive glass over stdio)
+  glass-core plugin list|add|remove    manage Agent Plugins (skills + MCP servers)
+  glass-core worktree list|apply       reclaim work fan-out left in isolated checkouts
+  glass-core send <id|--latest> <msg>  message a running session (it runs a turn)
   glass-core serve [ID] [--socket PATH]   run a session on a Unix socket
   glass-core attach [--socket PATH]       attach a terminal client to a served session
   glass-core list        list saved sessions
@@ -113,6 +120,9 @@ In the prompt:
   /skills     list loaded skills
   /diff       review the last task's patch
   /budget [USD|off]  show or set the session spending limit
+  /loop <interval> <prompt>  repeat a prompt while the session is idle (30m, 2h)
+  /loop list|rm <n>|clear    inspect or manage loops
+  /send <session-id> <msg>   message another running session (it runs a turn)
   /branch [turn]    fork conversation through a turn; files stay as they are
   /checkpoint      save a workspace checkpoint
   /checkpoints     list saved checkpoints
@@ -395,6 +405,15 @@ fn run(args: &[String]) -> Result<(), String> {
     if args.first().is_some_and(|a| a == "export") {
         return headless_export(&cfg, &args[1..]);
     }
+    if args.first().is_some_and(|a| a == "plugin") {
+        return plugins::command(&args[1..]);
+    }
+    if args.first().is_some_and(|a| a == "worktree") {
+        return worktree::command(&args[1..]);
+    }
+    if args.first().is_some_and(|a| a == "send") {
+        return inbox::command(&cfg, &args[1..]);
+    }
     if args.first().is_some_and(|a| a == "acp") {
         return acp::serve(cfg);
     }
@@ -446,11 +465,19 @@ fn run(args: &[String]) -> Result<(), String> {
         ext::Registry::load(&cfg.extensions, &cfg.workspace, &cfg.model)
     };
 
-    let skills = cfg
+    let mut skills = cfg
         .skills_dir
         .as_deref()
         .map(skills::load_dir)
         .unwrap_or_default();
+    // Agent Plugins contribute skills (and, via mcp-bridge, MCP servers).
+    let mut plugin_report = Vec::new();
+    for plugin in plugins::load_all(&mut plugin_report) {
+        skills.extend(plugin.skills);
+    }
+    for line in plugin_report {
+        eprintln!("glass-core: {line}");
+    }
     let catalogue = skills::catalogue(&skills);
     // Project instructions are pure prompt text and cost no code path, but they
     // are the one thing that can be large, so they are capped hard.
@@ -730,7 +757,7 @@ fn headless(
             "--attach" if prompt.is_empty() => {
                 i += 1;
                 polish::attach(
-                    &session,
+                    &mut session,
                     &cfg.workspace,
                     args.get(i).ok_or("--attach requires a file path")?,
                 )?;
@@ -814,7 +841,9 @@ fn headless(
         })
     };
     let workspace = cfg.workspace.clone();
-    let scratch = std::env::temp_dir().join(format!("glass-subagent-{}", std::process::id()));
+    // Nested sessions and worktrees live under the data dir so `gc worktree`
+    // can find them after the process that created them is long gone.
+    let scratch = config::data_dir().join("subagents");
     let sub_factory = Arc::clone(&factory);
     let sub_factory_for = Arc::clone(&factory_for_model);
     extensions.set_subagent(move || {
@@ -992,6 +1021,8 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
         ("compact", "[focus]", "Compact the conversation now", false),
         ("diff", "[checkpoint]", "Review task changes", false),
         ("budget", "[USD|off]", "Show or set spending limit", false),
+        ("loop", "[interval] [prompt]", "Schedule a repeating prompt", false),
+        ("send", "[session-id] [message]", "Message another running session", false),
         ("branch", "[turn]", "Fork conversation history", false),
         ("checkpoint", "", "Save workspace baseline", false),
         ("checkpoints", "", "List saved checkpoints", false),
@@ -1307,8 +1338,8 @@ fn repl(
     let subagent_factory = Arc::clone(&factory);
     let subagent_factory_for = Arc::clone(&factory_for_model);
     let subagent_workspace = cfg.workspace.clone();
-    let subagent_scratch =
-        std::env::temp_dir().join(format!("glass-subagent-{}", std::process::id()));
+    // Same scratch rule as the headless path: discoverable under the data dir.
+    let subagent_scratch = config::data_dir().join("subagents");
     let make_subagent = move || -> ext::host::SubagentFn {
         let factory = Arc::clone(&subagent_factory);
         let factory_for = Arc::clone(&subagent_factory_for);
@@ -1336,6 +1367,8 @@ fn repl(
         .records
         .last()
         .is_some_and(|r| matches!(r,Record::Meta(t) if t.starts_with("error:")));
+    // Messages from other sessions arrive through this mailbox while idle.
+    let mut inbox_mailbox = crate::inbox::Mailbox::open(&session.id);
     loop {
         let _ = painter.refresh_geometry(!palette.active());
         let (w, nh) = term_size();
@@ -1364,6 +1397,37 @@ fn repl(
                     Ok(None) => {
                         if painter.refresh_geometry(!palette.active()) {
                             break None;
+                        }
+                        // A due loop only fires into an empty composer: the
+                        // user mid-sentence outranks a schedule, and typed
+                        // text must never be clobbered by a timer. Inbox
+                        // messages take the same path, ahead of loops.
+                        if editor.text().is_empty()
+                            && let Some((from, message)) = inbox_mailbox.next()
+                        {
+                            session.append(Record::System(format!(
+                                "[inbox] message from session {from}"
+                            )));
+                            ui_println!("\x1b[90minbox ({from}):\x1b[0m {message}");
+                            editor.insert_str(&message);
+                            break Some(glass_tui::crossterm::event::Event::Key(
+                                glass_tui::crossterm::event::KeyEvent::new(
+                                    glass_tui::crossterm::event::KeyCode::Enter,
+                                    glass_tui::crossterm::event::KeyModifiers::NONE,
+                                ),
+                            ));
+                        }
+                        if editor.text().is_empty()
+                            && let Some(prompt) = crate::loops::due(&session)
+                        {
+                            ui_println!("\x1b[90mloop:\x1b[0m {prompt}");
+                            editor.insert_str(&prompt);
+                            break Some(glass_tui::crossterm::event::Event::Key(
+                                glass_tui::crossterm::event::KeyEvent::new(
+                                    glass_tui::crossterm::event::KeyCode::Enter,
+                                    glass_tui::crossterm::event::KeyModifiers::NONE,
+                                ),
+                            ));
                         }
                     }
                     Err(_) => {
@@ -1689,7 +1753,7 @@ fn repl(
         }
         if text == "/context" {
             if let Err(e) =
-                polish::context(&keys, &session, &cfg, &project_instructions, &catalogue)
+                polish::context(&keys, &mut session, &cfg, &project_instructions, &catalogue)
             {
                 modal::info(&keys, "Context error", &e);
             }
@@ -1703,7 +1767,7 @@ fn repl(
                 polish::path_picker(&keys, &cfg.workspace)
             };
             if let Some(p) = path {
-                match polish::attach(&session, &cfg.workspace, &p) {
+                match polish::attach(&mut session, &cfg.workspace, &p) {
                     Ok(()) => ui_println!("Attached {p} · /context to inspect or remove"),
                     Err(e) => modal::info(&keys, "Attachment error", &e),
                 }
@@ -1888,6 +1952,22 @@ fn repl(
             continue;
         }
         // Guided fields stay in a modal, including commands typed directly.
+        if text == "/loop" || text.starts_with("/loop ") {
+            let args = text.strip_prefix("/loop").unwrap_or("").trim();
+            match crate::loops::command(&session, args) {
+                Ok(out) => ui_println!("{out}"),
+                Err(e) => ui_println!("\x1b[31m{e}\x1b[0m"),
+            }
+            continue;
+        }
+        if text == "/send" || text.starts_with("/send ") {
+            let args = text.strip_prefix("/send").unwrap_or("").trim();
+            match crate::inbox::from_session(&session, args) {
+                Ok(out) => ui_println!("{out}"),
+                Err(e) => ui_println!("\x1b[31m{e}\x1b[0m"),
+            }
+            continue;
+        }
         if text == "/budget" {
             let l = ledger.lock().unwrap();
             let note = format!(

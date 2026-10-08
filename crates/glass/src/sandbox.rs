@@ -19,9 +19,14 @@
 //!
 //! Linux uses Landlock (kernel 5.13+; raw syscalls, no dependency beyond the
 //! `libc` the crate already uses). macOS wraps commands with `sandbox-exec`.
-//! Network is not restricted in this version. A platform that cannot deliver
-//! the requested policy warns once; `strict` refuses to run commands at all
-//! rather than silently downgrading.
+//!
+//! With confinement on, two more boundaries apply: outbound TCP is limited to
+//! an allowlist of ports (Landlock ABI 4, Linux 6.7+; per-port is all the
+//! kernel offers — no host filtering, no localhost-only), and credential-ish
+//! environment variables are removed from shell children so the model cannot
+//! read the harness's own API keys out of `env`. A platform that cannot
+//! deliver the requested policy warns once; `strict` refuses to run commands
+//! at all rather than silently downgrading.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -63,6 +68,8 @@ struct State {
     /// Set when `strict` was requested and the platform cannot deliver it:
     /// commands must be refused rather than run bare.
     refusal: Option<String>,
+    /// Remove credential-ish variables from shell children.
+    scrub_env: bool,
 }
 
 static STATE: OnceLock<State> = OnceLock::new();
@@ -76,6 +83,7 @@ impl State {
             #[cfg(target_os = "macos")]
             profile: None,
             refusal: None,
+            scrub_env: false,
         }
     }
 }
@@ -130,10 +138,22 @@ fn readable_paths(workspace: &std::path::Path) -> Vec<PathBuf> {
 /// Initialise the process-wide sandbox state. Returns warnings to print.
 pub fn init(cfg: &config::Config) -> Vec<String> {
     let mut warnings = Vec::new();
+    let scrub = match cfg.sandbox_env.as_str() {
+        "inherit" => false,
+        "scrub" => true,
+        // Default follows the sandbox: confinement on means the model should
+        // not be able to read the harness's own credentials out of `env`.
+        _ => cfg.sandbox != Policy::Off,
+    };
     let state = if cfg.sandbox == Policy::Off {
-        State::off()
+        State {
+            scrub_env: scrub,
+            ..State::off()
+        }
     } else {
-        build_state(cfg, cfg.sandbox, &mut warnings)
+        let mut state = build_state(cfg, cfg.sandbox, &mut warnings);
+        state.scrub_env = scrub;
+        state
     };
     let _ = STATE.set(state);
     warnings
@@ -146,13 +166,22 @@ fn build_state(
     warnings: &mut Vec<String>,
 ) -> State {
     let strict = policy == Policy::Strict;
-    match landlock::build(&writable_paths(&cfg.workspace), &readable_paths(&cfg.workspace), strict)
-    {
-        Ok(fd) => State {
-            policy,
-            jail: Some(fd),
-            refusal: None,
-        },
+    let ports = cfg.sandbox_ports.as_slice();
+    match landlock::build(
+        &writable_paths(&cfg.workspace),
+        &readable_paths(&cfg.workspace),
+        strict,
+        Some(ports),
+    ) {
+        Ok((fd, notes)) => {
+            warnings.extend(notes);
+            State {
+                policy,
+                jail: Some(fd),
+                refusal: None,
+                scrub_env: false,
+            }
+        }
         Err(e) => {
             if strict {
                 warnings.push(format!(
@@ -162,6 +191,7 @@ fn build_state(
                     policy,
                     jail: None,
                     refusal: Some("the Landlock ruleset could not be created".into()),
+                    scrub_env: false,
                 }
             } else {
                 warnings.push(format!(
@@ -189,6 +219,7 @@ fn build_state(
                 policy,
                 profile: None,
                 refusal: Some("sandbox-exec is not available".into()),
+                scrub_env: false,
             };
         }
         warnings.push("sandbox unavailable (no sandbox-exec); commands run unsandboxed".into());
@@ -200,10 +231,16 @@ fn build_state(
         &readable_paths(&cfg.workspace),
         policy == Policy::Strict,
     );
+    warnings.push(
+        "sandbox: outbound network is not restricted on macOS in this version; \
+         credential environment scrubbing still applies"
+            .into(),
+    );
     State {
         policy,
         profile: Some(profile),
         refusal: None,
+        scrub_env: false,
     }
 }
 
@@ -219,6 +256,7 @@ fn build_state(
         State {
             policy,
             refusal: Some("unsupported platform".into()),
+            scrub_env: false,
         }
     } else {
         warnings.push("sandbox is not supported on this platform; running unsandboxed".into());
@@ -269,6 +307,61 @@ pub fn refusal() -> Option<&'static str> {
     STATE.get().and_then(|s| s.refusal.as_deref())
 }
 
+/// Variable names that hand a shell child ambient credentials.
+///
+/// Reading the harness's own API key out of `env` is the cheapest possible
+/// exfiltration path for a prompt-injected command, and shared build hosts
+/// leak CI tokens the same way. The list errs toward stripping: a build that
+/// needs a secret can be given one explicitly in the command.
+pub(crate) fn is_sensitive(name: &str) -> bool {
+    const EXACT: &[&str] = &[
+        "SSH_AUTH_SOCK",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "NPM_TOKEN",
+        "NODE_AUTH_TOKEN",
+        "CARGO_REGISTRY_TOKEN",
+        "DOCKER_AUTH_CONFIG",
+        "NETRC",
+    ];
+    let upper = name.to_ascii_uppercase();
+    if EXACT.contains(&upper.as_str()) {
+        return true;
+    }
+    if upper.starts_with("AWS_")
+        || upper.starts_with("GH_")
+        || upper.starts_with("GITHUB_")
+        || upper.starts_with("DOCKER_")
+    {
+        return true;
+    }
+    [
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "API_KEY",
+        "APIKEY",
+        "ACCESS_KEY",
+        "PRIVATE_KEY",
+        "CREDENTIAL",
+    ]
+    .iter()
+    .any(|needle| upper.contains(needle))
+}
+
+/// Remove sensitive variables from a shell child when scrubbing is on.
+pub fn scrub_env(cmd: &mut Command) {
+    if !STATE.get().is_some_and(|s| s.scrub_env) {
+        return;
+    }
+    for (key, _) in std::env::vars_os() {
+        if is_sensitive(&key.to_string_lossy()) {
+            cmd.env_remove(key);
+        }
+    }
+}
+
 /// The effective policy, for diagnostics.
 pub fn policy() -> Policy {
     STATE.get().map(|s| s.policy).unwrap_or(Policy::Off)
@@ -305,6 +398,12 @@ mod landlock {
     const MAKE_SYM: u64 = 1 << 12;
     const REFER: u64 = 1 << 13;
     const TRUNCATE: u64 = 1 << 14;
+
+    // Network rights live in a separate `handled_access_net` field of the
+    // ruleset attribute (ABI 4, Linux 6.7+). The bit values collide with the
+    // filesystem rights numerically; the kernel disambiguates by rule type.
+    const NET_CONNECT_TCP: u64 = 1 << 1;
+    const RULE_NET_PORT: u32 = 2;
 
     const READ_RIGHTS: u64 = READ_FILE | READ_DIR;
 
@@ -346,22 +445,61 @@ mod landlock {
     }
 
     /// Create a ruleset fd: writes under `writable`; when `strict`, reads and
-    /// execs only under `writable` and `readable`.
-    pub fn build(writable: &[PathBuf], readable: &[PathBuf], strict: bool) -> Result<RawFd, String> {
+    /// execs only under `writable` and `readable`; and, when `ports` is given
+    /// and the kernel is ABI 4+, outbound TCP limited to those ports.
+    ///
+    /// Returns the fd plus notes about anything requested but unavailable
+    /// (network rules on an older kernel), which the caller surfaces as
+    /// warnings rather than silence.
+    pub fn build(
+        writable: &[PathBuf],
+        readable: &[PathBuf],
+        strict: bool,
+        ports: Option<&[u16]>,
+    ) -> Result<(RawFd, Vec<String>), String> {
+        let mut notes = Vec::new();
         let abi = abi().ok_or("Landlock is not available on this kernel")?;
         let writes = write_rights(abi);
         let mut handled = writes;
         if strict {
             handled |= READ_RIGHTS | EXECUTE;
         }
-        let fd = unsafe {
-            libc::syscall(
-                SYS_CREATE_RULESET,
-                &handled as *const u64,
+        let mut handled_net: u64 = 0;
+        if let Some(ports) = ports {
+            if abi >= 4 {
+                handled_net = NET_CONNECT_TCP;
+                let _ = ports;
+            } else {
+                notes.push(
+                    "sandbox: outbound network is unrestricted (network rules need \
+                     Landlock ABI 4 / Linux 6.7+)"
+                        .into(),
+                );
+            }
+        }
+        #[repr(C)]
+        struct RulesetAttr {
+            fs: u64,
+            net: u64,
+        }
+        let attr = RulesetAttr {
+            fs: handled,
+            net: handled_net,
+        };
+        // Older kernels reject an attribute larger than they know, so the
+        // size argument must stop at the fields actually in use.
+        let (ptr, size): (*const std::ffi::c_void, usize) = if handled_net != 0 {
+            (
+                (&attr as *const RulesetAttr).cast(),
+                std::mem::size_of::<RulesetAttr>(),
+            )
+        } else {
+            (
+                (&attr.fs as *const u64).cast(),
                 std::mem::size_of::<u64>(),
-                0u32,
             )
         };
+        let fd = unsafe { libc::syscall(SYS_CREATE_RULESET, ptr, size, 0u32) };
         if fd < 0 {
             return Err(format!(
                 "landlock_create_ruleset: {}",
@@ -394,13 +532,52 @@ mod landlock {
                 }
             }
         }
+        if failure.is_none() && handled_net != 0 {
+            // No rule for a port means it is denied: the handled set is the
+            // boundary and the rules are the exceptions to it. Binds are left
+            // unrestricted so local test servers keep working.
+            for port in ports.unwrap_or(&[]) {
+                if let Err(e) = add_port(fd, *port, NET_CONNECT_TCP) {
+                    failure = Some(e);
+                    break;
+                }
+            }
+        }
         match failure {
-            None => Ok(fd),
+            None => Ok((fd, notes)),
             Some(e) => {
                 unsafe { libc::close(fd) };
                 Err(e)
             }
         }
+    }
+
+    fn add_port(fd: RawFd, port: u16, rights: u64) -> Result<(), String> {
+        #[repr(C)]
+        struct NetPort {
+            allowed: u64,
+            port: u64,
+        }
+        let rule = NetPort {
+            allowed: rights,
+            port: port as u64,
+        };
+        let rc = unsafe {
+            libc::syscall(
+                SYS_ADD_RULE,
+                fd,
+                RULE_NET_PORT,
+                &rule as *const NetPort,
+                0u32,
+            )
+        };
+        if rc < 0 {
+            return Err(format!(
+                "landlock_add_rule net port {port}: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(())
     }
 
     fn add(fd: RawFd, path: &std::path::Path, rights: u64) -> Result<(), String> {
@@ -478,8 +655,10 @@ mod landlock {
                 std::slice::from_ref(&ws),
                 std::slice::from_ref(&ws),
                 false,
+                None,
             )
-            .expect("ruleset");
+            .expect("ruleset")
+            .0;
             let mut cmd = Command::new("/bin/sh");
             cmd.arg("-c").arg(format!(
                 "echo ok > '{ws}/in.txt'; echo no > '{dir}/out.txt' 2>/dev/null || echo WRITE-DENIED; cat '{dir}/secret.txt'",
@@ -527,7 +706,9 @@ mod landlock {
                 PathBuf::from("/etc"),
             ]
             .to_vec();
-            let fd = build(std::slice::from_ref(&ws), &readable, true).expect("ruleset");
+            let fd = build(std::slice::from_ref(&ws), &readable, true, None)
+                .expect("ruleset")
+                .0;
             let mut cmd = Command::new("/bin/sh");
             cmd.arg("-c").arg(format!(
                 "cat '{ws}/inside.txt'; cat '{dir}/secret.txt' 2>/dev/null || echo READ-DENIED",
@@ -555,7 +736,50 @@ mod landlock {
             let ws = dir.join("ws");
             std::fs::create_dir_all(&ws).unwrap();
             let ghost = dir.join("does-not-exist");
-            build(&[ws, ghost], &[], false).expect("a missing dir must be skipped");
+            build(&[ws, ghost], &[], false, None).expect("a missing dir must be skipped");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn network_egress_is_limited_to_the_allowed_ports() {
+            if abi().unwrap_or(0) < 4 {
+                return; // per-port network rules arrived in ABI 4
+            }
+            if Command::new("python3").arg("--version").output().is_err() {
+                return;
+            }
+            let dir = scratch("net");
+            let allowed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let denied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let (fd, notes) = build(
+                std::slice::from_ref(&dir),
+                std::slice::from_ref(&dir),
+                false,
+                Some(&[allowed.local_addr().unwrap().port()]),
+            )
+            .expect("ruleset");
+            assert!(notes.is_empty(), "{notes:?}");
+            let script = format!(
+                "import socket\n\
+                 for name, port in (('allowed', {a}), ('denied', {d})):\n\
+                 \x20   try:\n\
+                 \x20       socket.create_connection(('127.0.0.1', port), timeout=3).close()\n\
+                 \x20       print(name, 'CONNECTED')\n\
+                 \x20   except OSError:\n\
+                 \x20       print(name, 'DENIED')\n",
+                a = allowed.local_addr().unwrap().port(),
+                d = denied.local_addr().unwrap().port()
+            );
+            let mut cmd = Command::new("python3");
+            cmd.arg("-c").arg(script);
+            unsafe {
+                use std::os::unix::process::CommandExt;
+                cmd.pre_exec(move || enter(fd));
+            }
+            let out = cmd.output().unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(stdout.contains("allowed CONNECTED"), "{stdout}");
+            assert!(stdout.contains("denied DENIED"), "{stdout}");
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
@@ -601,5 +825,31 @@ mod mac {
             }
         }
         p
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credential_names_are_recognised_by_shape_and_by_list() {
+        for sensitive in [
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "AWS_SECRET_ACCESS_KEY",
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "NPM_TOKEN",
+            "MY_SERVICE_PASSWORD",
+            "SSH_AUTH_SOCK",
+            "DOCKER_AUTH_CONFIG",
+            "some_credential",
+        ] {
+            assert!(is_sensitive(sensitive), "{sensitive}");
+        }
+        for safe in ["PATH", "HOME", "CARGO_HOME", "RUSTUP_HOME", "EDITOR", "PWD"] {
+            assert!(!is_sensitive(safe), "{safe}");
+        }
     }
 }

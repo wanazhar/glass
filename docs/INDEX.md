@@ -1,5 +1,15 @@
 # Glass Core design and delivery
 
+- [Auto-verify](plan/tasks/auto-verify-001.md): the project verifier runs after writes, through the host bridge.
+- [Cross-session memory](plan/tasks/memory-001.md): MEMORY.md index injected per project, user-level only.
+- [Image input](plan/tasks/image-input-001.md): PNG/JPEG/GIF/WebP attachments ride as image blocks, no codec.
+- [Agent Plugins](plan/tasks/plugins-001.md): Agent Plugins 1.0 loader, gc plugin add/list/remove, plugin MCP servers.
+- [Worktree apply-back](plan/tasks/worktree-apply-001.md): gc worktree list/apply reclaims isolated fan-out work.
+- [Oracle](plan/tasks/oracle-001.md): /oracle sends the diff to an alternate model, read-only and unrecorded.
+- [Sandbox egress](plan/tasks/sandbox-egress-001.md): port-limited outbound TCP and credential env scrubbing when the sandbox is on.
+- [Loops](plan/tasks/loops-001.md): /loop fires prompts on an interval while the session is idle.
+- [Session comms](plan/tasks/session-comms-001.md): multi-client attach broadcast plus gc send / inbox between sessions.
+
 - [Subagent fan-out](plan/tasks/subagent-fanout-001.md): batched delegation, named agent definitions, worktree isolation, host-side parallelism.
 - [Turn notifications](plan/tasks/notifications-001.md): OSC 9 / bell attention for long or failed turns.
 - [Model fallback](plan/tasks/model-fallback-001.md): ordered model failover on pre-event provider failures.

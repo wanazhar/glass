@@ -444,9 +444,14 @@ binding when explicitly resumed, and then appear in that project's browser.
 `/context` shows estimated context usage, the loaded system prompt and project
 instructions, the skill catalogue, attachments, and compaction summaries.
 `/attach` opens a searchable project file picker; `/attach path` also works.
-Attachments are saved UTF-8 snapshots, capped at 32 KiB per file and 128 KiB in
-total. Remove them in `/context`; removing an attachment changes future prompt
-context, and does not remove material already present in conversation history.
+Text attachments are saved UTF-8 snapshots, capped at 32 KiB per file and
+128 KiB in total. Images (PNG, JPEG, GIF, WebP) attach as pictures instead:
+up to 1 MiB each and 2 MiB in total, relayed to the model as image blocks —
+no codec decodes them, they are bytes passed through — and shown in the
+transcript as `[image: png · N KB]`. They become part of the conversation
+log, so a resumed session still has them. Remove attachments in `/context`;
+removing one changes future prompt context, and does not remove material
+already present in conversation history.
 
 Tool activity shows running/completion state and elapsed time. `/details` searches
 recorded tool names, commands, and inline output. Its detail view can copy the
@@ -590,6 +595,25 @@ than hidden.
 Verified: after a side question the session log is zero records, so the next
 turn costs exactly what it would have anyway.
 
+## A second opinion
+
+`extensions/oracle` adds `/oracle [question]`: the current working-tree diff
+is sent to a pinned alternate model (Amp calls this an oracle; Claude's
+`/advisor` is the same idea), the critique prints inline and is not
+recorded, and the reviewer runs through the read-only subagent path — it
+gets the inspection tools and no shell, so a review can look at everything
+and change nothing.
+
+```toml
+extensions = ["python3 ~/.config/glass-core/ext/oracle.py"]
+```
+
+Configure the model in `~/.config/glass-core/oracle.json`
+(`{"model": "claude-opus-4-5", "prompt": "optional extra instruction"}`, or
+`GC_ORACLE_MODEL`). Prices are the alternate model's, metered to the session
+ledger like any other request. `/oracle` without a configured model says so
+rather than guessing.
+
 ## Better edits, opt-in
 
 `extensions/hashline` adds `hl_read` / `hl_edit`, which refer to lines by a
@@ -647,12 +671,28 @@ Tasks may opt into two kinds of isolation:
   `model` frontmatter and the body as the sub-agent's system prompt. See the
   definitions with `/agents`.
 - **`worktree: true`** runs the task in a detached git worktree at HEAD, so
-  edits cannot collide with your working tree. The report includes the
-  worktree path for inspection; uncommitted parent changes are not present,
-  and nothing is merged back automatically.
+  edits cannot collide with your working tree. Checkouts live under
+  `~/.local/share/glass-core/subagents/worktrees/`; uncommitted parent
+  changes are not present, and nothing is merged back automatically —
+  reclaim the work with `glass-core worktree apply` (below).
 
 A task that fails — or whose worker panics — produces an error in its own
 report slot and never aborts its siblings.
+
+### Getting work back out of a worktree
+
+```sh
+glass-core worktree list [--json]          # name, changed files, age
+glass-core worktree apply [<name>] [--remove]
+```
+
+`apply` stages everything inside the checkout (`add -A`, so new files are
+included), takes a binary-safe diff against its HEAD, and applies it to the
+workspace's working tree with `--3way`. Conflicts are left in place with
+git's markers and reported — nothing is committed, silently merged, or
+thrown away; committing stays `/git`'s job. Without a name, the newest
+checkout is used; `--remove` deletes the checkout after a clean apply.
+Refuses to cross repositories.
 
 ## Web access
 
@@ -700,6 +740,28 @@ fails to start is skipped with a note on stderr; calls into a dead server
 return an error string, never a hung turn. stdio only — HTTP and SSE
 transports are out of scope — and nothing spawns unless `mcp.json` asks for
 it.
+
+### Agent Plugins
+
+glass-core loads [Agent Plugins 1.0](https://agent-plugins.org), the
+cross-vendor packaging standard for skills and MCP servers:
+
+```sh
+glass-core plugin add <path|git-url>   # installs under ~/.config/glass-core/plugins/
+glass-core plugin list [--json]        # skills, MCP, and post-install drift
+glass-core plugin remove <name>        # its data directory is kept
+```
+
+A plugin's `skills/` join the skill catalogue and its `mcp.json` servers load
+through the mcp-bridge extension (stdio in this version). Install is
+user-level, like extensions: a repository cannot add a plugin, so cloning an
+untrusted repo changes nothing here. Validation follows the spec's failure
+boundaries — unknown manifest fields are reported and ignored, a bad schema
+or name rejects the plugin, and one broken skill or server never stops the
+rest from loading. Plugin-relative paths (`./`, `${PLUGIN_ROOT}`,
+`${PLUGIN_DATA}`) are containment-checked against the plugin root, and each
+plugin gets a persistent data directory at `plugins/data/<name>/`. `plugin
+list` marks a plugin whose tree changed since install.
 
 ## Context management
 
@@ -757,13 +819,31 @@ glass-core data/config dirs, `~/.cache`, `~/.cargo`, and `/dev/null`; reads are
 unrestricted. `strict` additionally narrows reads and execution to an allowlist
 (the workspace, system directories, `~/.cargo`, `~/.rustup`, `~/.cache`), which
 is deliberately breakage-tolerant: a tool that reads somewhere unusual will
-fail, and that is the point. Network is not restricted in this version.
+fail, and that is the point.
+
+With confinement on, two more boundaries apply. **Egress**: outbound TCP is
+limited to an allowlist of ports, `sandbox_ports = [443, 80]` by default
+(empty denies all outbound TCP); binds are unrestricted so local test servers
+still work, and DNS is unaffected because Landlock covers TCP, not UDP. This
+needs Landlock ABI 4 (Linux 6.7+); older kernels warn and leave the network
+open rather than pretending. Per-port is all the kernel offers — there is no
+host filtering, so 443 to anywhere is allowed. **Credentials**: variables
+whose names look like secrets (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`,
+`*API_KEY*`, `AWS_*`, `GH_*`, `SSH_AUTH_SOCK`, …) are removed from shell
+children, so the model cannot read the harness's own API key out of `env`;
+`sandbox_env = "inherit"` restores the full environment.
+
+One honest boundary: **extensions are not sandboxed** — they are ordinary
+local programs you chose to run, and mcp-bridge spawns servers the same way.
+The jail is for the model's shell, which is the surface prompt injection
+reaches.
 
 Linux uses Landlock via raw syscalls (kernel 5.13 or newer; no new
-dependency). macOS wraps commands with `sandbox-exec`. A platform that cannot
-deliver the requested policy warns once at startup; `strict` refuses to run
-commands at all rather than silently downgrading to no confinement. `/security`
-shows the active state.
+dependency). macOS wraps commands with `sandbox-exec`; network restrictions
+are not implemented there yet (warned once). A platform that cannot deliver
+the requested policy warns once at startup; `strict` refuses to run commands
+at all rather than silently downgrading to no confinement. `/security` shows
+the active state.
 
 ## Extending
 
@@ -1003,6 +1083,42 @@ glass-core runs its own shell and has no permission prompts by design.
 Client-supplied MCP servers are accepted and ignored; connect MCP servers on
 the host with the mcp-bridge extension instead.
 
+## Verify after writes, opt-in
+
+`extensions/verify` runs the project's verifier after commands that write
+files and appends failures to the tool result the model reads:
+
+```toml
+extensions = ["python3 ~/.config/glass-core/ext/verify.py"]
+```
+
+Configure `~/.config/glass-core/verify.json` — `{"command": "cargo test
+--quiet", "timeout_s": 90, "debounce_s": 8}` — or let it detect
+`Cargo.toml` (`cargo check --quiet`) or a `package.json` `typecheck` script.
+The verifier runs through the host's bash tool, so the sandbox policy and
+output caps apply; it runs at most once per debounce window; failures append
+as `[verify exit N]` and the first success after a failure reports
+`[verify ok]`. `/verify` shows the active command and last result. A wrong
+guess about how to test a project is worse than silence, so anything beyond
+the two detected cases is opt-in.
+
+## Cross-session memory, opt-in
+
+`extensions/memory` keeps durable project memory across sessions:
+
+```toml
+extensions = ["python3 ~/.config/glass-core/ext/memory.py"]
+```
+
+Memories live under `~/.config/glass-core/memory/<project>/` with a
+`MEMORY.md` index (capped at 200 lines / 25 KB) that is injected into the
+system prompt at session start; topic files are read on demand. The model
+records and prunes them with the `memory` tool (`add`/`read`/`list`/
+`remove`), and `/memory` shows the index and directory. It is user-level
+only — a repository can never add memories that flow into its own prompt,
+so this stays outside the trust-gate surface. Use it for conventions,
+gotchas, and preferences; transient task state belongs in `state`.
+
 ### A session that outlives the window
 
 ```sh
@@ -1016,9 +1132,33 @@ newline-delimited JSON over a 0600 Unix socket in the data directory.
 `attach` finds the newest socket when `--socket` is omitted; it replays the
 last 200 entries from the raw log (so compaction does not hide the record),
 streams new output as it arrives, submits prompts, and cancels with ctrl-c.
-A second client replaces the first and gets the same replay; detaching never
-stops the server, and SIGTERM shuts it down cleanly. v1 keeps the client a
-text terminal: slash commands and modals remain in the interactive session.
+Up to four clients attach at once: each gets its own replay, live output
+broadcasts to all of them, any client can cancel, and a closed terminal is
+dropped rather than stalling the session — mirroring one session into two
+panes is the point. Access is same-user on a 0600 socket, which is the whole
+auth story; there is no TCP listener. Detaching never stops the server, and
+SIGTERM shuts it down cleanly. Slash commands and modals remain in the
+interactive session.
+
+## Messaging another session
+
+```sh
+glass-core send <session-id> "the migration finished, rebase whenever"
+glass-core send --latest "pick up where I left off"
+```
+
+```text
+/send <session-id> <message>
+```
+
+`sessions are separate universes` was true until you wanted two of them to
+coordinate. A message is appended to `<data>/inbox/<id>.jsonl` (0600); a
+running session reads its mailbox when **idle** and turns each message into a
+normal turn, prefixed by a `[inbox] message from session …` note so the model
+knows where it came from — the same idle path loops use, so messages never
+stack behind a running turn. Messages are capped at 32 KB, targets are
+validated (they are filenames), and a writer mid-append is never truncated or
+skipped.
 
 ## Background commands
 
@@ -1036,6 +1176,23 @@ Live jobs are stopped on normal terminal exit. Logs stay under session data in
 `jobs/<session>/` for inspection. Jobs belong to the running terminal process and
 are not reattached on resume.
 
+## Loops
+
+```text
+/loop 30m check the deploy and report
+/loop                 # list: interval, run count, next fire, prompt
+/loop rm 1            # remove one
+/loop clear           # remove all
+```
+
+A loop is a prompt that fires again on an interval while the session is
+**idle** — never mid-turn, never stacked, and never into a composer you are
+typing in. Missed intervals skip forward: a session resumed after a day
+fires each loop once, not 2,880 times. Loops live in a sidecar next to the
+session (`<id>.loops.json`) and survive resume; with `serve` running, a
+detached session keeps its loops going, which is the autonomy story without
+a daemon: schedule, walk away, reattach to the results. Intervals are `90s`,
+`30m`, `2h` (bare numbers are seconds, zero is refused), capped at 16 loops.
 
 The feature smoke check uses a local mock endpoint and a real terminal process;
 it makes no paid API calls:

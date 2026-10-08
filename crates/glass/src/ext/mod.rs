@@ -261,11 +261,19 @@ impl Registry {
     /// Give every extension a chance to rewrite a tool result.
     ///
     /// Each one sees the previous one's output, so several extensions compose
-    /// into a redaction pipeline rather than fighting over the same bytes.
-    pub fn rewrite_tool_result(&mut self, call_id: &str, name: &str, body: &mut String) -> bool {
+    /// into a redaction pipeline rather than fighting over the same bytes. The
+    /// bridge is passed through so a rewriting extension may run host tools
+    /// (auto-verify runs the project's verifier this way).
+    pub fn rewrite_tool_result(
+        &mut self,
+        call_id: &str,
+        name: &str,
+        body: &mut String,
+        host_tools: &mut HostToolBridge<'_>,
+    ) -> bool {
         let mut changed = false;
         for e in &mut self.exts {
-            if let Some(new) = e.rewrite_tool_result(call_id, name, body) {
+            if let Some(new) = e.rewrite_tool_result(call_id, name, body, &mut *host_tools) {
                 *body = new;
                 changed = true;
             }
@@ -392,7 +400,8 @@ for line in sys.stdin:
         );
         assert_eq!(e.run_command("tcmd", "x").as_deref(), Some("cmd out"));
         assert_eq!(
-            e.rewrite_tool_result("c1", "bash", "original").as_deref(),
+            e.rewrite_tool_result("c1", "bash", "original", &mut nohost)
+                .as_deref(),
             Some("REWRITTEN")
         );
         assert_eq!(e.authorize("c1", "bash", "rm"), Err("nope".to_string()));

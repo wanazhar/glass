@@ -46,6 +46,7 @@ impl Jobs {
         #[cfg(unix)]
         cmd.process_group(0);
         crate::sandbox::harden(&mut cmd);
+        crate::sandbox::scrub_env(&mut cmd);
         let child = cmd.spawn().map_err(|e| e.to_string())?;
         let pid = child.id();
         self.jobs.insert(

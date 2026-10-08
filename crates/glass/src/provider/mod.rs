@@ -132,6 +132,12 @@ pub trait Provider {
 pub fn default_estimate(messages: &[Message]) -> u32 {
     let mut chars: usize = 0;
     for m in messages {
+        if matches!(m, Message::Image { .. }) {
+            // Images are billed by pixels, not bytes; a flat allowance keeps
+            // a base64 data URI from reading as millions of phantom tokens.
+            chars += 8_000;
+            continue;
+        }
         chars += m.text().len();
         chars += 8; // role and framing overhead per message
     }
@@ -364,6 +370,20 @@ mod tests {
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[0].0, "bash");
         assert_eq!(tools[1].0, "state");
+    }
+
+    #[test]
+    fn an_image_counts_a_flat_allowance_not_its_bytes() {
+        let image = Message::Image {
+            media_type: "image/png".into(),
+            data: "A".repeat(1_000_000),
+        };
+        let estimate = default_estimate(&[image]);
+        assert!(estimate > 1_500, "too low: {estimate}");
+        assert!(
+            estimate < 5_000,
+            "base64 bytes must not be counted as text: {estimate}"
+        );
     }
 
     #[test]

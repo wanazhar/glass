@@ -51,8 +51,9 @@ pub fn load_dir(dir: &Path) -> Vec<Skill> {
 ///
 /// The body is deliberately discarded: the model reads the file with `bash` on
 /// demand, so holding every skill's prose in the harness's heap would be a cost
-/// with no benefit.
-fn parse(text: &str, path: PathBuf) -> Result<Skill, String> {
+/// with no benefit. `pub(crate)` so the Agent Plugins loader can reuse it for
+/// `skills/<name>/SKILL.md` files.
+pub(crate) fn parse(text: &str, path: PathBuf) -> Result<Skill, String> {
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())

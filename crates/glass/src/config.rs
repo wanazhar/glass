@@ -62,6 +62,12 @@ pub struct Config {
     pub trust: Trust,
     /// OS-level confinement for shell commands.
     pub sandbox: sandbox::Policy,
+    /// Outbound TCP ports a confined shell may connect to (Landlock ABI 4+).
+    /// An empty list denies all outbound TCP; binds are never restricted.
+    pub sandbox_ports: Vec<u16>,
+    /// Credential env scrubbing for shell children: "", "scrub", or "inherit".
+    /// Empty means "scrub whenever the sandbox is on".
+    pub sandbox_env: String,
     pub system_prompt: String,
 }
 
@@ -85,6 +91,8 @@ impl Default for Config {
             fallback: Vec::new(),
             trust: Trust::default(),
             sandbox: sandbox::Policy::default(),
+            sandbox_ports: vec![443, 80],
+            sandbox_env: String::new(),
             system_prompt: BASE_SYSTEM_PROMPT.to_string(),
         }
     }
@@ -223,6 +231,8 @@ struct Raw {
     fallback: Option<Vec<String>>,
     trust: Option<String>,
     sandbox: Option<String>,
+    sandbox_ports: Option<Vec<u16>>,
+    sandbox_env: Option<String>,
 
     skills_dir: Option<String>,
     skills: Option<Vec<String>>,
@@ -364,6 +374,18 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
                 "sandbox must be off, workspace, or strict (got `{v}`)"
             ))
         })?;
+    }
+    if let Some(ports) = raw.sandbox_ports {
+        cfg.sandbox_ports = ports;
+    }
+    if let Some(v) = raw.sandbox_env {
+        let v = v.trim().to_ascii_lowercase();
+        if !matches!(v.as_str(), "" | "scrub" | "inherit") {
+            return Err(LoadError::Invalid(format!(
+                "sandbox_env must be scrub, inherit, or empty (got `{v}`)"
+            )));
+        }
+        cfg.sandbox_env = v;
     }
 
     // `skills = [...]` in the default location narrows the set, so an empty
@@ -521,7 +543,29 @@ mod tests {
         assert_eq!(load(&p).unwrap().sandbox, sandbox::Policy::Strict);
         let p = write(&d, "bad.toml", "sandbox = \"jail\"\n");
         assert!(load(&p).unwrap_err().to_string().contains("sandbox"));
-        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn sandbox_network_and_env_knobs_validate() {
+        let d = scratch("sandbox-knobs");
+        let plain = load(&d.join("none.toml")).unwrap();
+        assert_eq!(plain.sandbox_ports, vec![443, 80], "sane egress default");
+        assert_eq!(plain.sandbox_env, "", "empty means scrub-with-sandbox");
+
+        let p = write(
+            &d,
+            "c.toml",
+            "sandbox = \"workspace\"\nsandbox_ports = [22, 443]\nsandbox_env = \"inherit\"\n",
+        );
+        let cfg = load(&p).unwrap();
+        assert_eq!(cfg.sandbox_ports, vec![22, 443]);
+        assert_eq!(cfg.sandbox_env, "inherit");
+
+        let p = write(&d, "empty.toml", "sandbox_ports = []\n");
+        assert!(load(&p).unwrap().sandbox_ports.is_empty(), "deny all TCP");
+
+        let p = write(&d, "bad.toml", "sandbox_env = \"leak\"\n");
+        assert!(load(&p).unwrap_err().to_string().contains("sandbox_env"));
     }
 
     #[test]

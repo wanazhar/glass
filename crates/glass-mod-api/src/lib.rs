@@ -22,6 +22,12 @@ pub enum Message {
         name: String,
         body: String,
     },
+    /// An image attached by the user. `data` is base64; nothing in the
+    /// harness decodes it, so no image codec is involved.
+    Image {
+        media_type: String,
+        data: String,
+    },
     /// Injected by the harness, not the model. Never returned as model output.
     System(String),
 }
@@ -29,7 +35,7 @@ pub enum Message {
 impl Message {
     pub fn role(&self) -> &'static str {
         match self {
-            Message::User(_) => "user",
+            Message::User(_) | Message::Image { .. } => "user",
             Message::Assistant(_) | Message::ToolCall { .. } => "assistant",
             Message::ToolResult { .. } => "user",
             Message::System(_) => "system",
@@ -41,6 +47,8 @@ impl Message {
             Message::User(s) | Message::Assistant(s) | Message::System(s) => s,
             Message::ToolResult { body, .. } => body,
             Message::ToolCall { arguments, .. } => arguments,
+            // Images have no text; byte length would be a meaningless proxy.
+            Message::Image { .. } => "",
         }
     }
 }

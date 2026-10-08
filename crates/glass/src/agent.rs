@@ -109,6 +109,36 @@ pub enum Progress<'a> {
     },
 }
 
+/// Run `f` with the host-tool bridge an extension may use during a hook.
+///
+/// Only `bash` and `state` are exposed: those are the tools the model already
+/// has, so nesting cannot widen an extension's reach beyond the base surface.
+/// Used by `run_tool` and by `rewrite_tool_result` (auto-verify runs the
+/// project's verifier from inside that hook). Callback-shaped so the mutable
+/// borrow of `state` cannot outlive the call.
+fn with_tool_bridge<R>(
+    workspace: &std::path::Path,
+    state: &mut State,
+    call_id: &str,
+    f: impl FnOnce(&mut dyn FnMut(&str, &str) -> String) -> R,
+) -> R {
+    let workspace = workspace.to_path_buf();
+    let id = format!("{call_id}-nested");
+    let mut bridge = move |tool: &str, args: &str| -> String {
+        let inner = ToolCall {
+            id: id.clone(),
+            name: tool.to_string(),
+            arguments: args.to_string(),
+        };
+        match tool {
+            "bash" => tools::bash(&inner, &workspace).body,
+            "state" => state.apply(&inner).body,
+            other => format!("error: extensions may only call bash or state, not `{other}`"),
+        }
+    };
+    f(&mut bridge)
+}
+
 enum StreamUpdate {
     Event(Event),
     Retry {
@@ -1046,9 +1076,10 @@ impl<'a> Agent<'a> {
         // Record what the command read, so a later write can be allowed.
         self.reads.observe(&command, &outcome.body, self.workspace);
 
-        let rewritten = self
-            .extensions
-            .rewrite_tool_result(&call.id, &call.name, &mut body);
+        let rewritten = with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
+            self.extensions
+                .rewrite_tool_result(&call.id, &call.name, &mut body, bridge)
+        });
         let mut output = ToolOutput::new(body);
         if rewritten {
             output.rewritten = true;
@@ -1155,29 +1186,11 @@ impl<'a> Agent<'a> {
             outcome = self.state.apply(call);
         } else if self.extensions.has_tool(&call.name) {
             // The bridge lets an extension call tools on the host while it
-            // runs. Only `bash` and `state` are exposed: those are the tools
-            // the model already has, so an extension cannot widen its own
-            // reach by nesting something deeper.
-            let workspace = self.workspace.to_path_buf();
-            let state = &mut *self.state;
-            let mut bridge = |tool: &str, args: &str| -> String {
-                let inner = ToolCall {
-                    id: format!("{}-nested", call.id),
-                    name: tool.to_string(),
-                    arguments: args.to_string(),
-                };
-                match tool {
-                    "bash" => tools::bash(&inner, &workspace).body,
-                    "state" => state.apply(&inner).body,
-                    other => {
-                        format!("error: extensions may only call bash or state, not `{other}`")
-                    }
-                }
-            };
-            match self
-                .extensions
-                .run_tool(&call.name, &call.arguments, &mut bridge)
-            {
+            // runs — only `bash` and `state`, the model's own tools.
+            let out = with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
+                self.extensions.run_tool(&call.name, &call.arguments, bridge)
+            });
+            match out {
                 Some(out) => outcome.body = out,
                 None => outcome.body = format!("`{}` did not return a result", call.name),
             }
@@ -1188,9 +1201,10 @@ impl<'a> Agent<'a> {
         }
 
         let mut body = outcome.body;
-        let rewritten = self
-            .extensions
-            .rewrite_tool_result(&call.id, &call.name, &mut body);
+        let rewritten = with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
+            self.extensions
+                .rewrite_tool_result(&call.id, &call.name, &mut body, bridge)
+        });
         self.finish_tool(
             call,
             tools::Outcome {

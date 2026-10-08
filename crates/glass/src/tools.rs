@@ -129,6 +129,7 @@ pub fn bash_cancellable(
     // Kernel-level confinement, when a policy is active: applied after fork
     // and before exec so the shell and everything it spawns inherits it.
     crate::sandbox::harden(&mut builder);
+    crate::sandbox::scrub_env(&mut builder);
     let mut child = match builder.spawn() {
         Ok(c) => c,
         Err(e) => {

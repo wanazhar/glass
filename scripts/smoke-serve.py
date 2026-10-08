@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline checks for `gc serve` / `gc attach`: socket protocol, replay,
-prompts, cancellation, client replacement, and the terminal client in a PTY."""
+prompts, multi-client broadcast, cancellation from any client, and the
+terminal client in a PTY."""
 import http.server
 import importlib.util
 import json
@@ -125,27 +126,39 @@ def main():
             text, done = one.until_done()
             assert text == 'SERVER-HELLO' and done['stop'] == 'finished', (text, done)
 
-            # A second client replaces the first and receives history.
+            # A second client attaches alongside the first (no eviction) and
+            # gets its own history replay.
             two = Client(sock)
             replay = two.next()
             roles = [e['role'] for e in replay['entries']]
             assert roles == ['user', 'assistant'], replay
             assert replay['entries'][0]['text'] == 'hello', replay
-            one.close()
 
-            # Cancellation: a stalled stream ends as `cancelled`, not an error.
+            # Broadcast: a prompt from one client streams to every attached
+            # client, each ending with its own done frame.
+            one.send({'t': 'prompt', 'text': 'broadcast me'})
+            text_one, done_one = one.until_done()
+            text_two, done_two = two.until_done()
+            assert text_one == 'SERVER-HELLO' and done_one['stop'] == 'finished', (text_one, done_one)
+            assert text_two == 'SERVER-HELLO' and done_two['stop'] == 'finished', (text_two, done_two)
+
+            # Cancellation works from any attached client.
             Endpoint.mode = 'hang'
-            two.send({'t': 'prompt', 'text': 'cancel me'})
+            one.send({'t': 'prompt', 'text': 'cancel me'})
             while True:
-                message = two.next()
+                message = one.next()
                 if message['t'] == 'text':
                     break
             two.send({'t': 'cancel'})
-            _, done = two.until_done(timeout=15)
+            _, done = one.until_done(timeout=15)
             assert done['stop'] == 'cancelled', done
+            _, done_two = two.until_done(timeout=15)
+            assert done_two['stop'] == 'cancelled', done_two
             Endpoint.mode = 'text'
 
-            # The server survives a client disconnect and keeps the session.
+            # The server survives disconnects and a late attach still gets
+            # the whole history.
+            one.close()
             two.close()
             time.sleep(0.3)
             three = Client(sock)
@@ -156,13 +169,15 @@ def main():
             assert text == 'SERVER-HELLO' and done['stop'] == 'finished', (text, done)
             three.close()
 
-            # The terminal client: attach in a PTY, submit one prompt.
+            # The terminal client: attach in a PTY, submit one prompt. Screen
+            # assertions, not byte windows: the replay already contains older
+            # SERVER-HELLO text, and wait() consumes its window on match.
             t = f.Terminal(repo, env, args=('attach', '--socket', str(sock)), size=(80, 24))
             try:
                 t.visible('attached', timeout=10)
                 t.send('pty hello')
-                t.wait('SERVER-HELLO', timeout=15)
-                t.wait('finished', timeout=15)
+                t.visible('SERVER-HELLO', timeout=15)
+                t.visible('— finished —', timeout=15)
             finally:
                 t.close()
         finally:
@@ -174,8 +189,8 @@ def main():
                 serve.wait()
             server.shutdown()
     print(
-        'PASS serve/attach: replay, prompt streaming, cancellation as `cancelled`, '
-        'client replacement with history, survival across disconnects, PTY attach'
+        'PASS serve/attach: replay, prompt streaming, multi-client broadcast, '
+        'cancel from any client, survival across disconnects, PTY attach'
     )
 
 

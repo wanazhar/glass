@@ -42,3 +42,7 @@
 - [Scrolling and message spacing fixes](plan/tasks/chat-scroll-spacing-001.md): initial wheel routing and compact replies without role headings.
 - [Reader redraw and history fixes](plan/tasks/reader-redraw-001.md): complete body repaint and readable tool/reasoning projection.
 - [Reader redraw review](plan/reviews/reader-redraw-001-01.md): filled-screen PTY reproduction and installed-release evidence.
+
+- [October 8 regression fixes](plan/tasks/oct8-regressions-001.md): LSP deadlines, buffered diagnostics and child cleanup.
+- [MCP HTTP regression fixes](plan/tasks/mcp-http-regressions-001.md): session negotiation, bounded SSE replies and loopback validation.
+- [October 8 verification review](plan/reviews/oct8-regressions-001-01.md): release smoke results and constrained PTY evidence.

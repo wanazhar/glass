@@ -688,7 +688,8 @@ glass-core worktree apply [<name>] [--remove]
 
 `apply` stages everything inside the checkout (`add -A`, so new files are
 included), takes a binary-safe diff against its HEAD, and applies it to the
-workspace's working tree with `--3way`. Conflicts are left in place with
+workspace's working tree with `--3way`, which also stages the destination
+patch. Inspect the staged diff before committing. Conflicts are left in place with
 git's markers and reported — nothing is committed, silently merged, or
 thrown away; committing stays `/git`'s job. Without a name, the newest
 checkout is used; `--remove` deletes the checkout after a clean apply.

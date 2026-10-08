@@ -7,7 +7,9 @@ glass extension. It reads `~/.config/glass-core/mcp.json` (or GC_MCP_CONFIG):
     {
       "servers": {
         "files": { "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },
-        "notes": { "command": ["python3", "/path/notes_server.py"], "env": { "NOTES_DIR": "~/notes" } }
+        "notes": { "command": ["python3", "/path/notes_server.py"], "env": { "NOTES_DIR": "~/notes" } },
+        "remote": { "type": "streamable-http", "url": "https://mcp.example.com/mcp",
+                    "headers": { "Authorization": "Bearer …" } }
       }
     }
 
@@ -16,26 +18,46 @@ their JSON Schema passed through. Beyond 40 tools the manifest switches to two
 meta-tools, `mcp_search` and `mcp_call`, so a large server does not inflate
 every prompt (the same "deferred tools" idea Claude Code's tool search uses).
 
-Transports: stdio only. HTTP/SSE MCP servers are deliberately out of scope.
-A server that fails to start or dies is reported on stderr and skipped; it
-never hangs a turn.
+Transports: stdio and Streamable HTTP. Version negotiation probes with
+`server/discover` first (the stateless 2026-07-28 revision, where every
+request carries `_meta` instead of a handshake) and falls back to the classic
+`initialize` handshake for older servers, which remain the majority. The
+legacy HTTP+SSE transport is deprecated in the spec and refused with a
+pointer to `streamable-http`. A server that fails to start or dies is
+reported on stderr and skipped; it never hangs a turn.
 """
 
 import json
 import os
 import select
+import shutil
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 PROTOCOL = 1
 CLIENT_INFO = {"name": "glass-core", "version": "1.0"}
-PROTOCOL_VERSION = "2024-11-05"
+# The stateless revision (2026-07-28) replaced the initialize handshake with
+# per-request _meta and a required server/discover; the classic handshake is
+# kept for older servers, which remain the majority.
+STATELESS_VERSION = "2026-07-28"
+LEGACY_VERSION = "2024-11-05"
 INIT_TIMEOUT = 8.0
 CALL_TIMEOUT = 120.0
 DEFER_AT = 40  # switch to search/call meta-tools above this many tools
 # Agent Plugins 1.0 schema identifiers (agent-plugins.org).
 PLUGIN_MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+
+
+def stateless_meta(version):
+    return {
+        "io.modelcontextprotocol/protocolVersion": version,
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": CLIENT_INFO,
+    }
 
 
 def config_dir():
@@ -113,6 +135,22 @@ def plugin_servers():
             if not isinstance(spec, dict):
                 continue
             kind = spec.get("type", "stdio")
+            key = f"{name}.{sname}"
+            if kind == "streamable-http":
+                url = spec.get("url")
+                if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                    print(
+                        f"mcp-bridge: plugin {name}/{sname}: url must be absolute http(s); skipped",
+                        file=sys.stderr,
+                    )
+                    continue
+                headers = {
+                    str(k): str(v) for k, v in (spec.get("headers") or {}).items()
+                }
+                # The spec forbids placeholder expansion in url/header values:
+                # headers are visible package data, not a secret channel.
+                out[key] = {"type": "streamable-http", "url": url, "headers": headers}
+                continue
             if kind != "stdio":
                 print(
                     f"mcp-bridge: plugin {name}/{sname}: transport `{kind}` not supported yet",
@@ -159,13 +197,65 @@ def plugin_servers():
     return out
 
 
-class Server:
-    """One stdio MCP server: spawn, initialize, call."""
+class BaseServer:
+    """Shared call surface for both transports."""
 
-    def __init__(self, name, spec):
+    def __init__(self, name):
         self.name = name
         self.tools = []
         self.dead = None
+
+    def list_tools(self):
+        result = self.request("tools/list", {}, INIT_TIMEOUT)
+        # `ttlMs`/`cacheScope` (CacheableResult, 2026-07-28) are tolerated and
+        # ignored: this bridge fetches once at startup and keeps the result.
+        tools = result.get("tools") or []
+        return [t for t in tools if isinstance(t, dict) and t.get("name")]
+
+    def call_tool(self, tool, arguments):
+        if self.dead:
+            return f"mcp({self.name}): server is not running ({self.dead})"
+        try:
+            result = self.request(
+                "tools/call",
+                {"name": tool, "arguments": arguments or {}},
+                CALL_TIMEOUT,
+            )
+        except Exception as error:
+            if isinstance(error, (EOFError, BrokenPipeError, OSError)):
+                self.dead = "connection closed"
+            return f"mcp({self.name}): {error}"
+        if result.get("resultType") == "input_required":
+            return (
+                f"mcp({self.name}): the tool needs input from the client "
+                "(multi round-trip requests are not supported yet)"
+            )
+        parts = []
+        for item in result.get("content") or []:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text", "")))
+            elif isinstance(item, dict):
+                parts.append(f"[{item.get('type', 'non-text')} content omitted]")
+        text = "\n".join(part for part in parts if part)
+        if not text:
+            if result.get("structuredContent") is not None:
+                text = json.dumps(result["structuredContent"])
+            elif result.get("isError"):
+                text = "(tool reported an error with no message)"
+            else:
+                text = "(no content)"
+        if result.get("isError"):
+            text = f"error: {text}"
+        return text
+
+
+class Server(BaseServer):
+    """One stdio MCP server: spawn, negotiate, call."""
+
+    def __init__(self, name, spec):
+        super().__init__(name)
+        self.stateless = False
+        self.version = LEGACY_VERSION
         command = spec.get("command") if isinstance(spec, dict) else None
         if not isinstance(command, list) or not command:
             raise ValueError("`command` must be a non-empty argument list")
@@ -185,18 +275,40 @@ class Server:
         self.buffer = b""
         self.next_id = 0
         try:
+            self.version = self.handshake()
+        except Exception as error:
+            raise RuntimeError(f"handshake failed: {error}") from error
+
+    def handshake(self):
+        """server/discover first (2026-07-28), classic initialize otherwise.
+
+        The spec recommends exactly this probe on stdio for backward
+        compatibility: a stateless server answers `server/discover`; an older
+        one answers method-not-found and gets the classic handshake instead.
+        """
+        try:
+            result = self.request(
+                "server/discover",
+                {"_meta": stateless_meta(STATELESS_VERSION)},
+                INIT_TIMEOUT,
+                pad=False,
+            )
+        except Exception:
+            self.stateless = False
             self.request(
                 "initialize",
                 {
-                    "protocolVersion": PROTOCOL_VERSION,
+                    "protocolVersion": LEGACY_VERSION,
                     "capabilities": {},
                     "clientInfo": CLIENT_INFO,
                 },
                 INIT_TIMEOUT,
+                pad=False,
             )
             self.notify("notifications/initialized")
-        except Exception as error:
-            raise RuntimeError(f"initialize failed: {error}") from error
+            return LEGACY_VERSION
+        self.stateless = True
+        return str(result.get("protocolVersion") or STATELESS_VERSION)
 
     def send(self, message):
         self.proc.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
@@ -224,11 +336,13 @@ class Server:
         line, _, self.buffer = self.buffer.partition(b"\n")
         return json.loads(line.decode("utf-8", "replace"))
 
-    def request(self, method, params, timeout):
+    def request(self, method, params, timeout, pad=True):
         self.next_id += 1
         message = {"jsonrpc": "2.0", "id": self.next_id, "method": method}
         if params is not None:
-            message["params"] = params
+            message["params"] = dict(params)
+        if pad and self.stateless and isinstance(message.get("params"), dict):
+            message["params"].setdefault("_meta", stateless_meta(self.version))
         self.send(message)
         deadline = time.monotonic() + timeout
         while True:
@@ -242,42 +356,6 @@ class Server:
                 raise RuntimeError(error.get("message") or json.dumps(error))
             return reply.get("result") or {}
 
-    def list_tools(self):
-        result = self.request("tools/list", {}, INIT_TIMEOUT)
-        tools = result.get("tools") or []
-        return [t for t in tools if isinstance(t, dict) and t.get("name")]
-
-    def call_tool(self, tool, arguments):
-        if self.dead:
-            return f"mcp({self.name}): server is not running ({self.dead})"
-        try:
-            result = self.request(
-                "tools/call",
-                {"name": tool, "arguments": arguments or {}},
-                CALL_TIMEOUT,
-            )
-        except Exception as error:
-            if isinstance(error, (EOFError, BrokenPipeError, OSError)):
-                self.dead = "connection closed"
-            return f"mcp({self.name}): {error}"
-        parts = []
-        for item in result.get("content") or []:
-            if isinstance(item, dict) and item.get("type") == "text":
-                parts.append(str(item.get("text", "")))
-            elif isinstance(item, dict):
-                parts.append(f"[{item.get('type', 'non-text')} content omitted]")
-        text = "\n".join(part for part in parts if part)
-        if not text:
-            if result.get("structuredContent") is not None:
-                text = json.dumps(result["structuredContent"])
-            elif result.get("isError"):
-                text = "(tool reported an error with no message)"
-            else:
-                text = "(no content)"
-        if result.get("isError"):
-            text = f"error: {text}"
-        return text
-
     def shutdown(self):
         try:
             self.proc.terminate()
@@ -287,6 +365,135 @@ class Server:
                 self.proc.kill()
             except Exception:
                 pass
+
+
+class HttpServer(BaseServer):
+    """Streamable HTTP MCP server: one POST per request, stateless."""
+
+    def __init__(self, name, spec):
+        super().__init__(name)
+        self.url = str(spec.get("url") or "")
+        parsed = urllib.parse.urlparse(self.url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("url must be an absolute http(s) URL")
+        host = (parsed.hostname or "").lower()
+        loopback = host in ("localhost", "::1") or host.startswith("127.")
+        if parsed.scheme == "http" and not loopback:
+            raise ValueError("non-loopback MCP endpoints must use HTTPS")
+        self.headers = {
+            str(key): str(value) for key, value in (spec.get("headers") or {}).items()
+        }
+        self.next_id = 0
+        self.stateless = False
+        self.version = LEGACY_VERSION
+        try:
+            self.version = self.handshake()
+        except Exception as error:
+            raise RuntimeError(f"handshake failed: {error}") from error
+
+    def handshake(self):
+        try:
+            result = self.request(
+                "server/discover",
+                {"_meta": stateless_meta(STATELESS_VERSION)},
+                INIT_TIMEOUT,
+                pad=False,
+            )
+        except Exception:
+            self.stateless = False
+            self.request(
+                "initialize",
+                {
+                    "protocolVersion": LEGACY_VERSION,
+                    "capabilities": {},
+                    "clientInfo": CLIENT_INFO,
+                },
+                INIT_TIMEOUT,
+                pad=False,
+            )
+            try:
+                self.post(
+                    {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                    INIT_TIMEOUT,
+                )
+            except Exception:
+                pass
+            return LEGACY_VERSION
+        self.stateless = True
+        return str(result.get("protocolVersion") or STATELESS_VERSION)
+
+    def post(self, payload, timeout):
+        method = str(payload.get("method") or "")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "Mcp-Method": method,
+            **self.headers,
+        }
+        tool_name = (payload.get("params") or {}).get("name")
+        if isinstance(tool_name, str) and tool_name:
+            headers["Mcp-Name"] = tool_name
+        request = urllib.request.Request(
+            self.url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = response.read()
+                content_type = response.headers.get_content_type()
+        except urllib.error.HTTPError as error:
+            if error.code == 401:
+                raise RuntimeError(
+                    "unauthorized (401): add a bearer token or headers to mcp.json"
+                ) from error
+            raise RuntimeError(f"HTTP {error.code}") from error
+        text = body.decode("utf-8", "replace")
+        if content_type == "text/event-stream" or text.lstrip().startswith("data:"):
+            # A streamed reply: the matching JSON-RPC message is the one with
+            # our id; request-scoped notifications ride the same stream.
+            for line in text.splitlines():
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    message = json.loads(line[5:].strip())
+                except ValueError:
+                    continue
+                if message.get("id") == payload.get("id"):
+                    return message
+            raise RuntimeError("no reply on the event stream")
+        return json.loads(text)
+
+    def request(self, method, params, timeout, pad=True):
+        self.next_id += 1
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self.next_id,
+            "method": method,
+            "params": dict(params or {}),
+        }
+        if pad and self.stateless:
+            payload["params"].setdefault("_meta", stateless_meta(self.version))
+        reply = self.post(payload, timeout)
+        if "error" in reply:
+            raise RuntimeError(
+                reply["error"].get("message") or json.dumps(reply["error"])
+            )
+        return reply.get("result") or {}
+
+
+def make_server(name, spec):
+    if not isinstance(spec, dict):
+        raise ValueError("server configuration must be an object")
+    kind = spec.get("type") or "stdio"
+    if kind == "stdio":
+        return Server(name, spec)
+    if kind == "streamable-http":
+        return HttpServer(name, spec)
+    if kind == "sse":
+        raise ValueError("the legacy HTTP+SSE transport is deprecated; use streamable-http")
+    raise ValueError(f"unknown transport `{kind}`")
 
 
 def namespaced(server, tool):
@@ -307,7 +514,7 @@ class Bridge:
         self.entries = {}  # namespaced name -> (server name, tool name, description)
         for name, spec in load_servers().items():
             try:
-                server = Server(str(name), spec)
+                server = make_server(str(name), spec)
                 server.tools = server.list_tools()
                 self.servers[server.name] = server
                 for tool in server.tools:

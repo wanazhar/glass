@@ -238,6 +238,176 @@ impl Record {
     }
 }
 
+/// What a log repair did.
+#[derive(Debug, PartialEq, Eq)]
+enum Repair {
+    None,
+    /// A torn final line (no trailing newline) was truncated away.
+    TruncatedTail,
+    /// Complete but unreadable lines were dropped; the original log is kept
+    /// at `backup`.
+    DroppedLines {
+        first: usize,
+        count: usize,
+        backup: PathBuf,
+    },
+}
+
+/// Repair a session log in place before replay.
+///
+/// Two failure shapes, previously conflated into "skip anything that does
+/// not parse":
+///
+/// - a **torn tail** — killed mid-append, so the final line has no trailing
+///   newline — is truncated. That matters beyond tidiness: the next append
+///   would otherwise glue its record onto the fragment, producing a line
+///   that never parses and silently losing the new record too;
+/// - a **complete unreadable line** is corruption. pi-durable fails closed
+///   here, but that rule is only safe behind commit markers; over a plain
+///   append-only log it would lock a user out of their session over one bad
+///   byte. The line is dropped, the original is backed up beside the log,
+///   and the drop is reported (and recorded as a `Meta`) rather than hidden.
+///
+/// Lines that are valid JSON but carry an unknown `k` are forward
+/// compatibility, not corruption, and pass through untouched.
+fn repair_log(path: &Path) -> std::io::Result<Repair> {
+    if !path.exists() {
+        return Ok(Repair::None);
+    }
+    let bytes = std::fs::read(path)?;
+    if bytes.is_empty() {
+        return Ok(Repair::None);
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let trailing_newline = bytes.last() == Some(&b'\n');
+    let raw: Vec<&str> = if trailing_newline {
+        let mut v: Vec<&str> = text.split('\n').collect();
+        v.pop(); // the empty tail created by the final newline
+        v
+    } else {
+        text.split('\n').collect()
+    };
+    let last = raw.len().saturating_sub(1);
+    let mut kept: Vec<&str> = Vec::new();
+    let mut torn = false;
+    let mut first_bad = 0usize;
+    let mut bad = 0usize;
+    for (i, line) in raw.iter().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if serde_json::from_str::<serde_json::Value>(line).is_ok() {
+            kept.push(line);
+            continue;
+        }
+        if i == last && !trailing_newline {
+            torn = true;
+        } else {
+            bad += 1;
+            if first_bad == 0 {
+                first_bad = i + 1;
+            }
+        }
+    }
+    if !torn && bad == 0 {
+        return Ok(Repair::None);
+    }
+    let rewritten: String = kept.iter().map(|line| format!("{line}\n")).collect();
+    if bad == 0 {
+        // Pure torn tail: truncate in place, keeping every complete record.
+        let file = OpenOptions::new().write(true).open(path)?;
+        file.set_len(rewritten.len() as u64)?;
+        return Ok(Repair::TruncatedTail);
+    }
+    let backup = PathBuf::from(format!(
+        "{}.corrupt-{}",
+        path.display(),
+        crate::loops::now()
+    ));
+    crate::auth::secure_write(&backup, &bytes).map_err(std::io::Error::other)?;
+    // Atomic replace, permissions preserved from the original.
+    let tmp = path.with_extension("jsonl.tmp");
+    std::fs::write(&tmp, rewritten.as_bytes())?;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(Repair::DroppedLines {
+        first: first_bad,
+        count: bad,
+        backup,
+    })
+}
+
+/// Recovery policy for a tool call, mirroring pi's `replay` declaration.
+///
+/// `state` is pure bookkeeping and idempotent; every other tool — `bash`
+/// first of all — is treated as unsafe. Nothing is ever re-run
+/// automatically: the policy only decides what the model is told after an
+/// interruption, because unattended re-execution is a destructive-action
+/// risk worth more than the convenience.
+pub(crate) fn replay_policy(name: &str) -> &'static str {
+    match name {
+        "state" => "safe",
+        _ => "unsafe",
+    }
+}
+
+/// One interrupted-result body for a call that never recorded an outcome.
+fn interrupted_result(call: &Record) -> Option<Record> {
+    let Record::ToolCall { id, name, .. } = call else {
+        return None;
+    };
+    let body = match replay_policy(name) {
+        "safe" => format!(
+            "interrupted: `{name}` never completed, but it has no side effects — \
+             calling it again is safe."
+        ),
+        _ => format!(
+            "interrupted: `{name}` was killed while running and may have partially run. \
+             Check the workspace before retrying; do not re-run it blindly."
+        ),
+    };
+    Some(Record::ToolResult {
+        name: name.clone(),
+        call_id: id.clone(),
+        body,
+    })
+}
+
+/// Tool calls with no recorded result — the crash-mid-tool case.
+///
+/// The call record is the durable intent: it is appended before the tool
+/// executes, so a call without a result means the effect may have landed.
+/// Answering it here keeps the provider transcript well-formed (`tool_use`
+/// always paired with `tool_result`) and stops the `/retry` recovery path
+/// from re-executing a command that may already have run.
+pub(crate) fn interrupted_calls(raw: &[Record]) -> Vec<Record> {
+    let answered: std::collections::HashSet<&str> = raw
+        .iter()
+        .filter_map(|r| match r {
+            Record::ToolResult { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    raw.iter()
+        .filter(|r| matches!(r, Record::ToolCall { id, .. } if !answered.contains(id.as_str())))
+        .filter_map(interrupted_result)
+        .collect()
+}
+
+/// Whether every appended record is flushed to stable storage.
+///
+/// Off by default: append + flush already gives process-crash consistency,
+/// which is what a kill needs. `log_fsync = "always"` adds `sync_data` per
+/// record for survival of power or host loss, at a write cost per record.
+static LOG_FSYNC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Configure per-record fsync from the loaded config.
+pub fn configure_fsync(on: bool) {
+    LOG_FSYNC.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub struct Session {
     pub id: String,
     /// Kept so `resume` can report where a session lives and so a future
@@ -291,6 +461,24 @@ impl Session {
         } else {
             dir.join(format!("{target}.jsonl"))
         };
+        let repair = repair_log(&path)?;
+        match &repair {
+            Repair::None => {}
+            Repair::TruncatedTail => eprintln!(
+                "glass-core: repaired a truncated session log (killed mid-write): {}",
+                path.display()
+            ),
+            Repair::DroppedLines {
+                first,
+                count,
+                backup,
+            } => eprintln!(
+                "glass-core: skipped {count} unreadable record(s) starting at line {first} in {}; \
+                 the original is kept at {}",
+                path.display(),
+                backup.display()
+            ),
+        }
         // `append(true)` alone opens write-only, and reading from such a handle
         // fails with EBADF. `read(true)` is required for the replay pass.
         let file = OpenOptions::new().read(true).append(true).open(&path)?;
@@ -303,8 +491,8 @@ impl Session {
                 continue;
             }
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
-                // A truncated final line is expected after a hard kill.
-                // Skipping it is strictly better than refusing to resume.
+                // Repair ran first; a remaining parse failure is a race with
+                // another writer. Skipping keeps resume working.
                 continue;
             };
             if let Some(r) = Record::from_json(&v) {
@@ -325,17 +513,55 @@ impl Session {
         // tripped the threshold again, and paid for another summary. The
         // records on disk are the immutable log; `records` is the projection
         // the model sees, and they are allowed to differ.
+        let repairs = interrupted_calls(&records);
+        let last_assistant = records.iter().rev().find_map(|r| match r {
+            Record::Assistant(t) => Some(t.clone()),
+            _ => None,
+        });
+        let live = crate::partial::load(&path);
+        let live_file = crate::partial::path(&path);
         let log_len = records.len();
         let (records, turn) = apply_projection(records);
 
-        Ok(Self {
+        let mut session = Self {
             id,
             path,
             file: Some(file),
             records,
             turn,
             log_len,
-        })
+        };
+        for repair in repairs {
+            session.append(repair);
+        }
+        if let Repair::DroppedLines {
+            first,
+            count,
+            backup,
+        } = repair
+        {
+            // Visible in the transcript, not in model context: the repair
+            // becomes part of the record rather than a stderr line nobody
+            // reads again.
+            session.append(Record::Meta(format!(
+                "log repair: skipped {count} unreadable record(s) starting at line {first}; \
+                 the original log is kept at {}",
+                backup.display()
+            )));
+        }
+        // A leftover partial-output sidecar means the last turn was killed
+        // mid-response. The recovered text is recorded as the assistant
+        // message it was going to be, so `/retry` continues instead of
+        // pretending the turn never happened.
+        if let Some(recovered) =
+            live.and_then(|live| crate::partial::recover(&live_file, live, last_assistant.as_deref()))
+        {
+            session.append(Record::Meta(recovered.meta));
+            if let Some(partial) = recovered.partial {
+                session.append(Record::Assistant(partial));
+            }
+        }
+        Ok(session)
     }
 
     pub fn raw_turns(&self) -> std::io::Result<usize> {
@@ -415,6 +641,9 @@ impl Session {
         {
             let _ = writeln!(f, "{line}");
             let _ = f.flush();
+            if LOG_FSYNC.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = f.sync_data();
+            }
         }
         self.records.push(record);
         self.log_len += 1;
@@ -1146,12 +1375,307 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("crashed.jsonl");
         fs::write(&path, "{\"k\":\"user\",\"t\":\"first\"}\n{\"k\":\"assis").unwrap();
-        let s = Session::open(&dir, "crashed").unwrap();
+        let mut s = Session::open(&dir, "crashed").unwrap();
         assert_eq!(
             s.records.len(),
             1,
             "partial line is skipped, valid line kept"
         );
+        // The torn fragment is truncated, not merely ignored: without that,
+        // the next append would glue itself to the fragment and be lost.
+        s.append(Record::User("second".into()));
+        drop(s);
+        let reopened = Session::open(&dir, "crashed").unwrap();
+        assert_eq!(reopened.records.len(), 2, "the next append is a clean record");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_corrupt_middle_line_is_dropped_with_a_backup_and_a_visible_note() {
+        let dir = tmpdir("corrupt");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sess.jsonl");
+        fs::write(
+            &path,
+            "{\"k\":\"user\",\"t\":\"one\"}\nthis is not json\n{\"k\":\"assistant\",\"t\":\"two\"}\n",
+        )
+        .unwrap();
+        let s = Session::open(&dir, "sess").unwrap();
+        assert!(matches!(s.records.first(), Some(Record::User(t)) if t == "one"));
+        assert!(matches!(s.records.get(1), Some(Record::Assistant(t)) if t == "two"));
+        assert!(
+            s.records
+                .iter()
+                .any(|r| matches!(r, Record::Meta(t) if t.contains("unreadable"))),
+            "the repair must be visible in the transcript"
+        );
+        let backups: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "the original log is backed up");
+        assert!(
+            fs::read_to_string(backups[0].path())
+                .unwrap()
+                .contains("this is not json")
+        );
+        // Stable across a second open: the bad line is gone, one note only.
+        let again = Session::open(&dir, "sess").unwrap();
+        assert_eq!(
+            again
+                .records
+                .iter()
+                .filter(|r| matches!(r, Record::Meta(t) if t.contains("unreadable")))
+                .count(),
+            1
+        );
+        assert_eq!(
+            fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+                .count(),
+            1,
+            "no second backup on re-open"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_complete_unreadable_final_line_is_corruption_not_a_torn_tail() {
+        let dir = tmpdir("complete-corrupt");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        fs::write(&path, "{\"k\":\"user\",\"t\":\"one\"}\noops but newline\n").unwrap();
+        let s = Session::open(&dir, "s").unwrap();
+        assert_eq!(s.records.iter().filter(|r| matches!(r, Record::User(_))).count(), 1);
+        assert!(
+            s.records
+                .iter()
+                .any(|r| matches!(r, Record::Meta(t) if t.contains("line 2"))),
+            "a complete bad line is corruption at its real line number"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unknown_record_kinds_are_forward_compatibility_not_corruption() {
+        let dir = tmpdir("forward");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("f.jsonl");
+        fs::write(
+            &path,
+            "{\"k\":\"future_thing\",\"x\":1}\n{\"k\":\"user\",\"t\":\"hi\"}\n",
+        )
+        .unwrap();
+        let s = Session::open(&dir, "f").unwrap();
+        assert_eq!(s.records.len(), 1, "unknown kinds are skipped, not repaired");
+        assert_eq!(
+            fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+                .count(),
+            0,
+            "no backup for a line from a newer version"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn fsync_policy_is_settable_and_appends_stay_readable() {
+        configure_fsync(true);
+        let dir = tmpdir("fsync");
+        let mut s = Session::create(&dir).unwrap();
+        let id = s.id.clone();
+        s.append(Record::User("durable".into()));
+        drop(s);
+        let reopened = Session::open(&dir, &id).unwrap();
+        assert_eq!(reopened.records.len(), 1);
+        configure_fsync(false);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn replay_policy_is_safe_only_for_state() {
+        assert_eq!(replay_policy("state"), "safe");
+        assert_eq!(replay_policy("bash"), "unsafe");
+        assert_eq!(replay_policy("hl_edit"), "unsafe");
+        assert_eq!(replay_policy("anything-unknown"), "unsafe");
+    }
+
+    #[test]
+    fn opening_a_session_recovers_a_leftover_partial() {
+        let dir = tmpdir("live-recover");
+        let mut s = Session::create(&dir).unwrap();
+        let id = s.id.clone();
+        s.append(Record::User("go".into()));
+        s.append(Record::Assistant("an earlier answer".into()));
+        // Simulate the kill: a sidecar with streamed text and no final record.
+        let live = crate::partial::Live {
+            text: "half a th".into(),
+            at: crate::partial::now(),
+            ..Default::default()
+        };
+        fs::write(
+            crate::partial::path(&s.path),
+            serde_json::to_vec(&live).unwrap(),
+        )
+        .unwrap();
+        drop(s);
+        let reopened = Session::open(&dir, &id).unwrap();
+        assert!(
+            reopened
+                .records
+                .iter()
+                .any(|r| matches!(r, Record::Meta(t) if t.contains("partial output recovered"))),
+            "the interruption must be visible"
+        );
+        assert!(
+            matches!(reopened.records.last(), Some(Record::Assistant(t)) if t == "half a th"),
+            "the partial is recorded as the assistant message it was becoming"
+        );
+        assert!(
+            !crate::partial::path(&dir.join(format!("{id}.jsonl"))).exists(),
+            "the sidecar is consumed"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_stale_sidecar_whose_text_already_landed_is_discarded_quietly() {
+        let dir = tmpdir("live-stale");
+        let mut s = Session::create(&dir).unwrap();
+        let id = s.id.clone();
+        s.append(Record::Assistant("the whole answer".into()));
+        let live = crate::partial::Live {
+            text: "the whole answer".into(),
+            at: crate::partial::now(),
+            ..Default::default()
+        };
+        fs::write(
+            crate::partial::path(&s.path),
+            serde_json::to_vec(&live).unwrap(),
+        )
+        .unwrap();
+        drop(s);
+        let reopened = Session::open(&dir, &id).unwrap();
+        assert!(
+            !reopened
+                .records
+                .iter()
+                .any(|r| matches!(r, Record::Meta(t) if t.contains("interrupted"))),
+            "a late flush is not an interruption"
+        );
+        assert_eq!(
+            reopened
+                .records
+                .iter()
+                .filter(|r| matches!(r, Record::Assistant(_)))
+                .count(),
+            1,
+            "no duplicate assistant text"
+        );
+        assert!(!crate::partial::path(&dir.join(format!("{id}.jsonl"))).exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_interrupted_tool_call_is_repaired_once_with_policy_wording() {
+        let dir = tmpdir("interrupted");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"k\":\"user\",\"t\":\"go\"}\n",
+                "{\"k\":\"call\",\"id\":\"c1\",\"name\":\"bash\",\"args\":\"{}\"}\n",
+                "{\"k\":\"call\",\"id\":\"c2\",\"name\":\"state\",\"args\":\"{}\"}\n",
+                "{\"k\":\"tool\",\"name\":\"state\",\"id\":\"c2\",\"t\":\"ok\"}\n",
+            ),
+        )
+        .unwrap();
+        let s = Session::open(&dir, "s").unwrap();
+        let repairs: Vec<&Record> = s
+            .records
+            .iter()
+            .filter(|r| matches!(r, Record::ToolResult { call_id, .. } if call_id == "c1"))
+            .collect();
+        assert_eq!(repairs.len(), 1, "one repair for the unanswered call");
+        let Record::ToolResult { body, .. } = repairs[0] else {
+            unreachable!()
+        };
+        assert!(body.contains("may have partially run"), "{body}");
+        // The answered call gained nothing; a second open repairs nothing more.
+        assert_eq!(
+            s.records
+                .iter()
+                .filter(|r| matches!(r, Record::ToolResult { call_id, .. } if call_id == "c2"))
+                .count(),
+            1,
+            "the answered call gained nothing"
+        );
+        let again = Session::open(&dir, "s").unwrap();
+        assert_eq!(
+            again
+                .records
+                .iter()
+                .filter(|r| matches!(r, Record::ToolResult { call_id, .. } if call_id == "c1"))
+                .count(),
+            1,
+            "the repair is not repeated on reopen"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_safe_interrupted_call_says_it_has_no_side_effects() {
+        let dir = tmpdir("interrupted-safe");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        fs::write(
+            &path,
+            "{\"k\":\"call\",\"id\":\"c9\",\"name\":\"state\",\"args\":\"{}\"}\n",
+        )
+        .unwrap();
+        let s = Session::open(&dir, "s").unwrap();
+        let body = s
+            .records
+            .iter()
+            .find_map(|r| match r {
+                Record::ToolResult { call_id, body, .. } if call_id == "c9" => Some(body.clone()),
+                _ => None,
+            })
+            .expect("repaired");
+        assert!(body.contains("no side effects"), "{body}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_repair_pairs_the_provider_transcript() {
+        let dir = tmpdir("interrupted-pair");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"k\":\"user\",\"t\":\"go\"}\n",
+                "{\"k\":\"call\",\"id\":\"c1\",\"name\":\"bash\",\"args\":\"{}\"}\n",
+            ),
+        )
+        .unwrap();
+        let s = Session::open(&dir, "s").unwrap();
+        let messages = s.messages();
+        let call_at = messages
+            .iter()
+            .position(|m| matches!(m, Message::ToolCall { id, .. } if id == "c1"))
+            .expect("the call is in context");
+        let result_at = messages
+            .iter()
+            .position(|m| matches!(m, Message::ToolResult { call_id, body, .. } if call_id == "c1" && body.contains("interrupted")))
+            .expect("the repair is in context, so tool_use always pairs with tool_result");
+        assert!(result_at > call_at, "the result follows its call");
         fs::remove_dir_all(&dir).ok();
     }
 

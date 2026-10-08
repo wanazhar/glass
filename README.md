@@ -453,6 +453,43 @@ log, so a resumed session still has them. Remove attachments in `/context`;
 removing one changes future prompt context, and does not remove material
 already present in conversation history.
 
+### Crash recovery
+
+A kill mid-turn used to leave three loose ends; all three are handled on
+reopen now, and the handling is invisible until it matters.
+
+**The log repairs itself.** A killed append can leave a torn final line;
+opening truncates it — the alternative was silent record loss, because the
+next append would glue itself onto the fragment. A *complete* line that is
+not JSON is corruption: the original log is backed up beside it, the line is
+dropped, and a visible note records the repair. Lines from a newer version
+are left alone: forward compatibility is not corruption.
+`log_fsync = "always"` upgrades every append from process-crash consistency
+to power-loss survival.
+
+**Interrupted tools are answered, never re-run.** The tool call record is
+written before the command executes, so a call with no result means the
+effect may have landed. Reopening answers it with an `interrupted` tool
+result — "may have partially run; check the workspace before retrying" for
+`bash`, "no side effects" for `state` — so the provider transcript stays
+well-formed (`tool_use` always pairs with `tool_result`) and `/retry`
+cannot silently re-execute a half-landed command.
+
+**Partial output survives.** While a turn streams, the assistant text, the
+tool in flight, and any retry deadline are committed to a
+`<session>.live.json` sidecar at most every `live_flush_ms` (default 250;
+0 disables) — and immediately when a tool starts, when a retry begins, and
+before the turn's final records. The sidecar is deleted the moment the turn
+ends, however it ends, so a leftover file means the process died. The next
+open shows what happened, records the partial as the assistant message it
+was becoming, and lets `/retry` continue the thought instead of restarting
+it.
+
+`gc attach` takes a cursor too: a client that kept one receives only entries
+newer than it (`{"t":"attach","since":N}`), with an explicit reset when the
+cursor is stale, and prompt frames carry a `request_id` so a retry over a
+flaky link cannot submit the same prompt twice.
+
 Tool activity shows running/completion state and elapsed time. `/details` searches
 recorded tool names, commands, and inline output. Its detail view can copy the
 exact original command or recorded inline output; it identifies spilled or

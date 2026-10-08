@@ -68,6 +68,11 @@ pub struct Config {
     /// Credential env scrubbing for shell children: "", "scrub", or "inherit".
     /// Empty means "scrub whenever the sandbox is on".
     pub sandbox_env: String,
+    /// Per-record fsync policy for session logs: "off" (default) or "always".
+    pub log_fsync: String,
+    /// How often streamed partial output is committed to the sidecar, in ms.
+    /// 0 disables the sidecar; a crash otherwise loses at most this window.
+    pub live_flush_ms: u32,
     pub system_prompt: String,
 }
 
@@ -93,6 +98,8 @@ impl Default for Config {
             sandbox: sandbox::Policy::default(),
             sandbox_ports: vec![443, 80],
             sandbox_env: String::new(),
+            log_fsync: "off".into(),
+            live_flush_ms: 250,
             system_prompt: BASE_SYSTEM_PROMPT.to_string(),
         }
     }
@@ -233,6 +240,8 @@ struct Raw {
     sandbox: Option<String>,
     sandbox_ports: Option<Vec<u16>>,
     sandbox_env: Option<String>,
+    log_fsync: Option<String>,
+    live_flush_ms: Option<u32>,
 
     skills_dir: Option<String>,
     skills: Option<Vec<String>>,
@@ -386,6 +395,23 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
             )));
         }
         cfg.sandbox_env = v;
+    }
+    if let Some(v) = raw.log_fsync {
+        let v = v.trim().to_ascii_lowercase();
+        if !matches!(v.as_str(), "off" | "always") {
+            return Err(LoadError::Invalid(format!(
+                "log_fsync must be off or always (got `{v}`)"
+            )));
+        }
+        cfg.log_fsync = v;
+    }
+    if let Some(v) = raw.live_flush_ms {
+        if v > 60_000 {
+            return Err(LoadError::Invalid(format!(
+                "live_flush_ms is capped at 60000 (got {v}); 0 disables the sidecar"
+            )));
+        }
+        cfg.live_flush_ms = v;
     }
 
     // `skills = [...]` in the default location narrows the set, so an empty
@@ -566,6 +592,26 @@ mod tests {
 
         let p = write(&d, "bad.toml", "sandbox_env = \"leak\"\n");
         assert!(load(&p).unwrap_err().to_string().contains("sandbox_env"));
+    }
+
+    #[test]
+    fn log_fsync_parses_off_by_default_and_rejects_typos() {
+        let d = scratch("log-fsync");
+        assert_eq!(load(&d.join("none.toml")).unwrap().log_fsync, "off");
+        let p = write(&d, "always.toml", "log_fsync = \"always\"\n");
+        assert_eq!(load(&p).unwrap().log_fsync, "always");
+        let p = write(&d, "bad.toml", "log_fsync = \"sometimes\"\n");
+        assert!(load(&p).unwrap_err().to_string().contains("log_fsync"));
+    }
+
+    #[test]
+    fn live_flush_ms_defaults_and_is_capped() {
+        let d = scratch("live-flush");
+        assert_eq!(load(&d.join("none.toml")).unwrap().live_flush_ms, 250);
+        let p = write(&d, "off.toml", "live_flush_ms = 0\n");
+        assert_eq!(load(&p).unwrap().live_flush_ms, 0, "0 disables the sidecar");
+        let p = write(&d, "huge.toml", "live_flush_ms = 60001\n");
+        assert!(load(&p).unwrap_err().to_string().contains("live_flush_ms"));
     }
 
     #[test]

@@ -198,6 +198,8 @@ pub struct Agent<'a> {
     breaker: compact::Breaker,
     /// Whether this turn already spent its one context-overflow recovery.
     overflow_recovered: bool,
+    /// Throttled partial-output sidecar, when the session wants one.
+    live: Option<crate::partial::Writer>,
 }
 
 /// Lines of a written file echoed back to the model.
@@ -210,6 +212,18 @@ const VERIFY_TAIL_LINES: usize = 40;
 /// A progress callback.
 pub type ProgressSink<'a> = Box<dyn Fn(Progress<'_>) + 'a>;
 
+impl Drop for Agent<'_> {
+    /// The turn is over however it ended: the partial-output sidecar had a
+    /// reason to exist only while the turn was running. A file that survives
+    /// this is therefore evidence of a kill, which is exactly the signal the
+    /// next open acts on.
+    fn drop(&mut self) {
+        if let Some(live) = self.live.as_mut() {
+            live.finish();
+        }
+    }
+}
+
 impl<'a> Agent<'a> {
     /// Report a progress event if an observer is attached.
     fn emit(&self, p: Progress<'_>) {
@@ -220,6 +234,9 @@ impl<'a> Agent<'a> {
 
     /// Open a tool chip in the default view.
     fn emit_tool_start(&mut self, call: &ToolCall) {
+        if let Some(live) = self.live.as_mut() {
+            live.tool(&call.id, &call.name);
+        }
         let command = call.arg_str("command");
         self.emit(Progress::ToolStart {
             name: &call.name,
@@ -259,7 +276,18 @@ impl<'a> Agent<'a> {
             read_only: false,
             breaker: compact::Breaker::default(),
             overflow_recovered: false,
+            live: None,
         }
+    }
+
+    /// Commit streamed partial output to a sidecar between writes.
+    ///
+    /// `interval_ms == 0` disables it. The writer is dropped with the agent,
+    /// which deletes the sidecar: a file left behind therefore means the
+    /// process died mid-turn, not that cleanup was forgotten.
+    pub fn with_live(mut self, interval_ms: u64) -> Self {
+        self.live = crate::partial::Writer::new(&self.session.path, interval_ms);
+        self
     }
 
     pub fn with_plan_mode(mut self, enabled: bool) -> Self {
@@ -508,6 +536,9 @@ impl<'a> Agent<'a> {
                 provider::RETRY_ATTEMPTS,
                 &provider::RETRY_DELAYS,
                 |attempt, delay, why| {
+                    if let Some(live) = self.live.as_mut() {
+                        live.retry(attempt as u32, delay);
+                    }
                     self.emit(Progress::Retrying {
                         attempt,
                         delay_s: delay,
@@ -537,6 +568,9 @@ impl<'a> Agent<'a> {
                         delay_s,
                         reason,
                     }) => {
+                        if let Some(live) = self.live.as_mut() {
+                            live.retry(attempt as u32, delay_s);
+                        }
                         self.emit(Progress::Retrying {
                             attempt,
                             delay_s,
@@ -569,6 +603,9 @@ impl<'a> Agent<'a> {
                 Event::Text(t) => {
                     // Emit before accumulating so the UI can paint the delta
                     // as it arrives rather than after the whole turn.
+                    if let Some(live) = self.live.as_mut() {
+                        live.text(&t);
+                    }
                     self.emit(Progress::Text(&t));
                     out.text.push_str(&t);
                 }
@@ -633,6 +670,15 @@ impl<'a> Agent<'a> {
             warnings: Vec::new(),
         };
 
+        if let Some(live) = self.live.as_mut() {
+            let turn = self
+                .session
+                .records
+                .iter()
+                .filter(|r| matches!(r, Record::User(_)))
+                .count() as u64;
+            live.begin_turn(turn);
+        }
         self.overflow_recovered = false;
         for round in 0..self.max_tool_rounds {
             let out = match self.turn(&mut pump) {
@@ -1220,6 +1266,9 @@ impl<'a> Agent<'a> {
     /// Record a tool result and notify mods. The single path every tool
     /// outcome takes, including the ones blocked by a guard.
     fn finish_tool(&mut self, call: &ToolCall, outcome: tools::Outcome) {
+        if let Some(live) = self.live.as_mut() {
+            live.tool_done();
+        }
         let mut output = ToolOutput::new(outcome.body);
         if !self.read_only {
             for m in self.mods {

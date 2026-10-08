@@ -23,6 +23,8 @@ supported way back.
   `git -C <workspace> apply --3way -`. Conflicts stay in the working tree
   with git's markers and are reported as errors — no silent side-picking,
   no committing. `--remove` runs `git worktree remove --force` + prune.
+- Git's `--3way` also stages the applied destination patch. The command
+  creates no commit; inspect the staged diff before committing it.
 - Cross-repository applies are refused by comparing `--git-common-dir`.
 - `list` reports name, changed-file count, and age; `--json` for scripts.
 

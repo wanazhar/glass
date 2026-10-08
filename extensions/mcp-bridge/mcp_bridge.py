@@ -28,9 +28,11 @@ reported on stderr and skipped; it never hangs a turn.
 """
 
 import json
+import ipaddress
 import os
 import select
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -48,6 +50,7 @@ LEGACY_VERSION = "2024-11-05"
 INIT_TIMEOUT = 8.0
 CALL_TIMEOUT = 120.0
 DEFER_AT = 40  # switch to search/call meta-tools above this many tools
+MAX_HTTP_RESPONSE = 8 * 1024 * 1024
 # Agent Plugins 1.0 schema identifiers (agent-plugins.org).
 PLUGIN_MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
 
@@ -377,7 +380,11 @@ class HttpServer(BaseServer):
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise ValueError("url must be an absolute http(s) URL")
         host = (parsed.hostname or "").lower()
-        loopback = host in ("localhost", "::1") or host.startswith("127.")
+        try:
+            loopback_ip = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback_ip = False
+        loopback = host == "localhost" or loopback_ip
         if parsed.scheme == "http" and not loopback:
             raise ValueError("non-loopback MCP endpoints must use HTTPS")
         self.headers = {
@@ -386,6 +393,7 @@ class HttpServer(BaseServer):
         self.next_id = 0
         self.stateless = False
         self.version = LEGACY_VERSION
+        self.session_id = None
         try:
             self.version = self.handshake()
         except Exception as error:
@@ -418,7 +426,7 @@ class HttpServer(BaseServer):
                 )
             except Exception:
                 pass
-            return LEGACY_VERSION
+            return self.version
         self.stateless = True
         return str(result.get("protocolVersion") or STATELESS_VERSION)
 
@@ -430,6 +438,10 @@ class HttpServer(BaseServer):
             "Mcp-Method": method,
             **self.headers,
         }
+        if payload.get("method") != "initialize":
+            headers["MCP-Protocol-Version"] = self.version
+            if self.session_id:
+                headers["MCP-Session-Id"] = self.session_id
         tool_name = (payload.get("params") or {}).get("name")
         if isinstance(tool_name, str) and tool_name:
             headers["Mcp-Name"] = tool_name
@@ -441,8 +453,16 @@ class HttpServer(BaseServer):
         )
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                body = response.read()
                 content_type = response.headers.get_content_type()
+                if payload.get("method") == "initialize":
+                    self.session_id = response.headers.get("MCP-Session-Id")
+                if response.status == 202:
+                    if "id" in payload:
+                        raise RuntimeError("server accepted request without returning a response")
+                    return None
+                if content_type == "text/event-stream":
+                    return self._read_sse_response(response, payload, timeout)
+                body = self._read_http_body(response, timeout)
         except urllib.error.HTTPError as error:
             if error.code == 401:
                 raise RuntimeError(
@@ -451,19 +471,95 @@ class HttpServer(BaseServer):
             raise RuntimeError(f"HTTP {error.code}") from error
         text = body.decode("utf-8", "replace")
         if content_type == "text/event-stream" or text.lstrip().startswith("data:"):
-            # A streamed reply: the matching JSON-RPC message is the one with
-            # our id; request-scoped notifications ride the same stream.
-            for line in text.splitlines():
-                if not line.startswith("data:"):
-                    continue
-                try:
-                    message = json.loads(line[5:].strip())
-                except ValueError:
-                    continue
+            for message in self._sse_messages(text):
                 if message.get("id") == payload.get("id"):
+                    self._record_initialize_version(payload, message)
                     return message
             raise RuntimeError("no reply on the event stream")
-        return json.loads(text)
+        if not text.strip():
+            return None
+        reply = json.loads(text)
+        self._record_initialize_version(payload, reply)
+        return reply
+
+    def _record_initialize_version(self, payload, reply):
+        if payload.get("method") == "initialize":
+            result = reply.get("result") or {}
+            self.version = str(result.get("protocolVersion") or LEGACY_VERSION)
+
+    @staticmethod
+    def _sse_messages(text):
+        data = []
+        for line in text.splitlines():
+            if line.startswith("data:"):
+                data.append(line[5:].lstrip())
+            elif not line and data:
+                try:
+                    yield json.loads("\n".join(data))
+                except ValueError:
+                    pass
+                data = []
+
+    def _read_http_body(self, response, timeout):
+        length = response.headers.get("Content-Length")
+        if length is not None and int(length) > MAX_HTTP_RESPONSE:
+            raise RuntimeError("HTTP response exceeds 8 MiB limit")
+        deadline = time.monotonic() + timeout
+        body = bytearray()
+        while True:
+            chunk = self._read_http_chunk(response, deadline)
+            if not chunk:
+                return bytes(body)
+            body.extend(chunk)
+            if len(body) > MAX_HTTP_RESPONSE:
+                raise RuntimeError("HTTP response exceeds 8 MiB limit")
+
+    def _read_sse_response(self, response, payload, timeout):
+        """Read complete SSE events through the matching reply under one deadline."""
+        deadline = time.monotonic() + timeout
+        pending = bytearray()
+        event_data = []
+        total = 0
+        while True:
+            chunk = self._read_http_chunk(response, deadline, 4096)
+            if not chunk:
+                raise RuntimeError("no reply on the event stream")
+            total += len(chunk)
+            if total > MAX_HTTP_RESPONSE:
+                raise RuntimeError("HTTP response exceeds 8 MiB limit")
+            pending.extend(chunk)
+            while b"\n" in pending:
+                raw_line, _, rest = pending.partition(b"\n")
+                pending = bytearray(rest)
+                line = raw_line.decode("utf-8", "strict").rstrip("\r")
+                if line.startswith("data:"):
+                    event_data.append(line[5:].lstrip())
+                elif not line and event_data:
+                    try:
+                        message = json.loads("\n".join(event_data))
+                    except ValueError:
+                        event_data = []
+                        continue
+                    event_data = []
+                    if message.get("id") == payload.get("id"):
+                        self._record_initialize_version(payload, message)
+                        return message
+
+    @staticmethod
+    def _read_http_chunk(response, deadline, size=65536):
+        if response.fp is None:
+            return b""
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("HTTP response timed out")
+        try:
+            # Reset the socket timeout to the remaining total deadline before
+            # each read so many small chunks cannot extend the request forever.
+            sock = response.fp.raw._sock
+            sock.settimeout(remaining)
+            return response.read1(size)
+        except (socket.timeout, TimeoutError) as error:
+            raise TimeoutError("HTTP response timed out") from error
 
     def request(self, method, params, timeout, pad=True):
         self.next_id += 1
@@ -476,6 +572,8 @@ class HttpServer(BaseServer):
         if pad and self.stateless:
             payload["params"].setdefault("_meta", stateless_meta(self.version))
         reply = self.post(payload, timeout)
+        if not isinstance(reply, dict):
+            raise RuntimeError("server returned an invalid JSON-RPC response")
         if "error" in reply:
             raise RuntimeError(
                 reply["error"].get("message") or json.dumps(reply["error"])

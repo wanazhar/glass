@@ -51,6 +51,18 @@ pub enum Record {
         media_type: String,
         data: String,
     },
+    /// An append-only edit of future model context.
+    ///
+    /// The turn's raw records are untouched — transcript, export, and
+    /// accounting keep the original — but the projection drops the turn
+    /// (`hide`), swaps its user text (`replace`), or makes it visible again
+    /// (`restore`). The latest edit for a turn wins; this mirrors pi's
+    /// `context_edit` entries, minus the session tree.
+    ContextEdit {
+        turn: usize,
+        mode: String,
+        text: Option<String>,
+    },
     /// A compaction epoch.
     ///
     /// `tail_start` is the index into the log where the surviving tail begins.
@@ -99,6 +111,9 @@ impl Record {
             Record::Meta(t) => json!({ "k": "meta", "t": t }),
             Record::Image { media_type, data } => {
                 json!({ "k": "image", "mime": media_type, "data": data })
+            }
+            Record::ContextEdit { turn, mode, text } => {
+                json!({ "k": "edit", "turn": turn, "mode": mode, "text": text })
             }
             Record::Compacted {
                 kept,
@@ -150,6 +165,11 @@ impl Record {
             "image" => Record::Image {
                 media_type: s("mime")?,
                 data: s("data")?,
+            },
+            "edit" => Record::ContextEdit {
+                turn: v.get("turn").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+                mode: s("mode")?,
+                text: s("text"),
             },
             "compacted" => Record::Compacted {
                 kept: v.get("kept").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
@@ -229,6 +249,16 @@ impl Record {
                     media_type.rsplit('/').next().unwrap_or(media_type),
                     data.len() * 3 / 4 / 1024
                 ),
+            ),
+            Record::ContextEdit { turn, mode, text } => (
+                Role::Meta,
+                match (mode.as_str(), text) {
+                    ("replace", Some(text)) => {
+                        format!("[context edit: turn {turn} rewritten for future context — {text}]")
+                    }
+                    ("restore", _) => format!("[context edit: turn {turn} restored to context]"),
+                    _ => format!("[context edit: turn {turn} hidden from future context]"),
+                },
             ),
             Record::Compacted { kept, dropped, .. } => (
                 Role::Meta,
@@ -651,7 +681,122 @@ impl Session {
 
     /// The conversation as the model should see it.
     pub fn messages(&self) -> Vec<Message> {
-        crate::compact::project(&self.records)
+        match self.context_edits() {
+            // Turn numbers must match `/branch` and the transcript, which both
+            // count raw log turns; edits therefore apply to the raw records
+            // and compaction projects afterwards.
+            Some(edits) => crate::compact::project(&apply_edits(&self.read_history_records(), &edits)),
+            None => crate::compact::project(&self.records),
+        }
+    }
+
+    /// The latest edit per turn: `restore` removes the entry, so the last
+    /// word wins exactly like an append-only log implies.
+    fn context_edits(&self) -> Option<HashMap<usize, (String, Option<String>)>> {
+        let mut edits: HashMap<usize, (String, Option<String>)> = HashMap::new();
+        for record in &self.records {
+            if let Record::ContextEdit { turn, mode, text } = record {
+                if mode == "restore" {
+                    edits.remove(turn);
+                } else {
+                    edits.insert(*turn, (mode.clone(), text.clone()));
+                }
+            }
+        }
+        (!edits.is_empty()).then_some(edits)
+    }
+
+    /// `/forget`, `/unforget`, `/rewrite`: append-only context edits.
+    ///
+    /// They change only what the model sees next: raw history, the transcript,
+    /// exports, and accounting keep the original turn, and files on disk were
+    /// never affected either way.
+    pub fn context_command(&mut self, command: &str, args: &str) -> Result<String, String> {
+        let args = args.trim();
+        let turns = self.raw_turns().map_err(|e| e.to_string())?;
+        let parse_turn = |text: &str| -> Result<usize, String> {
+            let n: usize = text
+                .trim()
+                .parse()
+                .map_err(|_| format!("`{text}` is not a turn number (see /forget)"))?;
+            if n == 0 || n > turns {
+                return Err(format!("turn {n} does not exist; there are {turns}"));
+            }
+            Ok(n)
+        };
+        match command {
+            "forget" => {
+                if args.is_empty() {
+                    return Ok(self.context_edits_listing(turns));
+                }
+                let turn = parse_turn(args)?;
+                self.append(Record::ContextEdit {
+                    turn,
+                    mode: "hide".into(),
+                    text: None,
+                });
+                Ok(format!(
+                    "turn {turn} hidden from future context \
+                     (raw history and files unchanged; /unforget {turn} restores it)"
+                ))
+            }
+            "unforget" => {
+                let turn = parse_turn(args)?;
+                self.append(Record::ContextEdit {
+                    turn,
+                    mode: "restore".into(),
+                    text: None,
+                });
+                Ok(format!("turn {turn} restored to future context"))
+            }
+            "rewrite" => {
+                let (turn_text, replacement) = args
+                    .split_once(char::is_whitespace)
+                    .ok_or("usage: /rewrite <turn> <text>")?;
+                let turn = parse_turn(turn_text)?;
+                let replacement = replacement.trim();
+                if replacement.is_empty() {
+                    return Err("the replacement is empty".into());
+                }
+                if replacement.len() > 8_000 {
+                    return Err("the replacement is longer than 8 KB".into());
+                }
+                self.append(Record::ContextEdit {
+                    turn,
+                    mode: "replace".into(),
+                    text: Some(replacement.to_string()),
+                });
+                Ok(format!(
+                    "turn {turn}'s message rewritten for future context \
+                     (the transcript keeps the original)"
+                ))
+            }
+            _ => Err("usage: /forget [turn] | /unforget <turn> | /rewrite <turn> <text>".into()),
+        }
+    }
+
+    fn context_edits_listing(&self, turns: usize) -> String {
+        let records = self.read_history_records();
+        let edits = self.context_edits().unwrap_or_default();
+        let mut out = String::from("turns (edits change only future model context):\n");
+        let mut turn = 0usize;
+        for record in &records {
+            if let Record::User(text) = record {
+                turn += 1;
+                let state = match edits.get(&turn) {
+                    Some((mode, _)) if mode == "hide" => " · hidden",
+                    Some((mode, _)) if mode == "replace" => " · rewritten",
+                    _ => "",
+                };
+                let snippet: String = text.lines().next().unwrap_or("").chars().take(60).collect();
+                out.push_str(&format!("  {turn}. {snippet}{state}\n"));
+                if turn >= 40 && turn < turns {
+                    out.push_str(&format!("  … {} more turns\n", turns - turn));
+                    break;
+                }
+            }
+        }
+        out.trim_end().to_string()
     }
 
     /// Full append-only history for UI inspection, independent of model compaction.
@@ -684,6 +829,33 @@ impl Session {
             .filter_map(|value| Record::from_json(&value))
             .collect()
     }
+}
+
+/// Apply context edits to a record list: hidden turns vanish entirely,
+/// replaced turns keep their assistant/tool records with a substituted user
+/// message, and everything else passes through untouched.
+fn apply_edits(records: &[Record], edits: &HashMap<usize, (String, Option<String>)>) -> Vec<Record> {
+    let mut out = Vec::with_capacity(records.len());
+    let mut turn = 0usize;
+    for record in records {
+        if matches!(record, Record::User(_)) {
+            turn += 1;
+        }
+        match edits.get(&turn) {
+            Some((mode, _)) if mode == "hide" => continue,
+            Some((mode, text)) if mode == "replace" => {
+                if let Record::User(_) = record
+                    && let Some(text) = text
+                {
+                    out.push(Record::User(text.clone()));
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        out.push(record.clone());
+    }
+    out
 }
 
 fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
@@ -1480,6 +1652,82 @@ mod tests {
             0,
             "no backup for a line from a newer version"
         );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn context_edits_change_only_the_model_view() {
+        let dir = tmpdir("ctx-edit");
+        let mut s = Session::create(&dir).unwrap();
+        s.append(Record::User("first question".into()));
+        s.append(Record::Assistant("first answer".into()));
+        s.append(Record::User("second question".into()));
+        s.append(Record::Assistant("second answer".into()));
+
+        // Hide the first turn: the model view loses it, the log keeps it.
+        let note = s.context_command("forget", "1").unwrap();
+        assert!(note.contains("hidden"), "{note}");
+        let listing = s.context_command("forget", "").unwrap();
+        assert!(listing.contains("hidden"), "{listing}");
+        let text = format!("{:?}", s.messages());
+        assert!(
+            !text.contains("first question") && !text.contains("first answer"),
+            "{text}"
+        );
+        assert!(text.contains("second question"), "{text}");
+        assert!(
+            s.records
+                .iter()
+                .any(|r| matches!(r, Record::User(t) if t == "first question")),
+            "raw history keeps the original"
+        );
+
+        // Rewrite turn 2's user message only; the assistant reply stays.
+        s.context_command("rewrite", "2 REWRITTEN-SECOND").unwrap();
+        let text = format!("{:?}", s.messages());
+        assert!(text.contains("REWRITTEN-SECOND"), "{text}");
+        assert!(!text.contains("second question"), "{text}");
+        assert!(text.contains("second answer"), "{text}");
+
+        // Restore the first turn: the latest edit wins.
+        s.context_command("unforget", "1").unwrap();
+        let text = format!("{:?}", s.messages());
+        assert!(text.contains("first question"), "{text}");
+        assert!(text.contains("REWRITTEN-SECOND"), "{text}");
+
+        // Validation.
+        assert!(s.context_command("forget", "0").is_err());
+        assert!(s.context_command("forget", "99").is_err());
+        assert!(s.context_command("forget", "abc").is_err());
+        assert!(
+            s.context_command("rewrite", "1").is_err(),
+            "a rewrite needs replacement text"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hiding_a_turn_with_tools_drops_its_tool_records_too() {
+        let dir = tmpdir("ctx-edit-tools");
+        let mut s = Session::create(&dir).unwrap();
+        s.append(Record::User("run something".into()));
+        s.append(Record::ToolCall {
+            id: "c1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        });
+        s.append(Record::ToolResult {
+            name: "bash".into(),
+            call_id: "c1".into(),
+            body: "TOOL-OUTPUT-MARKER".into(),
+        });
+        s.append(Record::Assistant("done".into()));
+        s.append(Record::User("next".into()));
+        s.context_command("forget", "1").unwrap();
+        let text = format!("{:?}", s.messages());
+        assert!(!text.contains("TOOL-OUTPUT-MARKER"), "{text}");
+        assert!(!text.contains("run something"), "{text}");
+        assert!(text.contains("next"), "{text}");
         fs::remove_dir_all(&dir).ok();
     }
 

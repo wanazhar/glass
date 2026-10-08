@@ -42,6 +42,7 @@ mod session;
 mod signals;
 mod skills;
 mod sse;
+mod status;
 mod subagent;
 mod surface;
 mod tools;
@@ -124,6 +125,9 @@ In the prompt:
   /loop <interval> <prompt>  repeat a prompt while the session is idle (30m, 2h)
   /loop list|rm <n>|clear    inspect or manage loops
   /send <session-id> <msg>   message another running session (it runs a turn)
+  /forget [turn]     hide a turn from future context (raw history stays)
+  /unforget <turn>   restore a forgotten turn
+  /rewrite <turn> <text>  replace one turn's message for future context
   /branch [turn]    fork conversation through a turn; files stay as they are
   /checkpoint      save a workspace checkpoint
   /checkpoints     list saved checkpoints
@@ -398,6 +402,7 @@ fn run(args: &[String]) -> Result<(), String> {
         eprintln!("glass-core: {warning}");
     }
     session::configure_fsync(cfg.log_fsync == "always");
+    status::configure(&cfg.program_status);
     if workflows::headless_info(args, &cfg)? {
         return Ok(());
     }
@@ -1026,6 +1031,9 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
         ("budget", "[USD|off]", "Show or set spending limit", false),
         ("loop", "[interval] [prompt]", "Schedule a repeating prompt", false),
         ("send", "[session-id] [message]", "Message another running session", false),
+        ("forget", "[turn]", "Hide a turn from future model context", false),
+        ("unforget", "[turn]", "Restore a forgotten turn", false),
+        ("rewrite", "[turn] [text]", "Rewrite a turn for future context", false),
         ("branch", "[turn]", "Fork conversation history", false),
         ("checkpoint", "", "Save workspace baseline", false),
         ("checkpoints", "", "List saved checkpoints", false),
@@ -1303,14 +1311,17 @@ fn repl(
                     "Deny".to_string(),
                     "Not now".to_string(),
                 ];
-                match modal::choose(
+                crate::status::blocked("permission", "Approve project instructions?");
+                let decision = modal::choose(
                     &keys,
                     "Project instructions",
                     &format!(
                         "{files} will be added to the system prompt on every turn in this project."
                     ),
                     &actions,
-                ) {
+                );
+                crate::status::set("idle", "");
+                match decision {
                     Some(0) => {
                         if let Err(e) =
                             trust::remember(&cfg.workspace, &digest, trust::Decision::Allow)
@@ -1372,6 +1383,7 @@ fn repl(
         .is_some_and(|r| matches!(r,Record::Meta(t) if t.starts_with("error:")));
     // Messages from other sessions arrive through this mailbox while idle.
     let mut inbox_mailbox = crate::inbox::Mailbox::open(&session.id);
+    crate::status::set("idle", "");
     loop {
         let _ = painter.refresh_geometry(!palette.active());
         let (w, nh) = term_size();
@@ -1867,11 +1879,15 @@ fn repl(
         }
         if matches!(text.as_str(), "/login" | "/logout" | "/model") {
             warmer.begin_turn();
+            if text == "/login" {
+                crate::status::blocked("auth", "Connect a provider");
+            }
             let result = match text.as_str() {
                 "/login" => onboarding::login(&keys, &mut cfg),
                 "/logout" => onboarding::logout(&keys, &mut cfg),
                 _ => onboarding::model(&keys, &mut cfg),
             };
+            crate::status::set("idle", "");
             match result {
                 Ok(true) => {
                     *runtime_config.lock().unwrap() = cfg.clone();
@@ -1970,6 +1986,27 @@ fn repl(
                 Err(e) => ui_println!("\x1b[31m{e}\x1b[0m"),
             }
             continue;
+        }
+        {
+            let mut context_command: Option<(&str, String)> = None;
+            for cmd in ["/forget", "/unforget", "/rewrite"] {
+                if text == cmd {
+                    context_command = Some((cmd, String::new()));
+                    break;
+                }
+                if let Some(args) = text.strip_prefix(&format!("{cmd} ")) {
+                    context_command = Some((cmd, args.trim().to_string()));
+                    break;
+                }
+            }
+            if let Some((cmd, args)) = context_command {
+                let name = cmd.trim_start_matches('/');
+                match session.context_command(name, &args) {
+                    Ok(out) => ui_println!("{out}"),
+                    Err(e) => ui_println!("\x1b[31m{e}\x1b[0m"),
+                }
+                continue;
+            }
         }
         if text == "/budget" {
             let l = ledger.lock().unwrap();
@@ -2713,6 +2750,9 @@ fn repl(
                     }
                 };
             let mut last_error: Option<String> = None;
+            // Read before the agent borrows the session.
+            let status_title = crate::polish::title(&session);
+            crate::status::set("working", &status_title);
             let turn_instructions = polish::prompt_context(&session, &project_instructions);
             painter.seed_live(session.history_entries(), session.reasoning_history());
             let turn_started = std::time::Instant::now();
@@ -2774,6 +2814,21 @@ fn repl(
                 }
             }
             let turn_failed = outcome.is_err();
+            // The tab status reflects the turn's verdict: finished, failed
+            // (first line of the reason), or back to idle after a cancel.
+            crate::status::set(
+                match &outcome {
+                    Ok((_, Stop::Cancelled)) => "idle",
+                    Ok(_) => "done",
+                    Err(_) => "error",
+                },
+                &match &outcome {
+                    Ok(_) => crate::polish::title(&session),
+                    // One line only: the protocol forbids control characters
+                    // in decoded text.
+                    Err(e) => e.to_string().lines().next().unwrap_or("").to_string(),
+                },
+            );
             let mut turn_finished = false;
             match outcome {
                 Ok((out, stop)) => {

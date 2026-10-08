@@ -490,6 +490,36 @@ newer than it (`{"t":"attach","since":N}`), with an explicit reset when the
 cursor is stale, and prompt frames carry a `request_id` so a retry over a
 flaky link cannot submit the same prompt twice.
 
+### Context edits
+
+```text
+/forget 3                      # hide turn 3 from future model context
+/forget                        # list turns and their edit state
+/rewrite 3 condensed wording   # replace turn 3's user message for the model
+/unforget 3                    # restore it
+```
+
+Turns are append-only, so these commands delete nothing: each appends an
+edit that changes only what the model sees next. The transcript, exports,
+and the raw log keep the original, files on disk were never affected either
+way, and the latest edit for a turn wins — `/unforget` is just another edit.
+This is pi's `context_edit` idea without the session tree: the log is the
+escape hatch, not a rewind. `/context` lists active edits.
+
+### Program status
+
+glass-core tells the terminal what it is doing with the Program Status
+Protocol (OSC 7501): `working` for a turn, `done`/`error` when it ends,
+`idle` at the prompt and after a cancel, and `blocked` for the project-trust
+modal (`permission`) and `/login` (`auth`). Reports never contain prompts
+or model output — the message is the session title, or the first line of an
+error. `program_status = "off"` disables them; they are emitted only on an
+interactive terminal, so pipes, CI, and headless runs stay byte-clean.
+Unlike pi, there is no reply handshake: the input layer reads through
+crossterm and cannot observe the reply, and the spec explicitly permits
+reporting without detection (terminals that do not know the sequence ignore
+it).
+
 Tool activity shows running/completion state and elapsed time. `/details` searches
 recorded tool names, commands, and inline output. Its detail view can copy the
 exact original command or recorded inline output; it identifies spilled or

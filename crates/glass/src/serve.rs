@@ -99,10 +99,9 @@ impl Client {
     }
 }
 
-fn replay_entries(session: &Session) -> Vec<Value> {
-    let records = crate::export::raw_records(session);
-    let start = records.len().saturating_sub(REPLAY_ENTRIES);
-    records[start..]
+/// Transcript entries for the raw-record range `[start, end)`.
+fn entries_between(records: &[Record], start: usize, end: usize) -> Vec<Value> {
+    records[start.min(end)..end]
         .iter()
         .filter_map(|record| match record {
             Record::User(text) => Some(json!({"role": "user", "text": text})),
@@ -113,6 +112,26 @@ fn replay_entries(session: &Session) -> Vec<Value> {
             _ => None,
         })
         .collect()
+}
+
+/// Replay for an attach: the entries, the cursor the client should keep, and
+/// whether anything before the range was skipped.
+///
+/// The cursor is the raw-record count — a durable, append-only position, so
+/// a client that kept one receives only what is new (`since=…`) instead of a
+/// fixed window. Two cases force a reset: no cursor at all, or one ahead of
+/// the log (a client from another session lineage); a `since` older than the
+/// retained window is clamped and flagged so the client knows it missed
+/// entries rather than silently believing it is current.
+fn replay_from(session: &Session, since: Option<usize>) -> (Vec<Value>, usize, bool) {
+    let records = crate::export::raw_records(session);
+    let cursor = records.len();
+    let floor = cursor.saturating_sub(REPLAY_ENTRIES);
+    let (start, reset) = match since {
+        Some(n) if n <= cursor => (n.max(floor), n < floor),
+        _ => (floor, since.is_some()),
+    };
+    (entries_between(&records, start, cursor), cursor, reset)
 }
 
 /// The newest server socket in the data dir, for `attach` without `--socket`.
@@ -201,6 +220,10 @@ pub fn serve(
     let clients = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Client>::new()));
     let mut mailbox = crate::inbox::Mailbox::open(&session.id);
     let mut pending: VecDeque<Value> = VecDeque::new();
+    // Idempotent submissions: a retried prompt must not run twice. In-process
+    // only — a durable table would need a storage decision this protocol has
+    // not made yet.
+    let mut seen_requests: VecDeque<String> = VecDeque::new();
     let failure;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
 
@@ -248,6 +271,16 @@ pub fn serve(
                             }
                             Incoming::Closed => dead.push(i),
                             Incoming::Malformed | Incoming::Idle => {}
+                        }
+                    }
+                    // Removing the dead shifts every later index down; the
+                    // sender's index has to follow, or the reply goes to the
+                    // wrong client (or to nobody).
+                    if let Some((Some(sender), _)) = &found {
+                        let sender = *sender;
+                        let shift = dead.iter().filter(|d| **d < sender).count();
+                        if shift > 0 {
+                            found = found.map(|(_, message)| (Some(sender - shift), message));
                         }
                     }
                     for i in dead.into_iter().rev() {
@@ -298,8 +331,18 @@ pub fn serve(
 
         match message.get("t").and_then(Value::as_str) {
             Some("attach") => {
-                let entries = replay_entries(&session);
-                to_origin(json!({"t": "replay", "session": session.id, "entries": entries}));
+                let since = message
+                    .get("since")
+                    .and_then(Value::as_u64)
+                    .map(|n| n as usize);
+                let (entries, cursor, reset) = replay_from(&session, since);
+                to_origin(json!({
+                    "t": "replay",
+                    "session": session.id,
+                    "entries": entries,
+                    "cursor": cursor,
+                    "reset": reset,
+                }));
             }
             Some("prompt") => {
                 let text = message
@@ -311,6 +354,16 @@ pub fn serve(
                 if text.is_empty() {
                     to_origin(json!({"t": "error", "message": "empty prompt"}));
                     continue;
+                }
+                if let Some(id) = message.get("request_id").and_then(Value::as_str) {
+                    if seen_requests.iter().any(|seen| seen == id) {
+                        to_origin(json!({"t": "duplicate", "request_id": id}));
+                        continue;
+                    }
+                    if seen_requests.len() >= 64 {
+                        seen_requests.pop_front();
+                    }
+                    seen_requests.push_back(id.to_string());
                 }
                 session.append(Record::User(text));
                 let provider = match factory() {
@@ -333,6 +386,7 @@ pub fn serve(
                     )
                     .prime_extensions()
                     .with_prompt(cfg.system_prompt.clone(), None, instructions.clone())
+                    .with_live(cfg.live_flush_ms as u64)
                     .with_stream_factory(std::sync::Arc::clone(&factory))
                     .with_progress(move |progress| match progress {
                         Progress::Text(t) => {
@@ -436,6 +490,9 @@ pub fn attach(socket: Option<&str>) -> Result<(), String> {
         socket.display()
     );
     let mut shown_prompt = false;
+    // Every submission carries a request id so a retry over a flaky link
+    // cannot run the same prompt twice.
+    let mut request_seq: u64 = 0;
 
     let result = (|| -> Result<(), String> {
         loop {
@@ -473,7 +530,15 @@ pub fn attach(socket: Option<&str>) -> Result<(), String> {
                     _ => match editor.key(key) {
                         glass_tui::Edit::Submit(text) => {
                             let _ = write!(out, "\x1b[36m❯\x1b[0m {}\r\n", raw(&text));
-                            send(&mut stream, json!({"t": "prompt", "text": text}));
+                            request_seq += 1;
+                            send(
+                                &mut stream,
+                                json!({
+                                    "t": "prompt",
+                                    "text": text,
+                                    "request_id": format!("{}-{request_seq}", std::process::id()),
+                                }),
+                            );
                             shown_prompt = false;
                         }
                         glass_tui::Edit::Continue => {}
@@ -551,4 +616,66 @@ fn render(out: &mut std::io::Stdout, value: Value, shown: bool) -> Result<bool, 
 /// Newlines must be explicit carriage returns inside raw mode.
 fn raw(text: &str) -> String {
     text.replace('\r', "").replace('\n', "\r\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("gc-serve-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_cursor_sends_only_later_entries_and_a_stale_one_resets() {
+        let dir = scratch("cursor");
+        let mut s = Session::create(&dir).unwrap();
+        s.append(Record::User("one".into()));
+        s.append(Record::Assistant("two".into()));
+        s.append(Record::Bash {
+            command: "true".into(),
+            output: "ok".into(),
+            exit_code: Some(0),
+            truncated: false,
+            spill: None,
+        });
+
+        let (entries, cursor, reset) = replay_from(&s, None);
+        assert_eq!(cursor, 3);
+        assert!(!reset, "a first attach missed nothing");
+        assert_eq!(entries.len(), 3);
+
+        let (entries, cursor, reset) = replay_from(&s, Some(2));
+        assert_eq!(cursor, 3);
+        assert!(!reset);
+        assert_eq!(entries.len(), 1, "only the record after the cursor");
+        assert!(
+            entries[0]["text"].as_str().unwrap().contains("true"),
+            "the later entry is the bash record"
+        );
+
+        let (entries, _, reset) = replay_from(&s, Some(99));
+        assert!(reset, "a cursor from another lineage resets");
+        assert_eq!(entries.len(), 3, "and gets the full window");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_cursor_older_than_the_retained_window_is_flagged() {
+        let dir = scratch("cursor-floor");
+        let mut s = Session::create(&dir).unwrap();
+        s.append(Record::User("old".into()));
+        for i in 0..REPLAY_ENTRIES {
+            s.append(Record::Assistant(format!("answer {i}")));
+        }
+        let (entries, cursor, reset) = replay_from(&s, Some(0));
+        assert!(reset, "the client missed entries and must know");
+        assert_eq!(entries.len(), REPLAY_ENTRIES, "the window is retained");
+        assert_eq!(cursor, REPLAY_ENTRIES + 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

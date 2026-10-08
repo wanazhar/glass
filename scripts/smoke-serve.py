@@ -23,6 +23,7 @@ spec.loader.exec_module(f)
 
 class Endpoint(http.server.BaseHTTPRequestHandler):
     mode = 'text'
+    calls = 0
 
     def log_message(self, *_):
         pass
@@ -36,6 +37,7 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.rfile.read(int(self.headers['Content-Length']))
+        type(self).calls += 1
         frames = [{'choices': [{'delta': {'content': 'SERVER-HELLO'}}]}]
         data = [('data: ' + json.dumps(x) + '\n\n').encode() for x in frames]
         self.send_response(200)
@@ -54,12 +56,12 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
 
 
 class Client:
-    def __init__(self, path):
+    def __init__(self, path, since=None):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(20)
         self.sock.connect(str(path))
         self.buf = b''
-        self.send({'t': 'attach'})
+        self.send({'t': 'attach', **({'since': since} if since is not None else {})})
 
     def send(self, obj):
         self.sock.sendall((json.dumps(obj) + '\n').encode())
@@ -156,6 +158,18 @@ def main():
             assert done_two['stop'] == 'cancelled', done_two
             Endpoint.mode = 'text'
 
+            # Idempotent submissions: the same request_id runs once; a
+            # duplicate gets an explicit frame instead of a second turn.
+            before = Endpoint.calls
+            two.send({'t': 'prompt', 'text': 'dedupe me', 'request_id': 'req-1'})
+            _, done = two.until_done()
+            assert done['stop'] == 'finished', done
+            assert Endpoint.calls == before + 1, Endpoint.calls
+            two.send({'t': 'prompt', 'text': 'dedupe me', 'request_id': 'req-1'})
+            frame = two.next()
+            assert frame['t'] == 'duplicate' and frame['request_id'] == 'req-1', frame
+            assert Endpoint.calls == before + 1, 'a duplicate must not reach the model'
+
             # The server survives disconnects and a late attach still gets
             # the whole history.
             one.close()
@@ -164,9 +178,27 @@ def main():
             three = Client(sock)
             replay = three.next()
             assert len(replay['entries']) >= 3, replay
+            assert replay.get('reset') is False, replay
+            cursor_before = replay['cursor']
             three.send({'t': 'prompt', 'text': 'again'})
             text, done = three.until_done()
             assert text == 'SERVER-HELLO' and done['stop'] == 'finished', (text, done)
+
+            # A cursor makes reattach incremental: only what is new arrives.
+            incremental = Client(sock, since=cursor_before)
+            frame = incremental.next()
+            assert frame['t'] == 'replay' and frame['reset'] is False, frame
+            texts = [e['text'] for e in frame['entries']]
+            assert texts == ['again', 'SERVER-HELLO'], texts
+            incremental.close()
+
+            # A cursor from another lineage resets instead of pretending to
+            # be current.
+            stale = Client(sock, since=1_000_000)
+            frame = stale.next()
+            assert frame['t'] == 'replay' and frame['reset'] is True, frame
+            assert len(frame['entries']) >= 6, frame
+            stale.close()
             three.close()
 
             # The terminal client: attach in a PTY, submit one prompt. Screen
@@ -190,7 +222,8 @@ def main():
             server.shutdown()
     print(
         'PASS serve/attach: replay, prompt streaming, multi-client broadcast, '
-        'cancel from any client, survival across disconnects, PTY attach'
+        'cancel from any client, idempotent request_id, cursor-based reattach '
+        'with reset, survival across disconnects, PTY attach'
     )
 
 

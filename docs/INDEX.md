@@ -12,6 +12,7 @@
 - [Index](plan/tasks/index-001.md): outline source files before reading them; the repo-map token win, extension-first.
 - [LSP](plan/tasks/lsp-001.md): language-server diagnostics appended to tool results after edits.
 - [MCP v2](plan/tasks/mcp-v2-001.md): MCP 2026-07-28 negotiation plus Streamable HTTP transport.
+- [Durability](plan/tasks/durability-001.md): log repair, effect sandwich, partial sidecar, cursor attach, idempotent submissions.
 
 - [Subagent fan-out](plan/tasks/subagent-fanout-001.md): batched delegation, named agent definitions, worktree isolation, host-side parallelism.
 - [Turn notifications](plan/tasks/notifications-001.md): OSC 9 / bell attention for long or failed turns.

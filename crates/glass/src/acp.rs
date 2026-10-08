@@ -298,6 +298,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                         catalogue.clone(),
                         instructions,
                     )
+                    .with_live(conversation.cfg.live_flush_ms as u64)
                     .with_stream_factory(std::sync::Arc::clone(&factory))
                     .with_progress(|progress| match progress {
                         Progress::Text(t) => emit(json!({

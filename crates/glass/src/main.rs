@@ -27,6 +27,7 @@ mod modal;
 mod mods;
 mod notify;
 mod onboarding;
+mod partial;
 mod plugins;
 mod polish;
 mod pricing;
@@ -396,6 +397,7 @@ fn run(args: &[String]) -> Result<(), String> {
     for warning in sandbox::init(&cfg) {
         eprintln!("glass-core: {warning}");
     }
+    session::configure_fsync(cfg.log_fsync == "always");
     if workflows::headless_info(args, &cfg)? {
         return Ok(());
     }
@@ -911,6 +913,7 @@ fn headless(
     .with_prompt(cfg.system_prompt.clone(), catalogue, prompt_instructions)
     .with_limits(cfg.max_tokens, cfg.reasoning_budget, 24)
     .with_recovery(recovering)
+    .with_live(cfg.live_flush_ms as u64)
     .with_stream_factory(Arc::clone(&factory))
     .run_turn(|slot| {
         if signals::interrupted() {
@@ -2730,6 +2733,7 @@ fn repl(
                 )
                 .with_limits(cfg.max_tokens, cfg.reasoning_budget, 24)
                 .with_recovery(recovering)
+                .with_live(cfg.live_flush_ms as u64)
                 .with_stream_factory(Arc::clone(&factory))
                 .with_progress(|p| painter.handle(p))
                 .with_warmer(&warmer);

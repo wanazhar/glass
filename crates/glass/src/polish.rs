@@ -21,7 +21,14 @@ pub struct Metadata {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Attachment {
     pub path: PathBuf,
+    #[serde(default)]
     pub text: String,
+    /// `"image/png"` etc. for image attachments; `text` is empty and `data`
+    /// holds the base64 payload instead.
+    #[serde(default)]
+    pub media_type: Option<String>,
+    #[serde(default)]
+    pub data: Option<String>,
 }
 fn meta_path(s: &Session) -> PathBuf {
     s.path.with_extension("meta.json")
@@ -213,27 +220,91 @@ pub fn browser(
         }
     }
 }
-pub fn attach(s: &Session, workspace: &Path, path: &str) -> Result<(), String> {
+/// Magic-byte sniff for the four image formats every provider accepts.
+///
+/// No codec: the bytes are relayed as base64, never decoded, which is what
+/// keeps the "no image codecs" size argument intact.
+pub(crate) fn image_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some("image/png");
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    None
+}
+
+/// Sniff and attach `path`.
+///
+/// Images become session records (`Record::Image`) so every wire format
+/// replays them without special cases; text files keep the old snapshot
+/// behaviour. The `Session` is mutable because attaching an image is
+/// appending to the conversation, not just file-handling bookkeeping.
+pub fn attach(s: &mut Session, workspace: &Path, path: &str) -> Result<(), String> {
     let p = workspace
         .join(path)
         .canonicalize()
         .map_err(|e| e.to_string())?;
     let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
+    let mut m = metadata(s);
+    m.attachments.retain(|a| a.path != p);
+    if let Some(media) = image_media_type(&bytes) {
+        const IMAGE_MAX_BYTES: usize = 1_048_576;
+        const IMAGES_TOTAL_BYTES: usize = 2_097_152;
+        if bytes.len() > IMAGE_MAX_BYTES {
+            return Err("Image exceeds 1 MiB. Attach a smaller screenshot.".into());
+        }
+        let existing: usize = m
+            .attachments
+            .iter()
+            .filter_map(|a| a.data.as_ref().map(|d| d.len() * 3 / 4))
+            .sum();
+        if existing + bytes.len() > IMAGES_TOTAL_BYTES {
+            return Err("Image attachments exceed 2 MiB total. Remove one in /context.".into());
+        }
+        use base64::Engine;
+        let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let media = media.to_string();
+        m.attachments.push(Attachment {
+            path: p,
+            text: String::new(),
+            media_type: Some(media.clone()),
+            data: Some(data.clone()),
+        });
+        save(s, &m)?;
+        s.append(Record::Image {
+            media_type: media,
+            data,
+        });
+        return Ok(());
+    }
     if bytes.len() > 32_768 {
         return Err("File exceeds 32 KiB. Attach a smaller excerpt.".into());
     }
     let text = String::from_utf8(bytes).map_err(|_| "Only UTF-8 text files can be attached.")?;
-    let mut m = metadata(s);
-    m.attachments.retain(|a| a.path != p);
     if m.attachments.iter().map(|a| a.text.len()).sum::<usize>() + text.len() > 131_072 {
         return Err("Attachments exceed 128 KiB. Remove an attachment in /context.".into());
     }
-    m.attachments.push(Attachment { path: p, text });
+    m.attachments.push(Attachment {
+        path: p,
+        text,
+        media_type: None,
+        data: None,
+    });
     save(s, &m)
 }
 pub fn prompt_context(s: &Session, instructions: &Option<String>) -> Option<String> {
     let mut text = instructions.clone().unwrap_or_default();
-    for a in metadata(s).attachments {
+    let m = metadata(s);
+    // Images ride as conversation records, not prompt text; only text
+    // snapshots belong in the system prompt.
+    for a in m.attachments.iter().filter(|a| a.data.is_none()) {
         text.push_str(&format!(
             "\n<attached_file path={:?}>\n{}\n</attached_file>",
             a.path, a.text
@@ -263,12 +334,18 @@ pub fn context_report(
     let files = m
         .attachments
         .iter()
-        .map(|a| {
-            format!(
+        .map(|a| match &a.data {
+            Some(data) => format!(
+                "{} · {} · {} KB (sent as an image message)",
+                a.path.display(),
+                a.media_type.as_deref().unwrap_or("image"),
+                data.len() * 3 / 4 / 1024
+            ),
+            None => format!(
                 "{} · {} bytes (saved snapshot)",
                 a.path.display(),
                 a.text.len()
-            )
+            ),
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -321,7 +398,7 @@ pub fn context_report(
 }
 pub fn context(
     keys: &KeyReader,
-    s: &Session,
+    s: &mut Session,
     cfg: &config::Config,
     instructions: &Option<String>,
     catalogue: &Option<String>,
@@ -708,10 +785,10 @@ mod tests {
     #[test]
     fn attachment_is_a_snapshot_and_can_be_removed() {
         let root = scratch();
-        let s = Session::create(&root).unwrap();
+        let mut s = Session::create(&root).unwrap();
         bind(&s, &root).unwrap();
         std::fs::write(root.join("note"), "first version").unwrap();
-        attach(&s, &root, "note").unwrap();
+        attach(&mut s, &root, "note").unwrap();
         std::fs::write(root.join("note"), "second version").unwrap();
         assert!(prompt_context(&s, &None).unwrap().contains("first version"));
         let mut m = metadata(&s);
@@ -719,7 +796,51 @@ mod tests {
         save(&s, &m).unwrap();
         assert!(prompt_context(&s, &None).is_none());
         std::fs::write(root.join("huge"), vec![b'x'; 32769]).unwrap();
-        assert!(attach(&s, &root, "huge").is_err());
+        assert!(attach(&mut s, &root, "huge").is_err());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn image_attachments_become_records_without_reaching_the_prompt() {
+        let root = scratch();
+        let mut s = Session::create(&root).unwrap();
+        bind(&s, &root).unwrap();
+        // A PNG header is enough: the sniff reads magic bytes, never decodes.
+        let png = [
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0,
+        ];
+        std::fs::write(root.join("shot.png"), png).unwrap();
+        attach(&mut s, &root, "shot.png").unwrap();
+        assert!(
+            s.records.iter().any(
+                |r| matches!(r, Record::Image { media_type, .. } if media_type == "image/png")
+            ),
+            "image must be recorded so every wire format replays it"
+        );
+        assert!(prompt_context(&s, &None).is_none(), "not prompt text");
+        let entry = s
+            .records
+            .iter()
+            .find(|r| matches!(r, Record::Image { .. }))
+            .map(|r| r.to_entry())
+            .unwrap();
+        assert_eq!(entry.0, glass_tui::Role::User);
+        assert!(entry.1.starts_with("[image: png"), "{}", entry.1);
+
+        // Sniffing itself.
+        assert_eq!(image_media_type(b"GIF89a-anything"), Some("image/gif"));
+        assert_eq!(
+            image_media_type(&[0xFF, 0xD8, 0xFF, 0x00]),
+            Some("image/jpeg")
+        );
+        assert_eq!(image_media_type(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
+        assert_eq!(image_media_type(b"plain text"), None);
+
+        // A >1 MiB image is refused before anything is written.
+        let mut huge = vec![0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        huge.resize(1_100_000, 0);
+        std::fs::write(root.join("big.png"), huge).unwrap();
+        assert!(attach(&mut s, &root, "big.png").is_err());
         std::fs::remove_dir_all(root).ok();
     }
     #[test]

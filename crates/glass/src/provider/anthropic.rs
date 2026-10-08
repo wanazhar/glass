@@ -132,6 +132,19 @@ impl Anthropic {
                 Message::User(s) => {
                     out.push(json!({ "role": "user", "content": [{ "type": "text", "text": s }] }));
                 }
+                Message::Image { media_type, data } => {
+                    out.push(json!({
+                        "role": "user",
+                        "content": [{
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": data
+                            }
+                        }]
+                    }));
+                }
                 Message::Assistant(s) => {
                     out.push(
                         json!({ "role": "assistant", "content": [{ "type": "text", "text": s }] }),
@@ -515,6 +528,20 @@ impl<R: Read> Iterator for StreamEvents<R> {
 mod tests {
     use super::*;
     use glass_mod_api::Message;
+
+    #[test]
+    fn an_image_message_becomes_an_image_block() {
+        let messages = vec![Message::Image {
+            media_type: "image/png".into(),
+            data: "QUJD".into(),
+        }];
+        let built = Anthropic::build_messages(&messages);
+        let block = &built[0]["content"][0];
+        assert_eq!(block["type"], "image");
+        assert_eq!(block["source"]["type"], "base64");
+        assert_eq!(block["source"]["media_type"], "image/png");
+        assert_eq!(block["source"]["data"], "QUJD");
+    }
 
     #[test]
     fn window_detects_1m_variants() {

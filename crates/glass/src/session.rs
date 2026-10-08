@@ -44,6 +44,13 @@ pub enum Record {
     State(Vec<String>),
     System(String),
     Meta(String),
+    /// A user message carrying an image. `data` is base64; the harness never
+    /// decodes it, so no image codec is needed, and the same record replays
+    /// into every wire format.
+    Image {
+        media_type: String,
+        data: String,
+    },
     /// A compaction epoch.
     ///
     /// `tail_start` is the index into the log where the surviving tail begins.
@@ -90,6 +97,9 @@ impl Record {
             Record::State(items) => json!({ "k": "state", "items": items }),
             Record::System(t) => json!({ "k": "system", "t": t }),
             Record::Meta(t) => json!({ "k": "meta", "t": t }),
+            Record::Image { media_type, data } => {
+                json!({ "k": "image", "mime": media_type, "data": data })
+            }
             Record::Compacted {
                 kept,
                 dropped,
@@ -137,6 +147,10 @@ impl Record {
             ),
             "system" => Record::System(s("t")?),
             "meta" => Record::Meta(s("t")?),
+            "image" => Record::Image {
+                media_type: s("mime")?,
+                data: s("data")?,
+            },
             "compacted" => Record::Compacted {
                 kept: v.get("kept").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
                 dropped: v.get("dropped").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
@@ -172,6 +186,10 @@ impl Record {
                 body: body.clone(),
             }),
             Record::System(t) => Some(Message::System(t.clone())),
+            Record::Image { media_type, data } => Some(Message::Image {
+                media_type: media_type.clone(),
+                data: data.clone(),
+            }),
             // Reasoning, bash echo, state, meta and compaction markers are
             // display-only: replaying them wastes context without informing
             // the model, which already has the tool results that matter.
@@ -203,6 +221,15 @@ impl Record {
             ),
             Record::System(t) => (Role::System, t.clone()),
             Record::Meta(t) => (Role::Meta, t.clone()),
+            Record::Image { media_type, data } => (
+                Role::User,
+                // The blob never reaches the transcript; a placeholder does.
+                format!(
+                    "[image: {} · {} KB]",
+                    media_type.rsplit('/').next().unwrap_or(media_type),
+                    data.len() * 3 / 4 / 1024
+                ),
+            ),
             Record::Compacted { kept, dropped, .. } => (
                 Role::Meta,
                 format!("context compacted: dropped {dropped}, kept {kept}"),

@@ -102,6 +102,11 @@ pub fn run_task(
             &run_workspace,
         )
         .with_prompt(compose_prompt(task), None, None);
+        if task.read_only {
+            // The inspection tools only: a second-opinion review can look at
+            // everything and change nothing.
+            agent = agent.with_plan_mode(true);
+        }
         match agent.run_turn(|_| {}) {
             Ok((out, _)) => Ok(format!("{}{note}", out.text)),
             Err(e) => Err(e.to_string()),
@@ -115,6 +120,11 @@ pub fn run_task(
 /// An agent definition body replaces the default framing; the task text
 /// is always appended so a custom persona cannot lose the assignment.
 pub fn compose_prompt(task: &SubagentTask) -> String {
+    let tools = if task.read_only {
+        "the read-only inspection tools (list, read, search). You cannot modify anything"
+    } else {
+        "bash and state"
+    };
     if let Some(body) = task
         .prompt
         .as_deref()
@@ -123,7 +133,7 @@ pub fn compose_prompt(task: &SubagentTask) -> String {
     {
         return format!(
             "{body}\n\nDelegated task: {task}\n\n\
-             Do the task using bash and state. Do not ask the user questions. \
+             Do the task using {tools}. Do not ask the user questions. \
              Reply with a concise report of what you found or changed.",
             task = task.task
         );
@@ -131,7 +141,7 @@ pub fn compose_prompt(task: &SubagentTask) -> String {
     format!(
         "You are a subagent working on a delegated task.\n\n\
          Task: {task}\n\n\
-         Do the task using bash and state. Do not ask the user \
+         Do the task using {tools}. Do not ask the user \
          questions. When you are done, reply with a concise report \
          of what you found or changed.",
         task = task.task

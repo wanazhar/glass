@@ -34,27 +34,129 @@ PROTOCOL_VERSION = "2024-11-05"
 INIT_TIMEOUT = 8.0
 CALL_TIMEOUT = 120.0
 DEFER_AT = 40  # switch to search/call meta-tools above this many tools
+# Agent Plugins 1.0 schema identifiers (agent-plugins.org).
+PLUGIN_MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+
+
+def config_dir():
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(xdg, "glass-core")
 
 
 def config_path():
     override = os.environ.get("GC_MCP_CONFIG")
     if override:
         return override
-    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(xdg, "glass-core", "mcp.json")
+    return os.path.join(config_dir(), "mcp.json")
 
 
 def load_servers():
+    servers = {}
     try:
         with open(config_path(), "r", encoding="utf-8") as fh:
             data = json.load(fh)
+        configured = data.get("servers") if isinstance(data, dict) else None
+        if isinstance(configured, dict):
+            servers.update(configured)
     except FileNotFoundError:
-        return {}
+        pass
     except (OSError, ValueError) as error:
         print(f"mcp-bridge: cannot read {config_path()}: {error}", file=sys.stderr)
-        return {}
-    servers = data.get("servers") if isinstance(data, dict) else None
-    return servers if isinstance(servers, dict) else {}
+    for name, spec in plugin_servers().items():
+        servers.setdefault(name, spec)
+    return servers
+
+
+def expand(text, root, data):
+    """Single, non-recursive ${PLUGIN_ROOT}/${PLUGIN_DATA} replacement."""
+    return text.replace("${PLUGIN_ROOT}", root).replace("${PLUGIN_DATA}", data)
+
+
+def plugin_servers():
+    """MCP servers declared by installed Agent Plugins (`plugins/*/mcp.json`).
+
+    Implements the spec's loading rules: fixed location, schema match,
+    containment for `./command` and `cwd`, placeholder expansion in
+    args/env/cwd, and per-entry failure isolation (a bad server never hides
+    the others or any skills).
+    """
+    out = {}
+    plugins = os.path.join(config_dir(), "plugins")
+    if not os.path.isdir(plugins):
+        return out
+    for name in sorted(os.listdir(plugins)):
+        pdir = os.path.join(plugins, name)
+        if name == "data" or not os.path.isdir(pdir):
+            continue
+        mcp = os.path.join(pdir, "mcp.json")
+        if not os.path.isfile(mcp):
+            continue
+        try:
+            with open(mcp, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError) as error:
+            print(f"mcp-bridge: plugin {name}: mcp.json unreadable: {error}", file=sys.stderr)
+            continue
+        if not isinstance(data, dict) or data.get("$schema") != PLUGIN_MCP_SCHEMA:
+            print(
+                f"mcp-bridge: plugin {name}: unsupported mcp.json schema; MCP disabled for it",
+                file=sys.stderr,
+            )
+            continue
+        root = os.path.realpath(pdir)
+        pdata = os.path.join(plugins, "data", name)
+        try:
+            os.makedirs(pdata, exist_ok=True)
+        except OSError:
+            pass
+        for sname, spec in (data.get("mcpServers") or {}).items():
+            if not isinstance(spec, dict):
+                continue
+            kind = spec.get("type", "stdio")
+            if kind != "stdio":
+                print(
+                    f"mcp-bridge: plugin {name}/{sname}: transport `{kind}` not supported yet",
+                    file=sys.stderr,
+                )
+                continue
+            command = spec.get("command")
+            if not isinstance(command, str) or not command:
+                print(
+                    f"mcp-bridge: plugin {name}/{sname}: command must be one executable token",
+                    file=sys.stderr,
+                )
+                continue
+            if command.startswith("./"):
+                resolved = os.path.realpath(os.path.join(root, command))
+                if not resolved.startswith(root + os.sep):
+                    print(
+                        f"mcp-bridge: plugin {name}/{sname}: command escapes the plugin root; skipped",
+                        file=sys.stderr,
+                    )
+                    continue
+                command = resolved
+            args = [expand(str(a), root, pdata) for a in (spec.get("args") or [])]
+            env = {
+                str(k): expand(str(v), root, pdata)
+                for k, v in (spec.get("env") or {}).items()
+            }
+            cwd = root
+            configured_cwd = spec.get("cwd")
+            if configured_cwd:
+                candidate = os.path.realpath(expand(str(configured_cwd), root, pdata))
+                inside = candidate == root or candidate.startswith(root + os.sep)
+                in_data = candidate == pdata or candidate.startswith(pdata + os.sep)
+                if not (inside or in_data):
+                    print(
+                        f"mcp-bridge: plugin {name}/{sname}: cwd escapes the plugin root; skipped",
+                        file=sys.stderr,
+                    )
+                    continue
+                cwd = candidate
+            env["PLUGIN_ROOT"] = root
+            env["PLUGIN_DATA"] = pdata
+            out[f"{name}.{sname}"] = {"command": [command] + args, "env": env, "cwd": cwd}
+    return out
 
 
 class Server:
@@ -70,12 +172,15 @@ class Server:
         env = dict(os.environ)
         for key, value in (spec.get("env") or {}).items():
             env[str(key)] = os.path.expanduser(str(value))
+        # Plugin servers carry a resolved cwd (plugin root or ${PLUGIN_DATA}).
+        cwd = spec.get("cwd") if isinstance(spec.get("cwd"), str) else None
         self.proc = subprocess.Popen(
             [str(part) for part in command],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             env=env,
+            cwd=cwd,
         )
         self.buffer = b""
         self.next_id = 0

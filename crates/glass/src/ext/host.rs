@@ -244,9 +244,10 @@ impl Extension {
                 continue;
             }
             if is_nested_call(&v) {
-                // No bridge means this extension tried to use a capability
-                // the caller did not grant it, which is a refusal, not a retry.
-                let bridge = host_tools.as_deref_mut()?;
+                // A refusal is an answer: when the caller did not grant a
+                // bridge, reply with an error body instead of dropping the
+                // request — silence would just stall the extension until its
+                // deadline expires, with no way to tell why.
                 let name = v
                     .get("name")
                     .and_then(|n| n.as_str())
@@ -257,7 +258,12 @@ impl Extension {
                     .and_then(|a| a.as_str())
                     .unwrap_or("{}")
                     .to_string();
-                let out = bridge(&name, &args);
+                let out = match host_tools.as_deref_mut() {
+                    Some(bridge) => bridge(&name, &args),
+                    None => format!(
+                        "error: nested tool call `{name}` refused: this hook has no host-tool bridge"
+                    ),
+                };
 
                 let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
                 self.reply(protocol::nested_call_result_json(&call_id, &out))?;
@@ -336,13 +342,23 @@ impl Extension {
 
     /// Offer a tool result for rewriting. Returns `Some` only if the extension
     /// actually changed something.
-    pub fn rewrite_tool_result(&mut self, call_id: &str, name: &str, body: &str) -> Option<String> {
+    ///
+    /// `host_tools` is the bridge the extension may use while it rewrites —
+    /// the auto-verify extension runs the project's verifier from inside this
+    /// hook, so the bridge is not optional plumbing here.
+    pub fn rewrite_tool_result(
+        &mut self,
+        call_id: &str,
+        name: &str,
+        body: &str,
+        host_tools: &mut HostToolBridge<'_>,
+    ) -> Option<String> {
         let req = Request::ToolResult {
             call_id: call_id.to_string(),
             name: name.to_string(),
             body: body.to_string(),
         };
-        let v = self.request(&req, REQUEST_TIMEOUT_MS, None)?;
+        let v = self.request(&req, REQUEST_TIMEOUT_MS, Some(host_tools))?;
         let new = v.get("body")?.as_str()?;
         (!new.is_empty() && new != body).then(|| new.to_string())
     }

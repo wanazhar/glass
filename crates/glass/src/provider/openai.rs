@@ -89,6 +89,13 @@ fn build_messages(system: &str, messages: &[glass_mod_api::Message]) -> Vec<Valu
     for m in messages {
         match m {
             Message::User(s) => out.push(json!({ "role": "user", "content": s })),
+            Message::Image { media_type, data } => out.push(json!({
+                "role": "user",
+                "content": [{
+                    "type": "image_url",
+                    "image_url": { "url": format!("data:{media_type};base64,{data}") }
+                }]
+            })),
             Message::Assistant(s) => out.push(json!({ "role": "assistant", "content": s })),
             Message::ToolCall {
                 id,
@@ -135,6 +142,13 @@ fn responses_input(messages: &[glass_mod_api::Message]) -> Vec<Value> {
                 json!({"type":"function_call_output", "call_id":call_id, "output":body})
             }
             Message::User(s) => json!({"role":"user", "content":s}),
+            Message::Image { media_type, data } => json!({
+                "role": "user",
+                "content": [{
+                    "type": "input_image",
+                    "image_url": format!("data:{media_type};base64,{data}")
+                }]
+            }),
             Message::Assistant(s) => json!({"role":"assistant", "content":s}),
             Message::System(s) => json!({"role":"developer", "content":s}),
         })
@@ -623,6 +637,26 @@ impl<R: Read> Iterator for StreamEvents<R> {
 mod tests {
     use super::*;
     use glass_mod_api::Message;
+
+    #[test]
+    fn an_image_message_becomes_a_data_uri_in_both_flavours() {
+        let messages = vec![Message::Image {
+            media_type: "image/png".into(),
+            data: "QUJD".into(),
+        }];
+        let chat = build_messages("sys", &messages);
+        assert_eq!(chat[1]["content"][0]["type"], "image_url");
+        assert_eq!(
+            chat[1]["content"][0]["image_url"]["url"],
+            "data:image/png;base64,QUJD"
+        );
+        let responses = responses_input(&messages);
+        assert_eq!(responses[0]["content"][0]["type"], "input_image");
+        assert_eq!(
+            responses[0]["content"][0]["image_url"],
+            "data:image/png;base64,QUJD"
+        );
+    }
 
     #[test]
     fn window_by_family() {

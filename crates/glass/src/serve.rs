@@ -17,9 +17,12 @@
 //! `{"t":"tool_end","summary":…}` · `{"t":"done","stop":…,"text":…}` ·
 //! `{"t":"error","message":…}`
 //!
-//! v1 limits, documented in the README: one attached client at a time, no
-//! remote modals (slash commands stay local to the interactive session), and
-//! loopback-only by construction (a Unix socket).
+//! Up to four clients attach at once: each attach gets its own replay,
+//! live output broadcasts to all of them, and a closed terminal is dropped
+//! rather than stalling the session. Slash commands stay local to the
+//! interactive session. The 0600 Unix socket is the auth boundary — same
+//! user, same machine — which is why there is no token scheme to get wrong.
+//! Loopback-only by construction.
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -34,6 +37,8 @@ use crate::ext;
 use crate::session::{Record, Session};
 
 const REPLAY_ENTRIES: usize = 200;
+/// Concurrent attaches per served session.
+const MAX_CLIENTS: usize = 4;
 
 fn send(stream: &mut UnixStream, value: Value) {
     if let Ok(mut line) = serde_json::to_string(&value) {
@@ -41,6 +46,22 @@ fn send(stream: &mut UnixStream, value: Value) {
         let _ = stream.write_all(line.as_bytes());
         let _ = stream.flush();
     }
+}
+
+/// Send to every attached client, dropping any whose pipe stopped taking
+/// bytes — a closed terminal must never stall the session.
+fn broadcast(clients: &std::rc::Rc<std::cell::RefCell<Vec<Client>>>, value: Value) {
+    let Ok(mut line) = serde_json::to_string(&value) else {
+        return;
+    };
+    line.push('\n');
+    let mut slots = clients.borrow_mut();
+    slots.retain_mut(|c| {
+        c.stream
+            .write_all(line.as_bytes())
+            .and_then(|_| c.stream.flush())
+            .is_ok()
+    });
 }
 
 enum Incoming {
@@ -177,7 +198,8 @@ pub fn serve(
         false,
     );
 
-    let client = std::rc::Rc::new(std::cell::RefCell::new(None::<Client>));
+    let clients = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Client>::new()));
+    let mut mailbox = crate::inbox::Mailbox::open(&session.id);
     let mut pending: VecDeque<Value> = VecDeque::new();
     let failure;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
@@ -187,12 +209,17 @@ pub fn serve(
             failure = None;
             break 'serve;
         }
-        // A new connection replaces the previous client, attached or not:
-        // reattaching from another terminal is the whole point of the socket.
+        // Attaches accumulate (up to a cap): mirroring one session into two
+        // terminals is the point, and a new attach no longer evicts the old
+        // one. Same-user access to a 0600 socket is the whole auth story.
         match listener.accept() {
             Ok((stream, _)) => {
                 let _ = stream.set_nonblocking(true);
-                *client.borrow_mut() = Some(Client {
+                let mut slots = clients.borrow_mut();
+                if slots.len() >= MAX_CLIENTS {
+                    slots.remove(0);
+                }
+                slots.push(Client {
                     stream,
                     buf: Vec::new(),
                 });
@@ -203,44 +230,76 @@ pub fn serve(
                 break 'serve;
             }
         }
-        if client.borrow().is_none() {
-            std::thread::sleep(std::time::Duration::from_millis(30));
-            continue;
-        }
 
-        let message = match pending.pop_front() {
-            Some(message) => Some(message),
+        // One message per iteration, with the client it came from (None for
+        // messages from the mid-turn queue or produced by a loop).
+        let message: Option<(Option<usize>, Value)> = match pending.pop_front() {
+            Some(message) => Some((None, message)),
             None => {
-                let incoming = client
-                    .borrow_mut()
-                    .as_mut()
-                    .map(Client::try_incoming)
-                    .unwrap_or(Incoming::Idle);
-                match incoming {
-                    Incoming::Message(message) => Some(message),
-                    Incoming::Idle => {
-                        std::thread::sleep(std::time::Duration::from_millis(30));
-                        continue;
+                let mut found = None;
+                let mut dead: Vec<usize> = Vec::new();
+                {
+                    let mut slots = clients.borrow_mut();
+                    for (i, c) in slots.iter_mut().enumerate() {
+                        match c.try_incoming() {
+                            Incoming::Message(message) => {
+                                found = Some((Some(i), message));
+                                break;
+                            }
+                            Incoming::Closed => dead.push(i),
+                            Incoming::Malformed | Incoming::Idle => {}
+                        }
                     }
-                    Incoming::Malformed => continue,
-                    Incoming::Closed => {
-                        *client.borrow_mut() = None;
-                        continue;
+                    for i in dead.into_iter().rev() {
+                        slots.remove(i);
+                    }
+                }
+                match found {
+                    Some(found) => Some(found),
+                    None => {
+                        // Messages from other sessions first, then due loops:
+                        // both become prompts when nobody is talking, and
+                        // while a turn runs this branch is unreachable, so
+                        // neither stacks behind live work. This runs even
+                        // with no client attached: that is the autonomy story.
+                        if let Some((from, text)) = mailbox.next() {
+                            broadcast(
+                                &clients,
+                                json!({"t": "text", "delta": format!("\n\x1b[90m[inbox from {from}]\x1b[0m {text}\n")}),
+                            );
+                            session.append(Record::System(format!(
+                                "[inbox] message from session {from}"
+                            )));
+                            Some((None, json!({"t": "prompt", "text": text})))
+                        } else if let Some(prompt) = crate::loops::due(&session) {
+                            broadcast(
+                                &clients,
+                                json!({"t": "text", "delta": format!("\n\x1b[90m[loop]\x1b[0m {prompt}\n")}),
+                            );
+                            Some((None, json!({"t": "prompt", "text": prompt})))
+                        } else {
+                            std::thread::sleep(std::time::Duration::from_millis(30));
+                            continue;
+                        }
                     }
                 }
             }
         };
-        let Some(message) = message else { continue };
+        let Some((origin, message)) = message else { continue };
+
+        // Send to the client that asked, if it is still attached.
+        let to_origin = |value: Value| {
+            if let Some(i) = origin
+                && let Some(c) = clients.borrow_mut().get_mut(i)
+            {
+                send(&mut c.stream, value);
+            }
+        };
 
         match message.get("t").and_then(Value::as_str) {
             Some("attach") => {
                 let entries = replay_entries(&session);
-                if let Some(c) = client.borrow_mut().as_mut() {
-                    send(
-                        &mut c.stream,
-                        json!({"t": "replay", "session": session.id, "entries": entries}),
-                    );
-                }
+                to_origin(json!({"t": "replay", "session": session.id, "entries": entries}));
             }
             Some("prompt") => {
                 let text = message
@@ -250,22 +309,18 @@ pub fn serve(
                     .trim()
                     .to_string();
                 if text.is_empty() {
-                    if let Some(c) = client.borrow_mut().as_mut() {
-                        send(&mut c.stream, json!({"t": "error", "message": "empty prompt"}));
-                    }
+                    to_origin(json!({"t": "error", "message": "empty prompt"}));
                     continue;
                 }
                 session.append(Record::User(text));
                 let provider = match factory() {
                     Ok(p) => p,
                     Err(e) => {
-                        if let Some(c) = client.borrow_mut().as_mut() {
-                            send(&mut c.stream, json!({"t": "error", "message": e}));
-                        }
+                        to_origin(json!({"t": "error", "message": e}));
                         continue;
                     }
                 };
-                let outer = std::rc::Rc::clone(&client);
+                let outer = std::rc::Rc::clone(&clients);
                 let mut queued: Vec<Value> = Vec::new();
                 let outcome = {
                     let mut agent = Agent::new(
@@ -279,46 +334,47 @@ pub fn serve(
                     .prime_extensions()
                     .with_prompt(cfg.system_prompt.clone(), None, instructions.clone())
                     .with_stream_factory(std::sync::Arc::clone(&factory))
-                    .with_progress(move |progress| {
-                        let mut slot = outer.borrow_mut();
-                        let Some(c) = slot.as_mut() else { return };
-                        match progress {
-                            Progress::Text(t) => {
-                                send(&mut c.stream, json!({"t": "text", "delta": t}))
-                            }
-                            Progress::ToolStart { name, command } => send(
-                                &mut c.stream,
-                                json!({"t": "tool", "name": name, "command": command}),
-                            ),
-                            Progress::ToolEnd { summary, .. } => send(
-                                &mut c.stream,
-                                json!({"t": "tool_end", "summary": summary}),
-                            ),
-                            _ => {}
+                    .with_progress(move |progress| match progress {
+                        Progress::Text(t) => {
+                            broadcast(&outer, json!({"t": "text", "delta": t}))
                         }
+                        Progress::ToolStart { name, command } => broadcast(
+                            &outer,
+                            json!({"t": "tool", "name": name, "command": command}),
+                        ),
+                        Progress::ToolEnd { summary, .. } => broadcast(
+                            &outer,
+                            json!({"t": "tool_end", "summary": summary}),
+                        ),
+                        _ => {}
                     });
-                    let outer = std::rc::Rc::clone(&client);
+                    let outer = std::rc::Rc::clone(&clients);
                     agent.run_turn(|steer| {
                         if crate::signals::interrupted() {
                             *steer = Some(String::new());
                         }
-                        let mut slot = outer.borrow_mut();
-                        let Some(c) = slot.as_mut() else { return };
-                        loop {
-                            match c.try_incoming() {
-                                Incoming::Message(message) => match message
-                                    .get("t")
-                                    .and_then(Value::as_str)
-                                {
-                                    Some("cancel") => *steer = Some(String::new()),
-                                    _ => queued.push(message),
-                                },
-                                Incoming::Malformed | Incoming::Idle => break,
-                                Incoming::Closed => {
-                                    *slot = None;
-                                    break;
+                        let mut slots = outer.borrow_mut();
+                        let mut dead: Vec<usize> = Vec::new();
+                        for (i, c) in slots.iter_mut().enumerate() {
+                            loop {
+                                match c.try_incoming() {
+                                    Incoming::Message(message) => match message
+                                        .get("t")
+                                        .and_then(Value::as_str)
+                                    {
+                                        Some("cancel") => *steer = Some(String::new()),
+                                        _ => queued.push(message),
+                                    },
+                                    Incoming::Malformed | Incoming::Idle => break,
+                                    Incoming::Closed => {
+                                        dead.push(i);
+                                        break;
+                                    }
                                 }
                             }
+                        }
+                        for i in dead.into_iter().rev() {
+                            slots.remove(i);
                         }
                     })
                 };
@@ -326,12 +382,10 @@ pub fn serve(
                 let (stop, text) = match outcome {
                     Ok((out, stop)) => (stop, out.text),
                     Err(e) => {
-                        if let Some(c) = client.borrow_mut().as_mut() {
-                            send(
-                                &mut c.stream,
-                                json!({"t": "error", "message": format!("turn failed: {e}")}),
-                            );
-                        }
+                        broadcast(
+                            &clients,
+                            json!({"t": "error", "message": format!("turn failed: {e}")}),
+                        );
                         continue;
                     }
                 };
@@ -341,18 +395,13 @@ pub fn serve(
                     Stop::Steered => "steered",
                     Stop::ToolBudget => "tool_budget",
                 };
-                if let Some(c) = client.borrow_mut().as_mut() {
-                    send(&mut c.stream, json!({"t": "done", "stop": stop, "text": text}));
-                }
+                broadcast(&clients, json!({"t": "done", "stop": stop, "text": text}));
             }
             Some("cancel") => { /* no turn running: nothing to cancel */ }
             other => {
-                if let Some(c) = client.borrow_mut().as_mut() {
-                    send(
-                        &mut c.stream,
-                        json!({"t": "error", "message": format!("unknown message {:?}", other)}),
-                    );
-                }
+                to_origin(
+                    json!({"t": "error", "message": format!("unknown message {:?}", other)}),
+                );
             }
         }
     }

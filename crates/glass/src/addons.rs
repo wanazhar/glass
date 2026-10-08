@@ -68,6 +68,30 @@ pub const BUNDLES: &[Bundle] = &[
         source: include_str!("../../../extensions/mcp-bridge/mcp_bridge.py"),
         access: "Spawns configured MCP servers and calls their tools; reads ~/.config/glass-core/mcp.json.",
     },
+    Bundle {
+        name: "verify",
+        description: "Run the project verifier after writes",
+        interpreter: "python3",
+        file: "verify.py",
+        source: include_str!("../../../extensions/verify/verify.py"),
+        access: "Runs the configured or detected verify command through the host's bash tool after file writes.",
+    },
+    Bundle {
+        name: "memory",
+        description: "Durable project memory across sessions",
+        interpreter: "python3",
+        file: "memory.py",
+        source: include_str!("../../../extensions/memory/memory.py"),
+        access: "Reads and writes ~/.config/glass-core/memory/<project>/; injects the index into the system prompt.",
+    },
+    Bundle {
+        name: "oracle",
+        description: "Second opinion from an alternate model",
+        interpreter: "python3",
+        file: "oracle.py",
+        source: include_str!("../../../extensions/oracle/oracle.py"),
+        access: "Sends the current diff to a configured alternate model on your account, read-only; uses model quota.",
+    },
 ];
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]

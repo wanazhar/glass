@@ -364,6 +364,10 @@ pub struct SubagentTask {
     pub model: Option<String>,
     /// Run the task in a detached git worktree instead of the workspace.
     pub worktree: bool,
+    /// Run with the read-only inspection tools only — no shell, no writes.
+    /// Second-opinion flows (an oracle reviewing a diff) use this so a
+    /// critique can never mutate the tree it is judging.
+    pub read_only: bool,
 }
 
 /// Parse the `tasks` array of a batched subagent request.
@@ -403,6 +407,7 @@ pub fn parse_subagent_tasks(v: &Value) -> Result<Vec<SubagentTask>, String> {
                 .map(str::to_string)
                 .filter(|s| !s.trim().is_empty()),
             worktree: t.get("worktree").and_then(Value::as_bool).unwrap_or(false),
+            read_only: t.get("read_only").and_then(Value::as_bool).unwrap_or(false),
         });
     }
     Ok(out)
@@ -653,6 +658,14 @@ mod tests {
         assert!(parse_subagent_tasks(&empty).is_err());
         let no_array = json!({ "task": "legacy shape" });
         assert!(parse_subagent_tasks(&no_array).is_err());
+    }
+
+    #[test]
+    fn a_task_can_request_read_only_execution() {
+        let v = json!({ "tasks": [{ "task": "review the diff", "read_only": true }] });
+        assert!(parse_subagent_tasks(&v).unwrap()[0].read_only);
+        let v = json!({ "tasks": [{ "task": "fix the bug" }] });
+        assert!(!parse_subagent_tasks(&v).unwrap()[0].read_only);
     }
 
     #[test]

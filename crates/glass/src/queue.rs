@@ -80,8 +80,6 @@ impl Queue {
         }
         out
     }
-
-
 }
 
 /// Classify a submitted line.
@@ -136,14 +134,26 @@ mod tests {
 
     #[test]
     fn enter_steers_only_while_running() {
-        assert_eq!(classify("fix", false, true), Some(Intent::Steer("fix".into())));
-        assert_eq!(classify("fix", false, false), Some(Intent::FollowUp("fix".into())));
+        assert_eq!(
+            classify("fix", false, true),
+            Some(Intent::Steer("fix".into()))
+        );
+        assert_eq!(
+            classify("fix", false, false),
+            Some(Intent::FollowUp("fix".into()))
+        );
     }
 
     #[test]
     fn alt_enter_always_queues() {
-        assert_eq!(classify("then docs", true, true), Some(Intent::FollowUp("then docs".into())));
-        assert_eq!(classify("then docs", true, false), Some(Intent::FollowUp("then docs".into())));
+        assert_eq!(
+            classify("then docs", true, true),
+            Some(Intent::FollowUp("then docs".into()))
+        );
+        assert_eq!(
+            classify("then docs", true, false),
+            Some(Intent::FollowUp("then docs".into()))
+        );
     }
 
     #[test]
@@ -154,7 +164,10 @@ mod tests {
 
     #[test]
     fn text_is_trimmed() {
-        assert_eq!(classify("  hi  ", false, true), Some(Intent::Steer("hi".into())));
+        assert_eq!(
+            classify("  hi  ", false, true),
+            Some(Intent::Steer("hi".into()))
+        );
     }
 
     #[test]

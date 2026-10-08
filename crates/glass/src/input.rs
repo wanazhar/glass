@@ -10,9 +10,9 @@
 //! the whole reason this works.
 
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use glass_tui::crossterm::event::Event;
 
@@ -46,7 +46,8 @@ impl KeyReader {
                             }
                         }
                         Err(e) => {
-                            let _ = writeln!(std::io::stderr(), "\r\x1b[31minput error: {e}\x1b[0m");
+                            let _ =
+                                writeln!(std::io::stderr(), "\r\x1b[31minput error: {e}\x1b[0m");
                             return;
                         }
                     },
@@ -56,7 +57,11 @@ impl KeyReader {
             }
         });
 
-        Self { rx, stop, _handle: Some(handle) }
+        Self {
+            rx,
+            stop,
+            _handle: Some(handle),
+        }
     }
 
     /// Take a pending event without blocking.
@@ -65,6 +70,21 @@ impl KeyReader {
             Ok(ev) => Some(ev),
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => None,
+        }
+    }
+
+    pub fn next_timeout(&self, timeout: std::time::Duration) -> Option<Event> {
+        self.rx.recv_timeout(timeout).ok()
+    }
+
+    pub fn wait_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<Option<Event>, std::sync::mpsc::RecvTimeoutError> {
+        match self.rx.recv_timeout(timeout) {
+            Ok(event) => Ok(Some(event)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(error) => Err(error),
         }
     }
 
@@ -97,17 +117,27 @@ mod tests {
     #[test]
     fn try_next_is_empty_when_nothing_pending() {
         let (_tx, rx): (Sender<Event>, Receiver<Event>) = channel();
-        let reader = KeyReader { rx, stop: Arc::new(AtomicBool::new(false)), _handle: None };
+        let reader = KeyReader {
+            rx,
+            stop: Arc::new(AtomicBool::new(false)),
+            _handle: None,
+        };
         assert!(reader.try_next().is_none());
     }
 
     #[test]
     fn try_next_drains_a_queued_event() {
         let (tx, rx): (Sender<Event>, Receiver<Event>) = channel();
-        let reader = KeyReader { rx, stop: Arc::new(AtomicBool::new(false)), _handle: None };
+        let reader = KeyReader {
+            rx,
+            stop: Arc::new(AtomicBool::new(false)),
+            _handle: None,
+        };
         tx.send(Event::FocusGained).unwrap();
         assert!(reader.try_next().is_some());
-        assert!(reader.try_next().is_none(), "must not redeliver the same event");
+        assert!(
+            reader.try_next().is_none(),
+            "must not redeliver the same event"
+        );
     }
-
 }

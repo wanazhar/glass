@@ -11,8 +11,17 @@ use std::collections::BTreeMap;
 pub enum Message {
     User(String),
     Assistant(String),
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    },
     /// Result of a tool call, keyed by the tool call id that requested it.
-    ToolResult { call_id: String, name: String, body: String },
+    ToolResult {
+        call_id: String,
+        name: String,
+        body: String,
+    },
     /// Injected by the harness, not the model. Never returned as model output.
     System(String),
 }
@@ -21,7 +30,7 @@ impl Message {
     pub fn role(&self) -> &'static str {
         match self {
             Message::User(_) => "user",
-            Message::Assistant(_) => "assistant",
+            Message::Assistant(_) | Message::ToolCall { .. } => "assistant",
             Message::ToolResult { .. } => "user",
             Message::System(_) => "system",
         }
@@ -31,6 +40,7 @@ impl Message {
         match self {
             Message::User(s) | Message::Assistant(s) | Message::System(s) => s,
             Message::ToolResult { body, .. } => body,
+            Message::ToolCall { arguments, .. } => arguments,
         }
     }
 }
@@ -150,11 +160,17 @@ pub struct ToolOutput {
 
 impl ToolOutput {
     pub fn new(body: impl Into<String>) -> Self {
-        Self { body: body.into(), rewritten: false }
+        Self {
+            body: body.into(),
+            rewritten: false,
+        }
     }
 
     pub fn rewritten(body: impl Into<String>) -> Self {
-        Self { body: body.into(), rewritten: true }
+        Self {
+            body: body.into(),
+            rewritten: true,
+        }
     }
 }
 
@@ -267,7 +283,10 @@ pub struct ModSlot {
 
 impl ModSlot {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), enabled: true }
+        Self {
+            name: name.into(),
+            enabled: true,
+        }
     }
 }
 
@@ -286,12 +305,21 @@ mod tests {
     use super::*;
 
     fn call(args: &str) -> ToolCall {
-        ToolCall { id: "t1".into(), name: "bash".into(), arguments: args.to_string() }
+        ToolCall {
+            id: "t1".into(),
+            name: "bash".into(),
+            arguments: args.to_string(),
+        }
     }
 
     #[test]
     fn reads_plain_string() {
-        assert_eq!(call(r#"{"command":"ls -la"}"#).arg_str("command").as_deref(), Some("ls -la"));
+        assert_eq!(
+            call(r#"{"command":"ls -la"}"#)
+                .arg_str("command")
+                .as_deref(),
+            Some("ls -la")
+        );
     }
 
     #[test]
@@ -302,7 +330,9 @@ mod tests {
 
     #[test]
     fn reads_object_argument() {
-        let v = call(r#"{"opts":{"deep":{"k":1}}}"#).arg_raw("opts").unwrap();
+        let v = call(r#"{"opts":{"deep":{"k":1}}}"#)
+            .arg_raw("opts")
+            .unwrap();
         assert_eq!(v, r#"{"deep":{"k":1}}"#);
     }
 
@@ -318,13 +348,17 @@ mod tests {
 
     #[test]
     fn respects_escaped_quotes() {
-        let v = call(r#"{"command":"echo \"hi\"","x":1}"#).arg_raw("command").unwrap();
+        let v = call(r#"{"command":"echo \"hi\"","x":1}"#)
+            .arg_raw("command")
+            .unwrap();
         assert_eq!(v, r#""echo \"hi\"""#);
     }
 
     #[test]
     fn decodes_escapes_in_string_value() {
-        let got = call(r#"{"command":"line1\nline2\ttab"}"#).arg_str("command").unwrap();
+        let got = call(r#"{"command":"line1\nline2\ttab"}"#)
+            .arg_str("command")
+            .unwrap();
         assert_eq!(got, "line1\nline2\ttab");
     }
 
@@ -336,12 +370,20 @@ mod tests {
     #[test]
     fn wrong_type_returns_none_for_str() {
         assert!(call(r#"{"timeout_ms":5}"#).arg_str("timeout_ms").is_none());
-        assert_eq!(call(r#"{"timeout_ms":5}"#).arg_raw("timeout_ms").as_deref(), Some("5"));
+        assert_eq!(
+            call(r#"{"timeout_ms":5}"#).arg_raw("timeout_ms").as_deref(),
+            Some("5")
+        );
     }
 
     #[test]
     fn last_argument_is_found_without_trailing_comma() {
-        assert_eq!(call(r#"{"a":1,"command":"go"}"#).arg_str("command").as_deref(), Some("go"));
+        assert_eq!(
+            call(r#"{"a":1,"command":"go"}"#)
+                .arg_str("command")
+                .as_deref(),
+            Some("go")
+        );
     }
 
     #[test]
@@ -352,6 +394,11 @@ mod tests {
 
     #[test]
     fn unicode_survives() {
-        assert_eq!(call(r#"{"command":"echo 你好"}"#).arg_str("command").as_deref(), Some("echo 你好"));
+        assert_eq!(
+            call(r#"{"command":"echo 你好"}"#)
+                .arg_str("command")
+                .as_deref(),
+            Some("echo 你好")
+        );
     }
 }

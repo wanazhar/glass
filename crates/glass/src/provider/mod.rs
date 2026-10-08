@@ -5,9 +5,11 @@
 //! id, not a new implementation.
 
 mod anthropic;
+mod chain;
 mod openai;
 
 pub use anthropic::Anthropic;
+pub use chain::Chain;
 pub use openai::{Flavour, OpenAiCompat};
 
 use std::io::{self, Read};
@@ -58,7 +60,11 @@ pub enum Event {
     /// Reasoning content, when the provider exposes it.
     Reasoning(String),
     /// The model wants a tool run.
-    ToolCall { id: String, name: String, arguments: String },
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    },
     /// Token counts reported by the provider, when available.
     ///
     /// `input` is the *uncached* portion. On Anthropic that is only the
@@ -71,6 +77,20 @@ pub enum Event {
     Done,
     /// Non-fatal problem worth surfacing.
     Warning(String),
+    /// Fatal stream failure; partial tool calls must not execute.
+    Error(String),
+}
+
+/// Provider diagnostics can echo a credential; never persist or render it.
+pub fn redact_event(event: Event, key: Option<&str>) -> Event {
+    let Some(key) = key.filter(|s| !s.is_empty()) else {
+        return event;
+    };
+    match event {
+        Event::Error(s) => Event::Error(s.replace(key, "[redacted]")),
+        Event::Warning(s) => Event::Warning(s.replace(key, "[redacted]")),
+        other => other,
+    }
 }
 
 /// Everything needed to produce one model turn.
@@ -133,6 +153,10 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Transport(m) => write!(f, "transport: {m}"),
+            Error::Status(c @ (401 | 403), m) => write!(
+                f,
+                "http {c}: {m} · use /login to reconnect or /model to choose a permitted model"
+            ),
             Error::Status(c, m) => write!(f, "http {c}: {m}"),
             Error::Config(m) => write!(f, "config: {m}"),
         }
@@ -161,13 +185,94 @@ pub fn http_agent() -> ureq::Agent {
         .new_agent()
 }
 
+/// Stream one turn, retrying transient failures.
+///
+/// A 429 or a 5xx means the request never produced an event, so
+/// re-sending it is safe: the model never saw the first attempt
+/// and no tool ran. A 4xx is a request problem, not a blip, and
+/// retrying it would only burn the same money again.
+///
+/// `delays` is the backoff in seconds per retry, passed in so a
+/// test does not have to sit through the production delays.
+/// `on_retry` is notified before each sleep, which is how the
+/// turn reports that it is retrying rather than hanging.
+pub fn stream_with_retry<'a>(
+    provider: &'a dyn Provider,
+    req: &Request<'_>,
+    attempts: u8,
+    delays: &[u64],
+    mut on_retry: impl FnMut(u8, u64, &str),
+) -> Result<Box<dyn Iterator<Item = Event> + 'a>, Error> {
+    let mut attempt = 0u8;
+    loop {
+        match provider.stream(req) {
+            Ok(stream) => return Ok(stream),
+            Err(e) if is_transient(&e) && attempt + 1 < attempts => {
+                attempt += 1;
+                let delay = delays.get((attempt - 1) as usize).copied().unwrap_or(0);
+                on_retry(attempt, delay, &e.to_string());
+                if delay > 0 {
+                    std::thread::sleep(std::time::Duration::from_secs(delay));
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// True when a failed request can be re-sent safely.
+pub(crate) fn is_transient(e: &Error) -> bool {
+    match e {
+        Error::Status(code, _) => *code == 429 || *code >= 500,
+        // The request never reached the provider, or the
+        // connection dropped before the first event: nothing
+        // happened, so trying again is free.
+        Error::Transport(_) => true,
+        Error::Config(_) => false,
+    }
+}
+
+/// How many times one request is attempted before the turn fails.
+pub const RETRY_ATTEMPTS: u8 = 3;
+
+/// Backoff in seconds between attempts: 1s, 2s, 4s.
+pub const RETRY_DELAYS: [u64; 3] = [1, 2, 4];
+
+pub fn validate_endpoint(base_url: &str) -> Result<(), Error> {
+    let url = url::Url::parse(base_url)
+        .map_err(|_| Error::Config("provider endpoint is not a valid URL".into()))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(Error::Config(
+            "provider endpoint must be HTTP(S), without embedded credentials, query, or fragment"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Build the provider named in config.
 ///
 /// The dispatch is on a string in config rather than on inferred capability,
 /// so adding a provider is a config edit and never a code change.
-pub fn build(kind: &str, base_url: &str, api_key: Option<String>, model: &str) -> Result<Box<dyn Provider>, Error> {
+pub fn build(
+    kind: &str,
+    base_url: &str,
+    api_key: Option<String>,
+    model: &str,
+) -> Result<Box<dyn Provider>, Error> {
+    validate_endpoint(base_url)?;
     match kind {
-        "anthropic" => Ok(Box::new(Anthropic::new(base_url, api_key.unwrap_or_default(), model))),
+        "anthropic" => Ok(Box::new(Anthropic::new(
+            base_url,
+            api_key.unwrap_or_default(),
+            model,
+        ))),
         "openai" => Ok(Box::new(OpenAiCompat::new(base_url, api_key, model))),
         "openai-responses" => Ok(Box::new(
             OpenAiCompat::new(base_url, api_key, model).with_flavour(Flavour::Responses),
@@ -274,7 +379,12 @@ mod tests {
         let tools = builtin_tools();
         let bash: Value = serde_json::from_str(&tools[0].2).unwrap();
         let state: Value = serde_json::from_str(&tools[1].2).unwrap();
-        assert!(bash["required"].as_array().unwrap().contains(&Value::String("command".into())));
+        assert!(
+            bash["required"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String("command".into()))
+        );
         // `state` must be callable with zero arguments, or the read-back path
         // the compaction flow depends on becomes awkward to express.
         assert!(state.get("required").is_none());
@@ -308,16 +418,134 @@ mod tests {
 
     #[test]
     fn provider_dispatch_covers_all_three_flavours() {
-        assert_eq!(build("anthropic", "u", None, "m").unwrap().id(), "anthropic");
-        assert_eq!(build("openai", "u", None, "m").unwrap().id(), "openai");
-        assert_eq!(build("openai-responses", "u", None, "m").unwrap().id(), "openai");
+        assert_eq!(
+            build("anthropic", "https://example.invalid", None, "m")
+                .unwrap()
+                .id(),
+            "anthropic"
+        );
+        assert_eq!(
+            build("openai", "https://example.invalid", None, "m")
+                .unwrap()
+                .id(),
+            "openai"
+        );
+        assert_eq!(
+            build("openai-responses", "https://example.invalid", None, "m")
+                .unwrap()
+                .id(),
+            "openai"
+        );
     }
 
     #[test]
     fn pressure_is_a_fraction_between_zero_and_one() {
         let p: Box<dyn Provider> = Box::new(OpenAiCompat::new("u", None, "gpt-5"));
-        let msgs: Vec<Message> = (0..50).map(|i| Message::User(format!("message {i}"))).collect();
+        let msgs: Vec<Message> = (0..50)
+            .map(|i| Message::User(format!("message {i}")))
+            .collect();
         let f = pressure(p.as_ref(), &msgs);
         assert!(f > 0.0 && f < 1.0, "{f}");
+    }
+
+    /// Counts calls and fails the first `fail` of them.
+    struct Flaky {
+        calls: std::sync::Arc<std::sync::atomic::AtomicU8>,
+        fail: u8,
+        code: u16,
+    }
+
+    impl Provider for Flaky {
+        fn id(&self) -> &str {
+            "flaky"
+        }
+        fn stream(
+            &self,
+            _req: &Request<'_>,
+        ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n < self.fail {
+                return Err(Error::Status(self.code, "overloaded".into()));
+            }
+            Ok(Box::new(
+                vec![Event::Text("ok".into()), Event::Done].into_iter(),
+            ))
+        }
+        fn context_window(&self) -> u32 {
+            1_000
+        }
+    }
+
+    fn flaky_req() -> Request<'static> {
+        Request {
+            model: "m",
+            system: "s",
+            messages: &[],
+            tools: &[],
+            max_tokens: 10,
+            reasoning: None,
+        }
+    }
+
+    #[test]
+    fn a_transient_failure_is_retried() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let p = Flaky {
+            calls: std::sync::Arc::clone(&calls),
+            fail: 2,
+            code: 429,
+        };
+        let mut saw: Vec<(u8, u64)> = Vec::new();
+        let out = stream_with_retry(&p, &flaky_req(), 3, &[0, 0], |attempt, delay, _| {
+            saw.push((attempt, delay))
+        });
+        assert!(out.is_ok(), "the third attempt must succeed");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert_eq!(saw, vec![(1, 0), (2, 0)], "both retries are reported");
+    }
+
+    #[test]
+    fn a_server_error_is_transient() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let p = Flaky {
+            calls: std::sync::Arc::clone(&calls),
+            fail: 1,
+            code: 503,
+        };
+        let out = stream_with_retry(&p, &flaky_req(), 3, &[0, 0], |_, _, _| {});
+        assert!(out.is_ok());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_client_error_is_not_retried() {
+        // A 400 is a request problem. Retrying would spend the
+        // same money to get the same answer.
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let p = Flaky {
+            calls: std::sync::Arc::clone(&calls),
+            fail: 9,
+            code: 400,
+        };
+        let out = stream_with_retry(&p, &flaky_req(), 3, &[0, 0], |_, _, _| {});
+        assert!(out.is_err());
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "no retry on a 4xx"
+        );
+    }
+
+    #[test]
+    fn retries_stop_at_the_attempt_budget() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let p = Flaky {
+            calls: std::sync::Arc::clone(&calls),
+            fail: 9,
+            code: 500,
+        };
+        let out = stream_with_retry(&p, &flaky_req(), 3, &[0, 0], |_, _, _| {});
+        assert!(out.is_err(), "persistent failure still fails the turn");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 }

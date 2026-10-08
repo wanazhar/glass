@@ -7,9 +7,9 @@
 
 use std::io::Read;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{http_agent, read_lossy, Error, Event, Provider, Request, Usage};
+use super::{Error, Event, Provider, Request, Usage, http_agent, read_lossy};
 use crate::sse::SseDecoder;
 
 const DEFAULT_WINDOW: u32 = 128_000;
@@ -30,7 +30,11 @@ pub enum Flavour {
 }
 
 impl OpenAiCompat {
-    pub fn new(base_url: impl Into<String>, api_key: Option<String>, model: impl Into<String>) -> Self {
+    pub fn new(
+        base_url: impl Into<String>,
+        api_key: Option<String>,
+        model: impl Into<String>,
+    ) -> Self {
         Self {
             base_url: base_url.into(),
             api_key,
@@ -86,8 +90,27 @@ fn build_messages(system: &str, messages: &[glass_mod_api::Message]) -> Vec<Valu
         match m {
             Message::User(s) => out.push(json!({ "role": "user", "content": s })),
             Message::Assistant(s) => out.push(json!({ "role": "assistant", "content": s })),
+            Message::ToolCall {
+                id,
+                name,
+                arguments,
+            } => {
+                let call = json!({"id":id,"type":"function","function":{"name":name,"arguments":arguments}});
+                if let Some(last) = out.last_mut().filter(|v| v["role"] == "assistant") {
+                    if !last["tool_calls"].is_array() {
+                        last["tool_calls"] = json!([]);
+                    }
+                    last["tool_calls"].as_array_mut().unwrap().push(call);
+                } else {
+                    out.push(json!({"role":"assistant", "tool_calls":[call]}));
+                }
+            }
             Message::System(s) => out.push(json!({ "role": "system", "content": s })),
-            Message::ToolResult { call_id, name, body } => out.push(json!({
+            Message::ToolResult {
+                call_id,
+                name,
+                body,
+            } => out.push(json!({
                 "role": "tool",
                 "tool_call_id": call_id,
                 "name": name,
@@ -98,12 +121,33 @@ fn build_messages(system: &str, messages: &[glass_mod_api::Message]) -> Vec<Valu
     out
 }
 
+fn responses_input(messages: &[glass_mod_api::Message]) -> Vec<Value> {
+    use glass_mod_api::Message;
+    messages
+        .iter()
+        .map(|m| match m {
+            Message::ToolCall {
+                id,
+                name,
+                arguments,
+            } => json!({"type":"function_call", "call_id":id, "name":name, "arguments":arguments}),
+            Message::ToolResult { call_id, body, .. } => {
+                json!({"type":"function_call_output", "call_id":call_id, "output":body})
+            }
+            Message::User(s) => json!({"role":"user", "content":s}),
+            Message::Assistant(s) => json!({"role":"assistant", "content":s}),
+            Message::System(s) => json!({"role":"developer", "content":s}),
+        })
+        .collect()
+}
+
 fn build_tools(tools: &[(String, String, String)]) -> Value {
     Value::Array(
         tools
             .iter()
             .map(|(name, desc, schema)| {
-                let params: Value = serde_json::from_str(schema).unwrap_or_else(|_| json!({ "type": "object" }));
+                let params: Value =
+                    serde_json::from_str(schema).unwrap_or_else(|_| json!({ "type": "object" }));
                 json!({
                     "type": "function",
                     "function": { "name": name, "description": desc, "parameters": params }
@@ -135,7 +179,8 @@ impl Provider for OpenAiCompat {
                 "model": self.model,
                 "stream": true,
                 "instructions": req.system,
-                "input": build_messages("", req.messages),
+                "input": responses_input(req.messages),
+                "store": false,
                 "max_output_tokens": req.max_tokens,
             }),
         };
@@ -145,7 +190,14 @@ impl Provider for OpenAiCompat {
             // Wrapping it again produced `[[{...}]]`, which every strict
             // endpoint rejects — and lenient ones ignore, leaving the model
             // with no tools at all and the agent silently inert.
-            body["tools"] = build_tools(req.tools);
+            body["tools"] = if self.flavour == Flavour::Responses {
+                Value::Array(req.tools.iter().map(|(name, description, schema)| json!({
+                    "type": "function", "name": name, "description": description,
+                    "parameters": serde_json::from_str::<Value>(schema).unwrap_or_else(|_| json!({"type":"object"}))
+                })).collect())
+            } else {
+                build_tools(req.tools)
+            };
         }
 
         // Reasoning budget is vendor-specific even inside this format. GPT-5
@@ -154,8 +206,16 @@ impl Provider for OpenAiCompat {
         // usually tolerated, but not universally, so we gate on the model id.
         if let Some(budget) = req.reasoning {
             let m = self.model.to_ascii_lowercase();
-            if m.starts_with("gpt-5") || m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4") {
-                body["reasoning_effort"] = json!(effort_label(budget));
+            if m.starts_with("gpt-5")
+                || m.starts_with("o1")
+                || m.starts_with("o3")
+                || m.starts_with("o4")
+            {
+                if self.flavour == Flavour::Responses {
+                    body["reasoning"] = json!({"effort": effort_label(budget), "summary": "auto"});
+                } else {
+                    body["reasoning_effort"] = json!(effort_label(budget));
+                }
             } else if m.contains("glm") || m.contains("qwen3") || m.contains("deepseek") {
                 body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
             }
@@ -170,10 +230,19 @@ impl Provider for OpenAiCompat {
         let mut reader = resp.into_body().into_reader();
         if !(200..300).contains(&status) {
             let text = read_lossy(&mut reader).unwrap_or_default();
-            return Err(Error::Status(status, extract_error(&text)));
+            return Err(Error::Status(
+                status,
+                match &self.api_key {
+                    Some(key) if !key.is_empty() => extract_error(&text).replace(key, "[redacted]"),
+                    _ => extract_error(&text),
+                },
+            ));
         }
 
-        Ok(Box::new(StreamEvents::new(reader)))
+        let key = self.api_key.clone();
+        Ok(Box::new(StreamEvents::new(reader).map(move |event| {
+            super::redact_event(event, key.as_deref())
+        })))
     }
 }
 
@@ -210,6 +279,7 @@ fn extract_error(body: &str) -> String {
 struct Accum {
     text: String,
     reasoning: String,
+    summaries: std::collections::BTreeMap<(String, u64), String>,
     tools: std::collections::BTreeMap<usize, Partial>,
     usage: Option<Usage>,
     /// Guards `seal` against running twice.
@@ -257,6 +327,12 @@ impl<R: Read> StreamEvents<R> {
         if self.acc.sealed {
             return;
         }
+        if self.acc.tools.values().any(|p| {
+            p.id.is_empty() || p.name.is_empty() || serde_json::from_str::<Value>(&p.args).is_err()
+        }) {
+            self.fail("Provider returned an incomplete or invalid tool call".into());
+            return;
+        }
         self.acc.sealed = true;
 
         if let Some(u) = self.acc.usage.take() {
@@ -265,7 +341,11 @@ impl<R: Read> StreamEvents<R> {
         let calls: Vec<_> = std::mem::take(&mut self.acc.tools)
             .into_iter()
             .filter(|(_, p)| !p.name.is_empty())
-            .map(|(_, p)| Event::ToolCall { id: p.id, name: p.name, arguments: p.args })
+            .map(|(_, p)| Event::ToolCall {
+                id: p.id,
+                name: p.name,
+                arguments: p.args,
+            })
             .collect();
         self.outbox.extend(calls);
         self.outbox.push_back(Event::Done);
@@ -278,46 +358,151 @@ impl<R: Read> StreamEvents<R> {
                 return Some(e);
             }
             if self.done {
+                if self.acc.sealed {
+                    return None;
+                }
                 self.seal();
                 continue;
             }
 
             let mut chunk = [0u8; 8192];
             let n = match self.reader.read(&mut chunk) {
-                Ok(0) | Err(_) => {
-                    self.done = true;
-                    // A stream cut without `[DONE]` still has usable content;
-                    // sealing flushes whatever we accumulated.
+                Ok(0) => {
                     if let Some(ev) = self.decoder.finish()
                         && let Ok(v) = serde_json::from_str::<Value>(&ev.data)
                     {
                         self.consume(&v);
                     }
+                    if !self.done {
+                        self.fail("provider stream ended before completion".into());
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    self.fail(format!("provider stream read failed: {e}"));
                     continue;
                 }
                 Ok(n) => n,
             };
 
-            let text = String::from_utf8_lossy(&chunk[..n]);
-            for ev in self.decoder.push(&text) {
+            for ev in self.decoder.push_bytes(&chunk[..n]) {
                 if ev.data.trim() == "[DONE]" {
                     self.done = true;
                     break;
                 }
-                let Ok(v) = serde_json::from_str::<Value>(&ev.data) else { continue };
+                let Ok(v) = serde_json::from_str::<Value>(&ev.data) else {
+                    self.fail("Provider sent an invalid stream event".into());
+                    break;
+                };
                 self.consume(&v);
+                if self.done {
+                    break;
+                }
             }
         }
     }
 
+    fn fail(&mut self, message: String) {
+        self.done = true;
+        self.acc.sealed = true;
+        self.acc.tools.clear();
+        self.outbox.push_back(Event::Error(message));
+    }
+
     /// Fold one delta object into the accumulator.
     fn consume(&mut self, v: &Value) {
-        if let Some(err) = v.get("error").and_then(|e| e.get("message")).and_then(Value::as_str) {
-            self.outbox.push_back(Event::Warning(err.to_string()));
-            self.done = true;
+        if let Some(err) = v
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(Value::as_str)
+        {
+            self.fail(err.to_string());
             return;
         }
 
+        if let Some(kind) = v.get("type").and_then(Value::as_str) {
+            match kind {
+                "response.output_text.delta" | "response.refusal.delta" => {
+                    if let Some(t) = v["delta"].as_str() {
+                        self.acc.text.push_str(t);
+                        self.outbox.push_back(Event::Text(t.into()));
+                    }
+                }
+                "response.reasoning_summary_text.delta"
+                | "response.reasoning_summary_text.done" => {
+                    let key = (
+                        v["item_id"]
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| v["output_index"].to_string()),
+                        v["summary_index"].as_u64().unwrap_or(0),
+                    );
+                    let previous = self.acc.summaries.entry(key).or_default();
+                    let text = if kind.ends_with(".delta") {
+                        v["delta"].as_str().unwrap_or("")
+                    } else if previous.is_empty() {
+                        v["text"].as_str().unwrap_or("")
+                    } else {
+                        ""
+                    };
+                    if !text.is_empty() {
+                        previous.push_str(text);
+                        self.acc.reasoning.push_str(text);
+                        self.outbox.push_back(Event::Reasoning(text.into()));
+                    }
+                }
+                "response.output_item.added" => {
+                    if v["item"]["type"] == "function_call" {
+                        let i = v["output_index"].as_u64().unwrap_or(0) as usize;
+                        self.acc.tools.insert(
+                            i,
+                            Partial {
+                                id: v["item"]["call_id"].as_str().unwrap_or("").into(),
+                                name: v["item"]["name"].as_str().unwrap_or("").into(),
+                                args: String::new(),
+                            },
+                        );
+                    }
+                }
+                "response.function_call_arguments.delta" => {
+                    let i = v["output_index"].as_u64().unwrap_or(0) as usize;
+                    self.acc
+                        .tools
+                        .entry(i)
+                        .or_default()
+                        .args
+                        .push_str(v["delta"].as_str().unwrap_or(""));
+                }
+                "response.output_item.done" => {
+                    if v["item"]["type"] == "function_call" {
+                        let i = v["output_index"].as_u64().unwrap_or(0) as usize;
+                        self.acc.tools.insert(
+                            i,
+                            Partial {
+                                id: v["item"]["call_id"].as_str().unwrap_or("").into(),
+                                name: v["item"]["name"].as_str().unwrap_or("").into(),
+                                args: v["item"]["arguments"].as_str().unwrap_or("{}").into(),
+                            },
+                        );
+                    }
+                }
+                "response.completed" => {
+                    self.read_usage(&v["response"]);
+                    self.done = true;
+                }
+                "response.failed" | "response.incomplete" | "error" => {
+                    self.fail(
+                        v["response"]["error"]["message"]
+                            .as_str()
+                            .or_else(|| v["message"].as_str())
+                            .unwrap_or("provider did not complete the response")
+                            .into(),
+                    );
+                }
+                _ => {}
+            }
+            return;
+        }
         let Some(choices) = v.get("choices").and_then(Value::as_array) else {
             // Usage-only chunks carry no choices.
             self.read_usage(v);
@@ -327,14 +512,24 @@ impl<R: Read> StreamEvents<R> {
             self.read_usage(v);
             return;
         };
+        if choice["finish_reason"] == "length" {
+            self.outbox.push_back(Event::Warning(
+                "Response reached the output token limit".into(),
+            ));
+        }
         let delta = choice.get("delta").or_else(|| choice.get("message"));
 
         if let Some(t) = delta
             .and_then(|d| d.get("reasoning_content").and_then(Value::as_str))
-            .or_else(|| delta.and_then(|d| d.get("reasoning")).and_then(Value::as_str))
+            .or_else(|| {
+                delta
+                    .and_then(|d| d.get("reasoning"))
+                    .and_then(Value::as_str)
+            })
             && !t.is_empty()
         {
             self.acc.reasoning.push_str(t);
+            self.outbox.push_back(Event::Reasoning(t.into()));
         }
 
         if let Some(t) = delta.and_then(|d| d.get("content")).and_then(Value::as_str)
@@ -344,7 +539,10 @@ impl<R: Read> StreamEvents<R> {
             self.outbox.push_back(Event::Text(t.to_string()));
         }
 
-        if let Some(calls) = delta.and_then(|d| d.get("tool_calls")).and_then(Value::as_array) {
+        if let Some(calls) = delta
+            .and_then(|d| d.get("tool_calls"))
+            .and_then(Value::as_array)
+        {
             for c in calls {
                 let idx = c.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
                 let slot = self.acc.tools.entry(idx).or_default();
@@ -359,7 +557,10 @@ impl<R: Read> StreamEvents<R> {
                 {
                     slot.name.push_str(name);
                 }
-                if let Some(args) = func.and_then(|f| f.get("arguments")).and_then(Value::as_str) {
+                if let Some(args) = func
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(Value::as_str)
+                {
                     slot.args.push_str(args);
                 }
             }
@@ -370,8 +571,16 @@ impl<R: Read> StreamEvents<R> {
 
     fn read_usage(&mut self, v: &Value) {
         if let Some(usage) = v.get("usage").filter(|u| !u.is_null()) {
-            let prompt = usage.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0) as u32;
-            let output = usage.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let prompt = usage
+                .get("prompt_tokens")
+                .or_else(|| usage.get("input_tokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
+            let output = usage
+                .get("completion_tokens")
+                .or_else(|| usage.get("output_tokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
 
             // Unlike Anthropic, OpenAI reports `cached_tokens` as a SUBSET of
             // `prompt_tokens`, not in addition to it. Subtracting is what makes
@@ -379,11 +588,13 @@ impl<R: Read> StreamEvents<R> {
             // model does not have to special-case the provider.
             let cached = usage
                 .get("prompt_tokens_details")
+                .or_else(|| usage.get("input_tokens_details"))
                 .and_then(|d| d.get("cached_tokens"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as u32;
             let written = usage
                 .get("prompt_tokens_details")
+                .or_else(|| usage.get("input_tokens_details"))
                 .and_then(|d| d.get("cache_write_tokens"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as u32;
@@ -419,7 +630,10 @@ mod tests {
         assert_eq!(OpenAiCompat::window_for("gpt-4-turbo"), 128_000);
         assert_eq!(OpenAiCompat::window_for("gemini-3-pro"), 1_000_000);
         assert_eq!(OpenAiCompat::window_for("glm-4.6"), 128_000);
-        assert_eq!(OpenAiCompat::window_for("something-unknown"), DEFAULT_WINDOW);
+        assert_eq!(
+            OpenAiCompat::window_for("something-unknown"),
+            DEFAULT_WINDOW
+        );
     }
 
     #[test]
@@ -439,7 +653,11 @@ mod tests {
 
     #[test]
     fn tool_result_becomes_tool_role() {
-        let msgs = vec![Message::ToolResult { call_id: "call_1".into(), name: "bash".into(), body: "ok".into() }];
+        let msgs = vec![Message::ToolResult {
+            call_id: "call_1".into(),
+            name: "bash".into(),
+            body: "ok".into(),
+        }];
         let out = build_messages("sys", &msgs);
         assert_eq!(out[0]["role"], "system");
         assert_eq!(out[1]["role"], "tool");
@@ -448,7 +666,11 @@ mod tests {
 
     #[test]
     fn tools_use_function_wrapper() {
-        let tools = vec![("bash".to_string(), "run".to_string(), r#"{"type":"object"}"#.to_string())];
+        let tools = vec![(
+            "bash".to_string(),
+            "run".to_string(),
+            r#"{"type":"object"}"#.to_string(),
+        )];
         let v = build_tools(&tools);
         assert_eq!(v[0]["type"], "function");
         assert_eq!(v[0]["function"]["name"], "bash");
@@ -471,7 +693,7 @@ mod tests {
 #[cfg(test)]
 mod shape_tests {
     use super::*;
-    use crate::provider::{builtin_tools, Request};
+    use crate::provider::{Request, builtin_tools};
 
     /// The wire format must be a flat array of function objects.
     ///
@@ -487,9 +709,18 @@ mod shape_tests {
         let arr = tools.as_array().expect("array");
         assert_eq!(arr.len(), 2, "one entry per tool, not one entry per array");
         for t in arr {
-            assert!(t.get("type").and_then(Value::as_str) == Some("function"), "{t}");
-            assert!(t.get("function").is_some(), "each entry needs a function object: {t}");
-            assert!(t.as_array().is_none(), "entries must be objects, not arrays");
+            assert!(
+                t.get("type").and_then(Value::as_str) == Some("function"),
+                "{t}"
+            );
+            assert!(
+                t.get("function").is_some(),
+                "each entry needs a function object: {t}"
+            );
+            assert!(
+                t.as_array().is_none(),
+                "entries must be objects, not arrays"
+            );
         }
     }
 
@@ -497,8 +728,10 @@ mod shape_tests {
     fn tool_entry_carries_name_and_schema() {
         let tools = build_tools(&builtin_tools());
         let arr = tools.as_array().unwrap();
-        let names: Vec<&str> =
-            arr.iter().filter_map(|t| t["function"]["name"].as_str()).collect();
+        let names: Vec<&str> = arr
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str())
+            .collect();
         assert_eq!(names, vec!["bash", "state"]);
         assert!(arr[0]["function"]["parameters"]["properties"].is_object());
     }
@@ -552,20 +785,36 @@ mod stream_tests {
                 if ev.data.trim() == "[DONE]" {
                     continue;
                 }
-                let Ok(v) = serde_json::from_str::<Value>(&ev.data) else { continue };
-                for c in v["choices"][0]["delta"]["tool_calls"].as_array().into_iter().flatten() {
+                let Ok(v) = serde_json::from_str::<Value>(&ev.data) else {
+                    continue;
+                };
+                for c in v["choices"][0]["delta"]["tool_calls"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
                     let idx = c.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
                     let slot = acc.tools.entry(idx).or_default();
-                    if let Some(n) = c["function"]["name"].as_str() { slot.name.push_str(n); }
-                    if let Some(a) = c["function"]["arguments"].as_str() { slot.args.push_str(a); }
-                    if let Some(i) = c["id"].as_str() { slot.id.push_str(i); }
+                    if let Some(n) = c["function"]["name"].as_str() {
+                        slot.name.push_str(n);
+                    }
+                    if let Some(a) = c["function"]["arguments"].as_str() {
+                        slot.args.push_str(a);
+                    }
+                    if let Some(i) = c["id"].as_str() {
+                        slot.id.push_str(i);
+                    }
                 }
             }
         }
         {
             for (_, p) in std::mem::take(&mut acc.tools) {
                 if !p.name.is_empty() {
-                    outbox.push_back(Event::ToolCall { id: p.id, name: p.name, arguments: p.args });
+                    outbox.push_back(Event::ToolCall {
+                        id: p.id,
+                        name: p.name,
+                        arguments: p.args,
+                    });
                 }
             }
         }
@@ -578,7 +827,11 @@ mod stream_tests {
         let evs = run_stream(&[chunk]);
         assert_eq!(evs.len(), 1, "{evs:?}");
         match &evs[0] {
-            Event::ToolCall { name, arguments, id } => {
+            Event::ToolCall {
+                name,
+                arguments,
+                id,
+            } => {
                 assert_eq!(name, "hl_edit");
                 assert_eq!(id, "c1");
                 assert!(arguments.contains("/x"), "{arguments}");
@@ -595,7 +848,8 @@ mod stream_tests {
         assert_eq!(evs.len(), 1);
         match &evs[0] {
             Event::ToolCall { arguments, .. } => {
-                let parsed: Value = serde_json::from_str(arguments).expect("reassembled args must be valid JSON");
+                let parsed: Value =
+                    serde_json::from_str(arguments).expect("reassembled args must be valid JSON");
                 assert_eq!(parsed["command"], "ls -la");
             }
             other => panic!("expected a tool call, got {other:?}"),
@@ -613,5 +867,179 @@ mod stream_tests {
     fn a_text_only_chunk_produces_no_tool_calls() {
         let chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
         assert!(run_stream(&[chunk]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod protocol_regressions {
+    use super::*;
+    fn events(values: &[Value], done: bool) -> Vec<Event> {
+        let mut wire = values
+            .iter()
+            .map(|v| format!("data: {v}\n\n"))
+            .collect::<String>();
+        if done {
+            wire.push_str("data: [DONE]\n\n");
+        }
+        StreamEvents::new(std::io::Cursor::new(wire.into_bytes())).collect()
+    }
+    #[test]
+    fn responses_text_usage_and_completion_are_decoded() {
+        let output = events(
+            &[
+                json!({"type":"response.output_text.delta","delta":"Hello"}),
+                json!({"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":5,"input_tokens_details":{"cached_tokens":40}}}}),
+            ],
+            false,
+        );
+        assert_eq!(
+            output,
+            vec![
+                Event::Text("Hello".into()),
+                Event::Usage(Usage {
+                    input: 60,
+                    output: 5,
+                    cache_read: 40,
+                    cache_write: 0
+                }),
+                Event::Done
+            ]
+        );
+    }
+    #[test]
+    fn responses_tools_use_call_ids_and_complete_arguments() {
+        let output = events(
+            &[
+                json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"c1","name":"bash"}}),
+                json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"ls\"}"}),
+                json!({"type":"response.completed","response":{}}),
+            ],
+            false,
+        );
+        assert!(
+            matches!(&output[0],Event::ToolCall{id,name,arguments} if id=="c1" && name=="bash" && arguments=="{\"command\":\"ls\"}")
+        );
+        assert_eq!(output.last(), Some(&Event::Done));
+    }
+    #[test]
+    fn partial_streams_never_execute_tools() {
+        let output = events(
+            &[
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"bash","arguments":"{}"}}]}}]}),
+            ],
+            false,
+        );
+        assert!(output.iter().any(|e| matches!(e, Event::Error(_))));
+        assert!(
+            !output
+                .iter()
+                .any(|e| matches!(e, Event::ToolCall { .. } | Event::Done))
+        );
+    }
+    #[test]
+    fn error_and_failed_events_are_fatal() {
+        for v in [
+            json!({"error":{"message":"bad key"}}),
+            json!({"type":"response.failed","response":{"error":{"message":"bad key"}}}),
+            json!({"type":"response.incomplete"}),
+        ] {
+            let output = events(&[v], false);
+            assert!(matches!(&output[0], Event::Error(_)));
+            assert!(!output.contains(&Event::Done));
+        }
+    }
+    #[test]
+    fn chat_stream_is_finite() {
+        assert_eq!(
+            events(&[json!({"choices":[{"delta":{"content":"ok"}}]})], true),
+            vec![Event::Text("ok".into()), Event::Done]
+        );
+    }
+    #[test]
+    fn read_failures_are_fatal() {
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("socket closed"))
+            }
+        }
+        let output = StreamEvents::new(Broken).collect::<Vec<_>>();
+        assert!(matches!(&output[0],Event::Error(s) if s.contains("socket closed")));
+    }
+    #[test]
+    fn invalid_tool_arguments_are_fatal() {
+        let output = events(
+            &[
+                json!({"choices":[{"delta":{"tool_calls":[{"id":"c","index":0,"function":{"name":"bash","arguments":"{"}}]}}]}),
+            ],
+            true,
+        );
+        assert!(matches!(&output[0], Event::Error(_)));
+    }
+    #[test]
+    fn responses_history_contains_request_and_result() {
+        use glass_mod_api::Message;
+        let history = [
+            Message::ToolCall {
+                id: "c".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
+            Message::ToolResult {
+                call_id: "c".into(),
+                name: "bash".into(),
+                body: "ok".into(),
+            },
+        ];
+        let wire = responses_input(&history);
+        assert_eq!(wire[0]["type"], "function_call");
+        assert_eq!(wire[1]["type"], "function_call_output");
+        assert_eq!(wire[0]["call_id"], wire[1]["call_id"]);
+        let chat = build_messages("sys", &history);
+        assert_eq!(chat[1]["tool_calls"][0]["id"], "c");
+    }
+}
+
+#[cfg(test)]
+mod reasoning_tests {
+    use super::*;
+    #[test]
+    fn public_summary_deltas_and_done_are_not_duplicated() {
+        let mut s = StreamEvents::new(std::io::empty());
+        s.consume(&json!({"type":"response.reasoning_summary_text.delta","item_id":"r1","summary_index":0,"delta":"Plan "}));
+        s.consume(&json!({"type":"response.reasoning_summary_text.delta","item_id":"r1","summary_index":0,"delta":"changes"}));
+        s.consume(&json!({"type":"response.reasoning_summary_text.done","item_id":"r1","summary_index":0,"text":"Plan changes"}));
+        let text: String = s
+            .outbox
+            .iter()
+            .filter_map(|e| {
+                if let Event::Reasoning(t) = e {
+                    Some(t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(text, "Plan changes");
+    }
+    #[test]
+    fn done_fallback_exposes_only_public_summary_and_compatible_text() {
+        let mut s = StreamEvents::new(std::io::empty());
+        s.consume(&json!({"type":"response.reasoning_summary_text.done","item_id":"r1","summary_index":0,"text":"Public summary"}));
+        s.consume(&json!({"type":"response.output_item.done","item":{"type":"reasoning","encrypted_content":"SECRET","signature":"SECRET","summary":[]}}));
+        s.consume(&json!({"choices":[{"delta":{"reasoning_content":"Compatible"}}]}));
+        let text: String = s
+            .outbox
+            .iter()
+            .filter_map(|e| {
+                if let Event::Reasoning(t) = e {
+                    Some(t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(text, "Public summaryCompatible");
+        assert!(!text.contains("SECRET"));
     }
 }

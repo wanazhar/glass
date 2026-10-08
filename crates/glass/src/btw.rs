@@ -86,6 +86,7 @@ pub fn ask(
     for ev in stream {
         match ev {
             Event::Text(t) => text.push_str(&t),
+            Event::Error(e) => return Err(provider::Error::Transport(e)),
             Event::Usage(u) => {
                 input_tokens = u.prompt_total();
                 output_tokens = u.output;
@@ -95,24 +96,53 @@ pub fn ask(
         }
     }
 
-    Ok(Answer { text, input_tokens, output_tokens })
+    Ok(Answer {
+        text,
+        input_tokens,
+        output_tokens,
+    })
 }
 
 /// Render the answer for the terminal.
 ///
 /// Shown as a dim aside rather than as a normal turn, because it is not part of
 /// the conversation and should not read like one.
-pub fn render(question: &str, answer: &Answer) -> String {
+///
+/// A rate card, when one is in force, puts a dollar figure on the
+/// detour. The side request reports no cache split, so the estimate
+/// prices every input token at the uncached rate — an upper bound,
+/// which is the honest direction for a cost the user did not plan.
+pub fn render(question: &str, answer: &Answer, card: Option<&crate::pricing::RateCard>) -> String {
     let mut out = String::new();
-    out.push_str(&format!("\x1b[90mbtw: {question}\x1b[0m\n"));
-    for line in answer.text.trim().lines() {
-        out.push_str(&format!("\x1b[90m│\x1b[0m {line}\n"));
+    let width = crate::term_size().0 as usize;
+    for row in glass_tui::text::wrap_words(
+        &glass_tui::markdown::sanitize(&format!("btw: {question}")),
+        width.saturating_sub(3),
+    ) {
+        out.push_str(&format!("  \x1b[90m{row}\x1b[0m\n"));
     }
+    let mut body = Vec::new();
+    let mut stream = glass_tui::markdown::Stream::default();
+    stream.write(&mut body, &answer.text, width);
+    stream.flush(&mut body, width);
+    out.push_str(&String::from_utf8(body).expect("Markdown emits UTF-8"));
     if answer.input_tokens > 0 || answer.output_tokens > 0 {
-        out.push_str(&format!(
-            "\x1b[90m  (side question: {} in / {} out, not added to the conversation)\x1b[0m\n",
-            answer.input_tokens, answer.output_tokens
-        ));
+        let mut cost = format!("{} in / {} out", answer.input_tokens, answer.output_tokens);
+        if let Some(card) = card {
+            let usage = crate::provider::Usage {
+                input: answer.input_tokens,
+                cache_read: 0,
+                cache_write: 0,
+                output: answer.output_tokens,
+            };
+            cost.push_str(&format!(", {}", crate::pricing::money(card.cost(&usage))));
+        }
+        for row in glass_tui::text::wrap_words(
+            &format!("side question: {cost}, not added to the conversation"),
+            width.saturating_sub(3),
+        ) {
+            out.push_str(&format!("  \x1b[90m{row}\x1b[0m\n"));
+        }
     }
     out
 }
@@ -135,29 +165,67 @@ mod tests {
 
     #[test]
     fn render_prefixes_the_question() {
-        let a = Answer { text: "it sets dry-run mode".into(), input_tokens: 10, output_tokens: 4 };
-        let r = render("what does --check do?", &a);
+        let a = Answer {
+            text: "it sets dry-run mode".into(),
+            input_tokens: 10,
+            output_tokens: 4,
+        };
+        let r = render("what does --check do?", &a, None);
         assert!(r.contains("btw: what does --check do?"));
         assert!(r.contains("it sets dry-run mode"));
     }
 
     #[test]
     fn render_shows_the_cost_and_that_it_is_not_recorded() {
-        let a = Answer { text: "x".into(), input_tokens: 100, output_tokens: 20 };
-        let r = render("q", &a);
+        let a = Answer {
+            text: "x".into(),
+            input_tokens: 100,
+            output_tokens: 20,
+        };
+        let r = render("q", &a, None);
         assert!(r.contains("100 in / 20 out"), "{r}");
         assert!(r.contains("not added to the conversation"), "{r}");
     }
 
     #[test]
+    fn render_prices_the_detour_when_a_card_is_known() {
+        use crate::pricing::RateCard;
+        let a = Answer {
+            text: "x".into(),
+            input_tokens: 1_000_000,
+            output_tokens: 0,
+        };
+        let card = RateCard {
+            input: 5.0,
+            cache_read: 0.5,
+            cache_write: 6.25,
+            output: 25.0,
+        };
+        let r = render("q", &a, Some(&card));
+        // Uncached rate, an upper bound: 1M input at $5.
+        assert!(r.contains("$5.00"), "{r}");
+    }
+
+    #[test]
     fn render_omits_the_cost_line_when_unreported() {
-        let a = Answer { text: "x".into(), input_tokens: 0, output_tokens: 0 };
-        assert!(!render("q", &a).contains("in /"), "no fabricated usage numbers");
+        let a = Answer {
+            text: "x".into(),
+            input_tokens: 0,
+            output_tokens: 0,
+        };
+        assert!(
+            !render("q", &a, None).contains("in /"),
+            "no fabricated usage numbers"
+        );
     }
 
     #[test]
     fn empty_answer_is_reported_as_empty() {
-        let a = Answer { text: "   \n ".into(), input_tokens: 0, output_tokens: 0 };
+        let a = Answer {
+            text: "   \n ".into(),
+            input_tokens: 0,
+            output_tokens: 0,
+        };
         assert!(a.is_empty());
     }
 
@@ -167,7 +235,10 @@ mod tests {
         h.extend(history());
         // The tail must be enough to resolve "this" without the whole session.
         let tail: Vec<&Message> = h[h.len().saturating_sub(10)..].iter().collect();
-        assert!(tail.iter().any(|m| m.text().contains("refactor the parser")));
+        assert!(
+            tail.iter()
+                .any(|m| m.text().contains("refactor the parser"))
+        );
     }
 
     #[test]

@@ -1,10 +1,10 @@
-# glass
+# glass-core
 
 A minimal coding harness. Two tools, one loop, native terminal.
 
 ```
-binary   2.4 MB   (stripped, lto=fat, codegen-units=1)
-RSS      ~2 MB    idle
+binary   ~3.7 MB   (stripped, lto=fat, codegen-units=1)
+RSS      ~3.7 MB  idle
 startup  <10 ms
 tools    bash + state
 ```
@@ -44,6 +44,11 @@ than its edit tool. So:
   and results reassembled in call order. A chat-completions endpoint rejects
   out-of-order tool results, and a transcript whose results appear in completion
   order is impossible to debug.
+- **Transient failures retry.** A 429, a 5xx, or a dropped connection is
+  re-sent with backoff (1s, 2s, 4s) before the turn gives up. That is
+  safe because a failed request produced no events: the model never saw
+  it and no tool ran. A 4xx is a request problem, not a blip, and is
+  never retried.
 
 ## Why two tools
 
@@ -55,9 +60,16 @@ exactly what context compaction needs to survive a long task.
 
 ## Prompt caching
 
-glass caches aggressively and shows you the hit rate after every turn:
+glass-core caches aggressively and shows the hit rate after every turn:
 
-    12350 in / 3 out · cache 97% (12,000 read / 300 written)
+     12,350 in / 3 out · cache 97% · $0.041
+
+The dollar tail is the turn's cost, from a rate card. Anthropic's
+list prices are built in for the default provider; any other model
+prices itself via `[pricing]` in config, and an unpriced model shows
+tokens only — a wrong price is worse than no price, because it is
+the number a budget is decided from. The session tail carries the
+cumulative cost alongside the token total and the context fill.
 
 Three breakpoints, matching Anthropic's documented layout:
 
@@ -91,7 +103,7 @@ buys is latency on the first turn after an idle gap. Enable it if that
 latency is worth the spend:
 
 ```toml
-extensions = ["python3 ~/.config/glass/ext/cache-warmer.py"]
+extensions = ["python3 ~/.config/glass-core/ext/cache-warmer.py"]
 ```
 
 The extension declares a *policy*; the host owns the *mechanism*. That
@@ -107,20 +119,183 @@ is never warmed for nothing). Both are tunable by environment variable,
 and `/extensions` shows the active values.
 
 Compare: Codex CLI — the only serious Rust harness in existence — reports ~100MB
-idle RSS and ships an 80MB binary. glass is roughly 50x smaller because it does
+idle RSS and ships an 80MB binary. glass-core is roughly 50x smaller because it does
 not do the things that make it big: no syntax highlighting, no image codecs, no
 telemetry, no MCP, no embedded JS engine, and no tokio.
 
 ## Install
 
 ```sh
-cargo build --release
-./target/release/glass
+./scripts/install.sh
+# Both commands launch the same executable:
+glass-core --version
+gc --version
 ```
+
+The Cargo package and executable are named `glass-core`. The installer uses
+`${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin` and creates `gc` as a
+relative symlink to `glass-core`. It refuses to replace an unrelated `gc` command.
+The separate `glass` executable and package belong to the other Glass project.
+
+For a build without installation:
+
+```sh
+cargo build --release --package glass-core --bin glass-core
+./target/release/glass-core
+```
+
+### Build and upgrade checks
+
+The GitHub Actions workflow builds and checks Linux and macOS independently.
+It runs the Rust tests, Clippy, installer checks, and offline PTY suites (including
+20×8 terminals), then performs a real clean install and repeat installation in a
+disposable configuration and data directory. These checks require no provider
+account. They verify that configuration, credentials, history, and session files
+survive installation and that the separate `glass` executable is preserved.
+
+Successful jobs upload a native binary archive containing `glass-core`, the
+relative `gc` symlink, and this README, plus a SHA-256 checksum. These are CI
+artifacts; the workflow does not publish a release or modify Git tags.
+
+To run the same checks locally:
+
+```sh
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo build --release --locked --package glass-core --bin glass-core
+export GLASS_CORE_TEST_BINARY="$PWD/target/release/glass-core"
+python3 scripts/smoke-install.py
+python3 scripts/smoke-features.py
+python3 scripts/smoke-onboarding.py
+python3 scripts/smoke-polish.py
+python3 scripts/smoke-workflows.py
+python3 scripts/smoke-mobile.py
+python3 scripts/smoke-chat.py
+python3 scripts/smoke-motion.py
+python3 scripts/smoke-live.py
+python3 scripts/smoke-navigation.py
+python3 scripts/smoke-trust.py
+python3 scripts/smoke-sandbox.py
+python3 scripts/smoke-init.py
+python3 scripts/smoke-web.py
+python3 scripts/smoke-mcp.py
+python3 scripts/smoke-acp.py
+python3 scripts/smoke-serve.py
+python3 scripts/smoke-upgrade.py
+```
+
+The PTY suites require a Unix host and Python 3.10 or newer. Real provider
+authentication and model behavior require a separate account-backed trial.
+Install the VT parser dependency with `python3 -m pip install pyte==0.8.2`
+before running the PTY suites.
+
+### Appearance and add-on controls
+
+Main chat uses the same Markdown presentation as the transcript and response
+viewer: styled headings, emphasis, inline code, hanging bullets, and distinct
+fenced code. Prose wraps at words inside a reading column capped at 88 cells,
+with two-cell margins (one on the smallest phone screens). Neutral body text
+remains legible without inheriting a terminal's yellow foreground.
+
+Streaming displays completed words and rows before the response finishes. The
+last row is provisional; split Markdown delimiters wait for their closer.
+Unfinished display segments are bounded to 8 KiB, with very long segments rolled
+onto a new display row. Incomplete markup is shown literally at completion or
+that bound. Exact source text remains in logs and clipboard copies. Resizing
+changes subsequent rows; printed terminal scrollback is retained. Provider text
+cannot emit terminal controls or clipboard commands through rendering.
+
+Tool cards show the actual command by default (up to four wrapped rows), a
+completion status, and up to three output rows. Failures show a red status and
+short error preview. `/tools` switches to compact cards. Full commands and
+recorded output remain available in `/details` and the transcript. Cancelled or interrupted responses flush their remaining
+text without carrying Markdown state into the next turn.
+
+- `/dashboard` opens workspace shortcuts for provider/model, sessions, review,
+  context, plans, Git, diagnostics, profiles, responses, mods, extensions, and security.
+- `/theme` selects Aurora, Amber, Monochrome, Orchid, or Ocean for the current session. The
+  composer, Markdown, command selection, rounded modals, and progress share
+  coordinated accent, emphasis, code, success, warning, and error colors.
+  Existing profiles retain their original theme indices. Active provider, tool,
+  and modal work animate with cycling glyphs, colors, and elapsed time; completed
+  text stays still. Motion runs from the existing input loop, at no more than
+  eight redraws per second, and does not add lines to terminal scrollback.
+  Busy multiline drafts use a single-row viewport while retaining their full
+  text. `NO_COLOR=1` selects neutral presentation while activity still animates.
+- `/mods` toggles built-in mods for the session. `redact` masks tool-output lines
+  containing common credential markers; `noisy` remains the example mod.
+  Use `mods = ["redact"]` in your configuration to enable it on future launches.
+- `/extensions` shows loaded versions and tools, opens details, and lets you stop
+  an extension immediately. The manager discovers bundled extensions, shows source
+  and access details, accepts custom commands, and persists enable/disable choices.
+  Failed startup attempts remain visible in its startup warnings view.
+- `/security` describes the active endpoint and local trust boundaries.
+
+Extensions keep their existing host-tool access. They run as trusted local
+programs with your filesystem and network permissions, so inspect their source
+before adding executable commands to `extensions` in your configuration.
+GC filters inherited environment variables whose names contain `TOKEN`, `SECRET`,
+`PASSWORD`, or `API_KEY`, plus `AWS_ACCESS_KEY_ID` and `SSH_AUTH_SOCK`. This reduces
+accidental credential exposure; extensions can still read files accessible to you.
+
+An extension enforcing policy should include `"authorization_required": true`
+in its handshake. In this mode missing, invalid, or negative authorization replies
+block the tool. Legacy extensions retain their previous optional-hook behavior.
+Extensions that fail their startup handshake are skipped with a warning; check
+the loaded list before relying on an extension to enforce policy.
+Extension replies have bounded size and read deadlines, and extension shutdown
+cleans up its owned process group. Duplicate extension names and tools, including
+attempts to replace `bash` or `state`, are rejected.
+
+New session logs and output spills use `0600` permissions; spills live under
+the glass-core data directory in `output/`. Existing logs keep their current
+permissions. Streamed provider text is stripped of terminal control characters.
+The `redact` mod is a best-effort output filter, not a guarantee that all secrets
+are removed: original shell output can still exist in spill files.
+
+### Project workflows
+
+- `/plan` uses a bounded, read-only filesystem inspector. Shell commands, writes,
+  extension tools, and delegation are blocked during planning. Review the proposal
+  in its modal and explicitly choose execution to start a normal coding turn.
+  `gc run --plan --json "describe the change"` supports SSH and headless use.
+  Planning still writes private session logs; local extensions are trusted programs,
+  not an operating-system sandbox.
+- `/init [notes]` drafts an `AGENTS.md` for the workspace in the same
+  read-only mode as `/plan` (no shell, no writes), then offers review, save,
+  or regenerate. The draft is written by the harness, never by the model, and
+  an existing file is replaced only after an explicit confirmation; an outer
+  Markdown fence is unwrapped first if the model wrapped the document in one.
+  `gc init --json` prints a draft, `gc init --write` creates the file.
+- `/git` reviews staged and unstaged changes, stages individual files or hunks,
+  and offers an editable local commit-message draft. Committing requires explicit
+  confirmation. Rename and metadata changes use whole-file staging. Cancelling a
+  commit can occur after Git has completed it; check repository status afterward.
+- `/doctor` checks the model catalogue and offers an optional streaming/tool-format
+  probe. The probe consumes provider quota, records usage, and respects the cost
+  limit; it does not execute the requested test tool. `gc doctor --json` and
+  `gc doctor --json --probe` provide headless diagnostics.
+- `/profiles` saves provider/model, account references, instructions, theme, mods,
+  and extensions per canonical workspace path. Saved profiles contain account IDs,
+  not copied credentials. Changes to an active profile are saved automatically.
+  `gc profiles --json` lists profiles without opening the UI.
+- `/responses` renders Markdown and fenced code, and requests exact response or
+  code-block copying with OSC52. Clipboard support depends on the terminal and
+  SSH/multiplexer settings. Transcript tool collapse preserves the full content.
+
+Bundled extensions need their listed Python or Node interpreter. Enabling them
+uses embedded source and does not download third-party code. Custom commands can
+use a JSON argument vector, such as `["python3", "/path with spaces/ext.py"]`.
+`gc extensions --json` reports configured extensions and the bundled catalogue.
+Theme and mod selections are saved when a workspace profile is active.
+Required extension authorization applies to streamed Bash and mixed tool batches
+as well as ordinary calls.
 
 ## Configure
 
-`~/.config/glass/config.toml`. Every field is optional.
+`~/.config/glass-core/config.toml`. Every field is optional.
+Configuration and session data use only the `glass-core` namespace; this harness
+does not read or migrate the separate project's `glass` directories.
 
 ```toml
 provider = "anthropic"          # "anthropic" | "openai" | "openai-responses"
@@ -128,7 +303,17 @@ base_url = "https://api.anthropic.com"
 model = "claude-opus-4-5"
 api_key_env = "ANTHROPIC_API_KEY"
 max_tokens = 16000
+cost_limit = 5.0              # optional session limit in USD
 mods = []                       # "noisy" is the shipped example
+notify = "auto"                 # auto | osc | bell | off
+
+# Optional: dollars per million tokens. All four fields are
+# required — a partial card would misprice every request.
+[pricing]
+input = 5.0
+cache_read = 0.5
+cache_write = 6.25
+output = 25.0
 ```
 
 The API key is read from an environment variable, never stored in the file. Set
@@ -145,19 +330,169 @@ Any OpenAI-compatible endpoint works, which covers GPT-5, Kimi, GLM, Qwen,
 DeepSeek, Mistral, Gemini's compatibility endpoint, Ollama, vLLM, and LM Studio.
 A new provider is a base URL and a model id, not a new implementation.
 
+### Model fallback
+
+`fallback = ["claude-sonnet-4-5"]` lists model ids to try, in order, when the
+primary fails *before producing any output* — hard rate limits, overload, or a
+model that vanished from the account. Every entry runs on the same connection
+and endpoint; the first model that answers serves the turn, and the stream
+opens with a warning naming the swap so a changed model is never silent.
+Authentication failures are never routed around — a bad credential would fail
+identically on every model — and when everything fails, the primary's error is
+the one reported. The chain applies to delegated sub-agent tasks and their
+model overrides too. A fallback to a smaller-context model is not re-derived
+mid-turn: compaction keeps using the primary's window.
+
 ## Keys
 
 | key | |
 |---|---|
-| `ctrl-g` | fullscreen transcript: scroll, collapse, follow |
+| `ctrl-g` | live transcript: scroll, collapse, follow; works during tools |
+| `ctrl-t` | live provider reasoning or public summary |
+| `esc` in a viewer | close it and restore the draft and main view |
+| `/` on an empty prompt or `ctrl-p` | command palette |
 | `ctrl-c` | interrupt |
 | `ctrl-d` | quit |
 | `up` / `down` | prompt history (line motion in a multi-line draft) |
 | `enter` | steer the running turn |
 | `alt-enter` | queue for after the turn |
-| `/help` | help |
-| `/model <name>` | switch the model for the rest of the session |
-| `/extensions` | loaded extensions, their tools and commands |
+| `/help` | searchable help modal |
+| `/keys` | contextual keyboard reference, including active-turn controls |
+| `/model` | choose provider/account, then an available model |
+| `/model <name>` | use a custom model ID directly |
+| `/login` | guided provider or ChatGPT sign-in |
+| `/logout` | remove a saved connection and its credentials |
+| `/status` | connection, model, and session status |
+| `/clear` | start a fresh session in this terminal |
+| `/extensions` | discover, inspect, enable, or disable extensions |
+| `/plan` | inspect the project and review a plan before execution |
+| `/init` | draft AGENTS.md for this repository in a read-only run |
+| `/git` | review changes, stage files or hunks, confirm a commit |
+| `/doctor` | provider diagnostics and optional streaming/tool probe |
+| `/profiles` | workspace provider, model, instructions, and add-ons |
+| `/responses` | formatted responses, code blocks, and exact copy |
+| `/skills` | loaded skills |
+
+### Command palette
+
+Type `/` at an empty prompt or press `ctrl-p` to open the command modal.
+Type to filter, use `up`/`down` to choose, and press `enter` to select. Commands
+open selectors or input fields inside a modal. `/model` chooses a provider or
+account and then fetches its available models; `/help` and `/keys` are searchable. `tab`
+completes a command for editing inside the palette; `esc` closes the modal. A draft opened with
+`ctrl-p` is restored when you cancel. Loaded extensions' slash commands appear
+alongside the built-ins.
+
+The palette and its command dialogs draw inside the app-owned screen, without
+nested alternate screens. Ordinary typing uses the terminal's cursor and flushes
+every frame, keeping the first and last typed characters visible immediately.
+
+### Provider onboarding
+
+Use `/login` to connect a provider. The flow guides you through authentication
+and model selection, with masked secret entry and an explicit cancel action.
+Built-in choices include Anthropic, OpenAI API, Google Gemini, OpenRouter,
+DeepSeek, Groq, Mistral, xAI, Cerebras, Z.AI Coding Plan, Ollama, and LM Studio.
+Custom endpoints support Chat Completions, Responses, or Anthropic Messages.
+Your last selected connection and model are restored at startup; the remaining
+options continue to come from config.toml.
+API keys can come from the provider's environment variable or private local
+storage. Local runtimes can use no authentication.
+
+**Continue with ChatGPT** uses OpenAI's [direct open-source sign-in flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in),
+with PKCE, a loopback callback, a stable installation ID, validated ID-token
+signatures and account identity, and explicit ChatGPT plan permission. The
+browser completes authorization; remote terminals can paste the final callback
+URL into a masked field. Returning sign-in reuses that account's issued client
+ID. Multiple accounts are kept separately. Tokens refresh before new turns,
+and revoked sessions show an instruction to reconnect with `/login`.
+
+Credentials and saved provider/model choices live exclusively in
+`~/.config/glass-core/auth.json` (or the XDG config location), written atomically
+with owner-only permissions on Unix. They are never imported from Glass, pi,
+Hermes, or Codex. `/logout` removes this application's saved connection; it does
+not revoke the provider grant or unset shell environment variables.
+
+Model choices come from the selected provider or account's live catalog, with a
+custom-ID option for endpoints that do not expose discovery. ChatGPT uses the
+public Responses API with `store=false`, rather than the legacy Codex backend.
+API-key pricing and ChatGPT plan usage are different: model costs are shown only
+when an applicable rate card is available; unknown costs are not guessed.
+
+`/help`, `/status`, `/skills`, `/extensions`, `/diff`, checkpoints, and job output
+stay in temporary modal screens. Budgets, branch points, job actions, and command
+inputs use guided selectors or fields. Normal conversation remains in terminal
+scrollback. Input fields also support Ctrl+A/E, Ctrl+U/K, and Ctrl+W.
+
+Missing credentials fail before inference. HTTP authentication failures, SSE
+errors, truncated streams, and empty replies are surfaced explicitly. Partial
+streams never execute pending tool calls. Both Chat Completions and Responses
+retain tool requests and matching results across turns and session resumes.
+
+The interaction patterns were informed by [pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/providers.md)
+and [Hermes](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/integrations/providers.md).
+
+### Sessions, context, and task review
+
+`/sessions` searches conversations in the current project. Choose a session to
+preview, rename, resume, branch through a chosen turn, or delete with confirmation.
+The current session cannot be deleted. Deletion removes its transcript, title,
+attachments, and cost ledger; workspace files and checkpoint snapshots stay.
+Sessions are bound to the canonical workspace path. Older logs acquire a project
+binding when explicitly resumed, and then appear in that project's browser.
+
+`/context` shows estimated context usage, the loaded system prompt and project
+instructions, the skill catalogue, attachments, and compaction summaries.
+`/attach` opens a searchable project file picker; `/attach path` also works.
+Attachments are saved UTF-8 snapshots, capped at 32 KiB per file and 128 KiB in
+total. Remove them in `/context`; removing an attachment changes future prompt
+context, and does not remove material already present in conversation history.
+
+Tool activity shows running/completion state and elapsed time. `/details` searches
+recorded tool names, commands, and inline output. Its detail view can copy the
+exact original command or recorded inline output; it identifies spilled or
+truncated output without loading an unbounded file. Every task ends with a
+compact command/file-change summary. `/review` shows the final answer, actual
+shell commands and exit statuses, and the checkpoint diff. It does not infer
+that tests passed from an agent's completion message.
+
+`/export [path]` writes the raw conversation to Markdown — user and assistant
+turns, commands with their exit status, and folded tool output, with fences
+that content cannot break; reasoning stays out unless asked for. The raw log
+is the source, so the export includes turns compaction later dropped.
+`gc export <id> [--out PATH] [--thinking] [--json]` does the same headlessly,
+printing to stdout when no output path is given.
+
+Failed streams preserve partial assistant text. `/retry` offers retry, provider
+and model selection, or sign-in, then resumes the existing context. During
+recovery, identical tool name/arguments with an existing result reuse that result
+even when the provider issues a new call ID. Completed actions are not replayed.
+HTTP errors, including unavailable models and rate limits, remain visible.
+
+### Small terminals and editing
+
+Modal selectors keep the current selection visible and drop decorative rows on
+short screens. Press F1 or Right to read a selected item's full label. Information
+views wrap and scroll with arrows, PageUp/PageDown, Home/End. Fields display an
+insertion caret and mask secrets. The composer keeps a bounded viewport around
+the cursor for long pasted text and clears rows when a draft shrinks. Width
+calculations account for wide Unicode characters and combining marks.
+
+Ctrl+R (or `/history`) searches prompt history. Ctrl+X (or `/editor`) uses
+`VISUAL`, then `EDITOR`, then `vi`, preserving the draft if the editor fails.
+Tab searches project file paths. Alt+Enter inserts a newline while idle;
+Ctrl/Shift+Enter also do so when the terminal reports those keys. While busy,
+Alt+Enter keeps its existing meaning of queueing a follow-up. Bracketed paste
+preserves newlines. Ctrl+C cancels the current turn, drops queued follow-ups,
+and stops owned shell process groups. Cancelling a response stops local
+consumption; it does not guarantee that the provider stops processing or billing
+an already submitted request. `/redraw` repaints the current terminal screen;
+Ctrl+G reopens the recorded transcript.
+
+Offline PTY checks cover 80×24, 40×12, 24×10, and 20×8 terminals, resize during
+editing and modal navigation, draft restoration, multiline paste, file selection,
+sessions, response recovery, and cancellation. Real ChatGPT browser authorization
+and paid account inference are intentionally left for the user's later sign-in.
 
 ### Steering
 
@@ -177,31 +512,73 @@ Both need the input thread: the loop must stay able to read keys while a model
 is streaming and a command is running, which is why `crates/glass/src/input.rs`
 owns stdin on its own thread and the loop drains it non-blockingly.
 
+### Turn notifications
+
+Long turns are meant to be walked away from. When a turn that ran at least
+five seconds finishes — or any turn fails, however fast — glass-core gets
+your attention. `notify = "auto"` sends OSC 9 on terminals that surface it
+(iTerm2, WezTerm, kitty, Ghostty, VS Code, mintty) and rings the bell
+everywhere else; `"osc"` and `"bell"` force one mechanism; `"off"` silences
+it. Cancelled and steered turns never notify, because you are already at the
+keyboard, and a queued follow-up defers the alert until the work is really
+done. Notifications are interactive-only; headless runs stay silent. The
+message carries the turn duration and session cost and never includes
+provider text that could smuggle terminal controls.
+
 ## Sessions
 
-One append-only JSONL file per session under `$XDG_DATA_HOME/glass`. The same
+One append-only JSONL file per session under `$XDG_DATA_HOME/glass-core`. The same
 file is the crash-recovery mechanism, the resume mechanism, and the source for
 the transcript viewer — which is what keeps the two renderers from drifting.
 
 ```sh
-glass list
-glass resume
-glass resume <id>
+glass-core list          # sessions, newest first, with date and first message
+glass-core search <pat>  # every session whose messages match a pattern
+glass-core resume
+glass-core resume <id>
 ```
 
-## Rendering: why there is no alt-screen
+Prompt history is persisted too: `up` recalls prompts from earlier
+sessions, capped at 200.
 
-The default view writes into the terminal's own scrollback. History therefore
-belongs to the terminal, which already scrolls, searches, and selects for free,
-and the harness heap holds only a bounded diff buffer. pi publishes "a few
-hundred kilobytes" for the same design.
+## Rendering: one owned screen
 
-Holding history in RAM instead is not free: 10,000 messages at a realistic 1–4KB
-average is 10–40MB, which is a harness's entire memory budget before it starts.
+The interactive app owns one alternate screen for its lifetime. The shell's
+primary screen and scrollback are restored on exit. Provider output, activity,
+and composer have separate owned rows; resize repaints the app surface so
+terminal reflow cannot turn draft text or decorative rules into history.
 
-`ctrl-g` opens a fullscreen ratatui transcript for people who want a scrollbar,
-jump-to-turn, and per-turn collapse. It is opt-in, so you only pay for it when
-you actually scroll back.
+The rendered viewport cache is capped at 1 MiB. Full conversation records stay
+in the private session log and are reachable through Ctrl-G or PageUp. Shared
+modals and live viewers use the same screen; they do not nest alternate-screen
+switches. Prose uses a neutral foreground, emphasis and code use coordinated
+colors, and tools show their actual commands and bounded output previews.
+PageUp or Ctrl-B scrolls the conversation in place; PageDown or Ctrl-F moves
+toward newer messages. Mouse-wheel scrolling works in terminals that forward
+mouse events. The composer stays editable while you read. New output preserves
+your reading position and shows an update count; End or Esc returns to the
+latest content. Ctrl-G opens the dedicated transcript viewer.
+The user's prompt is marked by a cyan `❯` and printed once
+— the typed line is replaced, not echoed — so a prompt is
+never recorded twice.
+
+Narrow terminals — a phone over ssh — get the same
+language in less space: the banner splits into short
+lines, tool commands and results wrap in bounded previews
+(the full text stays in the transcript), and
+the usage accounting takes two rows instead of one,
+so no line wraps mid-number. A terminal that reports
+a zero size mid-resize is read as 80x24 rather than
+wrapping the editor at zero columns.
+
+`ctrl-g` opens the transcript while idle or during provider/tool work. Work
+continues while it is open; Ctrl-G or Esc closes it and restores the draft.
+Ctrl-T or `/thinking` brings provider-exposed reasoning or a public summary to
+the front. Unsupported providers show an honest empty state. Up/Down, paging,
+Home and End navigate; End follows arriving text. Ctrl-C cancels active work
+even from an overlay. Primary output is privately spooled while an overlay is
+open, then replayed once when it closes. Fixed composer and activity rows stay
+separate from conversation. A short accent divider fits even 20-column phones.
 
 ## Side questions
 
@@ -237,7 +614,7 @@ whole list after every change, so the model reads the state it just produced
 rather than making a separate call.
 
 ```sh
-extensions = ["python3 ~/.config/glass/ext/todo.py"]
+extensions = ["python3 ~/.config/glass-core/ext/todo.py"]
 ```
 
 It is an extension for the same reason hashline is: a plan is a capability, not
@@ -245,21 +622,84 @@ a core tool, and shipping it out of process keeps the two core tools to two.
 
 ## Delegation
 
-`extensions/subagent` adds a `subagent` tool: hand a self-contained task to a
-second agent and get back its report. The sub-agent runs a full turn loop with
-its own isolated context, so its scratch work never enters your conversation —
-only the final report does. It carries the two core tools (`bash` and `state`)
-and nothing else, and runs synchronously inside your turn: the work happens in
-your workspace, so a sub-agent can edit the same files you can.
+`extensions/subagent` adds a `subagent` tool: delegate one to eight
+self-contained tasks and get back their reports. Every task runs a full turn
+loop with its own isolated context, so scratch work never enters your
+conversation — only the reports do. Sub-agents carry the two core tools
+(`bash` and `state`) and nothing else; the work happens in your workspace, so
+a sub-agent can edit the same files you can.
 
-```sh
-extensions = ["python3 ~/.config/glass/ext/subagent.py"]
+Independent tasks in one call run in parallel, up to four at a time, and the
+reports come back in request order. Fan-out happens in the host, not in the
+extension, because one extension is one serial stdio pipe — the extension
+declares the tool and forwards the batch, and the nested loops run in
+glass-core where the provider and the tools already live. A sub-agent is never
+a second harness to maintain.
+
+```toml
+extensions = ["python3 ~/.config/glass-core/ext/subagent.py"]
 ```
 
-The heavy lifting stays in the harness. The extension only declares the tool and
-forwards the task; the nested loop itself runs in glass, where the provider and
-the tools already live. That keeps the extension a thin shell and means a
-sub-agent is never a second harness to maintain.
+Tasks may opt into two kinds of isolation:
+
+- **A named agent** runs the task with a saved prompt (and optional model):
+  `~/.config/glass-core/agents/*.md` with `name`, `description`, optional
+  `model` frontmatter and the body as the sub-agent's system prompt. See the
+  definitions with `/agents`.
+- **`worktree: true`** runs the task in a detached git worktree at HEAD, so
+  edits cannot collide with your working tree. The report includes the
+  worktree path for inspection; uncommitted parent changes are not present,
+  and nothing is merged back automatically.
+
+A task that fails — or whose worker panics — produces an error in its own
+report slot and never aborts its siblings.
+
+## Web access
+
+`extensions/web` adds `web_fetch` and `web_search`, opt-in like every other
+capability:
+
+```toml
+extensions = ["python3 ~/.config/glass-core/ext/web.py"]
+```
+
+`web_fetch` returns one URL as readable text — HTML stripped to prose with
+links kept inline, scripts and styles dropped, the body capped at 512 KB and
+the text at 20,000 characters (tunable per call). It is a text browser; raw
+bytes, headers, and POSTs remain `curl`'s job. `web_search` defaults to
+DuckDuckGo's HTML endpoint with no key required; point it at a SearXNG
+instance in `~/.config/glass-core/web.json` when you have one. Keys belong in
+that file: the host strips `*API_KEY*`/`*TOKEN*` variables from extension
+processes, so environment variables cannot work there. A blocked or
+redesigned backend degrades into an explicit message, never a silent empty
+result.
+
+## MCP tools, out of process
+
+`extensions/mcp-bridge` makes Model Context Protocol servers callable without
+the core growing an MCP client:
+
+```toml
+extensions = ["python3 ~/.config/glass-core/ext/mcp_bridge.py"]
+```
+
+`~/.config/glass-core/mcp.json` lists stdio servers:
+
+```json
+{
+  "servers": {
+    "files": { "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"] }
+  }
+}
+```
+
+Each tool appears namespaced as `mcp__<server>__<tool>` with its JSON Schema
+passed through. Past 40 tools the bridge switches to `mcp_search` and
+`mcp_call`, so a large server does not inflate every prompt. A server that
+fails to start is skipped with a note on stderr; calls into a dead server
+return an error string, never a hung turn. stdio only — HTTP and SSE
+transports are out of scope — and nothing spawns unless `mcp.json` asks for
+it.
 
 ## Context management
 
@@ -276,23 +716,67 @@ they tested, with task complexity held constant).
 A safety net runs underneath both: oversized tool results are replaced with
 placeholders, preserving head and tail. Tool output is where the tokens are.
 
+`/compact [focus]` compacts on demand, below the threshold — a manual
+compaction is a statement about what you want, not a measurement — and the
+optional focus steers what the summary keeps. The summary request serializes
+each record with a 2,000-character ceiling, so it always fits the window it
+is replacing.
+
+Three failure lessons from other harnesses are built in. When a provider
+refuses a request as too large, the harness evicts oversized tool results
+anywhere in the conversation and drops the middle once, then retries — never
+re-streaming the history that just did not fit (Crush's permanent-wedge
+cascade). Three consecutive summary failures open a circuit breaker that
+stops paid summarization for the session while deterministic compaction
+keeps running, instead of a permanent lock after one failure. And an
+oversized tool result is only ever replaced with an explicit placeholder,
+never silently dropped.
+
 ## No permission system
 
 `bash` runs what the model asks for. There is no allowlist, no prompt, no
 sandbox. This is a deliberate choice for a single-user tool and it is the
 opposite of what every vendor ships by default, so it is worth being explicit:
-**run glass somewhere you are willing to lose.**
+**run glass-core somewhere you are willing to lose.**
 
 If you want gating, the `Mod_::authorize` hook is where it goes. The shipped
 `noisy` mod blocks `rm -rf /` in about five lines as a demonstration.
+
+### Optional sandbox
+
+For unattended runs and untrusted repositories there is an opt-in, kernel-level
+middle ground that needs no prompts:
+
+```toml
+sandbox = "workspace"   # "off" (default) | "workspace" | "strict"
+```
+
+`workspace` confines every shell command — the `bash` tool and `/bg` jobs — to
+writing only under the workspace, the temp directory, `/var/tmp`, the
+glass-core data/config dirs, `~/.cache`, `~/.cargo`, and `/dev/null`; reads are
+unrestricted. `strict` additionally narrows reads and execution to an allowlist
+(the workspace, system directories, `~/.cargo`, `~/.rustup`, `~/.cache`), which
+is deliberately breakage-tolerant: a tool that reads somewhere unusual will
+fail, and that is the point. Network is not restricted in this version.
+
+Linux uses Landlock via raw syscalls (kernel 5.13 or newer; no new
+dependency). macOS wraps commands with `sandbox-exec`. A platform that cannot
+deliver the requested policy warns once at startup; `strict` refuses to run
+commands at all rather than silently downgrading to no confinement. `/security`
+shows the active state.
 
 ## Extending
 
 Three mechanisms, in increasing order of power.
 
-**Project instructions** are read automatically. If the workspace has an
+**Project instructions** are read after consent. If the workspace has an
 `AGENTS.md`, `AGENTS.override.md`, or `CLAUDE.md`, it goes into the system
-prompt. One file per directory (first match wins), 8KB per file, 12KB total,
+prompt — but only once you allow it for that workspace. The decision is keyed
+by a content hash, so edited instructions ask again rather than riding on the
+old approval, and a denial persists until the content changes.
+`trust = "always"` in config restores the pre-gate behavior; headless runs
+skip untrusted instructions with a warning on stderr unless `--trust` is
+passed. One file per directory (first match wins), 8KB per file, 12KB total,
 truncated with a visible marker rather than silently filling the prompt. No
 ancestor walking, because that is what makes the feature unpredictable. A
 compile-time assertion fails the build if the budget is raised past 16KB.
@@ -305,7 +789,7 @@ and it bundles QuickJS, a TypeScript loader, and an image worker. Ours ships
 
 ```toml
 extensions = [
-  "node ~/.config/glass/ext/mine.js",
+  "node ~/.config/glass-core/ext/mine.js",
   "python3 ~/tools/my-ext.py",
 ]
 ```
@@ -330,7 +814,7 @@ Copy `extensions/hello.py` — it implements the entire protocol in 100 lines.
 and defines the hook surface. They stay for anything that needs to be in the
 hot path, and they cannot segfault the harness.
 
-**Skills** are markdown files in `~/.config/glass/skills/`:
+**Skills** are markdown files in `~/.config/glass-core/skills/`:
 
 ```markdown
 ---
@@ -381,8 +865,9 @@ can `tail` or `rg` the rest instead of the tail being discarded. pi does the
 same thing; losing the end of a build log is losing the part that says what went
 wrong.
 
-Measured on a 2006-era toolchain: 2.4 MB binary, ~2 MB idle RSS, sub-10ms
-startup.
+Measured on Linux aarch64 with Rust 1.97 (2026-10-07): approximately 3.7 MB
+for the stripped binary, 3.7 MB idle RSS, and 7.0 ms median from process launch to the
+first prompt in an isolated PTY. Startup excludes provider network requests.
 
 ## Layout
 
@@ -391,7 +876,8 @@ crates/glass-mod-api   the in-process hook surface, zero dependencies
 crates/glass-tui       terminal rendering, input, virtualized transcript
 crates/glass           loop, providers, tools, session, compaction, config,
                        extension protocol, AGENTS.md, concurrency, read guard,
-                       post-write verification, /btw
+                       post-write verification, /btw, provider onboarding,
+                       account auth, command modals, budgets, checkpoints, jobs
 extensions/            hello.py (reference), codemode, hashline
 ```
 
@@ -402,8 +888,160 @@ type is defined there — and it stays dependency-free so that it always can.
 
 ```sh
 cargo test --workspace
+cargo build
+python3 scripts/smoke-features.py
+python3 scripts/smoke-onboarding.py
+python3 scripts/smoke-polish.py
+python3 scripts/smoke-workflows.py
+python3 scripts/smoke-mobile.py
+python3 scripts/smoke-chat.py
+python3 scripts/smoke-motion.py
+python3 scripts/smoke-install.py
+python3 scripts/smoke-trust.py
+python3 scripts/smoke-sandbox.py
+python3 scripts/smoke-init.py
+python3 scripts/smoke-web.py
+python3 scripts/smoke-mcp.py
+python3 scripts/smoke-acp.py
+python3 scripts/smoke-serve.py
 ```
 
-116 tests. The bash tests spawn real processes and assert on timeouts, process
+373 tests. The bash tests spawn real processes and assert on timeouts, process
 groups, output truncation, and stderr interleaving, because those are the parts
 that break silently.
+
+## Review, checkpoints, and undo
+
+Each agent task in a Git workspace automatically saves the working tree before
+and after execution. `/diff` shows the last task's file summary and patch,
+including new files. `/undo` restores only those task changes to their starting
+contents, preserving edits that existed before the task and unrelated later
+edits. It refuses any affected file changed after the task. Git's staging index
+is left unchanged.
+
+`/checkpoints` lists saved checkpoints. `/diff <name>` and `/undo <name>` select
+an earlier task. `/checkpoint` saves an explicit baseline; `/restore <name>`
+restores that baseline and saves a recovery checkpoint first. Unlike `/undo`,
+explicit restore intentionally replaces subsequent edits. Recovery checkpoints
+can also be restored using `/restore`.
+
+Snapshots include tracked files and nonignored new files across the Git repository.
+Ignored build outputs and submodule contents are outside their scope. Git objects
+are kept under `refs/glass-core/<session>/`; manifests live beside session data in
+`checkpoints/<session>/`. This works with uncommitted user edits and an unborn
+branch, and does not create commits. Outside Git, the agent still runs but review
+and recovery checkpoints are unavailable.
+
+## Session spending limits
+
+Set `cost_limit = 5.0` in config or use `/budget 5` during a session. `/budget`
+shows spending and the current limit; `/budget off` disables the limit. Accounting
+covers every model request, including delegated tasks, side questions, summaries,
+and cache refreshes, using the rate card active for that request. The ledger
+persists alongside the session and reloads on resume.
+
+The limit is checked before each request. An in-flight request can cross the
+limit; the next request is refused. Models require a known rate card for limits,
+and missing usage or unreadable accounting prevents further budgeted requests.
+Use `[pricing]` for models without a built-in card. The displayed session cost
+includes delegated work and survives model switches.
+
+## Headless execution
+
+```sh
+glass-core run "fix the failing build"
+glass-core run --json --budget 2 "review this change"
+glass-core run --json --resume SESSION_ID "continue the task"
+glass-core run --json --resume SESSION_ID --retry --model MODEL_ID
+glass-core run --json --attach src/main.rs "review this file"
+glass-core sessions --json
+glass-core context SESSION_ID --json
+glass-core review SESSION_ID --json
+printf '%s' 'explain this repository' | glass-core run --json
+```
+
+Headless execution uses the same tools, extensions, project instructions,
+compaction, and task checkpoints as the terminal. It saves a resumable session.
+`--json` emits one JSON object on stdout with session ID, final text, status,
+error, cost, and checkpoint error; diagnostics go to stderr. Exit codes are
+0 for a finished agent turn, 1 for an error, 2 for an exhausted tool-round limit,
+and 3 for reaching the session cost limit. SIGINT/SIGTERM stop owned shell
+process groups, save partial responses, emit `status: "cancelled"` in JSON,
+and exit with 130/143. Parse and preflight failures also emit a JSON error
+when `--json` is requested. `--connection ID` chooses a saved account without
+changing the global preference; use `glass-core status --json` to find IDs.
+Run interactively over SSH with `ssh -t host gc`; non-interactive runs require
+no terminal. Browser sign-in over SSH supports pasting the final loopback
+callback URL in `/login`; API keys can also be configured through environment
+variables. There is no credential import from another harness. A finished turn is the model's
+completion signal; callers should still check their own build or test results.
+
+## Conversation branches
+
+`/branch` forks the current conversation into a new session; `/branch 3` forks
+through user turn 3. The original log stays intact. Branching reads the complete
+log, so it works after compaction. Conversation branching keeps the workspace
+files as they currently are; use a checkpoint restore separately when desired.
+Each branch starts its own spending ledger with the current limit.
+
+### Editor integration (ACP)
+
+`glass-core acp` speaks the Agent Client Protocol (v1) on stdio, so editors
+that host agents over ACP can drive glass-core natively. `initialize` and
+`session/new` bind a glass session to the editor's working directory; prompts
+stream back as `agent_message_chunk`, provider reasoning as
+`agent_thought_chunk`, tool activity as `tool_call` / `tool_call_update`, and
+each turn closes with a `usage_update` and a stop reason. `session/cancel`
+interrupts before the next command, kills owned process groups, and answers
+`cancelled` rather than an error.
+
+The engine is the same as the terminal and headless paths — tools,
+extensions, compaction, budgets, the trust gate, and the sandbox policy all
+apply. Deliberately outside the advertised surface: `session/load`, mode
+switching, and the client-side filesystem/terminal callbacks, because
+glass-core runs its own shell and has no permission prompts by design.
+Client-supplied MCP servers are accepted and ignored; connect MCP servers on
+the host with the mcp-bridge extension instead.
+
+### A session that outlives the window
+
+```sh
+glass-core serve                    # owns a session, prints its socket path
+glass-core attach --socket <path>   # terminal client; detach without stopping it
+```
+
+`serve` runs the same engine as the terminal — tools, extensions,
+checkpoints, budgets, the trust gate, the sandbox policy — and speaks
+newline-delimited JSON over a 0600 Unix socket in the data directory.
+`attach` finds the newest socket when `--socket` is omitted; it replays the
+last 200 entries from the raw log (so compaction does not hide the record),
+streams new output as it arrives, submits prompts, and cancels with ctrl-c.
+A second client replaces the first and gets the same replay; detaching never
+stops the server, and SIGTERM shuts it down cleanly. v1 keeps the client a
+text terminal: slash commands and modals remain in the interactive session.
+
+## Background commands
+
+```text
+/bg cargo run
+/jobs
+/job 1
+/job 1 stop
+```
+
+Background commands run in the configured workspace while the agent remains
+available. `/jobs` shows IDs, process status, command, and log path; `/job <id>`
+prints the last 60KB of output. `/job <id> stop` stops the command's process group.
+Live jobs are stopped on normal terminal exit. Logs stay under session data in
+`jobs/<session>/` for inspection. Jobs belong to the running terminal process and
+are not reattached on resume.
+
+
+The feature smoke check uses a local mock endpoint and a real terminal process;
+it makes no paid API calls:
+
+```sh
+cargo build
+python3 scripts/smoke-features.py
+python3 scripts/smoke-install.py
+```

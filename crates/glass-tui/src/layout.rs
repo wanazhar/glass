@@ -47,7 +47,11 @@ pub struct Layout {
 
 impl Layout {
     pub fn new(entries: Vec<(String, Role, usize)>) -> Self {
-        let mut l = Self { entries, dirty: true, ..Default::default() };
+        let mut l = Self {
+            entries,
+            dirty: true,
+            ..Default::default()
+        };
         l.rebuild_index();
         l
     }
@@ -62,7 +66,7 @@ impl Layout {
     }
 
     fn same_shape(&self, other: &[(String, Role, usize)]) -> bool {
-        self.entries.iter().zip(other).all(|(a, b)| a.0.len() == b.0.len())
+        self.entries.iter().zip(other).all(|(a, b)| a == b)
     }
 
     pub fn len(&self) -> usize {
@@ -110,7 +114,7 @@ impl Layout {
             // entries we are still counting, so every line past the cap would
             // measure as one line and the index would be wrong.
             let (text, role, _) = &self.entries[i];
-            let n = build_lines(text, *role, width).len().max(1);
+            let n = entry_lines(text, *role, width, i > 0).len().max(1);
             self.total += n;
         }
         self.starts.push(self.total);
@@ -123,7 +127,9 @@ impl Layout {
             return l.clone();
         }
         let (text, role, _) = self.entries[idx].clone();
-        let laid = Laid { lines: build_lines(&text, role, width) };
+        let laid = Laid {
+            lines: entry_lines(&text, role, width, idx > 0),
+        };
         self.cache.insert(idx, laid.clone());
         self.order.push(idx);
         if self.order.len() > CACHE_CAPACITY {
@@ -143,11 +149,14 @@ impl Layout {
     /// Change the wrap width. Every cached entry was wrapped for the old width,
     /// so the whole cache is invalid and the index must be rebuilt.
     pub fn set_width(&mut self, width: u16) {
-        if self.last_width == Some(width) {
+        if self.last_width == Some(width) && !self.dirty {
             return;
         }
         self.last_width = Some(width);
-        self.dirty = true;
+        self.rebuild_index();
+    }
+    pub fn width(&self) -> u16 {
+        self.last_width.unwrap_or(80)
     }
 
     /// The lines visible in `area`, starting at `scroll`.
@@ -199,41 +208,77 @@ impl Layout {
     }
 }
 
+fn entry_lines(text: &str, role: Role, width: u16, boundary: bool) -> Vec<Line<'static>> {
+    let mut lines = build_lines(text, role, width);
+    if boundary {
+        lines.insert(0, Line::default());
+    }
+    lines
+}
+
 /// Build the display lines for one entry.
 ///
 /// A `Role::Meta` entry renders as a single dim line regardless of content,
 /// which is both cheaper and visually correct for compaction markers.
 fn build_lines(text: &str, role: Role, width: u16) -> Vec<Line<'static>> {
     if role == Role::Meta {
-        return vec![Line::from(Span::styled(truncate(text, width as usize), role_style(role)))];
+        return vec![Line::from(Span::styled(
+            truncate(text, width as usize),
+            role_style(role),
+        ))];
     }
 
-    let wrapped = wrap_width(text, width.saturating_sub(2) as usize);
+    let prefix = match role {
+        Role::User => "❯ ".to_string(),
+        Role::Assistant => String::new(),
+        _ => crate::text::clip(
+            &format!(" {} ", role.label()),
+            width.saturating_sub(1) as usize,
+        ),
+    };
+    let content_width = usize::from(width)
+        .saturating_sub(crate::text::width(&prefix))
+        .max(1);
+    let wrapped = if role == Role::Assistant {
+        crate::markdown::lines(trim_leading_blank_lines(text), content_width)
+    } else {
+        wrap_width(text, content_width)
+            .into_iter()
+            .map(Line::from)
+            .collect()
+    };
 
     // The role label appears only on the first line, so it is built once and
     // consumed on the first iteration rather than cloned per line.
     let mut first = true;
     let mut lines = Vec::with_capacity(wrapped.len());
-    for w in wrapped {
+    for mut line in wrapped {
         if first {
             first = false;
-            lines.push(Line::from(vec![
-                Span::styled(format!(" {} ", role.label()), role_style(role)),
-                Span::raw(w),
-            ]));
-        } else {
-            lines.push(Line::from(Span::raw(w)));
+            line.spans
+                .insert(0, Span::styled(prefix.clone(), role_style(role)));
         }
+        lines.push(line);
     }
     lines
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    let mut out: String = s.chars().take(max).collect();
-    if s.chars().count() > max {
-        out.push('…');
+/// Remove leading empty display lines without changing the stored entry or
+/// stripping indentation from the first visible line.
+fn trim_leading_blank_lines(text: &str) -> &str {
+    let mut start = 0;
+    for line in text.split_inclusive('\n') {
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        if !content.trim().is_empty() {
+            break;
+        }
+        start += line.len();
     }
-    out
+    &text[start..]
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    crate::text::clip(s, max)
 }
 
 fn role_style(role: Role) -> ratatui::style::Style {
@@ -252,14 +297,67 @@ fn role_style(role: Role) -> ratatui::style::Style {
 mod tests {
     use super::*;
 
+    #[test]
+    fn replacing_same_length_text_updates_the_layout() {
+        let mut layout = Layout::new(vec![("old".into(), Role::User, 1)]);
+        layout.set_entries(vec![("new".into(), Role::User, 1)]);
+        assert_eq!(layout.entries[0].0, "new");
+    }
+
+    #[test]
+    fn user_has_cyan_prompt_marker_and_assistant_has_no_role_heading() {
+        let user = build_lines("do the task", Role::User, 40);
+        assert_eq!(user[0].to_string(), "❯ do the task");
+        assert_eq!(
+            user[0].spans[0].style.fg,
+            Some(ratatui::style::Color::Cyan)
+        );
+        assert!(user[0].spans[0]
+            .style
+            .add_modifier
+            .contains(ratatui::style::Modifier::BOLD));
+
+        let assistant = build_lines("A plain answer", Role::Assistant, 40);
+        assert_eq!(assistant[0].to_string(), "A plain answer");
+        assert!(!assistant[0].to_string().contains("glass"));
+        assert!(!assistant[0].to_string().contains("Assistant"));
+    }
+
+    #[test]
+    fn entries_have_one_compact_blank_boundary() {
+        let lines = entry_lines("reply", Role::Assistant, 40, true);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].to_string().is_empty());
+        assert_eq!(lines[1].to_string(), "reply");
+    }
+
+    #[test]
+    fn assistant_display_drops_only_leading_blank_lines() {
+        assert_eq!(trim_leading_blank_lines("\n \t\n  indented prose"), "  indented prose");
+        let assistant = build_lines("\n\nanswer", Role::Assistant, 40);
+        assert_eq!(assistant.len(), 1);
+        assert_eq!(assistant[0].to_string(), "answer");
+    }
+
     fn entries(n: usize) -> Vec<(String, Role, usize)> {
         (0..n)
-            .map(|i| (format!("entry {i} with some text to wrap around"), Role::User, i))
+            .map(|i| {
+                (
+                    format!("entry {i} with some text to wrap around"),
+                    Role::User,
+                    i,
+                )
+            })
             .collect()
     }
 
     fn rect(h: u16) -> Rect {
-        Rect { x: 0, y: 0, width: 80, height: h }
+        Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: h,
+        }
     }
 
     #[test]
@@ -267,7 +365,11 @@ mod tests {
         let mut l = Layout::new(entries(5000));
         l.set_width(80);
         let items = l.visible(0, rect(30));
-        assert!(items.len() <= 30, "built {} items for a 30-row viewport", items.len());
+        assert!(
+            items.len() <= 30,
+            "built {} items for a 30-row viewport",
+            items.len()
+        );
         assert!(!items.is_empty());
     }
 
@@ -293,7 +395,10 @@ mod tests {
     #[test]
     fn total_lines_grows_with_entries() {
         let l = Layout::new(entries(50));
-        assert!(l.total_lines() >= 50, "each entry contributes at least one line");
+        assert!(
+            l.total_lines() >= 50,
+            "each entry contributes at least one line"
+        );
     }
 
     #[test]
@@ -310,7 +415,11 @@ mod tests {
         let mut l = Layout::new(entries(10_000));
         l.set_width(80);
         let _ = l.visible(9_000, rect(30));
-        assert!(l.cache.len() <= CACHE_CAPACITY, "cache grew to {}", l.cache.len());
+        assert!(
+            l.cache.len() <= CACHE_CAPACITY,
+            "cache grew to {}",
+            l.cache.len()
+        );
     }
 
     #[test]
@@ -318,13 +427,27 @@ mod tests {
         // Each entry is short enough to fit on one line at 80 columns, but
         // wraps to several at 20, so the total line count must grow.
         let mut l = Layout::new(entries(20));
-        let wide = Rect { x: 0, y: 0, width: 80, height: 10 };
+        let wide = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 10,
+        };
         let _ = l.visible(0, wide);
         let at_80 = l.total_lines();
 
-        let narrow = Rect { x: 0, y: 0, width: 20, height: 10 };
+        let narrow = Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 10,
+        };
         let _ = l.visible(0, narrow);
-        assert!(l.total_lines() > at_80, "narrower width must re-wrap: {} vs {at_80}", l.total_lines());
+        assert!(
+            l.total_lines() > at_80,
+            "narrower width must re-wrap: {} vs {at_80}",
+            l.total_lines()
+        );
     }
 
     #[test]
@@ -344,7 +467,18 @@ mod tests {
     #[test]
     fn zero_height_returns_nothing() {
         let mut l = Layout::new(entries(100));
-        assert!(l.visible(0, Rect { x: 0, y: 0, width: 80, height: 0 }).is_empty());
+        assert!(
+            l.visible(
+                0,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 0
+                }
+            )
+            .is_empty()
+        );
     }
 
     #[test]

@@ -20,7 +20,7 @@
 //! token that would be fatal, so the protocol is deliberately shaped around
 //! per-turn and per-tool-call boundaries instead.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Protocol version. An extension whose version we do not know is rejected at
 /// handshake rather than misbehaving later.
@@ -84,6 +84,8 @@ pub struct CommandSpec {
 /// What an extension announced during its handshake.
 #[derive(Clone, Debug, Default)]
 pub struct Manifest {
+    /// Require a valid allow decision; opt-in for legacy compatibility.
+    pub authorization_required: bool,
     pub name: String,
     pub version: String,
     pub tools: Vec<ToolSpec>,
@@ -121,26 +123,44 @@ pub struct WarmerPolicy {
 impl WarmerPolicy {
     /// Five-minute TTL, refreshed at four, for prefixes above
     /// roughly a thousand tokens.
-    pub const DEFAULT: Self = Self { refresh_after_s: 240, min_prefix_bytes: 4000 };
+    pub const DEFAULT: Self = Self {
+        refresh_after_s: 240,
+        min_prefix_bytes: 4000,
+    };
 }
 
 /// One message sent to an extension.
 #[derive(Clone, Debug)]
 pub enum Request {
     /// Sent once at startup. The extension replies with a manifest.
-    Hello { protocol: u32, workspace: String, model: String },
+    Hello {
+        protocol: u32,
+        workspace: String,
+        model: String,
+    },
     /// Ask for the system-prompt contribution. Replies with `{ "text": ... }`.
     SystemPrompt,
     /// A tool finished. May rewrite the body.
-    ToolResult { call_id: String, name: String, body: String },
+    ToolResult {
+        call_id: String,
+        name: String,
+        body: String,
+    },
     /// Decide whether a tool call may run. Replies `{ "allow": bool, "reason": ... }`.
-    Authorize { call_id: String, name: String, arguments: String },
+    Authorize {
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
     /// A turn finished. Replies are ignored.
     ///
     /// `cacheable_prefix_bytes` tells the extension how large the stable
     /// prompt prefix is, which is what a cache warmer needs to decide whether
     /// a refresh write is worth its cost.
-    TurnEnd { text: String, cacheable_prefix_bytes: usize },
+    TurnEnd {
+        text: String,
+        cacheable_prefix_bytes: usize,
+    },
     /// A slash command was invoked. Replies with `{ "output": ... }`.
     Command { name: String, args: String },
     /// Execute a tool the extension contributed. Replies with `{ "output": ... }`.
@@ -153,31 +173,47 @@ impl Request {
     /// Wire form. `id` is filled in by the caller so replies can be matched.
     pub fn to_json(&self, id: u64) -> Value {
         match self {
-            Request::Hello { protocol, workspace, model } => json!({
+            Request::Hello {
+                protocol,
+                workspace,
+                model,
+            } => json!({
                 "type": "hello", "id": id, "protocol": protocol,
                 "workspace": workspace, "model": model
             }),
             Request::SystemPrompt => json!({ "type": "system_prompt", "id": id }),
-            Request::ToolResult { call_id, name, body } => json!({
+            Request::ToolResult {
+                call_id,
+                name,
+                body,
+            } => json!({
                 "type": "tool_result", "id": id,
                 "call_id": call_id, "name": name, "body": body
             }),
-            Request::Authorize { call_id, name, arguments } => json!({
+            Request::Authorize {
+                call_id,
+                name,
+                arguments,
+            } => json!({
                 "type": "authorize", "id": id,
                 "call_id": call_id, "name": name, "arguments": arguments
             }),
-            Request::TurnEnd { text, cacheable_prefix_bytes } => json!({
+            Request::TurnEnd {
+                text,
+                cacheable_prefix_bytes,
+            } => json!({
                 "type": "turn_end", "id": id, "text": text,
                 "cacheable_prefix_bytes": cacheable_prefix_bytes
             }),
-            Request::Command { name, args } => json!({ "type": "command", "id": id, "name": name, "args": args }),
+            Request::Command { name, args } => {
+                json!({ "type": "command", "id": id, "name": name, "args": args })
+            }
             Request::RunTool { name, arguments } => json!({
                 "type": "run_tool", "id": id, "name": name, "arguments": arguments
             }),
             Request::Goodbye => json!({ "type": "goodbye", "id": id }),
         }
     }
-
 }
 
 /// Parse a handshake reply into a [`Manifest`].
@@ -204,8 +240,15 @@ pub fn parse_manifest(v: &Value) -> Result<Manifest, String> {
                 .filter_map(|t| {
                     let n = t.get("name")?.as_str()?.to_string();
                     Some(ToolSpec {
-                        description: t.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
-                        schema: t.get("schema").cloned().unwrap_or_else(|| json!({ "type": "object" })),
+                        description: t
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        schema: t
+                            .get("schema")
+                            .cloned()
+                            .unwrap_or_else(|| json!({ "type": "object" })),
                         concurrency: t
                             .get("concurrency")
                             .and_then(Value::as_str)
@@ -227,7 +270,11 @@ pub fn parse_manifest(v: &Value) -> Result<Manifest, String> {
                     let n = c.get("name")?.as_str()?.to_string();
                     Some(CommandSpec {
                         name: n,
-                        description: c.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
+                        description: c
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
                     })
                 })
                 .collect()
@@ -249,12 +296,28 @@ pub fn parse_manifest(v: &Value) -> Result<Manifest, String> {
             .filter(|b| *b > 0 && *b <= 10_000_000)
             .map(|b| b as usize)
             .unwrap_or(WarmerPolicy::DEFAULT.min_prefix_bytes);
-        WarmerPolicy { refresh_after_s, min_prefix_bytes }
+        WarmerPolicy {
+            refresh_after_s,
+            min_prefix_bytes,
+        }
     });
 
     Ok(Manifest {
-        version: v.get("version").and_then(Value::as_str).unwrap_or("0").to_string(),
-        system_prompt: v.get("system_prompt").and_then(Value::as_str).unwrap_or("").to_string(),
+        authorization_required: match v.get("authorization_required") {
+            None => false,
+            Some(Value::Bool(required)) => *required,
+            Some(_) => return Err("authorization_required must be a boolean".into()),
+        },
+        version: v
+            .get("version")
+            .and_then(Value::as_str)
+            .unwrap_or("0")
+            .to_string(),
+        system_prompt: v
+            .get("system_prompt")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         name,
         tools,
         commands,
@@ -289,6 +352,79 @@ pub fn subagent_result_json(call_id: &Value, output: &str) -> Value {
 /// request is still in flight, so it is demultiplexed the same way.
 pub fn is_subagent_call(v: &Value) -> bool {
     v.get("type").and_then(Value::as_str) == Some("run_subagent")
+}
+
+/// One delegated task in a batched `run_subagents` request.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SubagentTask {
+    pub task: String,
+    /// Replaces the default subagent prompt, e.g. an agent definition body.
+    pub prompt: Option<String>,
+    /// Model id for this task; resolved against the active connection.
+    pub model: Option<String>,
+    /// Run the task in a detached git worktree instead of the workspace.
+    pub worktree: bool,
+}
+
+/// Parse the `tasks` array of a batched subagent request.
+///
+/// The batch is validated as a whole: one malformed entry rejects the
+/// request rather than silently dropping a task the model believes it
+/// delegated.
+pub fn parse_subagent_tasks(v: &Value) -> Result<Vec<SubagentTask>, String> {
+    let tasks = v
+        .get("tasks")
+        .and_then(Value::as_array)
+        .ok_or("run_subagents requires a tasks array")?;
+    if tasks.is_empty() {
+        return Err("run_subagents requires at least one task".into());
+    }
+    let mut out = Vec::with_capacity(tasks.len());
+    for t in tasks {
+        let task = t
+            .get("task")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if task.is_empty() {
+            return Err("every delegated task needs a non-empty task".into());
+        }
+        out.push(SubagentTask {
+            task,
+            prompt: t
+                .get("prompt")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .filter(|s| !s.trim().is_empty()),
+            model: t
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .filter(|s| !s.trim().is_empty()),
+            worktree: t.get("worktree").and_then(Value::as_bool).unwrap_or(false),
+        });
+    }
+    Ok(out)
+}
+
+/// Wire form of the host's answer to a batched `run_subagents` request.
+///
+/// `outputs` holds one report per task, in request order. `error` is set
+/// when the batch itself was rejected before any task ran.
+pub fn subagents_result_json(call_id: &Value, outputs: &[String], error: Option<&str>) -> Value {
+    json!({
+        "type": "subagents_result", "call_id": call_id,
+        "outputs": outputs, "error": error
+    })
+}
+
+/// True when `v` is a batched `run_subagents` request.
+///
+/// The single-task `run_subagent` form is legacy; a batch request is how
+/// fan-out reaches the host, because one extension is one serial pipe.
+pub fn is_subagents_call(v: &Value) -> bool {
+    v.get("type").and_then(Value::as_str) == Some("run_subagents")
 }
 
 /// Render a tool spec into the `(name, description, schema)` triple the
@@ -356,17 +492,26 @@ mod tests {
     fn concurrency_is_read_from_the_manifest() {
         let mut v = reply();
         v["tools"][0]["concurrency"] = json!("serial");
-        assert_eq!(parse_manifest(&v).unwrap().tools[0].concurrency, ExtConcurrency::Serial);
+        assert_eq!(
+            parse_manifest(&v).unwrap().tools[0].concurrency,
+            ExtConcurrency::Serial
+        );
 
         v["tools"][0]["concurrency"] = json!("keyed");
-        assert_eq!(parse_manifest(&v).unwrap().tools[0].concurrency, ExtConcurrency::Keyed);
+        assert_eq!(
+            parse_manifest(&v).unwrap().tools[0].concurrency,
+            ExtConcurrency::Keyed
+        );
     }
 
     #[test]
     fn unknown_concurrency_falls_back_to_parallel() {
         let mut v = reply();
         v["tools"][0]["concurrency"] = json!("nonsense");
-        assert_eq!(parse_manifest(&v).unwrap().tools[0].concurrency, ExtConcurrency::Parallel);
+        assert_eq!(
+            parse_manifest(&v).unwrap().tools[0].concurrency,
+            ExtConcurrency::Parallel
+        );
     }
 
     #[test]
@@ -417,7 +562,11 @@ mod tests {
 
     #[test]
     fn requests_serialize_with_an_id() {
-        let r = Request::ToolResult { call_id: "c1".into(), name: "bash".into(), body: "out".into() };
+        let r = Request::ToolResult {
+            call_id: "c1".into(),
+            name: "bash".into(),
+            body: "out".into(),
+        };
         let j = r.to_json(7);
         assert_eq!(j["type"], "tool_result");
         assert_eq!(j["id"], 7);
@@ -426,15 +575,23 @@ mod tests {
 
     #[test]
     fn hello_carries_workspace_and_model() {
-        let j = Request::Hello { protocol: PROTOCOL_VERSION, workspace: "/tmp".into(), model: "gpt-5".into() }
-            .to_json(1);
+        let j = Request::Hello {
+            protocol: PROTOCOL_VERSION,
+            workspace: "/tmp".into(),
+            model: "gpt-5".into(),
+        }
+        .to_json(1);
         assert_eq!(j["workspace"], "/tmp");
         assert_eq!(j["model"], "gpt-5");
     }
 
     #[test]
     fn turn_end_reports_the_prefix_size() {
-        let j = Request::TurnEnd { text: "x".into(), cacheable_prefix_bytes: 4200 }.to_json(2);
+        let j = Request::TurnEnd {
+            text: "x".into(),
+            cacheable_prefix_bytes: 4200,
+        }
+        .to_json(2);
         assert_eq!(j["cacheable_prefix_bytes"], 4200);
     }
 
@@ -445,12 +602,77 @@ mod tests {
         // A plain reply, and the host's answer to a nested call, must both be
         // treated as ordinary replies rather than triggering a nested dispatch.
         assert!(!is_nested_call(&json!({ "id": 4, "output": "x" })));
-        assert!(!is_nested_call(&nested_call_result_json(&json!("c9"), "out")));
+        assert!(!is_nested_call(&nested_call_result_json(
+            &json!("c9"),
+            "out"
+        )));
+    }
+
+    #[test]
+    fn subagent_batch_is_distinguishable_from_a_single_task() {
+        let batch = json!({ "type": "run_subagents", "tasks": [{ "task": "a" }] });
+        assert!(is_subagents_call(&batch));
+        assert!(!is_subagent_call(&batch), "a batch is not the legacy form");
+        assert!(!is_subagents_call(&json!({ "type": "run_subagent", "task": "a" })));
+        assert!(!is_subagents_call(&subagents_result_json(&json!("c1"), &[], None)));
+    }
+
+    #[test]
+    fn batch_tasks_parse_with_defaults() {
+        let v = json!({ "tasks": [{ "task": "  do the thing  " }, { "task": "other" }] });
+        let tasks = parse_subagent_tasks(&v).unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].task, "do the thing", "task text is trimmed");
+        assert_eq!(tasks[0].prompt, None);
+        assert_eq!(tasks[0].model, None);
+        assert!(!tasks[0].worktree);
+    }
+
+    #[test]
+    fn batch_tasks_carry_agent_and_worktree_fields() {
+        let v = json!({
+            "tasks": [{
+                "task": "review auth",
+                "prompt": "You review security.",
+                "model": "claude-opus-4-5",
+                "worktree": true
+            }]
+        });
+        let t = &parse_subagent_tasks(&v).unwrap()[0];
+        assert_eq!(t.prompt.as_deref(), Some("You review security."));
+        assert_eq!(t.model.as_deref(), Some("claude-opus-4-5"));
+        assert!(t.worktree);
+    }
+
+    #[test]
+    fn a_malformed_batch_is_rejected_whole() {
+        // One bad entry must not silently drop a delegated task.
+        let missing = json!({ "tasks": [{ "task": "ok" }, { "nope": 1 }] });
+        assert!(parse_subagent_tasks(&missing).is_err());
+        let empty = json!({ "tasks": [] });
+        assert!(parse_subagent_tasks(&empty).is_err());
+        let no_array = json!({ "task": "legacy shape" });
+        assert!(parse_subagent_tasks(&no_array).is_err());
+    }
+
+    #[test]
+    fn batch_result_reports_an_error_field() {
+        let outputs = vec!["a done".to_string(), "b failed".to_string()];
+        let j = subagents_result_json(&json!("c1"), &outputs, Some("nope"));
+        assert_eq!(j["type"], "subagents_result");
+        assert_eq!(j["outputs"][1], "b failed");
+        assert_eq!(j["error"], "nope");
+        let ok = subagents_result_json(&json!(null), &outputs, None);
+        assert!(ok["error"].is_null());
     }
 
     #[test]
     fn run_tool_serializes_name_and_arguments() {
-        let j = Request::RunTool { name: "warm".into(), arguments: "{}".into() }.to_json(3);
+        let j = Request::RunTool {
+            name: "warm".into(),
+            arguments: "{}".into(),
+        }
+        .to_json(3);
         assert_eq!(j["type"], "run_tool");
         assert_eq!(j["name"], "warm");
         assert_eq!(j["id"], 3);

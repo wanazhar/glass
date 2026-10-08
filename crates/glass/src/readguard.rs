@@ -62,14 +62,22 @@ impl ReadSet {
 
         // The overwhelmingly common idiom: `cat path`, `head -n5 path`, `less`.
         for (i, tok) in cmd.split_whitespace().enumerate() {
-            let t = tok.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '/' && c != '_' && c != '-');
+            let t = tok.trim_matches(|c: char| {
+                !c.is_alphanumeric() && c != '.' && c != '/' && c != '_' && c != '-'
+            });
             if t.is_empty() || !looks_like_path(t) {
                 continue;
             }
-            let prev = if i > 0 { cmd.split_whitespace().nth(i - 1).unwrap_or("") } else { "" };
+            let prev = if i > 0 {
+                cmd.split_whitespace().nth(i - 1).unwrap_or("")
+            } else {
+                ""
+            };
             let next = cmd.split_whitespace().nth(i + 1).unwrap_or("");
-            let reader = ["cat", "head", "tail", "less", "bat", "wc", "nl", "source", "stat", "file", "wc"]
-                .contains(&prev.trim_matches(|c: char| !c.is_alphanumeric()));
+            let reader = [
+                "cat", "head", "tail", "less", "bat", "wc", "nl", "source", "stat", "file", "wc",
+            ]
+            .contains(&prev.trim_matches(|c: char| !c.is_alphanumeric()));
             let _ = next;
             if reader {
                 self.mark(&abs(t, workspace));
@@ -82,7 +90,14 @@ impl ReadSet {
         for tool in ["rg", "grep"] {
             if let Some(rest) = strip_tool(cmd, tool) {
                 for tok in rest.split_whitespace().skip(1) {
-                    let t = tok.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '/' && c != '_' && c != '-' && c != '*');
+                    let t = tok.trim_matches(|c: char| {
+                        !c.is_alphanumeric()
+                            && c != '.'
+                            && c != '/'
+                            && c != '_'
+                            && c != '-'
+                            && c != '*'
+                    });
                     if t.is_empty() || t.starts_with('-') || t == "." || t == ".." {
                         continue;
                     }
@@ -96,11 +111,15 @@ impl ReadSet {
         // A compiler or test run read and validated every file it touched, and
         // the failure text names them, so anything mentioned in a non-empty
         // result from a build tool counts as read.
-        let builds = ["cargo", "go", "npm", "make", "tsc", "pytest", "gcc", "clang"];
+        let builds = [
+            "cargo", "go", "npm", "make", "tsc", "pytest", "gcc", "clang",
+        ];
         if builds.iter().any(|b| cmd.starts_with(b)) && !output.trim().is_empty() {
             for line in output.lines() {
                 for tok in line.split_whitespace() {
-                    let t = tok.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '/' && c != '_' && c != '-');
+                    let t = tok.trim_matches(|c: char| {
+                        !c.is_alphanumeric() && c != '.' && c != '/' && c != '_' && c != '-'
+                    });
                     if looks_like_path(t) {
                         self.mark(&abs(t, workspace));
                     }
@@ -130,7 +149,11 @@ fn looks_like_path(t: &str) -> bool {
 
 fn abs(p: &str, workspace: &Path) -> std::path::PathBuf {
     let raw = Path::new(p);
-    if raw.is_absolute() { raw.to_path_buf() } else { workspace.join(raw) }
+    if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        workspace.join(raw)
+    }
 }
 
 #[cfg(test)]
@@ -169,7 +192,10 @@ mod tests {
 
         let mut rs = ReadSet::new();
         rs.observe("cat src/lib.rs", "x", &d);
-        assert!(rs.contains(&f), "a relative read must resolve to the same key as an absolute one");
+        assert!(
+            rs.contains(&f),
+            "a relative read must resolve to the same key as an absolute one"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -201,7 +227,11 @@ mod tests {
         std::fs::write(&f, "old").unwrap();
         let rs = ReadSet::new();
         let targets = [f];
-        assert_eq!(rs.blocked(&targets).len(), 1, "an unread existing file must be blocked");
+        assert_eq!(
+            rs.blocked(&targets).len(),
+            1,
+            "an unread existing file must be blocked"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -225,7 +255,10 @@ mod tests {
         assert!(!f.exists());
         let rs = ReadSet::new();
         let targets = [f];
-        assert!(rs.blocked(&targets).is_empty(), "a nonexistent file must be writable");
+        assert!(
+            rs.blocked(&targets).is_empty(),
+            "a nonexistent file must be writable"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -236,7 +269,10 @@ mod tests {
         std::fs::write(&f, "x").unwrap();
         let mut rs = ReadSet::new();
         rs.mark(&f);
-        assert!(rs.contains(&d.join("./a.rs")), "the same file must not look unread because of spelling");
+        assert!(
+            rs.contains(&d.join("./a.rs")),
+            "the same file must not look unread because of spelling"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -247,7 +283,10 @@ mod tests {
         std::fs::write(&f, "x").unwrap();
         let mut rs = ReadSet::new();
         rs.observe("cargo build", &format!("error[E0425]: {}", f.display()), &d);
-        assert!(rs.contains(&f), "a compiler that named the file clearly read it");
+        assert!(
+            rs.contains(&f),
+            "a compiler that named the file clearly read it"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 

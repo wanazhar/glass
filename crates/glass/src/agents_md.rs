@@ -22,8 +22,13 @@ use std::path::{Path, PathBuf};
 
 /// Candidate names, in precedence order. `override` shadows within one
 /// directory only, which is the convention the ecosystem settled on.
-pub const CANDIDATES: &[&str] =
-    &["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+pub const CANDIDATES: &[&str] = &[
+    "AGENTS.override.md",
+    "AGENTS.md",
+    "AGENTS.MD",
+    "CLAUDE.md",
+    "CLAUDE.MD",
+];
 
 /// Bytes of a single instruction file we are willing to inline. Roughly 250
 /// tokens. Past this the file is a document, not instructions.
@@ -60,7 +65,10 @@ impl Instruction {
         } else {
             self.text.clone()
         };
-        format!("<project_instructions path=\"{}\">\n{body}\n</project_instructions>", self.path.display())
+        format!(
+            "<project_instructions path=\"{}\">\n{body}\n</project_instructions>",
+            self.path.display()
+        )
     }
 }
 
@@ -92,7 +100,9 @@ pub fn load(workspace: &Path) -> Vec<Instruction> {
         if out.iter().any(|i: &Instruction| i.path == path) {
             continue;
         }
-        let Ok(raw) = std::fs::read(&path) else { continue };
+        let Ok(raw) = std::fs::read(&path) else {
+            continue;
+        };
 
         // Two independent limits: the per-file cap keeps one file from filling
         // the prompt, the running budget keeps several files from doing it
@@ -105,7 +115,11 @@ pub fn load(workspace: &Path) -> Vec<Instruction> {
         }
         budget -= take.min(budget);
 
-        out.push(Instruction { path, text, truncated });
+        out.push(Instruction {
+            path,
+            text,
+            truncated,
+        });
         if budget == 0 {
             break;
         }
@@ -215,7 +229,10 @@ mod tests {
     fn empty_file_is_skipped() {
         let d = scratch("empty");
         std::fs::write(d.join("AGENTS.md"), "   \n  ").unwrap();
-        assert!(load(&d).is_empty(), "a blank file must not add an empty section");
+        assert!(
+            load(&d).is_empty(),
+            "a blank file must not add an empty section"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -236,5 +253,4 @@ mod tests {
     fn render_all_returns_none_when_empty() {
         assert!(render_all(&[]).is_none());
     }
-
 }

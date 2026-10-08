@@ -10,16 +10,24 @@ pub mod protocol;
 use std::path::Path;
 
 use host::{Extension, HostToolBridge, SubagentFn};
-use protocol::{tool_triple, ExtConcurrency, ToolSpec};
+use protocol::{ExtConcurrency, ToolSpec, tool_triple};
 
 /// Every loaded extension.
 pub struct Registry {
     exts: Vec<Extension>,
+    failures: Vec<String>,
+    sources: std::collections::BTreeMap<String, String>,
+    runner_factory: Option<Box<dyn Fn() -> SubagentFn>>,
 }
 
 impl Registry {
     pub fn empty() -> Self {
-        Self { exts: Vec::new() }
+        Self {
+            exts: Vec::new(),
+            failures: Vec::new(),
+            sources: std::collections::BTreeMap::new(),
+            runner_factory: None,
+        }
     }
 
     #[cfg(test)]
@@ -43,9 +51,12 @@ impl Registry {
             if name.is_empty() {
                 continue;
             }
-            match spawn_one(name, workspace, model) {
-                Ok(ext) => reg.exts.push(ext),
-                Err(e) => eprintln!("\x1b[33mglass: {e}, skipping\x1b[0m"),
+            match reg.enable(name, workspace, model) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("glass-core: {e}, skipping");
+                    reg.failures.push(format!("{name}: {e}"));
+                }
             }
         }
         reg
@@ -58,10 +69,30 @@ impl Registry {
     /// Only the extension that declares the `subagent` tool will
     /// actually invoke it; the rest hold an unused runner, which
     /// is cheap — an `Arc` clone and a `PathBuf`.
-    pub fn set_subagent(&mut self, make: impl Fn() -> SubagentFn) {
+    pub fn set_subagent(&mut self, make: impl Fn() -> SubagentFn + 'static) {
         for ext in self.exts.iter_mut() {
             ext.set_subagent(make());
         }
+        self.runner_factory = Some(Box::new(make));
+    }
+
+    pub fn source(&self, name: &str) -> Option<&str> {
+        self.sources.get(name).map(String::as_str)
+    }
+    pub fn reload(&mut self, specs: &[String], workspace: &Path, model: &str) {
+        self.shutdown();
+        self.exts.clear();
+        self.sources.clear();
+        self.failures.clear();
+        for spec in specs {
+            if let Err(error) = self.enable(spec, workspace, model) {
+                self.failures.push(format!("{spec}: {error}"));
+            }
+        }
+    }
+
+    pub fn failures(&self) -> &[String] {
+        &self.failures
     }
 
     pub fn names(&self) -> Vec<&str> {
@@ -76,6 +107,9 @@ impl Registry {
             .map(|e| {
                 let tools: Vec<&str> = e.manifest.tools.iter().map(|t| t.name.as_str()).collect();
                 let mut line = format!("{} v{}", e.manifest.name, e.manifest.version);
+                if e.manifest.authorization_required {
+                    line.push_str(" · required authorization");
+                }
                 if !tools.is_empty() {
                     line.push_str(&format!(" · tools: {}", tools.join(", ")));
                 }
@@ -96,10 +130,54 @@ impl Registry {
             .collect()
     }
 
+    pub fn enable(&mut self, spec: &str, workspace: &Path, model: &str) -> Result<(), String> {
+        self.register(spawn_one(spec, workspace, model)?, spec)
+    }
+    pub fn register(&mut self, mut extension: Extension, spec: &str) -> Result<(), String> {
+        let tools = extension
+            .manifest
+            .tools
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>();
+        let collision = self.names().contains(&extension.manifest.name.as_str())
+            || tools
+                .iter()
+                .any(|name| matches!(*name, "bash" | "state") || self.has_tool(name))
+            || tools
+                .iter()
+                .enumerate()
+                .any(|(i, name)| tools[..i].contains(name));
+        if collision {
+            extension.shutdown();
+            return Err("extension name or tool conflicts with an existing capability".into());
+        }
+        if let Some(make) = &self.runner_factory {
+            extension.set_subagent(make());
+        }
+        self.sources
+            .insert(extension.manifest.name.clone(), spec.into());
+        self.exts.push(extension);
+        Ok(())
+    }
+
+    /// Stop a loaded extension for this session, including its owned processes.
+    pub fn disable(&mut self, name: &str) {
+        if let Some(index) = self.exts.iter().position(|e| e.manifest.name == name) {
+            let mut extension = self.exts.remove(index);
+            self.sources.remove(name);
+            extension.shutdown();
+        }
+    }
+
     /// Scheduling class an extension declared for one of its tools.
     pub fn tool_concurrency(&self, name: &str) -> Option<ExtConcurrency> {
         self.exts.iter().find_map(|e| {
-            e.manifest.tools.iter().find(|t| t.name == name).map(|t| t.concurrency)
+            e.manifest
+                .tools
+                .iter()
+                .find(|t| t.name == name)
+                .map(|t| t.concurrency)
         })
     }
 
@@ -115,19 +193,28 @@ impl Registry {
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
-        self.exts.iter().any(|e| e.manifest.tools.iter().any(|t| t.name == name))
+        self.exts
+            .iter()
+            .any(|e| e.manifest.tools.iter().any(|t| t.name == name))
     }
 
     /// Find an extension that offers a named tool.
     fn tool_owner(&self, name: &str) -> Option<usize> {
-        self.exts.iter().position(|e| e.manifest.tools.iter().any(|t: &ToolSpec| t.name == name))
+        self.exts
+            .iter()
+            .position(|e| e.manifest.tools.iter().any(|t: &ToolSpec| t.name == name))
     }
 
     /// `/`-prefixed commands offered by extensions, for help text.
     pub fn commands(&self) -> Vec<(String, String)> {
         self.exts
             .iter()
-            .flat_map(|e| e.manifest.commands.iter().map(|c| (c.name.clone(), c.description.clone())))
+            .flat_map(|e| {
+                e.manifest
+                    .commands
+                    .iter()
+                    .map(|c| (c.name.clone(), c.description.clone()))
+            })
             .collect()
     }
 
@@ -142,9 +229,7 @@ impl Registry {
     /// One warmer is enough: two refreshing the same prefix
     /// would pay the cache-write cost twice for the same hit.
     pub fn cache_warmer(&self) -> Option<protocol::WarmerPolicy> {
-        self.exts
-            .iter()
-            .find_map(|e| e.manifest.cache_warmer)
+        self.exts.iter().find_map(|e| e.manifest.cache_warmer)
     }
 
     pub fn system_prompt(&mut self) -> String {
@@ -222,29 +307,11 @@ impl Registry {
 }
 
 fn spawn_one(spec: &str, workspace: &Path, model: &str) -> Result<Extension, String> {
-    // A spec may carry arguments, so only the program is checked for existence.
-    let program = spec.split_whitespace().next().unwrap_or(spec);
-
-    // A bare name is looked up on PATH; anything with a separator is treated
-    // as a path, which is what lets `~/.config/glass/ext/foo` work.
-    let cmd = if program.contains('/') || program.starts_with('~') {
-        let expanded = if let Some(rest) = program.strip_prefix("~/") {
-            match std::env::var("HOME") {
-                Ok(h) => format!("{h}/{rest}"),
-                Err(_) => program.to_string(),
-            }
-        } else {
-            program.to_string()
-        };
-        if !Path::new(&expanded).exists() {
-            return Err(format!("extension `{spec}` does not exist"));
-        }
-        // Re-assemble with the original arguments.
-        spec.replacen(program, &expanded, 1)
-    } else {
-        spec.to_string()
-    };
-
+    let args = host::arguments(spec)?;
+    if args[0].contains('/') && !Path::new(&args[0]).is_file() {
+        return Err("Extension executable does not exist".into());
+    }
+    let cmd = serde_json::to_string(&args).map_err(|e| e.to_string())?;
     Extension::spawn(&cmd, &workspace.to_string_lossy(), model)
 }
 #[cfg(test)]
@@ -262,8 +329,7 @@ mod tests {
         use std::sync::atomic::{AtomicU32, Ordering};
         static SEQ: AtomicU32 = AtomicU32::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir()
-            .join(format!("glass-ext-{}-{n}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("glass-ext-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("ext.py");
         std::fs::write(&p, body).unwrap();
@@ -312,19 +378,18 @@ for line in sys.stdin:
     fn extension_completes_handshake_and_serves_hooks() {
         let Some(py) = python() else { return }; // no interpreter, skip
         let p = echo_ext(&helper_script());
-        let mut e = Extension::spawn(
-            &format!("{py} {}", p.display()),
-            "/tmp",
-            "test-model",
-        )
-        .expect("handshake must succeed");
+        let mut e = Extension::spawn(&format!("{py} {}", p.display()), "/tmp", "test-model")
+            .expect("handshake must succeed");
 
         assert_eq!(e.manifest.name, "t");
         assert_eq!(e.manifest.version, "1");
         assert!(e.has_command("tcmd"));
         assert_eq!(e.system_prompt().as_deref(), Some("from ext"));
         let mut nohost = |_n: &str, _a: &str| String::new();
-        assert_eq!(e.run_tool("ping", "{}", &mut nohost).as_deref(), Some("pong"));
+        assert_eq!(
+            e.run_tool("ping", "{}", &mut nohost).as_deref(),
+            Some("pong")
+        );
         assert_eq!(e.run_command("tcmd", "x").as_deref(), Some("cmd out"));
         assert_eq!(
             e.rewrite_tool_result("c1", "bash", "original").as_deref(),
@@ -370,5 +435,87 @@ for line in sys.stdin:
         assert!(reg.tools().is_empty());
         assert!(!reg.has_tool("anything"));
         assert!(reg.system_prompt().is_empty());
+    }
+
+    /// An extension that delegates a two-task batch and joins the reports.
+    const BATCH_HELPER: &str = r#"
+import json, sys
+def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    r=json.loads(line); t=r.get("type"); i=r.get("id")
+    if t=="hello":
+        send({"id":i,"protocol":PROTO,"name":"batch","version":"1",
+              "tools":[{"name":"batch","description":"d","schema":{"type":"object"}}]})
+    elif t=="run_tool":
+        send({"type":"run_subagents","tasks":[{"task":"one"},{"task":"two"}]})
+        while True:
+            rep=json.loads(sys.stdin.readline())
+            if rep.get("type")=="subagents_result":
+                send({"id":i,"output":"|".join(rep.get("outputs") or [])})
+                break
+    elif t=="goodbye": break
+"#;
+
+    #[test]
+    fn a_batch_extension_gets_one_report_per_task_in_order() {
+        let Some(py) = python() else { return }; // no interpreter, skip
+        let p = echo_ext(&BATCH_HELPER.replace("PROTO", &PROTOCOL_VERSION.to_string()));
+        let mut reg = Registry::load(
+            &[format!("{py} {}", p.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        reg.set_subagent(|| {
+            Box::new(|tasks: &[crate::ext::protocol::SubagentTask]| {
+                tasks
+                    .iter()
+                    .map(|t| format!("done:{}", t.task))
+                    .collect()
+            })
+        });
+        let mut nohost = |_n: &str, _a: &str| String::new();
+        assert_eq!(
+            reg.run_tool("batch", "{}", &mut nohost).as_deref(),
+            Some("done:one|done:two"),
+            "both reports must come back, in request order"
+        );
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
+    fn a_malformed_batch_is_answered_with_an_error_not_a_hang() {
+        let Some(py) = python() else { return };
+        let body = r#"
+import json, sys
+def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    r=json.loads(line); t=r.get("type"); i=r.get("id")
+    if t=="hello":
+        send({"id":i,"protocol":PROTO,"name":"bad","version":"1",
+              "tools":[{"name":"bad","description":"d","schema":{"type":"object"}}]})
+    elif t=="run_tool":
+        send({"type":"run_subagents","tasks":[]})
+        rep=json.loads(sys.stdin.readline())
+        send({"id":i,"output":str(rep.get("error"))})
+    elif t=="goodbye": break
+"#;
+        let p = echo_ext(&body.replace("PROTO", &PROTOCOL_VERSION.to_string()));
+        let mut reg = Registry::load(
+            &[format!("{py} {}", p.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        reg.set_subagent(|| Box::new(|_: &[crate::ext::protocol::SubagentTask]| Vec::new()));
+        let mut nohost = |_n: &str, _a: &str| String::new();
+        let out = reg.run_tool("bad", "{}", &mut nohost).unwrap_or_default();
+        assert!(
+            out.contains("at least one task"),
+            "an empty batch must be refused with a reason: {out}"
+        );
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 }

@@ -3,24 +3,48 @@
 //! Two tools, one loop, native terminal. Everything a mod can touch is in
 //! `glass-mod-api`; everything the model can call is in `provider::builtin_tools`.
 
+mod addons;
+mod acp;
 mod agent;
 mod agents_md;
+mod auth;
 mod btw;
+mod budget;
+mod checkpoint;
 mod compact;
 mod concurrency;
 mod config;
+mod export;
 mod ext;
+mod history;
 mod input;
-mod queue;
+mod inspect;
+mod jobs;
+mod live;
+mod modal;
 mod mods;
+mod notify;
+mod onboarding;
+mod polish;
+mod pricing;
+mod profiles;
 mod provider;
+mod queue;
+mod reader;
 mod readguard;
+mod sandbox;
+mod serve;
 mod session;
+mod signals;
 mod skills;
 mod sse;
+mod subagent;
+mod surface;
 mod tools;
+mod trust;
 mod verify;
 mod warmer;
+mod workflows;
 
 use std::io::Write;
 
@@ -29,27 +53,97 @@ use glass_tui::{Edit, Editor, term};
 use crate::agent::{Agent, Progress, Stop};
 use crate::session::{Record, Session};
 
-const HELP: &str = "\
-glass — a minimal coding harness
+// These macros are reserved for interactive presentation, never headless source/logs.
+macro_rules! ui_println {
+    () => {{ let _ = surface::emit("\n"); }};
+    ($($argument:tt)*) => {{ let _ = surface::emit(&format!("{}\n", glass_tui::theme::neutralize(&format!($($argument)*)))); }};
+}
+macro_rules! ui_print {
+    ($($argument:tt)*) => {{ let _ = surface::emit(&glass_tui::theme::neutralize(&format!($($argument)*))); }};
+}
 
-  glass                 start in the current directory
-  glass resume          reopen the most recent session
-  glass resume <id>     reopen a specific session
-  glass list            list saved sessions
+const HELP: &str = "\
+glass-core — a minimal coding harness
+
+  glass-core        start in the current directory
+  glass-core resume    reopen the most recent session
+  glass-core resume <id>     reopen a specific session
+  glass-core run [--json] [--plan] [--resume ID] [--attach FILE] [--budget USD] <prompt>
+  glass-core run --json --resume ID --retry [--model MODEL] [--connection ID]
+  glass-core sessions [--json]   list conversations in this project
+  glass-core status [--json]     connection information
+  glass-core context|review|details ID [--json]   inspect without a terminal
+  glass-core doctor [--json] [--probe]    check provider compatibility
+  glass-core profiles|extensions [--json]    inspect saved settings
+  glass-core export <id|--latest> [--out PATH] [--thinking] [--json]
+  glass-core acp         Agent Client Protocol server (editors drive glass over stdio)
+  glass-core serve [ID] [--socket PATH]   run a session on a Unix socket
+  glass-core attach [--socket PATH]       attach a terminal client to a served session
+  glass-core list        list saved sessions
+  glass-core search <pat>    find sessions whose messages match
 
 In the prompt:
+  PageUp / Ctrl-B: scroll conversation inline; PageDown / Ctrl-F: move toward newest
+  End or Esc: return to bottom · mouse wheel: scroll when terminal supports it
   ctrl-g      fullscreen transcript (scroll, collapse, follow)
+  / or ctrl-p command palette (type to filter, arrows, Enter/Tab, Esc)
   ctrl-c      interrupt the current turn
+  ctrl-r      search prompt history
+  ctrl-x      external editor (VISUAL or EDITOR)
+  Tab         search project file paths
+  Alt+Enter   insert newline (also Ctrl/Shift+Enter where supported)
   ctrl-d      quit
   up/down     prompt history; line motion in a multi-line draft
   /btw <q>    ask a side question without recording it
-  /model <m>  switch the model for the rest of the session
-  /extensions loaded extensions, their tools and commands
-  /help       show this text
+  /model [m] choose provider/model, or enter a custom model ID
+  /clear      start a fresh session in this terminal
+  /compact [focus]  summarize the conversation now, optionally focused
+  /dashboard  workspace overview and quick actions
+  /theme      choose expressive color palettes
+  /security   inspect security and extension trust
+  /mods       toggle built-in mods for this session
+  /extensions discover, enable, inspect, and disable extensions
+  /plan [task] inspect read-only and review before execution
+  /init [notes]  draft AGENTS.md for this repository in a read-only run
+  /git        review files/hunks, stage, and draft commits
+  /doctor     provider connectivity and optional tool probe
+  /profiles   persist project settings and extensions
+  /responses  formatted responses and exact code copying
+  /export [path]  write the conversation to a Markdown file
+  /skills     list loaded skills
+  /diff       review the last task's patch
+  /budget [USD|off]  show or set the session spending limit
+  /branch [turn]    fork conversation through a turn; files stay as they are
+  /checkpoint      save a workspace checkpoint
+  /checkpoints     list saved checkpoints
+  /restore <name>  restore a saved baseline, keeping an undo backup
+  /undo       restore last task's files; refuse subsequent edits
+  /bg <cmd>   start a background command (stopped when session exits)
+  /jobs       list background jobs
+  /job <id> [stop]  show output or stop a job
+  /login      guided provider and account setup
+  /logout     remove saved credentials
+  /status     connection and session status
+  /sessions   preview, rename, resume, branch or delete conversations
+  /retry      retry, switch model or reconnect after a failed response
+  /details    expand recorded tool output
+  /context    inspect instructions, usage and attachments
+  /attach     pick a text file to attach
+  /review     task summary, commands and workspace changes
+  /history    search and restore a prompt
+  /editor     edit your draft in an external editor
+  /redraw     repaint after terminal drift
+  /help       browse help in a modal
 
-glass ships no permission system: bash runs what the model asks for. Run it
-somewhere you are willing to lose.
+glass-core ships no permission system: bash runs what the model asks
+for. Run it somewhere you are willing to lose.
 ";
+
+static JSON_EMITTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn emit_json(value: serde_json::Value) {
+    JSON_EMITTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    println!("{value}");
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -60,19 +154,42 @@ fn main() {
             return;
         }
         Some("--version") | Some("-V") => {
-            println!("glass {}", env!("CARGO_PKG_VERSION"));
+            println!("glass-core {}", env!("CARGO_PKG_VERSION"));
             return;
         }
         Some("list") => {
             list_sessions();
             return;
         }
+        Some("search") => {
+            match args.get(1).map(String::as_str) {
+                Some(pattern) => search_sessions(pattern),
+                None => println!("usage: glass-core search <pattern>"),
+            }
+            return;
+        }
         _ => {}
     }
 
     if let Err(e) = run(&args) {
-        eprintln!("glass: {e}");
-        std::process::exit(1);
+        if args.iter().any(|a| a == "--json")
+            && !JSON_EMITTED.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            emit_json(serde_json::json!({"status":"error","error":e,"text":""}));
+        }
+        eprintln!(
+            "glass-core: {}",
+            glass_tui::markdown::sanitize(&e.to_string())
+        );
+        std::process::exit(if let Some(code) = signals::exit_code() {
+            code
+        } else if e.contains("session cost limit reached") {
+            3
+        } else if e.starts_with("incomplete:") {
+            2
+        } else {
+            1
+        });
     }
 }
 
@@ -82,79 +199,333 @@ fn list_sessions() {
         println!("no sessions in {}", dir.display());
         return;
     };
-    let mut rows: Vec<(String, u64)> = entries
+    let mut rows: Vec<(String, u64, Option<std::time::SystemTime>, Option<String>)> = entries
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
         .filter_map(|e| {
             let stem = e.path().file_stem()?.to_string_lossy().into_owned();
             let bytes = e.metadata().ok()?.len();
-            Some((stem, bytes))
+            let modified = e.metadata().ok().and_then(|m| m.modified().ok());
+            let first = first_user_message(&e.path());
+            Some((stem, bytes, modified, first))
         })
         .collect();
-    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    // Newest first: the session a user wants is usually the last one.
+    rows.sort_by_key(|r| std::cmp::Reverse(r.2));
 
     if rows.is_empty() {
         println!("no sessions in {}", dir.display());
         return;
     }
-    println!("{:<28} {:>10}", "session", "bytes");
-    for (id, bytes) in rows {
-        println!("{id:<28} {bytes:>10}");
+    println!(
+        "{:<28} {:<16} {:>10}  first message",
+        "session", "modified (UTC)", "bytes"
+    );
+    for (id, bytes, modified, first) in rows {
+        let when = modified.map(format_time).unwrap_or_else(|| "?".into());
+        let preview = first
+            .map(|f| first_line(&f, 56))
+            .unwrap_or_else(|| "(empty)".into());
+        println!("{id:<28} {when:<16} {bytes:>10}  {preview}");
     }
+}
+
+/// The first user message of a session, for `glass-core list`.
+fn first_user_message(path: &std::path::Path) -> Option<String> {
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(path).ok()?;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if v.get("k").and_then(|k| k.as_str()) == Some("user") {
+            return v.get("t").and_then(|t| t.as_str()).map(str::to_string);
+        }
+    }
+    None
+}
+
+/// Format a timestamp as `YYYY-MM-DD HH:MM` in UTC, without
+/// pulling in a date crate for one column of one command.
+pub(crate) fn format_time(t: std::time::SystemTime) -> String {
+    let secs = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86_400) as i64;
+    let sod = secs % 86_400;
+    let (y, m, d) = civil_from_days(days);
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}",
+        sod / 3_600,
+        (sod % 3_600) / 60
+    )
+}
+
+/// Howard Hinnant's days-to-civil algorithm: the date for a
+/// count of days since 1970-01-01.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    (y + if m <= 2 { 1 } else { 0 }, m, d)
+}
+
+/// Search every session's conversation for a pattern.
+///
+/// Matches user and assistant messages, so a search finds both
+/// what was asked and what was answered. Case-insensitive: a
+/// search pattern is a memory aid, not a query language.
+fn search_sessions(pattern: &str) {
+    let dir = config::data_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        println!("no sessions in {}", dir.display());
+        return;
+    };
+    let needle = pattern.to_ascii_lowercase();
+    const MAX_HITS: usize = 100;
+    let mut hits = 0;
+    let mut rows: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+        .map(|e| e.path())
+        .collect();
+    // Newest first, so the most recent match is the first one read.
+    rows.sort_by(|a, b| {
+        let m = |p: &std::path::Path| {
+            p.metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(std::time::UNIX_EPOCH)
+        };
+        m(b).cmp(&m(a))
+    });
+    for path in rows {
+        let id = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let Some(file) = std::fs::File::open(&path).ok() else {
+            continue;
+        };
+        use std::io::{BufRead, BufReader};
+        let mut turn = 0usize;
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let kind = v.get("k").and_then(|k| k.as_str()).unwrap_or_default();
+            if kind == "user" {
+                turn += 1;
+            }
+            if kind != "user" && kind != "assistant" {
+                continue;
+            }
+            let Some(text) = v.get("t").and_then(|t| t.as_str()) else {
+                continue;
+            };
+            if !text.to_ascii_lowercase().contains(&needle) {
+                continue;
+            }
+            println!("{id} t{turn:<4} {}", first_line(text, 100));
+            hits += 1;
+            if hits >= MAX_HITS {
+                println!("… stopping at {MAX_HITS} matches; narrow the pattern");
+                return;
+            }
+        }
+    }
+    if hits == 0 {
+        println!("no sessions match {pattern:?}");
+    }
+}
+
+fn run_resume(args: &[String]) -> Result<Option<&str>, String> {
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--resume" => {
+                return args
+                    .get(i + 1)
+                    .map(|s| Some(s.as_str()))
+                    .ok_or("--resume requires a session ID".into());
+            }
+            "--attach" | "--budget" | "--model" | "--connection" => i += 2,
+            "--json" | "--retry" | "--plan" | "--trust" => i += 1,
+            _ => break,
+        }
+    }
+    Ok(None)
+}
+
+fn run_plan(args: &[String]) -> bool {
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--plan" => return true,
+            "--json" | "--retry" | "--trust" => i += 1,
+            "--resume" | "--model" | "--connection" | "--attach" | "--budget" => i += 2,
+            _ => return false,
+        }
+    }
+    false
 }
 
 fn run(args: &[String]) -> Result<(), String> {
     let cfg_path = config::default_path();
-    let cfg = config::load(&cfg_path).map_err(|e| e.to_string())?;
+    let mut cfg = config::load(&cfg_path).map_err(|e| e.to_string())?;
+    auth::apply(&mut cfg)?;
+    addons::apply(&mut cfg)?;
+    profiles::apply_active(&mut cfg)?;
+    for warning in sandbox::init(&cfg) {
+        eprintln!("glass-core: {warning}");
+    }
+    if workflows::headless_info(args, &cfg)? {
+        return Ok(());
+    }
+    if headless_info(args, &cfg)? {
+        return Ok(());
+    }
+    if args.first().is_some_and(|a| a == "export") {
+        return headless_export(&cfg, &args[1..]);
+    }
+    if args.first().is_some_and(|a| a == "acp") {
+        return acp::serve(cfg);
+    }
+    if args.first().is_some_and(|a| a == "serve") {
+        let mut session_id: Option<&str> = None;
+        let mut socket: Option<&str> = None;
+        let mut i = 1;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--socket" => {
+                    i += 1;
+                    socket = Some(args.get(i).ok_or("--socket requires a path")?);
+                }
+                a if a.starts_with("--") => return Err(format!("unknown option {a}")),
+                a => session_id = Some(a),
+            }
+            i += 1;
+        }
+        return serve::serve(cfg, session_id, socket);
+    }
+    if args.first().is_some_and(|a| a == "attach") {
+        let mut socket: Option<&str> = None;
+        let mut i = 1;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--socket" => {
+                    i += 1;
+                    socket = Some(args.get(i).ok_or("--socket requires a path")?);
+                }
+                a => return Err(format!("unknown option {a}")),
+            }
+            i += 1;
+        }
+        return serve::attach(socket);
+    }
+    if !term::stdin_is_tty() && !args.first().is_some_and(|a| a == "run") {
+        return Err("No interactive terminal. Use glass-core run [--json] [--resume ID] <prompt>, or pipe a prompt to glass-core run.".into());
+    }
 
     let loaded_mods = mods::load(&cfg.mods)?;
 
     // Extensions are opt-in: nothing is spawned unless config names it, so a
     // default install pays nothing for the mechanism.
-    let extensions = if cfg.extensions.is_empty() {
+    let extensions = if cfg.extensions.is_empty()
+        || (args.first().is_some_and(|a| a == "run") && run_plan(&args[1..]))
+    {
         ext::Registry::empty()
     } else {
         ext::Registry::load(&cfg.extensions, &cfg.workspace, &cfg.model)
     };
 
-    let skills = cfg.skills_dir.as_deref().map(skills::load_dir).unwrap_or_default();
+    let skills = cfg
+        .skills_dir
+        .as_deref()
+        .map(skills::load_dir)
+        .unwrap_or_default();
     let catalogue = skills::catalogue(&skills);
-
     // Project instructions are pure prompt text and cost no code path, but they
     // are the one thing that can be large, so they are capped hard.
     let instructions = agents_md::load(&cfg.workspace);
     for i in &instructions {
-        if !i.truncated {
+        if !i.truncated && !args.first().is_some_and(|a| a == "run") {
             println!("\x1b[90m  reading {}\x1b[0m", i.path.display());
         }
     }
-    let project_instructions = agents_md::render_all(&instructions);
+    let mut project_instructions = agents_md::render_all(&instructions);
+    if args.first().is_some_and(|a| a == "run") {
+        // Headless runs cannot ask; the store, config, and --trust decide.
+        let force = args.iter().any(|a| a == "--trust");
+        project_instructions = trust::gated(&cfg, &instructions, force);
+        if !instructions.is_empty() && project_instructions.is_none() {
+            eprintln!(
+                "glass-core: project instructions not loaded — this workspace is not trusted \
+                 for its AGENTS.md; run interactively to allow it, or pass --trust"
+            );
+        }
+    }
+    if instructions.is_empty() {
+        project_instructions = None;
+    }
 
     // Resume or create the session before touching the terminal so a bad path
     // produces a clean error instead of a mangled screen.
     let dir = config::data_dir();
-    let resume = args.first().map(String::as_str).filter(|a| *a != "resume");
+    let resume = args.get(1).map(String::as_str);
     let session = match args.first().map(String::as_str) {
         Some("resume") => match resume {
             Some(id) => Session::open(&dir, id).map_err(|e| format!("cannot resume {id}: {e}"))?,
-            None => match Session::last(&dir) {
-                Some(p) => {
-                    let id = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-                    Session::open(&dir, &id).map_err(|e| format!("cannot resume: {e}"))?
-                }
+            None => match polish::sessions(&cfg.workspace).into_iter().next() {
+                Some(s) => s,
                 None => Session::create(&dir).map_err(|e| e.to_string())?,
             },
+        },
+        Some("run") => match run_resume(&args[1..])? {
+            Some(id) => Session::open(&dir, id).map_err(|e| e.to_string())?,
+            None => Session::create(&dir).map_err(|e| e.to_string())?,
         },
         _ => Session::create(&dir).map_err(|e| e.to_string())?,
     };
 
+    polish::bind(&session, &cfg.workspace)?;
+    if args.first().is_some_and(|a| a == "run") {
+        let mut extensions = extensions;
+        let result = headless(
+            &cfg,
+            &loaded_mods,
+            &mut extensions,
+            catalogue,
+            project_instructions,
+            session,
+            &args[1..],
+        );
+        extensions.shutdown();
+        return result;
+    }
+
     if !term::stdin_is_tty() {
-        return Err("glass needs a terminal. pipe input is not supported.".into());
+        return Err("glass-core needs a terminal. use glass-core run for piped input.".into());
     }
 
     term::enter().map_err(|e| format!("cannot set up terminal: {e}"))?;
     let mut extensions = extensions;
-    let result = repl(cfg, loaded_mods, &mut extensions, catalogue, project_instructions, session);
+    let result = repl(
+        cfg,
+        loaded_mods,
+        &mut extensions,
+        catalogue,
+        &skills,
+        instructions,
+        session,
+    );
     // Extensions are child processes: they must be reaped on every exit path,
     // or they outlive the session holding the workspace open.
     extensions.shutdown();
@@ -162,116 +533,866 @@ fn run(args: &[String]) -> Result<(), String> {
     result
 }
 
-fn repl(
-    mut cfg: config::Config,
-    loaded_mods: Vec<Box<dyn glass_mod_api::Mod_>>,
+fn latest_task_checkpoint(dir: &std::path::Path) -> Option<checkpoint::Checkpoint> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.path().extension().is_some_and(|x| x == "json")
+                && e.file_name().to_string_lossy().starts_with("task-")
+        })
+        .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
+        .and_then(|e| std::fs::read(e.path()).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+}
+fn headless_info(args: &[String], cfg: &config::Config) -> Result<bool, String> {
+    let Some(command) = args.first().map(String::as_str) else {
+        return Ok(false);
+    };
+    if !matches!(
+        command,
+        "sessions" | "status" | "context" | "review" | "details"
+    ) {
+        return Ok(false);
+    }
+    let json = args.iter().any(|s| s == "--json");
+    let value = if command == "status" {
+        let store = auth::load()?;
+        serde_json::json!({"status":auth::status(cfg),"provider":cfg.provider,"model":cfg.model,"endpoint":cfg.base_url,"connections":store.connections.iter().map(|c|serde_json::json!({"id":c.id,"label":c.label,"model":c.model})).collect::<Vec<_>>()})
+    } else if command == "sessions" {
+        serde_json::json!({"sessions":polish::sessions(&cfg.workspace).iter().map(|s|serde_json::json!({"id":s.id,"title":polish::title(s),"turns":s.turn,"workspace":cfg.workspace})).collect::<Vec<_>>()})
+    } else {
+        let id = args
+            .iter()
+            .skip(1)
+            .find(|a| !a.starts_with('-'))
+            .ok_or("requires a session ID; use glass-core sessions --json")?;
+        let session = Session::open(&config::data_dir(), id).map_err(|e| e.to_string())?;
+        polish::bind(&session, &cfg.workspace)?;
+        let text = match command {
+            "context" => polish::context_report(
+                &session,
+                cfg,
+                &agents_md::render_all(&agents_md::load(&cfg.workspace)),
+                &skills::catalogue(
+                    &cfg.skills_dir
+                        .as_deref()
+                        .map(skills::load_dir)
+                        .unwrap_or_default(),
+                ),
+            ),
+            "details" => session
+                .records
+                .iter()
+                .filter_map(|r| {
+                    if let Record::Bash {
+                        command,
+                        output,
+                        exit_code,
+                        ..
+                    } = r
+                    {
+                        Some(format!("$ {command} (exit {exit_code:?})\n{output}"))
+                    } else if let Record::ToolResult { name, body, .. } = r {
+                        if name != "bash" {
+                            Some(format!("{name}\n{body}"))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+            _ => polish::review_report(
+                &session,
+                latest_task_checkpoint(&config::data_dir().join("checkpoints").join(&session.id))
+                    .as_ref(),
+            ),
+        };
+        serde_json::json!({"session":session.id,"text":text})
+    };
+    if json {
+        emit_json(value)
+    } else if let Some(t) = value["text"].as_str() {
+        println!("{t}")
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?
+        )
+    }
+    Ok(true)
+}
+
+fn headless_export(cfg: &config::Config, args: &[String]) -> Result<(), String> {
+    let mut json = false;
+    let mut thinking = false;
+    let mut latest = false;
+    let mut out: Option<std::path::PathBuf> = None;
+    let mut id: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => json = true,
+            "--thinking" => thinking = true,
+            "--latest" => latest = true,
+            "--out" => {
+                i += 1;
+                out = Some(std::path::PathBuf::from(
+                    args.get(i).ok_or("--out requires a path")?,
+                ));
+            }
+            a if a.starts_with("--") => return Err(format!("unknown option {a}")),
+            a => {
+                if id.is_some() {
+                    return Err("export takes one session ID".into());
+                }
+                id = Some(a.to_string());
+            }
+        }
+        i += 1;
+    }
+    let session = match id {
+        Some(id) => Session::open(&config::data_dir(), &id).map_err(|e| e.to_string())?,
+        None if latest => polish::sessions(&cfg.workspace)
+            .into_iter()
+            .next()
+            .ok_or("no sessions in this workspace")?,
+        None => return Err("give a session ID or --latest; see glass-core sessions --json".into()),
+    };
+    let md = export::markdown(&session, thinking, &export::raw_records(&session));
+    let written = match &out {
+        Some(path) => {
+            std::fs::write(path, &md).map_err(|e| e.to_string())?;
+            true
+        }
+        None => false,
+    };
+    if json {
+        emit_json(serde_json::json!({
+            "session": session.id,
+            "path": out.as_ref().map(|p| p.display().to_string()),
+            "bytes": md.len(),
+            "written": written
+        }));
+    } else if let Some(path) = &out {
+        println!("wrote {}", path.display());
+    } else {
+        print!("{md}");
+    }
+    Ok(())
+}
+
+fn headless(
+    cfg: &config::Config,
+    mods: &[Box<dyn glass_mod_api::Mod_>],
     extensions: &mut ext::Registry,
     catalogue: Option<String>,
-    project_instructions: Option<String>,
+    instructions: Option<String>,
+    mut session: Session,
+    args: &[String],
+) -> Result<(), String> {
+    use std::sync::{Arc, Mutex};
+    let _signals = signals::Guard::install();
+    let mut cfg = cfg.clone();
+    let mut json = false;
+    let mut recovering = false;
+    let mut planning = false;
+    let mut limit = cfg.cost_limit;
+    let mut prompt = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" if prompt.is_empty() => json = true,
+            "--retry" if prompt.is_empty() => recovering = true,
+            "--plan" if prompt.is_empty() => planning = true,
+            "--trust" if prompt.is_empty() => {} // consumed by run(); accepted here
+            "--budget" if prompt.is_empty() => {
+                i += 1;
+                let n = args
+                    .get(i)
+                    .ok_or("--budget requires dollars")?
+                    .parse::<f64>()
+                    .map_err(|_| "invalid budget")?;
+                if !n.is_finite() || n <= 0.0 {
+                    return Err("budget must be positive and finite".into());
+                }
+                limit = Some(n);
+            }
+            "--resume" if prompt.is_empty() => {
+                i += 1;
+                let id = args.get(i).ok_or("--resume requires a session ID")?;
+                session = Session::open(&config::data_dir(), id).map_err(|e| e.to_string())?;
+                polish::bind(&session, &cfg.workspace)?;
+            }
+            "--attach" if prompt.is_empty() => {
+                i += 1;
+                polish::attach(
+                    &session,
+                    &cfg.workspace,
+                    args.get(i).ok_or("--attach requires a file path")?,
+                )?;
+            }
+            "--model" if prompt.is_empty() => {
+                i += 1;
+                cfg.model = args.get(i).ok_or("--model requires a model ID")?.clone();
+            }
+            "--connection" if prompt.is_empty() => {
+                i += 1;
+                let store = auth::load()?;
+                let c = store
+                    .connections
+                    .iter()
+                    .find(|c| &c.id == args.get(i).unwrap_or(&String::new()))
+                    .ok_or("unknown connection ID; use glass-core status --json")?;
+                auth::configure(&mut cfg, c);
+            }
+            "--" if prompt.is_empty() => {
+                prompt.extend_from_slice(&args[i + 1..]);
+                break;
+            }
+            a if a.starts_with("--") && prompt.is_empty() => {
+                return Err(format!("unknown option {a}"));
+            }
+            _ => prompt.push(args[i].clone()),
+        }
+        i += 1;
+    }
+    let mut prompt = prompt.join(" ");
+    if recovering {
+        if run_resume(args)?.is_none() {
+            return Err("--retry requires --resume ID".into());
+        }
+        if !prompt.is_empty() {
+            return Err("--retry resumes existing context; omit the prompt".into());
+        }
+        if !session
+            .records
+            .last()
+            .is_some_and(|r| matches!(r,Record::Meta(t) if t.starts_with("error:")))
+        {
+            return Err("No failed response to retry in this session".into());
+        }
+    }
+    if prompt.is_empty() && !recovering {
+        use std::io::Read;
+        if term::stdin_is_tty() {
+            return Err("usage: glass-core run [--json] [--budget USD] <prompt>".into());
+        }
+        std::io::stdin()
+            .read_to_string(&mut prompt)
+            .map_err(|e| e.to_string())?;
+    }
+    if prompt.trim().is_empty() && !recovering {
+        return Err("prompt is empty".into());
+    }
+    let path = Arc::new(Mutex::new(session.path.with_extension("cost.json")));
+    let ledger = budget::load(&path.lock().unwrap(), limit);
+    let factory: crate::warmer::ProviderFactory = {
+        let cfg = cfg.clone();
+        let ledger = Arc::clone(&ledger);
+        let path = Arc::clone(&path);
+        Arc::new(move || make_provider(&cfg, Arc::clone(&ledger), Arc::clone(&path), None))
+    };
+    // A delegated task may name its own model; that needs the same
+    // construction with a different model id, plus its own rate card.
+    let factory_for_model: crate::warmer::ProviderForModel = {
+        let cfg = cfg.clone();
+        let ledger = Arc::clone(&ledger);
+        let path = Arc::clone(&path);
+        Arc::new(move |model: &str| {
+            let cfg = cfg.clone();
+            let ledger = Arc::clone(&ledger);
+            let path = Arc::clone(&path);
+            let model = model.to_string();
+            let f: crate::warmer::ProviderFactory = Arc::new(move || {
+                make_provider(&cfg, Arc::clone(&ledger), Arc::clone(&path), Some(&model))
+            });
+            f
+        })
+    };
+    let workspace = cfg.workspace.clone();
+    let scratch = std::env::temp_dir().join(format!("glass-subagent-{}", std::process::id()));
+    let sub_factory = Arc::clone(&factory);
+    let sub_factory_for = Arc::clone(&factory_for_model);
+    extensions.set_subagent(move || {
+        let factory = Arc::clone(&sub_factory);
+        let factory_for = Arc::clone(&sub_factory_for);
+        let workspace = workspace.clone();
+        let scratch = scratch.clone();
+        Box::new(move |tasks: &[ext::protocol::SubagentTask]| -> Vec<String> {
+            let make = |model: Option<&str>| -> Result<Box<dyn provider::Provider>, String> {
+                match model {
+                    Some(m) => (factory_for(m))(),
+                    None => factory(),
+                }
+            };
+            crate::subagent::run_batch(tasks, crate::subagent::MAX_CONCURRENT, |t| {
+                crate::subagent::run_task(t, &workspace, &scratch, &make)
+            })
+        })
+    });
+    if !recovering {
+        session.append(Record::User(prompt));
+    }
+    let p = match factory() {
+        Ok(p) => p,
+        Err(e) => {
+            session.append(Record::Meta(format!("error: {e}")));
+            if json {
+                emit_json(
+                    serde_json::json!({"session":session.id,"status":"error","text":"","error":e,"cost_usd":null,"checkpoint_error":null}),
+                );
+            }
+            return Err(e);
+        }
+    };
+    let dir = config::data_dir().join("checkpoints").join(&session.id);
+    let (mut checkpoint, mut checkpoint_error) = if planning {
+        (None, None)
+    } else {
+        match checkpoint::begin(&cfg.workspace, &dir, "task-1") {
+            Ok(c) => (Some(c), None),
+            Err(e) => (None, Some(e)),
+        }
+    };
+    let mut state = tools::State::new();
+    for r in &session.records {
+        if let Record::State(items) = r {
+            state.apply(&glass_mod_api::ToolCall {
+                id: "restore".into(),
+                name: "state".into(),
+                arguments: serde_json::json!({"items":items}).to_string(),
+            });
+        }
+    }
+    let prompt_instructions = polish::prompt_context(&session, &instructions);
+    let result = Agent::new(
+        p.as_ref(),
+        &mut session,
+        &mut state,
+        mods,
+        extensions,
+        &cfg.workspace,
+    )
+    .with_plan_mode(planning)
+    .prime_extensions()
+    .with_prompt(cfg.system_prompt.clone(), catalogue, prompt_instructions)
+    .with_limits(cfg.max_tokens, cfg.reasoning_budget, 24)
+    .with_recovery(recovering)
+    .with_stream_factory(Arc::clone(&factory))
+    .run_turn(|slot| {
+        if signals::interrupted() {
+            *slot = Some(String::new());
+        }
+    });
+    if let Some(c) = checkpoint.as_mut() {
+        checkpoint_error = c.finish(&dir).err();
+    }
+    let l = ledger.lock().unwrap();
+    let (text, status, error) = match result {
+        Ok((out, Stop::Finished)) => (out.text, "finished", None),
+        Ok((out, Stop::Cancelled)) => (
+            out.text,
+            "cancelled",
+            Some("cancelled: owned shell process groups stopped; partial response saved".into()),
+        ),
+        Ok((out, stop)) => (
+            out.text,
+            "incomplete",
+            Some(format!("incomplete: {stop:?}")),
+        ),
+        Err(e) => {
+            let start = session
+                .records
+                .iter()
+                .rposition(|r| matches!(r, Record::User(_)))
+                .unwrap_or(0);
+            let partial = session.records[start..]
+                .iter()
+                .filter_map(|r| {
+                    if let Record::Assistant(t) = r {
+                        Some(t.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (partial, "error", Some(e.to_string()))
+        }
+    };
+    if let Some(e) = &error {
+        session.append(Record::Meta(format!("error: {e}")));
+    }
+    if json {
+        emit_json(
+            serde_json::json!({"session": session.id, "status": status, "text": text, "error": error, "cost_usd": if l.unknown { None } else { Some(l.spent) }, "checkpoint_error": checkpoint_error}),
+        );
+    } else {
+        println!("{text}");
+        if let Some(e) = &checkpoint_error {
+            eprintln!("checkpoint: {e}");
+        }
+    }
+    match error {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Command> {
+    use glass_tui::palette::Command;
+    let builtin = [
+        ("help", "", "Show help", false),
+        (
+            "keys",
+            "",
+            "Discover draft, active-turn and viewer shortcuts",
+            false,
+        ),
+        ("btw", "<question>", "Ask a side question", true),
+        ("model", "[name]", "Choose provider and model", false),
+        ("login", "", "Connect a provider or ChatGPT account", false),
+        ("logout", "", "Remove saved credentials", false),
+        ("status", "", "View connection and session status", false),
+        ("sessions", "", "Browse project conversations", false),
+        ("retry", "", "Recover a failed response", false),
+        ("details", "", "Expand tool activity and output", false),
+        (
+            "thinking",
+            "",
+            "View live provider reasoning · Ctrl-T",
+            false,
+        ),
+        (
+            "context",
+            "",
+            "Inspect context and manage attached files",
+            false,
+        ),
+        (
+            "attach",
+            "[path]",
+            "Attach a text file to model context",
+            false,
+        ),
+        (
+            "review",
+            "",
+            "Review task summary, commands and changes",
+            false,
+        ),
+        ("history", "", "Search prompt history", false),
+        ("editor", "", "Edit your draft in VISUAL or EDITOR", false),
+        ("redraw", "", "Repaint after terminal drift", false),
+        ("clear", "", "Start a fresh session", false),
+        ("compact", "[focus]", "Compact the conversation now", false),
+        ("diff", "[checkpoint]", "Review task changes", false),
+        ("budget", "[USD|off]", "Show or set spending limit", false),
+        ("branch", "[turn]", "Fork conversation history", false),
+        ("checkpoint", "", "Save workspace baseline", false),
+        ("checkpoints", "", "List saved checkpoints", false),
+        ("undo", "[checkpoint]", "Undo task changes", false),
+        ("restore", "<checkpoint>", "Restore a saved baseline", true),
+        ("bg", "<command>", "Start a background command", true),
+        ("jobs", "", "List background jobs", false),
+        ("job", "<id> [stop]", "Read output or stop a job", true),
+        (
+            "plan",
+            "[task]",
+            "Inspect read-only, review a plan, then choose execution",
+            false,
+        ),
+        (
+            "init",
+            "[notes]",
+            "Draft AGENTS.md for this repository",
+            false,
+        ),
+        (
+            "git",
+            "",
+            "Review files and hunks, stage, and draft commits",
+            false,
+        ),
+        (
+            "doctor",
+            "",
+            "Diagnose provider, streaming, and tool compatibility",
+            false,
+        ),
+        ("profiles", "", "Save and select workspace settings", false),
+        (
+            "responses",
+            "",
+            "Read Markdown and copy responses or code blocks",
+            false,
+        ),
+        (
+            "export",
+            "[path]",
+            "Write the conversation as a Markdown file",
+            false,
+        ),
+        ("theme", "", "Choose a terminal color palette", false),
+        (
+            "dashboard",
+            "",
+            "Workspace dashboard and quick actions",
+            false,
+        ),
+        (
+            "security",
+            "",
+            "Inspect security and extension trust",
+            false,
+        ),
+        (
+            "mods",
+            "",
+            "Enable or disable built-in mods for this session",
+            false,
+        ),
+        (
+            "extensions",
+            "",
+            "Inspect and stop loaded extensions",
+            false,
+        ),
+        ("skills", "", "List loaded skills", false),
+    ];
+    let mut commands: Vec<_> = builtin
+        .into_iter()
+        .map(|(name, hint, description, required_args)| Command {
+            name: name.into(),
+            hint: hint.into(),
+            description: description.into(),
+            required_args,
+        })
+        .collect();
+    for (name, description) in extensions.commands() {
+        if !commands.iter().any(|c| c.name == name) {
+            commands.push(Command {
+                name,
+                hint: String::new(),
+                description,
+                required_args: false,
+            });
+        }
+    }
+    commands
+}
+
+/// Build a metered provider for `cfg`, optionally overriding the model.
+///
+/// Delegated tasks and fallback entries need the same construction with a
+/// different model id. The ledger and the rate card follow that model, so a
+/// request is accounted at the price of the model that actually served it.
+///
+/// When `fallback` is configured, the result is a chain: the primary first,
+/// then each fallback model in order. A fallback that cannot even be built
+/// (a typo'd adapter, a missing credential) is skipped with a note rather
+/// than taking the whole session down.
+pub(crate) fn make_provider(
+    cfg: &config::Config,
+    ledger: std::sync::Arc<std::sync::Mutex<budget::Ledger>>,
+    path: std::sync::Arc<std::sync::Mutex<std::path::PathBuf>>,
+    model: Option<&str>,
+) -> Result<Box<dyn provider::Provider>, String> {
+    let model = model.unwrap_or(&cfg.model);
+    let primary = make_metered(
+        cfg,
+        std::sync::Arc::clone(&ledger),
+        std::sync::Arc::clone(&path),
+        model,
+    )?;
+    let mut levels: Vec<Box<dyn provider::Provider>> = vec![primary];
+    for fallback in &cfg.fallback {
+        if levels.iter().any(|p| p.id() == fallback) {
+            continue;
+        }
+        match make_metered(
+            cfg,
+            std::sync::Arc::clone(&ledger),
+            std::sync::Arc::clone(&path),
+            fallback,
+        ) {
+            Ok(p) => levels.push(p),
+            Err(e) => eprintln!("glass-core: fallback `{fallback}` unusable: {e}"),
+        }
+    }
+    if levels.len() == 1 {
+        return Ok(levels.pop().expect("one level"));
+    }
+    Ok(Box::new(provider::Chain::new(model.to_string(), levels)))
+}
+
+/// One model's metered provider: adapter plus ledger and rate card.
+fn make_metered(
+    cfg: &config::Config,
+    ledger: std::sync::Arc<std::sync::Mutex<budget::Ledger>>,
+    path: std::sync::Arc<std::sync::Mutex<std::path::PathBuf>>,
+    model: &str,
+) -> Result<Box<dyn provider::Provider>, String> {
+    let key = auth::resolve(cfg)?;
+    let inner =
+        provider::build(&cfg.provider, &cfg.base_url, key, model).map_err(|e| e.to_string())?;
+    Ok(Box::new(budget::Metered {
+        inner,
+        ledger,
+        card: cfg.rate_card(model),
+        path,
+    }) as Box<dyn provider::Provider>)
+}
+
+fn repl(
+    mut cfg: config::Config,
+    mut loaded_mods: Vec<Box<dyn glass_mod_api::Mod_>>,
+    extensions: &mut ext::Registry,
+    catalogue: Option<String>,
+    skills: &[crate::skills::Skill],
+    instructions: Vec<crate::agents_md::Instruction>,
     mut session: Session,
 ) -> Result<(), String> {
     use std::sync::{Arc, Mutex};
+
+    let mut project_instructions = crate::agents_md::render_all(&instructions);
 
     // The model lives in one shared cell so `/model` can switch it
     // and both the live provider and the cache warmer pick the new
     // one up — neither holds a stale copy. The provider itself is not
     // `Send`, but it is cheap to construct from configuration, so it
     // is rebuilt on demand rather than shared with the warmer thread.
-    let current_model = Arc::new(Mutex::new(cfg.model.clone()));
+    let mut checkpoint_dir = config::data_dir().join("checkpoints").join(&session.id);
+    let ledger_path = session.path.with_extension("cost.json");
+    let mut ledger = budget::load(&ledger_path, cfg.cost_limit);
+    let mut ledger_path = Arc::new(Mutex::new(ledger_path));
+    let budget_context = Arc::new(Mutex::new((Arc::clone(&ledger), Arc::clone(&ledger_path))));
+    let mut jobs = jobs::Jobs::default();
+    let mut latest_checkpoint: Option<checkpoint::Checkpoint> = std::fs::read_dir(&checkpoint_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.path().extension().is_some_and(|x| x == "json")
+                && e.file_name().to_string_lossy().starts_with("task-")
+        })
+        .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
+        .and_then(|e| std::fs::read(e.path()).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    let runtime_config = Arc::new(Mutex::new(cfg.clone()));
     let factory: crate::warmer::ProviderFactory = {
-        let kind = cfg.provider.clone();
-        let base_url = cfg.base_url.clone();
-        let api_key = cfg.api_key();
-        let model = Arc::clone(&current_model);
+        let runtime_config = Arc::clone(&runtime_config);
+        let budget_context = Arc::clone(&budget_context);
         Arc::new(move || {
-            let m = model.lock().map_err(|_| "model lock poisoned".to_string())?.clone();
-            provider::build(&kind, &base_url, api_key.clone(), &m)
-                .map_err(|e| e.to_string())
+            let cfg = runtime_config
+                .lock()
+                .map_err(|_| "configuration lock poisoned")?
+                .clone();
+            let (ledger, path) = budget_context.lock().unwrap().clone();
+            make_provider(&cfg, ledger, path, None)
         })
     };
-    let mut provider = factory().map_err(|e| e.to_string())?;
+    // A delegated task may name its own model; that needs the same
+    // construction with a different model id, plus its own rate card.
+    let factory_for_model: crate::warmer::ProviderForModel = {
+        let runtime_config = Arc::clone(&runtime_config);
+        let budget_context = Arc::clone(&budget_context);
+        Arc::new(move |model: &str| {
+            let runtime_config = Arc::clone(&runtime_config);
+            let budget_context = Arc::clone(&budget_context);
+            let model = model.to_string();
+            let f: crate::warmer::ProviderFactory = Arc::new(move || {
+                let cfg = runtime_config
+                    .lock()
+                    .map_err(|_| "configuration lock poisoned")?
+                    .clone();
+                let (ledger, path) = budget_context.lock().unwrap().clone();
+                make_provider(&cfg, ledger, path, Some(&model))
+            });
+            f
+        })
+    };
+    // Start disconnected so /login remains available. Requests fail before network access.
+    let mut provider: Box<dyn provider::Provider>;
 
     let mut state = tools::State::new();
+    for r in &session.records {
+        if let Record::State(items) = r {
+            state.apply(&glass_mod_api::ToolCall {
+                id: "restore".into(),
+                name: "state".into(),
+                arguments: serde_json::json!({"items":items}).to_string(),
+            });
+        }
+    }
     let mut editor = Editor::new();
+    // Recall survives the process: the prompts of every
+    // session are the ones most likely to be repeated.
+    editor.set_history(crate::history::load(&config::data_dir()));
     let mut back = glass_tui::term::BackBuffer::new();
 
-    print_banner(&cfg, &loaded_mods, extensions, &session);
+    let _surface = surface::enter().map_err(|e| e.to_string())?;
+    let narrow = term_size().0 < 60;
+    print_banner(&cfg, &loaded_mods, extensions, &session, narrow);
+    ui_println!(
+        "\x1b[90m{}\x1b[0m",
+        glass_tui::text::clip(&auth::status(&cfg), usize::from(term_size().0))
+    );
 
-    let keys = input::KeyReader::spawn();
+    let mut keys = input::KeyReader::spawn();
+    let mut palette = glass_tui::palette::Palette::new(command_catalogue(extensions));
+
+    // Workspace trust: repository-controlled instruction text is a decision,
+    // not a surprise. Asked once per workspace and content hash; changed
+    // instructions ask again.
+    if project_instructions.is_some() {
+        let digest = trust::digest(&instructions);
+        match trust::remembered(&cfg.workspace, &digest) {
+            Some(trust::Decision::Allow) => {}
+            Some(trust::Decision::Deny) => {
+                project_instructions = None;
+            }
+            None if cfg.trust == config::Trust::Always => {}
+            None => {
+                let files = instructions
+                    .iter()
+                    .map(|i| i.path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let actions = [
+                    "Allow for this project".to_string(),
+                    "Deny".to_string(),
+                    "Not now".to_string(),
+                ];
+                match modal::choose(
+                    &keys,
+                    "Project instructions",
+                    &format!(
+                        "{files} will be added to the system prompt on every turn in this project."
+                    ),
+                    &actions,
+                ) {
+                    Some(0) => {
+                        if let Err(e) =
+                            trust::remember(&cfg.workspace, &digest, trust::Decision::Allow)
+                        {
+                            ui_println!("\x1b[33mtrust not saved: {e}\x1b[0m");
+                        }
+                    }
+                    Some(1) => {
+                        project_instructions = None;
+                        let _ =
+                            trust::remember(&cfg.workspace, &digest, trust::Decision::Deny);
+                    }
+                    _ => project_instructions = None,
+                }
+            }
+        }
+    }
     let mut pending = queue::Queue::new();
 
     let warmer = crate::warmer::Warmer::new(Arc::clone(&factory));
 
-    // Subagents run as a nested agent with its own isolated
-    // context. The runner is a plain closure: it builds a fresh
-    // provider and a throwaway session, so a delegated task never
-    // sees the parent's conversation. Only the core tools come
-    // along — the runner cannot borrow the live `mods` or the live
-    // extension registry, both of which the parent turn owns.
-    let make_subagent = || -> ext::host::SubagentFn {
-        let factory = Arc::clone(&factory);
-        let workspace = cfg.workspace.clone();
-        Box::new(move |task: &str| -> String {
-            let provider = match factory() {
-                Ok(p) => p,
-                Err(e) => return format!("subagent: {e}"),
+    // Subagents run as a batch of nested agents, each with its own
+    // isolated context. The runner is a plain closure: it builds a
+    // fresh provider and a throwaway session per task, so a delegated
+    // task never sees the parent's conversation. Only the core tools
+    // come along — the runner cannot borrow the live `mods` or the
+    // live extension registry, both of which the parent turn owns.
+    let subagent_factory = Arc::clone(&factory);
+    let subagent_factory_for = Arc::clone(&factory_for_model);
+    let subagent_workspace = cfg.workspace.clone();
+    let subagent_scratch =
+        std::env::temp_dir().join(format!("glass-subagent-{}", std::process::id()));
+    let make_subagent = move || -> ext::host::SubagentFn {
+        let factory = Arc::clone(&subagent_factory);
+        let factory_for = Arc::clone(&subagent_factory_for);
+        let workspace = subagent_workspace.clone();
+        let scratch = subagent_scratch.clone();
+        Box::new(move |tasks: &[ext::protocol::SubagentTask]| -> Vec<String> {
+            let make = |model: Option<&str>| -> Result<Box<dyn provider::Provider>, String> {
+                match model {
+                    Some(m) => (factory_for(m))(),
+                    None => factory(),
+                }
             };
-            let dir = std::env::temp_dir()
-                .join(format!("glass-subagent-{}", std::process::id()));
-            let mut session = match Session::create(&dir) {
-                Ok(s) => s,
-                Err(e) => return format!("subagent: {e}"),
-            };
-            session.append(Record::User(task.to_string()));
-            let mut state = tools::State::new();
-            let mods: Vec<Box<dyn glass_mod_api::Mod_>> = Vec::new();
-            let mut registry = ext::Registry::empty();
-            let prompt = format!(
-                "You are a subagent working on a delegated task.\n\n\
-                 Task: {task}\n\n\
-                 Do the task using bash and state. Do not ask the user \
-                 questions. When you are done, reply with a concise report \
-                 of what you found or changed."
-            );
-            let mut agent = Agent::new(
-                provider.as_ref(),
-                &mut session,
-                &mut state,
-                &mods,
-                &mut registry,
-                &workspace,
-            )
-            .with_prompt(prompt, None, None);
-            match agent.run_turn(|_| {}) {
-                Ok((out, _)) => out.text,
-                Err(e) => format!("subagent failed: {e}"),
-            }
+            crate::subagent::run_batch(tasks, crate::subagent::MAX_CONCURRENT, |t| {
+                crate::subagent::run_task(t, &workspace, &scratch, &make)
+            })
         })
     };
     extensions.set_subagent(make_subagent);
 
-    let (mut w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
-    let mut prompt_row = h.saturating_sub(2);
     let mut totals = Totals::new();
+    let painter = Painter::new();
+    painter.seed_live(session.history_entries(), session.reasoning_history());
 
+    let mut retry_available = session
+        .records
+        .last()
+        .is_some_and(|r| matches!(r,Record::Meta(t) if t.starts_with("error:")));
     loop {
-        editor.render(prompt_row, w, true);
+        let _ = painter.refresh_geometry(!palette.active());
+        let (w, nh) = term_size();
+        let prompt_row = nh.saturating_sub(2).max(1);
+        painter.set_width(w);
+        let restore_reader = painter.reader_needs_redraw(palette.active());
+        if !palette.active()
+            && painter.reader_active()
+            && restore_reader
+            && let Some(reader) = painter.reader.borrow_mut().as_mut()
+        {
+            reader.restore_after_overlay().map_err(|e| e.to_string())?;
+        }
+        let prompt_rows = if palette.active() {
+            palette.render(editor.text(), w, term_size().1);
+            1
+        } else {
+            surface::composer(&editor, true, false)
+        };
 
-        let ev = match keys.try_next().or_else(|| keys.next_blocking()) {
-            Some(e) => e,
-            None => {
-                term::leave().ok();
-                return Err("input stream closed".into());
+        let ev = loop {
+            match keys.try_next() {
+                Some(event) => break Some(event),
+                None => match keys.wait_timeout(std::time::Duration::from_millis(120)) {
+                    Ok(Some(event)) => break Some(event),
+                    Ok(None) => {
+                        if painter.refresh_geometry(!palette.active()) {
+                            break None;
+                        }
+                    }
+                    Err(_) => {
+                        term::leave().ok();
+                        return Err("input stream closed".into());
+                    }
+                },
             }
         };
+        let Some(ev) = ev else { continue };
+        let _ = painter.refresh_geometry(!palette.active());
+
+        if painter.reader_active() && !palette.active() && painter.reader_event(&ev)? {
+            continue;
+        }
+
+        if should_open_reader_for_wheel(&ev, painter.reader_active(), palette.active()) {
+            painter.open_reader(session.history_entries(), false)?;
+            let _ = painter.reader_event(&ev)?;
+            continue;
+        }
 
         // Global bindings are handled here and never reach the editor, so a
         // ctrl-key can never leak into the prompt as a literal character.
         let key = match ev {
             glass_tui::crossterm::event::Event::Key(k) => k,
             glass_tui::crossterm::event::Event::Resize(nw, nh) => {
-                w = nw;
-                prompt_row = nh.saturating_sub(2);
+                painter.set_width(nw);
+                let _ = nh;
                 continue;
             }
             // Bracketed paste delivers a whole run at once,
@@ -281,43 +1402,876 @@ fn repl(
             // input a coding harness uses most.
             glass_tui::crossterm::event::Event::Paste(text) => {
                 editor.insert_str(&text);
+                if palette.active() {
+                    palette.changed(&editor);
+                }
                 continue;
             }
             _ => continue,
         };
 
-        let ctrl = key.modifiers.contains(glass_tui::crossterm::event::KeyModifiers::CONTROL);
+        if key.code == glass_tui::crossterm::event::KeyCode::PageUp {
+            palette.cancel(&mut editor);
+            painter.open_reader(session.history_entries(), true)?;
+            continue;
+        }
+        let ctrl = key
+            .modifiers
+            .contains(glass_tui::crossterm::event::KeyModifiers::CONTROL);
+        if ctrl
+            && matches!(
+                key.code,
+                glass_tui::crossterm::event::KeyCode::Char('b' | 'f')
+            )
+        {
+            palette.cancel(&mut editor);
+            painter.open_reader(
+                session.history_entries(),
+                key.code == glass_tui::crossterm::event::KeyCode::Char('b'),
+            )?;
+            continue;
+        }
         if ctrl {
             match key.code {
+                glass_tui::crossterm::event::KeyCode::Char('r') => {
+                    let prompts = crate::history::load(&config::data_dir())
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>();
+                    if let Some(i) = modal::choose(
+                        &keys,
+                        "Prompt history",
+                        "Search; Enter restores a prompt for editing",
+                        &prompts,
+                    ) {
+                        editor.set_text(&prompts[i]);
+                    }
+                    continue;
+                }
+                glass_tui::crossterm::event::KeyCode::Char('x') => {
+                    keys.stop();
+                    if painter.reader_active() {
+                        painter.close_reader()?;
+                    }
+                    let result = polish::external_editor(editor.text());
+                    keys = input::KeyReader::spawn();
+                    match result {
+                        Ok(t) => editor.set_text(&t),
+                        Err(e) => modal::info(&keys, "Editor", &e),
+                    }
+                    continue;
+                }
+                glass_tui::crossterm::event::KeyCode::Char('p') => {
+                    if palette.active() {
+                        palette.cancel(&mut editor);
+                    } else {
+                        palette
+                            .open_managed(&mut editor)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    continue;
+                }
                 glass_tui::crossterm::event::KeyCode::Char('d') => {
-                    println!("\nbye");
+                    palette.close();
+                    ui_println!("\nbye");
                     return Ok(());
                 }
+                glass_tui::crossterm::event::KeyCode::Char('t') => {
+                    painter
+                        .live
+                        .borrow_mut()
+                        .toggle(true)
+                        .map_err(|e| e.to_string())?;
+                    while painter.live.borrow().active() {
+                        painter.live.borrow_mut().draw().ok();
+                        if let Some(ev) = keys.next_blocking() {
+                            painter.live.borrow_mut().event(&ev);
+                        } else {
+                            painter.live.borrow_mut().close().ok();
+                        }
+                    }
+                    continue;
+                }
                 glass_tui::crossterm::event::KeyCode::Char('g') => {
-                    view_transcript(&session, &loaded_mods)?;
+                    palette.cancel(&mut editor);
+                    view_transcript(&session, &loaded_mods, &keys, false)?;
                     continue;
                 }
                 glass_tui::crossterm::event::KeyCode::Char('c') => {
+                    palette.close();
                     editor.clear();
-                    println!("^C");
+                    ui_println!("^C");
                     continue;
                 }
                 _ => {}
             }
         }
 
-        let text = match editor.key(key) {
-            Edit::Continue => continue,
-            Edit::Submit(t) => t,
+        if !palette.active() && key.code == glass_tui::crossterm::event::KeyCode::Tab {
+            if let Some(path) = polish::path_picker(&keys, &cfg.workspace) {
+                editor.insert_str(&path);
+            }
+            continue;
+        }
+        let text = if palette.active() {
+            match palette.key(&mut editor, key) {
+                Some(t) => t,
+                None => continue,
+            }
+        } else {
+            let open_palette = key.code == glass_tui::crossterm::event::KeyCode::Char('/')
+                && editor.text().is_empty();
+            match editor.key(key) {
+                Edit::Continue => {
+                    if open_palette {
+                        palette
+                            .open_managed(&mut editor)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    continue;
+                }
+                Edit::Submit(t) => t,
+            }
         };
 
-        let text = text.trim().to_string();
+        if let Some(draft) = palette.take_draft() {
+            editor.set_text(&draft);
+        }
+        let mut text = text.trim().to_string();
         if text.is_empty() {
             continue;
         }
 
+        // Every submitted prompt enters the history, commands
+        // included: a shell records what was typed, and so does
+        // the prompt.
+        crate::history::record(&config::data_dir(), &text);
+
+        if text == "/dashboard" {
+            let choices = [
+                "Plan a task",
+                "Git review",
+                "Provider diagnostics",
+                "Workspace profiles",
+                "Responses and code",
+                "Provider and model",
+                "Sessions",
+                "Task review",
+                "Context",
+                "Mods",
+                "Extensions",
+                "Security",
+            ];
+            let actions = [
+                "/plan",
+                "/git",
+                "/doctor",
+                "/profiles",
+                "/responses",
+                "/model",
+                "/sessions",
+                "/review",
+                "/context",
+                "/mods",
+                "/extensions",
+                "/security",
+            ];
+            let note = format!(
+                "{} · {}\n{}",
+                cfg.model,
+                cfg.workspace.display(),
+                auth::status(&cfg)
+            );
+            if let Some(i) = modal::choose(
+                &keys,
+                "Workspace dashboard",
+                &note,
+                &choices.map(String::from),
+            ) {
+                text = actions[i].into();
+            } else {
+                continue;
+            }
+        }
+        if text == "/profiles" {
+            match profiles::manage(&keys, &cfg) {
+                Ok(Some(candidate)) => {
+                    warmer.begin_turn();
+                    cfg = candidate;
+                    loaded_mods = mods::load(&cfg.mods)?;
+                    extensions.reload(&cfg.extensions, &cfg.workspace, &cfg.model);
+                    *runtime_config.lock().unwrap() = cfg.clone();
+                    palette = glass_tui::palette::Palette::new(command_catalogue(extensions));
+                    modal::info(
+                        &keys,
+                        "Profile applied",
+                        "Provider, model, instructions, mods, and extensions are active in this workspace.",
+                    );
+                }
+                Ok(None) => {}
+                Err(e) => modal::info(&keys, "Profile error", &e),
+            }
+            continue;
+        }
+        if text == "/doctor" {
+            workflows::doctor(&keys, &cfg, Arc::clone(&factory));
+            continue;
+        }
+        if text == "/git" {
+            if let Err(e) = workflows::git_review(&keys, &cfg.workspace) {
+                modal::info(&keys, "Git review error", &e);
+            }
+            continue;
+        }
+        if text == "/responses" {
+            if let Err(e) = workflows::responses(&keys, &session) {
+                modal::info(&keys, "Response error", &e);
+            }
+            continue;
+        }
+        if text == "/plan" || text.starts_with("/plan ") {
+            warmer.begin_turn();
+            match workflows::plan(
+                &keys,
+                &cfg,
+                &session,
+                Arc::clone(&factory),
+                text.strip_prefix("/plan").unwrap_or("").trim(),
+            ) {
+                Ok(Some(task)) => text = task,
+                Ok(None) => continue,
+                Err(e) => {
+                    modal::info(&keys, "Planning error", &e);
+                    continue;
+                }
+            }
+        }
+        if text == "/init" || text.starts_with("/init ") {
+            warmer.begin_turn();
+            let notes = text.strip_prefix("/init").unwrap_or("").trim();
+            match workflows::init(&keys, &cfg, Arc::clone(&factory), Some(notes)) {
+                Ok(Some(path)) => ui_println!("\x1b[32mwrote\x1b[0m {path}"),
+                Ok(None) => {}
+                Err(e) => modal::info(&keys, "Init error", &e),
+            }
+            continue;
+        }
+        if text == "/sessions" {
+            warmer.begin_turn();
+            match polish::browser(&keys, &session, &cfg.workspace) {
+                Ok(Some(s)) => {
+                    session = s;
+                    state = tools::State::new();
+                    totals = Totals::new();
+                    for r in &session.records {
+                        if let Record::State(items) = r {
+                            state.apply(&glass_mod_api::ToolCall {
+                                id: "restore".into(),
+                                name: "state".into(),
+                                arguments: serde_json::json!({"items":items}).to_string(),
+                            });
+                        }
+                    }
+                    checkpoint_dir = config::data_dir().join("checkpoints").join(&session.id);
+                    latest_checkpoint = latest_task_checkpoint(&checkpoint_dir);
+                    let limit = cfg.cost_limit;
+                    ledger_path = Arc::new(Mutex::new(session.path.with_extension("cost.json")));
+                    ledger = budget::load(&ledger_path.lock().unwrap(), limit);
+                    *budget_context.lock().unwrap() =
+                        (Arc::clone(&ledger), Arc::clone(&ledger_path));
+                    retry_available = false;
+                    ui_println!("Resumed {} · {}", polish::title(&session), session.id);
+                }
+                Ok(None) => {}
+                Err(e) => modal::info(&keys, "Session error", &e),
+            }
+            continue;
+        }
+        if text == "/context" {
+            if let Err(e) =
+                polish::context(&keys, &session, &cfg, &project_instructions, &catalogue)
+            {
+                modal::info(&keys, "Context error", &e);
+            }
+            warmer.begin_turn();
+            continue;
+        }
+        if text == "/attach" || text.starts_with("/attach ") {
+            let path = if let Some(p) = text.strip_prefix("/attach ") {
+                Some(p.trim().to_string())
+            } else {
+                polish::path_picker(&keys, &cfg.workspace)
+            };
+            if let Some(p) = path {
+                match polish::attach(&session, &cfg.workspace, &p) {
+                    Ok(()) => ui_println!("Attached {p} · /context to inspect or remove"),
+                    Err(e) => modal::info(&keys, "Attachment error", &e),
+                }
+            }
+            warmer.begin_turn();
+            continue;
+        }
+        if text == "/keys" {
+            polish::keys(&keys);
+            continue;
+        }
+        if text == "/details" {
+            polish::details(&keys, &session);
+            continue;
+        }
+        if text == "/review" {
+            modal::info(
+                &keys,
+                "Task review",
+                &polish::review_report(&session, latest_checkpoint.as_ref()),
+            );
+            continue;
+        }
+        if text == "/history" {
+            let prompts = crate::history::load(&config::data_dir())
+                .into_iter()
+                .rev()
+                .filter(|p| p != "/history")
+                .collect::<Vec<_>>();
+            if let Some(i) =
+                modal::choose(&keys, "Prompt history", "Choose a prompt to edit", &prompts)
+            {
+                editor.set_text(&prompts[i]);
+            }
+            continue;
+        }
+        if text == "/editor" {
+            keys.stop();
+            let result = polish::external_editor(editor.text());
+            keys = input::KeyReader::spawn();
+            match result {
+                Ok(t) => editor.set_text(&t),
+                Err(e) => modal::info(&keys, "Editor", &e),
+            }
+            continue;
+        }
+        if text == "/redraw" {
+            surface::overlay(false).ok();
+            continue;
+        }
+        let recovering = text == "/retry";
+        if recovering {
+            if !retry_available {
+                modal::info(
+                    &keys,
+                    "Response recovery",
+                    "No failed response to retry in this session.",
+                );
+                continue;
+            }
+            match modal::choose(
+                &keys,
+                "Recover response",
+                "Keeps completed tool results and partial output; resumes from current context",
+                &[
+                    "Retry response".into(),
+                    "Switch provider and model, then retry".into(),
+                    "Sign in, then retry".into(),
+                ],
+            ) {
+                Some(0) => {}
+                Some(i) => {
+                    let result = if i == 1 {
+                        onboarding::model(&keys, &mut cfg)
+                    } else {
+                        onboarding::login(&keys, &mut cfg)
+                    };
+                    match result {
+                        Ok(true) => {
+                            *runtime_config.lock().unwrap() = cfg.clone();
+                            if let Err(e) = profiles::update_active(&cfg) {
+                                modal::info(&keys, "Profile save error", &e);
+                            }
+                        }
+                        Ok(false) => continue,
+                        Err(e) => {
+                            modal::info(&keys, "Connection error", &e);
+                            continue;
+                        }
+                    }
+                }
+                None => continue,
+            }
+        }
+        if matches!(text.as_str(), "/login" | "/logout" | "/model") {
+            warmer.begin_turn();
+            let result = match text.as_str() {
+                "/login" => onboarding::login(&keys, &mut cfg),
+                "/logout" => onboarding::logout(&keys, &mut cfg),
+                _ => onboarding::model(&keys, &mut cfg),
+            };
+            match result {
+                Ok(true) => {
+                    *runtime_config.lock().unwrap() = cfg.clone();
+                    if let Err(e) = profiles::update_active(&cfg) {
+                        modal::info(&keys, "Profile save error", &e);
+                    }
+                    ui_println!("\x1b[90m{} · {}\x1b[0m", auth::status(&cfg), cfg.model);
+                }
+                Ok(false) => {}
+                Err(e) => modal::info(&keys, "Connection error", &e),
+            }
+            continue;
+        }
+        if text == "/status" {
+            let l = ledger.lock().unwrap();
+            let detail = format!(
+                "{}\n\nProvider: {}\nEndpoint: {}\nModel: {}\nSession: {}\nSpent: {}\n\n/login connect · /model choose provider and model · /logout sign out",
+                auth::status(&cfg),
+                cfg.provider,
+                cfg.base_url,
+                cfg.model,
+                session.id,
+                pricing::money(l.spent)
+            );
+            drop(l);
+            modal::info(&keys, "Connection and session", &detail);
+            continue;
+        }
+        if text == "/tools" {
+            let labels = vec![
+                "Expanded · command and output preview".into(),
+                "Compact · completion status".into(),
+            ];
+            if let Some(choice) = modal::choose(
+                &keys,
+                "Tool cards",
+                "Full commands and recorded output stay in /details",
+                &labels,
+            ) {
+                painter.compact_tools.set(choice == 1);
+            }
+            continue;
+        }
+        if text == "/thinking" {
+            painter
+                .live
+                .borrow_mut()
+                .toggle(true)
+                .map_err(|e| e.to_string())?;
+            while painter.live.borrow().active() {
+                painter.live.borrow_mut().draw().ok();
+                if let Some(ev) = keys.next_blocking() {
+                    painter.live.borrow_mut().event(&ev);
+                } else {
+                    painter.live.borrow_mut().close().ok();
+                }
+            }
+            continue;
+        }
         if text == "/help" {
-            print!("{HELP}");
+            let items = command_catalogue(extensions)
+                .into_iter()
+                .map(|c| format!("/{} {} — {}", c.name, c.hint, c.description))
+                .collect::<Vec<_>>();
+            if let Some(i) = modal::choose(
+                &keys,
+                "Help",
+                "Choose a command to learn how to use it",
+                &items,
+            ) {
+                let c = &command_catalogue(extensions)[i];
+                modal::info(
+                    &keys,
+                    &format!("/{}", c.name),
+                    &format!(
+                        "{}\n\n/{} {}\n\nSelect it from / or Ctrl+P to start its guided flow.\nEscape closes a modal. Ctrl+G opens the transcript.\nCtrl+C clears input; Ctrl+D exits.",
+                        c.description, c.name, c.hint
+                    ),
+                );
+            }
+            continue;
+        }
+        // Guided fields stay in a modal, including commands typed directly.
+        if text == "/budget" {
+            let l = ledger.lock().unwrap();
+            let note = format!(
+                "Spent {} · limit {}",
+                pricing::money(l.spent),
+                l.limit.map(pricing::money).unwrap_or_else(|| "off".into())
+            );
+            drop(l);
+            match modal::choose(
+                &keys,
+                "Budget",
+                &note,
+                &["Set spending limit…".into(), "Turn limit off".into()],
+            ) {
+                Some(0) => {
+                    match modal::validated_field(
+                        &keys,
+                        "Budget",
+                        "Maximum session spend in USD",
+                        "",
+                        false,
+                        |s| {
+                            if s.parse::<f64>().is_ok_and(|n| n.is_finite() && n > 0.0) {
+                                Ok(())
+                            } else {
+                                Err("Enter a positive, finite dollar amount.".into())
+                            }
+                        },
+                    ) {
+                        Some(v) => text = format!("/budget {v}"),
+                        None => continue,
+                    }
+                }
+                Some(1) => text = "/budget off".into(),
+                _ => continue,
+            }
+        }
+        if matches!(text.as_str(), "/bg" | "/btw") {
+            let label = if text == "/bg" {
+                "Shell command to run in background"
+            } else {
+                "Side question"
+            };
+            match modal::field(&keys, &text, label, "", false) {
+                Some(v) => text = format!("{text} {v}"),
+                None => continue,
+            }
+        }
+        if text == "/branch" {
+            let turns = session.raw_turns().unwrap_or(0);
+            let choices = (0..=turns)
+                .rev()
+                .map(|t| {
+                    format!(
+                        "Through turn {t}{}",
+                        if t == turns {
+                            " (current conversation)"
+                        } else {
+                            ""
+                        }
+                    )
+                })
+                .collect::<Vec<_>>();
+            match modal::choose(
+                &keys,
+                "Branch conversation",
+                "Choose where to fork",
+                &choices,
+            ) {
+                Some(i) => text = format!("/branch {}", turns - i),
+                None => continue,
+            }
+        }
+        if matches!(text.as_str(), "/restore" | "/checkpoints") {
+            let mut labels = std::fs::read_dir(&checkpoint_dir)
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+                .map(|e| {
+                    e.path()
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect::<Vec<_>>();
+            labels.sort();
+            labels.reverse();
+            if labels.is_empty() {
+                modal::info(
+                    &keys,
+                    "Checkpoints",
+                    "No checkpoints yet. Use /checkpoint to save a baseline.",
+                );
+                continue;
+            }
+            let Some(i) = modal::choose(
+                &keys,
+                "Checkpoints",
+                "Choose a saved workspace checkpoint",
+                &labels,
+            ) else {
+                continue;
+            };
+            let action = if text == "/restore" {
+                Some(2)
+            } else {
+                modal::choose(
+                    &keys,
+                    "Checkpoint actions",
+                    &labels[i],
+                    &[
+                        "Review changes".into(),
+                        "Undo task changes".into(),
+                        "Restore baseline…".into(),
+                    ],
+                )
+            };
+            text = match action {
+                Some(0) => format!("/diff {}", labels[i]),
+                Some(1) => format!("/undo {}", labels[i]),
+                Some(2) => {
+                    if modal::choose(
+                        &keys,
+                        "Restore baseline?",
+                        "Current files will be replaced. A backup checkpoint will be saved.",
+                        &["Cancel".into(), "Restore baseline".into()],
+                    ) != Some(1)
+                    {
+                        continue;
+                    }
+                    format!("/restore {}", labels[i])
+                }
+                _ => continue,
+            };
+        }
+        if matches!(text.as_str(), "/jobs" | "/job") {
+            let list = jobs.list();
+            if list.is_empty() {
+                modal::info(
+                    &keys,
+                    "Background jobs",
+                    "No jobs yet. Use /bg to start a command.",
+                );
+                continue;
+            }
+            let rows = list.lines().map(str::to_string).collect::<Vec<_>>();
+            let Some(i) = modal::choose(&keys, "Background jobs", "Choose a job", &rows) else {
+                continue;
+            };
+            let id = rows[i].split(':').next().unwrap_or("");
+            match modal::choose(
+                &keys,
+                "Job actions",
+                &rows[i],
+                &["Read output".into(), "Stop job…".into()],
+            ) {
+                Some(0) => text = format!("/job {id}"),
+                Some(1) => {
+                    if modal::choose(
+                        &keys,
+                        "Stop background job?",
+                        &rows[i],
+                        &["Cancel".into(), "Stop owned job".into()],
+                    ) != Some(1)
+                    {
+                        continue;
+                    }
+                    text = format!("/job {id} stop");
+                }
+                _ => continue,
+            }
+        }
+        if let Some(args) = text
+            .strip_prefix("/budget")
+            .filter(|s| s.is_empty() || s.starts_with(' '))
+        {
+            let mut l = ledger.lock().unwrap();
+            let args = args.trim();
+            if !args.is_empty() {
+                if args == "off" {
+                    l.limit = None;
+                } else if let Ok(n) = args.parse::<f64>() {
+                    if n.is_finite() && n > 0.0 {
+                        l.limit = Some(n);
+                    } else {
+                        ui_println!("budget must be positive and finite");
+                        continue;
+                    }
+                } else {
+                    ui_println!("usage: /budget [dollars|off]");
+                    continue;
+                }
+                if let Err(e) = budget::save(&ledger_path.lock().unwrap(), &l) {
+                    ui_println!("budget persistence failed: {e}");
+                    l.unknown = true;
+                }
+            }
+            ui_println!(
+                "spent {} · limit {}{}",
+                pricing::money(l.spent),
+                l.limit.map(pricing::money).unwrap_or_else(|| "off".into()),
+                if l.unknown {
+                    " · incomplete accounting"
+                } else {
+                    ""
+                }
+            );
+            continue;
+        }
+        if let Some(label) = text
+            .strip_prefix("/diff")
+            .filter(|s| s.is_empty() || s.starts_with(' '))
+        {
+            let selected = if label.trim().is_empty() {
+                latest_checkpoint
+                    .as_ref()
+                    .ok_or("no task checkpoint".to_string())
+                    .cloned()
+            } else {
+                checkpoint::Checkpoint::load(&checkpoint_dir, label.trim())
+            };
+            match selected.and_then(|c| c.diff()) {
+                Ok(d) => modal::info(
+                    &keys,
+                    "Workspace diff",
+                    if d.is_empty() { "No changes" } else { &d },
+                ),
+                Err(e) => modal::info(&keys, "Workspace diff", &e),
+            }
+            continue;
+        }
+        if let Some(label) = text
+            .strip_prefix("/undo")
+            .filter(|s| s.is_empty() || s.starts_with(' '))
+        {
+            let selected = if label.trim().is_empty() {
+                latest_checkpoint
+                    .as_ref()
+                    .ok_or("no task checkpoint".to_string())
+                    .cloned()
+            } else {
+                checkpoint::Checkpoint::load(&checkpoint_dir, label.trim())
+            };
+            match selected.and_then(|c| c.undo(&checkpoint_dir)) {
+                Ok(d) => {
+                    ui_println!("{d}");
+                    session.append(Record::System("User restored files to the last task's starting checkpoint. Re-read files before continuing.".into()));
+                }
+                Err(e) => ui_println!("undo: {e}"),
+            }
+            continue;
+        }
+        if let Some(label) = text.strip_prefix("/restore ") {
+            let result = checkpoint::Checkpoint::load(&checkpoint_dir, label.trim())
+                .and_then(|c| c.restore(&checkpoint_dir));
+            match result {
+                Ok(s) => {
+                    ui_println!("{s}");
+                    session.append(Record::System("User restored a saved workspace checkpoint. Re-read files before continuing.".into()));
+                }
+                Err(e) => ui_println!("restore: {e}"),
+            }
+            continue;
+        }
+        if text == "/checkpoints" {
+            let mut rows: Vec<_> = std::fs::read_dir(&checkpoint_dir)
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+                .collect();
+            rows.sort_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()));
+            for row in rows {
+                ui_println!(
+                    "{}",
+                    row.path().file_stem().unwrap_or_default().to_string_lossy()
+                );
+            }
+            continue;
+        }
+        if let Some(args) = text
+            .strip_prefix("/checkpoint")
+            .filter(|s| s.is_empty() || s.starts_with(' '))
+        {
+            let label = format!("manual-{}", session.log_len());
+            let result =
+                checkpoint::begin(&cfg.workspace, &checkpoint_dir, &label).and_then(|mut c| {
+                    c.finish(&checkpoint_dir)?;
+                    Ok(c)
+                });
+            match result {
+                Ok(c) => {
+                    ui_println!("checkpoint {} (saved baseline)", c.label);
+                }
+                Err(e) => ui_println!("checkpoint: {e}"),
+            }
+            let _ = args;
+            continue;
+        }
+        if let Some(args) = text
+            .strip_prefix("/branch")
+            .filter(|s| s.is_empty() || s.starts_with(' '))
+        {
+            let turns = session.raw_turns().unwrap_or(0);
+            let through = if args.trim().is_empty() {
+                Ok(turns)
+            } else {
+                args.trim().parse::<usize>()
+            };
+            match through.map_err(|e| e.to_string()).and_then(|t| {
+                session
+                    .branch(&config::data_dir(), t)
+                    .map_err(|e| e.to_string())
+            }) {
+                Ok(s) => {
+                    ui_println!(
+                        "branch {} — conversation forked; workspace files unchanged",
+                        s.id
+                    );
+                    warmer.begin_turn();
+                    let parent_metadata = polish::metadata(&session);
+                    polish::save(&s, &parent_metadata)?;
+                    session = s;
+                    polish::bind(&session, &cfg.workspace)?;
+                    state = tools::State::new();
+                    checkpoint_dir = config::data_dir().join("checkpoints").join(&session.id);
+                    latest_checkpoint = None;
+                    let limit = ledger.lock().unwrap().limit;
+                    ledger_path = Arc::new(Mutex::new(session.path.with_extension("cost.json")));
+                    ledger = budget::load(&ledger_path.lock().unwrap(), limit);
+                    *budget_context.lock().unwrap() =
+                        (Arc::clone(&ledger), Arc::clone(&ledger_path));
+                    // Refresh credentials before the next request.
+                    for r in &session.records {
+                        if let Record::State(items) = r {
+                            state.apply(&glass_mod_api::ToolCall {
+                                id: "restore".into(),
+                                name: "state".into(),
+                                arguments: serde_json::json!({"items": items}).to_string(),
+                            });
+                        }
+                    }
+                }
+                Err(e) => ui_println!("branch: {e}"),
+            }
+            continue;
+        }
+        if let Some(command) = text.strip_prefix("/bg ") {
+            match jobs.start(
+                command.trim(),
+                &cfg.workspace,
+                &config::data_dir().join("jobs").join(&session.id),
+            ) {
+                Ok(s) => {
+                    ui_println!("{s}");
+                    session.append(Record::System(format!("User started background command {command}: {s}. Read its log with bash when needed.")));
+                }
+                Err(e) => ui_println!("background: {e}"),
+            }
+            continue;
+        }
+        if text == "/jobs" {
+            ui_println!("{}", jobs.list());
+            continue;
+        }
+        if let Some(args) = text.strip_prefix("/job ") {
+            let mut parts = args.split_whitespace();
+            let result = parts
+                .next()
+                .and_then(|n| n.parse::<u32>().ok())
+                .ok_or("usage: /job <id> [stop]".to_string())
+                .and_then(|id| match parts.next() {
+                    Some("stop") => jobs.stop(id),
+                    None => jobs.output(id),
+                    _ => Err("usage: /job <id> [stop]".into()),
+                });
+            match result {
+                Ok(s) => modal::info(&keys, "Job output", &s),
+                Err(e) => modal::info(&keys, "Job error", &e),
+            }
             continue;
         }
 
@@ -325,13 +2279,20 @@ fn repl(
         // context and prints the answer without recording either. The main
         // conversation is untouched, so the next turn costs what it would have
         // anyway.
-        if let Some(question) = text.strip_prefix("/btw") {
+        if let Some(question) = text.strip_prefix("/btw ") {
+            provider = match factory() {
+                Ok(p) => p,
+                Err(e) => {
+                    modal::info(&keys, "Provider is not ready", &e);
+                    continue;
+                }
+            };
             let question = question.trim();
             if question.is_empty() {
-                println!("\x1b[33musage: /btw <question>\x1b[0m");
+                ui_println!("\x1b[33musage: /btw <question>\x1b[0m");
                 continue;
             }
-            print!("\x1b[90masking...\x1b[0m\r");
+            ui_print!("\x1b[90masking...\x1b[0m\r");
             let _ = std::io::stdout().flush();
             match btw::ask(
                 provider.as_ref(),
@@ -340,52 +2301,258 @@ fn repl(
                 question,
                 provider.id(),
             ) {
-                Ok(answer) if answer.is_empty() => println!("\x1b[33mbtw: no answer\x1b[0m"),
-                Ok(answer) => print!("{}", btw::render(question, &answer)),
-                Err(e) => println!("\x1b[31mbtw failed: {e}\x1b[0m"),
+                Ok(answer) if answer.is_empty() => ui_println!("\x1b[33mbtw: no answer\x1b[0m"),
+                Ok(answer) => ui_print!(
+                    "{}",
+                    btw::render(question, &answer, cfg.rate_card(&cfg.model).as_ref())
+                ),
+                Err(e) => painter.notice(
+                    &mut surface::BodyWriter,
+                    "\x1b[31m",
+                    &format!("btw failed: {e}"),
+                ),
             }
             continue;
         }
 
-        // `/model <name>` switches the model for the rest of the
-        // session. The candidate is built before anything is
-        // committed, so a typo leaves the running session on the
-        // model that was actually working.
-        if let Some(name) = text.strip_prefix("/model") {
-            let name = name.trim();
-            if name.is_empty() {
-                println!("\x1b[33mmodel: {}\x1b[0m", cfg.model);
-                println!("\x1b[33musage: /model <name>\x1b[0m");
-                continue;
-            }
-            match provider::build(&cfg.provider, &cfg.base_url, cfg.api_key(), name) {
-                Ok(p) => {
-                    if let Ok(mut m) = current_model.lock() {
-                        *m = name.to_string();
-                    }
-                    provider = p;
-                    cfg.model = name.to_string();
-                    println!("\x1b[90mmodel: {name}\x1b[0m");
+        // `/compact [focus]` compacts now, below the automatic threshold. A
+        // manual compaction is a statement about what the user wants, not a
+        // measurement; the optional focus steers what the summary keeps.
+        if text == "/compact" || text.starts_with("/compact ") {
+            provider = match factory() {
+                Ok(p) => p,
+                Err(e) => {
+                    modal::info(&keys, "Provider is not ready", &e);
+                    continue;
                 }
-                Err(e) => println!("\x1b[31m/model failed: {e}\x1b[0m"),
+            };
+            let focus = text.strip_prefix("/compact ").map(str::trim);
+            ui_print!("\x1b[90mcompacting…\x1b[0m\r");
+            let _ = std::io::stdout().flush();
+            match compact::run_manual(provider.as_ref(), &mut session, &state, focus) {
+                Ok((before, after)) => ui_println!(
+                    "\x1b[32mcompacted\x1b[0m · ~{} → ~{} tokens (estimate) · summary saved to the session",
+                    compact(before as u64),
+                    compact(after as u64)
+                ),
+                Err(e) => painter.notice(
+                    &mut surface::BodyWriter,
+                    "\x1b[31m",
+                    &format!("compact failed: {e}"),
+                ),
             }
             continue;
         }
 
-        if text == "/extensions" {
-            if extensions.is_empty() {
-                println!("no extensions loaded. add them under `extensions` in config.toml.");
+        // `/export [path]` writes the raw conversation as Markdown. The log is
+        // the source, so the export includes turns compaction dropped.
+        if text == "/export" || text.starts_with("/export ") {
+            let arg = text.strip_prefix("/export").unwrap_or("").trim();
+            let default = format!("glass-session-{}.md", session.id);
+            let path = if arg.is_empty() {
+                match modal::field(&keys, "Export session", "Write Markdown to", &default, false) {
+                    Some(p) => p,
+                    None => continue,
+                }
             } else {
-                for line in extensions.describe() {
-                    println!("  {line}");
+                arg.to_string()
+            };
+            let path = std::path::PathBuf::from(path);
+            if path.exists() {
+                let confirm = ["Overwrite".to_string(), "Cancel".to_string()];
+                if modal::choose(
+                    &keys,
+                    "Overwrite existing file?",
+                    &path.display().to_string(),
+                    &confirm,
+                ) != Some(0)
+                {
+                    continue;
                 }
-                let cmds = extensions.commands();
-                if !cmds.is_empty() {
-                    println!("  commands:");
-                    for (name, desc) in cmds {
-                        println!("    /{name:<14} {desc}");
-                    }
+            }
+            let md = export::markdown(&session, false, &export::raw_records(&session));
+            match std::fs::write(&path, md) {
+                Ok(()) => ui_println!("\x1b[32mwrote\x1b[0m {}", path.display()),
+                Err(e) => painter.notice(
+                    &mut surface::BodyWriter,
+                    "\x1b[31m",
+                    &format!("export failed: {e}"),
+                ),
+            }
+            continue;
+        }
+
+        if let Some(name) = text.strip_prefix("/model ") {
+            let name = name.trim();
+            if !name.is_empty() {
+                cfg.model = name.into();
+                *runtime_config.lock().unwrap() = cfg.clone();
+                if let Some(id) = &cfg.connection
+                    && let Err(e) = auth::edit(|store| {
+                        if let Some(c) = store.connections.iter_mut().find(|c| &c.id == id) {
+                            c.model = name.into();
+                        }
+                        Ok(())
+                    })
+                {
+                    ui_println!("model preference persistence failed: {e}");
                 }
+                warmer.begin_turn();
+                ui_println!("\x1b[90mmodel: {name}\x1b[0m");
+            }
+            continue;
+        }
+
+        if text == "/theme" {
+            let names = glass_tui::theme::NAMES.map(String::from);
+            if let Some(i) = modal::choose(
+                &keys,
+                "Appearance",
+                "Aurora · cool blue and lilac. Amber · warm gold. Monochrome · neutral. Orchid · violet. Ocean · teal. Active work animates with coordinated colors. NO_COLOR uses neutral presentation.",
+                &names,
+            ) {
+                glass_tui::theme::select(i);
+                if let Err(e) = profiles::update_active(&cfg) {
+                    modal::info(&keys, "Profile save error", &e);
+                }
+            }
+            continue;
+        }
+        if text == "/security" {
+            let confinement = match sandbox::policy() {
+                sandbox::Policy::Off => {
+                    "Shell commands run with your OS permissions (sandbox is off).".to_string()
+                }
+                sandbox::Policy::Workspace => {
+                    "Shell commands are confined to the workspace, temp, caches, and the \
+                     glass data folder (sandbox=workspace); reads are unrestricted."
+                        .to_string()
+                }
+                sandbox::Policy::Strict => {
+                    "Shell commands are confined to the workspace plus a system and \
+                     toolchain allowlist (sandbox=strict)."
+                        .to_string()
+                }
+            };
+            let refusal = match sandbox::refusal() {
+                Some(reason) => format!(" Commands are being refused: {reason}."),
+                None => String::new(),
+            };
+            modal::info(
+                &keys,
+                "Security and trust",
+                &format!(
+                    "Workspace: {}\nProvider: {}\nEndpoint: {}\n\n{confinement}{refusal} Extensions are trusted local programs, not sandboxed. Provider response text cannot emit terminal control characters. Host-tool access remains enabled.\n\nNew session logs and output spills use private 0600 files. Extension processes do not inherit environment variables named TOKEN, SECRET, PASSWORD, API_KEY, AWS_ACCESS_KEY_ID, or SSH_AUTH_SOCK. This does not prevent filesystem access to credentials.\n\nExtensions may declare authorization_required=true to block tools on missing or malformed authorization replies. Legacy authorization behavior is preserved otherwise.\n\nLoaded mods: {}\nLoaded extensions: {}\nUse /mods and /extensions to manage this session.",
+                    cfg.workspace.display(),
+                    cfg.provider,
+                    cfg.base_url,
+                    loaded_mods
+                        .iter()
+                        .map(|m| m.name())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    extensions.names().join(", ")
+                ),
+            );
+            continue;
+        }
+        if text == "/mods" {
+            let names = mods::available();
+            let rows = names
+                .iter()
+                .map(|name| {
+                    format!(
+                        "{} · {}",
+                        name,
+                        if loaded_mods.iter().any(|m| m.name() == name) {
+                            "enabled · disable"
+                        } else {
+                            "disabled · enable"
+                        }
+                    )
+                })
+                .collect::<Vec<_>>();
+            if let Some(i) = modal::choose(
+                &keys,
+                "Built-in mods",
+                "Changes apply to this session. Save mods in config.toml for future sessions. Redact masks credential-marker lines in tool results; noisy is a demo.",
+                &rows,
+            ) {
+                let name = &names[i];
+                if let Some(index) = loaded_mods.iter().position(|m| m.name() == name) {
+                    loaded_mods.remove(index);
+                } else {
+                    loaded_mods.extend(mods::load(std::slice::from_ref(name))?);
+                }
+            }
+            cfg.mods = loaded_mods.iter().map(|m| m.name().to_string()).collect();
+            if let Err(e) = profiles::update_active(&cfg) {
+                modal::info(&keys, "Profile save error", &e);
+            }
+            continue;
+        }
+        if text == "/extensions" {
+            warmer.begin_turn();
+            if let Err(e) = addons::manage(&keys, &mut cfg, extensions) {
+                modal::info(&keys, "Extension manager error", &e);
+            }
+            if let Err(e) = profiles::update_active(&cfg) {
+                modal::info(&keys, "Profile save error", &e);
+            }
+            *runtime_config.lock().unwrap() = cfg.clone();
+            palette = glass_tui::palette::Palette::new(command_catalogue(extensions));
+            continue;
+        }
+        if text == "/skills" {
+            if skills.is_empty() {
+                modal::info(
+                    &keys,
+                    "Skills",
+                    &format!(
+                        "No skills loaded. Add Markdown files in {}",
+                        config::config_dir().join("skills").display()
+                    ),
+                );
+            } else {
+                let rows = skills
+                    .iter()
+                    .map(|s| format!("{} — {}", s.name, s.description))
+                    .collect::<Vec<_>>();
+                if let Some(i) = modal::choose(&keys, "Skills", "Choose a skill to read", &rows) {
+                    let content =
+                        std::fs::read_to_string(&skills[i].path).unwrap_or_else(|e| e.to_string());
+                    modal::info(&keys, &skills[i].name, &content);
+                }
+            }
+            continue;
+        }
+
+        // `/clear` starts a fresh conversation in this terminal.
+        // The old session stays on disk — the log is the resume
+        // mechanism — so clearing is a new conversation, not a
+        // deletion.
+        if text == "/clear" {
+            match Session::create(&config::data_dir()) {
+                Ok(s) => {
+                    // A pending cache refresh would warm the old
+                    // conversation; a new session supersedes it.
+                    warmer.begin_turn();
+                    session = s;
+                    polish::bind(&session, &cfg.workspace)?;
+                    checkpoint_dir = config::data_dir().join("checkpoints").join(&session.id);
+                    let limit = ledger.lock().unwrap().limit;
+                    ledger_path = Arc::new(Mutex::new(session.path.with_extension("cost.json")));
+                    ledger = budget::load(&ledger_path.lock().unwrap(), limit);
+                    *budget_context.lock().unwrap() =
+                        (Arc::clone(&ledger), Arc::clone(&ledger_path));
+                    // Refresh credentials before the next request.
+                    state = tools::State::new();
+                    totals = Totals::new();
+                    latest_checkpoint = None;
+                    editor.clear();
+                    ui_println!("\x1b[90mcleared — new session {}\x1b[0m", session.id);
+                }
+                Err(e) => ui_println!("\x1b[31m/clear failed: {e}\x1b[0m"),
             }
             continue;
         }
@@ -393,16 +2560,18 @@ fn repl(
         // Anything else beginning with `/` may be an extension command. If no
         // extension claims it, say so rather than sending it to the model as a
         // prompt, where it would read as confused text.
-        if let Some(rest) = text.strip_prefix('/') {
+        if let Some(rest) = text.strip_prefix('/')
+            && !recovering
+        {
             let (cmd, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
             if extensions.has_command(cmd) {
                 match extensions.run_command(cmd, args.trim()) {
-                    Some(out) => println!("{}", out.trim_end()),
-                    None => println!("\x1b[33m/{cmd} did not return a result\x1b[0m"),
+                    Some(out) => ui_println!("{}", out.trim_end()),
+                    None => ui_println!("\x1b[33m/{cmd} did not return a result\x1b[0m"),
                 }
                 continue;
             }
-            println!("\x1b[31munknown command /{cmd}\x1b[0m — try /help");
+            ui_println!("\x1b[31munknown command /{cmd}\x1b[0m — try /help");
             continue;
         }
 
@@ -410,15 +2579,60 @@ fn repl(
         // one scheduled: the user is back, so the next request
         // rewrites the cache anyway.
         warmer.begin_turn();
-        session.append(Record::User(text.clone()));
-        println!("\n\x1b[90m❯\x1b[0m {text}");
+        if auth::needs_refresh(&cfg) {
+            let refresh_cfg = cfg.clone();
+            match modal::work(&keys, "Refreshing ChatGPT session", move || {
+                auth::resolve(&refresh_cfg)
+            }) {
+                Some(Ok(_)) => {}
+                Some(Err(e)) => {
+                    modal::info(&keys, "Sign-in needs attention", &e);
+                    editor.set_text(&text);
+                    continue;
+                }
+                None => {
+                    editor.set_text(&text);
+                    continue;
+                }
+            }
+        }
+        provider = match factory() {
+            Ok(p) => p,
+            Err(e) => {
+                modal::info(&keys, "Provider is not ready", &e);
+                editor.set_text(&text);
+                continue;
+            }
+        };
+        if !recovering {
+            session.append(Record::User(text.clone()));
+        }
+        // The typed prompt is still on the prompt row. Clear those
+        // rows and print the prompt once, whole: a prompt must be
+        // recorded once, and a multi-line one must land intact.
+        echo_prompt(&mut std::io::stdout(), &text, prompt_row, prompt_rows);
+        // Submission transfers ownership of the prompt to conversation
+        // history. Remove its visible draft before provider work can begin.
+        surface::clear_composer();
 
         // Dispatch this message, then anything the user queued while it ran.
         // The queue is drained here so a follow-up is a single Enter away from
         // being asked, which is the entire point of queuing it.
         let mut next = Some(text);
         while next.is_some() {
+            let label = format!("task-{}", session.log_len());
+            let mut task_checkpoint =
+                match checkpoint::begin(&cfg.workspace, &checkpoint_dir, &label) {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        ui_println!("checkpoint unavailable: {e}");
+                        None
+                    }
+                };
             let mut last_error: Option<String> = None;
+            let turn_instructions = polish::prompt_context(&session, &project_instructions);
+            painter.seed_live(session.history_entries(), session.reasoning_history());
+            let turn_started = std::time::Instant::now();
             let outcome = {
                 let mut agent = Agent::new(
                     provider.as_ref(),
@@ -429,52 +2643,154 @@ fn repl(
                     &cfg.workspace,
                 )
                 .prime_extensions()
-                .with_prompt(cfg.system_prompt.clone(), catalogue.clone(), project_instructions.clone())
+                .with_prompt(
+                    cfg.system_prompt.clone(),
+                    catalogue.clone(),
+                    turn_instructions,
+                )
                 .with_limits(cfg.max_tokens, cfg.reasoning_budget, 24)
-                .with_progress(report)
+                .with_recovery(recovering)
+                .with_stream_factory(Arc::clone(&factory))
+                .with_progress(|p| painter.handle(p))
                 .with_warmer(&warmer);
 
-                println!("\x1b[38;5;245m");
+                painter.reset();
                 let mut draft = glass_tui::Editor::new();
-                let (_, nh) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+                let (_, nh) = term_size();
                 let draft_row = nh.saturating_sub(2);
                 let result = agent.run_turn(&mut |steer_slot: &mut Option<String>| {
-                    if let Some(s) = drain_input(&keys, &mut draft, &mut pending, draft_row, 80)
-                        && !s.is_empty()
+                    if painter.refresh_geometry(true) {
+                        surface::composer(&draft, true, true);
+                    }
+                    painter.tick();
+                    if let Some(s) =
+                        drain_input(&keys, &mut draft, &mut pending, draft_row, w, &painter)
                     {
                         *steer_slot = Some(s);
                     }
                 });
-                let _ = std::io::stdout().flush();
-                println!("\x1b[0m");
+                painter.flush(&mut surface::BodyWriter);
+                editor.set_text(draft.text());
+                painter.live.borrow_mut().finish();
+                while painter.live.borrow().active() {
+                    painter.live.borrow_mut().draw().ok();
+                    if let Some(ev) = keys.next_blocking() {
+                        painter.live.borrow_mut().event(&ev);
+                    } else {
+                        painter.live.borrow_mut().close().ok();
+                    }
+                }
                 result
             };
 
+            if let Some(c) = task_checkpoint.as_mut() {
+                match c.finish(&checkpoint_dir) {
+                    Ok(()) => latest_checkpoint = task_checkpoint,
+                    Err(e) => ui_println!("checkpoint: {e}"),
+                }
+            }
+            let turn_failed = outcome.is_err();
+            let mut turn_finished = false;
             match outcome {
                 Ok((out, stop)) => {
+                    retry_available = false;
+                    turn_finished = matches!(stop, Stop::Finished | Stop::ToolBudget);
                     match stop {
-                        Stop::ToolBudget => println!(
+                        Stop::ToolBudget => ui_println!(
                             "\x1b[33m⚠ stopped: reached the tool-call budget for this turn\x1b[0m"
                         ),
-                        Stop::Steered => println!("\x1b[33m⚡ stopped to apply your correction\x1b[0m"),
+                        Stop::Steered => {
+                            ui_println!("\x1b[33m⚡ stopped to apply your correction\x1b[0m")
+                        }
+                        Stop::Cancelled => {
+                            pending = queue::Queue::new();
+                            ui_println!(
+                                "Cancelled · partial output saved · owned shell process groups stopped"
+                            );
+                        }
                         Stop::Finished => {}
                     }
                     for w in &out.warnings {
-                        println!("\x1b[33m⚠ {w}\x1b[0m");
+                        ui_println!("\x1b[33m⚠ {w}\x1b[0m");
                     }
                     if let Some(u) = out.usage {
                         totals.add(&u);
-                        println!("{}{}", usage_line(&u), totals.suffix());
+                        let card = cfg.rate_card(&cfg.model);
+                        let width = term_size().0 as usize;
+                        let l = ledger.lock().unwrap();
+                        let cost = if l.unknown {
+                            "cost unavailable".into()
+                        } else {
+                            format!("session {}", pricing::money(l.spent))
+                        };
+                        if width < 80 {
+                            let mut rows = vec![format!(
+                                "{} in · {} out",
+                                compact(u.prompt_total() as u64),
+                                compact(u.output as u64)
+                            )];
+                            let window = provider.context_window();
+                            rows.push(if window == 0 {
+                                format!(
+                                    "{} session tok",
+                                    compact(totals.prompt_total() + totals.output)
+                                )
+                            } else {
+                                format!(
+                                    "{} tok · {}% ctx",
+                                    compact(totals.prompt_total() + totals.output),
+                                    (totals.prompt_total() * 100 / window as u64).min(999)
+                                )
+                            });
+                            rows.push(cost);
+                            for row in rows {
+                                for line in
+                                    glass_tui::text::wrap_words(&row, width.saturating_sub(1))
+                                {
+                                    ui_println!("\x1b[90m{line}\x1b[0m");
+                                }
+                            }
+                        } else {
+                            ui_println!(
+                                "{}{} · {}",
+                                usage_line(&u, card.as_ref(), false),
+                                totals.suffix(provider.context_window(), None, false),
+                                cost
+                            );
+                        }
                     }
                 }
                 Err(e) => {
-                    println!("\x1b[31mprovider error: {e}\x1b[0m");
+                    painter
+                        .append_live_entry(glass_tui::Role::System, format!("Provider error: {e}"));
+                    painter.notice(
+                        &mut surface::BodyWriter,
+                        "\x1b[31m",
+                        &format!("provider error: {e}"),
+                    );
                     last_error = Some(e.to_string());
                 }
             }
 
+            if turn_failed {
+                // A failed turn always deserves attention, however fast it
+                // failed: the connection is probably gone, and the user may
+                // already be away from the keyboard.
+                crate::notify::emit(
+                    cfg.notify,
+                    &format!(
+                        "glass-core · turn failed · {}s",
+                        turn_started.elapsed().as_secs()
+                    ),
+                );
+            }
+
             if let Some(msg) = last_error {
-                session.append(Record::System(format!("error: {msg}")));
+                session.append(Record::Meta(format!("error: {msg}")));
+                retry_available = true;
+                ui_println!(
+                    "/retry: Retry · Switch model · Sign in. Partial output is saved; completed tools stay in context."
+                );
                 // A failed turn means the connection is probably gone; draining
                 // the queue would just burn the same failure repeatedly.
                 break;
@@ -482,16 +2798,38 @@ fn repl(
 
             next = pending.take_follow_up();
             if let Some(q) = &next {
-                println!("\n\x1b[90m❯\x1b[0m {q}");
+                ui_println!("\n\x1b[38;5;39m❯\x1b[0m {q}");
                 session.append(Record::User(q.clone()));
+            } else if crate::notify::wanted(
+                false,
+                turn_finished,
+                turn_started.elapsed(),
+                crate::notify::NOTIFY_AFTER_S,
+            ) {
+                // Only when the turn series is fully done: a queued follow-up
+                // means work continues and an alert would be premature.
+                let secs = turn_started.elapsed().as_secs();
+                let cost = {
+                    let l = ledger.lock().unwrap();
+                    (!l.unknown).then(|| pricing::money(l.spent))
+                };
+                let message = match cost {
+                    Some(c) => format!("glass-core · {secs}s · {c}"),
+                    None => format!("glass-core · {secs}s"),
+                };
+                crate::notify::emit(cfg.notify, &message);
             }
         }
-        println!();
+        ui_println!(
+            "\x1b[90m{}\x1b[0m",
+            polish::completion(&session, latest_checkpoint.as_ref(), term_size().0 as usize)
+        );
+        ui_println!();
 
         // Scroll the prompt back to just under the last output line.
-        let (nw, nh) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
-        let _ = nw;
-        prompt_row = nh.saturating_sub(2);
+        let (nw, nh) = term_size();
+        painter.set_width(nw);
+        let _ = nh;
         back.push(String::new());
     }
 }
@@ -510,25 +2848,108 @@ fn drain_input(
     keys: &input::KeyReader,
     editor: &mut glass_tui::Editor,
     pending: &mut queue::Queue,
-    row: u16,
-    width: u16,
+    _row: u16,
+    _width: u16,
+    painter: &Painter,
 ) -> Option<String> {
     use glass_tui::crossterm::event::{Event, KeyCode, KeyModifiers};
 
     let mut dirty = false;
 
     while let Some(ev) = keys.try_next() {
-        let Event::Key(k) = ev else { continue };
+        let resized = painter.refresh_geometry(true);
+        if resized {
+            surface::composer(editor, true, true);
+        }
+        if painter.reader_active() {
+            match painter.reader_event(&ev) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(error) => {
+                    let _ = painter.close_reader();
+                    ui_println!("inline reader: {error}");
+                }
+            }
+        }
+        if should_open_reader_for_wheel(
+            &ev,
+            painter.reader_active(),
+            painter.live.borrow().active(),
+        ) {
+            let entries = painter.live.borrow().snapshot();
+            if let Err(error) = painter.open_reader(entries, false) {
+                ui_println!("inline reader: {error}");
+            } else if let Err(error) = painter.reader_event(&ev) {
+                let _ = painter.close_reader();
+                ui_println!("inline reader: {error}");
+            }
+            continue;
+        }
+        if let Event::Key(k) = &ev {
+            if k.code == KeyCode::PageUp && !painter.live.borrow().active() {
+                let entries = painter.live.borrow().snapshot();
+                if let Err(error) = painter.open_reader(entries, true) {
+                    ui_println!("inline reader: {error}");
+                }
+                continue;
+            }
+            if k.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(k.code, KeyCode::Char('b' | 'f'))
+            {
+                let entries = painter.live.borrow().snapshot();
+                if let Err(error) = painter.open_reader(entries, k.code == KeyCode::Char('b')) {
+                    ui_println!("inline reader: {error}");
+                }
+                continue;
+            }
+            if k.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(k.code, KeyCode::Char('g') | KeyCode::Char('t'))
+            {
+                painter
+                    .live
+                    .borrow_mut()
+                    .toggle(k.code == KeyCode::Char('t'))
+                    .ok();
+                dirty = true;
+                continue;
+            }
+        }
+        if painter.live.borrow_mut().event(&ev) {
+            dirty = true;
+            continue;
+        }
+        let k = match ev {
+            Event::Paste(text) => {
+                editor.insert_str(&text);
+                dirty = true;
+                continue;
+            }
+            Event::Resize(_, _) => {
+                dirty = true;
+                continue;
+            }
+            Event::Key(k) => k,
+            _ => continue,
+        };
 
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
             // Ctrl-C is an escape hatch: abandon the turn and drop the draft.
             editor.clear();
-            println!("\r\x1b[33m⚡ interrupt\x1b[0m");
+            painter.append_live_entry(
+                glass_tui::Role::System,
+                "Cancelled the current turn; partial output is saved.",
+            );
+            ui_println!("\r\x1b[2K\x1b[33m⚡ interrupt\x1b[0m");
             return Some(String::new());
         }
 
         let alt = k.modifiers.contains(KeyModifiers::ALT);
-        match editor.key(k) {
+        let edit_key = if alt && k.code == KeyCode::Enter {
+            glass_tui::crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+        } else {
+            k
+        };
+        match editor.key(edit_key) {
             glass_tui::Edit::Continue => dirty = true,
             glass_tui::Edit::Submit(text) => {
                 let Some(intent) = queue::classify(&text, alt, true) else {
@@ -536,51 +2957,98 @@ fn drain_input(
                 };
                 match intent {
                     queue::Intent::Steer(s) => {
-                        println!("\r\x1b[33m⚡ steering: {s}\x1b[0m");
+                        ui_println!(
+                            "\x1b[33m⚡ steering: {}\x1b[0m",
+                            glass_tui::markdown::sanitize(&s)
+                        );
+                        // Submit clears the editor buffer. Paint that cleared
+                        // state before returning early to hand off the steer.
+                        surface::composer(editor, true, true);
                         // Returned so the caller owns the slot; taking it here
                         // would borrow the same state the loop is holding.
                         return Some(s);
                     }
                     queue::Intent::FollowUp(s) => {
-                        pending.push(queue::Intent::FollowUp(s));
-                        println!("\r\x1b[90m· queued\x1b[0m");
+                        pending.push(queue::Intent::FollowUp(s.clone()));
+                        painter.append_live_entry(glass_tui::Role::User, format!("Queued: {s}"));
+                        ui_println!("\x1b[90m· queued\x1b[0m");
+                        dirty = true;
                     }
                 }
             }
         }
     }
 
+    painter.live.borrow_mut().draw().ok();
     if dirty {
-        // Repaint the draft line in place so a queued message is visible.
-        editor.render(row, width, true);
-        let _ = std::io::stdout().flush();
+        surface::composer(editor, true, true);
     }
     None
 }
 
-/// One line of token accounting, including how much of the prompt was cached.
+/// Print the submitted prompt into scrollback.
 ///
-/// Without this line a broken breakpoint layout is invisible: the request still
-/// succeeds, it just costs 1.25x more per turn forever. The hit rate is the
-/// only externally visible signal that the cache is doing anything.
-fn usage_line(u: &provider::Usage) -> String {
-    let total = u.prompt_total();
+/// The typed prompt is still on the prompt row, so those rows are
+/// cleared and the prompt is printed once, whole: a prompt must be
+/// recorded once, and a multi-line one must land intact.
+fn render_prompt(io: &mut impl Write, text: &str, width: u16) {
+    let clean = glass_tui::markdown::sanitize(text).replace('\t', "    ");
+    for (index, line) in
+        glass_tui::text::wrap_words(&clean, width.saturating_sub(3).max(1) as usize)
+            .into_iter()
+            .enumerate()
+    {
+        let _ = write!(
+            io,
+            "{}{} {line}\x1b[0m\r\n",
+            glass_tui::theme::accent(),
+            if index == 0 { "❯" } else { " " }
+        );
+    }
+}
+
+fn echo_prompt(_io: &mut impl Write, text: &str, _row: u16, _rows: u16) {
+    let mut io = glass_tui::theme::TerminalWriter(surface::BodyWriter);
+    render_prompt(&mut io, text, term_size().0);
+    let _ = io.flush();
+}
+
+fn should_open_reader_for_wheel(
+    event: &glass_tui::crossterm::event::Event,
+    reader_active: bool,
+    other_view_active: bool,
+) -> bool {
+    use glass_tui::crossterm::event::{Event, MouseEventKind};
+    !reader_active
+        && !other_view_active
+        && matches!(event, Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown))
+}
+
+fn usage_line(u: &provider::Usage, card: Option<&pricing::RateCard>, narrow: bool) -> String {
+    // Compact counts: "1.8k in" keeps the line inside a
+    // phone-width terminal, where "1,800 in" would wrap.
+    let total = if narrow {
+        compact(u.prompt_total() as u64)
+    } else {
+        thousands(u.prompt_total())
+    };
     let pct = (u.hit_rate() * 100.0).round() as u32;
     let cached = if u.cache_read > 0 || u.cache_write > 0 {
-        format!(
-            " · cache {pct}% ({} read / {} written)",
-            thousands(u.cache_read),
-            thousands(u.cache_write)
-        )
+        format!(" · cache {pct}%")
     } else {
         // Zero in both buckets means nothing was cached at all: either the
         // prefix is under the model's minimum, or there is no breakpoint.
         " · \x1b[33mno cache\x1b[90m".to_string()
     };
-    format!(
-        "\x1b[90m  {total} in / {} out{cached}\x1b[0m",
+    let cost = card
+        .map(|c| format!(" · {}", pricing::money(c.cost(u))))
+        .unwrap_or_default();
+    let output = if narrow {
+        compact(u.output as u64)
+    } else {
         thousands(u.output)
-    )
+    };
+    format!("\x1b[90m  {total} in / {output} out{cached}{cost}\x1b[0m")
 }
 
 /// Running token totals for the whole session.
@@ -599,7 +3067,13 @@ struct Totals {
 
 impl Totals {
     fn new() -> Self {
-        Self { turns: 0, input: 0, cache_read: 0, cache_write: 0, output: 0 }
+        Self {
+            turns: 0,
+            input: 0,
+            cache_read: 0,
+            cache_write: 0,
+            output: 0,
+        }
     }
 
     fn add(&mut self, u: &provider::Usage) {
@@ -614,23 +3088,53 @@ impl Totals {
         self.input + self.cache_read + self.cache_write
     }
 
-    fn hit_rate(&self) -> f32 {
-        let total = self.prompt_total();
-        if total == 0 {
-            return 0.0;
+    /// Compact tail for the usage line: cumulative tokens,
+    /// how full the context window is, and what it all cost.
+    ///
+    /// The fill ratio is the number that matters most for
+    /// judging a long session: it tells you how close the
+    /// conversation is to compaction, which is the point
+    /// where quality starts to drop. On a narrow terminal
+    /// the tail takes its own row, so the line never
+    /// wraps mid-number.
+    fn suffix(&self, window: u32, card: Option<&pricing::RateCard>, narrow: bool) -> String {
+        let tok = self.prompt_total() + self.output;
+        let fill = if window == 0 {
+            None
+        } else {
+            let f = (self.prompt_total() as f64 / window as f64 * 100.0).round() as u32;
+            Some(f.min(999))
+        };
+        let cost = card
+            .map(|c| format!(" · {}", pricing::money(self.total_cost(c))))
+            .unwrap_or_default();
+        let lead = if narrow {
+            "\n  session "
+        } else {
+            " · session "
+        };
+        match fill {
+            // Near the window, compaction is close: flag it so
+            // the fill is visible rather than discovered mid-task.
+            Some(f) if f >= 80 => format!(
+                "\x1b[90m{lead}{tok} tok · \x1b[33m{f}% ctx\x1b[90m{cost}\x1b[0m",
+                tok = compact(tok),
+            ),
+            Some(f) => format!(
+                "\x1b[90m{lead}{tok} tok · {f}% ctx{cost}\x1b[0m",
+                tok = compact(tok),
+            ),
+            None => format!("\x1b[90m{lead}{tok} tok{cost}\x1b[0m", tok = compact(tok),),
         }
-        self.cache_read as f32 / total as f32
     }
 
-    /// Compact tail for the usage line: cumulative tokens
-    /// and cache rate across every turn so far.
-    fn suffix(&self) -> String {
-        let tok = self.prompt_total() + self.output;
-        let pct = (self.hit_rate() * 100.0).round() as u32;
-        format!(
-            "\x1b[90m · session {tok} tok · {pct}% cache\x1b[0m",
-            tok = compact(tok),
-        )
+    /// What the session has cost so far, in dollars.
+    fn total_cost(&self, card: &pricing::RateCard) -> f64 {
+        (self.input as f64 * card.input
+            + self.cache_read as f64 * card.cache_read
+            + self.cache_write as f64 * card.cache_write
+            + self.output as f64 * card.output)
+            / 1_000_000.0
     }
 }
 
@@ -658,57 +3162,466 @@ fn thousands(n: u32) -> String {
     out
 }
 
-/// Paint one progress event.
+/// Paints progress events into the terminal's scrollback.
 ///
-/// Streaming text is written bare so the turn reads as prose; tool activity is
-/// prefixed and dimmed so it is visibly not prose. Everything here is written
-/// into the terminal's own scrollback, which is why this needs no viewport
-/// bookkeeping at all.
-fn report(p: Progress<'_>) {
-    let mut io = std::io::stdout();
-    match p {
-        Progress::Text(t) => {
-            let _ = write!(io, "{t}");
-            let _ = io.flush();
+/// Streaming text is written bare so the turn reads as prose; tool
+/// activity is prefixed and dimmed so it is visibly not prose.
+/// Everything lands in the terminal's own scrollback, which is why
+/// this needs no viewport bookkeeping at all.
+///
+/// The one piece of state is whether the cursor sits mid-line. A
+/// tool chip must break a half-finished sentence but must not open
+/// a blank row when the turn began with a tool call, and its
+/// result belongs on the line below the chip, not appended to it.
+struct Painter {
+    mid_line: std::cell::Cell<bool>,
+    markdown: std::cell::RefCell<glass_tui::markdown::Stream>,
+    /// Terminal width: tool commands and results are
+    /// truncated to it, because a wrapped command is
+    /// noise and the full text lives in the transcript.
+    width: std::cell::Cell<u16>,
+    waiting: std::cell::Cell<bool>,
+    tool_started: std::cell::Cell<Option<std::time::Instant>>,
+    tool_name: std::cell::RefCell<String>,
+    response_started: std::cell::Cell<bool>,
+    response_prefix: std::cell::RefCell<String>,
+    waiting_started: std::cell::Cell<Option<std::time::Instant>>,
+    last_tick: std::cell::Cell<Option<std::time::Instant>>,
+    activity_frame: std::cell::Cell<usize>,
+    live: std::cell::RefCell<live::Live>,
+    reader: std::cell::RefCell<Option<reader::Reader>>,
+    reader_dirty: std::cell::Cell<bool>,
+    reader_last_sync: std::cell::Cell<Option<std::time::Instant>>,
+    last_size: std::cell::Cell<(u16, u16)>,
+    palette_was_active: std::cell::Cell<bool>,
+    compact_tools: std::cell::Cell<bool>,
+}
+
+impl Painter {
+    fn new() -> Self {
+        Self {
+            mid_line: std::cell::Cell::new(false),
+            markdown: std::cell::RefCell::new(glass_tui::markdown::Stream::default()),
+            width: std::cell::Cell::new(80),
+            waiting: std::cell::Cell::new(false),
+            tool_started: std::cell::Cell::new(None),
+            tool_name: std::cell::RefCell::new(String::new()),
+            response_started: std::cell::Cell::new(false),
+            response_prefix: std::cell::RefCell::new(String::new()),
+            waiting_started: std::cell::Cell::new(None),
+            last_tick: std::cell::Cell::new(None),
+            activity_frame: std::cell::Cell::new(0),
+            live: std::cell::RefCell::new(live::Live::new()),
+            reader: std::cell::RefCell::new(None),
+            reader_dirty: std::cell::Cell::new(false),
+            reader_last_sync: std::cell::Cell::new(None),
+            last_size: std::cell::Cell::new(term_size()),
+            palette_was_active: std::cell::Cell::new(false),
+            compact_tools: std::cell::Cell::new(false),
         }
-        Progress::ToolStart { name, command } => {
-            // A newline only when text is mid-line, so a turn that starts with
-            // a tool call does not open with a blank row.
-            let _ = write!(io, "\n\x1b[38;5;179m◆ {name}\x1b[0m ");
-            if let Some(c) = command {
-                let _ = write!(io, "\x1b[90m{}\x1b[0m", first_line(c, 120));
+    }
+
+    fn set_width(&self, width: u16) {
+        self.width.set(width.max(1));
+    }
+
+    fn refresh_geometry(&self, reader_allowed: bool) -> bool {
+        let current = term_size();
+        if self.last_size.get() == current {
+            return false;
+        }
+        self.set_width(current.0);
+        let _ = surface::body_rect();
+        if reader_allowed && let Some(reader) = self.reader.borrow_mut().as_mut() {
+            let _ = reader.resize();
+        }
+        if reader_allowed || !self.reader_active() {
+            self.last_size.set(current);
+        }
+        true
+    }
+
+    /// The repl writes around the painter — the usage line —
+    /// and those end in a newline, so the cursor is never
+    /// mid-line across one.
+    fn reset(&self) {
+        self.response_started.set(false);
+        self.response_prefix.borrow_mut().clear();
+        self.tool_started.set(None);
+        self.waiting_started.set(None);
+        self.last_tick.set(None);
+        self.mid_line.set(false);
+    }
+
+    /// Close a span the model never closed, and land the cursor
+    /// on a fresh row: the usage line that follows a turn must
+    /// not append to half a sentence.
+    fn flush(&self, io: &mut impl Write) {
+        if self.waiting.replace(false) {
+            let _ = surface::status("");
+        }
+        self.markdown
+            .borrow_mut()
+            .flush(io, self.width.get() as usize);
+        self.mid_line.set(false);
+        self.response_started.set(false);
+        self.response_prefix.borrow_mut().clear();
+    }
+
+    fn handle(&self, p: Progress<'_>) {
+        let before = self.live.borrow().content_revision();
+        self.live.borrow_mut().progress(&p);
+        if self.live.borrow().content_revision() != before && self.reader_active() {
+            self.reader_dirty.set(true);
+        }
+        self.set_width(term_size().0);
+        let mut io = glass_tui::theme::TerminalWriter(surface::BodyWriter);
+        if self.waiting.replace(false) {
+            let _ = surface::status("");
+        }
+        self.render_text_transition(&mut io, &p);
+        match p {
+            Progress::Waiting => {
+                self.flush(&mut io);
+                self.waiting_started.set(Some(std::time::Instant::now()));
+                self.activity_frame.set(0);
+                self.last_tick.set(Some(std::time::Instant::now()));
+                self.waiting.set(true);
+                self.draw_activity(&mut io);
             }
-            let _ = io.flush();
+            Progress::Reasoning(_) => {
+                self.waiting.set(true);
+                self.draw_activity(&mut io);
+            }
+            Progress::Text(_) => {
+                self.waiting.set(true);
+                self.draw_activity(&mut io);
+            }
+            Progress::ToolStart { name, command } => {
+                if let Some(command) = command.filter(|_| !self.compact_tools.get()) {
+                    let rows = glass_tui::text::wrap_words(
+                        &glass_tui::markdown::sanitize(&format!("$ {command}")),
+                        self.width.get().saturating_sub(3).max(1) as usize,
+                    );
+                    for row in rows.iter().take(4) {
+                        self.notice(
+                            &mut io,
+                            &glass_tui::theme::ansi(glass_tui::theme::Tone::Secondary),
+                            row,
+                        );
+                    }
+                    if rows.len() > 4 {
+                        self.notice(
+                            &mut io,
+                            &glass_tui::theme::ansi(glass_tui::theme::Tone::Muted),
+                            "… full command: /details",
+                        );
+                    }
+                }
+                self.tool_started.set(Some(std::time::Instant::now()));
+                *self.tool_name.borrow_mut() = glass_tui::text::clip(name, 32);
+                self.waiting_started.set(Some(std::time::Instant::now()));
+                self.activity_frame.set(0);
+                self.last_tick.set(Some(std::time::Instant::now()));
+                self.waiting.set(true);
+                self.draw_activity(&mut io);
+            }
+            Progress::ToolEnd { summary, output } => {
+                let elapsed = self
+                    .tool_started
+                    .take()
+                    .map(|t| t.elapsed().as_secs_f32())
+                    .unwrap_or(0.0);
+                let failed = (summary.starts_with("[exit ") && !summary.starts_with("[exit 0]"))
+                    || summary.starts_with("error:")
+                    || summary.contains("killed")
+                    || summary.starts_with("refused:")
+                    || summary.starts_with("blocked");
+                let name = self.tool_name.borrow();
+                let budget = self.width.get().saturating_sub(2) as usize;
+                let label = if failed {
+                    format!("× {name} · failed · {elapsed:.1}s")
+                } else {
+                    format!("✓ {name} · {elapsed:.1}s")
+                };
+                let color = glass_tui::theme::ansi(if failed {
+                    glass_tui::theme::Tone::Error
+                } else {
+                    glass_tui::theme::Tone::Success
+                });
+                let _ = writeln!(
+                    io,
+                    "  {color}{}\x1b[0m",
+                    first_line(&label, budget.saturating_sub(1))
+                );
+                if failed || (!self.compact_tools.get() && !output.is_empty()) {
+                    let clean =
+                        glass_tui::markdown::sanitize(if failed { &summary } else { output });
+                    for row in glass_tui::text::wrap_words(&clean, budget.saturating_sub(1).max(1))
+                        .into_iter()
+                        .take(3)
+                    {
+                        let _ = writeln!(
+                            io,
+                            "  {}{row}\x1b[0m",
+                            glass_tui::theme::ansi(if failed {
+                                glass_tui::theme::Tone::Error
+                            } else {
+                                glass_tui::theme::Tone::Muted
+                            })
+                        );
+                    }
+                }
+                self.mid_line.set(false);
+            }
+            Progress::BlockedByGuard(paths) => {
+                self.flush(&mut io);
+                self.notice(
+                    &mut io,
+                    &glass_tui::theme::ansi(glass_tui::theme::Tone::Error),
+                    &format!("× refused to write unread file(s): {paths}"),
+                );
+            }
+            Progress::Steered(text) => {
+                self.flush(&mut io);
+                self.notice(
+                    &mut io,
+                    &glass_tui::theme::ansi(glass_tui::theme::Tone::Warning),
+                    &format!("⚡ applying your correction: {text}"),
+                );
+            }
+            Progress::Retrying {
+                attempt,
+                delay_s,
+                reason,
+            } => {
+                self.flush(&mut io);
+                self.notice(
+                    &mut io,
+                    &glass_tui::theme::ansi(glass_tui::theme::Tone::Warning),
+                    &format!("⟳ retry {attempt} in {delay_s}s — {reason}"),
+                );
+            }
+            Progress::Compacted { kept, dropped } => {
+                self.flush(&mut io);
+                self.notice(
+                    &mut io,
+                    &glass_tui::theme::ansi(glass_tui::theme::Tone::Muted),
+                    &format!("◆ context compacted · dropped {dropped}, kept {kept}"),
+                );
+            }
         }
-        Progress::ToolEnd { name, summary } => {
-            let _ = writeln!(io, "\x1b[90m  {} → {}\x1b[0m", name, summary);
-            let _ = io.flush();
+        let _ = io.flush();
+    }
+
+    fn tick(&self) {
+        if self.reader_dirty.get()
+            && self
+                .reader_last_sync
+                .get()
+                .is_none_or(|last| last.elapsed() >= std::time::Duration::from_millis(125))
+        {
+            self.sync_reader();
         }
-        Progress::BlockedByGuard(paths) => {
-            let _ = writeln!(io, "[31m⛔ refused to write unread file(s): {paths}[0m");
-            let _ = io.flush();
+        if !self.waiting.get() {
+            return;
         }
-        Progress::Steered(text) => {
-            let _ = writeln!(io, "\x1b[33m⚡ applying your correction: {text}\x1b[0m");
-            let _ = io.flush();
+        if self
+            .last_tick
+            .get()
+            .is_some_and(|last| last.elapsed() < std::time::Duration::from_millis(125))
+        {
+            return;
         }
-        Progress::Compacted { kept, dropped } => {
-            let _ = writeln!(
-                io,
-                "\x1b[38;5;179m◆ context compacted\x1b[0m \x1b[90mdropped {dropped}, kept {kept}\x1b[0m"
-            );
-            let _ = io.flush();
+        self.last_tick.set(Some(std::time::Instant::now()));
+        self.activity_frame
+            .set(self.activity_frame.get().wrapping_add(1));
+        self.set_width(term_size().0);
+        let mut io = glass_tui::theme::TerminalWriter(surface::BodyWriter);
+        self.draw_activity(&mut io);
+        let _ = io.flush();
+    }
+
+    fn sync_reader(&self) {
+        let entries = self.live.borrow().snapshot();
+        if let Some(reader) = self.reader.borrow_mut().as_mut()
+            && reader.update(entries).is_ok()
+        {
+            self.reader_dirty.set(false);
+            self.reader_last_sync.set(Some(std::time::Instant::now()));
+        }
+    }
+
+    fn seed_live(&self, entries: Vec<glass_tui::Entry>, reasoning: String) {
+        let mut live = self.live.borrow_mut();
+        live.seed(entries);
+        live.seed_reasoning(reasoning);
+        drop(live);
+        if self.reader_active() {
+            self.reader_dirty.set(true);
+            self.sync_reader();
+        }
+    }
+
+    fn append_live_entry(&self, role: glass_tui::Role, text: impl Into<String>) {
+        self.live.borrow_mut().append_entry(role, text);
+        if self.reader_active() {
+            self.reader_dirty.set(true);
+            self.sync_reader();
+        }
+    }
+
+    fn open_reader(&self, entries: Vec<glass_tui::Entry>, page_up: bool) -> Result<(), String> {
+        if self.reader.borrow().is_some() {
+            return Ok(());
+        }
+        surface::reading(true).map_err(|e| e.to_string())?;
+        match reader::Reader::new(entries, page_up) {
+            Ok(reader) => {
+                *self.reader.borrow_mut() = Some(reader);
+                self.reader_dirty.set(false);
+                self.reader_last_sync.set(Some(std::time::Instant::now()));
+                Ok(())
+            }
+            Err(error) => {
+                surface::reading(false).ok();
+                Err(error.to_string())
+            }
+        }
+    }
+
+    fn close_reader(&self) -> Result<(), String> {
+        self.reader.borrow_mut().take();
+        self.reader_dirty.set(false);
+        surface::reading(false).map_err(|e| e.to_string())
+    }
+
+    fn reader_active(&self) -> bool {
+        self.reader.borrow().is_some()
+    }
+
+    fn reader_needs_redraw(&self, palette_active: bool) -> bool {
+        let palette_closed = self.palette_was_active.replace(palette_active) && !palette_active;
+        palette_closed || surface::reader_invalidated()
+    }
+
+    /// Returns true when the event belongs exclusively to the inline reader.
+    fn reader_event(&self, event: &glass_tui::crossterm::event::Event) -> Result<bool, String> {
+        use reader::Action;
+        let action = {
+            let mut slot = self.reader.borrow_mut();
+            let Some(reader) = slot.as_mut() else {
+                return Ok(false);
+            };
+            reader.event(event).map_err(|e| e.to_string())?
+        };
+        match action {
+            Action::Handled => Ok(true),
+            Action::Close => {
+                self.close_reader()?;
+                Ok(true)
+            }
+            Action::CloseAndPass => {
+                self.close_reader()?;
+                Ok(false)
+            }
+            Action::PassThrough => Ok(false),
+        }
+    }
+    fn draw_activity(&self, io: &mut impl Write) {
+        let frame = self.activity_frame.get();
+        let label = if self.tool_started.get().is_some() {
+            format!("{} running", self.tool_name.borrow())
+        } else if self.live.borrow().phase() == "Answer streaming" {
+            "Answer streaming".into()
+        } else if self.live.borrow().phase() == "Provider reasoning" {
+            "Reasoning".into()
+        } else if self.width.get() < 32 {
+            "Waiting".into()
+        } else {
+            "Waiting for provider".into()
+        };
+        let elapsed = self
+            .waiting_started
+            .get()
+            .map(|start| start.elapsed().as_secs_f32())
+            .unwrap_or(0.0);
+        let detail = format!("{label} · {elapsed:.1}s");
+        let content = first_line(
+            &format!("{} {detail}", glass_tui::theme::frame(frame)),
+            self.width.get().saturating_sub(3) as usize,
+        );
+        let _ = io;
+        let _ = surface::status_colored(
+            &format!("  {content}"),
+            &glass_tui::theme::activity_color(frame),
+        );
+    }
+
+    fn notice(&self, io: &mut impl Write, color: &str, text: &str) {
+        let io = &mut glass_tui::theme::TerminalWriter(io);
+        let width = self.width.get().saturating_sub(3).max(1) as usize;
+        for row in glass_tui::text::wrap_words(&glass_tui::markdown::sanitize(text), width) {
+            let _ = writeln!(io, "  {color}{row}\x1b[0m");
+        }
+        self.mid_line.set(false);
+    }
+
+    fn write_text(&self, io: &mut impl Write, text: &str) {
+        let text = if self.response_started.get() {
+            text.to_string()
+        } else {
+            let mut prefix = self.response_prefix.borrow_mut();
+            prefix.push_str(text);
+            let Some(first) = prefix.find(|c: char| !c.is_whitespace()) else {
+                if prefix.len() > 8192 {
+                    let keep = prefix.rfind('\n').map(|i| i + 1).unwrap_or_else(|| {
+                        let chars = prefix.chars().count().saturating_sub(256);
+                        prefix.char_indices().nth(chars).map_or(0, |(i, _)| i)
+                    });
+                    prefix.drain(..keep);
+                }
+                return;
+            };
+            self.response_started.set(true);
+            let start = prefix[..first].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let visible = prefix[start..].to_string();
+            prefix.clear();
+            let _ = io.write_all(b"\r\n");
+            visible
+        };
+        self.markdown
+            .borrow_mut()
+            .write(io, &text, self.width.get() as usize);
+        self.mid_line.set(!text.ends_with('\n'));
+    }
+
+    fn render_text_transition(&self, io: &mut impl Write, progress: &Progress<'_>) {
+        match progress {
+            Progress::Text(text) => self.write_text(io, text),
+            Progress::ToolStart { .. } | Progress::ToolEnd { .. } => self.flush(io),
+            _ => {}
         }
     }
 }
 
 fn first_line(s: &str, max: usize) -> String {
     let line = s.lines().next().unwrap_or("").trim();
-    let mut out: String = line.chars().take(max).collect();
-    if line.chars().count() > max {
+    let mut out = glass_tui::text::clip(line, max);
+    if glass_tui::text::width(line) > max {
         out.push('…');
     }
     out
+}
+
+/// Terminal size, with a sane fallback.
+///
+/// Some mobile terminals report 0x0 while a resize
+/// is in flight; a zero dimension would wrap the
+/// editor at 0 columns and park the prompt on row 0.
+fn term_size() -> (u16, u16) {
+    let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+    (if w == 0 { 80 } else { w }, if h == 0 { 24 } else { h })
 }
 
 fn print_banner(
@@ -716,38 +3629,62 @@ fn print_banner(
     loaded: &[Box<dyn glass_mod_api::Mod_>],
     exts: &ext::Registry,
     session: &Session,
+    narrow: bool,
 ) {
-    let mods = if loaded.is_empty() {
-        String::new()
-    } else {
-        format!(" · mod {}", loaded.iter().map(|m| m.name()).collect::<Vec<_>>().join(", "))
-    };
-    let extensions = if exts.is_empty() {
-        String::new()
-    } else {
-        format!(" · ext {}", exts.names().join(", "))
-    };
-    println!(
-        "\x1b[1mglass\x1b[0m \x1b[90m{} · {}{mods}{extensions}\x1b[0m",
-        cfg.model, session.id
+    let width = usize::from(term_size().0.max(1));
+    let accent = glass_tui::theme::accent();
+    ui_println!(
+        "{accent}\x1b[1m{}\x1b[0m",
+        glass_tui::text::clip("◆ glass-core", width)
     );
-    println!("\x1b[90m  bash + state · ctrl-g transcript · ctrl-d quit\x1b[0m");
-    println!("\x1b[90m  no permission gate: commands run as asked\x1b[0m\n");
+    let rows = if narrow {
+        vec![cfg.model.clone(), " / commands · ctrl-g view".into()]
+    } else {
+        vec![
+            format!("{} · {}", cfg.provider, cfg.model),
+            format!(
+                "{} mods · {} extensions · session {}",
+                loaded.len(),
+                exts.names().len(),
+                session.id
+            ),
+            "/dashboard overview · / commands · ctrl-g transcript · ctrl-d quit".into(),
+        ]
+    };
+    for row in rows {
+        ui_println!("\x1b[90m{}\x1b[0m", glass_tui::text::clip(&row, width));
+    }
+    ui_println!();
 }
 
 /// Fullscreen transcript viewer.
-fn view_transcript(session: &Session, loaded: &[Box<dyn glass_mod_api::Mod_>]) -> Result<(), String> {
+fn view_transcript(
+    session: &Session,
+    loaded: &[Box<dyn glass_mod_api::Mod_>],
+    keys: &input::KeyReader,
+    page_up: bool,
+) -> Result<(), String> {
     use glass_tui::crossterm::execute;
     use glass_tui::ratatui::Terminal;
 
-    let mut transcript = glass_tui::Transcript::new(session.entries());
-    let mut tui = Terminal::new(glass_tui::ratatui::backend::CrosstermBackend::new(std::io::stdout()))
-        .map_err(|e| format!("cannot start viewer: {e}"))?;
+    surface::overlay(true).map_err(|e| e.to_string())?;
+    let mut transcript = glass_tui::Transcript::new(session.history_entries());
+    if page_up {
+        transcript.page(-1, term_size().1);
+    }
+    let mut tui = Terminal::new(glass_tui::ratatui::backend::CrosstermBackend::new(
+        glass_tui::theme::TerminalWriter(std::io::stdout()),
+    ))
+    .map_err(|e| format!("cannot start viewer: {e}"))?;
 
     // Alternate screen only here. The default view never touches it, which is
     // what keeps history in the terminal instead of the heap.
-    execute!(std::io::stdout(), glass_tui::crossterm::terminal::EnterAlternateScreen, glass_tui::crossterm::cursor::Hide)
-        .map_err(|e| e.to_string())?;
+    execute!(
+        std::io::stdout(),
+        glass_tui::crossterm::terminal::Clear(glass_tui::crossterm::terminal::ClearType::All),
+        glass_tui::crossterm::cursor::Hide
+    )
+    .map_err(|e| e.to_string())?;
     tui.hide_cursor().ok();
 
     let res = (|| -> Result<(), String> {
@@ -759,7 +3696,7 @@ fn view_transcript(session: &Session, loaded: &[Box<dyn glass_mod_api::Mod_>]) -
             tui.draw(|f| transcript.draw(f, loaded, &session.id))
                 .map_err(|e| e.to_string())?;
 
-            match glass_tui::crossterm::event::read().map_err(|e| e.to_string())? {
+            match keys.next_blocking().ok_or("input stream closed")? {
                 Event::Key(k) => {
                     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
                     match k.code {
@@ -787,19 +3724,28 @@ fn view_transcript(session: &Session, loaded: &[Box<dyn glass_mod_api::Mod_>]) -
     })();
 
     tui.show_cursor().ok();
-    execute!(std::io::stdout(), glass_tui::crossterm::cursor::Show, glass_tui::crossterm::terminal::LeaveAlternateScreen)
-        .map_err(|e| e.to_string())?;
-    println!();
+    execute!(
+        std::io::stdout(),
+        glass_tui::crossterm::cursor::Show,
+        glass_tui::crossterm::terminal::Clear(glass_tui::crossterm::terminal::ClearType::All)
+    )
+    .map_err(|e| e.to_string())?;
+    surface::overlay(false).map_err(|e| e.to_string())?;
     res
 }
 
 #[cfg(test)]
 mod totals_tests {
-    use super::{compact, Totals};
+    use super::{Totals, compact};
     use crate::provider::Usage;
 
     fn u(input: u32, read: u32, write: u32, output: u32) -> Usage {
-        Usage { input, cache_read: read, cache_write: write, output }
+        Usage {
+            input,
+            cache_read: read,
+            cache_write: write,
+            output,
+        }
     }
 
     #[test]
@@ -813,19 +3759,309 @@ mod totals_tests {
     }
 
     #[test]
-    fn hit_rate_is_cumulative() {
-        let mut t = Totals::new();
-        // Two turns, each half served from cache.
-        t.add(&u(500, 500, 0, 10));
-        t.add(&u(500, 500, 0, 10));
-        // 1000 read of 2000 total prompt tokens.
-        assert!((t.hit_rate() - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
     fn compact_abbreviates_large_counts() {
         assert_eq!(compact(9_999), "9,999");
         assert_eq!(compact(12_345), "12.3k");
         assert_eq!(compact(2_500_000), "2.5M");
+    }
+
+    #[test]
+    fn the_session_tail_prices_the_session() {
+        use crate::pricing::RateCard;
+        let mut t = Totals::new();
+        t.add(&u(1_000_000, 0, 0, 0));
+        let card = RateCard {
+            input: 5.0,
+            cache_read: 0.5,
+            cache_write: 6.25,
+            output: 25.0,
+        };
+        assert!((t.total_cost(&card) - 5.0).abs() < 1e-9);
+        let s = t.suffix(200_000, Some(&card), false);
+        assert!(s.contains("$5.00"), "{s}");
+        // Without a card the tail stays tokens-only.
+        assert!(!t.suffix(200_000, None, false).contains('$'));
+    }
+
+    #[test]
+    fn the_usage_line_prices_a_turn() {
+        use crate::pricing::RateCard;
+        let card = RateCard {
+            input: 5.0,
+            cache_read: 0.5,
+            cache_write: 6.25,
+            output: 25.0,
+        };
+        let line = super::usage_line(&u(1_000_000, 0, 0, 0), Some(&card), false);
+        assert!(line.contains("$5.00"), "{line}");
+        assert!(!super::usage_line(&u(1_000_000, 0, 0, 0), None, false).contains('$'));
+        // Narrow counts are compact, so the line stays
+        // inside a phone-width terminal.
+        let narrow = super::usage_line(&u(1_000_000, 0, 0, 0), Some(&card), true);
+        assert!(narrow.contains("1.0M in"), "{narrow}");
+        assert!(narrow.chars().count() < 60, "{narrow}");
+    }
+}
+
+#[cfg(test)]
+mod session_list_tests {
+    use super::{civil_from_days, first_user_message, format_time};
+
+    #[test]
+    fn civil_dates_are_correct() {
+        // 1970-01-01 is day 0.
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        // 2024-02-29 is a leap day.
+        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
+        // 2000-01-01.
+        assert_eq!(civil_from_days(10_957), (2000, 1, 1));
+        // 2026-10-06.
+        assert_eq!(civil_from_days(20_732), (2026, 10, 6));
+    }
+
+    #[test]
+    fn format_time_renders_utc() {
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        // 1970-01-01T00:00:00Z plus 3661 seconds.
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(3_661);
+        assert_eq!(format_time(t), "1970-01-01 01:01");
+        let _ = UNIX_EPOCH;
+    }
+
+    #[test]
+    fn first_user_message_skips_other_records() {
+        use std::io::Write;
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let d = std::env::temp_dir().join(format!("glass-list-{}", n));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("s.jsonl");
+        let mut f = std::fs::File::create(&p).unwrap();
+        writeln!(f, r#"{{"k":"assistant","t":"answer"}}"#).unwrap();
+        writeln!(f, r#"{{"k":"user","t":"the task"}}"#).unwrap();
+        writeln!(f, r#"{{"k":"user","t":"second"}}"#).unwrap();
+        drop(f);
+        assert_eq!(first_user_message(&p).as_deref(), Some("the task"));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn first_user_message_tolerates_a_torn_log() {
+        use std::io::Write;
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let d = std::env::temp_dir().join(format!("glass-list-torn-{}", n));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("s.jsonl");
+        let mut f = std::fs::File::create(&p).unwrap();
+        writeln!(f, "{{not json").unwrap();
+        writeln!(f, r#"{{"k":"user","t":"real"}}"#).unwrap();
+        drop(f);
+        assert_eq!(first_user_message(&p).as_deref(), Some("real"));
+        std::fs::remove_dir_all(&d).ok();
+    }
+}
+
+#[cfg(test)]
+mod painter_tests {
+    use super::*;
+
+    fn paint(p: &Painter, chunks: &[&str]) -> String {
+        let mut out = Vec::new();
+        for c in chunks {
+            p.write_text(&mut out, c);
+        }
+        p.flush(&mut out);
+        String::from_utf8(out).unwrap()
+    }
+
+    /// The text a terminal would show, with SGR color runs removed.
+    ///
+    /// Assertions about layout must not depend on the theme: once the
+    /// gutter and the code have different colors, the raw bytes carry
+    /// escapes between them and a literal match would fail on styling
+    /// rather than on placement.
+    fn plain(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s;
+        while let Some(i) = rest.find('\x1b') {
+            out.push_str(&rest[..i]);
+            rest = &rest[i..];
+            if rest.as_bytes().get(1) == Some(&b'[') {
+                // CSI: ESC '[' params… final byte in @..~ (params are < '@').
+                if let Some(end) = rest[2..].find(|c: char| ('@'..='~').contains(&c)) {
+                    rest = &rest[end + 3..];
+                } else {
+                    rest = "";
+                }
+            } else {
+                // A two-byte escape; nothing else is expected from the painter.
+                rest = rest.get(2..).unwrap_or("");
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[test]
+    fn prose_is_neutral_with_mobile_margins() {
+        let out = paint(&Painter::new(), &["just prose"]);
+        assert_eq!(
+            out.contains("\x1b[38;5;252m"),
+            !glass_tui::theme::no_color()
+        );
+        assert!(out.contains("just prose"));
+        assert!(out.ends_with("\r\n"));
+    }
+
+    #[test]
+    fn first_response_discards_only_leading_blank_rows_and_keeps_code_indent() {
+        let p = Painter::new();
+        let mut out = Vec::new();
+        p.write_text(&mut out, "\n\n  ");
+        p.write_text(&mut out, "```rust\n    fn main() {}\n```\n");
+        p.flush(&mut out);
+        let out = String::from_utf8(out).unwrap();
+        assert!(!out.contains("Assistant"));
+        assert!(!out.contains("\r\n\r\n"));
+        assert!(plain(&out).contains("│     fn main() {}"), "{out:?}");
+    }
+
+    #[test]
+    fn composed_prompt_and_first_text_have_one_blank_boundary() {
+        let mut out = Vec::new();
+        render_prompt(&mut out, "hello", 40);
+        let p = Painter::new();
+        p.render_text_transition(&mut out, &Progress::Text("\n\nReply."));
+        p.flush(&mut out);
+        let out = String::from_utf8(out).unwrap();
+        let prompt = out.find("❯ hello").unwrap();
+        let reply = out.find("Reply.").unwrap();
+        let between = &out[prompt..reply];
+        assert_eq!(
+            between.matches("\r\n").count(),
+            2,
+            "one prompt end plus one blank row: {out:?}"
+        );
+
+        if let Some(dir) = std::env::var_os("GC_TEST_RENDER_CAPTURE_DIR") {
+            let dir = std::path::PathBuf::from(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            for (width, height) in [(65, 30), (40, 24), (24, 16), (20, 12), (20, 8)] {
+                let painter = Painter::new();
+                painter.set_width(width);
+                let mut capture = Vec::new();
+                render_prompt(&mut capture, "inspect the task", width);
+                painter.render_text_transition(
+                    &mut capture,
+                    &Progress::Text("\n\nFirst reply with **Markdown**."),
+                );
+                painter.render_text_transition(
+                    &mut capture,
+                    &Progress::ToolStart {
+                        name: "bash",
+                        command: Some("pwd"),
+                    },
+                );
+                painter.render_text_transition(
+                    &mut capture,
+                    &Progress::ToolEnd {
+                        summary: "done".into(),
+                        output: "workspace",
+                    },
+                );
+                painter.render_text_transition(&mut capture, &Progress::Text("\n\nFinal reply."));
+                painter.flush(&mut capture);
+                std::fs::write(dir.join(format!("painter-{width}x{height}.ansi")), capture)
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_tool_start_end_keep_one_compact_reply_boundary() {
+        let p = Painter::new();
+        let mut out = Vec::new();
+        p.render_text_transition(&mut out, &Progress::Text("First response."));
+        p.render_text_transition(
+            &mut out,
+            &Progress::ToolStart {
+                name: "bash",
+                command: Some("pwd"),
+            },
+        );
+        p.render_text_transition(
+            &mut out,
+            &Progress::ToolEnd {
+                summary: "done".into(),
+                output: "workspace",
+            },
+        );
+        p.render_text_transition(&mut out, &Progress::Text("\n\nFinal response."));
+        p.flush(&mut out);
+        let out = String::from_utf8(out).unwrap();
+        assert!(!out.contains("Assistant"));
+        assert_eq!(
+            out.matches("\r\n\r\n").count(),
+            1,
+            "one ToolEnd/reply boundary: {out:?}"
+        );
+        assert!(out.contains("First response."));
+        assert!(out.contains("Final response."));
+    }
+
+    #[test]
+    fn oversized_unicode_whitespace_prefix_stays_bounded_and_safe() {
+        let p = Painter::new();
+        let mut out = Vec::new();
+        p.write_text(&mut out, &"\u{2003}".repeat(9000));
+        p.write_text(&mut out, "reply");
+        p.flush(&mut out);
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("reply"));
+        assert!(!out.contains("Assistant"));
+    }
+
+    #[test]
+    fn first_wheel_opens_reader_only_when_no_other_view_owns_input() {
+        use glass_tui::crossterm::event::{
+            Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
+        };
+        let wheel = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        let key = Event::Key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        assert!(should_open_reader_for_wheel(&wheel, false, false));
+        assert!(!should_open_reader_for_wheel(&wheel, true, false));
+        assert!(!should_open_reader_for_wheel(&wheel, false, true));
+        assert!(!should_open_reader_for_wheel(&key, false, false));
+    }
+    #[test]
+    fn chunk_split_styles_are_closed_and_markers_hidden() {
+        let out = paint(&Painter::new(), &["run `l", "s` and **bo", "ld** now"]);
+        assert_eq!(
+            out.contains("\x1b[38;5;114m"),
+            !glass_tui::theme::no_color()
+        );
+        assert!(out.contains("\x1b[1m"));
+        assert!(!out.contains('`') && !out.contains("**"));
+    }
+    #[test]
+    fn flush_preserves_unclosed_text_and_breaks_the_row() {
+        let out = paint(&Painter::new(), &["run `ls"]);
+        assert!(out.contains("`ls"));
+        assert!(out.ends_with("\r\n"));
+    }
+    #[test]
+    fn fenced_code_is_a_distinct_block() {
+        let out = paint(&Painter::new(), &["```sh\nls\n```"]);
+        assert!(out.contains("sh ─────"));
+        assert!(out.contains("│ "));
+        assert!(!out.contains("```"));
     }
 }

@@ -28,6 +28,7 @@ import os
 import select
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 
@@ -111,16 +112,20 @@ class LanguageServer:
             stderr=subprocess.DEVNULL,
             cwd=self.root,
         )
-        self.request(
-            'initialize',
-            {
-                'processId': os.getpid(),
-                'rootUri': uri_for(self.root),
-                'capabilities': {'textDocument': {'publishDiagnostics': {}}},
-            },
-            self.timeout_s,
-        )
-        self.notify('initialized', {})
+        try:
+            self.request(
+                'initialize',
+                {
+                    'processId': os.getpid(),
+                    'rootUri': uri_for(self.root),
+                    'capabilities': {'textDocument': {'publishDiagnostics': {}}},
+                },
+                self.timeout_s,
+            )
+            self.notify('initialized', {})
+        except BaseException:
+            self._stop(wait_timeout=0.1)
+            raise
 
     def send(self, payload):
         self.proc.stdin.write(frame(payload))
@@ -131,16 +136,18 @@ class LanguageServer:
 
     def read_message(self, timeout):
         deadline = time.monotonic() + timeout
-        while b'\r\n\r\n' not in self.buffer:
+
+        def read_chunk():
             remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError('no reply')
-            if not select.select([self.proc.stdout], [], [], remaining)[0]:
+            if remaining <= 0 or not select.select([self.proc.stdout], [], [], max(0, remaining))[0]:
                 raise TimeoutError('no reply')
             chunk = self.proc.stdout.read1(65536)
             if not chunk:
                 raise EOFError('server closed the stream')
-            self.buffer += chunk
+            return chunk
+
+        while b'\r\n\r\n' not in self.buffer:
+            self.buffer += read_chunk()
         header, _, rest = self.buffer.partition(b'\r\n\r\n')
         length = None
         for line in header.decode('ascii', 'replace').split('\r\n'):
@@ -149,10 +156,10 @@ class LanguageServer:
         if length is None:
             raise RuntimeError('no Content-Length in frame')
         while len(rest) < length:
-            chunk = self.proc.stdout.read1(65536)
-            if not chunk:
-                raise EOFError('server closed the stream')
-            rest += chunk
+            rest += read_chunk()
+            # Retain an incomplete frame if the deadline expires. A later
+            # read can continue it without losing bytes already consumed.
+            self.buffer = header + b'\r\n\r\n' + rest
         message = json.loads(rest[:length].decode('utf-8', 'replace'))
         self.buffer = rest[length:]
         return message
@@ -162,7 +169,9 @@ class LanguageServer:
         self.send({'jsonrpc': '2.0', 'id': self.next_id, 'method': method, 'params': params})
         deadline = time.monotonic() + timeout
         while True:
-            remaining = max(0.1, deadline - time.monotonic())
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('no reply')
             message = self.read_message(remaining)
             if message.get('method') == 'textDocument/publishDiagnostics':
                 self.store_diagnostics(message.get('params') or {})
@@ -208,20 +217,45 @@ class LanguageServer:
         self.diagnostics.pop(uri, None)
         deadline = time.monotonic() + self.timeout_s
         quiet_until = None
-        while time.monotonic() < deadline:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            # read_message may have consumed a chunk containing notifications
+            # for several URIs. Drain complete/buffered messages before
+            # waiting on the OS pipe, which is no longer readable for them.
+            if self.buffer:
+                try:
+                    message = self.read_message(min(0.2, remaining))
+                except TimeoutError:
+                    continue
+                except (EOFError, RuntimeError, ValueError):
+                    break
+                if message.get('method') == 'textDocument/publishDiagnostics':
+                    params = message.get('params') or {}
+                    self.store_diagnostics(params)
+                    if params.get('uri') == uri:
+                        quiet_until = time.monotonic() + self.debounce_s
+                continue
             if uri in self.diagnostics:
                 if quiet_until is None:
                     quiet_until = time.monotonic() + self.debounce_s
                 elif time.monotonic() >= quiet_until:
                     return self.diagnostics.get(uri) or []
-            remaining = min(0.2, max(0.05, deadline - time.monotonic()))
-            if select.select([self.proc.stdout], [], [], remaining)[0]:
-                try:
-                    message = self.read_message(remaining)
-                except (TimeoutError, EOFError, RuntimeError, ValueError):
-                    break
-                if message.get('method') == 'textDocument/publishDiagnostics':
-                    self.store_diagnostics(message.get('params') or {})
+            wait_for = min(0.2, remaining)
+            if not select.select([self.proc.stdout], [], [], wait_for)[0]:
+                continue
+            try:
+                message = self.read_message(wait_for)
+            except TimeoutError:
+                continue
+            except (EOFError, RuntimeError, ValueError):
+                break
+            if message.get('method') == 'textDocument/publishDiagnostics':
+                params = message.get('params') or {}
+                self.store_diagnostics(params)
+                if params.get('uri') == uri:
+                    quiet_until = time.monotonic() + self.debounce_s
         return self.diagnostics.get(uri) or []
 
     def shutdown(self):
@@ -230,10 +264,30 @@ class LanguageServer:
             self.notify('exit', {})
         except Exception:
             pass
+        self._stop()
+
+    def _stop(self, wait_timeout=3):
+        """Close pipes and terminate/reap a server that did not exit cleanly."""
         try:
-            self.proc.wait(timeout=3)
+            if self.proc.stdin:
+                self.proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            self.proc.wait(timeout=wait_timeout)
         except subprocess.TimeoutExpired:
-            self.proc.kill()
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+        for stream in (self.proc.stdin, self.proc.stdout):
+            try:
+                if stream:
+                    stream.close()
+            except OSError:
+                pass
 
 
 class Manager:
@@ -417,6 +471,125 @@ def selftest():
     # The write-note parser takes the host's exact marker format.
     manager = Manager.__new__(Manager)
     assert Manager.written_paths(manager, '[wrote src/a.py — 3 lines]\nrest') == ['src/a.py']
+
+    def probe(code):
+        process = subprocess.Popen(
+            [sys.executable, '-c', code],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        server = LanguageServer.__new__(LanguageServer)
+        server.proc = process
+        server.buffer = b''
+        return server
+
+    # Both incomplete headers and bodies must obey the caller's budget even
+    # while the peer keeps stdout open.
+    for code in (
+        "import sys,time; sys.stdout.buffer.write(b'Content-Length: 20\\r\\n'); sys.stdout.flush(); time.sleep(4)",
+        "import sys,time; sys.stdout.buffer.write(b'Content-Length: 100\\r\\n\\r\\n{'); sys.stdout.flush(); time.sleep(4)",
+    ):
+        server = probe(code)
+        started = time.monotonic()
+        try:
+            server.read_message(0.1)
+            raise AssertionError('partial frame should time out')
+        except TimeoutError:
+            assert time.monotonic() - started < 0.6, 'partial frame exceeded its deadline'
+        finally:
+            server._stop(wait_timeout=0.05)
+
+    # Bytes following one frame belong to the next frame, even when one pipe
+    # read delivers both together.
+    first = frame({'jsonrpc': '2.0', 'id': 1, 'result': {'n': 1}})
+    second = frame({'jsonrpc': '2.0', 'id': 2, 'result': {'n': 2}})
+    code = f"import sys; sys.stdout.buffer.write(bytes.fromhex('{(first + second).hex()}')); sys.stdout.flush()"
+    server = probe(code)
+    try:
+        assert server.read_message(1)['id'] == 1
+        assert server.read_message(1)['id'] == 2
+    finally:
+        server._stop(wait_timeout=0.05)
+
+    # A timeout does not discard a partially consumed body; the next read can
+    # finish the same frame when the server resumes writing.
+    payload = frame({'jsonrpc': '2.0', 'id': 3, 'result': {'continued': True}})
+    split = len(payload) - 5
+    code = (
+        'import sys,time; '
+        f'sys.stdout.buffer.write(bytes.fromhex(\'{payload[:split].hex()}\')); '
+        'sys.stdout.flush(); time.sleep(0.25); '
+        f'sys.stdout.buffer.write(bytes.fromhex(\'{payload[split:].hex()}\')); '
+        'sys.stdout.flush()'
+    )
+    server = probe(code)
+    try:
+        try:
+            server.read_message(0.1)
+            raise AssertionError('incomplete body should time out')
+        except TimeoutError:
+            pass
+        assert server.read_message(1)['result'] == {'continued': True}
+    finally:
+        server._stop(wait_timeout=0.05)
+
+    # A stream of unrelated notifications cannot extend request() beyond its
+    # deadline merely because each individual read succeeds.
+    server = probe(
+        "import json,sys\n"
+        "msg=json.dumps({'jsonrpc':'2.0','method':'$/progress','params':{}})+'\\n'\n"
+        "while True:\n sys.stdout.write(msg); sys.stdout.flush()\n"
+    )
+    server.next_id = 0
+    server.stateless = False
+    started = time.monotonic()
+    try:
+        try:
+            server.request('initialize', {}, 0.15)
+            raise AssertionError('notification flood should time out')
+        except TimeoutError:
+            assert time.monotonic() - started < 0.6, 'notification flood exceeded request deadline'
+    finally:
+        server._stop(wait_timeout=0.05)
+
+    # diagnostics_for must drain complete notifications already buffered by
+    # an earlier read, even when the child pipe is no longer readable.
+    server = probe('import time; time.sleep(4)')
+    server.timeout_s = 0.2
+    server.debounce_s = 0.01
+    server.diagnostics = {}
+    server.buffer = frame({
+        'jsonrpc': '2.0', 'method': 'textDocument/publishDiagnostics',
+        'params': {'uri': 'file:///buffered.py', 'diagnostics': [{'message': 'buffered'}]},
+    })
+    try:
+        rows = server.diagnostics_for('file:///buffered.py')
+        assert rows == [{'message': 'buffered'}], rows
+    finally:
+        server._stop(wait_timeout=0.05)
+
+    # An initialization timeout must not orphan the child that was just
+    # spawned. Its PID file makes the assertion independent of process lists.
+    with tempfile.TemporaryDirectory(prefix='gc-lsp-selftest-') as scratch:
+        pid_file = os.path.join(scratch, 'pid')
+        code = (
+            'import os,time,pathlib; '
+            f'pathlib.Path({pid_file!r}).write_text(str(os.getpid())); '
+            'time.sleep(10)'
+        )
+        try:
+            LanguageServer('.test', {'command': [sys.executable, '-c', code], 'timeout_s': 0.1}, os.getcwd())
+            raise AssertionError('silent server initialization should time out')
+        except TimeoutError:
+            pass
+        child = int(open(pid_file, encoding='ascii').read())
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            raise AssertionError('failed initialization left its server process alive')
     print('PASS lsp extension selftest')
 
 

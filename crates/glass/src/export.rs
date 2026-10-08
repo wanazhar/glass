@@ -88,6 +88,9 @@ pub fn markdown(session: &Session, thinking: bool, records: &[Record]) -> String
             Record::Image { media_type, .. } => {
                 out.push_str(&format!("_[image: {media_type}]_\n\n"));
             }
+            Record::ContextEdit { turn, mode, .. } => {
+                out.push_str(&format!("_[context edit: turn {turn} {mode}]_\n\n"));
+            }
             // A bash tool result duplicates the Bash record above; log
             // metadata and the call/result plumbing are not content.
             Record::ToolResult { .. }

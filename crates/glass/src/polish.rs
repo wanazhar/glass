@@ -377,8 +377,41 @@ pub fn context_report(
         })
         .collect::<Vec<_>>()
         .join("\n\n");
+    let edits = {
+        let mut latest: std::collections::HashMap<usize, (String, Option<String>)> =
+            std::collections::HashMap::new();
+        for record in &s.records {
+            if let Record::ContextEdit { turn, mode, text } = record {
+                if mode == "restore" {
+                    latest.remove(turn);
+                } else {
+                    latest.insert(*turn, (mode.clone(), text.clone()));
+                }
+            }
+        }
+        if latest.is_empty() {
+            "None".to_string()
+        } else {
+            let mut rows: Vec<(usize, String)> = latest
+                .into_iter()
+                .map(|(turn, (mode, text))| {
+                    let detail = match (mode.as_str(), text) {
+                        ("replace", Some(text)) => format!("rewritten as: {text}"),
+                        ("replace", None) => "rewritten".into(),
+                        _ => "hidden".into(),
+                    };
+                    (turn, detail)
+                })
+                .collect();
+            rows.sort();
+            rows.into_iter()
+                .map(|(turn, detail)| format!("turn {turn}: {detail}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    };
     format!(
-        "Model: {}\nEstimated context: {estimate} tokens (includes prompt text; excludes tool schemas)\nMessages: {}\nSystem prompt: {} bytes\nSkill catalogue: {} bytes\n\nLoaded instructions:\n{}\n\nAttached files:\n{}\n\nCompaction:\n{}",
+        "Model: {}\nEstimated context: {estimate} tokens (includes prompt text; excludes tool schemas)\nMessages: {}\nSystem prompt: {} bytes\nSkill catalogue: {} bytes\n\nLoaded instructions:\n{}\n\nAttached files:\n{}\n\nContext edits:\n{edits}\n\nCompaction:\n{}",
         cfg.model,
         messages.len(),
         cfg.system_prompt.len(),

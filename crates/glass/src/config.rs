@@ -73,6 +73,9 @@ pub struct Config {
     /// How often streamed partial output is committed to the sidecar, in ms.
     /// 0 disables the sidecar; a crash otherwise loses at most this window.
     pub live_flush_ms: u32,
+    /// OSC 7501 program status: "on" (default; interactive terminals only)
+    /// or "off".
+    pub program_status: String,
     pub system_prompt: String,
 }
 
@@ -100,6 +103,7 @@ impl Default for Config {
             sandbox_env: String::new(),
             log_fsync: "off".into(),
             live_flush_ms: 250,
+            program_status: "on".into(),
             system_prompt: BASE_SYSTEM_PROMPT.to_string(),
         }
     }
@@ -242,6 +246,7 @@ struct Raw {
     sandbox_env: Option<String>,
     log_fsync: Option<String>,
     live_flush_ms: Option<u32>,
+    program_status: Option<String>,
 
     skills_dir: Option<String>,
     skills: Option<Vec<String>>,
@@ -412,6 +417,15 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
             )));
         }
         cfg.live_flush_ms = v;
+    }
+    if let Some(v) = raw.program_status {
+        let v = v.trim().to_ascii_lowercase();
+        if !matches!(v.as_str(), "on" | "off") {
+            return Err(LoadError::Invalid(format!(
+                "program_status must be on or off (got `{v}`)"
+            )));
+        }
+        cfg.program_status = v;
     }
 
     // `skills = [...]` in the default location narrows the set, so an empty
@@ -612,6 +626,16 @@ mod tests {
         assert_eq!(load(&p).unwrap().live_flush_ms, 0, "0 disables the sidecar");
         let p = write(&d, "huge.toml", "live_flush_ms = 60001\n");
         assert!(load(&p).unwrap_err().to_string().contains("live_flush_ms"));
+    }
+
+    #[test]
+    fn program_status_defaults_on_and_rejects_typos() {
+        let d = scratch("program-status");
+        assert_eq!(load(&d.join("none.toml")).unwrap().program_status, "on");
+        let p = write(&d, "off.toml", "program_status = \"off\"\n");
+        assert_eq!(load(&p).unwrap().program_status, "off");
+        let p = write(&d, "bad.toml", "program_status = \"maybe\"\n");
+        assert!(load(&p).unwrap_err().to_string().contains("program_status"));
     }
 
     #[test]

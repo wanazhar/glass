@@ -358,7 +358,7 @@ impl Extension {
             name: name.to_string(),
             body: body.to_string(),
         };
-        let v = self.request(&req, REQUEST_TIMEOUT_MS, Some(host_tools))?;
+        let v = self.request(&req, REQUEST_TIMEOUT_MS * 10, Some(host_tools))?;
         let new = v.get("body")?.as_str()?;
         (!new.is_empty() && new != body).then(|| new.to_string())
     }

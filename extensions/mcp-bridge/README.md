@@ -25,7 +25,16 @@ argument; this bridge is an ordinary extension.
 - Content arrays are flattened to text; non-text items become
   `[image content omitted]`-style placeholders rather than disappearing
   silently.
-- stdio transport only. HTTP/SSE MCP servers are deliberately out of scope.
+- Transports: stdio and Streamable HTTP (`{"type": "streamable-http",
+  "url": …, "headers": {…}}`; non-loopback endpoints must be HTTPS; a 401
+  says to add a bearer token). The legacy HTTP+SSE transport is deprecated
+  in the spec and refused with a pointer rather than implemented.
+- Protocol negotiation: `server/discover` is probed first (the stateless
+  2026-07-28 revision — no handshake, `_meta` on every request, `resultType`
+  honoured, `ttlMs`/`cacheScope` tolerated); a method-not-found falls back
+  to the classic `initialize`/`initialized` handshake, which remains what
+  most servers speak. `resultType: "input_required"` (multi round-trip
+  requests) returns a clear "not supported yet" text instead of a hang.
 
 ### Agent Plugins
 

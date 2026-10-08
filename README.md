@@ -737,9 +737,13 @@ Each tool appears namespaced as `mcp__<server>__<tool>` with its JSON Schema
 passed through. Past 40 tools the bridge switches to `mcp_search` and
 `mcp_call`, so a large server does not inflate every prompt. A server that
 fails to start is skipped with a note on stderr; calls into a dead server
-return an error string, never a hung turn. stdio only — HTTP and SSE
-transports are out of scope — and nothing spawns unless `mcp.json` asks for
-it.
+return an error string, never a hung turn. Transports: stdio and Streamable
+HTTP (`{"type": "streamable-http", "url": …, "headers": {…}}`, HTTPS for
+non-loopback endpoints); the deprecated HTTP+SSE transport is refused with a
+pointer. Servers are negotiated with the stateless 2026-07-28 revision when
+they support it — `server/discover` probed first, per-request `_meta` after —
+and fall back to the classic `initialize` handshake for everything older.
+Nothing spawns unless `mcp.json` asks for it.
 
 ### Agent Plugins
 
@@ -1175,6 +1179,47 @@ prints the last 60KB of output. `/job <id> stop` stops the command's process gro
 Live jobs are stopped on normal terminal exit. Logs stay under session data in
 `jobs/<session>/` for inspection. Jobs belong to the running terminal process and
 are not reattached on resume.
+
+## Outlining before reading, opt-in
+
+`extensions/index` adds an `index` tool: a file's skeleton with exact line
+numbers (`index {path: "src/agent.rs"}`), or the files containing a literal
+plus their outlines (`index {query: "retry_backoff"}`):
+
+```toml
+extensions = ["python3 ~/.config/glass-core/ext/index.py"]
+```
+
+Reads dominate token spend, so the point is reading a range instead of a
+whole file; the system prompt tells the model to index first. Regex
+scanners for rust/python/go/js/ts (unknown types say so rather than guess),
+ripgrep when available, 60 lines per file and 200 per call, path-contained
+to the workspace.
+
+## Compiler feedback after edits, opt-in
+
+`extensions/lsp` puts a real language server's verdict into the tool result
+the model is about to read:
+
+```toml
+extensions = ["python3 ~/.config/glass-core/ext/lsp.py"]
+```
+
+```json
+{
+  ".py": {"command": ["pylsp"], "timeout_s": 20},
+  ".rs": {"command": ["rust-analyzer"], "timeout_s": 30}
+}
+```
+
+in `~/.config/glass-core/lsp.json`. After a command writes a file of a
+configured language, the server is started lazily, the file is opened, and
+diagnostics are appended as `[lsp] path:line:col severity: message` (errors
+first, 20 cap) — the original tool output is preserved. Servers stay warm
+for the session and shut down on exit. An explicitly requested `lsp {path}`
+tool and a `/lsp` status command exist for the warm-up case; a server that
+cannot start is reported once and then ignored, because a missing language
+server must never break the edit loop.
 
 ## Loops
 

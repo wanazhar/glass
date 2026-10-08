@@ -92,6 +92,22 @@ pub const BUNDLES: &[Bundle] = &[
         source: include_str!("../../../extensions/oracle/oracle.py"),
         access: "Sends the current diff to a configured alternate model on your account, read-only; uses model quota.",
     },
+    Bundle {
+        name: "index",
+        description: "Outline source files before reading them",
+        interpreter: "python3",
+        file: "index.py",
+        source: include_str!("../../../extensions/index/index.py"),
+        access: "Reads files in the workspace to report symbol outlines; runs ripgrep when available.",
+    },
+    Bundle {
+        name: "lsp",
+        description: "Language-server diagnostics after edits",
+        interpreter: "python3",
+        file: "lsp.py",
+        source: include_str!("../../../extensions/lsp/lsp.py"),
+        access: "Spawns configured language servers in the workspace and reads their diagnostics; reads ~/.config/glass-core/lsp.json.",
+    },
 ];
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]

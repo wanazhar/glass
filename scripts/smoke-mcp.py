@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Offline protocol check for the MCP bridge: namespaced tools from a fixture
-stdio server, error text, and the deferred mcp_search/mcp_call mode."""
+stdio server, error text, the deferred mcp_search/mcp_call mode, the stateless
+2026-07-28 revision (server/discover + per-request _meta), and Streamable
+HTTP."""
 import json
 import os
 import subprocess
@@ -11,6 +13,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 BRIDGE = REPO / 'extensions' / 'mcp-bridge' / 'mcp_bridge.py'
 FIXTURE = REPO / 'scripts' / 'mcp_fixture_server.py'
+DISCOVER_FIXTURE = REPO / 'scripts' / 'mcp_discover_fixture.py'
+HTTP_FIXTURE = REPO / 'scripts' / 'mcp_http_fixture.py'
 
 
 class Bridge:
@@ -103,9 +107,56 @@ def main():
         assert 'not valid JSON' in out, out
         bridge.close()
 
+        # Stateless stdio (2026-07-28): the server/discover probe selects the
+        # revision, and every later request must carry _meta — the fixture
+        # errors otherwise, so a working call proves the padding.
+        (root / 'discover.json').write_text(json.dumps({
+            'servers': {'new': {'command': [sys.executable, str(DISCOVER_FIXTURE)]}}
+        }))
+        bridge = Bridge(root / 'discover.json')
+        manifest = bridge.hello()
+        names = {t['name'] for t in manifest['tools']}
+        assert names == {'mcp__new__echo'}, names
+        out = bridge.tool('mcp__new__echo', {'text': 'x'})
+        assert out == 'stateless echo: x', out
+        bridge.close()
+
+        # Streamable HTTP: tools/list answered as JSON, tools/call as SSE, the
+        # Mcp-Method header required by the fixture; the deprecated SSE
+        # transport is refused with a pointer, not silently dropped.
+        http = subprocess.Popen(
+            [sys.executable, str(HTTP_FIXTURE), '--port', '0'],
+            stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            port = int(http.stdout.readline())
+            (root / 'http.json').write_text(json.dumps({
+                'servers': {
+                    'remote': {'type': 'streamable-http', 'url': f'http://127.0.0.1:{port}/mcp'},
+                    'legacy': {'type': 'sse', 'url': f'http://127.0.0.1:{port}/sse'},
+                }
+            }))
+            bridge = Bridge(root / 'http.json')
+            manifest = bridge.hello()
+            names = {t['name'] for t in manifest['tools']}
+            assert names == {'mcp__remote__echo'}, names
+            out = bridge.tool('mcp__remote__echo', {'text': 'y'})
+            assert out == 'http echo: y', out
+            bridge.close()
+            stderr = bridge.proc.stderr.read()
+            assert 'deprecated' in stderr, stderr
+        finally:
+            http.terminate()
+            try:
+                http.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                http.kill()
+
     print(
         'PASS mcp bridge: namespaced tools with pass-through schemas, error text, '
-        'unknown-tool refusal, deferred mcp_search/mcp_call'
+        'unknown-tool refusal, deferred mcp_search/mcp_call, stateless '
+        'server/discover with _meta, Streamable HTTP (JSON + SSE replies), '
+        'SSE transport refused'
     )
 
 

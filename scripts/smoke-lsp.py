@@ -59,6 +59,15 @@ class Ext:
 
 
 def main():
+    selftest = subprocess.run(
+        [sys.executable, str(EXTENSION), '--selftest'],
+        check=True,
+        timeout=30,
+        capture_output=True,
+        text=True,
+    )
+    assert 'PASS lsp extension selftest' in selftest.stdout, selftest.stdout
+
     with tempfile.TemporaryDirectory(prefix='gc-lsp-') as tmp:
         ws = Path(tmp) / 'ws'
         ws.mkdir()

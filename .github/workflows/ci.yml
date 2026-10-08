@@ -51,6 +51,16 @@ jobs:
           python3 scripts/smoke-mcp.py
           python3 scripts/smoke-acp.py
           python3 scripts/smoke-serve.py
+          python3 scripts/smoke-verify.py
+          python3 scripts/smoke-memory.py
+          python3 scripts/smoke-image.py
+          python3 scripts/smoke-plugin.py
+          python3 scripts/smoke-oracle.py
+          python3 scripts/smoke-worktree.py
+          python3 scripts/smoke-loop.py
+          python3 scripts/smoke-inbox.py
+          python3 scripts/smoke-index.py
+          python3 scripts/smoke-lsp.py
       - name: Clean install and upgrade
         run: python3 scripts/smoke-upgrade.py
       - name: Package binary

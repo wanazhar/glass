@@ -139,6 +139,29 @@ def input_round_trip_checks():
     assert 'interactive' in refusal['error']['message'], refusal
     assert calls[-1][2] is False, calls[-1]
 
+    for action in ('decline', 'cancel'):
+        interactive = BRIDGE_MODULE.BaseServer('interactive')
+        observed = []
+        remaining = [
+            {'resultType': 'input_required', 'inputRequests': {
+                'url-consent': {'method': 'elicitation/create', 'params': {
+                    'mode': 'url', 'url': 'https://auth.example.test/continue', 'message': 'Continue on provider site'
+                }}
+            }, 'requestState': 'url-state'},
+            {'content': [{'type': 'text', 'text': 'stopped'}]},
+        ]
+
+        def request_url(method, params, timeout, pad=True, elicitation=False):
+            observed.append((dict(params), elicitation))
+            return remaining.pop(0)
+
+        interactive.request = request_url
+        stopped = interactive.call_tool('authorize', {}, lambda name, params: {'action': action})
+        assert stopped == 'stopped'
+        assert observed[0][1] and observed[1][1]
+        assert observed[1][0]['requestState'] == 'url-state'
+        assert observed[1][0]['inputResponses'] == {'url-consent': {'action': action}}
+
     # Exercise the real extension wire with a local MCP stdio fixture.
     with tempfile.TemporaryDirectory(prefix='gc-mcp-input-') as tmp:
         root = Path(tmp)

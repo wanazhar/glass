@@ -171,7 +171,10 @@ def run():
             assert cli("doctor", "--json")["status"] == "ok"
             assert "demonstrated" in cli("doctor", "--json", "--probe")["text"]
             Endpoint.reject = True
-            assert cli("doctor", "--json", ok=False)["status"] == "error"
+            # Offline diagnostics must not contact the provider; probing reports
+            # the endpoint failure explicitly.
+            assert cli("doctor", "--json")["status"] == "ok"
+            assert cli("doctor", "--json", "--probe", ok=False)["status"] == "error"
             Endpoint.reject = False
 
             for width, height in [(80, 24), (40, 12), (24, 10), (20, 8)]:

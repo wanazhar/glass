@@ -59,4 +59,6 @@
 - [Round 3 regression fixes](plan/tasks/round3-regressions-001.md): read-only logs, resumed checkpoints, extension state and graceful stop verification.
 - [Round 3 verification](plan/reviews/round3-regressions-001-01.md): full release suite and runtime integration evidence.
 
-- [Twenty-item shipping round](plan/ship-next-20.md): approved staged reliability, terminal and extension delivery.
+- [Twenty-item shipping round](plan/ship-next-20.md): completed reliability, terminal and extension delivery.
+
+- [Twenty-item final verification](plan/reviews/ship-final-001-01.md): 571 tests, 40 release smoke suites, independent reviews, small-screen PTYs and performance evidence.

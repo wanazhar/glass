@@ -2,7 +2,7 @@
 
 Review date: 2026-10-09
 
-Reviewed integration commit `fbc56a03335e1f32e1b6f0096524326313921c4d`, the MCP input hardening, and the final review-fix commit `9c895e39507335ef46af68f78990550db947ceec`. This review covers permission approvals and profiles, extension/MCP input handling, provider diagnostic redaction, and doctor output. It does not approve the whole 20-item release.
+Reviewed final tree `1890e599b953864401f79ef9ca94291956545382`, including MCP input hardening and the review-fix commit `9c895e39507335ef46af68f78990550db947ceec`. This review covers permission approvals and profiles, extension/MCP input handling, provider diagnostic redaction, and doctor output. It does not approve the whole 20-item release.
 
 ## Findings and disposition
 
@@ -14,12 +14,13 @@ Reviewed integration commit `fbc56a03335e1f32e1b6f0096524326313921c4d`, the MCP 
 
 ## Independent verification
 
-The supplied release binary for `fbc56a0` had SHA-256 `80b42e4974b94dd0588f7d5a8d967f10d3f645db3f4ddd3f27cedd297910e16d`. Against it:
+The final release binary for `1890e59` has SHA-256 `8d81bae65e14f8aeb6cf131f41cd299dbde9dbc3ca49906fa82ee03132d3aa93`. Against this exact binary:
 
 - `scripts/smoke-permissions-pty.py` passed at 40x24 and 20x8.
 - `scripts/smoke-elicitation-pty.py` passed at 40x24 and 20x8.
 - `scripts/smoke-mcp.py`, `scripts/smoke-chat.py`, and `scripts/smoke-doctor.py` passed.
+- `scripts/smoke-workflows.py` passed all six workflows at 80x24, 40x12, 24x10, and 20x8.
 
 On the patched working tree, `CARGO_NET_OFFLINE=true cargo test --locked -p glass-core input::tests:: -- --test-threads=1` passed 6/6. The workflow smoke assertion was then shortened for compact terminals; `/tmp/gc-review-fix-workflows.log` records `scripts/smoke-workflows.py` passing all six workflows at 80x24, 40x12, 24x10, and 20x8, including extension capability review and enablement.
 
-The supplied release binary predates the MCP parser hardening and workflow assertion update. Root reports that the final 9c895e3 workspace test suite (571 tests) and strict Clippy pass; I have not independently rerun those checks. The final release is still rebuilding, so the focused PTY evidence above is from the previous supplied release or current debug build as noted. No remaining source blocker was found in this review; final release verification should use the exact final root tree.
+Root reports that the final workspace test suite (571 tests) and strict Clippy pass; I have not independently rerun those checks. The focused PTY probes above were independently rerun on the exact final release. No remaining source blocker was found in this review.

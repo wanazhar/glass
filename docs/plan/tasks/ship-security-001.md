@@ -1,6 +1,6 @@
 ---
 id: ship-security-001
-status: in-progress
+status: complete
 depends-on: [ship-terminal-001]
 scope: ship-next-20 items 15-19
 ---
@@ -56,3 +56,10 @@ Reference: official MCP 2026-07-28 client/elicitation and multi-round-trip specs
 Real OS deny-path fixtures, command-chain and /bg tests, inherited MCP child jail,
 redacted env, missing strictcapabilities, plugin tampering/upgrade failure/approval,
 mock MCP form/enum/url/cancel/headless paths and PTY at 40x24/20x8. Full final gate.
+
+## Final verification
+
+Completed in root source checkpoint `1890e59`; see
+[final evidence](../reviews/ship-final-001-01.md). Independent review blockers were
+fixed before the clean release run. All 40 smoke suites, 571 workspace tests,
+strict Clippy and performance gates passed, with real PTYs at 40x24 and 20x8.

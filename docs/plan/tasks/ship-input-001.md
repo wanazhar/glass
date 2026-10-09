@@ -1,6 +1,6 @@
 ---
 id: ship-input-001
-status: in-progress
+status: complete
 depends-on: [ship-terminal-001, ship-security-001]
 scope: ship-next-20 item 19 and security UI integration
 ---
@@ -48,3 +48,10 @@ and [multi round-trip requests](https://github.com/modelcontextprotocol/modelcon
 Use actual bridge mocks for form, titled/multiple enums, URL, decline/cancel,
 headless refusal, private-value absence, fresh RPC ids and exact state echo.
 Verify all modals with actual VT cells at 40x24 and 20x8.
+
+## Final verification
+
+Completed in root source checkpoint `1890e59`; see
+[final evidence](../reviews/ship-final-001-01.md). Independent review blockers were
+fixed before the clean release run. All 40 smoke suites, 571 workspace tests,
+strict Clippy and performance gates passed, with real PTYs at 40x24 and 20x8.

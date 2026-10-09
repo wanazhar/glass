@@ -1058,8 +1058,8 @@ fn headless(
     let (mut checkpoint, mut checkpoint_error) = if planning {
         (None, None)
     } else {
-        match checkpoint::begin(&cfg.workspace, &dir, "task-1") {
-            Ok(c) => (Some(c), None),
+        match checkpoint::begin_if_repository(&cfg.workspace, &dir, "task-1") {
+            Ok(c) => (c, None),
             Err(e) => (None, Some(e)),
         }
     };
@@ -1673,13 +1673,16 @@ fn repl(
         let Some(ev) = ev else { continue };
         let _ = painter.refresh_geometry(!palette.active());
 
-        if painter.reader_active() && !palette.active() && painter.reader_event(&ev)? {
+        if painter.reader_active()
+            && !palette.active()
+            && painter.reader_event(&ev, !editor.text().is_empty())?
+        {
             continue;
         }
 
         if should_open_reader_for_wheel(&ev, painter.reader_active(), palette.active()) {
             painter.open_reader(session.history_entries(), false)?;
-            let _ = painter.reader_event(&ev)?;
+            let _ = painter.reader_event(&ev, !editor.text().is_empty())?;
             continue;
         }
 
@@ -3070,8 +3073,8 @@ fn repl(
         while next.is_some() {
             let label = format!("task-{}", session.log_len());
             let mut task_checkpoint =
-                match checkpoint::begin(&cfg.workspace, &checkpoint_dir, &label) {
-                    Ok(c) => Some(c),
+                match checkpoint::begin_if_repository(&cfg.workspace, &checkpoint_dir, &label) {
+                    Ok(c) => c,
                     Err(e) => {
                         ui_println!("checkpoint unavailable: {e}");
                         None
@@ -3119,6 +3122,7 @@ fn repl(
                     if let Some(s) =
                         drain_input(&keys, &mut draft, &mut pending, draft_row, w, &painter)
                     {
+                        pending.push(queue::Intent::Steer(s.clone()));
                         *steer_slot = Some(s);
                     }
                 });
@@ -3264,7 +3268,7 @@ fn repl(
                 break;
             }
 
-            next = pending.take_follow_up();
+            next = pending.take_next();
             if let Some(q) = &next {
                 ui_println!("\n\x1b[38;5;39m❯\x1b[0m {q}");
                 if let Err(error) = session.append_checked(&[Record::User(q.clone())]) {
@@ -3334,7 +3338,7 @@ fn drain_input(
             surface::composer(editor, true, true);
         }
         if painter.reader_active() {
-            match painter.reader_event(&ev) {
+            match painter.reader_event(&ev, !editor.text().is_empty()) {
                 Ok(true) => continue,
                 Ok(false) => {}
                 Err(error) => {
@@ -3351,7 +3355,7 @@ fn drain_input(
             let entries = painter.live.borrow().snapshot();
             if let Err(error) = painter.open_reader(entries, false) {
                 ui_println!("inline reader: {error}");
-            } else if let Err(error) = painter.reader_event(&ev) {
+            } else if let Err(error) = painter.reader_event(&ev, !editor.text().is_empty()) {
                 let _ = painter.close_reader();
                 ui_println!("inline reader: {error}");
             }
@@ -3983,7 +3987,7 @@ impl Painter {
         use glass_tui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
         self.open_reader(entries, false)?;
         let event = Event::Key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
-        if self.reader_event(&event)? {
+        if self.reader_event(&event, false)? {
             Ok(())
         } else {
             Err("reader search did not accept its initial search key".into())
@@ -4006,14 +4010,20 @@ impl Painter {
     }
 
     /// Returns true when the event belongs exclusively to the inline reader.
-    fn reader_event(&self, event: &glass_tui::crossterm::event::Event) -> Result<bool, String> {
+    fn reader_event(
+        &self,
+        event: &glass_tui::crossterm::event::Event,
+        composer_has_draft: bool,
+    ) -> Result<bool, String> {
         use reader::Action;
         let action = {
             let mut slot = self.reader.borrow_mut();
             let Some(reader) = slot.as_mut() else {
                 return Ok(false);
             };
-            reader.event(event).map_err(|e| e.to_string())?
+            reader
+                .event(event, composer_has_draft)
+                .map_err(|e| e.to_string())?
         };
         match action {
             Action::Handled => Ok(true),

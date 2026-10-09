@@ -648,6 +648,13 @@ impl<'a> Agent<'a> {
             // is busy but not blocked, so it is the right place to notice a
             // steer without spinning when there is nothing to read.
             pump(&mut self.steer);
+            if self.steer.as_deref().is_some_and(|text| !text.is_empty()) {
+                // Chat Completions cannot accept input into this HTTP request.
+                // Preserve received prose and resume from history with the
+                // correction; incomplete/unexecuted tool calls must not run.
+                out.tool_calls.clear();
+                return Ok(out);
+            }
             if self.steer.as_deref() == Some("") {
                 if !out.text.is_empty() {
                     self.session.append(Record::Assistant(out.text.clone()));
@@ -818,11 +825,6 @@ impl<'a> Agent<'a> {
                 }
             }
 
-            if !out.wants_tools() {
-                self.schedule_warm();
-                return Ok((last, Stop::Finished));
-            }
-
             // A steer typed while this turn was running lands here. Checking
             // *before* the tools run is the whole point: the user is objecting
             // to what the model is about to do, so the correction has to arrive
@@ -833,6 +835,11 @@ impl<'a> Agent<'a> {
                 )));
                 self.emit(Progress::Steered(&steer));
                 return Ok((last, Stop::Steered));
+            }
+
+            if !out.wants_tools() {
+                self.schedule_warm();
+                return Ok((last, Stop::Finished));
             }
 
             // Independent calls run together. Correctness comes from the

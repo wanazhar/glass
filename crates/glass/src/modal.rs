@@ -24,6 +24,21 @@ impl Screen {
         Self { managed }
     }
     pub fn draw(&self, title: &str, lines: &[String], footer: &str, offset: usize) {
+        self.draw_rows(title, lines, footer, offset, false);
+    }
+
+    fn draw_diff(&self, title: &str, lines: &[String], footer: &str, offset: usize) {
+        self.draw_rows(title, lines, footer, offset, true);
+    }
+
+    fn draw_rows(
+        &self,
+        title: &str,
+        lines: &[String],
+        footer: &str,
+        offset: usize,
+        diff_rows: bool,
+    ) {
         let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
         let w = usize::from(w.max(1));
         let h = usize::from(h.max(1));
@@ -75,6 +90,8 @@ impl Screen {
             let selected = line.starts_with("› ");
             let style = if i == 0 {
                 glass_tui::theme::accent()
+            } else if diff_rows {
+                glass_tui::theme::ansi(diff_line_tone(line))
             } else if selected {
                 glass_tui::theme::selected()
             } else if let Some(frame) = line
@@ -116,6 +133,20 @@ impl Screen {
     }
 }
 
+fn diff_line_tone(line: &str) -> glass_tui::theme::Tone {
+    if line.starts_with("+++") || line.starts_with("---") {
+        glass_tui::theme::Tone::Muted
+    } else {
+        match line.as_bytes().first().copied() {
+            Some(b'+') => glass_tui::theme::Tone::Success,
+            Some(b'-') => glass_tui::theme::Tone::Error,
+            Some(b'@') => glass_tui::theme::Tone::Secondary,
+            Some(b' ') => glass_tui::theme::Tone::Body,
+            _ => glass_tui::theme::Tone::Muted,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DiffHunk {
     heading: String,
@@ -133,18 +164,48 @@ struct DiffFile {
 pub fn diff(keys: &KeyReader, title: &str, patch: &str) {
     let files = parse_diff(patch);
     if files.is_empty() {
-        info(keys, title, if patch.trim().is_empty() { "No changes" } else { patch });
+        info(
+            keys,
+            title,
+            if patch.trim().is_empty() {
+                "No changes"
+            } else {
+                patch
+            },
+        );
         return;
     }
-    let labels = files.iter().map(|file| file.label.clone()).collect::<Vec<_>>();
-    let searchable = files.iter().map(|file| {
-        format!("{}\n{}", file.label, file.hunks.iter().flat_map(|h| &h.lines).cloned().collect::<Vec<_>>().join("\n"))
-    }).collect::<Vec<_>>();
-    while let Some(file_index) = choose_search(keys, title, "Select a changed file", &labels, &searchable) {
+    let labels = files
+        .iter()
+        .map(|file| file.label.clone())
+        .collect::<Vec<_>>();
+    let searchable = files
+        .iter()
+        .map(|file| {
+            format!(
+                "{}\n{}",
+                file.label,
+                file.hunks
+                    .iter()
+                    .flat_map(|h| &h.lines)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        })
+        .collect::<Vec<_>>();
+    while let Some(file_index) =
+        choose_search(keys, title, "Select a changed file", &labels, &searchable)
+    {
         let file = &files[file_index];
         let hunks = if file.hunks.is_empty() {
-            vec![DiffHunk { heading: "File metadata".into(), lines: vec![file.label.clone()] }]
-        } else { file.hunks.clone() };
+            vec![DiffHunk {
+                heading: "File metadata".into(),
+                lines: vec![file.label.clone()],
+            }]
+        } else {
+            file.hunks.clone()
+        };
         let hunk_labels = hunks.iter().map(|h| h.heading.clone()).collect::<Vec<_>>();
         while let Some(hunk_index) = choose(keys, &file.label, "Select a diff hunk", &hunk_labels) {
             diff_pager(keys, &file.label, &hunks[hunk_index].lines);
@@ -156,13 +217,24 @@ fn parse_diff(patch: &str) -> Vec<DiffFile> {
     let mut files: Vec<DiffFile> = Vec::new();
     for line in patch.lines() {
         if line.starts_with("diff --git ") {
-            let label = line.split_once(" b/").map(|(_, path)| path.to_string()).unwrap_or_else(|| line.to_string());
-            files.push(DiffFile { label, hunks: Vec::new() });
+            let label = line
+                .split_once(" b/")
+                .map(|(_, path)| path.to_string())
+                .unwrap_or_else(|| line.to_string());
+            files.push(DiffFile {
+                label,
+                hunks: Vec::new(),
+            });
             continue;
         }
-        let Some(file) = files.last_mut() else { continue; };
+        let Some(file) = files.last_mut() else {
+            continue;
+        };
         if line.starts_with("@@") {
-            file.hunks.push(DiffHunk { heading: line.into(), lines: vec![line.into()] });
+            file.hunks.push(DiffHunk {
+                heading: line.into(),
+                lines: vec![line.into()],
+            });
         } else if let Some(hunk) = file.hunks.last_mut() {
             hunk.lines.push(line.into());
         }
@@ -178,19 +250,36 @@ fn diff_pager(keys: &KeyReader, title: &str, lines: &[String]) {
         let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
         let framed = w >= 24 && h >= 12;
         let width = usize::from(if framed { w.saturating_sub(6) } else { w }).max(1);
-        let capacity = usize::from(if framed { h.saturating_sub(4) } else { h }).saturating_sub(3).max(1);
-        let visible = lines.iter().skip(y).take(capacity).map(|line| skip_columns(line, x)).collect::<Vec<_>>();
+        let capacity = usize::from(if framed { h.saturating_sub(4) } else { h })
+            .saturating_sub(3)
+            .max(1);
+        let visible = lines
+            .iter()
+            .skip(y)
+            .take(capacity)
+            .map(|line| skip_columns(line, x))
+            .collect::<Vec<_>>();
         let mut page = vec![format!("{}  line {} · column {}", title, y + 1, x + 1)];
         page.extend(visible);
-        screen.draw(title, &page, "↑↓/PgUp/PgDn scroll · ←→ horizontal · Esc back", 0);
+        screen.draw_diff(
+            title,
+            &page,
+            "↑↓/PgUp/PgDn scroll · ←→ horizontal · Esc back",
+            0,
+        );
         match keys.next_blocking() {
-            Some(Event::Key(k)) if cancelled(k.code, k.modifiers) || k.code == KeyCode::Enter => return,
+            Some(Event::Key(k)) if cancelled(k.code, k.modifiers) || k.code == KeyCode::Enter => {
+                return;
+            }
             Some(Event::Key(k)) => match k.code {
                 KeyCode::Up => y = y.saturating_sub(1),
                 KeyCode::Down => y = (y + 1).min(lines.len().saturating_sub(1)),
                 KeyCode::PageUp => y = y.saturating_sub(capacity),
                 KeyCode::PageDown => y = (y + capacity).min(lines.len().saturating_sub(1)),
-                KeyCode::Home => { y = 0; x = 0; }
+                KeyCode::Home => {
+                    y = 0;
+                    x = 0;
+                }
                 KeyCode::End => y = lines.len().saturating_sub(capacity),
                 KeyCode::Left => x = x.saturating_sub((width / 2).max(1)),
                 KeyCode::Right => x = x.saturating_add((width / 2).max(1)),
@@ -207,7 +296,10 @@ fn skip_columns(text: &str, columns: usize) -> String {
     let mut start = 0usize;
     for (index, ch) in text.char_indices() {
         let width = glass_tui::text::width(&ch.to_string());
-        if skipped + width > columns { start = index; break; }
+        if skipped + width > columns {
+            start = index;
+            break;
+        }
         skipped += width;
         start = index + ch.len_utf8();
     }
@@ -654,7 +746,26 @@ mod diff_tests {
         assert_eq!(files[0].hunks.len(), 2);
         assert_eq!(files[1].hunks.len(), 1);
         assert!(skip_columns(&files[1].hunks[0].lines[2], 200).len() < 120);
-        assert!(files[0].hunks[0].lines.iter().any(|line| line.starts_with('+')));
-        assert!(files[0].hunks[0].lines.iter().any(|line| line.starts_with('-')));
+        assert!(
+            files[0].hunks[0]
+                .lines
+                .iter()
+                .any(|line| line.starts_with('+'))
+        );
+        assert!(
+            files[0].hunks[0]
+                .lines
+                .iter()
+                .any(|line| line.starts_with('-'))
+        );
+    }
+
+    #[test]
+    fn diff_rows_use_distinct_semantic_tones_for_add_remove_hunk_and_context() {
+        use glass_tui::theme::Tone;
+        assert!(matches!(diff_line_tone("+added"), Tone::Success));
+        assert!(matches!(diff_line_tone("-removed"), Tone::Error));
+        assert!(matches!(diff_line_tone("@@ -1 +1 @@"), Tone::Secondary));
+        assert!(matches!(diff_line_tone(" context"), Tone::Body));
     }
 }

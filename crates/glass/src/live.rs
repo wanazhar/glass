@@ -1,7 +1,5 @@
 //! Live alternate-screen views driven by the same pump as provider/tool work.
 use crate::{agent::Progress, surface};
-use std::collections::HashMap;
-use std::time::Instant;
 use glass_tui::{
     Entry, Role, Transcript,
     crossterm::{
@@ -16,7 +14,9 @@ use glass_tui::{
         widgets::{Block, Borders, Paragraph},
     },
 };
+use std::collections::HashMap;
 use std::io;
+use std::time::Instant;
 type Tui = Terminal<CrosstermBackend<glass_tui::theme::TerminalWriter<io::Stdout>>>;
 pub struct Live {
     entries: Vec<Entry>,
@@ -75,11 +75,20 @@ impl Live {
                             start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
                         });
                     }
-                    crate::session::tool_card_text(card, self.expanded_cards.contains(&(e.turn, card.call_id.clone())))
+                    crate::session::tool_card_text(
+                        card,
+                        self.expanded_cards
+                            .contains(&(e.turn, card.call_id.clone())),
+                    )
                 } else {
                     e.text.clone()
                 };
-                Entry { role: e.role, text, turn: e.turn, tool_card }
+                Entry {
+                    role: e.role,
+                    text,
+                    turn: e.turn,
+                    tool_card,
+                }
             })
             .collect()
     }
@@ -101,7 +110,10 @@ impl Live {
     }
     pub fn progress(&mut self, p: &Progress<'_>) {
         match p {
-            Progress::Waiting => { self.phase = "Waiting for provider"; self.provider_detail = None; }
+            Progress::Waiting => {
+                self.phase = "Waiting for provider";
+                self.provider_detail = None;
+            }
             Progress::Reasoning(t) => {
                 if self.phase != "Provider reasoning" && !self.reasoning.is_empty() {
                     self.reasoning.push_str("\n\n");
@@ -127,10 +139,15 @@ impl Live {
                     })
                 }
             }
-            Progress::ToolStart { call_id, name, command } => {
+            Progress::ToolStart {
+                call_id,
+                name,
+                command,
+            } => {
                 self.phase = "Tool running";
                 self.provider_detail = None;
-                self.tool_started.insert((*call_id).to_string(), Instant::now());
+                self.tool_started
+                    .insert((*call_id).to_string(), Instant::now());
                 self.entries.push(Entry {
                     role: Role::Bash,
                     text: format!("{name}\n{}", command.unwrap_or("")),
@@ -146,15 +163,21 @@ impl Live {
                     }),
                 })
             }
-            Progress::ToolEnd { call_id, output, .. } => {
+            Progress::ToolEnd {
+                call_id, output, ..
+            } => {
                 if let Some(entry) = self.entries.iter_mut().rev().find(|entry| {
-                    entry.tool_card.as_ref().is_some_and(|card| card.call_id == *call_id)
+                    entry
+                        .tool_card
+                        .as_ref()
+                        .is_some_and(|card| card.call_id == *call_id)
                 }) {
                     if let Some(card) = entry.tool_card.as_mut() {
                         card.output = (*output).to_string();
                         card.status = "completed".into();
-                        card.elapsed_ms = self.tool_started.remove(*call_id)
-                            .map(|started| started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+                        card.elapsed_ms = self.tool_started.remove(*call_id).map(|started| {
+                            started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+                        });
                         entry.text = format!("{}\n{}", card.command, output);
                     }
                 } else {
@@ -178,17 +201,31 @@ impl Live {
             } => {
                 self.phase = "Retrying provider";
                 let cause = sanitize_provider_detail(reason);
-                self.provider_detail = Some(format!("Retry {attempt} in {delay_s}s · {cause} · /status /retry"));
-                self.append_entry(Role::System, format!("Retry {attempt} in {delay_s}s: {cause}"));
+                self.provider_detail = Some(format!(
+                    "Retry {attempt} in {delay_s}s · {cause} · /status /retry"
+                ));
+                self.append_entry(
+                    Role::System,
+                    format!("Retry {attempt} in {delay_s}s: {cause}"),
+                );
             }
             Progress::ProviderNotice(text) => {
                 self.phase = "Provider fallback";
-                self.provider_detail = Some(format!("{} · /status /model", sanitize_provider_detail(text)));
-                self.append_entry(Role::System, format!("Provider notice: {}", sanitize_provider_detail(text)));
+                self.provider_detail = Some(format!(
+                    "{} · /status /model",
+                    sanitize_provider_detail(text)
+                ));
+                self.append_entry(
+                    Role::System,
+                    format!("Provider notice: {}", sanitize_provider_detail(text)),
+                );
             }
             Progress::ProviderFailure(text) => {
                 self.phase = "Provider error";
-                self.provider_detail = Some(format!("{} · recover with /retry, /status or /login", sanitize_provider_detail(text)));
+                self.provider_detail = Some(format!(
+                    "{} · recover with /retry, /status or /login",
+                    sanitize_provider_detail(text)
+                ));
             }
             Progress::Compacted { kept, dropped } => self.append_entry(
                 Role::Meta,
@@ -319,10 +356,18 @@ impl Live {
                 }
                 let is_thinking = self.view.as_ref().unwrap().2;
                 if !is_thinking && k.code == KeyCode::Enter {
-                    let selected = self.view.as_ref().map(|(_, view, _)| view.layout.entry_at_line(view.scroll));
-                    let card_key = selected.and_then(|index| self.entries.get(index).and_then(|entry| {
-                        entry.tool_card.as_ref().map(|card| (entry.turn, card.call_id.clone()))
-                    }));
+                    let selected = self
+                        .view
+                        .as_ref()
+                        .map(|(_, view, _)| view.layout.entry_at_line(view.scroll));
+                    let card_key = selected.and_then(|index| {
+                        self.entries.get(index).and_then(|entry| {
+                            entry
+                                .tool_card
+                                .as_ref()
+                                .map(|card| (entry.turn, card.call_id.clone()))
+                        })
+                    });
                     if let Some(key) = card_key {
                         if !self.expanded_cards.insert(key.clone()) {
                             self.expanded_cards.remove(&key);
@@ -398,14 +443,142 @@ impl Live {
 }
 
 pub(crate) fn sanitize_provider_detail(text: &str) -> String {
-    text.split_whitespace().map(|word| {
+    const REDACTED: &str = "[redacted]";
+    const MAX_DETAIL_CHARS: usize = 512;
+    fn key_name(word: &str) -> String {
+        word.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_' && ch != '-')
+            .to_ascii_lowercase()
+    }
+    fn sensitive_key(key: &str) -> bool {
+        matches!(
+            key,
+            "authorization"
+                | "api_key"
+                | "api-key"
+                | "apikey"
+                | "x-api-key"
+                | "token"
+                | "access_token"
+                | "refresh_token"
+                | "password"
+                | "secret"
+                | "client_secret"
+                | "key"
+        )
+    }
+
+    let words: Vec<_> = text.split_whitespace().collect();
+    let mut clean = Vec::with_capacity(words.len());
+    let mut index = 0;
+    while index < words.len() {
+        let word = words[index];
         let lower = word.to_ascii_lowercase();
-        if word.contains("://") || lower.starts_with("bearer") || lower.contains("api_key=") || lower.contains("token=") {
-            "[provider detail redacted]"
-        } else {
-            word
+        let key = key_name(word.split('=').next().unwrap_or(word));
+
+        if word.contains("://") {
+            clean.push("[provider detail redacted]".to_string());
+            index += 1;
+            continue;
         }
-    }).collect::<Vec<_>>().join(" ")
+
+        if let Some((name, value)) = word.split_once(':')
+            && sensitive_key(&key_name(name))
+        {
+            let name_key = key_name(name);
+            clean.push(format!("{name}: [redacted]"));
+            index += 1;
+            if name_key == "authorization" {
+                if value.trim().eq_ignore_ascii_case("bearer") {
+                    index = (index + 1).min(words.len());
+                } else if value.trim().is_empty() {
+                    if words
+                        .get(index)
+                        .is_some_and(|next| next.eq_ignore_ascii_case("bearer"))
+                    {
+                        index = (index + 2).min(words.len());
+                    } else if index < words.len() {
+                        index += 1;
+                    }
+                }
+            } else if value.trim().is_empty() && index < words.len() {
+                index += 1;
+            }
+            continue;
+        }
+
+        if let Some((name, value)) = word.split_once('=') {
+            let name_key = key_name(name);
+            if name_key == "bearer" {
+                clean.push(format!("Bearer {REDACTED}"));
+                index += 1;
+                if value.is_empty() && index < words.len() {
+                    index += 1;
+                }
+                continue;
+            }
+            if sensitive_key(&name_key) {
+                clean.push(format!("{name}={REDACTED}"));
+                index += 1;
+                if name_key == "authorization"
+                    && value.eq_ignore_ascii_case("bearer")
+                    && index < words.len()
+                {
+                    index += 1;
+                }
+                continue;
+            }
+        }
+
+        if key == "authorization" {
+            clean.push(format!("{word} {REDACTED}"));
+            index += 1;
+            if words.get(index) == Some(&"=") {
+                index += 1;
+            }
+            if words
+                .get(index)
+                .is_some_and(|value| value.eq_ignore_ascii_case("bearer"))
+            {
+                index += 2;
+            } else if index < words.len() {
+                index += 1;
+            }
+            continue;
+        }
+
+        if key == "bearer" || lower.starts_with("bearer:") {
+            clean.push(format!("Bearer {REDACTED}"));
+            index += 1;
+            if !lower.starts_with("bearer:") && index < words.len() {
+                index += 1;
+            }
+            continue;
+        }
+
+        if sensitive_key(&key) {
+            clean.push(format!("{word} {REDACTED}"));
+            index += 1;
+            if words.get(index) == Some(&"=") {
+                index += 1;
+            }
+            if index < words.len() && !words[index].ends_with(':') {
+                index += 1;
+            }
+            continue;
+        }
+
+        clean.push(word.to_string());
+        index += 1;
+    }
+    let text = clean.join(" ");
+    if text.chars().count() > MAX_DETAIL_CHARS {
+        format!(
+            "{}…",
+            text.chars().take(MAX_DETAIL_CHARS).collect::<String>()
+        )
+    } else {
+        text
+    }
 }
 
 fn wheel_lines(kind: MouseEventKind) -> Option<isize> {
@@ -452,7 +625,11 @@ mod tests {
         transcript.step(23, 10);
         let paused_line = transcript.scroll;
         let paused_entry = transcript.layout.entry_at_line(paused_line);
-        let paused_text = transcript.layout.entry_text(paused_entry).unwrap().to_string();
+        let paused_text = transcript
+            .layout
+            .entry_text(paused_entry)
+            .unwrap()
+            .to_string();
         live.park_view(false, transcript);
 
         let mut reasoning = Transcript::new(transcript_entries(30));
@@ -469,7 +646,10 @@ mod tests {
         assert_eq!(transcript.scroll, paused_line);
         transcript.replace_entries(transcript_entries(100));
         let entry = transcript.layout.entry_at_line(transcript.scroll);
-        assert_eq!(transcript.layout.entry_text(entry), Some(paused_text.as_str()));
+        assert_eq!(
+            transcript.layout.entry_text(entry),
+            Some(paused_text.as_str())
+        );
         live.park_view(false, transcript);
 
         assert_eq!(live.take_parked_view(true).unwrap().scroll, reasoning_line);
@@ -479,21 +659,73 @@ mod tests {
     #[test]
     fn live_tool_cards_match_results_by_exact_call_id_and_provider_errors_redact_urls() {
         let mut live = Live::new();
-        live.progress(&Progress::ToolStart { call_id: "id-a", name: "bash", command: Some("same command") });
-        live.progress(&Progress::ToolStart { call_id: "id-b", name: "bash", command: Some("same command") });
-        live.progress(&Progress::ToolEnd { call_id: "id-a", summary: "done".into(), output: "identical output" });
-        live.progress(&Progress::ToolEnd { call_id: "id-b", summary: "done".into(), output: "identical output" });
-        let cards = live.snapshot().into_iter().filter_map(|entry| entry.tool_card).collect::<Vec<_>>();
+        live.progress(&Progress::ToolStart {
+            call_id: "id-a",
+            name: "bash",
+            command: Some("same command"),
+        });
+        live.progress(&Progress::ToolStart {
+            call_id: "id-b",
+            name: "bash",
+            command: Some("same command"),
+        });
+        live.progress(&Progress::ToolEnd {
+            call_id: "id-a",
+            summary: "done".into(),
+            output: "identical output",
+        });
+        live.progress(&Progress::ToolEnd {
+            call_id: "id-b",
+            summary: "done".into(),
+            output: "identical output",
+        });
+        let cards = live
+            .snapshot()
+            .into_iter()
+            .filter_map(|entry| entry.tool_card)
+            .collect::<Vec<_>>();
         assert_eq!(cards.len(), 2);
         assert_eq!(cards[0].call_id, "id-a");
         assert_eq!(cards[1].call_id, "id-b");
         assert_eq!(cards[0].output, cards[1].output);
-        live.progress(&Progress::ProviderFailure("failed at https://host/path?token=secret"));
+        live.progress(&Progress::ProviderFailure(
+            "failed at https://host/path?token=secret",
+        ));
         assert_eq!(live.phase(), "Provider error");
-        assert!(live.provider_detail().unwrap().contains("recover with /retry"));
+        assert!(
+            live.provider_detail()
+                .unwrap()
+                .contains("recover with /retry")
+        );
         assert!(!live.provider_detail().unwrap().contains("https://"));
         assert!(!live.provider_detail().unwrap().contains("secret"));
+        live.progress(&Progress::ProviderFailure(
+            "401 Authorization: Bearer sk-provider-secret-sentinel",
+        ));
+        assert!(
+            !live
+                .provider_detail()
+                .unwrap()
+                .contains("sk-provider-secret-sentinel")
+        );
+        assert!(
+            live.snapshot()
+                .iter()
+                .all(|entry| { !entry.text.contains("sk-provider-secret-sentinel") })
+        );
         live.finish();
         assert_eq!(live.phase(), "Provider error");
+    }
+
+    #[test]
+    fn provider_details_consume_authorization_values_and_bound_untrusted_text() {
+        let secret = "sk-provider-secret-sentinel";
+        let detail = sanitize_provider_detail(&format!(
+            "Authorization: Bearer {secret} authorization BEARER {secret} api_key={secret} token = {secret} https://host/?access_token={secret}"
+        ));
+        assert!(detail.contains("Authorization: [redacted]"), "{detail}");
+        assert!(!detail.contains(secret), "{detail}");
+        assert!(!detail.contains("https://"), "{detail}");
+        assert!(sanitize_provider_detail(&"x".repeat(2048)).chars().count() <= 513);
     }
 }

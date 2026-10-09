@@ -5,7 +5,7 @@ use glass_tui::{
     ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend, layout::Rect},
     theme::TerminalWriter,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 
 type Tui = Terminal<CrosstermBackend<TerminalWriter<io::Stdout>>>;
@@ -26,13 +26,16 @@ pub struct Reader {
     entries: Vec<Entry>,
     expanded_cards: HashSet<(usize, String)>,
     selected_card: Option<(usize, String)>,
+    loaded_spills: LoadedSpills,
 }
 
 impl Reader {
     pub fn new(entries: Vec<Entry>, page_up: bool) -> io::Result<Self> {
         let rect = body_rect();
         let terminal = make_clean_terminal(rect)?;
-        let mut transcript = Transcript::new(render_entries(&entries, &HashSet::new()));
+        let loaded_spills = HashMap::new();
+        let mut transcript =
+            Transcript::new(render_entries(&entries, &HashSet::new(), &loaded_spills));
         transcript.set_width(rect.width);
         transcript.follow_tail(rect.height);
         if page_up {
@@ -47,6 +50,7 @@ impl Reader {
             entries,
             expanded_cards: HashSet::new(),
             selected_card: None,
+            loaded_spills,
         };
         reader.draw()?;
         Ok(reader)
@@ -55,10 +59,11 @@ impl Reader {
     pub fn update(&mut self, entries: Vec<Entry>) -> io::Result<()> {
         let following = self.transcript.follow;
         self.entries = entries;
-        if !self
-            .transcript
-            .replace_entries(render_entries(&self.entries, &self.expanded_cards))
-        {
+        if !self.transcript.replace_entries(render_entries(
+            &self.entries,
+            &self.expanded_cards,
+            &self.loaded_spills,
+        )) {
             return Ok(());
         }
         if let Some(query) = self.search.clone() {
@@ -144,6 +149,7 @@ impl Reader {
                             self.transcript.replace_entries(render_entries(
                                 &self.entries,
                                 &self.expanded_cards,
+                                &self.loaded_spills,
                             ));
                             if let Some(line) = self.transcript.layout.line_for_entry(index) {
                                 self.transcript.scroll = line;
@@ -153,6 +159,28 @@ impl Reader {
                             return Ok(Action::Handled);
                         }
                         return Ok(Action::Handled);
+                    }
+                    KeyCode::Char('l') => {
+                        if let Some(index) = self.selected_tool_card_index()
+                            && let Some(card) = self.entries[index].tool_card.as_ref()
+                            && let Some(path) = card.spill.as_deref()
+                        {
+                            let key = (self.entries[index].turn, card.call_id.clone());
+                            self.loaded_spills
+                                .entry(key.clone())
+                                .or_insert_with(|| crate::polish::load_spill(path));
+                            self.selected_card = Some(key.clone());
+                            self.expanded_cards.insert(key);
+                            self.transcript.replace_entries(render_entries(
+                                &self.entries,
+                                &self.expanded_cards,
+                                &self.loaded_spills,
+                            ));
+                            self.align_selected_card_end(area.height);
+                            self.draw()?;
+                            return Ok(Action::Handled);
+                        }
+                        return Ok(Action::PassThrough);
                     }
                     KeyCode::Char('f') if ctrl => {
                         self.search = Some(String::new());
@@ -211,10 +239,22 @@ impl Reader {
             } else {
                 "Enter expand"
             };
-            format!(
-                "Tool {} · {action} · PgUp/PgDn · End/Esc bottom",
-                card.call_id
-            )
+            let loaded_spill = self.loaded_spills.get(&(entry.turn, card.call_id.clone()));
+            if card.spill.is_some() && loaded_spill.is_none() {
+                "L load full output (64 KiB cap)".to_string()
+            } else if let Some(loaded) = loaded_spill {
+                let status = match loaded {
+                    Ok((_, true)) => "spill loaded 64 KiB",
+                    Ok((_, false)) => "spill loaded",
+                    Err(_) => "spill load failed",
+                };
+                format!("Tool {} · {status} · {action}", card.call_id)
+            } else {
+                format!(
+                    "Tool {} · {action} · PgUp/PgDn · End/Esc bottom",
+                    card.call_id,
+                )
+            }
         } else if self.transcript.follow {
             "PgUp/Ctrl+B ↑ · PgDn/Ctrl+F ↓ · End/Esc bottom · Wheel".to_string()
         } else if self.unread == 0 {
@@ -277,7 +317,8 @@ impl Reader {
             .line_for_entry(index + 1)
             .unwrap_or_else(|| self.transcript.layout.total_lines());
         let last = end.saturating_sub(1);
-        let page = height.max(1) as usize;
+        // Transcript reserves one row for its inline controls hint.
+        let page = height.saturating_sub(1).max(1) as usize;
         let max_scroll = self.transcript.layout.total_lines().saturating_sub(page);
         self.transcript.scroll = last.saturating_sub(page.saturating_sub(1)).min(max_scroll);
         self.transcript.follow = false;
@@ -290,7 +331,12 @@ impl Reader {
             for entry in &self.entries {
                 if let Some(card) = &entry.tool_card
                     && (card.command.to_lowercase().contains(&needle)
-                        || card.output.to_lowercase().contains(&needle))
+                        || card.output.to_lowercase().contains(&needle)
+                        || self
+                            .loaded_spills
+                            .get(&(entry.turn, card.call_id.clone()))
+                            .and_then(|spill| spill.as_ref().ok())
+                            .is_some_and(|(text, _)| text.to_lowercase().contains(&needle)))
                 {
                     self.expanded_cards
                         .insert((entry.turn, card.call_id.clone()));
@@ -299,22 +345,52 @@ impl Reader {
                     }
                 }
             }
-            self.transcript
-                .replace_entries(render_entries(&self.entries, &self.expanded_cards));
+            self.transcript.replace_entries(render_entries(
+                &self.entries,
+                &self.expanded_cards,
+                &self.loaded_spills,
+            ));
         }
         self.match_count = self.transcript.search(query);
         self.align_selected_card_end(body_rect().height);
     }
 }
 
-fn render_entries(entries: &[Entry], expanded: &HashSet<(usize, String)>) -> Vec<Entry> {
+type LoadedSpills = HashMap<(usize, String), Result<(String, bool), String>>;
+
+fn render_entries(
+    entries: &[Entry],
+    expanded: &HashSet<(usize, String)>,
+    loaded_spills: &LoadedSpills,
+) -> Vec<Entry> {
     entries
         .iter()
         .cloned()
         .map(|mut entry| {
             if let Some(card) = &entry.tool_card {
-                let is_expanded = expanded.contains(&(entry.turn, card.call_id.clone()));
-                entry.text = crate::session::tool_card_text(card, is_expanded);
+                let key = (entry.turn, card.call_id.clone());
+                let is_expanded = expanded.contains(&key);
+                let mut rendered = card.clone();
+                match loaded_spills.get(&key) {
+                    Some(Ok((text, truncated))) => {
+                        rendered.output.push_str("\n[loaded spill continuation]\n");
+                        rendered.output.push_str(text);
+                        if *truncated {
+                            rendered
+                                .output
+                                .push_str("\n[spill display capped at 64 KiB]");
+                        }
+                        rendered.spill = None;
+                        rendered.truncated = false;
+                    }
+                    Some(Err(error)) => {
+                        rendered
+                            .output
+                            .push_str(&format!("\n[spill load failed: {error}]"));
+                    }
+                    None => {}
+                }
+                entry.text = crate::session::tool_card_text(&rendered, is_expanded);
             }
             entry
         })
@@ -338,4 +414,85 @@ fn make_terminal(rect: Rect) -> io::Result<Tui> {
 fn make_clean_terminal(rect: Rect) -> io::Result<Tui> {
     crate::surface::clear_body_rect()?;
     make_terminal(rect)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spill_content_is_absent_until_exact_card_is_explicitly_loaded() {
+        let entries = vec![Entry {
+            role: glass_tui::Role::Bash,
+            text: String::new(),
+            turn: 7,
+            tool_card: Some(glass_tui::ToolCard {
+                call_id: "exact-call".into(),
+                command: "echo output".into(),
+                output: "inline preview".into(),
+                status: "exit 0".into(),
+                elapsed_ms: None,
+                spill: Some("spill.log".into()),
+                truncated: true,
+            }),
+        }];
+        let expanded = HashSet::from([(7, "exact-call".to_string())]);
+        let unloaded = render_entries(&entries, &expanded, &HashMap::new());
+        assert!(!unloaded[0].text.contains("SPILL_ONLY_SEARCH_MARKER"));
+        assert!(unloaded[0].text.contains("spill available"));
+
+        let loaded = HashMap::from([(
+            (7, "exact-call".to_string()),
+            Ok(("spill-only-search-marker".to_string(), false)),
+        )]);
+        let rendered = render_entries(&entries, &expanded, &loaded);
+        assert!(rendered[0].text.contains("spill-only-search-marker"));
+        assert!(rendered[0].text.contains("loaded spill continuation"));
+    }
+
+    #[test]
+    fn spill_search_text_is_visible_only_after_a_successful_explicit_load() {
+        let entries = vec![Entry {
+            role: glass_tui::Role::Bash,
+            text: String::new(),
+            turn: 2,
+            tool_card: Some(glass_tui::ToolCard {
+                call_id: "call-2".into(),
+                command: "echo inline".into(),
+                output: "inline output".into(),
+                status: "exit 0".into(),
+                elapsed_ms: None,
+                spill: Some("spill.log".into()),
+                truncated: true,
+            }),
+        }];
+        let unloaded: HashMap<(usize, String), Result<(String, bool), String>> = HashMap::new();
+        let query = "spill-only-search-marker";
+        assert!(
+            !entries[0]
+                .tool_card
+                .as_ref()
+                .unwrap()
+                .output
+                .to_lowercase()
+                .contains(query)
+        );
+        assert!(!unloaded.contains_key(&(2, "call-2".to_string())));
+        assert!(
+            !render_entries(&entries, &HashSet::new(), &unloaded)[0]
+                .text
+                .to_lowercase()
+                .contains(query)
+        );
+        let loaded = HashMap::from([(
+            (2, "call-2".to_string()),
+            Ok(("spill-only-search-marker".to_string(), false)),
+        )]);
+        let rows = render_entries(
+            &entries,
+            &HashSet::from([(2, "call-2".to_string())]),
+            &loaded,
+        );
+        assert!(rows[0].text.to_lowercase().contains(query));
+    }
 }

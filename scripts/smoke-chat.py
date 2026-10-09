@@ -39,7 +39,7 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
                 frames = [{'choices': [{'delta': {'tool_calls': [{'index': 0, 'id': mode, 'function': {'name': 'bash', 'arguments': json.dumps({'command': command})}}]}}]}]
             else: frames = [{'choices': [{'delta': {'content': 'Task completed.'}}]}]
         elif mode == 'error':
-            data = json.dumps({'error': {'message': 'bad \u001b]52;c;EVIL\u0007 endpoint'}}).encode()
+            data = json.dumps({'error': {'message': 'bad \u001b]52;c;EVIL\u0007 endpoint Authorization: Bearer sk-provider-secret-sentinel'}}).encode()
             self.send_response(401); self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data); return
         else: frames = None
         self.send_response(200)
@@ -193,6 +193,8 @@ with tempfile.TemporaryDirectory(prefix='gc-chat-design-') as tmp:
                 back(t); t.visible('Tool actions'); back(t); t.visible('Tool details'); back(t); t.idle()
             Endpoint.mode = 'error'; t.send('bad endpoint'); output = t.wait('provider error'); t.idle(); output += t.received
             assert '\x1b]52' not in output, repr(output)
+            assert 'sk-provider-secret-sentinel' not in output + t.vt.text(), output + t.vt.text()
+            assert 'sk-provider-secret-sentinel' not in json.dumps(session_records(root))
         finally: t.close()
         Endpoint.mode = 'rich'; Endpoint.release.clear()
         t = ChatTerminal(root, env, (20, 12))

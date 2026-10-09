@@ -258,11 +258,28 @@ impl Jobs {
         let mut f = std::fs::File::open(&j.output).map_err(err)?;
         f.seek(SeekFrom::Start(offset)).map_err(err)?;
         let mut bytes = Vec::new();
-        f.take((limit.clamp(1, 24 * 1024) as u64).min(size - offset))
+        let limit = limit.clamp(1, 24 * 1024);
+        // Peek up to three bytes beyond the requested boundary so a Unicode
+        // scalar is delivered whole. Byte cursors still describe consumed bytes.
+        f.take(((limit + 3) as u64).min(size - offset))
             .read_to_end(&mut bytes)
             .map_err(err)?;
+        let mut end = limit.min(bytes.len());
+        while end < bytes.len() && bytes[end] & 0xc0 == 0x80 {
+            end += 1;
+        }
+        bytes.truncate(end);
+        let draining = j.drains.iter().any(|h| !h.is_finished());
+        if (j.exit.is_none() || draining)
+            && let Err(error) = std::str::from_utf8(&bytes)
+            && error.error_len().is_none()
+        {
+            // A writer may have emitted only the beginning of a scalar. Leave
+            // its bytes at the same cursor until the remaining bytes arrive.
+            bytes.truncate(error.valid_up_to());
+        }
         Ok(
-            json!({"job":id,"state":if j.exit.is_some(){"exited"}else{"running"},"exit_code":j.exit,"elapsed_seconds":j.finished.unwrap_or_else(||j.started.elapsed()).as_secs_f32(),"offset":offset,"next_offset":offset+bytes.len() as u64,"captured_bytes":size,"dropped_bytes":j.dropped.load(Ordering::Relaxed),"draining":j.drains.iter().any(|h|!h.is_finished()),"output":String::from_utf8_lossy(&bytes)}),
+            json!({"job":id,"state":if j.exit.is_some(){"exited"}else{"running"},"exit_code":j.exit,"elapsed_seconds":j.finished.unwrap_or_else(||j.started.elapsed()).as_secs_f32(),"offset":offset,"next_offset":offset+bytes.len() as u64,"captured_bytes":size,"dropped_bytes":j.dropped.load(Ordering::Relaxed),"draining":draining,"output":String::from_utf8_lossy(&bytes)}),
         )
     }
     fn input(&mut self, id: u32, text: &str, eof: bool) -> Result<Value, String> {
@@ -595,6 +612,28 @@ mod tests {
         registry().lock().unwrap().remove(&owner_key(&dir, "two"));
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn incremental_poll_preserves_unicode_at_one_byte_limits() {
+        let dir = scratch("unicode");
+        let mut jobs = Jobs::default();
+        jobs.start("printf 'A€😀Z'", &dir, &dir).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut cursor = 0;
+        let mut output = String::new();
+        loop {
+            let chunk = jobs.poll(1, cursor, 1).unwrap();
+            output.push_str(chunk["output"].as_str().unwrap());
+            cursor = chunk["next_offset"].as_u64().unwrap();
+            if chunk["state"] == "exited" && chunk["draining"] == false
+                && cursor == chunk["captured_bytes"].as_u64().unwrap() { break; }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(output, "A€😀Z");
+        drop(jobs);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn capture_is_capped_and_eof_works() {
         let dir = scratch("cap");

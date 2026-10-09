@@ -29,6 +29,11 @@ hook: it skips the base jail only for that approved child and never changes
 the process-wide profile. Requests that need a decision are refused before
 spawn until the UI gets an answer. `security_summary` plus the label helpers
 provide value-free profile/isolation status for doctor and status surfaces.
+Interactive model commands receive an explicit snapshot of the current session's
+grant. Headless, delegated and extension host-tool calls do not inherit it.
+Exceptions use the session workspace as their working directory; changing the
+tool's `cwd` requires using the normal confined policy instead. `/bg` accepts
+the same explicit session grants, and changing conversations clears them.
 
 Strict extension isolation reads `<entrypoint>.capabilities.json` before it
 starts the extension. Entry points, declared paths, and descriptor content
@@ -69,6 +74,8 @@ removed. Linux Landlock provides filesystem rights and TCP destination-port
 rules when ABI 4 is available. Port rules do not filter hosts or local bind
 addresses. Landlock cannot prevent process creation; grandchildren inherit the
 same jail. Strict mode refuses platforms without the required confinement.
+These network rules constrain outbound TCP connections only; UDP, Unix sockets
+and other protocols are not filtered by this policy.
 
 The host logs the declared paths and ports plus these enforcement limits at
 extension startup. Capabilities announced by the extension handshake are too

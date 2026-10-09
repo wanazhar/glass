@@ -48,6 +48,8 @@ jobs:
           python3 scripts/smoke-doctor.py
           python3 scripts/smoke-trust.py
           python3 scripts/smoke-sandbox.py
+          python3 scripts/smoke-security.py
+          python3 scripts/smoke-permissions-pty.py
           python3 scripts/smoke-init.py
           python3 scripts/smoke-web.py
           python3 scripts/smoke-mcp.py

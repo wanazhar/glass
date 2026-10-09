@@ -467,6 +467,10 @@ pub(crate) fn sanitize_provider_detail(text: &str) -> String {
         )
     }
 
+    let text: String = text
+        .chars()
+        .filter(|ch| !ch.is_control() || ch.is_whitespace())
+        .collect();
     let words: Vec<_> = text.split_whitespace().collect();
     let mut clean = Vec::with_capacity(words.len());
     let mut index = 0;

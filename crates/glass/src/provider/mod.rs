@@ -157,14 +157,18 @@ pub enum Error {
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Every caller (TTY, headless, ACP, serve and durable error records)
+        // must see the same redacted diagnostic, not the provider's raw body.
+        let safe = crate::live::sanitize_provider_detail;
         match self {
-            Error::Transport(m) => write!(f, "transport: {m}"),
+            Error::Transport(m) => write!(f, "transport: {}", safe(m)),
             Error::Status(c @ (401 | 403), m) => write!(
                 f,
-                "http {c}: {m} · use /login to reconnect or /model to choose a permitted model"
+                "http {c}: {} · use /login to reconnect or /model to choose a permitted model",
+                safe(m)
             ),
-            Error::Status(c, m) => write!(f, "http {c}: {m}"),
-            Error::Config(m) => write!(f, "config: {m}"),
+            Error::Status(c, m) => write!(f, "http {c}: {}", safe(m)),
+            Error::Config(m) => write!(f, "config: {}", safe(m)),
         }
     }
 }
@@ -567,5 +571,21 @@ mod tests {
         let out = stream_with_retry(&p, &flaky_req(), 3, &[0, 0], |_, _, _| {});
         assert!(out.is_err(), "persistent failure still fails the turn");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn displayed_errors_redact_credentials_for_every_caller() {
+        let detail = "Authorization: Bearer sk-provider-secret-sentinel https://example.test/?token=private\x1b]52;c;EVIL\x07";
+        for error in [
+            Error::Transport(detail.into()),
+            Error::Status(401, detail.into()),
+            Error::Config(detail.into()),
+        ] {
+            let text = error.to_string();
+            assert!(!text.contains("sk-provider-secret-sentinel"));
+            assert!(!text.contains("example.test"));
+            assert!(!text.contains('\x1b'));
+            assert!(!text.contains('\x07'));
+        }
     }
 }

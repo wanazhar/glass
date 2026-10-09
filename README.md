@@ -229,7 +229,33 @@ text without carrying Markdown state into the next turn.
   an extension immediately. The manager discovers bundled extensions, shows source
   and access details, accepts custom commands, and persists enable/disable choices.
   Failed startup attempts remain visible in its startup warnings view.
-- `/security` describes the active endpoint and local trust boundaries.
+- `/security` or `/permissions` reviews the active permission policy, saves an
+  opt-in profile for the next launch, approves exact commands for this session,
+  and inspects extension capability declarations before startup.
+
+### Conversation and recovery tools
+
+- `/search` or Ctrl+F searches the conversation. Reading positions survive
+  resize and switching conversation/thinking views. End returns to live output.
+- Tool cards show the exact command, status and timing. Enter toggles the
+  focused card; `L` explicitly loads up to 64 KiB of spilled output for viewing
+  and search. Loaded output is marked if capped.
+- `/diff` browses changed files and hunks with distinct addition/removal colors
+  and horizontal scrolling. `/activity` collects tools, subagents, jobs and loops.
+- `gc attach` reconnects with bounded backoff, saved replay position and durable
+  submission IDs. Ctrl+C/Ctrl+D can cancel reconnecting.
+- `gc doctor --json` and `/doctor` provide redacted offline diagnostics.
+  Provider requests require an explicit check or `gc doctor --probe`.
+- `gc plugin verify` checks managed plugin content. `gc plugin update NAME`
+  reviews capability changes before replacing an install; existing plugin data
+  is retained.
+- MCP servers can request reviewed forms/selections or HTTPS URL consent in the
+  interactive UI. Headless requests fail explicitly when user input is needed.
+  Form responses are sent to the server without recording the callback values
+  in the conversation log. Credential collection belongs in URL flows.
+
+See [permission and extension confinement](docs/security-confinement.md) for
+`permission_profile` and `extension_isolation`, OS support and enforced limits.
 
 Extensions keep their existing host-tool access. They run as trusted local
 programs with your filesystem and network permissions, so inspect their source

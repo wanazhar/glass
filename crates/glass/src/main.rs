@@ -2055,14 +2055,15 @@ fn repl(
             continue;
         }
         if text == "/activity" {
-            let items = polish::activity_items(&session, &mut jobs);
-            if items.is_empty() {
-                modal::info(&keys, "Activity", "No tools, subagents, jobs or loops in this session yet.");
-                continue;
-            }
-            let labels = items.iter().map(|item| format!("{} · {}", item.status, item.label)).collect::<Vec<_>>();
-            let searchable = items.iter().map(|item| format!("{}\n{}\n{}", item.label, item.status, item.detail)).collect::<Vec<_>>();
-            while let Some(index) = modal::choose_search(&keys, "Activity", "Tools, subagents, jobs and loops · choose a row", &labels, &searchable) {
+            loop {
+                let items = polish::activity_items(&session, &mut jobs);
+                if items.is_empty() {
+                    modal::info(&keys, "Activity", "No tools, subagents, jobs or loops in this session yet.");
+                    break;
+                }
+                let labels = items.iter().map(|item| format!("{} · {}", item.status, item.label)).collect::<Vec<_>>();
+                let searchable = items.iter().map(|item| format!("{}\n{}\n{}", item.label, item.status, item.detail)).collect::<Vec<_>>();
+                let Some(index) = modal::choose_search(&keys, "Activity", "Tools, subagents, jobs and loops · choose a row", &labels, &searchable) else { break };
                 let item = &items[index];
                 match item.action {
                     polish::ActivityAction::Tool => {

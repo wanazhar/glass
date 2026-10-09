@@ -4,12 +4,17 @@ import http.server
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 BINARY = Path(os.environ.get("GLASS_CORE_TEST_BINARY", str(REPO / "target/debug/glass-core")))
+
+if sys.platform != "linux":
+    print("SKIP Linux Landlock permission profiles; unsupported strict policies refuse")
+    raise SystemExit(0)
 
 
 class Endpoint(http.server.BaseHTTPRequestHandler):

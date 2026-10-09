@@ -163,7 +163,9 @@ def main():
             for i in range(12000):
                 text = f'RFMK fixture record {i} stable-search-target'
                 if i >= 11000:
-                    text += ' READER_FRAME'
+                    # Keep a visible marker on each of the last two rows, even
+                    # when the compact reader has only one text row.
+                    text += ' READER_FRAME\nRFMK\nRFMK'
                 f.write(json.dumps({'k': 'user' if i % 2 == 0 else 'assistant', 't': text}) + '\n')
         env = dict(os.environ, XDG_CONFIG_HOME=str(root / 'config'), XDG_DATA_HOME=str(root / 'data'), TERM='xterm-256color', GC_PERF_WORKSPACE=str(workspace))
         starts = [elapsed_ms(lambda: subprocess.run([BIN, '--help'], cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)) for _ in range(7)]

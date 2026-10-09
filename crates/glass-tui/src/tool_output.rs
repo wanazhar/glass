@@ -58,27 +58,60 @@ pub fn lines(
     let first = source.next();
     let skip_exit = first.is_some_and(|s| s.starts_with("[exit ") && s.ends_with(']'));
     let source = first.filter(|_| !skip_exit).into_iter().chain(source);
+    let native_file = output.lines().take(2).any(|s| s.starts_with("[file "));
+    let budget = if native_file { 6 } else { 3 };
     let mut shown = 0;
     let mut hidden = 0;
     let mut partial = false;
     for raw in source {
-        if shown >= 3 || (compact && !failed) {
+        if shown >= budget || (compact && !failed) {
             hidden += 1;
             continue;
         }
-        let clean = markdown::sanitize(&text::clip(raw, body_width * 4));
-        let wrapped = text::wrap_words(&clean, body_width);
-        let remaining = 3 - shown;
+        let display = if native_file && raw.starts_with("[file ") {
+            raw.split_once(" · revision ")
+                .map(|(path, _)| text::clip(&format!("◆ {}", &path[6..]), body_width))
+                .unwrap_or_else(|| raw.to_string())
+        } else if native_file && raw.starts_with("[diagnostics ") {
+            if raw.starts_with("[diagnostics ok") {
+                "✓ syntax checked".into()
+            } else if raw.starts_with("[diagnostics error") {
+                "× syntax error".into()
+            } else {
+                "syntax unchecked".into()
+            }
+        } else {
+            text::clip(raw, body_width * 4)
+        };
+        let clean = markdown::sanitize(&text::clip(&display, body_width * 4));
+        let wrapped = text::wrap(&clean, body_width);
+        let remaining = budget - shown;
         for row in wrapped.iter().take(remaining) {
             rows.push(line(
                 if shown == 0 { "└ " } else { "  " },
                 row,
-                if failed { Tone::Error } else { Tone::Muted },
+                if failed
+                    || (native_file
+                        && (raw.starts_with("- ")
+                            || raw.starts_with("error ")
+                            || raw.starts_with("[diagnostics error")))
+                {
+                    Tone::Error
+                } else if native_file
+                    && (raw.starts_with("+ ") || raw.starts_with("[diagnostics ok"))
+                {
+                    Tone::Success
+                } else if native_file && raw.starts_with("[file ") {
+                    Tone::Accent
+                } else {
+                    Tone::Muted
+                },
                 width,
             ));
             shown += 1;
         }
-        partial |= wrapped.len() > remaining || text::width(raw) > body_width * 4;
+        partial |= wrapped.len() > remaining
+            || (!native_file || !raw.starts_with("[file ")) && text::width(raw) > body_width * 4;
     }
     if hidden > 0 || partial {
         let hint = if partial {
@@ -145,6 +178,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn native_preview_preserves_indent_and_uses_semantic_colors() {
+        let output = "[exit 0]\n[file src/main.rs · revision deadbeef]\n[diagnostics ok · json]\n+1 -1\n-   old\n+   new";
+        let rows = lines("bash", "edit", false, 0.1, output, 40, false);
+        assert!(rows.iter().any(|r| r.to_string().contains("-   old")));
+        let removed = rows
+            .iter()
+            .find(|r| r.to_string().contains("-   old"))
+            .unwrap();
+        let added = rows
+            .iter()
+            .find(|r| r.to_string().contains("+   new"))
+            .unwrap();
+        assert_eq!(removed.spans[0].style.fg, Some(theme::color(Tone::Error)));
+        assert_eq!(added.spans[0].style.fg, Some(theme::color(Tone::Success)));
+        assert!(!rows.iter().any(|r| r.to_string().contains("deadbeef")));
+        for width in [1, 10, 18, 38] {
+            assert!(
+                lines("bash", "edit", false, 0.1, output, width, false)
+                    .iter()
+                    .all(|r| text::width(&r.to_string()) <= width)
+            );
+        }
+    }
     #[test]
     fn large_one_line_output_has_a_bounded_preview() {
         let rows = lines(

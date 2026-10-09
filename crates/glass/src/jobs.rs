@@ -1,156 +1,619 @@
-//! Explicitly owned background process groups; output is kept on disk.
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
+//! Session-owned process groups with bounded capture, incremental polling and stdin.
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
+    io::{Read, Seek, SeekFrom, Write},
+    os::fd::AsRawFd,
+    os::unix::{fs::OpenOptionsExt, process::CommandExt},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, ChildStdin, Command, Stdio},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
+trait Pipe: Read + AsRawFd + Send {}
+impl<T: Read + AsRawFd + Send> Pipe for T {}
+const MAX_LOG: u64 = 4 * 1024 * 1024;
+const MAX_JOBS: usize = 16;
+struct Capture {
+    file: std::fs::File,
+    bytes: u64,
+}
 pub struct Job {
     child: Child,
+    input: Option<ChildStdin>,
     command: String,
     output: PathBuf,
+    capture: Arc<Mutex<Capture>>,
+    dropped: Arc<AtomicU64>,
+    drains: Vec<std::thread::JoinHandle<()>>,
+    started: Instant,
+    exit: Option<i32>,
+    closed: bool,
+    stopping: Arc<AtomicBool>,
+    finished: Option<Duration>,
 }
 #[derive(Default)]
 pub struct Jobs {
     jobs: BTreeMap<u32, Job>,
     next: u32,
 }
+fn err(e: impl std::fmt::Display) -> String {
+    e.to_string()
+}
 impl Jobs {
     pub fn start(&mut self, command: &str, workspace: &Path, dir: &Path) -> Result<String, String> {
+        let approvals = crate::permissions::approvals_for_command(command)?;
+        let id = self.start_owned(command, workspace, dir, &approvals)?;
+        let j = &self.jobs[&id];
+        Ok(format!(
+            "job {id} pid {}: {}",
+            j.child.id(),
+            j.output.display()
+        ))
+    }
+    fn start_owned(
+        &mut self,
+        command: &str,
+        workspace: &Path,
+        dir: &Path,
+        approvals: &crate::sandbox::SessionApprovals,
+    ) -> Result<u32, String> {
         if command.trim().is_empty() {
             return Err("background command is empty".into());
         }
-        let approvals = crate::permissions::approvals_for_command(command)?;
+        self.refresh();
+        if self.jobs.values().filter(|j| j.exit.is_none()).count() >= MAX_JOBS {
+            return Err("16 active jobs maximum; stop a job first".into());
+        }
+        if self.jobs.len() >= 128 {
+            return Err("128 retained jobs maximum for a session".into());
+        }
         let exception = approvals.permits_exact(command);
         if !exception && let Some(reason) = crate::sandbox::refusal() {
             return Err(format!(
-                "sandbox = strict is not available ({reason}); refusing to run jobs unsandboxed"
+                "sandbox = strict is not available ({reason}); refusing jobs unsandboxed"
             ));
         }
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        self.next += 1;
-        let timestamp = std::time::SystemTime::now()
+        std::fs::create_dir_all(dir).map_err(err)?;
+        self.next = self.next.checked_add(1).ok_or("job ID overflow")?;
+        let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
+            .map_err(err)?
             .as_nanos();
-        let output = dir.join(format!("job-{}-{timestamp}.log", self.next));
+        let output = dir.join(format!("job-{}-{stamp}.log", self.next));
         let file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o600)
             .open(&output)
-            .map_err(|e| e.to_string())?;
+            .map_err(err)?;
         let mut cmd = if exception {
-            let mut cmd = Command::new("/bin/sh");
-            cmd.arg("-c").arg(command);
-            cmd
+            let mut c = Command::new("/bin/sh");
+            c.arg("-c").arg(command);
+            c
         } else {
             crate::sandbox::shell(command)
         };
         cmd.current_dir(workspace)
-            .stdin(Stdio::null())
-            .stdout(file.try_clone().map_err(|e| e.to_string())?)
-            .stderr(file);
-        #[cfg(unix)]
-        cmd.process_group(0);
-        crate::sandbox::harden_command(&mut cmd, command, &approvals, exception, false)?;
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
+        crate::sandbox::harden_command(&mut cmd, command, approvals, exception, false)?;
         crate::sandbox::scrub_env(&mut cmd);
-        let child = cmd.spawn().map_err(|e| e.to_string())?;
-        let pid = child.id();
+        if let Ok(exe) = std::env::current_exe() {
+            cmd.env("GC_BIN", exe);
+        }
+        let mut child = cmd.spawn().map_err(err)?;
+        let input = child.stdin.take();
+        if let Some(ref input) = input {
+            let fd = input.as_raw_fd();
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                let _ = child.wait();
+                return Err("cannot make job stdin nonblocking".into());
+            }
+        }
+        let capture = Arc::new(Mutex::new(Capture { file, bytes: 0 }));
+        let dropped = Arc::new(AtomicU64::new(0));
+        let mut drains = Vec::new();
+        let stopping = Arc::new(AtomicBool::new(false));
+        for mut pipe in [
+            Box::new(child.stdout.take().unwrap()) as Box<dyn Pipe>,
+            Box::new(child.stderr.take().unwrap()) as Box<dyn Pipe>,
+        ] {
+            let capture = capture.clone();
+            let dropped = dropped.clone();
+            let stopping = stopping.clone();
+            let fd = pipe.as_raw_fd();
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                stopping.store(true, Ordering::Relaxed);
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                let _ = child.wait();
+                return Err("cannot make job capture nonblocking".into());
+            }
+            drains.push(std::thread::spawn(move || {
+                let mut buffer = [0u8; 8192];
+                loop {
+                    let n = match pipe.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            if stopping.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            let mut event = libc::pollfd {
+                                fd,
+                                events: libc::POLLIN,
+                                revents: 0,
+                            };
+                            unsafe {
+                                libc::poll(&mut event, 1, 25);
+                            }
+                            continue;
+                        }
+                        Err(_) => break,
+                    };
+                    let Ok(mut c) = capture.lock() else { break };
+                    let keep = (MAX_LOG.saturating_sub(c.bytes) as usize).min(n);
+                    if keep > 0 {
+                        if c.file.write_all(&buffer[..keep]).is_err() {
+                            dropped.fetch_add(n as u64, Ordering::Relaxed);
+                            continue;
+                        }
+                        c.bytes += keep as u64;
+                    }
+                    dropped.fetch_add((n - keep) as u64, Ordering::Relaxed);
+                }
+            }));
+        }
         self.jobs.insert(
             self.next,
             Job {
                 child,
+                input,
                 command: command.into(),
-                output: output.clone(),
+                output,
+                capture,
+                dropped,
+                drains,
+                started: Instant::now(),
+                exit: None,
+                closed: false,
+                stopping,
+                finished: None,
             },
         );
-        Ok(format!("job {} pid {pid}: {}", self.next, output.display()))
+        Ok(self.next)
+    }
+    fn refresh(&mut self) {
+        for j in self.jobs.values_mut() {
+            if j.exit.is_none()
+                && let Ok(Some(status)) = j.child.try_wait()
+            {
+                j.exit = Some(status.code().unwrap_or(-1));
+                j.finished = Some(j.started.elapsed());
+                j.stopping.store(true, Ordering::Relaxed);
+                j.input.take();
+                // A completed shell must not leave descendants holding capture pipes open.
+                unsafe {
+                    libc::kill(-(j.child.id() as i32), libc::SIGKILL);
+                }
+                j.closed = true;
+            }
+        }
     }
     pub fn list(&mut self) -> String {
+        self.refresh();
         self.jobs
-            .iter_mut()
+            .iter()
             .map(|(id, j)| {
-                let status = match j.child.try_wait() {
-                    Ok(Some(s)) => s.to_string(),
-                    Ok(None) => "running".into(),
-                    Err(e) => e.to_string(),
-                };
-                format!("{id}: {status} — {} — {}", j.command, j.output.display())
+                format!(
+                    "{id}: {} — {} — {}",
+                    j.exit.map_or("running".into(), |n| format!("exit {n}")),
+                    j.command,
+                    j.output.display()
+                )
             })
             .collect::<Vec<_>>()
             .join("\n")
     }
     pub fn output(&self, id: u32) -> Result<String, String> {
-        use std::io::{Read, Seek, SeekFrom};
         let j = self.jobs.get(&id).ok_or("unknown job")?;
-        let mut f = std::fs::File::open(&j.output).map_err(|e| e.to_string())?;
-        let size = f.metadata().map_err(|e| e.to_string())?.len();
+        let mut f = std::fs::File::open(&j.output).map_err(err)?;
+        let size = f.metadata().map_err(err)?.len();
         f.seek(SeekFrom::Start(size.saturating_sub(60_000)))
-            .map_err(|e| e.to_string())?;
+            .map_err(err)?;
         let mut bytes = Vec::new();
-        f.take(60_000)
+        f.take(60_000).read_to_end(&mut bytes).map_err(err)?;
+        Ok(format!(
+            "{}{}",
+            String::from_utf8_lossy(&bytes),
+            if j.dropped.load(Ordering::Relaxed) > 0 {
+                "\n[job log capped at 4 MiB; further bytes discarded]"
+            } else {
+                ""
+            }
+        ))
+    }
+    fn poll(&mut self, id: u32, offset: u64, limit: usize) -> Result<Value, String> {
+        self.refresh();
+        let j = self.jobs.get(&id).ok_or("unknown job")?;
+        let size = j.capture.lock().map_err(err)?.bytes;
+        if offset > size {
+            return Err("offset exceeds captured output".into());
+        }
+        let mut f = std::fs::File::open(&j.output).map_err(err)?;
+        f.seek(SeekFrom::Start(offset)).map_err(err)?;
+        let mut bytes = Vec::new();
+        f.take((limit.clamp(1, 24 * 1024) as u64).min(size - offset))
             .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+            .map_err(err)?;
+        Ok(
+            json!({"job":id,"state":if j.exit.is_some(){"exited"}else{"running"},"exit_code":j.exit,"elapsed_seconds":j.finished.unwrap_or_else(||j.started.elapsed()).as_secs_f32(),"offset":offset,"next_offset":offset+bytes.len() as u64,"captured_bytes":size,"dropped_bytes":j.dropped.load(Ordering::Relaxed),"draining":j.drains.iter().any(|h|!h.is_finished()),"output":String::from_utf8_lossy(&bytes)}),
+        )
+    }
+    fn input(&mut self, id: u32, text: &str, eof: bool) -> Result<Value, String> {
+        if text.len() > 8192 {
+            return Err("job input limited to 8192 bytes per call".into());
+        }
+        self.refresh();
+        let j = self.jobs.get_mut(&id).ok_or("unknown job")?;
+        let input = j.input.as_mut().ok_or("job stdin is closed")?;
+        let n = if text.is_empty() {
+            0
+        } else {
+            match input.write(text.as_bytes()) {
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
+                Err(e) => return Err(err(e)),
+            }
+        };
+        if eof && n == text.len() {
+            j.input.take();
+        }
+        Ok(
+            json!({"job":id,"accepted_bytes":n,"remaining_bytes":text.len()-n,"stdin_closed":j.input.is_none()}),
+        )
     }
     pub fn stop(&mut self, id: u32) -> Result<String, String> {
         let j = self.jobs.get_mut(&id).ok_or("unknown job")?;
-        if j.child.try_wait().map_err(|e| e.to_string())?.is_some() {
+        if j.closed {
             return Ok(format!("job {id} already exited"));
         }
-        #[cfg(unix)]
-        {
-            let result = Command::new("kill")
-                .args(["-KILL", "--", &format!("-{}", j.child.id())])
-                .output()
-                .map_err(|e| e.to_string())?;
-            if !result.status.success() && j.child.try_wait().map_err(|e| e.to_string())?.is_none()
-            {
-                return Err(String::from_utf8_lossy(&result.stderr).into());
-            }
+        j.input.take();
+        unsafe {
+            libc::kill(-(j.child.id() as i32), libc::SIGTERM);
         }
-        #[cfg(not(unix))]
-        j.child.kill().map_err(|e| e.to_string())?;
-        let _ = j.child.wait();
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let mut exit = None;
+        while Instant::now() < deadline {
+            if let Ok(Some(s)) = j.child.try_wait() {
+                exit = Some(s.code().unwrap_or(-1));
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        unsafe {
+            libc::kill(-(j.child.id() as i32), libc::SIGKILL);
+        }
+        if exit.is_none() {
+            exit = j.child.wait().ok().map(|s| s.code().unwrap_or(-1));
+        }
+        j.exit = exit;
+        j.finished = Some(j.started.elapsed());
+        j.closed = true;
+        j.stopping.store(true, Ordering::Relaxed);
+        for h in j.drains.drain(..) {
+            let _ = h.join();
+        }
         Ok(format!("stopped job {id}"))
     }
 }
 impl Drop for Jobs {
     fn drop(&mut self) {
-        let ids: Vec<_> = self.jobs.keys().copied().collect();
-        for id in ids {
+        for id in self.jobs.keys().copied().collect::<Vec<_>>() {
             let _ = self.stop(id);
         }
     }
+}
+fn registry() -> &'static Mutex<BTreeMap<String, Jobs>> {
+    static R: OnceLock<Mutex<BTreeMap<String, Jobs>>> = OnceLock::new();
+    R.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+fn owner_key(workspace: &Path, owner: &str) -> String {
+    format!("{}\0{owner}", crate::concurrency::canonical_key(workspace))
+}
+pub struct Handle {
+    key: String,
+}
+impl Handle {
+    pub fn new(workspace: &Path, owner: &str) -> Self {
+        Self {
+            key: owner_key(workspace, owner),
+        }
+    }
+    pub fn set_owner(&mut self, workspace: &Path, owner: &str) {
+        let key = owner_key(workspace, owner);
+        if key != self.key {
+            self.key = key;
+        }
+    }
+    pub fn start(&mut self, command: &str, workspace: &Path, dir: &Path) -> Result<String, String> {
+        registry()
+            .lock()
+            .map_err(err)?
+            .entry(self.key.clone())
+            .or_default()
+            .start(command, workspace, dir)
+    }
+    pub fn list(&mut self) -> String {
+        registry()
+            .lock()
+            .map(|mut r| r.entry(self.key.clone()).or_default().list())
+            .unwrap_or_default()
+    }
+    pub fn output(&self, id: u32) -> Result<String, String> {
+        registry()
+            .lock()
+            .map_err(err)?
+            .get(&self.key)
+            .ok_or("unknown job")?
+            .output(id)
+    }
+    pub fn stop(&mut self, id: u32) -> Result<String, String> {
+        registry()
+            .lock()
+            .map_err(err)?
+            .get_mut(&self.key)
+            .ok_or("unknown job")?
+            .stop(id)
+    }
+}
+impl Drop for Handle {
+    fn drop(&mut self) {
+        if let Ok(mut r) = registry().lock() {
+            r.remove(&self.key);
+        }
+    }
+}
+pub fn finish_all() {
+    if let Ok(mut r) = registry().lock() {
+        r.clear();
+    }
+}
+pub struct Cleanup;
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        finish_all();
+    }
+}
+pub fn dispatch(
+    call: &glass_mod_api::ToolCall,
+    workspace: &Path,
+    owner: &str,
+    approvals: &crate::sandbox::SessionApprovals,
+) -> Result<Value, String> {
+    let v: Value = serde_json::from_str(&call.arguments).map_err(err)?;
+    let job = v.get("job").ok_or("job object required")?;
+    let action = job
+        .get("action")
+        .and_then(Value::as_str)
+        .ok_or("job.action required")?;
+    if action != "start" && v.get("command").is_some() {
+        return Err("command is only accepted for job start".into());
+    }
+    for key in ["id", "offset", "limit"] {
+        if job.get(key).is_some_and(|v| !v.is_u64()) {
+            return Err(format!("job.{key} must be a nonnegative integer"));
+        }
+    }
+    if job.get("text").is_some_and(|v| !v.is_string())
+        || job.get("eof").is_some_and(|v| !v.is_boolean())
+    {
+        return Err("job.text must be a string and job.eof a boolean".into());
+    }
+    let mut r = registry().lock().map_err(err)?;
+    let jobs = r.entry(owner_key(workspace, owner)).or_default();
+    let id = || {
+        job.get("id")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or("job.id required")
+    };
+    match action {
+        "start" => {
+            let command = call
+                .arg_str("command")
+                .ok_or("command required to start a job")?;
+            let cwd = call
+                .arg_str("cwd")
+                .map(|p| workspace.join(p))
+                .unwrap_or_else(|| workspace.to_path_buf());
+            if !cwd.is_dir() {
+                return Err("job cwd is not a directory".into());
+            }
+            if approvals.permits_exact(&command)
+                && cwd.canonicalize().map_err(err)? != workspace.canonicalize().map_err(err)?
+            {
+                return Err("exact-command approval applies only in session workspace".into());
+            }
+            let id = jobs.start_owned(
+                &command,
+                &cwd,
+                &crate::config::data_dir()
+                    .join("jobs")
+                    .join(format!("owned-{}", std::process::id())),
+                approvals,
+            )?;
+            Ok(json!({"job":id,"state":"running","next_offset":0}))
+        }
+        "poll" => jobs.poll(
+            id()?,
+            job.get("offset").and_then(Value::as_u64).unwrap_or(0),
+            job.get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(8192)
+                .min(24576) as usize,
+        ),
+        "input" => jobs.input(
+            id()?,
+            job.get("text").and_then(Value::as_str).unwrap_or(""),
+            job.get("eof").and_then(Value::as_bool).unwrap_or(false),
+        ),
+        "stop" => Ok(json!({"job":id()?,"message":jobs.stop(id()?)?})),
+        "list" => Ok(json!({"jobs":jobs.list()})),
+        _ => Err("job.action must be start, poll, input, stop or list".into()),
+    }
+}
+pub fn label(v: &Value) -> String {
+    format!(
+        "job {}{}",
+        v["action"].as_str().unwrap_or("control"),
+        v["id"]
+            .as_u64()
+            .map(|n| format!(" #{n}"))
+            .unwrap_or_default()
+    )
+}
+pub fn render(v: &Value) -> String {
+    let id = v["job"]
+        .as_u64()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "list".into());
+    let state = v["state"]
+        .as_str()
+        .or_else(|| v["message"].as_str())
+        .unwrap_or("updated");
+    let mut out = format!("[job {id} · {state}]\n");
+    if let Some(text) = v["output"].as_str() {
+        out.push_str(text);
+        if !text.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    let mut metadata = v.clone();
+    if let Some(object) = metadata.as_object_mut() {
+        object.remove("output");
+    }
+    out.push_str(&format!("[job metadata] {metadata}\n"));
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn scratch(tag: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("gc-jobs-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
     #[test]
-    fn background_output_is_available_and_stop_reaps_the_owned_process() {
-        let dir = std::env::temp_dir().join(format!("glass-jobs-{}", std::process::id()));
+    fn input_poll_and_cleanup() {
+        let dir = scratch("io");
         let mut jobs = Jobs::default();
-        jobs.start("echo ready; sleep 30", &std::env::temp_dir(), &dir)
-            .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while !jobs.output(1).unwrap().contains("ready") {
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(std::time::Duration::from_millis(10));
+        jobs.start(
+            "read line; printf 'reply:%s\\n' \"$line\"; sleep 30",
+            &dir,
+            &dir,
+        )
+        .unwrap();
+        assert_eq!(
+            jobs.input(1, "hello\n", false).unwrap()["accepted_bytes"],
+            6
+        );
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let v = jobs.poll(1, 0, 100).unwrap();
+            if v["output"].as_str().unwrap().contains("reply:hello") {
+                assert_eq!(
+                    jobs.poll(1, v["next_offset"].as_u64().unwrap(), 100)
+                        .unwrap()["output"],
+                    ""
+                );
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
         }
         assert!(jobs.list().contains("running"));
         jobs.stop(1).unwrap();
-        assert!(
-            jobs.jobs
-                .get_mut(&1)
-                .unwrap()
-                .child
-                .try_wait()
-                .unwrap()
-                .is_some()
+        assert!(jobs.jobs[&1].closed);
+        assert!(jobs.output(1).unwrap().contains("reply:hello"));
+        drop(jobs);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn nonreading_stdin_and_graceful_shutdown_are_bounded() {
+        let dir = scratch("nonblocking");
+        let mut jobs = Jobs::default();
+        jobs.start(
+            "trap 'echo SHUTDOWN; exit 0' TERM; echo READY; while :; do sleep 0.05; done",
+            &dir,
+            &dir,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !jobs.output(1).unwrap().contains("READY") {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let start = Instant::now();
+        for _ in 0..32 {
+            jobs.input(1, &"x".repeat(8192), false).unwrap();
+        }
+        assert!(start.elapsed() < Duration::from_secs(1));
+        jobs.stop(1).unwrap();
+        assert!(jobs.output(1).unwrap().contains("SHUTDOWN"));
+        drop(jobs);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn session_switch_keeps_jobs_and_isolates_polling() {
+        let dir = scratch("owners");
+        let mut handle = Handle::new(&dir, "one");
+        handle.start("echo OWNED; sleep 30", &dir, &dir).unwrap();
+        handle.set_owner(&dir, "two");
+        assert!(handle.output(1).is_err());
+        assert!(handle.list().is_empty());
+        handle.set_owner(&dir, "one");
+        assert!(handle.list().contains("running"));
+        handle.stop(1).unwrap();
+        drop(handle);
+        registry().lock().unwrap().remove(&owner_key(&dir, "two"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn capture_is_capped_and_eof_works() {
+        let dir = scratch("cap");
+        let mut jobs = Jobs::default();
+        jobs.start("head -c 5000000 /dev/zero; cat; sleep 30", &dir, &dir)
+            .unwrap();
+        jobs.input(1, "", true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while jobs.jobs[&1].dropped.load(Ordering::Relaxed) == 0 {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            std::fs::metadata(&jobs.jobs[&1].output).unwrap().len(),
+            MAX_LOG
         );
-        assert!(jobs.output(1).unwrap().contains("ready"));
+        assert!(jobs.input(1, "x", false).is_err());
+        jobs.stop(1).unwrap();
+        drop(jobs);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

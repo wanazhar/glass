@@ -339,8 +339,8 @@ def terminal_checks(workspace, root, env):
         terminal.wait("new session")
         assert json.loads(ledger.read_text())["spent"] == 1.0
         terminal.send("/bg sleep 30")
-        output = terminal.wait("job 2 pid")
-        pid = int(re.search(r"job 2 pid (\d+)", output).group(1))
+        output = terminal.wait("job 1 pid")
+        pid = int(re.search(r"job 1 pid (\d+)", output).group(1))
     finally:
         terminal.close()
     assert not process_exists(pid), "owned background process survived exit"

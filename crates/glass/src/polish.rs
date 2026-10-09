@@ -624,7 +624,7 @@ pub(crate) struct ActivityItem {
 
 /// Read-only snapshot assembled from the existing session, Jobs and Loops
 /// owners; this view intentionally owns no lifecycle state of its own.
-pub(crate) fn activity_items(s: &Session, jobs: &mut crate::jobs::Jobs) -> Vec<ActivityItem> {
+pub(crate) fn activity_items(s: &Session, job_list: &str) -> Vec<ActivityItem> {
     let mut items = Vec::new();
     for entry in s.history_entries() {
         let Some(card) = entry.tool_card else {
@@ -646,7 +646,6 @@ pub(crate) fn activity_items(s: &Session, jobs: &mut crate::jobs::Jobs) -> Vec<A
             },
         });
     }
-    let job_list = jobs.list();
     for row in job_list.lines() {
         let (head, rest) = row.split_once(':').unwrap_or((row, "unknown"));
         let Ok(id) = head.parse::<u32>() else {
@@ -1081,7 +1080,7 @@ mod tests {
         let mut jobs = crate::jobs::Jobs::default();
         jobs.start("echo activity-job", &root, &root.join("jobs"))
             .unwrap();
-        let items = activity_items(&s, &mut jobs);
+        let items = activity_items(&s, &jobs.list());
         assert!(
             items
                 .iter()

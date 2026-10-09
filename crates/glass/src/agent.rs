@@ -251,7 +251,9 @@ impl<'a> Agent<'a> {
         if let Some(live) = self.live.as_mut() {
             live.tool(&call.id, &call.name);
         }
-        let command = call.arg_str("command");
+        let command = call
+            .arg_str("command")
+            .or_else(||call.arg_raw("job").and_then(|raw|serde_json::from_str(&raw).ok()).map(|v|crate::jobs::label(&v)));
         self.emit(Progress::ToolStart {
             call_id: &call.id,
             name: &call.name,
@@ -499,10 +501,17 @@ impl<'a> Agent<'a> {
             reasoning: self.reasoning,
         };
 
-        let manifest = crate::context_audit::capture(&req, self.catalogue.as_deref(), &self.ext_prompt,
-            latest_system_checkpoint(&self.session.history_records()).is_some() && !self.read_only);
-        crate::context_audit::save(self.session, &manifest)
-            .map_err(|e| provider::Error::Config(format!("cannot record request context; no provider request was made: {e}")))?;
+        let manifest = crate::context_audit::capture(
+            &req,
+            self.catalogue.as_deref(),
+            &self.ext_prompt,
+            latest_system_checkpoint(&self.session.history_records()).is_some() && !self.read_only,
+        );
+        crate::context_audit::save(self.session, &manifest).map_err(|e| {
+            provider::Error::Config(format!(
+                "cannot record request context; no provider request was made: {e}"
+            ))
+        })?;
 
         self.emit(Progress::Waiting);
         let receiver = if let Some(factory) = self.stream_factory.clone() {
@@ -1060,6 +1069,7 @@ impl<'a> Agent<'a> {
             .collect();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_cancel = cancel.clone();
+        let owner = self.session.id.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let approvals: std::collections::HashMap<_, _> = calls
             .iter()
@@ -1072,7 +1082,13 @@ impl<'a> Agent<'a> {
                 if worker_cancel.load(std::sync::atomic::Ordering::Acquire) {
                     return tools::Outcome::err("Cancelled before execution");
                 }
-                tools::bash_with_approvals(inner, &workspace, &worker_cancel, &approvals[&i])
+                tools::bash_owned(
+                    inner,
+                    &workspace,
+                    &worker_cancel,
+                    &approvals[&i],
+                    Some(&owner),
+                )
             });
             let _ = tx.send(results);
         });
@@ -1170,17 +1186,19 @@ impl<'a> Agent<'a> {
         let worker_cancel = cancel.clone();
         let flag = std::sync::Arc::clone(&done);
         let approvals = self.command_approvals(call);
+        let owner = self.session.id.clone();
         std::thread::spawn(move || {
             let inner = ToolCall {
                 id: "worker".into(),
                 name: "bash".into(),
                 arguments: args,
             };
-            let _ = tx.send(tools::bash_with_approvals(
+            let _ = tx.send(tools::bash_owned(
                 &inner,
                 &workspace,
                 &worker_cancel,
                 &approvals,
+                Some(&owner),
             ));
             flag.store(true, std::sync::atomic::Ordering::Release);
         });
@@ -1219,7 +1237,7 @@ impl<'a> Agent<'a> {
 
     /// Record a bash result produced on a worker thread.
     fn apply_bash_result(&mut self, call: &ToolCall, outcome: tools::Outcome) {
-        let command = call.arg_str("command").unwrap_or_default();
+        let command = call.arg_str("command").or_else(||call.arg_raw("job").and_then(|raw|serde_json::from_str(&raw).ok()).map(|v|crate::jobs::label(&v))).unwrap_or_default();
         let mut body = outcome.body.clone();
 
         // Verification belongs here, not at the call site: this is the single
@@ -1338,11 +1356,12 @@ impl<'a> Agent<'a> {
                 self.emit(Progress::BlockedByGuard(&refusal));
                 return self.finish_tool(call, tools::Outcome::err(refusal));
             }
-            let r = tools::bash_with_approvals(
+            let r = tools::bash_owned(
                 call,
                 self.workspace,
                 &std::sync::atomic::AtomicBool::new(false),
                 &self.command_approvals(call),
+                Some(&self.session.id),
             );
 
             // Verification happens in apply_bash_result, which every bash

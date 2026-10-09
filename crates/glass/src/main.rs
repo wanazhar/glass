@@ -16,6 +16,8 @@ mod concurrency;
 mod config;
 mod context_audit;
 mod doctor;
+mod diagnostics;
+mod files;
 mod export;
 mod ext;
 mod history;
@@ -92,6 +94,7 @@ glass-core — a minimal coding harness
   glass-core send <id|--latest> <msg>  message a running session (it runs a turn)
   glass-core serve [ID] [--socket PATH]   run a session on a Unix socket
   glass-core attach [--socket PATH]       attach a terminal client to a served session
+  glass-core file --help    native revision-checked reads/edits/writes and diagnostics
   glass-core list        list saved sessions
   glass-core search <pat>    find sessions whose messages match
 
@@ -169,6 +172,7 @@ fn emit_json(value: serde_json::Value) {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let _job_cleanup = jobs::Cleanup;
 
     // Config parser errors can include source excerpts. Keep doctor JSON and
     // stderr useful without echoing potentially credential-bearing TOML.
@@ -189,6 +193,18 @@ fn main() {
         }
         Some("--version") | Some("-V") => {
             println!("glass-core {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        Some("file") => {
+            if let Err(e) = files::command(&args[1..]) {
+                if args.iter().any(|a| a == "--json")
+                    && !JSON_EMITTED.load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    emit_json(serde_json::json!({"status":"error","error":e}));
+                }
+                eprintln!("file: {}", glass_tui::markdown::sanitize(&e));
+                std::process::exit(1);
+            }
             return;
         }
         Some("list") => {
@@ -215,6 +231,7 @@ fn main() {
             "glass-core: {}",
             glass_tui::markdown::sanitize(&e.to_string())
         );
+        jobs::finish_all();
         std::process::exit(if let Some(code) = signals::exit_code() {
             code
         } else if e.contains("session cost limit reached") {
@@ -1421,7 +1438,7 @@ fn repl(
     let mut ledger = budget::load(&ledger_path, cfg.cost_limit);
     let mut ledger_path = Arc::new(Mutex::new(ledger_path));
     let budget_context = Arc::new(Mutex::new((Arc::clone(&ledger), Arc::clone(&ledger_path))));
-    let mut jobs = jobs::Jobs::default();
+    let mut jobs = jobs::Handle::new(&cfg.workspace, &session.id);
     let mut latest_checkpoint: Option<checkpoint::Checkpoint> = std::fs::read_dir(&checkpoint_dir)
         .ok()
         .into_iter()
@@ -1604,6 +1621,7 @@ fn repl(
     let mut inbox_mailbox = crate::inbox::Mailbox::open(&session.id);
     crate::status::set("idle", "");
     loop {
+        jobs.set_owner(&cfg.workspace, &session.id);
         let _ = painter.refresh_geometry(!palette.active());
         let (w, nh) = term_size();
         let prompt_row = nh.saturating_sub(2).max(1);
@@ -2060,7 +2078,7 @@ fn repl(
         }
         if text == "/activity" {
             loop {
-                let items = polish::activity_items(&session, &mut jobs);
+                let items = polish::activity_items(&session, &jobs.list());
                 if items.is_empty() {
                     modal::info(&keys, "Activity", "No tools, subagents, jobs or loops in this session yet.");
                     break;

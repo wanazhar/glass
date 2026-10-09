@@ -88,6 +88,28 @@ pub fn bash_with_approvals(
     cancel: &std::sync::atomic::AtomicBool,
     approvals: &crate::sandbox::SessionApprovals,
 ) -> Outcome {
+    bash_owned(call, workspace, cancel, approvals, None)
+}
+
+pub fn bash_owned(
+    call: &ToolCall,
+    workspace: &std::path::Path,
+    cancel: &std::sync::atomic::AtomicBool,
+    approvals: &crate::sandbox::SessionApprovals,
+    owner: Option<&str>,
+) -> Outcome {
+    if call.arg_raw("job").is_some() {
+        if cancel.load(Ordering::Relaxed) {
+            return Outcome::err("Cancelled before job control");
+        }
+        let Some(owner) = owner else {
+            return Outcome::err("error: job control requires an owned agent session");
+        };
+        return match crate::jobs::dispatch(call, workspace, owner, approvals) {
+            Ok(v) => Outcome::ok(format!("[exit 0]\n{}",crate::jobs::render(&v))),
+            Err(e) => Outcome::err(format!("error: {e}")),
+        };
+    }
     let Some(command) = call.arg_str("command") else {
         return Outcome::err("error: `command` is required and must be a string".to_string());
     };
@@ -163,6 +185,9 @@ pub fn bash_with_approvals(
         return Outcome::err(format!("error: {error}"));
     }
     crate::sandbox::scrub_env(&mut builder);
+    if let Ok(exe) = std::env::current_exe() {
+        builder.env("GC_BIN", exe);
+    }
     let mut child = match builder.spawn() {
         Ok(c) => c,
         Err(e) => {

@@ -3,7 +3,7 @@
 A minimal coding harness. Two tools, one loop, native terminal.
 
 ```
-binary   ~3.7 MB   (stripped, lto=fat, codegen-units=1)
+binary   ~4.8 MB   (stripped, lto=fat, codegen-units=1)
 RSS      ~3.7 MB  idle
 startup  <10 ms
 tools    bash + state
@@ -57,6 +57,89 @@ build, test, and use git with it, and every tool we don't ship is schema the
 model pays for on every single request. `state` exists because with only `bash`
 there is no durable place for the model to record what it is doing, and that is
 exactly what context compaction needs to survive a long task.
+
+## Native files and owned background jobs
+
+The default model tools remain `bash` and `state`. Bash children receive `GC_BIN`,
+the absolute path of the running executable. The agent can load file helper
+instructions on demand with `"$GC_BIN" file --help`; there is no file-tool schema
+catalogue or always-running helper process.
+
+```bash
+"$GC_BIN" file read src/main.rs 1 120
+"$GC_BIN" file --json read src/main.rs
+"$GC_BIN" file check settings.json
+```
+
+`file read` returns numbered UTF-8 text and a whole-file SHA-256 revision.
+Reads show at most 24 KiB and 1,000 lines (200 by default), with explicit partial
+read metadata. Files are capped at 8 MiB; binary files and symlink paths are
+rejected. Use ordinary shell commands for larger/binary files.
+
+`file edit` and `file write` take JSON on stdin. Editing supports unique exact
+replacements or original-file line ranges, so the model need not reproduce an
+entire old block. Every operation validates before a batch commits:
+
+```json
+{"path":"src/main.rs","expected":"revision from file read","edits":[
+  {"start":12,"end":14,"text":"replacement lines"},
+  {"old":"unique exact text","new":"replacement"}
+]}
+```
+
+For insertion use `end=start-1`. Line ranges preserve the file's CRLF convention,
+BOM and final-newline behavior; exact replacements use explicit supplied text.
+`file write` accepts `path`, `expected`, and `text`; `expected:null` means
+create-only. Existing files require the current revision. At most 128 edit
+operations and one million indexed lines are accepted; exact edits need no line
+index. Unchanged writes avoid replacing the file.
+
+Mutations use a same-directory temporary file, atomic replacement, file syncing,
+and cooperative parent-directory locking. Stale revisions, overlapping edits,
+symlink traversal, special files and hard-linked targets are refused. Ordinary
+rwx bits are retained; special mode bits are dropped. External writers that do
+not share the lock can still race the final POSIX rename; this is not a claim
+of filesystem-wide compare-and-swap.
+
+Native previews color added/removed lines and syntax status. JSON checks are
+in process. `file check` or `validate:true` explicitly runs syntax-only checks
+for JSON, Python or JavaScript; Python/Node checks have a three-second deadline.
+Unavailable and unsupported checks are reported distinctly. Validation failure
+leaves the original unchanged; ordinary Python/JavaScript writes do not spawn
+checkers. Use project commands for compiler/type/test diagnostics. `--json`
+provides structured file and diagnostic results for headless callers.
+
+Bash also accepts a `job` object, without adding another model tool:
+
+```json
+{"command":"npm run dev","job":{"action":"start"}}
+{"job":{"action":"poll","id":1,"offset":0}}
+{"job":{"action":"input","id":1,"text":"hello\n"}}
+{"job":{"action":"input","id":1,"eof":true}}
+{"job":{"action":"stop","id":1}}
+```
+
+Poll using the returned `next_offset` to avoid replaying old output. Metadata
+includes state, exit code, captured/dropped bytes and whether pipes are still
+draining. Input reports accepted bytes; retry only the remaining bytes when
+stdin applies backpressure. Input is capped at 8 KiB; polling at 24 KiB; each
+job log at 4 MiB. Further output is drained and counted, not accumulated.
+These are pipe-based jobs, not a terminal emulator; use unbuffered output when
+the underlying program needs it.
+
+`/bg`, `/jobs`, and model jobs share the current session's registry. IDs are local
+to a session. Switching sessions retains jobs under their original owner; exiting
+the application stops owned process groups. Stop sends TERM, allows 250 ms for
+shutdown, then sends KILL and reaps the child. No detached persistence is promised;
+programs that deliberately escape their process group are outside job ownership.
+Shell permissions and explicit command approvals still apply.
+
+Tool count alone does not establish performance. The job schema adds 547 bytes
+to the compact OpenAI tool envelope (1,151 to 1,698 bytes for both tools); file
+helper guidance adds a small fixed prompt paragraph and full help is on demand.
+Matched model/task trials are required before claiming better coding success or
+lower total token cost. Local checks: `scripts/check-performance.py` and
+`scripts/check-native-performance.py`.
 
 ## Prompt caching
 

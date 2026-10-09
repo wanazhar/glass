@@ -304,16 +304,19 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
             "Run a shell command in the workspace. Use this for everything: reading files \
              (cat, sed, rg), writing them (cat > f, tee), searching (rg, fd, grep), \
              building, testing, and version control. Set `timeout_ms` for long commands; \
-             the default is 120000."
+             the default is 120000. Optional job object controls owned background jobs: \
+             action=start (with command), poll (id, offset), input (id, text, eof), stop (id), list. \
+             Job controls return immediately; poll incrementally using next_offset."
                 .to_string(),
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "description": "Shell command to run" },
                     "cwd": { "type": "string", "description": "Working directory, relative to the workspace root" },
-                    "timeout_ms": { "type": "integer", "description": "Kill the command after this many milliseconds" }
+                    "timeout_ms": { "type": "integer", "description": "Kill the command after this many milliseconds" },
+                    "job": {"type":"object","properties":{"action":{"type":"string","enum":["start","poll","input","stop","list"]},"id":{"type":"integer"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":24576},"text":{"type":"string"},"eof":{"type":"boolean"}},"required":["action"]}
                 },
-                "required": ["command"]
+                "anyOf": [{"required":["command"]},{"required":["job"]}]
             })
             .to_string(),
         ),
@@ -399,16 +402,14 @@ mod tests {
     }
 
     #[test]
-    fn bash_requires_command_but_state_requires_nothing() {
+    fn bash_accepts_command_or_owned_job_but_state_requires_nothing() {
         let tools = builtin_tools();
         let bash: Value = serde_json::from_str(&tools[0].2).unwrap();
         let state: Value = serde_json::from_str(&tools[1].2).unwrap();
-        assert!(
-            bash["required"]
-                .as_array()
-                .unwrap()
-                .contains(&Value::String("command".into()))
-        );
+        assert_eq!(tools.len(),2);
+        assert_eq!(bash["anyOf"][0]["required"][0],"command");
+        assert_eq!(bash["anyOf"][1]["required"][0],"job");
+        assert_eq!(bash["properties"]["job"]["required"][0],"action");
         // `state` must be callable with zero arguments, or the read-back path
         // the compaction flow depends on becomes awkward to express.
         assert!(state.get("required").is_none());

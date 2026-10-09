@@ -129,6 +129,8 @@ You have exactly two tools.
 write, search, edit, build, test, and use version control. There is no separate
 read, write, edit, or search tool. Prefer one command that does the job over
 several that each do a piece of it.
+Native file helpers: run `\"$GC_BIN\" file --help` for bounded reads, revision-checked
+range/exact edits, atomic writes, and syntax diagnostics. Prefer them for edits.
 
 `state` records durable notes that survive context compaction. Call it with a
 list of specific facts, file paths, decisions, and next steps whenever you

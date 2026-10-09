@@ -1546,11 +1546,9 @@ fn latest_reasoning(records: &[Record]) -> String {
 }
 
 fn tool_command(arguments: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(arguments)
-        .ok()?
-        .get("command")?
-        .as_str()
-        .map(str::to_owned)
+    let value=serde_json::from_str::<serde_json::Value>(arguments).ok()?;
+    value.get("command").and_then(|v|v.as_str()).map(str::to_owned)
+        .or_else(||value.get("job").map(crate::jobs::label))
 }
 
 fn readable_tool_call(name: &str, arguments: &str) -> String {

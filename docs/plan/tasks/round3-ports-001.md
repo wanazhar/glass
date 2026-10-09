@@ -31,7 +31,9 @@ Safety and stability:
 - `Registry::declared_tools` freezes the declared extension tool list after
   the first turn: it is part of the cacheable prefix, so a mid-session
   enable/disable is noted once in the transcript (`tool set frozen …`) and
-  applies to the next session. The cache warmer uses the same frozen list.
+  applies to the next session. Disable still stops the owned process
+  immediately; any remaining declared tool becomes unavailable. The cache
+  warmer uses the same frozen list.
 - `Record::Compacted` gains a `system` checkpoint, captured at each automatic
   compaction site in `agent.rs`; requests use it when present
   (`effective_system`), so a session resumed under changed prompt config

@@ -3,8 +3,8 @@
 //! Two tools, one loop, native terminal. Everything a mod can touch is in
 //! `glass-mod-api`; everything the model can call is in `provider::builtin_tools`.
 
-mod addons;
 mod acp;
+mod addons;
 mod agent;
 mod agents_md;
 mod auth;
@@ -17,8 +17,8 @@ mod config;
 mod export;
 mod ext;
 mod history;
-mod input;
 mod inbox;
+mod input;
 mod inspect;
 mod jobs;
 mod live;
@@ -34,8 +34,8 @@ mod pricing;
 mod profiles;
 mod provider;
 mod queue;
-mod readguard;
 mod reader;
+mod readguard;
 mod sandbox;
 mod serve;
 mod session;
@@ -49,8 +49,8 @@ mod tools;
 mod trust;
 mod verify;
 mod warmer;
-mod worktree;
 mod workflows;
+mod worktree;
 
 use std::io::Write;
 use std::path::Path;
@@ -338,7 +338,10 @@ fn code_review(
     /// degrade, and the cap keeps the delegated prompt bounded.
     const DIFF_CAP: usize = 96 * 1024;
     let diff = if diff.len() > DIFF_CAP {
-        format!("{}…\n[diff truncated at {DIFF_CAP} bytes]", &diff[..DIFF_CAP])
+        format!(
+            "{}…\n[diff truncated at {DIFF_CAP} bytes]",
+            &diff[..DIFF_CAP]
+        )
     } else {
         diff.to_string()
     };
@@ -352,9 +355,7 @@ fn code_review(
         read_only: true,
         ..Default::default()
     };
-    let make = |_: Option<&str>| -> Result<Box<dyn provider::Provider>, String> {
-        factory()
-    };
+    let make = |_: Option<&str>| -> Result<Box<dyn provider::Provider>, String> { factory() };
     let reports = crate::subagent::run_batch(&[task], 1, |t| {
         crate::subagent::run_task(t, workspace, scratch, &make)
     });
@@ -988,21 +989,25 @@ fn headless(
         let factory_for = Arc::clone(&sub_factory_for);
         let workspace = workspace.clone();
         let scratch = scratch.clone();
-        Box::new(move |tasks: &[ext::protocol::SubagentTask]| -> Vec<String> {
-            let make = |model: Option<&str>| -> Result<Box<dyn provider::Provider>, String> {
-                match model {
-                    Some(m) => (factory_for(m))(),
-                    None => factory(),
-                }
-            };
-            crate::subagent::run_batch(tasks, crate::subagent::MAX_CONCURRENT, |t| {
-                crate::subagent::run_task(t, &workspace, &scratch, &make)
-            })
-        })
+        Box::new(
+            move |tasks: &[ext::protocol::SubagentTask]| -> Vec<String> {
+                let make = |model: Option<&str>| -> Result<Box<dyn provider::Provider>, String> {
+                    match model {
+                        Some(m) => (factory_for(m))(),
+                        None => factory(),
+                    }
+                };
+                crate::subagent::run_batch(tasks, crate::subagent::MAX_CONCURRENT, |t| {
+                    crate::subagent::run_task(t, &workspace, &scratch, &make)
+                })
+            },
+        )
     });
     // Extensions rebuild durable state from the log once the
     // session is open: the log is the store.
-    extensions.seed_custom(&session.records);
+    if let Ok(records) = Session::raw_records(&session.path) {
+        extensions.seed_custom(&records);
+    }
     if !recovering {
         session.append(Record::User(prompt));
     }
@@ -1131,7 +1136,12 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
         ("sessions", "", "Browse project conversations", false),
         ("name", "[title]", "Name this conversation", false),
         ("skill-doctor", "", "Skill sizes and context cost", false),
-        ("code-review", "[max]", "Review the diff for bugs, read-only", false),
+        (
+            "code-review",
+            "[max]",
+            "Review the diff for bugs, read-only",
+            false,
+        ),
         ("retry", "", "Recover a failed response", false),
         ("details", "", "Expand tool activity and output", false),
         (
@@ -1165,11 +1175,31 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
         ("compact", "[focus]", "Compact the conversation now", false),
         ("diff", "[checkpoint]", "Review task changes", false),
         ("budget", "[USD|off]", "Show or set spending limit", false),
-        ("loop", "[interval] [prompt]", "Schedule a repeating prompt", false),
-        ("send", "[session-id] [message]", "Message another running session", false),
-        ("forget", "[turn]", "Hide a turn from future model context", false),
+        (
+            "loop",
+            "[interval] [prompt]",
+            "Schedule a repeating prompt",
+            false,
+        ),
+        (
+            "send",
+            "[session-id] [message]",
+            "Message another running session",
+            false,
+        ),
+        (
+            "forget",
+            "[turn]",
+            "Hide a turn from future model context",
+            false,
+        ),
         ("unforget", "[turn]", "Restore a forgotten turn", false),
-        ("rewrite", "[turn] [text]", "Rewrite a turn for future context", false),
+        (
+            "rewrite",
+            "[turn] [text]",
+            "Rewrite a turn for future context",
+            false,
+        ),
         ("branch", "[turn]", "Fork conversation history", false),
         ("checkpoint", "", "Save workspace baseline", false),
         ("checkpoints", "", "List saved checkpoints", false),
@@ -1467,8 +1497,7 @@ fn repl(
                     }
                     Some(1) => {
                         project_instructions = None;
-                        let _ =
-                            trust::remember(&cfg.workspace, &digest, trust::Decision::Deny);
+                        let _ = trust::remember(&cfg.workspace, &digest, trust::Decision::Deny);
                     }
                     _ => project_instructions = None,
                 }
@@ -1500,22 +1529,26 @@ fn repl(
         let factory_for = Arc::clone(&subagent_factory_for);
         let workspace = subagent_workspace.clone();
         let scratch = subagent_scratch.clone();
-        Box::new(move |tasks: &[ext::protocol::SubagentTask]| -> Vec<String> {
-            let make = |model: Option<&str>| -> Result<Box<dyn provider::Provider>, String> {
-                match model {
-                    Some(m) => (factory_for(m))(),
-                    None => factory(),
-                }
-            };
-            crate::subagent::run_batch(tasks, crate::subagent::MAX_CONCURRENT, |t| {
-                crate::subagent::run_task(t, &workspace, &scratch, &make)
-            })
-        })
+        Box::new(
+            move |tasks: &[ext::protocol::SubagentTask]| -> Vec<String> {
+                let make = |model: Option<&str>| -> Result<Box<dyn provider::Provider>, String> {
+                    match model {
+                        Some(m) => (factory_for(m))(),
+                        None => factory(),
+                    }
+                };
+                crate::subagent::run_batch(tasks, crate::subagent::MAX_CONCURRENT, |t| {
+                    crate::subagent::run_task(t, &workspace, &scratch, &make)
+                })
+            },
+        )
     };
     extensions.set_subagent(make_subagent);
     // Extensions rebuild durable state from the log once the
     // session is open: the log is the store.
-    extensions.seed_custom(&session.records);
+    if let Ok(records) = Session::raw_records(&session.path) {
+        extensions.seed_custom(&records);
+    }
 
     let mut totals = Totals::new();
     let painter = Painter::new();
@@ -2003,8 +2036,7 @@ fn repl(
                     // Posted as a system record so the findings
                     // are in the model's context for the fix, the
                     // same way Claude Code posts review output.
-                    session
-                        .append(Record::System(format!("code review findings:\n{report}")));
+                    session.append(Record::System(format!("code review findings:\n{report}")));
                     modal::info(&keys, "Code review", &report);
                 }
                 Err(e) => modal::info(&keys, "Code review", &e),
@@ -2675,7 +2707,13 @@ fn repl(
             let arg = text.strip_prefix("/export").unwrap_or("").trim();
             let default = format!("glass-session-{}.md", session.id);
             let path = if arg.is_empty() {
-                match modal::field(&keys, "Export session", "Write Markdown to", &default, false) {
+                match modal::field(
+                    &keys,
+                    "Export session",
+                    "Write Markdown to",
+                    &default,
+                    false,
+                ) {
                     Some(p) => p,
                     None => continue,
                 }

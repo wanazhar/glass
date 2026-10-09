@@ -220,7 +220,8 @@ impl Extension {
                     match parse_subagent_tasks(&v) {
                         Ok(tasks) => (tasks, true),
                         Err(e) => {
-                            let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
+                            let call_id =
+                                v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
                             self.reply(protocol::subagents_result_json(&call_id, &[], Some(&e)))?;
                             deadline = std::time::Instant::now()
                                 + std::time::Duration::from_millis(timeout_ms);
@@ -257,8 +258,7 @@ impl Extension {
                     let out = outputs.first().cloned().unwrap_or_default();
                     self.reply(protocol::subagent_result_json(&call_id, &out))?;
                 }
-                deadline =
-                    std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+                deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
                 continue;
             }
             if is_custom_append(&v) {
@@ -271,10 +271,7 @@ impl Extension {
                     .and_then(|k| k.as_str())
                     .unwrap_or("")
                     .to_string();
-                let data = v
-                    .get("data")
-                    .and_then(|d| d.as_str())
-                    .map(str::to_string);
+                let data = v.get("data").and_then(|d| d.as_str()).map(str::to_string);
                 let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
                 let (ok, error) = match self.append_custom(kind, data) {
                     Ok(()) => (true, None),
@@ -286,8 +283,7 @@ impl Extension {
                     &[],
                     error.as_deref(),
                 ))?;
-                deadline =
-                    std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+                deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
                 continue;
             }
             if is_custom_read(&v) {
@@ -298,14 +294,8 @@ impl Extension {
                     .to_string();
                 let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
                 let entries = self.read_custom(&kind);
-                self.reply(protocol::custom_result_json(
-                    &call_id,
-                    true,
-                    &entries,
-                    None,
-                ))?;
-                deadline =
-                    std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+                self.reply(protocol::custom_result_json(&call_id, true, &entries, None))?;
+                deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
                 continue;
             }
             if is_nested_call(&v) {
@@ -332,8 +322,7 @@ impl Extension {
 
                 let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
                 self.reply(protocol::nested_call_result_json(&call_id, &out))?;
-                deadline =
-                    std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+                deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
                 continue;
             }
             // A reply to an earlier fire-and-forget event. It is not the answer
@@ -564,16 +553,18 @@ impl Extension {
             .into_iter()
             .filter(|(kind, _)| kind.starts_with(&prefix))
             .collect();
-        if mine.is_empty() {
-            return;
-        }
+        let had_custom = !self.custom.is_empty();
+        self.custom.clear();
+        self.pending_custom.clear();
         for (kind, data) in &mine {
             self.custom.insert(kind.clone(), data.clone());
         }
         // Best-effort: an extension that does not answer the
         // seed keeps working, it just starts with empty state.
-        let req = Request::SeedCustom { entries: mine };
-        let _ = self.request(&req, REQUEST_TIMEOUT_MS, None);
+        if !mine.is_empty() || had_custom {
+            let req = Request::SeedCustom { entries: mine };
+            let _ = self.request(&req, REQUEST_TIMEOUT_MS, None);
+        }
     }
 
     /// The extension's entries for one kind, seeded and

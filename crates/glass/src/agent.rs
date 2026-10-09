@@ -425,7 +425,10 @@ impl<'a> Agent<'a> {
         if !diff.added.is_empty() || !diff.removed.is_empty() {
             let mut note = String::from("tool set frozen for prompt-cache stability");
             if !diff.added.is_empty() {
-                note.push_str(&format!("; not loaded this session: {}", diff.added.join(", ")));
+                note.push_str(&format!(
+                    "; not loaded this session: {}",
+                    diff.added.join(", ")
+                ));
             }
             if !diff.removed.is_empty() {
                 note.push_str(&format!("; still declared: {}", diff.removed.join(", ")));
@@ -705,7 +708,9 @@ impl<'a> Agent<'a> {
                 // not fit (the Crush #3620 cascade). Recovery only fires when
                 // something actually got freed; otherwise the original error
                 // is the honest report.
-                Err(e) if !self.overflow_recovered && compact::looks_like_overflow(&e.to_string()) => {
+                Err(e)
+                    if !self.overflow_recovered && compact::looks_like_overflow(&e.to_string()) =>
+                {
                     self.overflow_recovered = true;
                     if !self.force_compact() {
                         return Err(e);
@@ -1256,7 +1261,8 @@ impl<'a> Agent<'a> {
             // The bridge lets an extension call tools on the host while it
             // runs — only `bash` and `state`, the model's own tools.
             let out = with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
-                self.extensions.run_tool(&call.name, &call.arguments, bridge)
+                self.extensions
+                    .run_tool(&call.name, &call.arguments, bridge)
             });
             match out {
                 Some(out) => outcome.body = out,
@@ -1350,16 +1356,12 @@ impl<'a> Agent<'a> {
     /// history keeps the prompt it was made under, until the next
     /// compaction re-captures the current one.
     fn effective_system(&self) -> String {
-        self.session
-            .records
-            .iter()
-            .rev()
-            .find_map(|r| match r {
-                Record::Compacted {
-                    system: Some(system), ..
-                } => Some(system.clone()),
-                _ => None,
-            })
+        if self.read_only {
+            return self.system_prompt();
+        }
+        crate::session::Session::raw_records(&self.session.path)
+            .ok()
+            .and_then(|records| latest_system_checkpoint(&records))
             .unwrap_or_else(|| self.system_prompt())
     }
 
@@ -1583,6 +1585,17 @@ impl<'a> Agent<'a> {
     }
 }
 
+fn latest_system_checkpoint(records: &[Record]) -> Option<String> {
+    records
+        .iter()
+        .rev()
+        .find_map(|record| match record {
+            Record::Compacted { system, .. } => Some(system.clone()),
+            _ => None,
+        })
+        .flatten()
+}
+
 #[cfg(test)]
 mod warm_integration {
     use super::*;
@@ -1593,6 +1606,32 @@ mod warm_integration {
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn latest_checkpoint_including_none_is_authoritative() {
+        let checkpoint = |system| Record::Compacted {
+            kept: 0,
+            dropped: 0,
+            summary: None,
+            tail_start: 0,
+            system,
+        };
+        assert_eq!(
+            latest_system_checkpoint(&[checkpoint(Some("old".into()))]),
+            Some("old".into())
+        );
+        assert_eq!(
+            latest_system_checkpoint(&[checkpoint(Some("old".into())), checkpoint(None)]),
+            None
+        );
+        assert_eq!(
+            latest_system_checkpoint(&[
+                checkpoint(Some("saved".into())),
+                Record::Assistant("tail".into())
+            ]),
+            Some("saved".into())
+        );
+    }
 
     /// Does nothing with input. A named function rather
     /// than a closure so it is generic over the borrow
@@ -1797,10 +1836,7 @@ mod warm_integration {
         fn id(&self) -> &str {
             "capturing"
         }
-        fn stream(
-            &self,
-            req: &Request<'_>,
-        ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+        fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
             self.tools
                 .lock()
                 .unwrap()
@@ -1950,7 +1986,9 @@ for line in sys.stdin:
         let mut session = Session::create(&dir).unwrap();
         for i in 0..30 {
             session.append(Record::User(format!("question number {i} with some words")));
-            session.append(Record::Assistant(format!("answer number {i} with some words")));
+            session.append(Record::Assistant(format!(
+                "answer number {i} with some words"
+            )));
         }
         let mut state = State::new();
         let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
@@ -2136,7 +2174,10 @@ mod recovery_tests {
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1, "no recovery for a 400");
         assert!(
-            session.records.iter().all(|r| !matches!(r, Record::Meta(_))),
+            session
+                .records
+                .iter()
+                .all(|r| !matches!(r, Record::Meta(_))),
             "a bare refusal leaves no partial-response meta behind"
         );
         let _ = std::fs::remove_dir_all(&dir);

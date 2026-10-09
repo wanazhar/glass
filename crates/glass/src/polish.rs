@@ -213,7 +213,7 @@ pub fn browser(
                 ) == Some(1)
                 {
                     std::fs::remove_file(&s.path).map_err(|e| e.to_string())?;
-                    for ext in ["meta.json", "cost.json"] {
+                    for ext in ["meta.json", "cost.json", "context"] {
                         let p = s.path.with_extension(ext);
                         if p.exists() {
                             std::fs::remove_file(p).map_err(|e| e.to_string())?;
@@ -325,7 +325,7 @@ pub fn context_report(
 ) -> String {
     let messages = s.messages();
     let instruction_files = agents_md::load(&cfg.workspace)
-        .into_iter()
+        .into_iter().filter(|i| instructions.as_ref().is_some_and(|text| text.contains(&format!("path=\"{}\"", i.path.display()))))
         .map(|i| {
             format!(
                 "{}{}",
@@ -425,8 +425,10 @@ pub fn context_report(
                 .join("\n")
         }
     };
+    let historical = crate::context_audit::reports(s);
+    let latest = historical.last().map(String::as_str).unwrap_or("No request context recorded yet (older sessions may lack manifests).");
     format!(
-        "Model: {}\nEstimated context: {estimate} tokens (includes prompt text; excludes tool schemas)\nMessages: {}\nSystem prompt: {} bytes\nSkill catalogue: {} bytes\n\nLoaded instructions:\n{}\n\nAttached files:\n{}\n\nContext edits:\n{edits}\n\nCompaction:\n{}",
+        "Last request context:\n{latest}\n\nModel: {}\nCurrent configuration (not a historical request):\nEstimated context: {estimate} tokens (includes prompt text; excludes tool schemas)\nMessages: {}\nSystem prompt: {} bytes\nSkill catalogue: {} bytes\n\nLoaded instructions:\n{}\n\nAttached files:\n{}\n\nContext edits:\n{edits}\n\nCompaction:\n{}",
         cfg.model,
         messages.len(),
         cfg.system_prompt.len(),
@@ -458,6 +460,7 @@ pub fn context(
             "Read loaded instructions".into(),
             "Read system prompt".into(),
             "Read skill catalogue".into(),
+            "Inspect past model requests".into(),
         ];
         let m = metadata(s);
         rows.extend(
@@ -494,9 +497,19 @@ pub fn context(
                 "Skill catalogue",
                 catalogue.as_deref().unwrap_or("No skill catalogue loaded."),
             ),
+            Some(5) => {
+                let reports = crate::context_audit::reports(s);
+                if reports.is_empty() { modal::info(keys, "Model requests", "No request context recorded yet."); }
+                else {
+                    let rows = reports.iter().enumerate().rev().map(|(i,_)|format!("Request {}",i+1)).collect::<Vec<_>>();
+                    if let Some(i) = modal::choose(keys, "Model requests", "Newest first · captured before dispatch", &rows) {
+                        modal::info(keys, "Request context", &reports[reports.len()-1-i]);
+                    }
+                }
+            }
             Some(i) => {
                 let mut m = metadata(s);
-                m.attachments.remove(i - 5);
+                m.attachments.remove(i - 6);
                 save(s, &m)?;
             }
             None => return Ok(()),

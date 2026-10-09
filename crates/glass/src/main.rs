@@ -14,6 +14,7 @@ mod checkpoint;
 mod compact;
 mod concurrency;
 mod config;
+mod context_audit;
 mod doctor;
 mod export;
 mod ext;
@@ -3185,8 +3186,10 @@ fn repl(
                     for w in &out.warnings {
                         ui_println!("\x1b[33m⚠ {w}\x1b[0m");
                     }
+                    ui_println!("\x1b[90mContext: request {} · /context\x1b[0m", context_audit::reports(&session).len());
                     if let Some(u) = out.usage {
                         totals.add(&u);
+                        totals.last_input = out.last_input.map(u64::from);
                         let card = cfg.rate_card(&cfg.model);
                         let width = term_size().0 as usize;
                         let l = ledger.lock().unwrap();
@@ -3197,23 +3200,15 @@ fn repl(
                         };
                         if width < 80 {
                             let mut rows = vec![format!(
-                                "{} in · {} out",
+                                "Turn: {} input · {} output",
                                 compact(u.prompt_total() as u64),
                                 compact(u.output as u64)
                             )];
                             let window = provider.context_window();
-                            rows.push(if window == 0 {
-                                format!(
-                                    "{} session tok",
-                                    compact(totals.prompt_total() + totals.output)
-                                )
-                            } else {
-                                format!(
-                                    "{} tok · {}% ctx",
-                                    compact(totals.prompt_total() + totals.output),
-                                    (totals.prompt_total() * 100 / window as u64).min(999)
-                                )
-                            });
+                            rows.push(format!("{} session total tokens", compact(totals.prompt_total() + totals.output)));
+                            if let Some(input) = totals.last_input.filter(|_| window > 0) {
+                                rows.push(format!("{}% context", (input * 100 / window as u64).min(999)));
+                            }
                             rows.push(cost);
                             for row in rows {
                                 for line in
@@ -3529,7 +3524,7 @@ fn usage_line(u: &provider::Usage, card: Option<&pricing::RateCard>, narrow: boo
     } else {
         thousands(u.output)
     };
-    format!("\x1b[90m  {total} in / {output} out{cached}{cost}\x1b[0m")
+    format!("\x1b[90m  {total} input / {output} output{cached}{cost}\x1b[0m")
 }
 
 /// Running token totals for the whole session.
@@ -3544,11 +3539,13 @@ struct Totals {
     cache_read: u64,
     cache_write: u64,
     output: u64,
+    last_input: Option<u64>,
 }
 
 impl Totals {
     fn new() -> Self {
         Self {
+            last_input: None,
             turns: 0,
             input: 0,
             cache_read: 0,
@@ -3558,6 +3555,7 @@ impl Totals {
     }
 
     fn add(&mut self, u: &provider::Usage) {
+        self.last_input = Some(u.prompt_total() as u64);
         self.turns += 1;
         self.input += u.input as u64;
         self.cache_read += u.cache_read as u64;
@@ -3580,12 +3578,8 @@ impl Totals {
     /// wraps mid-number.
     fn suffix(&self, window: u32, card: Option<&pricing::RateCard>, narrow: bool) -> String {
         let tok = self.prompt_total() + self.output;
-        let fill = if window == 0 {
-            None
-        } else {
-            let f = (self.prompt_total() as f64 / window as f64 * 100.0).round() as u32;
-            Some(f.min(999))
-        };
+        let fill = self.last_input.filter(|_| window > 0)
+            .map(|input| ((input as f64 / window as f64 * 100.0).round() as u32).min(999));
         let cost = card
             .map(|c| format!(" · {}", pricing::money(self.total_cost(c))))
             .unwrap_or_default();
@@ -3598,14 +3592,14 @@ impl Totals {
             // Near the window, compaction is close: flag it so
             // the fill is visible rather than discovered mid-task.
             Some(f) if f >= 80 => format!(
-                "\x1b[90m{lead}{tok} tok · \x1b[33m{f}% ctx\x1b[90m{cost}\x1b[0m",
+                "\x1b[90m{lead}{tok} total tokens · \x1b[33m{f}% ctx\x1b[90m{cost}\x1b[0m",
                 tok = compact(tok),
             ),
             Some(f) => format!(
-                "\x1b[90m{lead}{tok} tok · {f}% ctx{cost}\x1b[0m",
+                "\x1b[90m{lead}{tok} total tokens · {f}% ctx{cost}\x1b[0m",
                 tok = compact(tok),
             ),
-            None => format!("\x1b[90m{lead}{tok} tok{cost}\x1b[0m", tok = compact(tok),),
+            None => format!("\x1b[90m{lead}{tok} total tokens{cost}\x1b[0m", tok = compact(tok),),
         }
     }
 
@@ -4271,6 +4265,16 @@ mod totals_tests {
     }
 
     #[test]
+    fn context_fill_uses_last_request_not_session_spend() {
+        let mut t = Totals::new();
+        t.add(&u(900, 0, 0, 100));
+        t.add(&u(100, 0, 0, 10));
+        let line = t.suffix(1000, None, false);
+        assert!(line.contains("10% ctx"), "{line}");
+        assert!(line.contains("1,110 total tokens"), "{line}");
+    }
+
+    #[test]
     fn compact_abbreviates_large_counts() {
         assert_eq!(compact(9_999), "9,999");
         assert_eq!(compact(12_345), "12.3k");
@@ -4310,8 +4314,8 @@ mod totals_tests {
         // Narrow counts are compact, so the line stays
         // inside a phone-width terminal.
         let narrow = super::usage_line(&u(1_000_000, 0, 0, 0), Some(&card), true);
-        assert!(narrow.contains("1.0M in"), "{narrow}");
-        assert!(narrow.chars().count() < 60, "{narrow}");
+        assert!(narrow.contains("1.0M input"), "{narrow}");
+        assert!(narrow.chars().count() < 72, "{narrow}");
     }
 }
 

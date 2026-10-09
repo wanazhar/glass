@@ -62,7 +62,7 @@ exactly what context compaction needs to survive a long task.
 
 glass-core caches aggressively and shows the hit rate after every turn:
 
-     12,350 in / 3 out · cache 97% · $0.041
+     12,350 input / 3 output · cache 97% · $0.041
 
 The dollar tail is the turn's cost, from a rate card. Anthropic's
 list prices are built in for the default provider; any other model
@@ -471,8 +471,20 @@ binding when explicitly resumed, and then appear in that project's browser.
 current title, and an empty field falls back to the first message. `glass-core
 list` shows titles, and so does `/sessions`.
 
-`/context` shows estimated context usage, the loaded system prompt and project
-instructions, the skill catalogue, attachments, and compaction summaries.
+`/context` shows the last foreground model request and a browser of past requests,
+plus current prompt configuration, attachments, context edits, and compaction.
+Request manifests record instruction/attachment paths and byte counts, available
+tools and schema sizes, history counts, and which skill descriptions were supplied.
+Skill bodies are loaded on demand through tools; inspect `/details` for commands
+and results. Manifests describe supplied context, not proof the model read it.
+They are saved as metadata in a private `.context` sidecar beside the session log,
+never added to model history or compaction. Older sessions lack these manifests.
+Headless access: `glass-core context SESSION_ID --json`.
+
+The footer labels turn **input/output** separately from **session total tokens**
+accumulated during this run. Context fill uses the latest model request input,
+not summed usage across tool rounds. Manifest token estimates include tool schemas
+and a rough image allowance; provider-reported usage remains authoritative.
 `/attach` opens a searchable project file picker; `/attach path` also works.
 Text attachments are saved UTF-8 snapshots, capped at 32 KiB per file and
 128 KiB in total. Images (PNG, JPEG, GIF, WebP) attach as pictures instead:

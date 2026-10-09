@@ -104,14 +104,35 @@ def plugin_receipts(plugins):
         return {}, True
     try:
         lock = json.loads(raw)
-        entries = lock.get("plugins") if isinstance(lock, dict) else None
+        entries = lock.get("plugins", {}) if isinstance(lock, dict) else None
         if not isinstance(entries, dict):
             raise ValueError("plugins must be an object")
         for name, receipt in entries.items():
             if not isinstance(name, str) or not isinstance(receipt, dict):
                 raise ValueError("invalid plugin receipt entry")
-            if not isinstance(receipt.get("hash"), str) or len(receipt["hash"]) != 64:
+            source = receipt.get("source")
+            if not isinstance(source, str) or not source or len(source.encode("utf-8")) > 16_384:
+                raise ValueError(f"invalid source in plugin receipt for {name}")
+            file_hash = receipt.get("hash")
+            if not isinstance(file_hash, str) or len(file_hash) != 64 or any(c not in "0123456789abcdef" for c in file_hash):
                 raise ValueError(f"invalid SHA256 receipt for {name}")
+            version = receipt.get("version")
+            if not isinstance(version, str) or not version or len(version) > 256:
+                raise ValueError(f"invalid version in plugin receipt for {name}")
+            revision = receipt.get("revision")
+            if revision is not None and (
+                not isinstance(revision, str)
+                or len(revision) != 40
+                or any(c not in "0123456789abcdefABCDEF" for c in revision)
+            ):
+                raise ValueError(f"invalid revision in plugin receipt for {name}")
+            capabilities = receipt.get("capabilities")
+            if not isinstance(capabilities, dict) or any(
+                key not in {"filesystem", "network", "subprocess"} for key in capabilities
+            ):
+                raise ValueError(f"invalid capabilities in plugin receipt for {name}")
+            if len(json.dumps(capabilities, separators=(",", ":")).encode("utf-8")) > 16_384:
+                raise ValueError(f"capabilities exceed size limit for {name}")
         return entries, False
     except (ValueError, UnicodeDecodeError, TypeError) as error:
         print(f"mcp-bridge: invalid plugin integrity receipts: {error}; plugin MCP disabled", file=sys.stderr)

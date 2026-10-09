@@ -1,0 +1,36 @@
+name: Performance smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'crates/glass/**'
+      - 'scripts/check-performance.py'
+      - '.github/workflows/performance.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  performance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked --package glass-core --bin glass-core
+      - name: Measure startup, PTY key repaint, and long history
+        env:
+          GLASS_CORE_TEST_BINARY: ${{ github.workspace }}/target/release/glass-core
+          GC_PERF_REPORT: perf-report.json
+          GC_PERF_STARTUP_BUDGET_MS: '1500'
+          GC_PERF_KEY_BUDGET_MS: '1500'
+          GC_PERF_HISTORY_BUDGET_MS: '10000'
+          GC_PERF_RSS_BUDGET_KIB: '524288'
+        run: python3 scripts/check-performance.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: glass-core-performance-${{ github.run_id }}
+          path: perf-report.json
+          if-no-files-found: warn

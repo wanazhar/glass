@@ -96,7 +96,7 @@ with tempfile.TemporaryDirectory(prefix='gc-motion-') as tmp:
             key(t, 'tool draft'); t.visible('tool draft'); collect(t, .25); assert 'tool draft' in t.screen.text()
             t.wait('Finished.'); t.visible('❯ tool draft'); assert not re.search(r'[◐◓◑◒]', collect(t, .3)); key(t, '\x15'); t.idle()
             # Delayed catalog checks animate inside an alternate-screen modal.
-            Endpoint.models.clear(); t.send('/doctor'); t.visible('Provider diagnostics'); choose(t, 'Check connection'); t.visible('Checking provider')
+            Endpoint.models.clear(); t.send('/doctor'); t.visible('Diagnostics'); choose(t, 'Check connection'); t.visible('Checking provider')
             output = collect(t); assert len(set(re.findall(r'[◐◓◑◒]', output))) >= 3
             assert '\x1b[38;5;81m' in output and '\x1b[38;5;183m' in output
             key(t, '\x1b'); t.wait('\x1b[?25h'); t.idle(); Endpoint.models.set()

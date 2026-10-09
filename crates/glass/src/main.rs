@@ -4172,7 +4172,7 @@ fn view_transcript(
     surface::overlay(true).map_err(|e| e.to_string())?;
     let mut transcript = glass_tui::Transcript::new(session.history_entries());
     if page_up {
-        transcript.page(-1, term_size().1);
+        transcript.page(-1, term_size().1.saturating_sub(2));
     }
     let mut tui = Terminal::new(glass_tui::ratatui::backend::CrosstermBackend::new(
         glass_tui::theme::TerminalWriter(std::io::stdout()),
@@ -4194,7 +4194,7 @@ fn view_transcript(
         loop {
             // Viewport height is needed to clamp paging against the real
             // window, which can change between frames.
-            let height = tui.size().map(|r| r.height).unwrap_or(24);
+            let height = tui.size().map(|r| glass_tui::Transcript::content_rect(r.into()).height).unwrap_or(22);
             tui.draw(|f| transcript.draw(f, loaded, &session.id))
                 .map_err(|e| e.to_string())?;
 

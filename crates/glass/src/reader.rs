@@ -6,7 +6,7 @@ use glass_tui::{
     theme::TerminalWriter,
 };
 use std::collections::{HashMap, HashSet};
-use std::io;
+use std::io::{self, Write};
 
 type Tui = Terminal<CrosstermBackend<TerminalWriter<io::Stdout>>>;
 
@@ -36,10 +36,11 @@ impl Reader {
         let loaded_spills = HashMap::new();
         let mut transcript =
             Transcript::new(render_entries(&entries, &HashSet::new(), &loaded_spills));
-        transcript.set_width(rect.width);
-        transcript.follow_tail(rect.height);
+        let content = Transcript::content_rect(rect);
+        transcript.set_width(content.width);
+        transcript.follow_tail(content.height);
         if page_up {
-            transcript.page(-1, rect.height);
+            transcript.page(-1, content.height);
         }
         let mut reader = Self {
             terminal,
@@ -89,7 +90,7 @@ impl Reader {
     }
 
     pub fn event(&mut self, event: &Event) -> io::Result<Action> {
-        let area = body_rect();
+        let area = Transcript::content_rect(body_rect());
         let draw;
         match event {
             Event::Resize(_, _) => {
@@ -188,6 +189,8 @@ impl Reader {
                     }
                     KeyCode::Char('g' | 't') if ctrl => return Ok(Action::CloseAndPass),
                     KeyCode::Home if ctrl => self.transcript.top(),
+                    KeyCode::Up => self.transcript.step(-1, area.height),
+                    KeyCode::Down => self.transcript.step(1, area.height),
                     KeyCode::PageUp => self.transcript.step(-(area.height as isize), area.height),
                     KeyCode::PageDown => self.transcript.step(area.height as isize, area.height),
                     KeyCode::Char('b') if ctrl => {
@@ -256,23 +259,31 @@ impl Reader {
                 )
             }
         } else if self.transcript.follow {
-            "PgUp/Ctrl+B ↑ · PgDn/Ctrl+F ↓ · End/Esc bottom · Wheel".to_string()
+            "PgUp/↑ · PgDn/↓ · End/Esc bottom · Wheel".to_string()
         } else if self.unread == 0 {
             "End / Esc back to bottom".to_string()
         } else {
             format!("End / Esc bottom · {} new updates", self.unread)
         };
         self.transcript.set_inline_hint(Some(hint));
-        self.terminal.draw(|frame| {
+        // Publish a complete frame, including cursor restoration, together.
+        // Otherwise phone/SSH terminals can show intermediate differential rows.
+        let mut stdout = io::stdout();
+        stdout.write_all(b"\x1b[?2026h")?;
+        stdout.flush()?;
+        let result = self.terminal.draw(|frame| {
             self.transcript.draw(frame, &[], "Conversation");
-        })?;
+        });
         crate::surface::restore_composer_cursor();
+        stdout.write_all(b"\x1b[?2026l")?;
+        stdout.flush()?;
+        result?;
         crate::surface::reader_drawn();
         Ok(())
     }
 
     fn visible_tool_card_index(&self) -> Option<usize> {
-        let area = body_rect();
+        let area = Transcript::content_rect(body_rect());
         let first = self.transcript.layout.entry_at_line(self.transcript.scroll);
         if self
             .entries
@@ -317,8 +328,7 @@ impl Reader {
             .line_for_entry(index + 1)
             .unwrap_or_else(|| self.transcript.layout.total_lines());
         let last = end.saturating_sub(1);
-        // Transcript reserves one row for its inline controls hint.
-        let page = height.saturating_sub(1).max(1) as usize;
+        let page = height.max(1) as usize;
         let max_scroll = self.transcript.layout.total_lines().saturating_sub(page);
         self.transcript.scroll = last.saturating_sub(page.saturating_sub(1)).min(max_scroll);
         self.transcript.follow = false;
@@ -352,7 +362,7 @@ impl Reader {
             ));
         }
         self.match_count = self.transcript.search(query);
-        self.align_selected_card_end(body_rect().height);
+        self.align_selected_card_end(Transcript::content_rect(body_rect()).height);
     }
 }
 
@@ -399,7 +409,9 @@ fn render_entries(
 
 fn body_rect() -> Rect {
     let (x, y, width, height) = crate::surface::body_rect();
-    Rect::new(x, y, width.max(1), height.max(1))
+    // Keep the physical rightmost column untouched on SSH terminals that wrap
+    // immediately when the bottom-right scroll-region cell is painted.
+    Rect::new(x, y, width.saturating_sub(1).max(1), height.max(1))
 }
 
 fn make_terminal(rect: Rect) -> io::Result<Tui> {

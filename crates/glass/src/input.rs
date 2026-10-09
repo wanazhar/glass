@@ -56,19 +56,85 @@ fn bounded_text(value: Option<&Value>, limit: usize) -> Result<String, String> {
     Ok(text.to_string())
 }
 
+/// Heuristic screening for common credential names and prose. It cannot prove
+/// that an innocently named field is harmless; the form UI states this limit
+/// and makes the user review the requested fields before submission.
 fn sensitive_name(name: &str) -> bool {
-    let normalized = name.to_ascii_lowercase().replace(['_', '-'], " ");
-    [
+    let chars: Vec<char> = name.chars().collect();
+    let mut words = Vec::new();
+    let mut word = String::new();
+    for (index, ch) in chars.iter().copied().enumerate() {
+        if !ch.is_ascii_alphanumeric() {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+            continue;
+        }
+        if ch.is_ascii_uppercase() && !word.is_empty() {
+            let previous = chars[index - 1];
+            let next_is_lower = chars
+                .get(index + 1)
+                .is_some_and(|next| next.is_ascii_lowercase());
+            if previous.is_ascii_lowercase()
+                || previous.is_ascii_digit()
+                || (previous.is_ascii_uppercase() && next_is_lower)
+            {
+                words.push(std::mem::take(&mut word));
+            }
+        }
+        word.push(ch.to_ascii_lowercase());
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+
+    const CREDENTIAL_WORDS: &[&str] = &[
         "password",
+        "passphrase",
         "secret",
         "token",
-        "api key",
         "credential",
+        "credentials",
         "authorization",
-        "private key",
+        "authentication",
+        "bearer",
+        "cvv",
+        "cvc",
+    ];
+    if words
+        .iter()
+        .any(|word| CREDENTIAL_WORDS.contains(&word.as_str()))
+    {
+        return true;
+    }
+
+    let has_sequence = |sequence: &[&str]| {
+        words.windows(sequence.len()).any(|candidate| {
+            candidate
+                .iter()
+                .map(String::as_str)
+                .eq(sequence.iter().copied())
+        })
+    };
+    [
+        &["api", "key"][..],
+        &["access", "key"],
+        &["private", "key"],
+        &["secret", "key"],
+        &["signing", "key"],
+        &["encryption", "key"],
+        &["client", "secret"],
+        &["access", "token"],
+        &["refresh", "token"],
+        &["id", "token"],
+        &["aws", "access", "key", "id"],
+        &["aws", "secret", "access", "key"],
+        &["card", "number"],
+        &["security", "code"],
+        &["payment", "credential"],
     ]
     .iter()
-    .any(|needle| normalized.contains(needle))
+    .any(|sequence| has_sequence(sequence))
 }
 
 fn choices(schema: &Value) -> Result<Vec<(Value, String)>, String> {
@@ -191,7 +257,7 @@ impl ElicitationRequest {
         }
         let mut fields = Vec::new();
         for (name, spec) in properties {
-            if name.len() > 128 || sensitive_name(name) || !spec.is_object() {
+            if name.len() > 128 || !spec.is_object() {
                 return Err("sensitive or unsupported form field".into());
             }
             if spec.as_object().unwrap().keys().any(|k| {
@@ -217,6 +283,9 @@ impl ElicitationRequest {
             }
             let title = bounded_text(spec.get("title"), 256)?;
             let description = bounded_text(spec.get("description"), 512)?;
+            if sensitive_name(name) || sensitive_name(&title) || sensitive_name(&description) {
+                return Err("form fields cannot request passwords, tokens, API keys, or payment credentials".into());
+            }
             let ty = spec.get("type").and_then(Value::as_str).unwrap_or("");
             let (kind, opts) = if ty == "array" {
                 if spec
@@ -357,7 +426,14 @@ impl ElicitationRequest {
                 json!({"action": match choice { Some(0) => "accept", Some(2) => "cancel", _ => "decline" }}),
             );
         }
-        modal::info(keys, &title, &self.message);
+        modal::info(
+            keys,
+            &title,
+            &format!(
+                "{}\n\nThis in-band form must not request passwords, access tokens, API keys, or payment credentials. Name and description checks are heuristic, so review each field before submitting.",
+                self.message
+            ),
+        );
         let mut content = Map::new();
         for field in &self.fields {
             let value = if !field.choices.is_empty() && field.kind == "string" {
@@ -699,5 +775,29 @@ mod tests {
             parsed.url.as_deref(),
             Some("https://login.example.test/oauth/start?state=opaque")
         );
+    }
+
+    #[test]
+    fn elicitation_rejects_common_credential_names_and_sensitive_metadata() {
+        for name in [
+            "APIKey",
+            "apiKey",
+            "privateKey",
+            "accessKey",
+            "clientSecret",
+            "AWS_ACCESS_KEY_ID",
+            "refreshToken",
+        ] {
+            let request = json!({"message":"Continue", "requestedSchema":{"type":"object","properties":{name:{"type":"string"}}}});
+            assert!(
+                ElicitationRequest::parse("fixture", &request).is_err(),
+                "accepted {name}"
+            );
+        }
+        let title = json!({"message":"Continue", "requestedSchema":{"type":"object","properties":{"value":{"type":"string","title":"API key"}}}});
+        assert!(ElicitationRequest::parse("fixture", &title).is_err());
+        let description = json!({"message":"Continue", "requestedSchema":{"type":"object","properties":{"value":{"type":"string","description":"Paste the bearer token from your account"}}}});
+        assert!(ElicitationRequest::parse("fixture", &description).is_err());
+        assert!(!sensitive_name("keyboard_layout"));
     }
 }

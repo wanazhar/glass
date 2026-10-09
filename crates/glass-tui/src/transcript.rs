@@ -353,7 +353,12 @@ impl Transcript {
 
         let total = self.layout.total_lines();
         if total > 0 {
-            let mut sb = ScrollbarState::new(total.saturating_sub(1)).position(self.scroll);
+            // Ratatui expects the number of scroll positions, not total
+            // wrapped lines. The last legal offset is total - viewport.
+            let viewport = usize::from(content.height);
+            let mut sb = ScrollbarState::new(total.saturating_sub(viewport) + 1)
+                .viewport_content_length(viewport)
+                .position(self.scroll);
             frame.render_stateful_widget(
                 Scrollbar::new(ScrollbarOrientation::VerticalRight),
                 view,
@@ -528,6 +533,26 @@ mod tests {
             assert!(text.contains("TAIL"), "{width}x{height}: {text}");
             assert_eq!(transcript.scroll,
                 transcript.layout.total_lines().saturating_sub(content.height as usize));
+        }
+    }
+
+    #[test]
+    fn scrollbar_thumb_reaches_both_ends_for_each_viewport() {
+        use ratatui::{Terminal, backend::TestBackend};
+        for (width, height) in [(80, 24), (40, 19), (20, 8), (19, 4)] {
+            for count in [1, 15, 100] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                let mut transcript = Transcript::new(entries(count));
+                transcript.top();
+                terminal.draw(|frame| transcript.draw(frame, &[], "Log")).unwrap();
+                assert_eq!(terminal.backend().buffer()[(width - 1, 1)].symbol(), "█",
+                    "top: {width}x{height}, {count} entries");
+                transcript.follow = true;
+                terminal.draw(|frame| transcript.draw(frame, &[], "Log")).unwrap();
+                // Last track cell is above the down arrow and controls row.
+                assert_eq!(terminal.backend().buffer()[(width - 1, height - 3)].symbol(), "█",
+                    "bottom: {width}x{height}, {count} entries");
+            }
         }
     }
 

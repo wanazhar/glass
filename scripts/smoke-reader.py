@@ -57,10 +57,25 @@ with tempfile.TemporaryDirectory(prefix='gc-reader-pty-') as tmp:
     env = dict(os.environ, XDG_CONFIG_HOME=str(root / 'config'), XDG_DATA_HOME=str(root / 'data'))
     env.pop('NO_COLOR', None)  # This PTY checks diff foreground colors explicitly.
     binary = os.environ.get('GLASS_CORE_TEST_BINARY', str(Path(__file__).resolve().parents[1] / 'target/debug/glass-core'))
-    for size in [(40, 24), (20, 8)]:
+    for size in [(40, 24), (20, 12), (20, 8)]:
         terminal = Terminal(repo, env, size, args=('resume', 'reader-fixture'))
         try:
             terminal.idle()
+            terminal.send('\x02')  # Open reader, then jump to the absolute top.
+            terminal.send('\x1b[1;5H')
+            terminal.collect(.2)
+            bar = [row[size[0]-2] for row in terminal.vt.active.display]
+            if size[1] > 8:
+                assert bar[1] == '█', (size, bar, terminal.vt.text())
+            terminal.send('\x1b[F')  # End follows the tail.
+            terminal.collect(.2)
+            bar = [row[size[0]-2] for row in terminal.vt.active.display]
+            # Body height excludes the five composer/status rows; its final
+            # three rows hold last track cell, arrow and reader controls.
+            if size[1] > 8:
+                assert bar[size[1]-8] == '█', (size, bar, terminal.vt.text())
+            terminal.send('\x1b')
+            terminal.collect(.1)
             terminal.send('DRAFT_REMAINS')
             terminal.collect(.2)
             terminal.send('\x06')  # Ctrl+F opens directly into reader search.
@@ -207,4 +222,4 @@ with tempfile.TemporaryDirectory(prefix='gc-reader-pty-') as tmp:
             terminal.visible('stopped job 1')
         finally:
             terminal.close()
-print('PASS: reader full-output search/tool cards, draft preservation, diff file/hunk and long-line navigation, activity job actions, 40x24 and 20x8 PTY')
+print('PASS: reader full-output search/tool cards, draft preservation, diff file/hunk and long-line navigation, activity job actions, scrollbar endpoints, 40x24/20x12/20x8 PTY')

@@ -191,6 +191,10 @@ pub fn bash_owned(
     if let Ok(exe) = std::env::current_exe() {
         builder.env("GC_BIN", exe);
     }
+    builder.env_remove("GC_AGENT_OWNER");
+    if let Some(owner) = owner.filter(|id| crate::team::enabled(id)) {
+        builder.env("GC_AGENT_OWNER", owner);
+    }
     let mut child = match builder.spawn() {
         Ok(c) => c,
         Err(e) => {

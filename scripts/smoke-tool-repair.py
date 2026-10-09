@@ -22,7 +22,7 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
                     for block in message.get('content',[]) if isinstance(message.get('content'),list) else []:
                         if block.get('type')=='tool_use': assert isinstance(block['input'],dict)
                         if block.get('type')=='tool_result' and 'validation failed' in json.dumps(block): assert block.get('is_error') is True
-        followup='follow-up' in json.dumps(body.get('messages',body.get('input',[])))
+        followup=any(m.get('role')=='user' and 'follow-up' in json.dumps(m.get('content','')) for m in body.get('messages',body.get('input',[])))
         command="printf x >> executed.txt; printf REPAIR_TOOL_OK"
         calls=[]; text='FOLLOWUP_DONE' if followup else 'REPAIR_FINISHED'
         if mode=='after-completed' and step==0: calls=[('previous','bash',json.dumps({'command':'printf p >> previous.txt; printf PREVIOUS_OK'}))]

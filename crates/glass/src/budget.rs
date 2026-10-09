@@ -19,6 +19,7 @@ pub struct Metered {
     pub path: Arc<Mutex<std::path::PathBuf>>,
 }
 impl Provider for Metered {
+    fn rate_card(&self) -> Option<RateCard> { self.card }
     fn id(&self) -> &str {
         self.inner.id()
     }

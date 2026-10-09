@@ -24,11 +24,15 @@ impl Screen {
         Self { managed }
     }
     pub fn draw(&self, title: &str, lines: &[String], footer: &str, offset: usize) {
-        self.draw_rows(title, lines, footer, offset, false);
+        self.draw_rows(title, lines, footer, offset, false, false);
+    }
+
+    pub fn draw_team(&self, title: &str, lines: &[String], footer: &str, offset: usize) {
+        self.draw_rows(title, lines, footer, offset, false, true);
     }
 
     fn draw_diff(&self, title: &str, lines: &[String], footer: &str, offset: usize) {
-        self.draw_rows(title, lines, footer, offset, true);
+        self.draw_rows(title, lines, footer, offset, true, false);
     }
 
     fn draw_rows(
@@ -38,6 +42,7 @@ impl Screen {
         footer: &str,
         offset: usize,
         diff_rows: bool,
+        team_rows: bool,
     ) {
         let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
         let w = usize::from(w.max(1));
@@ -94,6 +99,14 @@ impl Screen {
                 glass_tui::theme::ansi(diff_line_tone(line))
             } else if selected {
                 glass_tui::theme::selected()
+            } else if team_rows && (line.starts_with("human →") || line.starts_with("main →") || line.starts_with("›")) {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Accent)
+            } else if team_rows && line.contains("→ main") {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Success)
+            } else if team_rows && (line.starts_with('$') || line.starts_with('◌') || line.starts_with('◆')) {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Secondary)
+            } else if team_rows && line.starts_with('!') {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Error)
             } else if let Some(frame) = line
                 .chars()
                 .next()

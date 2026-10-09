@@ -64,3 +64,6 @@
 - [Twenty-item final verification](plan/reviews/ship-final-001-01.md): 571 tests, 40 release smoke suites, independent reviews, small-screen PTYs and performance evidence.
 
 - [Scroll redraw and return-to-tail fix](plan/reviews/scroll-redraw-001-01.md): shared viewport geometry, synchronized frames, wheel/arrow roundtrips and five-size release PTYs.
+
+- [Persistent teammates](plan/persistent-agents.md): reusable workers, mailboxes, interaction previews, transcript paging, human steering and token budgets.
+- [Persistent teammate verification](plan/reviews/persistent-agents-001-01.md): release PTYs, live Kilo review, runtime/UI reviews and performance evidence.

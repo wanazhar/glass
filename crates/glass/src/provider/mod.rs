@@ -110,6 +110,9 @@ pub struct Request<'a> {
 }
 
 pub trait Provider {
+    /// Exact billing card supplied by the provider wrapper, when available.
+    fn rate_card(&self) -> Option<crate::pricing::RateCard> { None }
+
     /// Stable identifier used in config and the status bar.
     fn id(&self) -> &str;
 

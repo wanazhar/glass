@@ -1508,3 +1508,30 @@ cargo build
 python3 scripts/smoke-features.py
 python3 scripts/smoke-install.py
 ```
+
+### Persistent teammates
+
+Open **`/agents` or Alt+A** for a live roster, main/worker interaction history,
+and scrollable transcripts. Tab switches views; `?` lists actions. You can
+message a worker, interrupt it, and resume its saved context. Idle agents make
+no model requests. Reviewers are read-only unless explicitly given `--write`.
+
+The main agent uses the existing shell tool, so the default tool surface stays
+`bash` + `state`:
+
+```sh
+"$GC_BIN" agent create review "Review src/parser.rs for EOF bugs"
+"$GC_BIN" agent wait review 10
+"$GC_BIN" agent send review "Also check the changes to recovery.rs"
+```
+
+From another SSH shell, use `gc agent --session MAIN_ID list` and the same
+controls. `gc agent --help` lists model selection, token budgets, worktree
+isolation, transcript pagination, and lifecycle commands. Restart the main
+session to restore its roster; uncertain work is parked for explicit review.
+
+Two workers run at once. Transcripts load in bounded pages; complete histories
+are not automatically copied into model prompts. Usage and cost are shown only
+when known, with separate reservations for interrupted requests. See the
+[implementation contract](docs/plan/persistent-agents.md) for exact bounds and
+transport cancellation behavior.

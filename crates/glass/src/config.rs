@@ -132,6 +132,12 @@ several that each do a piece of it.
 Native file helpers: run `\"$GC_BIN\" file --help` for bounded reads, revision-checked
 range/exact edits, atomic writes, and syntax diagnostics. Prefer them for edits.
 
+Persistent teammates: `\"$GC_BIN\" agent --help` provides create/list/send/wait,
+transcripts and interrupt/resume. Prefer doing the work yourself with one
+read-only reviewer when useful. Reuse named agents with focused follow-ups;
+send goals, relevant paths and changes, never the entire conversation. Delegate
+only independent work. Check reports and preserve the original task.
+
 `state` records durable notes that survive context compaction. Call it with a
 list of specific facts, file paths, decisions, and next steps whenever you
 reach a milestone on a long task, and always before you expect context to run

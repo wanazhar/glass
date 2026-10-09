@@ -786,6 +786,7 @@ impl<'a> Agent<'a> {
         let mut repairs = 0;
         let mut repair_tools = None;
         for round in 0..self.max_tool_rounds {
+            crate::team::record_notices(self.session).map_err(provider::Error::Config)?;
             let out = match self.turn(&mut pump) {
                 Ok(out) => out,
                 // A refusal that names an overflow can be recovered once: the

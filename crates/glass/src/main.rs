@@ -49,6 +49,7 @@ mod skills;
 mod sse;
 mod status;
 mod subagent;
+mod team;
 mod surface;
 mod tools;
 mod tool_repair;
@@ -194,6 +195,13 @@ fn main() {
         }
         Some("--version") | Some("-V") => {
             println!("glass-core {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        Some("agent") => {
+            if let Err(e) = team::command(&args[1..]) {
+                eprintln!("agent: {}", glass_tui::markdown::sanitize(&e));
+                std::process::exit(1);
+            }
             return;
         }
         Some("file") => {
@@ -1028,6 +1036,7 @@ fn headless(
             f
         })
     };
+    let _team = team::start(&session.id, &cfg.workspace, Arc::clone(&factory), Arc::clone(&factory_for_model), &cfg.model)?;
     let workspace = cfg.workspace.clone();
     // Nested sessions and worktrees live under the data dir so `gc worktree`
     // can find them after the process that created them is long gone.
@@ -1195,6 +1204,7 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
         ),
         ("retry", "", "Recover a failed response", false),
         ("details", "", "Expand tool activity and output", false),
+        ("agents", "", "Persistent teammates, interactions and transcripts", false),
         ("activity", "", "Inspect tools, subagents, jobs and loops", false),
         (
             "thinking",
@@ -1610,6 +1620,9 @@ fn repl(
         extensions.seed_custom(&records);
     }
 
+    let mut team_owner = session.id.clone();
+    let mut team_guard = Some(team::start(&session.id, &cfg.workspace, Arc::clone(&factory), Arc::clone(&factory_for_model), &cfg.model)?);
+    let mut team_dock = String::new();
     let mut totals = Totals::new();
     let painter = Painter::new();
     painter.seed_live(session.history_entries(), session.reasoning_history());
@@ -1622,6 +1635,14 @@ fn repl(
     let mut inbox_mailbox = crate::inbox::Mailbox::open(&session.id);
     crate::status::set("idle", "");
     loop {
+        if team_owner != session.id {
+            team_guard.take();
+            team_guard = Some(team::start(&session.id, &cfg.workspace, Arc::clone(&factory), Arc::clone(&factory_for_model), &cfg.model)?);
+            team_owner.clone_from(&session.id);
+        }
+        painter.team_owner.replace(session.id.clone());
+        team::record_notices(&mut session)?;
+        team::dock(&session.id, &mut team_dock);
         jobs.set_owner(&cfg.workspace, &session.id);
         let _ = painter.refresh_geometry(!palette.active());
         let (w, nh) = term_size();
@@ -1648,6 +1669,7 @@ fn repl(
                 None => match keys.wait_timeout(std::time::Duration::from_millis(120)) {
                     Ok(Some(event)) => break Some(event),
                     Ok(None) => {
+                        team::dock(&session.id, &mut team_dock);
                         if painter.refresh_geometry(!palette.active()) {
                             break None;
                         }
@@ -1730,6 +1752,11 @@ fn repl(
             _ => continue,
         };
 
+        if key.code == glass_tui::crossterm::event::KeyCode::Char('a') && key.modifiers.contains(glass_tui::crossterm::event::KeyModifiers::ALT) {
+            palette.cancel(&mut editor);
+            team::view(&keys, &session.id);
+            continue;
+        }
         if key.code == glass_tui::crossterm::event::KeyCode::PageUp {
             palette.cancel(&mut editor);
             painter.open_reader(session.history_entries(), true)?;
@@ -2075,6 +2102,10 @@ fn repl(
         }
         if text == "/details" {
             polish::details(&keys, &session);
+            continue;
+        }
+        if text == "/agents" {
+            team::view(&keys, &session.id);
             continue;
         }
         if text == "/activity" {
@@ -3140,7 +3171,7 @@ fn repl(
                     }
                     painter.tick();
                     if let Some(s) =
-                        drain_input(&keys, &mut draft, &mut pending, draft_row, w, &painter)
+                        drain_input(&keys, &mut draft, &mut pending, draft_row, w, &painter, &team_owner)
                     {
                         pending.push(queue::Intent::Steer(s.clone()));
                         *steer_slot = Some(s);
@@ -3341,6 +3372,7 @@ fn drain_input(
     _row: u16,
     _width: u16,
     painter: &Painter,
+    team_owner: &str,
 ) -> Option<String> {
     use glass_tui::crossterm::event::{Event, KeyCode, KeyModifiers};
 
@@ -3376,6 +3408,11 @@ fn drain_input(
             continue;
         }
         if let Event::Key(k) = &ev {
+            if k.code == KeyCode::Char('a') && k.modifiers.contains(KeyModifiers::ALT) {
+                team::view(keys, team_owner);
+                dirty = true;
+                continue;
+            }
             if k.code == KeyCode::PageUp && !painter.live.borrow().active() {
                 let entries = painter.live.borrow().snapshot();
                 if let Err(error) = painter.open_reader(entries, true) {
@@ -3690,6 +3727,7 @@ struct Painter {
     last_size: std::cell::Cell<(u16, u16)>,
     palette_was_active: std::cell::Cell<bool>,
     compact_tools: std::cell::Cell<bool>,
+    team_owner: std::cell::RefCell<String>,
 }
 
 impl Painter {
@@ -3714,6 +3752,7 @@ impl Painter {
             last_size: std::cell::Cell::new(term_size()),
             palette_was_active: std::cell::Cell::new(false),
             compact_tools: std::cell::Cell::new(false),
+            team_owner: std::cell::RefCell::new(String::new()),
         }
     }
 
@@ -4050,7 +4089,7 @@ impl Painter {
         );
         let _ = io;
         let _ = surface::status_colored(
-            &format!("  {content}"),
+            &format!("  {content}{}", team::activity_suffix(&self.team_owner.borrow())),
             &glass_tui::theme::activity_color(frame),
         );
     }

@@ -95,7 +95,9 @@ pub fn sessions(workspace: &Path) -> Vec<Session> {
     paths.sort_by_key(|e| std::cmp::Reverse(e.metadata().ok().and_then(|m| m.modified().ok())));
     paths
         .into_iter()
-        .filter_map(|e| Session::open_readonly(&config::data_dir(), &e.path().to_string_lossy()).ok())
+        .filter_map(|e| {
+            Session::open_readonly(&config::data_dir(), &e.path().to_string_lossy()).ok()
+        })
         .filter(|s| metadata(s).workspace == root)
         .collect()
 }
@@ -151,7 +153,9 @@ pub fn browser(
             &actions,
         ) {
             Some(0) => {
-                if s.id == current.id { return Ok(None); }
+                if s.id == current.id {
+                    return Ok(None);
+                }
                 return Session::open(&config::data_dir(), &s.id)
                     .map(Some)
                     .map_err(|e| e.to_string());
@@ -370,7 +374,10 @@ pub fn context_report(
                 let checkpoint = system
                     .as_deref()
                     .map(|sys| {
-                        format!(" · prompt checkpoint {}B (replay keeps it until the next compaction)", sys.len())
+                        format!(
+                            " · prompt checkpoint {}B (replay keeps it until the next compaction)",
+                            sys.len()
+                        )
                     })
                     .unwrap_or_default();
                 Some(format!(
@@ -571,6 +578,21 @@ struct ToolDetail {
     truncated: bool,
 }
 
+pub(crate) fn load_spill(path: &str) -> Result<(String, bool), String> {
+    std::fs::File::open(path)
+        .map_err(|error| format!("cannot open recorded spill: {error}"))
+        .and_then(|file| {
+            use std::io::Read;
+            let mut bytes = Vec::with_capacity(64 * 1024);
+            file.take(64 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|error| format!("cannot read recorded spill: {error}"))?;
+            let truncated = bytes.len() > 64 * 1024;
+            bytes.truncate(64 * 1024);
+            Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated))
+        })
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum ActivityAction {
     Tool,
@@ -592,20 +614,37 @@ pub(crate) struct ActivityItem {
 pub(crate) fn activity_items(s: &Session, jobs: &mut crate::jobs::Jobs) -> Vec<ActivityItem> {
     let mut items = Vec::new();
     for entry in s.history_entries() {
-        let Some(card) = entry.tool_card else { continue; };
+        let Some(card) = entry.tool_card else {
+            continue;
+        };
         let subagent = card.command.starts_with("run_subagents");
         items.push(ActivityItem {
-            label: format!("{} · {}", if subagent { "subagent" } else { "tool" }, glass_tui::text::clip(&card.command.replace('\n', " "), 56)),
+            label: format!(
+                "{} · {}",
+                if subagent { "subagent" } else { "tool" },
+                glass_tui::text::clip(&card.command.replace('\n', " "), 56)
+            ),
             status: card.status.clone(),
             detail: crate::session::tool_card_text(&card, true),
-            action: if subagent { ActivityAction::Subagent } else { ActivityAction::Tool },
+            action: if subagent {
+                ActivityAction::Subagent
+            } else {
+                ActivityAction::Tool
+            },
         });
     }
     let job_list = jobs.list();
     for row in job_list.lines() {
         let (head, rest) = row.split_once(':').unwrap_or((row, "unknown"));
-        let Ok(id) = head.parse::<u32>() else { continue; };
-        let status = rest.split_once(" — ").map(|(s, _)| s).unwrap_or("unknown").trim().to_string();
+        let Ok(id) = head.parse::<u32>() else {
+            continue;
+        };
+        let status = rest
+            .split_once(" — ")
+            .map(|(s, _)| s)
+            .unwrap_or("unknown")
+            .trim()
+            .to_string();
         items.push(ActivityItem {
             label: format!("job {id} · {}", glass_tui::text::clip(rest.trim(), 52)),
             status,
@@ -615,9 +654,20 @@ pub(crate) fn activity_items(s: &Session, jobs: &mut crate::jobs::Jobs) -> Vec<A
     }
     for (index, entry) in crate::loops::load(s).entries.iter().enumerate() {
         items.push(ActivityItem {
-            label: format!("loop {} · {}", index + 1, glass_tui::text::clip(&entry.prompt, 52)),
-            status: format!("scheduled · next in {}s · ran {}×", entry.next_at.saturating_sub(crate::loops::now()), entry.runs),
-            detail: format!("Prompt: {}\nEvery: {} seconds\nNext at: {}\nRuns: {}", entry.prompt, entry.every_s, entry.next_at, entry.runs),
+            label: format!(
+                "loop {} · {}",
+                index + 1,
+                glass_tui::text::clip(&entry.prompt, 52)
+            ),
+            status: format!(
+                "scheduled · next in {}s · ran {}×",
+                entry.next_at.saturating_sub(crate::loops::now()),
+                entry.runs
+            ),
+            detail: format!(
+                "Prompt: {}\nEvery: {} seconds\nNext at: {}\nRuns: {}",
+                entry.prompt, entry.every_s, entry.next_at, entry.runs
+            ),
             action: ActivityAction::Loop(index),
         });
     }
@@ -728,24 +778,23 @@ pub fn details(keys: &KeyReader, s: &Session) {
                     &format!("{command}Recorded output\n{}\n\n{location}", entry.output),
                 );
             } else if actions[action] == "Load spill (up to 64 KiB)" {
-                let path = entry.spill.as_deref().expect("spill action requires a path");
-                let loaded = std::fs::File::open(path)
-                    .map_err(|error| format!("cannot open recorded spill: {error}"))
-                    .and_then(|file| {
-                        use std::io::Read;
-                        let mut bytes = Vec::with_capacity(64 * 1024);
-                        file.take(64 * 1024 + 1).read_to_end(&mut bytes)
-                            .map_err(|error| format!("cannot read recorded spill: {error}"))?;
-                        let truncated = bytes.len() > 64 * 1024;
-                        bytes.truncate(64 * 1024);
-                        let text = String::from_utf8_lossy(&bytes);
-                        Ok((text.into_owned(), truncated))
-                    });
-                match loaded {
+                let path = entry
+                    .spill
+                    .as_deref()
+                    .expect("spill action requires a path");
+                match load_spill(path) {
                     Ok((text, truncated)) => modal::info(
                         keys,
                         "Recorded spill output",
-                        &format!("{}{}", text, if truncated { "\n\n[display capped at 64 KiB]" } else { "" }),
+                        &format!(
+                            "{}{}",
+                            text,
+                            if truncated {
+                                "\n\n[display capped at 64 KiB]"
+                            } else {
+                                ""
+                            }
+                        ),
                     ),
                     Err(error) => modal::info(keys, "Recorded spill output", &error),
                 }
@@ -879,6 +928,18 @@ mod tests {
         p
     }
     #[test]
+    fn spill_load_reads_only_the_explicit_64kib_cap() {
+        let root = scratch();
+        let path = root.join("output.log");
+        let content = format!("{}SPILL_TAIL_SENTINEL", "x".repeat(64 * 1024));
+        std::fs::write(&path, content).unwrap();
+        let (loaded, truncated) = load_spill(path.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.len(), 64 * 1024);
+        assert!(truncated);
+        assert!(!loaded.contains("SPILL_TAIL_SENTINEL"));
+        std::fs::remove_dir_all(root).ok();
+    }
+    #[test]
     fn project_binding_and_titles_are_persistent() {
         let root = scratch();
         let other = scratch();
@@ -889,7 +950,10 @@ mod tests {
         let mut m = metadata(&s);
         m.title = "Renamed".into();
         save(&s, &m).unwrap();
-        assert_eq!(title(&Session::open_readonly(&root, &s.id).unwrap()), "Renamed");
+        assert_eq!(
+            title(&Session::open_readonly(&root, &s.id).unwrap()),
+            "Renamed"
+        );
         assert!(bind(&s, &other).is_err());
         std::fs::remove_dir_all(root).ok();
         std::fs::remove_dir_all(other).ok();
@@ -918,9 +982,7 @@ mod tests {
         let mut s = Session::create(&root).unwrap();
         bind(&s, &root).unwrap();
         // A PNG header is enough: the sniff reads magic bytes, never decodes.
-        let png = [
-            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0,
-        ];
+        let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0];
         std::fs::write(root.join("shot.png"), png).unwrap();
         attach(&mut s, &root, "shot.png").unwrap();
         assert!(
@@ -945,7 +1007,10 @@ mod tests {
             image_media_type(&[0xFF, 0xD8, 0xFF, 0x00]),
             Some("image/jpeg")
         );
-        assert_eq!(image_media_type(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
+        assert_eq!(
+            image_media_type(b"RIFF\0\0\0\0WEBPVP8 "),
+            Some("image/webp")
+        );
         assert_eq!(image_media_type(b"plain text"), None);
 
         // A >1 MiB image is refused before anything is written.
@@ -979,18 +1044,54 @@ mod tests {
         let root = scratch();
         let mut s = Session::create(&root).unwrap();
         s.append(Record::User("start work".into()));
-        s.append(Record::ToolCall { id: "tool-a".into(), name: "state".into(), arguments: r#"{"items":["ready"]}"#.into() });
-        s.append(Record::ToolResult { name: "state".into(), call_id: "tool-a".into(), body: "state updated".into() });
-        s.append(Record::ToolCall { id: "agent-a".into(), name: "run_subagents".into(), arguments: r#"{"tasks":["inspect"]}"#.into() });
-        s.append(Record::ToolResult { name: "run_subagents".into(), call_id: "agent-a".into(), body: "inspection done".into() });
+        s.append(Record::ToolCall {
+            id: "tool-a".into(),
+            name: "state".into(),
+            arguments: r#"{"items":["ready"]}"#.into(),
+        });
+        s.append(Record::ToolResult {
+            name: "state".into(),
+            call_id: "tool-a".into(),
+            body: "state updated".into(),
+        });
+        s.append(Record::ToolCall {
+            id: "agent-a".into(),
+            name: "run_subagents".into(),
+            arguments: r#"{"tasks":["inspect"]}"#.into(),
+        });
+        s.append(Record::ToolResult {
+            name: "run_subagents".into(),
+            call_id: "agent-a".into(),
+            body: "inspection done".into(),
+        });
         crate::loops::command(&s, "1h check status").unwrap();
         let mut jobs = crate::jobs::Jobs::default();
-        jobs.start("echo activity-job", &root, &root.join("jobs")).unwrap();
+        jobs.start("echo activity-job", &root, &root.join("jobs"))
+            .unwrap();
         let items = activity_items(&s, &mut jobs);
-        assert!(items.iter().any(|item| matches!(item.action, ActivityAction::Tool) && item.detail.contains("state updated")));
-        assert!(items.iter().any(|item| matches!(item.action, ActivityAction::Subagent) && item.detail.contains("inspection done")));
-        assert!(items.iter().any(|item| matches!(item.action, ActivityAction::Job(_))));
-        assert!(items.iter().any(|item| matches!(item.action, ActivityAction::Loop(_)) && item.status.contains("scheduled")));
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item.action, ActivityAction::Tool)
+                    && item.detail.contains("state updated"))
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item.action, ActivityAction::Subagent)
+                    && item.detail.contains("inspection done"))
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item.action, ActivityAction::Job(_)))
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item.action, ActivityAction::Loop(_))
+                    && item.status.contains("scheduled"))
+        );
         drop(jobs);
         std::fs::remove_dir_all(root).ok();
     }

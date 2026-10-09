@@ -1,6 +1,6 @@
 ---
 id: ship-input-001
-status: pending
+status: in-progress
 depends-on: [ship-terminal-001, ship-security-001]
 scope: ship-next-20 item 19 and security UI integration
 ---

@@ -453,14 +453,16 @@ pub fn serve(
                     .trim()
                     .to_string();
                 if text.is_empty() {
-                    to_origin(json!({"t": "error", "message": "empty prompt"}));
+                    to_origin(
+                        json!({"t": "error", "request_id":message.get("request_id"), "message": "empty prompt"}),
+                    );
                     continue;
                 }
                 if let Some(id) = message.get("request_id").and_then(Value::as_str) {
                     if let Some(status) = seen_requests.get(id) {
                         to_origin(json!({"t": "duplicate", "request_id": id, "status": status,
                             "cursor":crate::export::raw_records(&session).len(),
-                            "message": if status == "accepted" { "prior request was interrupted; it will not be replayed" } else { "request already completed" }}));
+                            "message": if status == "accepted" { "prior request was interrupted; it will not be replayed" } else if status == "failed" { "prior request failed before execution; submit a new request to retry" } else { "request already completed" }}));
                         continue;
                     }
                     if let Err(error) = session.append_checked(&[Record::ServeRequest {
@@ -468,20 +470,37 @@ pub fn serve(
                         status: "accepted".into(),
                     }]) {
                         to_origin(
-                            json!({"t":"error", "message": format!("cannot durably accept request; prompt was not run: {error}")}),
+                            json!({"t":"error", "request_id":message.get("request_id"), "message": format!("cannot durably accept request; prompt was not run: {error}")}),
                         );
                         continue;
                     }
                     seen_requests.insert(id.to_string(), "accepted".into());
                 }
                 if let Err(error) = session.append_checked(&[Record::User(text)]) {
-                    to_origin(json!({"t":"error", "message": format!("cannot durably record prompt; it was not run: {error}")}));
+                    to_origin(
+                        json!({"t":"error", "request_id":message.get("request_id"), "message": format!("cannot durably record prompt; it was not run: {error}")}),
+                    );
                     continue;
                 }
                 let provider = match factory() {
                     Ok(p) => p,
                     Err(e) => {
-                        to_origin(json!({"t": "error", "message": e}));
+                        let mut detail = crate::live::sanitize_provider_detail(&e);
+                        if let Some(id) = message.get("request_id").and_then(Value::as_str) {
+                            match session.append_checked(&[Record::ServeRequest {
+                                id: id.to_string(),
+                                status: "failed".into(),
+                            }]) {
+                                Ok(()) => {
+                                    seen_requests.insert(id.to_string(), "failed".into());
+                                }
+                                Err(error) => {
+                                    detail.push_str(&format!("; cannot record failure: {error}"))
+                                }
+                            }
+                        }
+                        to_origin(json!({"t": "error", "request_id":message.get("request_id"),
+                            "cursor":crate::export::raw_records(&session).len(), "message":detail}));
                         continue;
                     }
                 };

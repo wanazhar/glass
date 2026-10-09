@@ -136,6 +136,14 @@ fn sensitive_name(name: &str) -> bool {
     .any(|sequence| has_sequence(sequence))
 }
 
+fn safe_form_value(value: &Value, max: usize) -> bool {
+    match value {
+        Value::String(s) => s.len() <= max && !s.chars().any(char::is_control),
+        Value::Array(values) => values.iter().all(|v| safe_form_value(v, max)),
+        _ => true,
+    }
+}
+
 fn choices(schema: &Value) -> Result<Vec<(Value, String)>, String> {
     let mut out = Vec::new();
     if let Some(values) = schema.get("enum").and_then(Value::as_array) {
@@ -177,7 +185,7 @@ fn choices(schema: &Value) -> Result<Vec<(Value, String)>, String> {
             out.push((constant.clone(), title));
         }
     }
-    if !out.is_empty() && out.len() <= 32 {
+    if !out.is_empty() && out.len() <= 32 && out.iter().all(|(v, _)| safe_form_value(v, 256)) {
         Ok(out)
     } else {
         Err("unsupported or oversized enum".into())
@@ -255,7 +263,7 @@ impl ElicitationRequest {
         }
         let mut fields = Vec::new();
         for (name, spec) in properties {
-            if name.len() > 128 || !spec.is_object() {
+            if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) || !spec.is_object() {
                 return Err("sensitive or unsupported form field".into());
             }
             if spec.as_object().unwrap().keys().any(|k| {
@@ -313,7 +321,9 @@ impl ElicitationRequest {
                 (kind, opts)
             };
             if let Some(default) = spec.get("default") {
-                if serde_json::to_vec(default).map_or(true, |b| b.len() > 1024) {
+                if !safe_form_value(default, 1024)
+                    || serde_json::to_vec(default).map_or(true, |b| b.len() > 1024)
+                {
                     return Err("form default is too large".into());
                 }
                 let matches_type = match kind {
@@ -573,6 +583,9 @@ impl ElicitationRequest {
                 }
                 value
             };
+            if !safe_form_value(&value, MAX_INPUT_BYTES) {
+                return Err("form response contains unsupported control characters".into());
+            }
             content.insert(field.name.clone(), value);
         }
         let summary = content
@@ -701,6 +714,31 @@ impl Drop for KeyReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_enum_constants_and_defaults_are_rejected() {
+        for constant in ["safe\u{1b}]52;c;hidden\u{7}".to_string(), "x".repeat(257)] {
+            for schema in [
+                json!({"enum":[constant]}),
+                json!({"oneOf":[{"const":constant,"title":"Continue"}]}),
+                json!({"items":{"enum":[constant]}}),
+                json!({"items":{"anyOf":[{"const":constant,"title":"Continue"}]}}),
+            ] {
+                assert!(choices(&schema).is_err());
+            }
+        }
+        assert!(!safe_form_value(
+            &json!("safe\u{1b}]52;c;hidden\u{7}"),
+            1024
+        ));
+        assert!(!safe_form_value(&json!(["safe", "hidden\n"]), 1024));
+        assert!(safe_form_value(&json!(["safe", "visible"]), 1024));
+        assert!(ElicitationRequest::parse("fixture", &json!({
+            "message":"Review", "requestedSchema":{"type":"object", "properties":{
+                "hidden\u{1b}]52;c;key\u{7}":{"type":"string"}
+            }}
+        })).is_err());
+    }
 
     #[test]
     fn try_next_is_empty_when_nothing_pending() {

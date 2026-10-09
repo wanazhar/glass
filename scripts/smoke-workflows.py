@@ -193,6 +193,8 @@ def run():
                     if (cfg / "addons.json").exists() and "todo" in json.loads((cfg / "addons.json").read_text())["enabled"]:
                         choose(t, "todo"); t.visible("Inspect access"); choose(t, "Disable and save"); t.visible("Extension manager")
                     choose(t, "todo"); t.visible("Inspect access"); choose(t, "Enable and save")
+                    t.visible("Review extension"); back(t)
+                    t.visible("Enable extension"); choose(t, "Continue to enable review")
                     t.visible("Extension manager"); back(t); t.idle()
                     assert "todo" in json.loads((cfg / "addons.json").read_text())["enabled"]
                     t.send("/profiles"); t.visible("Workspace profiles"); choose(t, "Save current")
@@ -297,7 +299,9 @@ for line in sys.stdin:
                 assert auth_count.read_text() == count_before
                 t.send('/extensions'); t.visible('Extension manager'); choose(t, 'private-probe'); t.visible('Inspect access')
                 choose(t, 'Disable and save'); t.visible('Extension manager'); wait_process_gone(child)
-                choose(t, 'Disabled custom'); t.visible('Disabled extension'); choose(t, 'Enable and save'); t.visible('Extension manager')
+                choose(t, 'Disabled custom'); t.visible('Disabled extension'); choose(t, 'Enable and save')
+                t.visible('Review extension'); back(t)
+                t.visible('Enable extension'); choose(t, 'Continue to enable review'); t.visible('Extension manager')
                 new_child = int(child_pid.read_text()); assert f.process_exists(new_child)
                 back(t); t.idle(); Endpoint.guard = 'denied'; t.send('denied after re-enable'); wait_turn(t)
                 assert not (guarded / 'denied-command').exists(); Endpoint.guard = ''
@@ -305,7 +309,9 @@ for line in sys.stdin:
                 partial = root / 'partial-extension.py'; partial_pid = root / 'partial.pid'
                 partial.write_text('import os,pathlib,sys,time\npathlib.Path(' + repr(str(partial_pid)) + ').write_text(str(os.getpid()))\nsys.stdout.write("{");sys.stdout.flush();time.sleep(60)\n')
                 t.send('/extensions'); t.visible('Extension manager'); choose(t, 'Add a custom'); t.visible('Enable custom')
-                key(t, json.dumps(['python3', str(partial)]) + '\r'); t.visible('Starting extension')
+                key(t, json.dumps(['python3', str(partial)]) + '\r')
+                t.visible('Review extension'); back(t)
+                t.visible('Enable extension'); choose(t, 'Continue to enable review'); t.visible('Starting extension')
                 deadline = time.monotonic() + 3
                 while not partial_pid.exists(): assert time.monotonic() < deadline; time.sleep(.01)
                 partial_child = int(partial_pid.read_text()); key(t, '\x1b'); t.visible('Extension manager')
@@ -314,6 +320,8 @@ for line in sys.stdin:
                 collision = root / 'collision.py'
                 collision.write_text('import json,sys\nfor line in sys.stdin:\n r=json.loads(line)\n if r["type"]=="hello": print(json.dumps({"id":r["id"],"protocol":1,"name":"collision","tools":[{"name":"bash","schema":{"type":"object"}}]}),flush=True)\n')
                 choose(t, 'Add a custom'); t.visible('Enable custom'); key(t, json.dumps(['python3', str(collision)]) + '\r')
+                t.visible('Review extension'); back(t)
+                t.visible('Enable extension'); choose(t, 'Continue to enable review')
                 t.visible('Extension manager error', timeout=10); back(t); t.idle()
                 assert 'collision' not in (cfg / 'addons.json').read_text()
             finally:

@@ -41,6 +41,10 @@ pub fn snapshot(w: &Path, dir: &Path, tag: &str) -> Result<String, String> {
         }
         // Only tracked and nonignored files; large generated trees stay excluded.
         git(&w, &["add", "-A", "--", "."], Some(&index))?;
+        // A copied index can have a newer timestamp than unchanged-size files,
+        // hiding rapid edits behind Git's stat cache. Rehash remaining entries
+        // after applying deletions and renames; never mutate the user's index.
+        git(&w, &["add", "--renormalize", "--", "."], Some(&index))?;
         let tree = String::from_utf8_lossy(&git(&w, &["write-tree"], Some(&index))?)
             .trim()
             .to_string();
@@ -394,7 +398,15 @@ mod tests {
     fn session_snapshot_refs_do_not_overwrite_another_sessions_objects() {
         let (w, d) = repo();
         let a = begin(&w, &d.join("session-a"), "task-1").unwrap();
+        let metadata = std::fs::metadata(w.join("file")).unwrap();
         std::fs::write(w.join("file"), "different").unwrap();
+        // Equal size and mtime must not make a copied index hide the edit.
+        std::fs::File::options()
+            .write(true)
+            .open(w.join("file"))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(metadata.modified().unwrap()))
+            .unwrap();
         let b = begin(&w, &d.join("session-b"), "task-1").unwrap();
         assert_ne!(a.before, b.before);
         let kept = git(

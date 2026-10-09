@@ -277,6 +277,16 @@ def main():
             t = f.Terminal(repo, env, args=('attach', '--socket', str(sock)), size=(80, 24))
             try:
                 t.visible('attached', timeout=10)
+                # Corrupt credentials after startup to fail provider construction.
+                # The same attach must clear its pending ID and accept a new turn.
+                before_failure = Endpoint.calls
+                (cfg / 'auth.json').write_text('{invalid')
+                t.send('factory failure must not replay'); t.send('\r')
+                t.visible('auth.json is invalid', timeout=15)
+                states = list((root / 'data/glass-core').glob('attach-*.json'))
+                assert states and json.loads(states[0].read_text())['pending'] is None
+                assert Endpoint.calls == before_failure
+                (cfg / 'auth.json').unlink()
                 t.send('pty hello')
                 t.send('\r')
                 t.visible('SERVER-HELLO', timeout=15)

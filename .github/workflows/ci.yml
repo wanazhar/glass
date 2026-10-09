@@ -64,6 +64,7 @@ jobs:
           python3 scripts/smoke-recovery.py
           python3 scripts/smoke-editcontext.py
           python3 scripts/smoke-status.py
+          python3 scripts/smoke-round3.py
       - name: Clean install and upgrade
         run: python3 scripts/smoke-upgrade.py
       - name: Package binary

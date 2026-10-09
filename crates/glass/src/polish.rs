@@ -362,11 +362,18 @@ pub fn context_report(
                 kept,
                 dropped,
                 summary,
+                system,
                 ..
             } = r
             {
+                let checkpoint = system
+                    .as_deref()
+                    .map(|sys| {
+                        format!(" · prompt checkpoint {}B (replay keeps it until the next compaction)", sys.len())
+                    })
+                    .unwrap_or_default();
                 Some(format!(
-                    "Kept {kept}, dropped {dropped}\n{}",
+                    "Kept {kept}, dropped {dropped}{checkpoint}\n{}",
                     summary
                         .as_deref()
                         .unwrap_or("Deterministic compaction; no generated summary.")

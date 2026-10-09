@@ -53,6 +53,7 @@ mod worktree;
 mod workflows;
 
 use std::io::Write;
+use std::path::Path;
 
 use glass_tui::{Edit, Editor, term};
 
@@ -221,8 +222,8 @@ fn list_sessions() {
             let stem = e.path().file_stem()?.to_string_lossy().into_owned();
             let bytes = e.metadata().ok()?.len();
             let modified = e.metadata().ok().and_then(|m| m.modified().ok());
-            let first = first_user_message(&e.path());
-            Some((stem, bytes, modified, first))
+            let title = session_title(&e.path());
+            Some((stem, bytes, modified, title))
         })
         .collect();
     // Newest first: the session a user wants is usually the last one.
@@ -233,16 +234,136 @@ fn list_sessions() {
         return;
     }
     println!(
-        "{:<28} {:<16} {:>10}  first message",
+        "{:<28} {:<16} {:>10}  title / first message",
         "session", "modified (UTC)", "bytes"
     );
-    for (id, bytes, modified, first) in rows {
+    for (id, bytes, modified, title) in rows {
         let when = modified.map(format_time).unwrap_or_else(|| "?".into());
-        let preview = first
+        let preview = title
             .map(|f| first_line(&f, 56))
             .unwrap_or_else(|| "(empty)".into());
         println!("{id:<28} {when:<16} {bytes:>10}  {preview}");
     }
+}
+
+/// The display title of a session file: its saved name, else
+/// the first user message — the same fallback `polish::title` uses.
+fn session_title(path: &std::path::Path) -> Option<String> {
+    let meta = path.with_extension("meta.json");
+    if let Ok(bytes) = std::fs::read(&meta)
+        && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        && let Some(title) = v.get("title").and_then(|t| t.as_str())
+        && !title.trim().is_empty()
+    {
+        return Some(title.to_string());
+    }
+    first_user_message(path)
+}
+
+/// Per-skill context accounting: what the catalogue always pays,
+/// and what loading each body would cost. `/skill-doctor`.
+///
+/// Glass does not track which skills the model actually read — it
+/// reads them with `bash` — so the honest report is size and age,
+/// not use. A large body costs nothing until the model reads it.
+fn skill_doctor(cfg: &config::Config) -> String {
+    let Some(dir) = cfg.skills_dir.as_deref() else {
+        return "No skills directory configured (skills_dir in config.toml).".into();
+    };
+    let skills = skills::load_dir(dir);
+    if skills.is_empty() {
+        return format!("No skills in {}.", dir.display());
+    }
+    let mut rows = vec![format!(
+        "{:<28} {:>9} {:>9}  {}",
+        "skill", "body", "desc", "modified"
+    )];
+    let mut bodies = 0usize;
+    let mut descs = 0usize;
+    for s in &skills {
+        let body = std::fs::metadata(&s.path)
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
+        let desc = s.name.len() + s.description.len();
+        bodies += body;
+        descs += desc;
+        let modified = std::fs::metadata(&s.path)
+            .and_then(|m| m.modified())
+            .ok()
+            .map(crate::format_time)
+            .unwrap_or_else(|| "?".into());
+        rows.push(format!(
+            "{:<28} {:>8}B {:>8}B  {}",
+            s.name, body, desc, modified
+        ));
+    }
+    rows.push(String::new());
+    rows.push(format!(
+        "{} skills · the catalogue always costs ~{}B (names and descriptions); \
+         bodies cost {}B in total, only when the model reads them",
+        skills.len(),
+        descs,
+        bodies
+    ));
+    rows.join("\n")
+}
+
+/// Review the working diff through a read-only delegated agent.
+/// `/code-review [max-findings]`.
+///
+/// The reviewer cannot mutate the tree it is judging: the task
+/// runs with the inspection tools only, the same guarantee the
+/// oracle relies on. The report is returned to the caller, which
+/// posts it into the conversation.
+fn code_review(
+    workspace: &Path,
+    scratch: &Path,
+    factory: &crate::warmer::ProviderFactory,
+    max_findings: usize,
+) -> Result<String, String> {
+    let diff = std::process::Command::new("git")
+        .current_dir(workspace)
+        .args(["diff", "HEAD"])
+        .output()
+        .map_err(|e| format!("git diff failed: {e}"))?;
+    if !diff.status.success() {
+        return Err("git diff failed — is this a Git repository?".into());
+    }
+    let diff = String::from_utf8_lossy(&diff.stdout);
+    let diff = diff.trim();
+    if diff.is_empty() {
+        return Err("no uncommitted changes to review".into());
+    }
+    /// One review's worth of diff. Beyond this the findings
+    /// degrade, and the cap keeps the delegated prompt bounded.
+    const DIFF_CAP: usize = 96 * 1024;
+    let diff = if diff.len() > DIFF_CAP {
+        format!("{}…\n[diff truncated at {DIFF_CAP} bytes]", &diff[..DIFF_CAP])
+    } else {
+        diff.to_string()
+    };
+    let task = ext::protocol::SubagentTask {
+        task: format!(
+            "Review this diff for correctness bugs only — real defects, not style. \
+             Report at most {max_findings} findings, most severe first. \
+             For each: file:line, severity (critical/major/minor), the defect, \
+             and a one-line fix. If the diff is clean, say so in one line.\n\n```diff\n{diff}\n```"
+        ),
+        read_only: true,
+        ..Default::default()
+    };
+    let make = |_: Option<&str>| -> Result<Box<dyn provider::Provider>, String> {
+        factory()
+    };
+    let reports = crate::subagent::run_batch(&[task], 1, |t| {
+        crate::subagent::run_task(t, workspace, scratch, &make)
+    });
+    reports
+        .first()
+        .cloned()
+        .map(|report| report.trim().to_string())
+        .filter(|report| !report.is_empty())
+        .ok_or_else(|| "the reviewer produced no report".into())
 }
 
 /// The first user message of a session, for `glass-core list`.
@@ -455,6 +576,15 @@ fn run(args: &[String]) -> Result<(), String> {
             i += 1;
         }
         return serve::attach(socket);
+    }
+    if args.first().is_some_and(|a| a == "stop") {
+        return serve::stop(args.get(1).map(String::as_str));
+    }
+    if args.first().is_some_and(|a| a == "respawn") {
+        return serve::respawn(args.get(1).map(String::as_str));
+    }
+    if args.first().is_some_and(|a| a == "logs") {
+        return serve::logs(args.get(1).map(String::as_str), &cfg.workspace);
     }
     if !term::stdin_is_tty() && !args.first().is_some_and(|a| a == "run") {
         return Err("No interactive terminal. Use glass-core run [--json] [--resume ID] <prompt>, or pipe a prompt to glass-core run.".into());
@@ -870,6 +1000,9 @@ fn headless(
             })
         })
     });
+    // Extensions rebuild durable state from the log once the
+    // session is open: the log is the store.
+    extensions.seed_custom(&session.records);
     if !recovering {
         session.append(Record::User(prompt));
     }
@@ -996,6 +1129,9 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
         ("logout", "", "Remove saved credentials", false),
         ("status", "", "View connection and session status", false),
         ("sessions", "", "Browse project conversations", false),
+        ("name", "[title]", "Name this conversation", false),
+        ("skill-doctor", "", "Skill sizes and context cost", false),
+        ("code-review", "[max]", "Review the diff for bugs, read-only", false),
         ("retry", "", "Recover a failed response", false),
         ("details", "", "Expand tool activity and output", false),
         (
@@ -1349,11 +1485,16 @@ fn repl(
     // task never sees the parent's conversation. Only the core tools
     // come along — the runner cannot borrow the live `mods` or the
     // live extension registry, both of which the parent turn owns.
+    // `/code-review` drives the same machinery directly, so it keeps
+    // its own handles to the factory and the scratch dir.
+    let review_factory = Arc::clone(&factory);
+    let review_workspace = cfg.workspace.clone();
     let subagent_factory = Arc::clone(&factory);
     let subagent_factory_for = Arc::clone(&factory_for_model);
     let subagent_workspace = cfg.workspace.clone();
     // Same scratch rule as the headless path: discoverable under the data dir.
     let subagent_scratch = config::data_dir().join("subagents");
+    let review_scratch = subagent_scratch.clone();
     let make_subagent = move || -> ext::host::SubagentFn {
         let factory = Arc::clone(&subagent_factory);
         let factory_for = Arc::clone(&subagent_factory_for);
@@ -1372,6 +1513,9 @@ fn repl(
         })
     };
     extensions.set_subagent(make_subagent);
+    // Extensions rebuild durable state from the log once the
+    // session is open: the log is the store.
+    extensions.seed_custom(&session.records);
 
     let mut totals = Totals::new();
     let painter = Painter::new();
@@ -1766,6 +1910,36 @@ fn repl(
             }
             continue;
         }
+        if text == "/name" || text.starts_with("/name ") {
+            let args = text.strip_prefix("/name").unwrap_or("").trim();
+            let title = if args.is_empty() {
+                modal::field(
+                    &keys,
+                    "Name session",
+                    "Title (empty falls back to the first message)",
+                    &polish::title(&session),
+                    false,
+                )
+            } else {
+                Some(args.to_string())
+            };
+            if let Some(t) = title {
+                let mut m = polish::metadata(&session);
+                m.title = t.trim().to_string();
+                match polish::save(&session, &m) {
+                    Ok(()) => {
+                        let shown = if m.title.is_empty() {
+                            "first message".into()
+                        } else {
+                            m.title.clone()
+                        };
+                        ui_println!("\x1b[90msession title: {shown}\x1b[0m");
+                    }
+                    Err(e) => modal::info(&keys, "Name session", &e),
+                }
+            }
+            continue;
+        }
         if text == "/context" {
             if let Err(e) =
                 polish::context(&keys, &mut session, &cfg, &project_instructions, &catalogue)
@@ -1804,6 +1978,37 @@ fn repl(
                 "Task review",
                 &polish::review_report(&session, latest_checkpoint.as_ref()),
             );
+            continue;
+        }
+        if text == "/skill-doctor" {
+            modal::info(&keys, "Skill doctor", &skill_doctor(&cfg));
+            continue;
+        }
+        if text == "/code-review" || text.starts_with("/code-review ") {
+            let args = text.strip_prefix("/code-review").unwrap_or("").trim();
+            let max_findings: usize = if args.is_empty() {
+                10
+            } else {
+                args.parse().unwrap_or(10)
+            }
+            .clamp(1, 50);
+            ui_println!("\x1b[90mcode review: reading the diff…\x1b[0m");
+            match code_review(
+                &review_workspace,
+                &review_scratch,
+                &review_factory,
+                max_findings,
+            ) {
+                Ok(report) => {
+                    // Posted as a system record so the findings
+                    // are in the model's context for the fix, the
+                    // same way Claude Code posts review output.
+                    session
+                        .append(Record::System(format!("code review findings:\n{report}")));
+                    modal::info(&keys, "Code review", &report);
+                }
+                Err(e) => modal::info(&keys, "Code review", &e),
+            }
             continue;
         }
         if text == "/history" {

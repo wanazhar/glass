@@ -324,7 +324,7 @@ impl<'a> Agent<'a> {
     /// Called when a turn ends and control returns to the
     /// prompt: that is the moment the harness goes idle, and
     /// therefore the moment a cold cache would be felt.
-    pub fn schedule_warm(&self) {
+    pub fn schedule_warm(&mut self) {
         if self.read_only {
             return;
         }
@@ -338,19 +338,18 @@ impl<'a> Agent<'a> {
 
         // Rebuild exactly what the last request sent, so the
         // refresh lands on the same cache entries a real turn
-        // would read.
+        // would read: the declared (frozen) extension tools
+        // plus the built-ins, and the checkpointed system
+        // prompt, are what the last request actually sent.
+        let (declared, _) = self.extensions.declared_tools();
         let mut tools = self.tool_set();
-        for (n, d, sc) in if self.read_only {
-            Vec::new()
-        } else {
-            self.extensions.tools()
-        } {
+        for (n, d, sc) in declared {
             if !tools.iter().any(|(existing, _, _)| *existing == n) {
                 tools.push((n, d, sc));
             }
         }
         let snapshot = CacheSnapshot {
-            system: self.system_prompt(),
+            system: self.effective_system(),
             messages: self.session.messages(),
             tools,
         };
@@ -408,18 +407,34 @@ impl<'a> Agent<'a> {
         let mut tools = self.tool_set();
         // Extension tools are appended and can never shadow a builtin, so a
         // prompt written against `bash` and `state` keeps working with any
-        // extension set loaded.
-        for (n, d, s) in if self.read_only {
-            Vec::new()
+        // extension set loaded. The extension list is frozen for the session
+        // (see `Registry::declared_tools`): it is part of the cacheable
+        // prefix, so changing it mid-session would turn every later turn
+        // into a cache miss. A change is noted once, in the transcript, and
+        // applies to the next session.
+        let (declared, diff) = if self.read_only {
+            (Vec::new(), crate::ext::FreezeDiff::default())
         } else {
-            self.extensions.tools()
-        } {
+            self.extensions.declared_tools()
+        };
+        for (n, d, s) in declared {
             if !tools.iter().any(|(existing, _, _)| *existing == n) {
                 tools.push((n, d, s));
             }
         }
+        if !diff.added.is_empty() || !diff.removed.is_empty() {
+            let mut note = String::from("tool set frozen for prompt-cache stability");
+            if !diff.added.is_empty() {
+                note.push_str(&format!("; not loaded this session: {}", diff.added.join(", ")));
+            }
+            if !diff.removed.is_empty() {
+                note.push_str(&format!("; still declared: {}", diff.removed.join(", ")));
+            }
+            note.push_str("; extension changes apply to the next session");
+            self.session.append(Record::Meta(note));
+        }
 
-        let system = self.system_prompt();
+        let system = self.effective_system();
         let model = self.provider.id().to_string();
 
         // Size of the prefix a provider would cache: system prompt plus tool
@@ -736,6 +751,12 @@ impl<'a> Agent<'a> {
                     m.on_turn_end(&ctx, &out.text);
                 }
                 self.extensions.turn_end(&out.text, self.prefix_bytes);
+                // An extension may have queued durable entries while
+                // handling the turn-end event; land them now rather
+                // than at the next tool call, which may never come.
+                for (kind, data) in self.extensions.drain_custom() {
+                    self.session.append(Record::Custom { kind, data });
+                }
             }
 
             if !out.wants_tools() {
@@ -1261,6 +1282,12 @@ impl<'a> Agent<'a> {
                 spill: outcome.spill,
             },
         );
+        // Durable entries the extension queued while running (or
+        // authorizing, or rewriting) this call land after its
+        // result, in causal order.
+        for (kind, data) in self.extensions.drain_custom() {
+            self.session.append(Record::Custom { kind, data });
+        }
         let _ = rewritten;
     }
 
@@ -1311,6 +1338,29 @@ impl<'a> Agent<'a> {
             call_id: call.id.clone(),
             body: output.body,
         });
+    }
+
+    /// The system prompt to send with a request.
+    ///
+    /// The last compaction's checkpoint when there is one, else the
+    /// freshly assembled prompt. Within a session the two are
+    /// identical — the prompt's inputs are fixed at construction —
+    /// so the checkpoint only changes behaviour when a session is
+    /// resumed after its prompt config changed: the compacted
+    /// history keeps the prompt it was made under, until the next
+    /// compaction re-captures the current one.
+    fn effective_system(&self) -> String {
+        self.session
+            .records
+            .iter()
+            .rev()
+            .find_map(|r| match r {
+                Record::Compacted {
+                    system: Some(system), ..
+                } => Some(system.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| self.system_prompt())
     }
 
     /// Assemble the system prompt: base, then mod contributions, then skills.
@@ -1373,11 +1423,13 @@ impl<'a> Agent<'a> {
                 let rebuilt = compact::rebuild(&self.session.records, self.state);
                 self.session.records = rebuilt;
                 self.emit(Progress::Compacted { kept, dropped });
+                let system = self.system_prompt();
                 self.session.append(Record::Compacted {
                     kept,
                     dropped,
                     summary: None,
                     tail_start: 0,
+                    system: Some(system),
                 });
                 Ok(())
             }
@@ -1399,11 +1451,13 @@ impl<'a> Agent<'a> {
             compact::plan(&self.session.records, self.state, 1.0)
         {
             self.session.records = compact::rebuild(&self.session.records, self.state);
+            let system = self.system_prompt();
             self.session.append(Record::Compacted {
                 kept,
                 dropped,
                 summary: None,
                 tail_start: 0,
+                system: Some(system),
             });
             self.emit(Progress::Compacted { kept, dropped });
             changed = true;
@@ -1444,11 +1498,13 @@ impl<'a> Agent<'a> {
                 kept: self.session.records.len(),
                 dropped: shrunk,
             });
+            let system = self.system_prompt();
             self.session.append(Record::Compacted {
                 kept: self.session.records.len(),
                 dropped: 0,
                 summary: Some(format!("{shrunk} tool outputs shrunk")),
                 tail_start: 0,
+                system: Some(system),
             });
             let after = provider::pressure(self.provider, &compact::project(&self.session.records));
             if after < compact::COMPACT_AT {
@@ -1515,11 +1571,13 @@ impl<'a> Agent<'a> {
         let tail_start = self.session.log_len().saturating_sub(compact::KEEP_RECENT);
         self.session.records = compact::apply_summary(&self.session.records, &summary);
         let kept = self.session.records.len();
+        let system = self.system_prompt();
         self.session.append(Record::Compacted {
             kept,
             dropped: before.saturating_sub(kept),
             tail_start,
             summary: Some(summary),
+            system: Some(system),
         });
         Ok(())
     }
@@ -1726,6 +1784,200 @@ mod warm_integration {
             "no extension means no warmer, even on a big prefix"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A provider that records the tool names each request carried,
+    /// so a test can see exactly what the model was offered.
+    struct CapturingProvider {
+        tools: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    impl Provider for CapturingProvider {
+        fn id(&self) -> &str {
+            "capturing"
+        }
+        fn stream(
+            &self,
+            req: &Request<'_>,
+        ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+            self.tools
+                .lock()
+                .unwrap()
+                .push(req.tools.iter().map(|(n, _, _)| n.clone()).collect());
+            Ok(Box::new(
+                vec![Event::Text("ok".into()), Event::Done].into_iter(),
+            ))
+        }
+        fn context_window(&self) -> u32 {
+            200_000
+        }
+    }
+
+    /// A provider with a tiny window, so a short conversation still
+    /// trips compaction pressure.
+    struct CrampedProvider;
+
+    impl Provider for CrampedProvider {
+        fn id(&self) -> &str {
+            "cramped"
+        }
+        fn stream(
+            &self,
+            _req: &Request<'_>,
+        ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+            Ok(Box::new(
+                vec![Event::Text("ok".into()), Event::Done].into_iter(),
+            ))
+        }
+        fn context_window(&self) -> u32 {
+            60
+        }
+    }
+
+    fn python() -> Option<String> {
+        for c in ["python3", "python"] {
+            if std::process::Command::new(c)
+                .arg("--version")
+                .output()
+                .is_ok_and(|o| o.status.success())
+            {
+                return Some(c.to_string());
+            }
+        }
+        None
+    }
+
+    /// An extension whose manifest declares one tool.
+    fn tool_extension() -> String {
+        format!(
+            r#"
+import json, sys
+def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    r=json.loads(line); t=r.get("type"); i=r.get("id")
+    if t=="hello":
+        send({{"id":i,"protocol":{},"name":"extra","version":"1",
+              "tools":[{{"name":"extra_tool","description":"d","schema":{{"type":"object"}}}}]}})
+    elif t=="turn_end": send({{"id":i}})
+    elif t=="goodbye": break
+"#,
+            crate::ext::protocol::PROTOCOL_VERSION
+        )
+    }
+
+    #[test]
+    fn the_declared_tool_list_is_frozen_for_the_session() {
+        let Some(py) = python() else { return }; // no interpreter, skip
+        let dir = std::env::temp_dir().join(format!("glass-freeze-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let script = dir.join("ext.py");
+        std::fs::write(&script, tool_extension()).unwrap();
+        let mut extensions = Registry::load(
+            &[format!("{py} {}", script.display())],
+            Path::new("."),
+            "mock",
+        );
+        assert!(extensions.has_tool("extra_tool"), "the helper must load");
+
+        let capturing = CapturingProvider {
+            tools: std::sync::Mutex::new(Vec::new()),
+        };
+        let mut session = Session::create(&dir).unwrap();
+        let mut state = State::new();
+        let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
+
+        // Turn one fixes the declared list.
+        {
+            let mut agent = Agent::new(
+                &capturing,
+                &mut session,
+                &mut state,
+                &no_mods,
+                &mut extensions,
+                Path::new("."),
+            )
+            .with_prompt("prompt".into(), None, None);
+            agent.run_turn(no_pump).unwrap();
+        }
+        // The extension goes away mid-session. A second agent — the
+        // REPL builds one per turn — must keep declaring its tool:
+        // the list is part of the cacheable prefix.
+        extensions.disable("extra");
+        {
+            let mut agent = Agent::new(
+                &capturing,
+                &mut session,
+                &mut state,
+                &no_mods,
+                &mut extensions,
+                Path::new("."),
+            )
+            .with_prompt("prompt".into(), None, None);
+            agent.run_turn(no_pump).unwrap();
+        }
+
+        let seen = capturing.tools.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "one request per turn: {seen:?}");
+        assert!(
+            seen[0].iter().any(|n| n == "extra_tool"),
+            "the extension tool is declared on turn one: {:?}",
+            seen[0]
+        );
+        assert!(
+            seen[1].iter().any(|n| n == "extra_tool"),
+            "the frozen list must survive a mid-session change: {:?}",
+            seen[1]
+        );
+        assert!(
+            session
+                .records
+                .iter()
+                .any(|r| matches!(r, Record::Meta(note) if note.starts_with("tool set frozen"))),
+            "the change must be noted in the transcript once"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_compaction_epoch_checkpoints_the_system_prompt() {
+        let dir = std::env::temp_dir().join(format!("glass-checkpoint-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let mut session = Session::create(&dir).unwrap();
+        for i in 0..30 {
+            session.append(Record::User(format!("question number {i} with some words")));
+            session.append(Record::Assistant(format!("answer number {i} with some words")));
+        }
+        let mut state = State::new();
+        let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
+        let mut extensions = Registry::empty();
+        let marker = format!("MARKER-{}", std::process::id());
+        {
+            let mut agent = Agent::new(
+                &CrampedProvider,
+                &mut session,
+                &mut state,
+                &no_mods,
+                &mut extensions,
+                Path::new("."),
+            )
+            .with_prompt(format!("You are a test assistant. {marker}"), None, None);
+            let _ = agent.run_turn(no_pump);
+        }
+        assert!(
+            session.records.iter().any(|r| matches!(
+                r,
+                Record::Compacted {
+                    system: Some(system),
+                    ..
+                } if system.contains(&marker)
+            )),
+            "the compaction epoch must checkpoint the system prompt in effect"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

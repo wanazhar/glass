@@ -27,7 +27,9 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 
 use serde_json::{Value, json};
 
@@ -452,6 +454,15 @@ pub fn serve(
                 broadcast(&clients, json!({"t": "done", "stop": stop, "text": text}));
             }
             Some("cancel") => { /* no turn running: nothing to cancel */ }
+            Some("stop") => {
+                // Graceful shutdown. The turn still running, if any,
+                // finishes first — the frame is queued behind it like
+                // any other message — then the loop exit path shuts
+                // extensions down and removes the socket.
+                to_origin(json!({"t": "stopped", "session": session.id}));
+                failure = None;
+                break 'serve;
+            }
             other => {
                 to_origin(
                     json!({"t": "error", "message": format!("unknown message {:?}", other)}),
@@ -463,6 +474,162 @@ pub fn serve(
     extensions.shutdown();
     let _ = std::fs::remove_file(&socket_path);
     failure.map_or(Ok(()), Err)
+}
+
+/// Entries a `logs` run prints: the tail of the session log.
+const LOG_ENTRIES: usize = 40;
+
+/// The session id a socket belongs to: `serve-<id>.sock`.
+fn socket_session(socket: &std::path::Path) -> Option<String> {
+    socket
+        .file_stem()
+        .map(|s| s.to_string_lossy().trim_start_matches("serve-").to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Stop a served session: connect to its server and ask it to exit.
+///
+/// The server finishes any turn still running — the frame is
+/// queued behind it like any other message — then shuts down and
+/// removes its socket. The reply is read until EOF so a caller
+/// knows the server is fully down, not merely acknowledged.
+pub fn stop(session_id: Option<&str>) -> Result<(), String> {
+    let socket = match session_id {
+        Some(id) => config::data_dir().join(format!("serve-{id}.sock")),
+        None => default_socket()?,
+    };
+    let id = socket_session(&socket).unwrap_or_else(|| "unknown".into());
+    let mut stream = UnixStream::connect(&socket)
+        .map_err(|e| format!("cannot connect to {}: {e}", socket.display()))?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .map_err(|e| e.to_string())?;
+    send(&mut stream, json!({"t": "stop"}));
+    let mut buf = [0u8; 512];
+    let mut seen = String::new();
+    let mut stopped = false;
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                if chunk.contains("\"stopped\"") {
+                    stopped = true;
+                }
+                seen.push_str(&chunk);
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                break;
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    if stopped {
+        println!("glass-core: stopped session {id}");
+        Ok(())
+    } else {
+        Err(format!(
+            "server for session {id} did not acknowledge the stop: {seen}"
+        ))
+    }
+}
+
+/// Respawn a served session: stop the running server, if any,
+/// then start a fresh one for the same session.
+///
+/// The new server is detached into its own process group so it
+/// outlives the command and the shell that ran it; its startup
+/// lines stay on this terminal. With no id, the newest served
+/// session is respawned — or, with none running, the newest
+/// session in this workspace.
+pub fn respawn(session_id: Option<&str>) -> Result<(), String> {
+    let id = match session_id {
+        Some(id) => Some(id.to_string()),
+        None => default_socket().ok().as_deref().and_then(socket_session),
+    };
+    // Stop the running server first. A session with no server
+    // is not an error: respawn then just starts one.
+    if let Some(id) = &id {
+        let socket = config::data_dir().join(format!("serve-{id}.sock"));
+        if socket.exists() {
+            stop(Some(id))?;
+        }
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("cannot find glass-core: {e}"))?;
+    let mut cmd = Command::new(exe);
+    cmd.arg("serve");
+    if let Some(id) = &id {
+        cmd.arg(id);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd.spawn()
+        .map_err(|e| format!("cannot respawn the server: {e}"))?;
+    match &id {
+        Some(id) => println!("glass-core: respawning session {id}"),
+        None => println!("glass-core: respawning the newest session"),
+    }
+    Ok(())
+}
+
+/// Show a session's recent activity from its log.
+///
+/// With no id, the newest session in the workspace. Reads the
+/// durable log, so it works whether or not a server is running.
+pub fn logs(session_id: Option<&str>, workspace: &Path) -> Result<(), String> {
+    let dir = config::data_dir();
+    let id = match session_id {
+        Some(id) => id.to_string(),
+        None => crate::polish::sessions(workspace)
+            .into_iter()
+            .next()
+            .map(|s| s.id)
+            .ok_or_else(|| "no sessions in this workspace".to_string())?,
+    };
+    let session = Session::open(&dir, &id).map_err(|e| e.to_string())?;
+    let records = crate::export::raw_records(&session);
+    let entries: Vec<String> = records
+        .iter()
+        .rev()
+        .take(LOG_ENTRIES)
+        .rev()
+        .filter_map(|record| match record {
+            Record::User(text) => Some(format!("❯ {text}")),
+            Record::Assistant(text) => Some(text.clone()),
+            Record::Bash {
+                command,
+                exit_code,
+                ..
+            } => Some(format!(
+                "$ {command}{}",
+                exit_code
+                    .map(|code| format!(" [exit {code}]"))
+                    .unwrap_or_default()
+            )),
+            Record::ToolResult { name, body, .. } if name != "bash" => {
+                Some(format!("  {name}: {}", glass_tui::text::clip(body, 200)))
+            }
+            Record::Custom { kind, .. } => {
+                Some(format!("  [extension entry: {kind}]"))
+            }
+            _ => None,
+        })
+        .collect();
+    if entries.is_empty() {
+        println!("no activity in session {id}");
+        return Ok(());
+    }
+    println!("glass-core: last {} entries of session {id}\n", entries.len());
+    for entry in entries {
+        println!("{entry}\n");
+    }
+    Ok(())
 }
 
 /// A small terminal client for a served session.

@@ -305,7 +305,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 max_tokens = 16000
 cost_limit = 5.0              # optional session limit in USD
 mods = []                       # "noisy" is the shipped example
-notify = "auto"                 # auto | osc | bell | off
+notify = "auto"                 # auto | osc | osc777 | bell | off
 
 # Optional: dollars per million tokens. All four fields are
 # required — a partial card would misprice every request.
@@ -440,6 +440,10 @@ The current session cannot be deleted. Deletion removes its transcript, title,
 attachments, and cost ledger; workspace files and checkpoint snapshots stay.
 Sessions are bound to the canonical workspace path. Older logs acquire a project
 binding when explicitly resumed, and then appear in that project's browser.
+
+`/name <title>` sets the title directly; `/name` opens a modal prefilled with the
+current title, and an empty field falls back to the first message. `glass-core
+list` shows titles, and so does `/sessions`.
 
 `/context` shows estimated context usage, the loaded system prompt and project
 instructions, the skill catalogue, attachments, and compaction summaries.
@@ -588,14 +592,15 @@ owns stdin on its own thread and the loop drains it non-blockingly.
 
 Long turns are meant to be walked away from. When a turn that ran at least
 five seconds finishes — or any turn fails, however fast — glass-core gets
-your attention. `notify = "auto"` sends OSC 9 on terminals that surface it
-(iTerm2, WezTerm, kitty, Ghostty, VS Code, mintty) and rings the bell
-everywhere else; `"osc"` and `"bell"` force one mechanism; `"off"` silences
-it. Cancelled and steered turns never notify, because you are already at the
-keyboard, and a queued follow-up defers the alert until the work is really
-done. Notifications are interactive-only; headless runs stay silent. The
-message carries the turn duration and session cost and never includes
-provider text that could smuggle terminal controls.
+your attention. `notify = "auto"` sends OSC 777 on terminals that surface it
+(Ghostty, WezTerm), OSC 9 on the rest of the terminals that do (iTerm2,
+kitty, VS Code, mintty), and rings the bell everywhere else; `"osc"`,
+`"osc777"` and `"bell"` force one mechanism; `"off"` silences it. Cancelled
+and steered turns never notify, because you are already at the keyboard, and
+a queued follow-up defers the alert until the work is really done.
+Notifications are interactive-only; headless runs stay silent. The message
+carries the turn duration and session cost and never includes provider text
+that could smuggle terminal controls.
 
 ## Sessions
 
@@ -604,7 +609,7 @@ file is the crash-recovery mechanism, the resume mechanism, and the source for
 the transcript viewer — which is what keeps the two renderers from drifting.
 
 ```sh
-glass-core list          # sessions, newest first, with date and first message
+glass-core list          # sessions, newest first, with date and title/first message
 glass-core search <pat>  # every session whose messages match a pattern
 glass-core resume
 glass-core resume <id>
@@ -744,7 +749,10 @@ Tasks may opt into two kinds of isolation:
   reclaim the work with `glass-core worktree apply` (below).
 
 A task that fails — or whose worker panics — produces an error in its own
-report slot and never aborts its siblings.
+report slot and never aborts its siblings. Every report comes back wrapped in
+`<subagent-report>` tags, so report prose cannot read as instructions you
+gave: delegated text is generated in a context you never typed into, and the
+frame is what marks the boundary.
 
 ### Getting work back out of a worktree
 
@@ -951,6 +959,19 @@ Hooks: `system_prompt`, `run_tool`, `tool_result` (rewriting), `authorize`,
 the host to run a tool while it executes. That last one is what makes codemode
 possible.
 
+The declared tool list is frozen once the first turn runs: it is part of the
+cacheable prompt prefix, so an extension enabled or disabled mid-session is
+noted once in the transcript and applies to the next session instead of
+invalidating the cache for every later turn.
+
+An extension can keep durable state that never enters the model context.
+`append_custom` records an entry, `read_custom` reads a kind back, and at
+startup the host seeds each extension (`seed_custom`) with the entries it owns
+from the session log — so state survives restarts without a side file. Kinds
+are namespaced by the manifest name (`my-ext/state`), so one extension cannot
+write another's; entries are appended to the log by the harness, in causal
+order, and exports show them as `[extension entry: kind]`.
+
 Every exchange is bounded by a timeout and a byte cap. A wedged, hostile, or
 crashed extension degrades into a warning, never a hung session. A failed
 extension is skipped, never fatal. Nothing spawns unless config names it.
@@ -1084,6 +1105,16 @@ are kept under `refs/glass-core/<session>/`; manifests live beside session data 
 branch, and does not create commits. Outside Git, the agent still runs but review
 and recovery checkpoints are unavailable.
 
+`/code-review [max-findings]` reviews the working diff — staged and unstaged
+against HEAD — for correctness bugs, through a read-only delegated agent that
+cannot mutate the tree it is judging. Findings, most severe first, land in the
+conversation so the model can act on them; a clean tree is reported without
+spending a provider call. `/skill-doctor` reports what the skill library costs:
+per-skill body bytes (paid only when the model reads the file) and description
+bytes (paid every turn in the catalogue), plus each skill's last-modified date.
+Usage is not tracked — skills are read with `bash`, and glass does not
+instrument those reads — so the report is size and age, not a hit count.
+
 ## Session spending limits
 
 Set `cost_limit = 5.0` in config or use `/budget 5` during a session. `/budget`
@@ -1196,6 +1227,9 @@ gotchas, and preferences; transient task state belongs in `state`.
 ```sh
 glass-core serve                    # owns a session, prints its socket path
 glass-core attach --socket <path>   # terminal client; detach without stopping it
+glass-core logs <session-id>        # the last 40 recorded entries
+glass-core stop <session-id>        # ask the server to exit (socket removed)
+glass-core respawn <session-id>     # stop it, then start a fresh detached server
 ```
 
 `serve` runs the same engine as the terminal — tools, extensions,
@@ -1209,8 +1243,13 @@ broadcasts to all of them, any client can cancel, and a closed terminal is
 dropped rather than stalling the session — mirroring one session into two
 panes is the point. Access is same-user on a 0600 socket, which is the whole
 auth story; there is no TCP listener. Detaching never stops the server, and
-SIGTERM shuts it down cleanly. Slash commands and modals remain in the
-interactive session.
+SIGTERM shuts it down cleanly. `stop` asks over the same socket: a turn still
+running finishes first, then the server shuts down and removes its socket.
+`respawn` stops the server if one is running and starts a fresh one for the
+same session in its own process group, so it outlives the shell; `logs` reads
+the durable log and works whether or not a server is running. `stop` and
+`respawn` take the newest served session when the id is omitted. Slash
+commands and modals remain in the interactive session.
 
 ## Messaging another session
 

@@ -79,6 +79,12 @@ pub fn markdown(session: &Session, thinking: bool, records: &[Record]) -> String
                 }
                 out.push_str("\n</details>\n\n");
             }
+            Record::Custom { kind, data } => {
+                out.push_str(&format!(
+                    "<details><summary>extension entry: {kind}</summary>\n\n{}\n</details>\n\n",
+                    data.as_deref().unwrap_or("")
+                ));
+            }
             Record::System(text) => {
                 out.push_str("<details><summary>system</summary>\n\n");
                 out.push_str(text.trim_end());
@@ -146,6 +152,7 @@ mod tests {
                 dropped: 9,
                 summary: Some("earlier work".into()),
                 tail_start: 3,
+                system: None,
             },
         ]
     }

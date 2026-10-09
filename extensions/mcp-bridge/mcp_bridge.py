@@ -207,13 +207,29 @@ class BaseServer:
         self.name = name
         self.tools = []
         self.dead = None
+        # CacheableResult hints (2026-07-28): how long this list may be
+        # cached, and at what scope. Only the deferred index honours the
+        # TTL; the non-deferred manifest is the session's declared tool
+        # list and cannot change once the harness has frozen it.
+        self.ttl_ms = None
+        self.cache_scope = None
+        self.listed_at = 0.0
 
     def list_tools(self):
         result = self.request("tools/list", {}, INIT_TIMEOUT)
-        # `ttlMs`/`cacheScope` (CacheableResult, 2026-07-28) are tolerated and
-        # ignored: this bridge fetches once at startup and keeps the result.
+        ttl = result.get("ttlMs")
+        self.ttl_ms = ttl if isinstance(ttl, (int, float)) and ttl >= 0 else None
+        scope = result.get("cacheScope")
+        self.cache_scope = scope if isinstance(scope, str) else None
+        self.listed_at = time.time()
         tools = result.get("tools") or []
         return [t for t in tools if isinstance(t, dict) and t.get("name")]
+
+    def stale(self):
+        """Whether the cached tools/list has outlived its TTL."""
+        if self.ttl_ms is None:
+            return False
+        return (time.time() - self.listed_at) * 1000.0 > self.ttl_ms
 
     def call_tool(self, tool, arguments):
         if self.dead:
@@ -615,19 +631,51 @@ class Bridge:
                 server = make_server(str(name), spec)
                 server.tools = server.list_tools()
                 self.servers[server.name] = server
-                for tool in server.tools:
-                    full = namespaced(server.name, tool["name"])
-                    if full in self.entries:
-                        print(f"mcp-bridge: duplicate tool {full}, keeping the first", file=sys.stderr)
-                        continue
-                    self.entries[full] = (
-                        server.name,
-                        tool["name"],
-                        str(tool.get("description") or ""),
-                    )
+                self.index(server)
             except Exception as error:
                 print(f"mcp-bridge: server `{name}` skipped: {error}", file=sys.stderr)
         self.deferred = len(self.entries) > DEFER_AT
+
+    def index(self, server):
+        """Add one server's tools to the addressable catalogue."""
+        for tool in server.tools:
+            full = namespaced(server.name, tool["name"])
+            if full in self.entries:
+                print(f"mcp-bridge: duplicate tool {full}, keeping the first", file=sys.stderr)
+                continue
+            self.entries[full] = (
+                server.name,
+                tool["name"],
+                str(tool.get("description") or ""),
+            )
+
+    def refresh(self):
+        """Re-fetch servers whose tools/list TTL has expired.
+
+        Only the deferred index is refreshed: it is reached through
+        `mcp_search`, so replacing it changes no declared tool. The
+        non-deferred manifest is the session's declared tool list, and
+        the harness freezes that list for prompt-cache stability, so a
+        re-fetch there would not reach the model anyway.
+        """
+        for server in self.servers.values():
+            if not server.stale():
+                continue
+            try:
+                server.tools = server.list_tools()
+            except Exception as error:
+                print(
+                    f"mcp-bridge: refresh of `{server.name}` failed: {error}",
+                    file=sys.stderr,
+                )
+                continue
+            for full in [
+                full
+                for full, (owner, _, _) in self.entries.items()
+                if owner == server.name
+            ]:
+                del self.entries[full]
+            self.index(server)
 
     def manifest_tools(self):
         if not self.entries:
@@ -673,7 +721,10 @@ class Bridge:
                 },
             ]
         tools = []
-        for full, (server, tool, description) in self.entries.items():
+        # Sorted by namespaced name: the spec recommends deterministic
+        # tools/list ordering, and a stable order is what keeps the
+        # declared prefix byte-identical across sessions.
+        for full, (server, tool, description) in sorted(self.entries.items()):
             tools.append(
                 {
                     "name": full,
@@ -706,6 +757,9 @@ class Bridge:
     def run_tool(self, name, arguments):
         if self.deferred:
             if name == "mcp_search":
+                # The index is a cache: honour each server's TTL
+                # before answering a search over it.
+                self.refresh()
                 query = str((arguments or {}).get("query") or "").lower()
                 hits = [
                     f"{full} — {description}"

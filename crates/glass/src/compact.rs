@@ -313,7 +313,10 @@ impl Breaker {
 ///
 /// Works below the threshold: a manual compaction is a statement about what
 /// the user wants, not a measurement. The conversation is left untouched if
-/// the provider fails or returns nothing.
+/// the provider fails or returns nothing. No system-prompt checkpoint is
+/// recorded here: the assembled prompt lives with the Agent, so a manual
+/// epoch falls back to the current prompt on replay — the automatic path in
+/// `agent.rs` is the one that captures it.
 pub fn run_manual(
     provider: &dyn Provider,
     session: &mut Session,
@@ -364,6 +367,7 @@ pub fn run_manual(
         dropped: before_len.saturating_sub(kept),
         summary: Some(summary.to_string()),
         tail_start,
+        system: None,
     });
     let after = provider.estimate_tokens(&project(&session.records)) as usize;
     Ok((before, after))

@@ -52,3 +52,6 @@
 
 - [Pi shipping regression review](plan/tasks/pi-shipping-001.md): durability recovery and compaction-aware context edit fixes.
 - [Pi shipping verification](plan/reviews/pi-shipping-001-01.md): final regression tests and small-screen PTY evidence.
+
+- [Round-3 ports](plan/tasks/round3-ports-001.md): subagent report framing, frozen tool list, compaction prompt checkpoint, MCP TTL, OSC 777, /name, serve stop/respawn/logs, extension durable entries, /skill-doctor, /code-review.
+- [Round-3 verification](plan/reviews/round3-ports-001-01.md): unit, Clippy, release and full smoke evidence, with the envelope and freeze limitations stated.

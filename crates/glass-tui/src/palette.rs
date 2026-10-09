@@ -90,10 +90,29 @@ impl Palette {
             .next()
             .unwrap_or("")
             .to_ascii_lowercase();
-        self.commands
+        // Exact and prefix matches outrank bare substrings, so one
+        // command whose name merely contains another's cannot shadow
+        // it: `/review` must select `review`, not `code-review`.
+        // The sort is stable, so catalogue order holds within a rank.
+        let mut matches: Vec<(u8, &Command)> = self
+            .commands
             .iter()
-            .filter(|c| c.name.to_ascii_lowercase().contains(&query))
-            .collect()
+            .filter_map(|c| {
+                let name = c.name.to_ascii_lowercase();
+                let rank = if name == query {
+                    0
+                } else if name.starts_with(&query) {
+                    1
+                } else if name.contains(&query) {
+                    2
+                } else {
+                    return None;
+                };
+                Some((rank, c))
+            })
+            .collect();
+        matches.sort_by_key(|(rank, _)| *rank);
+        matches.into_iter().map(|(_, c)| c).collect()
     }
     pub fn changed(&mut self, editor: &Editor) {
         self.selected = 0;
@@ -293,6 +312,34 @@ mod tests {
         let p = palette();
         assert_eq!(p.matches("/mi")[0].name, "mine");
         assert!(p.matches("/xyz").is_empty());
+    }
+    #[test]
+    fn exact_and_prefix_matches_outrank_substrings() {
+        // `review` and `code-review` both contain `review`; the
+        // exact match must win, in both directions.
+        let mut p = Palette::new(vec![
+            Command {
+                name: "code-review".into(),
+                hint: "[max]".into(),
+                description: "Review the diff".into(),
+                required_args: false,
+            },
+            Command {
+                name: "review".into(),
+                hint: "".into(),
+                description: "Task review".into(),
+                required_args: false,
+            },
+        ]);
+        assert_eq!(p.matches("/review")[0].name, "review");
+        assert_eq!(p.matches("/code")[0].name, "code-review");
+        assert_eq!(p.matches("/code-r")[0].name, "code-review");
+        let mut e = Editor::new();
+        e.set_text("/review");
+        assert_eq!(
+            p.key(&mut e, KeyCode::Enter.into()).as_deref(),
+            Some("/review")
+        );
     }
     #[test]
     fn enter_submits_command_to_its_guided_flow() {

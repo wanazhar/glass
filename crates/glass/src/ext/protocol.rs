@@ -167,6 +167,12 @@ pub enum Request {
     RunTool { name: String, arguments: String },
     /// Shutdown notice before the process exits.
     Goodbye,
+    /// Seed an extension with its existing durable entries, sent once
+    /// after the session opens. The extension acks; the entries are
+    /// `(kind, data)` pairs it appended in earlier sessions.
+    SeedCustom {
+        entries: Vec<(String, Vec<String>)>,
+    },
 }
 
 impl Request {
@@ -212,6 +218,15 @@ impl Request {
                 "type": "run_tool", "id": id, "name": name, "arguments": arguments
             }),
             Request::Goodbye => json!({ "type": "goodbye", "id": id }),
+            Request::SeedCustom { entries } => {
+                let entries: Vec<Value> = entries
+                    .iter()
+                    .map(|(kind, data)| {
+                        json!({ "kind": kind, "entries": data })
+                    })
+                    .collect();
+                json!({ "type": "seed_custom", "id": id, "entries": entries })
+            }
         }
     }
 }
@@ -421,6 +436,46 @@ pub fn subagents_result_json(call_id: &Value, outputs: &[String], error: Option<
     json!({
         "type": "subagents_result", "call_id": call_id,
         "outputs": outputs, "error": error
+    })
+}
+
+/// Frame one delegated report so its content can never read as
+/// session instructions.
+///
+/// A subagent report is text generated in a context the user never
+/// typed into. Without an explicit envelope it is indistinguishable
+/// from conversation content, so report prose could be treated as
+/// instructions the user gave. The envelope is the hand-back
+/// boundary Claude Code frames subagent results with.
+pub fn envelope_report(output: &str) -> String {
+    format!("<subagent-report>\n{output}\n</subagent-report>")
+}
+
+/// True when `v` is an extension asking to append a durable entry.
+///
+/// Like a nested tool call it arrives while another request is in
+/// flight, so the host demultiplexes on the message type.
+pub fn is_custom_append(v: &Value) -> bool {
+    v.get("type").and_then(Value::as_str) == Some("append_custom")
+}
+
+/// True when `v` is an extension asking to read its durable entries.
+pub fn is_custom_read(v: &Value) -> bool {
+    v.get("type").and_then(Value::as_str) == Some("read_custom")
+}
+
+/// Wire form of the host's answer to `append_custom` and `read_custom`.
+///
+/// `entries` is set for reads; `ok`/`error` for appends.
+pub fn custom_result_json(
+    call_id: &Value,
+    ok: bool,
+    entries: &[String],
+    error: Option<&str>,
+) -> Value {
+    json!({
+        "type": "custom_result", "call_id": call_id,
+        "ok": ok, "entries": entries, "error": error
     })
 }
 
@@ -677,6 +732,50 @@ mod tests {
         assert_eq!(j["error"], "nope");
         let ok = subagents_result_json(&json!(null), &outputs, None);
         assert!(ok["error"].is_null());
+    }
+
+    #[test]
+    fn reports_are_framed_so_they_cannot_read_as_instructions() {
+        let framed = envelope_report("do the thing the user asked");
+        assert!(
+            framed.starts_with("<subagent-report>\n"),
+            "the frame opens the report: {framed}"
+        );
+        assert!(
+            framed.ends_with("\n</subagent-report>"),
+            "the frame closes the report: {framed}"
+        );
+        assert!(framed.contains("do the thing the user asked"));
+    }
+
+    #[test]
+    fn custom_calls_are_distinguishable_from_replies() {
+        let append = json!({
+            "type": "append_custom", "call_id": "c1",
+            "kind": "ext/state", "data": "v1"
+        });
+        assert!(is_custom_append(&append));
+        assert!(!is_custom_read(&append));
+        let read = json!({ "type": "read_custom", "call_id": "c2", "kind": "ext/state" });
+        assert!(is_custom_read(&read));
+        assert!(!is_custom_append(&read));
+        // A plain reply must not be demultiplexed as either.
+        assert!(!is_custom_append(&json!({ "id": 3, "ok": true })));
+        let j = custom_result_json(&json!("c1"), true, &["v1".to_string()], None);
+        assert_eq!(j["type"], "custom_result");
+        assert_eq!(j["entries"][0], "v1");
+        assert!(j["error"].is_null());
+    }
+
+    #[test]
+    fn seed_custom_serializes_kinds_and_entries() {
+        let j = Request::SeedCustom {
+            entries: vec![("ext/state".into(), vec!["v1".into(), "v2".into()])],
+        }
+        .to_json(9);
+        assert_eq!(j["type"], "seed_custom");
+        assert_eq!(j["entries"][0]["kind"], "ext/state");
+        assert_eq!(j["entries"][0]["entries"][1], "v2");
     }
 
     #[test]

@@ -93,6 +93,13 @@ def main():
                 t=f.Terminal(repo,env,size=size)
                 try:
                     t.idle();key(t,'x');t.visible('❯ x');key(t,'\x03');t.idle()
+                    # Escape must erase the managed palette, not merely repaint
+                    # the composer below a stale modal in the middle of the screen.
+                    for query in ('/', '/not-a-command'):
+                        key(t,query);t.visible('Commands');back(t);t.visible('❯ '+query)
+                        assert 'Commands' not in t.screen.text(), t.screen.text()
+                        assert 'No matching commands' not in t.screen.text(), t.screen.text()
+                        key(t,'\x03');t.idle()
                     key(t,'/');t.visible('Commands');key(t,'context');t.visible('› /context');key(t,'\r');t.visible('Context');t.visible('› Inspect')
                     key(t,'\r');t.visible('Context details');back(t);t.visible('› Inspect');back(t);t.idle()
                     # A palette-dispatched modal keeps a non-command draft.

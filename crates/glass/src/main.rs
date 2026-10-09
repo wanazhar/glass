@@ -3980,6 +3980,11 @@ impl Painter {
 
     fn reader_needs_redraw(&self, palette_active: bool) -> bool {
         let palette_closed = self.palette_was_active.replace(palette_active) && !palette_active;
+        if palette_closed {
+            // Managed palettes paint over the application screen. Restore the
+            // body as well as the composer when any dismissal path closes one.
+            let _ = surface::overlay(false);
+        }
         palette_closed || surface::reader_invalidated()
     }
 

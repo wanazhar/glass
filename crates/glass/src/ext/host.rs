@@ -54,6 +54,20 @@ pub fn arguments(spec: &str) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn extension_environment_is_rebuilt_without_explicit_secret_overrides() {
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg("test -z \"${GLASS_TEST_API_KEY:-}\"");
+        command.env("GLASS_TEST_API_KEY", "must-not-reach-extension");
+        crate::sandbox::scrub_sensitive_env(&mut command);
+        assert!(command.status().expect("shell starts").success());
+    }
+}
+
 /// A running extension process.
 pub struct Extension {
     pub manifest: Manifest,
@@ -108,18 +122,13 @@ impl Extension {
         let args = &parts[1..];
 
         let mut command = Command::new(program);
-        // Extensions are local programs, but need not inherit provider secrets.
-        for (name, _) in std::env::vars_os() {
-            let upper = name.to_string_lossy().to_ascii_uppercase();
-            if upper.contains("TOKEN")
-                || upper.contains("SECRET")
-                || upper.contains("PASSWORD")
-                || upper.contains("API_KEY")
-                || upper == "AWS_ACCESS_KEY_ID"
-                || upper == "SSH_AUTH_SOCK"
-            {
-                command.env_remove(name);
-            }
+        crate::sandbox::scrub_sensitive_env(&mut command);
+        // This reads the sidecar and installs a per-child OS jail before the
+        // extension can execute or announce tools in its handshake.
+        let notes =
+            crate::sandbox::harden_extension(&mut command, cmd, std::path::Path::new(workspace))?;
+        for note in notes {
+            eprintln!("glass-core: extension `{cmd}`: {note}");
         }
         let mut child = command
             .process_group(0)

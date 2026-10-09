@@ -62,6 +62,8 @@ def main():
         installed = cfg / 'plugins/demo'
         receipt = json.loads((cfg / 'plugins/lock.json').read_text())['plugins']['demo']
         assert len(receipt['hash']) == 64 and receipt['version'] == '1.0.0'
+        assert isinstance(receipt['source'], str) and isinstance(receipt['capabilities'], dict)
+        assert receipt['revision'] is None or isinstance(receipt['revision'], str)
         assert cli('plugin', 'verify').stdout.find('verified') >= 0
         # Same size and preserved mtime still fails cryptographic verification.
         skill = installed / 'skills/greet/SKILL.md'; old = skill.stat(); skill.write_text(skill.read_text().replace('First!', 'Other!'))
@@ -115,6 +117,18 @@ def main():
         assert any(tool['name'] == 'mcp__bridge-demo.fixture__echo' for tool in hello['tools']), hello
         assert marker.read_text() == 'started', 'valid receipt must allow actual MCP server startup'
         marker.unlink()
+        # Rust receipts require source/hash and emit version/revision/capabilities.
+        # A receipt with the correct hash but missing fields is malformed, not legacy.
+        valid_lock = json.loads((cfg / 'plugins/lock.json').read_text())
+        for missing_field in ('source', 'capabilities'):
+            malformed = json.loads(json.dumps(valid_lock))
+            del malformed['plugins']['bridge-demo'][missing_field]
+            (cfg / 'plugins/lock.json').write_text(json.dumps(malformed))
+            hello, errors = bridge_hello(env)
+            assert not any(tool['name'].startswith('mcp__bridge-demo.') for tool in hello['tools']), hello
+            assert 'invalid plugin integrity receipts' in errors
+            assert not marker.exists(), f'malformed receipt missing {missing_field} must not launch'
+        (cfg / 'plugins/lock.json').write_text(json.dumps(valid_lock))
         file = bridge_plugin / 'skills/greet/SKILL.md'; prior = file.stat()
         file.write_text(file.read_text().replace('First!', 'Tamper!'))
         os.utime(file, ns=(prior.st_atime_ns, prior.st_mtime_ns))

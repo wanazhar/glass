@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline plugin receipt, tamper, capability and replacement checks."""
 import importlib.util
+import hashlib
 import json
 import os
 import subprocess
@@ -11,6 +12,9 @@ spec = importlib.util.spec_from_file_location('features', Path(__file__).with_na
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 SCHEMA = 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json'
+MCP_SCHEMA = 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json'
+BRIDGE = Path(__file__).resolve().parents[1] / 'extensions/mcp-bridge/mcp_bridge.py'
+MCP_FIXTURE = Path(__file__).resolve().with_name('mcp_fixture_server.py')
 
 
 def fixture(path, capability=None, body='First!'):
@@ -20,6 +24,25 @@ def fixture(path, capability=None, body='First!'):
         manifest['extensions'] = {'org.glass-core': {'capabilities': capability}}
     (path / 'plugin.json').write_text(json.dumps(manifest))
     (path / 'skills/greet/SKILL.md').write_text(f'---\nname: greet\ndescription: greet\n---\n\n{body}')
+
+
+def tree_hash(root):
+    files = []
+    for path in root.rglob('*'):
+        if path.is_symlink(): raise AssertionError(f'unexpected fixture symlink: {path}')
+        if path.is_file(): files.append((path.relative_to(root).as_posix().encode(), path.read_bytes()))
+    hashed = hashlib.sha256()
+    for path, content in sorted(files):
+        hashed.update(len(path).to_bytes(8, 'little')); hashed.update(path)
+        hashed.update(len(content).to_bytes(8, 'little')); hashed.update(content)
+    return hashed.hexdigest()
+
+
+def bridge_hello(env):
+    p = subprocess.run([os.sys.executable, str(BRIDGE)], input='{"type":"hello","id":"test"}\n{"type":"shutdown"}\n',
+                       env=env, text=True, capture_output=True, timeout=20)
+    assert p.returncode == 0, (p.stdout, p.stderr)
+    return json.loads(p.stdout.splitlines()[0]), p.stderr
 
 
 def main():
@@ -71,11 +94,40 @@ def main():
         failed = cli('plugin', 'update', 'demo', ok=False)
         assert 'Second!' in skill.read_text()
 
+        # Exercise the real MCP bridge: receipt validation must happen before
+        # subprocess launch and before tool catalogue construction.
+        bridge_plugin = cfg / 'plugins/bridge-demo'; bridge_plugin.mkdir()
+        fixture(bridge_plugin)
+        manifest = json.loads((bridge_plugin / 'plugin.json').read_text()); manifest['name'] = 'bridge-demo'
+        (bridge_plugin / 'plugin.json').write_text(json.dumps(manifest))
+        marker = root / 'server-started'
+        runner = bridge_plugin / 'runner.py'
+        runner.write_text("import os, runpy, sys\nfrom pathlib import Path\nPath(os.environ['START_MARKER']).write_text('started')\nrunpy.run_path(sys.argv[1], run_name='__main__')\n")
+        (bridge_plugin / 'mcp.json').write_text(json.dumps({
+            '$schema': MCP_SCHEMA,
+            'mcpServers': {'fixture': {'type': 'stdio', 'command': os.sys.executable,
+                'args': [str(runner), str(MCP_FIXTURE)], 'env': {'START_MARKER': str(marker)}, 'cwd': '${PLUGIN_ROOT}'}},
+        }))
+        lock = json.loads((cfg / 'plugins/lock.json').read_text())
+        lock['plugins']['bridge-demo'] = {'source': 'fixture', 'hash': tree_hash(bridge_plugin), 'version': '1.0.0', 'revision': None, 'capabilities': {}}
+        (cfg / 'plugins/lock.json').write_text(json.dumps(lock))
+        hello, _ = bridge_hello(env)
+        assert any(tool['name'] == 'mcp__bridge-demo.fixture__echo' for tool in hello['tools']), hello
+        assert marker.read_text() == 'started', 'valid receipt must allow actual MCP server startup'
+        marker.unlink()
+        file = bridge_plugin / 'skills/greet/SKILL.md'; prior = file.stat()
+        file.write_text(file.read_text().replace('First!', 'Tamper!'))
+        os.utime(file, ns=(prior.st_atime_ns, prior.st_mtime_ns))
+        hello, errors = bridge_hello(env)
+        assert not any(tool['name'].startswith('mcp__bridge-demo.') for tool in hello['tools']), hello
+        assert 'integrity verification failed' in errors
+        assert not marker.exists(), 'tampered managed plugin server must not launch'
+
         # Escaping symlinks are rejected at install; unmanaged legacy remains loadable and explicit.
         outside = root / 'outside'; outside.write_text('secret')
         (src / 'escape').symlink_to(outside)
         cli('plugin', 'add', str(src), ok=False)
-    print('PASS plugin integrity: SHA256 content/path receipt, tamper detection, capability refusal, accepted staged update, persistent data, failed update preservation, symlink rejection')
+    print('PASS plugin integrity: SHA256 receipts, tamper detection, capability review, staged update, persistent data, legacy report, symlink rejection, fail-closed real MCP bridge')
 
 
 if __name__ == '__main__': main()

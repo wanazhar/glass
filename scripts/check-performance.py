@@ -39,6 +39,20 @@ def visible_text(data):
     return re.sub(rb'\x1b\][^\x07]*(?:\x07|\x1b\\)', b'', data)
 
 
+def wait_for_prompt(master, proc):
+    output = bytearray()
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline and proc.poll() is None:
+        readable, _, _ = select.select([master], [], [], 0.1)
+        if readable:
+            try: output.extend(os.read(master, 65536))
+            except OSError: break
+            visible = visible_text(output)
+            if b'glass-core' in visible and b'\xe2\x9d\xaf' in visible:
+                return output
+    raise RuntimeError('PTY did not reach the interactive prompt')
+
+
 def pty_measurements(env, size):
     master, slave = pty.openpty()
     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', size[1], size[0], 0, 0))
@@ -47,17 +61,7 @@ def pty_measurements(env, size):
     proc = subprocess.Popen([str(BIN)], cwd=env['GC_PERF_WORKSPACE'], env=env, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
     os.close(slave)
     try:
-        ready = bytearray()
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline and proc.poll() is None:
-            readable, _, _ = select.select([master], [], [], 0.1)
-            if readable:
-                try: ready.extend(os.read(master, 65536))
-                except OSError: break
-                visible = visible_text(ready)
-                if b'glass-core' in visible and b'\xe2\x9d\xaf' in visible: break
-        if proc.poll() is not None:
-            raise RuntimeError('interactive process exited before prompt')
+        wait_for_prompt(master, proc)
         prompt_ms = (time.perf_counter() - start) * 1000
         attrs = termios.tcgetattr(probe)
         if attrs[3] & termios.ICANON or attrs[3] & termios.ECHO:
@@ -107,6 +111,39 @@ def pty_measurements(env, size):
         os.close(probe)
 
 
+def reader_frame_latency(env, size):
+    master, slave = pty.openpty()
+    fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', size[1], size[0], 0, 0))
+    probe = os.dup(slave)
+    proc = subprocess.Popen([str(BIN), 'resume', 'perf-reader'], cwd=env['GC_PERF_WORKSPACE'], env=env, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+    os.close(slave)
+    try:
+        wait_for_prompt(master, proc)
+        attrs = termios.tcgetattr(probe)
+        if attrs[3] & termios.ICANON or attrs[3] & termios.ECHO:
+            raise RuntimeError('reader fixture PTY is not in raw, no-echo mode')
+        start = time.perf_counter()
+        os.write(master, b'\x02')  # Ctrl+B opens the real conversation reader.
+        output = bytearray()
+        deadline = time.monotonic() + 10
+        marker = b'RFMK'
+        while time.monotonic() < deadline:
+            if not select.select([master], [], [], 0.05)[0]:
+                continue
+            try: output.extend(os.read(master, 65536))
+            except OSError as exc: raise RuntimeError('PTY closed before reader frame') from exc
+            if marker in visible_text(output):
+                return (time.perf_counter() - start) * 1000
+        raise RuntimeError('long-history reader frame did not show its visible fixture marker')
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try: proc.wait(timeout=2)
+            except subprocess.TimeoutExpired: proc.kill(); proc.wait()
+        os.close(master)
+        os.close(probe)
+
+
 def main():
     if not BIN.is_file():
         raise SystemExit(f'missing release binary: {BIN}; build glass-core first')
@@ -121,13 +158,17 @@ def main():
         sessions.mkdir(parents=True)
         # Deterministic large history fixture; search exercises the real log
         # scanner without network access, credentials, or provider startup.
-        history = sessions / 'perf-fixture.jsonl'
+        history = sessions / 'perf-reader.jsonl'
         with history.open('w') as f:
             for i in range(12000):
-                f.write(json.dumps({'k': 'user' if i % 2 == 0 else 'assistant', 't': f'fixture record {i} stable-search-target'}) + '\n')
+                text = f'RFMK fixture record {i} stable-search-target'
+                if i >= 11000:
+                    text += ' READER_FRAME'
+                f.write(json.dumps({'k': 'user' if i % 2 == 0 else 'assistant', 't': text}) + '\n')
         env = dict(os.environ, XDG_CONFIG_HOME=str(root / 'config'), XDG_DATA_HOME=str(root / 'data'), TERM='xterm-256color', GC_PERF_WORKSPACE=str(workspace))
         starts = [elapsed_ms(lambda: subprocess.run([BIN, '--help'], cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)) for _ in range(7)]
         pty_results = {f'{w}x{h}': [pty_measurements(env, (w, h)) for _ in range(3)] for w, h in ((40, 24), (20, 8))}
+        reader_frames = {f'{w}x{h}': statistics.median([reader_frame_latency(env, (w, h)) for _ in range(3)]) for w, h in ((40, 24), (20, 8))}
         history_ms = elapsed_ms(lambda: subprocess.run([BIN, 'search', 'stable-search-target'], cwd=workspace, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True))
         # GNU time reports the peak RSS for this one child, in KiB.
         rss_file = root / 'rss-kib.txt'
@@ -142,9 +183,11 @@ def main():
                   'interactive_prompt_startup_worst_median_ms': max(x['interactive_prompt_startup_median_ms'] for x in per_size.values()),
                   'key_visible_worst_median_ms': max(x['key_visible_median_ms'] for x in per_size.values()),
                   'frame_visible_redraw_worst_median_ms': max(x['frame_visible_redraw_median_ms'] for x in per_size.values()),
+                  'long_history_reader_frame_median_ms': reader_frames,
+                  'long_history_reader_frame_worst_median_ms': max(reader_frames.values()),
                   'long_history_search_ms': history_ms, 'long_history_child_peak_rss_kib': rss}
         Path(os.environ.get('GC_PERF_REPORT', 'perf-report.json')).write_text(json.dumps(report, indent=2) + '\n')
-        budgets = {'startup_help_median_ms': limit('GC_PERF_STARTUP_BUDGET_MS', 250), 'interactive_prompt_startup_worst_median_ms': limit('GC_PERF_PROMPT_BUDGET_MS', 750), 'key_visible_worst_median_ms': limit('GC_PERF_KEY_BUDGET_MS', 200), 'frame_visible_redraw_worst_median_ms': limit('GC_PERF_FRAME_BUDGET_MS', 200), 'long_history_search_ms': limit('GC_PERF_HISTORY_BUDGET_MS', 10000), 'long_history_child_peak_rss_kib': limit('GC_PERF_RSS_BUDGET_KIB', 128 * 1024)}
+        budgets = {'startup_help_median_ms': limit('GC_PERF_STARTUP_BUDGET_MS', 250), 'interactive_prompt_startup_worst_median_ms': limit('GC_PERF_PROMPT_BUDGET_MS', 750), 'key_visible_worst_median_ms': limit('GC_PERF_KEY_BUDGET_MS', 200), 'frame_visible_redraw_worst_median_ms': limit('GC_PERF_FRAME_BUDGET_MS', 200), 'long_history_reader_frame_worst_median_ms': limit('GC_PERF_READER_FRAME_BUDGET_MS', 200), 'long_history_search_ms': limit('GC_PERF_HISTORY_BUDGET_MS', 10000), 'long_history_child_peak_rss_kib': limit('GC_PERF_RSS_BUDGET_KIB', 128 * 1024)}
         failures = [f'{key}={report[key]:.1f} exceeds {budget:.1f}' for key, budget in budgets.items() if report[key] > budget]
         print(json.dumps({'measurements': report, 'budgets': budgets, 'failures': failures}, indent=2))
         if failures: raise SystemExit('\n'.join(failures))

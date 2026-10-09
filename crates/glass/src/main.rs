@@ -14,6 +14,7 @@ mod checkpoint;
 mod compact;
 mod concurrency;
 mod config;
+mod doctor;
 mod export;
 mod ext;
 mod history;
@@ -93,7 +94,8 @@ glass-core — a minimal coding harness
   glass-core search <pat>    find sessions whose messages match
 
 In the prompt:
-  PageUp / Ctrl-B: scroll conversation inline; PageDown / Ctrl-F: move toward newest
+  PageUp / Ctrl-B: scroll conversation inline; Ctrl-F: search transcript
+  Inside reader: Ctrl-F search / next; PageDown moves toward newest
   End or Esc: return to bottom · mouse wheel: scroll when terminal supports it
   ctrl-g      fullscreen transcript (scroll, collapse, follow)
   / or ctrl-p command palette (type to filter, arrows, Enter/Tab, Esc)
@@ -116,7 +118,8 @@ In the prompt:
   /plan [task] inspect read-only and review before execution
   /init [notes]  draft AGENTS.md for this repository in a read-only run
   /git        review files/hunks, stage, and draft commits
-  /doctor     provider connectivity and optional tool probe
+  /doctor     offline local checks, provider checks, optional tool probe
+  /search     search the conversation transcript
   /profiles   persist project settings and extensions
   /responses  formatted responses and exact code copying
   /export [path]  write the conversation to a Markdown file
@@ -163,6 +166,18 @@ fn emit_json(value: serde_json::Value) {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // Config parser errors can include source excerpts. Keep doctor JSON and
+    // stderr useful without echoing potentially credential-bearing TOML.
+    if args.first().is_some_and(|a| a == "doctor") && config::load(&config::default_path()).is_err() {
+        let message = "Configuration could not be read or parsed; details are omitted to avoid exposing configured values.";
+        if args.iter().any(|a| a == "--json") {
+            println!("{}", serde_json::json!({"status":"error","error":message,"text":""}));
+        } else {
+            eprintln!("glass-core doctor: {message}");
+        }
+        std::process::exit(2);
+    }
 
     match args.first().map(String::as_str) {
         Some("--help") | Some("-h") | Some("help") => {
@@ -517,6 +532,17 @@ fn run_plan(args: &[String]) -> bool {
 fn run(args: &[String]) -> Result<(), String> {
     let cfg_path = config::default_path();
     let mut cfg = config::load(&cfg_path).map_err(|e| e.to_string())?;
+    if args.first().is_some_and(|a| a == "doctor") && !args.iter().any(|a| a == "--probe") {
+        // Local checks use best-effort saved references only. Keep this path
+        // before sandbox/status initialization and never let corrupt local
+        // stores turn the offline doctor into a provider/network request.
+        let _ = auth::apply(&mut cfg);
+        let _ = addons::apply(&mut cfg);
+        let _ = profiles::apply_active(&mut cfg);
+        if workflows::headless_info(args, &cfg)? {
+            return Ok(());
+        }
+    }
     auth::apply(&mut cfg)?;
     addons::apply(&mut cfg)?;
     profiles::apply_active(&mut cfg)?;
@@ -1137,6 +1163,7 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
         ("logout", "", "Remove saved credentials", false),
         ("status", "", "View connection and session status", false),
         ("sessions", "", "Browse project conversations", false),
+        ("search", "", "Search this conversation", false),
         ("name", "[title]", "Name this conversation", false),
         ("skill-doctor", "", "Skill sizes and context cost", false),
         (
@@ -1684,10 +1711,11 @@ fn repl(
             )
         {
             palette.cancel(&mut editor);
-            painter.open_reader(
-                session.history_entries(),
-                key.code == glass_tui::crossterm::event::KeyCode::Char('b'),
-            )?;
+            if key.code == glass_tui::crossterm::event::KeyCode::Char('f') {
+                painter.open_reader_search(session.history_entries())?;
+            } else {
+                painter.open_reader(session.history_entries(), true)?;
+            }
             continue;
         }
         if ctrl {
@@ -1874,6 +1902,12 @@ fn repl(
         }
         if text == "/doctor" {
             workflows::doctor(&keys, &cfg, Arc::clone(&factory));
+            continue;
+        }
+        if text == "/search" {
+            if let Err(error) = painter.open_reader_search(session.history_entries()) {
+                modal::info(&keys, "Transcript search", &error);
+            }
             continue;
         }
         if text == "/git" {
@@ -3290,7 +3324,12 @@ fn drain_input(
                 && matches!(k.code, KeyCode::Char('b' | 'f'))
             {
                 let entries = painter.live.borrow().snapshot();
-                if let Err(error) = painter.open_reader(entries, k.code == KeyCode::Char('b')) {
+                let result = if k.code == KeyCode::Char('f') {
+                    painter.open_reader_search(entries)
+                } else {
+                    painter.open_reader(entries, true)
+                };
+                if let Err(error) = result {
                     ui_println!("inline reader: {error}");
                 }
                 continue;
@@ -3880,6 +3919,17 @@ impl Painter {
                 surface::reading(false).ok();
                 Err(error.to_string())
             }
+        }
+    }
+
+    fn open_reader_search(&self, entries: Vec<glass_tui::Entry>) -> Result<(), String> {
+        use glass_tui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        self.open_reader(entries, false)?;
+        let event = Event::Key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        if self.reader_event(&event)? {
+            Ok(())
+        } else {
+            Err("reader search did not accept its initial search key".into())
         }
     }
 

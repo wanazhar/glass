@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --locked --package glass-core --bin glass-core
-      - name: Measure startup, PTY key repaint, and long history
+      - name: Measure startup, PTY key/frame latency, and long-history reader
         env:
           GLASS_CORE_TEST_BINARY: ${{ github.workspace }}/target/release/glass-core
           GC_PERF_REPORT: perf-report.json
@@ -28,6 +28,7 @@ jobs:
           GC_PERF_PROMPT_BUDGET_MS: '750'
           GC_PERF_KEY_BUDGET_MS: '200'
           GC_PERF_FRAME_BUDGET_MS: '200'
+          GC_PERF_READER_FRAME_BUDGET_MS: '200'
           GC_PERF_HISTORY_BUDGET_MS: '10000'
           GC_PERF_RSS_BUDGET_KIB: '131072'
         run: python3 scripts/check-performance.py

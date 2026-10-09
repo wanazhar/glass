@@ -440,34 +440,27 @@ pub fn diagnostics(
 }
 pub fn doctor(keys: &KeyReader, cfg: &config::Config, factory: crate::warmer::ProviderFactory) {
     let actions = [
-        "Check connection and model catalog".into(),
+        "Local offline diagnostics".into(),
+        "Check connection and model catalog · network request".into(),
         "Probe streaming and tool calls · uses model quota".into(),
-        "View local security and configuration".into(),
     ];
     if let Some(i) = modal::choose(
         keys,
-        "Provider diagnostics",
-        "Choose a check. Errors include recovery suggestions; no coding tools run.",
+        "Diagnostics",
+        "Local checks are offline. Provider checks contact the configured endpoint.",
         &actions,
     ) {
-        if i == 2 {
+        if i == 0 {
+            let report = crate::doctor::inspect(cfg, &config::default_path(), &config::data_dir());
             modal::info(
                 keys,
                 "Local diagnostics",
-                &format!(
-                    "Configuration: {}\nWorkspace: {}\nConnection: {}\nProvider: {}\nModel: {}\nExtensions: {}\nNo sandbox; local shell and extensions use your permissions.",
-                    config::default_path().display(),
-                    cfg.workspace.display(),
-                    auth::status(cfg),
-                    cfg.provider,
-                    cfg.model,
-                    cfg.extensions.len()
-                ),
+                &report.text(),
             );
         } else {
             let cfg = cfg.clone();
             if let Some(result) = modal::task(keys, "Checking provider", move |cancel, _| {
-                diagnostics(&cfg, i == 1, &cancel, Some(factory))
+                diagnostics(&cfg, i == 2, &cancel, Some(factory))
             }) {
                 modal::info(keys, "Diagnostic results", &result.unwrap_or_else(|e| format!("Check failed: {e}\n\nTry /model to choose a model, /login to reconnect, or check that your SSH host can reach the endpoint.")));
             }
@@ -994,10 +987,10 @@ pub fn headless_info(args: &[String], cfg: &config::Config) -> Result<bool, Stri
                 "path": path.display().to_string()
             })
         }
-        _ => {
+        "doctor" if args.iter().any(|a| a == "--probe") => {
             let report = diagnostics(
                 cfg,
-                args.iter().any(|a| a == "--probe"),
+                true,
                 &AtomicBool::new(false),
                 None,
             );
@@ -1011,6 +1004,11 @@ pub fn headless_info(args: &[String], cfg: &config::Config) -> Result<bool, Stri
                 }
             }
         }
+        "doctor" => {
+            let report = crate::doctor::inspect(cfg, &config::default_path(), &config::data_dir());
+            serde_json::json!({"status":"ok", "text":report.text(), "report":report})
+        }
+        _ => unreachable!("command was validated above"),
     };
     if args.iter().any(|a| a == "--json") {
         crate::emit_json(value);

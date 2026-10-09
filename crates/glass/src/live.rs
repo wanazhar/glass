@@ -304,6 +304,7 @@ impl Live {
             .and_then(|v| v.0.size().ok())
             .map(|s| s.height)
             .unwrap_or(24);
+        let transcript_height = Transcript::content_rect(glass_tui::ratatui::layout::Rect::new(0, 0, 1, height)).height;
         match ev {
             Event::Key(k) => {
                 let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
@@ -384,12 +385,12 @@ impl Live {
                 }
                 let (_, view, _) = self.view.as_mut().unwrap();
                 match k.code {
-                    KeyCode::Up => view.step(-1, height),
-                    KeyCode::Down => view.step(1, height),
-                    KeyCode::PageUp => view.page(-1, height),
-                    KeyCode::PageDown => view.page(1, height),
+                    KeyCode::Up => view.step(-1, transcript_height),
+                    KeyCode::Down => view.step(1, transcript_height),
+                    KeyCode::PageUp => view.page(-1, transcript_height),
+                    KeyCode::PageDown => view.page(1, transcript_height),
                     KeyCode::Home => view.top(),
-                    KeyCode::End | KeyCode::Char('f') => view.follow_tail(height),
+                    KeyCode::End | KeyCode::Char('f') => view.follow_tail(transcript_height),
                     _ => {}
                 }
             }
@@ -407,7 +408,7 @@ impl Live {
                             self.thinking_follow = true;
                         }
                     } else if let Some((_, view, _)) = self.view.as_mut() {
-                        view.step(delta, height);
+                        view.step(delta, transcript_height);
                     }
                 }
             }

@@ -292,6 +292,16 @@ impl Transcript {
         self.scroll = keep.min(self.layout.total_lines().saturating_sub(1));
     }
 
+    /// Actual text cells: one header row, one controls row, and a scrollbar column.
+    pub fn content_rect(area: Rect) -> Rect {
+        Rect::new(
+            area.x,
+            area.y.saturating_add(1).min(area.bottom()),
+            area.width.saturating_sub(1),
+            area.height.saturating_sub(2),
+        )
+    }
+
     /// Draw one frame. Only `height` lines are ever constructed.
     pub fn draw(&mut self, frame: &mut Frame, mods: &[Box<dyn Mod_>], session_label: &str) {
         let area = frame.area();
@@ -301,16 +311,17 @@ impl Transcript {
             .split(area);
 
         let view = chunks[0];
-        if self.layout.width() != view.width {
+        let content = Self::content_rect(area);
+        if self.layout.width() != content.width {
             let anchor = self.capture_anchor();
-            self.layout.set_width(view.width.max(1));
+            self.layout.set_width(content.width.max(1));
             self.restore_anchor(anchor);
         }
         if self.follow {
-            self.follow_tail(view.height);
+            self.follow_tail(content.height);
         }
-        self.clamp(view.height);
-        let items = self.layout.visible(self.scroll, view);
+        self.clamp(content.height);
+        let items = self.layout.visible(self.scroll, content);
 
         let session_label = if area.width < 40 {
             "Log"
@@ -332,16 +343,13 @@ impl Transcript {
         );
 
         frame.render_widget(
-            List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::TOP)
-                        .border_style(Style::new().fg(ratatui::style::Color::DarkGray))
-                        .title(title),
-                )
-                .highlight_style(Style::new().bg(ratatui::style::Color::Rgb(38, 38, 38))),
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::new().fg(ratatui::style::Color::DarkGray))
+                .title(title),
             view,
         );
+        frame.render_widget(List::new(items), content);
 
         let total = self.layout.total_lines();
         if total > 0 {
@@ -494,6 +502,28 @@ mod tests {
                 tool_card: None,
             })
             .collect()
+    }
+
+    #[test]
+    fn rendered_tail_and_scroll_use_the_same_text_rectangle() {
+        use ratatui::{Terminal, backend::TestBackend};
+        for (width, height) in [(40, 19), (19, 3)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut rows = entries(100);
+            rows.last_mut().unwrap().text = "TAIL".into();
+            let mut transcript = Transcript::new(rows);
+            let content = Transcript::content_rect(Rect::new(0, 0, width, height));
+            transcript.set_width(content.width);
+            transcript.top();
+            transcript.step(isize::MAX, content.height);
+            assert!(transcript.follow);
+            terminal.draw(|frame| transcript.draw(frame, &[], "Log")).unwrap();
+            let buffer = terminal.backend().buffer();
+            let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+            assert!(text.contains("TAIL"), "{width}x{height}: {text}");
+            assert_eq!(transcript.scroll,
+                transcript.layout.total_lines().saturating_sub(content.height as usize));
+        }
     }
 
     const H: u16 = 20;

@@ -70,7 +70,7 @@ with tempfile.TemporaryDirectory(prefix='gc-live-pty-') as tmp:
                 for width,height in [(20,8), (65,30), (20,12), size]:
                     t.resize(width,height); t.send('\x07'); t.visible('following')
                     t.resize(*size); t.send('\x1b'); t.collect(.15)
-                    assert 'draft' in t.vt.text(), t.vt.text()
+                    t.visible('draft')
                     assert len([r for r in t.vt.text().splitlines() if r.strip() and set(r.strip()) == {'─'}]) <= 1, t.vt.text()
 
                 if 'FINAL-LIVE-END' not in t.seen: t.wait('FINAL-LIVE-END')

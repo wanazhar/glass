@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory(prefix='gc-inline-pty-') as tmp:
         marker = 'OLDEST_MARK' if turn == 0 else f'history item {turn}'
         records.append({'k': 'user', 't': f'{marker} request with wrapping text ' * 2})
         records.append({'k': 'assistant', 't': f'assistant response {turn} with wrapping text ' * 2})
-    records[-1] = {'k': 'assistant', 't': 'LATEST_INLINE_MARKER at the tail'}
+    records[-1] = {'k': 'assistant', 't': 'LATEST_TAIL'}
     (data / f'{session_id}.jsonl').write_text(
         ''.join(json.dumps(record) + '\n' for record in records)
     )
@@ -48,13 +48,40 @@ with tempfile.TemporaryDirectory(prefix='gc-inline-pty-') as tmp:
             )
             terminal.send('\x1b[5~')
             terminal.collect(.15)
-            assert 'LATEST_INLINE_MARKER' not in terminal.vt.text(), 'PageUp must leave the tail'
+            assert 'LATEST_TAIL' not in terminal.vt.text(), 'PageUp must leave the tail'
             terminal.send('\x1b[1;5H')  # Ctrl+Home: oldest recorded entry.
             terminal.visible('OLDEST_MARK')
             assert terminal.seen.count('\x1b[?1049h') == 1, 'inline reader must not nest screens'
 
+            # Wheel-only navigation must reach the actual last rendered row.
+            terminal.send('\x1b[F')
+            terminal.collect(.4)
+            terminal.visible('LATEST_TAIL')
+            assert 'following' in terminal.vt.text(), terminal.vt.text()
+            tail = terminal.vt.text()
+            def cells():
+                screen = terminal.vt.active
+                return [[screen.buffer[y][x] for x in range(size[0])] for y in range(size[1])]
+            tail_cells = cells()
+            assert all(row[-1].data == ' ' for row in tail_cells[:size[1] - 5]), 'reader must leave physical wrap column untouched'
+            terminal.send('\x1b[<64;1;1M' * 12)
+            terminal.collect(.2)
+            assert 'LATEST_TAIL' not in terminal.vt.text()
+            terminal.send('\x1b[<65;1;1M' * 12)
+            terminal.collect(.2)
+            assert cells() == tail_cells, ('wheel roundtrip left stale cells or styles', terminal.vt.text(), tail)
+            terminal.send('\x1b[A' * 12)
+            terminal.collect(.2)
+            assert 'LATEST_TAIL' not in terminal.vt.text(), 'Up must navigate reader'
+            terminal.send('\x1b[B' * 12)
+            terminal.collect(.4)
+            terminal.visible('LATEST_TAIL')
+
             terminal.send('DRAFT_PRESERVED')
             terminal.visible('DRAFT_PRESERVED')
+            terminal.send('\x1b[A\x1b[B')
+            terminal.collect(.15)
+            assert 'DRAFT_PRESERVED' in terminal.vt.text(), 'reader arrows must not edit or recall composer history'
             terminal.send('\x1b[6~')
             terminal.collect(.1)
             terminal.send('\x1b[<64;1;1M')
@@ -82,4 +109,4 @@ with tempfile.TemporaryDirectory(prefix='gc-inline-pty-') as tmp:
         finally:
             terminal.close()
 
-print('PASS: offline inline reading, retained draft, wheel input, five sizes, full-width divider, one app-owned screen')
+print('PASS: offline inline reading, exact wheel roundtrip cells/styles, arrow navigation, reachable tail, retained draft, five sizes, safe wrap column, full-width divider, one app-owned screen')

@@ -184,7 +184,7 @@ def run():
                 try:
                     t.idle()
                     t.send("/dashboard"); t.visible("Workspace dashboard"); choose(t, "Provider diagnostics")
-                    t.visible("Provider diagnostics"); choose(t, "Check connection")
+                    t.visible("Diagnostics"); choose(t, "Check connection")
                     t.visible("Diagnostic results"); back(t); t.idle()
                     t.send("/theme"); t.visible("Appearance"); choose(t, "Amber"); t.idle()
                     t.send("/extensions"); t.visible("Extension manager"); choose(t, "todo")

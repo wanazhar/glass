@@ -1,5 +1,7 @@
 //! Live alternate-screen views driven by the same pump as provider/tool work.
 use crate::{agent::Progress, surface};
+use std::collections::HashMap;
+use std::time::Instant;
 use glass_tui::{
     Entry, Role, Transcript,
     crossterm::{
@@ -20,6 +22,7 @@ pub struct Live {
     entries: Vec<Entry>,
     reasoning: String,
     phase: &'static str,
+    provider_detail: Option<String>,
     view: Option<(Tui, Transcript, bool)>,
     parked_views: [Option<Transcript>; 2],
     dirty: bool,
@@ -27,6 +30,8 @@ pub struct Live {
     thinking_scroll: usize,
     thinking_follow: bool,
     content_revision: u64,
+    tool_started: HashMap<String, Instant>,
+    expanded_cards: std::collections::HashSet<(usize, String)>,
 }
 impl Live {
     pub fn new() -> Self {
@@ -34,6 +39,7 @@ impl Live {
             entries: vec![],
             reasoning: String::new(),
             phase: "Waiting for provider",
+            provider_detail: None,
             view: None,
             parked_views: [None, None],
             dirty: true,
@@ -41,6 +47,8 @@ impl Live {
             thinking_scroll: 0,
             thinking_follow: true,
             content_revision: 0,
+            tool_started: HashMap::new(),
+            expanded_cards: std::collections::HashSet::new(),
         }
     }
     pub fn seed(&mut self, entries: Vec<Entry>) {
@@ -48,6 +56,7 @@ impl Live {
         self.entries = entries;
         self.reasoning.clear();
         self.phase = "Waiting for provider";
+        self.provider_detail = None;
         self.dirty = true;
         self.content_revision = self.content_revision.wrapping_add(1);
     }
@@ -58,10 +67,19 @@ impl Live {
     fn rows(&self) -> Vec<Entry> {
         self.entries
             .iter()
-            .map(|e| Entry {
-                role: e.role,
-                text: e.text.clone(),
-                turn: e.turn,
+            .map(|e| {
+                let mut tool_card = e.tool_card.clone();
+                let text = if let Some(card) = &mut tool_card {
+                    if card.status == "running" {
+                        card.elapsed_ms = self.tool_started.get(&card.call_id).map(|start| {
+                            start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+                        });
+                    }
+                    crate::session::tool_card_text(card, self.expanded_cards.contains(&(e.turn, card.call_id.clone())))
+                } else {
+                    e.text.clone()
+                };
+                Entry { role: e.role, text, turn: e.turn, tool_card }
             })
             .collect()
     }
@@ -76,13 +94,14 @@ impl Live {
             role,
             text: text.into(),
             turn: self.turn,
+            tool_card: None,
         });
         self.content_revision = self.content_revision.wrapping_add(1);
         self.dirty = true;
     }
     pub fn progress(&mut self, p: &Progress<'_>) {
         match p {
-            Progress::Waiting => self.phase = "Waiting for provider",
+            Progress::Waiting => { self.phase = "Waiting for provider"; self.provider_detail = None; }
             Progress::Reasoning(t) => {
                 if self.phase != "Provider reasoning" && !self.reasoning.is_empty() {
                     self.reasoning.push_str("\n\n");
@@ -92,6 +111,7 @@ impl Live {
             }
             Progress::Text(t) => {
                 self.phase = "Answer streaming";
+                self.provider_detail = None;
                 if let Some(e) = self
                     .entries
                     .last_mut()
@@ -103,23 +123,48 @@ impl Live {
                         role: Role::Assistant,
                         text: (*t).into(),
                         turn: self.turn,
+                        tool_card: None,
                     })
                 }
             }
-            Progress::ToolStart { name, command } => {
+            Progress::ToolStart { call_id, name, command } => {
                 self.phase = "Tool running";
+                self.provider_detail = None;
+                self.tool_started.insert((*call_id).to_string(), Instant::now());
                 self.entries.push(Entry {
-                    role: Role::Tool,
+                    role: Role::Bash,
                     text: format!("{name}\n{}", command.unwrap_or("")),
                     turn: self.turn,
+                    tool_card: Some(glass_tui::ToolCard {
+                        call_id: (*call_id).to_string(),
+                        command: command.unwrap_or(name).to_string(),
+                        output: String::new(),
+                        status: "running".into(),
+                        elapsed_ms: None,
+                        spill: None,
+                        truncated: false,
+                    }),
                 })
             }
-            Progress::ToolEnd { output, .. } => {
-                self.entries.push(Entry {
-                    role: Role::Tool,
-                    text: (*output).into(),
-                    turn: self.turn,
-                });
+            Progress::ToolEnd { call_id, output, .. } => {
+                if let Some(entry) = self.entries.iter_mut().rev().find(|entry| {
+                    entry.tool_card.as_ref().is_some_and(|card| card.call_id == *call_id)
+                }) {
+                    if let Some(card) = entry.tool_card.as_mut() {
+                        card.output = (*output).to_string();
+                        card.status = "completed".into();
+                        card.elapsed_ms = self.tool_started.remove(*call_id)
+                            .map(|started| started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+                        entry.text = format!("{}\n{}", card.command, output);
+                    }
+                } else {
+                    self.entries.push(Entry {
+                        role: Role::Tool,
+                        text: (*output).into(),
+                        turn: self.turn,
+                        tool_card: None,
+                    });
+                }
                 self.phase = "Tool finished";
             }
             Progress::Steered(text) => self.append_entry(Role::User, (*text).to_string()),
@@ -130,10 +175,21 @@ impl Live {
                 attempt,
                 delay_s,
                 reason,
-            } => self.append_entry(
-                Role::System,
-                format!("Retry {attempt} in {delay_s}s: {reason}"),
-            ),
+            } => {
+                self.phase = "Retrying provider";
+                let cause = sanitize_provider_detail(reason);
+                self.provider_detail = Some(format!("Retry {attempt} in {delay_s}s · {cause} · /status /retry"));
+                self.append_entry(Role::System, format!("Retry {attempt} in {delay_s}s: {cause}"));
+            }
+            Progress::ProviderNotice(text) => {
+                self.phase = "Provider fallback";
+                self.provider_detail = Some(format!("{} · /status /model", sanitize_provider_detail(text)));
+                self.append_entry(Role::System, format!("Provider notice: {}", sanitize_provider_detail(text)));
+            }
+            Progress::ProviderFailure(text) => {
+                self.phase = "Provider error";
+                self.provider_detail = Some(format!("{} · recover with /retry, /status or /login", sanitize_provider_detail(text)));
+            }
             Progress::Compacted { kept, dropped } => self.append_entry(
                 Role::Meta,
                 format!("Context compacted · dropped {dropped}, kept {kept}"),
@@ -153,8 +209,13 @@ impl Live {
     pub fn phase(&self) -> &str {
         self.phase
     }
+    pub fn provider_detail(&self) -> Option<&str> {
+        self.provider_detail.as_deref()
+    }
     pub fn finish(&mut self) {
-        self.phase = "Turn finished";
+        if !matches!(self.phase, "Provider error" | "Provider fallback") {
+            self.phase = "Turn finished";
+        }
         self.dirty = true;
     }
     pub fn toggle(&mut self, thinking: bool) -> io::Result<()> {
@@ -256,6 +317,26 @@ impl Live {
                         _ => {}
                     }
                 }
+                let is_thinking = self.view.as_ref().unwrap().2;
+                if !is_thinking && k.code == KeyCode::Enter {
+                    let selected = self.view.as_ref().map(|(_, view, _)| view.layout.entry_at_line(view.scroll));
+                    let card_key = selected.and_then(|index| self.entries.get(index).and_then(|entry| {
+                        entry.tool_card.as_ref().map(|card| (entry.turn, card.call_id.clone()))
+                    }));
+                    if let Some(key) = card_key {
+                        if !self.expanded_cards.insert(key.clone()) {
+                            self.expanded_cards.remove(&key);
+                        }
+                        let rows = self.rows();
+                        if let Some((_, view, _)) = self.view.as_mut() {
+                            view.replace_entries(rows);
+                        }
+                    } else if let Some((_, view, _)) = self.view.as_mut() {
+                        view.toggle_collapse();
+                    }
+                    self.dirty = true;
+                    return true;
+                }
                 let (_, view, _) = self.view.as_mut().unwrap();
                 match k.code {
                     KeyCode::Up => view.step(-1, height),
@@ -264,7 +345,6 @@ impl Live {
                     KeyCode::PageDown => view.page(1, height),
                     KeyCode::Home => view.top(),
                     KeyCode::End | KeyCode::Char('f') => view.follow_tail(height),
-                    KeyCode::Enter => view.toggle_collapse(),
                     _ => {}
                 }
             }
@@ -317,6 +397,17 @@ impl Live {
     }
 }
 
+pub(crate) fn sanitize_provider_detail(text: &str) -> String {
+    text.split_whitespace().map(|word| {
+        let lower = word.to_ascii_lowercase();
+        if word.contains("://") || lower.starts_with("bearer") || lower.contains("api_key=") || lower.contains("token=") {
+            "[provider detail redacted]"
+        } else {
+            word
+        }
+    }).collect::<Vec<_>>().join(" ")
+}
+
 fn wheel_lines(kind: MouseEventKind) -> Option<isize> {
     match kind {
         MouseEventKind::ScrollUp => Some(-3),
@@ -341,6 +432,7 @@ mod tests {
                 role: Role::User,
                 text: format!("history marker {turn}"),
                 turn,
+                tool_card: None,
             })
             .collect()
     }
@@ -382,5 +474,26 @@ mod tests {
 
         assert_eq!(live.take_parked_view(true).unwrap().scroll, reasoning_line);
         assert_eq!(live.take_parked_view(false).unwrap().scroll, paused_line);
+    }
+
+    #[test]
+    fn live_tool_cards_match_results_by_exact_call_id_and_provider_errors_redact_urls() {
+        let mut live = Live::new();
+        live.progress(&Progress::ToolStart { call_id: "id-a", name: "bash", command: Some("same command") });
+        live.progress(&Progress::ToolStart { call_id: "id-b", name: "bash", command: Some("same command") });
+        live.progress(&Progress::ToolEnd { call_id: "id-a", summary: "done".into(), output: "identical output" });
+        live.progress(&Progress::ToolEnd { call_id: "id-b", summary: "done".into(), output: "identical output" });
+        let cards = live.snapshot().into_iter().filter_map(|entry| entry.tool_card).collect::<Vec<_>>();
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].call_id, "id-a");
+        assert_eq!(cards[1].call_id, "id-b");
+        assert_eq!(cards[0].output, cards[1].output);
+        live.progress(&Progress::ProviderFailure("failed at https://host/path?token=secret"));
+        assert_eq!(live.phase(), "Provider error");
+        assert!(live.provider_detail().unwrap().contains("recover with /retry"));
+        assert!(!live.provider_detail().unwrap().contains("https://"));
+        assert!(!live.provider_detail().unwrap().contains("secret"));
+        live.finish();
+        assert_eq!(live.phase(), "Provider error");
     }
 }

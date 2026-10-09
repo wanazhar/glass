@@ -30,6 +30,8 @@ pub enum Record {
     },
     Reasoning(String),
     Bash {
+        #[allow(dead_code)]
+        call_id: Option<String>,
         command: String,
         output: String,
         exit_code: Option<i32>,
@@ -119,13 +121,14 @@ impl Record {
             } => json!({"k":"call", "id":id, "name":name, "args":arguments}),
             Record::Reasoning(t) => json!({ "k": "reasoning", "t": t }),
             Record::Bash {
+                call_id,
                 command,
                 output,
                 exit_code,
                 truncated,
                 spill,
             } => json!({
-                "k": "bash", "cmd": command, "out": output,
+                "k": "bash", "id": call_id, "cmd": command, "out": output,
                 "code": exit_code, "trunc": truncated, "spill": spill
             }),
             Record::ToolResult {
@@ -175,6 +178,7 @@ impl Record {
             },
             "reasoning" => Record::Reasoning(s("t")?),
             "bash" => Record::Bash {
+                call_id: s("id"),
                 command: s("cmd").unwrap_or_default(),
                 output: s("out").unwrap_or_default(),
                 exit_code: v.get("code").and_then(|x| x.as_i64()).map(|x| x as i32),
@@ -1323,24 +1327,20 @@ fn apply_edits(
 }
 
 fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
-    type Scope = (usize, usize);
     type CallKey = (usize, usize, String);
     let mut scopes = Vec::with_capacity(records.len());
     let (mut turn, mut epoch) = (0usize, 0usize);
     let mut call_counts: HashMap<CallKey, usize> = HashMap::new();
     let mut result_counts: HashMap<CallKey, usize> = HashMap::new();
-    let mut bash_by_scope_and_command: HashMap<(Scope, String), VecDeque<CallKey>> = HashMap::new();
-    let mut paired_bash_calls = HashSet::new();
+    let mut bash_counts: HashMap<CallKey, usize> = HashMap::new();
     for record in records {
         if matches!(record, Record::User(_)) {
             turn += 1;
         }
         if matches!(record, Record::Compacted { .. }) {
             epoch += 1;
-            bash_by_scope_and_command.clear();
         }
-        let scope = (turn, epoch);
-        scopes.push(scope);
+        scopes.push((turn, epoch));
         match record {
             Record::ToolCall {
                 id,
@@ -1349,31 +1349,53 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
             } => {
                 let key = (turn, epoch, id.clone());
                 *call_counts.entry(key.clone()).or_default() += 1;
-                if name == "bash"
-                    && let Some(command) = tool_command(arguments)
-                {
-                    bash_by_scope_and_command
-                        .entry((scope, command))
-                        .or_default()
-                        .push_back(key);
-                }
+                let _ = (name, arguments);
             }
             Record::ToolResult { call_id, .. } => {
                 *result_counts
                     .entry((turn, epoch, call_id.clone()))
                     .or_default() += 1;
             }
-            Record::Bash { command, .. } => {
-                if let Some(key) = bash_by_scope_and_command
-                    .get_mut(&(scope, command.clone()))
-                    .and_then(VecDeque::pop_front)
-                {
-                    paired_bash_calls.insert(key);
+            Record::Bash { call_id: Some(id), .. } => {
+                *bash_counts.entry((turn, epoch, id.clone())).or_default() += 1;
+            }
+            Record::Bash { .. } => {
+                // Legacy Bash records did not retain call IDs. Keep them as
+                // independent rows rather than guessing identity from command text.
+            }
+            _ => {}
+        }
+    }
+    // Old Bash records predate the `id` field. Recover those associations by
+    // causal call order within the turn, never by comparing command text.
+    let mut pending_bash: HashMap<(usize, usize), VecDeque<CallKey>> = HashMap::new();
+    let mut legacy_bash_calls: HashMap<usize, CallKey> = HashMap::new();
+    for (record_index, (record, (turn, epoch))) in records.iter().zip(&scopes).enumerate() {
+        match record {
+            Record::ToolCall { id, name, .. } if name == "bash" => {
+                let key = (*turn, *epoch, id.clone());
+                if call_counts.get(&key) == Some(&1) {
+                    pending_bash.entry((*turn, *epoch)).or_default().push_back(key);
+                }
+            }
+            Record::Bash { call_id: Some(id), .. } => {
+                if let Some(queue) = pending_bash.get_mut(&(*turn, *epoch)) {
+                    queue.retain(|key| key.2 != *id);
+                }
+            }
+            Record::Bash { call_id: None, .. } => {
+                if let Some(key) = pending_bash.get_mut(&(*turn, *epoch)).and_then(VecDeque::pop_front) {
+                    legacy_bash_calls.insert(record_index, key.clone());
+                    *bash_counts.entry(key).or_default() += 1;
                 }
             }
             _ => {}
         }
     }
+    let paired_bash_calls: HashSet<CallKey> = bash_counts
+        .into_iter()
+        .filter_map(|(key, count)| (count == 1).then_some(key))
+        .collect();
 
     // Associate only unambiguous IDs. Malformed duplicate IDs stay visible in
     // full instead of silently hiding one of their records.
@@ -1400,7 +1422,7 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
     }
 
     let mut entries = Vec::new();
-    for (record, (turn, epoch)) in records.iter().zip(scopes) {
+    for (record_index, (record, (turn, epoch))) in records.iter().zip(scopes).enumerate() {
         let key = |id: &str| (turn, epoch, id.to_owned());
         let entry = match record {
             Record::ToolCall {
@@ -1414,31 +1436,39 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
                 }
                 let body = results.get(&call_key).map(|(_, body)| *body);
                 let heading = readable_tool_call(name, arguments);
-                let text = match body {
-                    Some(body) if !body.is_empty() => {
-                        format!("{heading}\n{}", readable_output(body))
-                    }
-                    _ => format!("{heading}\nNo result recorded."),
+                let output = body.unwrap_or("").to_string();
+                let status = if body.is_some() { "completed" } else { "interrupted" };
+                let card = glass_tui::ToolCard {
+                    call_id: id.clone(),
+                    command: heading.clone(),
+                    output: output.clone(),
+                    status: status.into(),
+                    elapsed_ms: None,
+                    spill: None,
+                    truncated: false,
                 };
-                (glass_tui::Role::Tool, text)
+                (glass_tui::Role::Tool, tool_card_text(&card, false), Some(card))
             }
             Record::Bash {
+                call_id,
                 command,
                 output,
                 exit_code,
                 truncated,
                 spill,
             } => {
-                let status = exit_code
-                    .map_or_else(|| "exit unknown".to_string(), |code| format!("exit {code}"));
-                let mut text = format!("$ {command} ({status})\n{output}");
-                if *truncated {
-                    text.push_str("\n[output truncated]");
-                }
-                if let Some(path) = spill {
-                    text.push_str(&format!("\nFull output: {path}"));
-                }
-                (glass_tui::Role::Bash, text)
+                let status = exit_code.map_or_else(|| "signal".into(), |code| format!("exit {code}"));
+                let card = glass_tui::ToolCard {
+                    call_id: call_id.clone().or_else(|| legacy_bash_calls.get(&record_index).map(|key| key.2.clone()))
+                        .unwrap_or_else(|| format!("legacy-bash-record-{record_index}")),
+                    command: command.clone(),
+                    output: output.clone(),
+                    status: if *truncated { format!("{status} · truncated") } else { status },
+                    elapsed_ms: None,
+                    spill: spill.clone(),
+                    truncated: *truncated,
+                };
+                (glass_tui::Role::Bash, tool_card_text(&card, false), Some(card))
             }
             Record::ToolResult {
                 call_id,
@@ -1451,23 +1481,56 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
                 {
                     continue;
                 }
-                (
-                    glass_tui::Role::Tool,
-                    format!("{name} result\n{}", readable_output(body)),
-                )
+                (glass_tui::Role::Tool, format!("{name} result\n{}", readable_output(body)), None)
             }
             Record::Reasoning(_) => continue,
-            other => other.to_entry(),
+            other => {
+                let (role, text) = other.to_entry();
+                (role, text, None)
+            }
         };
         if !entry.1.is_empty() {
             entries.push(glass_tui::Entry {
                 role: entry.0,
                 text: entry.1,
                 turn,
+                tool_card: entry.2,
             });
         }
     }
     entries
+}
+
+pub(crate) fn tool_card_text(card: &glass_tui::ToolCard, expanded: bool) -> String {
+    let mut text = format!("{} · {}", card.command, card.status);
+    if let Some(elapsed) = card.elapsed_ms {
+        text.push_str(&format!(" · {:.1}s", elapsed as f64 / 1000.0));
+    }
+    if !card.output.is_empty() {
+        text.push('\n');
+        if expanded {
+            text.push_str(&card.output);
+        } else {
+            let mut preview = card.output.lines().take(4).collect::<Vec<_>>().join("\n");
+            if preview.len() > 360 {
+                preview.truncate(360);
+                preview.push('…');
+            }
+            text.push_str(&preview);
+            if card.output.lines().count() > 4 || card.output.len() > 360 {
+                text.push_str("\n… Enter to expand full output");
+            }
+        }
+    } else if card.status == "running" {
+        text.push_str("\nRunning…");
+    }
+    if card.truncated {
+        text.push_str("\n[inline output truncated]");
+    }
+    if card.spill.is_some() {
+        text.push_str("\n[full output spill available in /details]");
+    }
+    text
 }
 
 fn latest_reasoning(records: &[Record]) -> String {
@@ -1792,6 +1855,7 @@ mod tests {
             Record::Assistant("a".into()),
             Record::Reasoning("r".into()),
             Record::Bash {
+                call_id: None,
                 command: "ls".into(),
                 output: "x".into(),
                 exit_code: Some(0),
@@ -1824,6 +1888,7 @@ mod tests {
     #[test]
     fn bash_record_preserves_exit_code_and_truncation() {
         let r = Record::Bash {
+            call_id: None,
             command: "c".into(),
             output: "o".into(),
             exit_code: Some(127),
@@ -1862,6 +1927,7 @@ mod tests {
             Record::User("hi".into()),
             Record::Reasoning("secret".into()),
             Record::Bash {
+                call_id: Some("c".into()),
                 command: "ls".into(),
                 output: "out".into(),
                 exit_code: Some(0),
@@ -1943,7 +2009,8 @@ mod tests {
             call_id: id.into(),
             body: "duplicate output".into(),
         };
-        let output = |text: &str| Record::Bash {
+        let output = |id: &str, text: &str| Record::Bash {
+            call_id: Some(id.into()),
             command: "pwd".into(),
             output: text.into(),
             exit_code: Some(0),
@@ -1954,12 +2021,12 @@ mod tests {
             Record::User("run twice".into()),
             bash("a"),
             bash("b"),
-            output("first"),
+            output("a", "first"),
             result("a"),
-            output("second"),
+            output("b", "second"),
             result("b"),
             Record::User("legacy".into()),
-            output("legacy output"),
+            output("legacy", "legacy output"),
         ]);
         let bash_entries: Vec<_> = entries
             .iter()
@@ -1969,11 +2036,36 @@ mod tests {
         assert!(bash_entries[0].text.contains("first"));
         assert!(bash_entries[1].text.contains("second"));
         assert!(bash_entries[2].text.contains("legacy output"));
+        assert_eq!(bash_entries[0].tool_card.as_ref().unwrap().call_id, "a");
+        assert_eq!(bash_entries[1].tool_card.as_ref().unwrap().call_id, "b");
+        assert_ne!(bash_entries[0].tool_card.as_ref().unwrap().call_id, bash_entries[1].tool_card.as_ref().unwrap().call_id);
         assert!(
             !entries
                 .iter()
                 .any(|entry| entry.text.contains("No result recorded"))
         );
+    }
+
+    #[test]
+    fn tool_card_preview_is_bounded_but_expansion_keeps_full_output() {
+        let output = (0..12).map(|n| format!("line {n} {}", "x".repeat(100))).collect::<Vec<_>>().join("\n");
+        let card = glass_tui::ToolCard {
+            call_id: "call-exact".into(),
+            command: "$ cargo test".into(),
+            output: output.clone(),
+            status: "exit 0".into(),
+            elapsed_ms: Some(1234),
+            spill: Some("/tmp/full-output".into()),
+            truncated: true,
+        };
+        let preview = tool_card_text(&card, false);
+        assert!(preview.contains("cargo test"));
+        assert!(preview.contains("1.2s"));
+        assert!(preview.contains("Enter to expand"));
+        assert!(preview.len() < 500, "preview must remain small: {} bytes", preview.len());
+        let full = tool_card_text(&card, true);
+        assert!(full.contains(&output));
+        assert_eq!(card.call_id, "call-exact");
     }
 
     #[test]

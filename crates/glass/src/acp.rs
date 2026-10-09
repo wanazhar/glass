@@ -320,7 +320,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                             "sessionUpdate": "agent_thought_chunk",
                             "content": {"type": "text", "text": t}
                         })),
-                        Progress::ToolStart { name, command } => {
+                        Progress::ToolStart { name, command, .. } => {
                             let call_id = format!("gc-{}", next_call.get() + 1);
                             next_call.set(next_call.get() + 1);
                             open_tools.borrow_mut().push(call_id.clone());
@@ -332,7 +332,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                                 "status": "in_progress"
                             }));
                         }
-                        Progress::ToolEnd { summary, output } => {
+                        Progress::ToolEnd { summary, output, .. } => {
                             let call_id = {
                                 let mut open = open_tools.borrow_mut();
                                 if open.is_empty() {

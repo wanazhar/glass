@@ -83,6 +83,12 @@ impl Screen {
                 .and_then(|glyph| ['◐', '◓', '◑', '◒'].iter().position(|c| *c == glyph))
             {
                 glass_tui::theme::activity_color(frame)
+            } else if line.starts_with('+') && !line.starts_with("+++") {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Success)
+            } else if line.starts_with('-') && !line.starts_with("---") {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Error)
+            } else if line.starts_with("@@") {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Secondary)
             } else if i == rows.len() - 1 {
                 glass_tui::theme::ansi(glass_tui::theme::Tone::Muted)
             } else {
@@ -108,6 +114,104 @@ impl Screen {
         let _ = write!(out, "\x1b[?2026l");
         let _ = out.flush();
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiffHunk {
+    heading: String,
+    lines: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiffFile {
+    label: String,
+    hunks: Vec<DiffHunk>,
+}
+
+/// Browse a read-only checkpoint diff by file, then by hunk. The final pager
+/// supports both axes so long source lines stay inspectable on SSH terminals.
+pub fn diff(keys: &KeyReader, title: &str, patch: &str) {
+    let files = parse_diff(patch);
+    if files.is_empty() {
+        info(keys, title, if patch.trim().is_empty() { "No changes" } else { patch });
+        return;
+    }
+    let labels = files.iter().map(|file| file.label.clone()).collect::<Vec<_>>();
+    let searchable = files.iter().map(|file| {
+        format!("{}\n{}", file.label, file.hunks.iter().flat_map(|h| &h.lines).cloned().collect::<Vec<_>>().join("\n"))
+    }).collect::<Vec<_>>();
+    while let Some(file_index) = choose_search(keys, title, "Select a changed file", &labels, &searchable) {
+        let file = &files[file_index];
+        let hunks = if file.hunks.is_empty() {
+            vec![DiffHunk { heading: "File metadata".into(), lines: vec![file.label.clone()] }]
+        } else { file.hunks.clone() };
+        let hunk_labels = hunks.iter().map(|h| h.heading.clone()).collect::<Vec<_>>();
+        while let Some(hunk_index) = choose(keys, &file.label, "Select a diff hunk", &hunk_labels) {
+            diff_pager(keys, &file.label, &hunks[hunk_index].lines);
+        }
+    }
+}
+
+fn parse_diff(patch: &str) -> Vec<DiffFile> {
+    let mut files: Vec<DiffFile> = Vec::new();
+    for line in patch.lines() {
+        if line.starts_with("diff --git ") {
+            let label = line.split_once(" b/").map(|(_, path)| path.to_string()).unwrap_or_else(|| line.to_string());
+            files.push(DiffFile { label, hunks: Vec::new() });
+            continue;
+        }
+        let Some(file) = files.last_mut() else { continue; };
+        if line.starts_with("@@") {
+            file.hunks.push(DiffHunk { heading: line.into(), lines: vec![line.into()] });
+        } else if let Some(hunk) = file.hunks.last_mut() {
+            hunk.lines.push(line.into());
+        }
+    }
+    files
+}
+
+fn diff_pager(keys: &KeyReader, title: &str, lines: &[String]) {
+    let screen = Screen::new();
+    let mut y = 0usize;
+    let mut x = 0usize;
+    loop {
+        let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+        let framed = w >= 24 && h >= 12;
+        let width = usize::from(if framed { w.saturating_sub(6) } else { w }).max(1);
+        let capacity = usize::from(if framed { h.saturating_sub(4) } else { h }).saturating_sub(3).max(1);
+        let visible = lines.iter().skip(y).take(capacity).map(|line| skip_columns(line, x)).collect::<Vec<_>>();
+        let mut page = vec![format!("{}  line {} · column {}", title, y + 1, x + 1)];
+        page.extend(visible);
+        screen.draw(title, &page, "↑↓/PgUp/PgDn scroll · ←→ horizontal · Esc back", 0);
+        match keys.next_blocking() {
+            Some(Event::Key(k)) if cancelled(k.code, k.modifiers) || k.code == KeyCode::Enter => return,
+            Some(Event::Key(k)) => match k.code {
+                KeyCode::Up => y = y.saturating_sub(1),
+                KeyCode::Down => y = (y + 1).min(lines.len().saturating_sub(1)),
+                KeyCode::PageUp => y = y.saturating_sub(capacity),
+                KeyCode::PageDown => y = (y + capacity).min(lines.len().saturating_sub(1)),
+                KeyCode::Home => { y = 0; x = 0; }
+                KeyCode::End => y = lines.len().saturating_sub(capacity),
+                KeyCode::Left => x = x.saturating_sub((width / 2).max(1)),
+                KeyCode::Right => x = x.saturating_add((width / 2).max(1)),
+                _ => {}
+            },
+            None => return,
+            _ => {}
+        }
+    }
+}
+
+fn skip_columns(text: &str, columns: usize) -> String {
+    let mut skipped = 0usize;
+    let mut start = 0usize;
+    for (index, ch) in text.char_indices() {
+        let width = glass_tui::text::width(&ch.to_string());
+        if skipped + width > columns { start = index; break; }
+        skipped += width;
+        start = index + ch.len_utf8();
+    }
+    text[start..].to_string()
 }
 impl Drop for Screen {
     fn drop(&mut self) {
@@ -534,5 +638,23 @@ pub fn markdown(keys: &KeyReader, title: &str, text: &str) {
             None => return,
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod diff_tests {
+    use super::*;
+
+    #[test]
+    fn diff_browser_model_keeps_files_hunks_and_long_lines_navigable() {
+        let patch = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@ fn first\n-old\n+new\n@@ -8 +8 @@ fn second\n-old2\n+new2\ndiff --git a/src/b.rs b/src/b.rs\n--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1 +1 @@\n-short\n+".to_owned() + &"x".repeat(300);
+        let files = parse_diff(&patch);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].label, "src/a.rs");
+        assert_eq!(files[0].hunks.len(), 2);
+        assert_eq!(files[1].hunks.len(), 1);
+        assert!(skip_columns(&files[1].hunks[0].lines[2], 200).len() < 120);
+        assert!(files[0].hunks[0].lines.iter().any(|line| line.starts_with('+')));
+        assert!(files[0].hunks[0].lines.iter().any(|line| line.starts_with('-')));
     }
 }

@@ -122,7 +122,10 @@ Bash also accepts a `job` object, without adding another model tool:
 Poll using the returned `next_offset` to avoid replaying old output. Metadata
 includes state, exit code, captured/dropped bytes and whether pipes are still
 draining. Input reports accepted bytes; retry only the remaining bytes when
-stdin applies backpressure. Input is capped at 8 KiB; polling at 24 KiB; each
+stdin applies backpressure. Poll limits may extend by up to three bytes to
+finish a UTF-8 character; incomplete live characters stay at the same cursor.
+Wait for both `state: exited` and `draining: false` before treating output as
+complete. Input is capped at 8 KiB; polling at 24 KiB plus that UTF-8 boundary; each
 job log at 4 MiB. Further output is drained and counted, not accumulated.
 These are pipe-based jobs, not a terminal emulator; use unbuffered output when
 the underlying program needs it.

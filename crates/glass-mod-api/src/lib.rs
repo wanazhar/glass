@@ -131,7 +131,16 @@ impl ToolCall {
                 'f' => out.push('\u{c}'),
                 'u' => {
                     let hex: String = chars.by_ref().take(4).collect();
-                    let cp = u32::from_str_radix(&hex, 16).ok()?;
+                    if hex.len() != 4 { return None; }
+                    let mut cp = u32::from_str_radix(&hex, 16).ok()?;
+                    if (0xd800..=0xdbff).contains(&cp) {
+                        if chars.next()? != '\\' || chars.next()? != 'u' { return None; }
+                        let low: String = chars.by_ref().take(4).collect();
+                        if low.len() != 4 { return None; }
+                        let low = u32::from_str_radix(&low, 16).ok()?;
+                        if !(0xdc00..=0xdfff).contains(&low) { return None; }
+                        cp = 0x10000 + ((cp - 0xd800) << 10) + low - 0xdc00;
+                    }
                     out.push(char::from_u32(cp)?);
                 }
                 // Unknown escape: keep the escaped character verbatim.
@@ -360,6 +369,14 @@ mod tests {
             .arg_raw("command")
             .unwrap();
         assert_eq!(v, r#""echo \"hi\"""#);
+    }
+
+    #[test]
+    fn decodes_surrogate_pairs_and_rejects_incomplete_unicode() {
+        assert_eq!(call(r#"{"command":"echo \ud83d\ude00"}"#).arg_str("command").as_deref(), Some("echo 😀"));
+        for input in [r#"{"command":"\ud83d"}"#, r#"{"command":"\ude00"}"#, r#"{"command":"\ud83d\u0041"}"#, r#"{"command":"\u123"}"#] {
+            assert!(call(input).arg_str("command").is_none(), "{input}");
+        }
     }
 
     #[test]

@@ -165,6 +165,8 @@ pub enum Request {
     Command { name: String, args: String },
     /// Execute a tool the extension contributed. Replies with `{ "output": ... }`.
     RunTool { name: String, arguments: String },
+    /// Execute a tool with the scoped interactive input callback enabled.
+    RunToolInput { name: String, arguments: String },
     /// Shutdown notice before the process exits.
     Goodbye,
     /// Seed an extension with its existing durable entries, sent once
@@ -216,6 +218,10 @@ impl Request {
             }
             Request::RunTool { name, arguments } => json!({
                 "type": "run_tool", "id": id, "name": name, "arguments": arguments
+            }),
+            Request::RunToolInput { name, arguments } => json!({
+                "type": "run_tool", "id": id, "name": name, "arguments": arguments,
+                "interactive_input": true
             }),
             Request::Goodbye => json!({ "type": "goodbye", "id": id }),
             Request::SeedCustom { entries } => {
@@ -353,6 +359,15 @@ pub fn nested_call_result_json(call_id: &Value, body: &str) -> Value {
 /// instead of assuming one reply per request.
 pub fn is_nested_call(v: &Value) -> bool {
     v.get("type").and_then(Value::as_str) == Some("call_tool")
+}
+
+/// A typed request for interactive user input, separate from tool dispatch.
+pub fn is_input_request(v: &Value) -> bool {
+    v.get("type").and_then(Value::as_str) == Some("request_input")
+}
+
+pub fn input_result_json(call_id: &Value, response: &Value) -> Value {
+    json!({ "type": "request_input_result", "call_id": call_id, "response": response })
 }
 
 /// Wire form of the host's answer to a nested `run_subagent` request.

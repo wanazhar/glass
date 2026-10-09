@@ -9,7 +9,7 @@ pub mod protocol;
 
 use std::path::Path;
 
-use host::{Extension, HostToolBridge, SubagentFn};
+use host::{Extension, HostInputFn, HostToolBridge, SubagentFn};
 use protocol::{ExtConcurrency, ToolSpec, tool_triple};
 
 /// Every loaded extension.
@@ -353,6 +353,18 @@ impl Registry {
     ) -> Option<String> {
         let idx = self.tool_owner(name)?;
         self.exts[idx].run_tool(name, arguments, host_tools)
+    }
+
+    /// Run an extension tool with an interactive elicitation callback bound only to this call.
+    pub fn run_tool_with_input(
+        &mut self,
+        name: &str,
+        arguments: &str,
+        host_tools: &mut HostToolBridge<'_>,
+        host_input: &mut HostInputFn<'_>,
+    ) -> Option<String> {
+        let idx = self.tool_owner(name)?;
+        self.exts[idx].run_tool_with_input(name, arguments, host_tools, host_input)
     }
 
     /// Give every extension a chance to rewrite a tool result.

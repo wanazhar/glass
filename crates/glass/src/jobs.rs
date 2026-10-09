@@ -21,6 +21,13 @@ impl Jobs {
         if command.trim().is_empty() {
             return Err("background command is empty".into());
         }
+        let approvals = crate::permissions::approvals_for_command(command)?;
+        let exception = approvals.permits_exact(command);
+        if !exception && let Some(reason) = crate::sandbox::refusal() {
+            return Err(format!(
+                "sandbox = strict is not available ({reason}); refusing to run jobs unsandboxed"
+            ));
+        }
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         self.next += 1;
         let timestamp = std::time::SystemTime::now()
@@ -33,19 +40,20 @@ impl Jobs {
             .create_new(true)
             .open(&output)
             .map_err(|e| e.to_string())?;
-        if let Some(reason) = crate::sandbox::refusal() {
-            return Err(format!(
-                "sandbox = strict is not available ({reason}); refusing to run jobs unsandboxed"
-            ));
-        }
-        let mut cmd = crate::sandbox::shell(command);
+        let mut cmd = if exception {
+            let mut cmd = Command::new("/bin/sh");
+            cmd.arg("-c").arg(command);
+            cmd
+        } else {
+            crate::sandbox::shell(command)
+        };
         cmd.current_dir(workspace)
             .stdin(Stdio::null())
             .stdout(file.try_clone().map_err(|e| e.to_string())?)
             .stderr(file);
         #[cfg(unix)]
         cmd.process_group(0);
-        crate::sandbox::harden(&mut cmd);
+        crate::sandbox::harden_command(&mut cmd, command, &approvals, exception, false)?;
         crate::sandbox::scrub_env(&mut cmd);
         let child = cmd.spawn().map_err(|e| e.to_string())?;
         let pid = child.id();

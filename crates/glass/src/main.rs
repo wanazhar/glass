@@ -113,7 +113,8 @@ In the prompt:
   /compact [focus]  summarize the conversation now, optionally focused
   /dashboard  workspace overview and quick actions
   /theme      choose expressive color palettes
-  /security   inspect security and extension trust
+  /security   review permission profiles, command approvals, and extension capabilities
+  /permissions review permission profiles, command approvals, and extension capabilities
   /mods       toggle built-in mods for this session
   /extensions discover, enable, inspect, and disable extensions
   /plan [task] inspect read-only and review before execution
@@ -1287,7 +1288,13 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
         (
             "security",
             "",
-            "Inspect security and extension trust",
+            "Review permission profiles, exact-command exceptions, and extension capabilities",
+            false,
+        ),
+        (
+            "permissions",
+            "",
+            "Review permission profiles, exact-command exceptions, and extension capabilities",
             false,
         ),
         (
@@ -1398,6 +1405,8 @@ fn repl(
     mut session: Session,
 ) -> Result<(), String> {
     use std::sync::{Arc, Mutex};
+
+    permissions::clear_session_approvals()?;
 
     let mut project_instructions = crate::agents_md::render_all(&instructions);
 
@@ -1955,6 +1964,7 @@ fn repl(
             warmer.begin_turn();
             match polish::browser(&keys, &session, &cfg.workspace) {
                 Ok(Some(s)) => {
+                    permissions::clear_session_approvals()?;
                     session = s;
                     state = tools::State::new();
                     totals = Totals::new();
@@ -2641,6 +2651,7 @@ fn repl(
                     .map_err(|e| e.to_string())
             }) {
                 Ok(s) => {
+                    permissions::clear_session_approvals()?;
                     ui_println!(
                         "branch {} — conversation forked; workspace files unchanged",
                         s.id
@@ -2858,42 +2869,33 @@ fn repl(
             }
             continue;
         }
-        if text == "/security" {
-            let confinement = match sandbox::policy() {
-                sandbox::Policy::Off => {
-                    "Shell commands run with your OS permissions (sandbox is off).".to_string()
+        if matches!(text.as_str(), "/security" | "/permissions") {
+            match permissions::review(&keys, &cfg, &cfg.extensions) {
+                permissions::ReviewAction::ApproveExactCommand(command) => {
+                    match permissions::approve_session_command(&command) {
+                        Ok(()) => modal::info(
+                            &keys,
+                            "Session exception approved",
+                            "Only this exact command text is exempt from the configured shell confinement for this session.",
+                        ),
+                        Err(error) => modal::info(&keys, "Approval not saved", &error),
+                    }
                 }
-                sandbox::Policy::Workspace => {
-                    "Shell commands are confined to the workspace, temp, caches, and the \
-                     glass data folder (sandbox=workspace); reads are unrestricted."
-                        .to_string()
+                permissions::ReviewAction::SelectProfile(profile) => {
+                    match permissions::persist_profile(&config::default_path(), profile) {
+                        Ok(()) => {
+                            cfg.permission_profile = profile;
+                            modal::info(
+                                &keys,
+                                "Profile saved",
+                                "The selected permission profile is saved in config.toml and takes effect after restarting glass-core. The current process keeps its startup policy.",
+                            );
+                        }
+                        Err(error) => modal::info(&keys, "Profile not saved", &error),
+                    }
                 }
-                sandbox::Policy::Strict => {
-                    "Shell commands are confined to the workspace plus a system and \
-                     toolchain allowlist (sandbox=strict)."
-                        .to_string()
-                }
-            };
-            let refusal = match sandbox::refusal() {
-                Some(reason) => format!(" Commands are being refused: {reason}."),
-                None => String::new(),
-            };
-            modal::info(
-                &keys,
-                "Security and trust",
-                &format!(
-                    "Workspace: {}\nProvider: {}\nEndpoint: {}\n\n{confinement}{refusal} Extensions are trusted local programs, not sandboxed. Provider response text cannot emit terminal control characters. Host-tool access remains enabled.\n\nNew session logs and output spills use private 0600 files. Extension processes do not inherit environment variables named TOKEN, SECRET, PASSWORD, API_KEY, AWS_ACCESS_KEY_ID, or SSH_AUTH_SOCK. This does not prevent filesystem access to credentials.\n\nExtensions may declare authorization_required=true to block tools on missing or malformed authorization replies. Legacy authorization behavior is preserved otherwise.\n\nLoaded mods: {}\nLoaded extensions: {}\nUse /mods and /extensions to manage this session.",
-                    cfg.workspace.display(),
-                    cfg.provider,
-                    cfg.base_url,
-                    loaded_mods
-                        .iter()
-                        .map(|m| m.name())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    extensions.names().join(", ")
-                ),
-            );
+                permissions::ReviewAction::Close => {}
+            }
             continue;
         }
         if text == "/mods" {
@@ -2974,6 +2976,7 @@ fn repl(
         if text == "/clear" {
             match Session::create(&config::data_dir()) {
                 Ok(s) => {
+                    permissions::clear_session_approvals()?;
                     // A pending cache refresh would warm the old
                     // conversation; a new session supersedes it.
                     warmer.begin_turn();
@@ -3099,6 +3102,7 @@ fn repl(
                 .with_recovery(recovering)
                 .with_live(cfg.live_flush_ms as u64)
                 .with_stream_factory(Arc::clone(&factory))
+                .with_input_keys(&keys)
                 .with_progress(|p| painter.handle(p))
                 .with_warmer(&warmer);
 

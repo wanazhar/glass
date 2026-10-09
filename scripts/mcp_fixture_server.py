@@ -101,7 +101,17 @@ def main():
                       and params.get("arguments") == {"original": "unchanged"}):
                     result = {"content": [{"type": "text", "text": "finished without echoing input"}]}
                 else:
-                    result = {"isError": True, "content": [{"type": "text", "text": "retry contract mismatch"}]}
+                    # Only structural metadata is included so protocol tests
+                    # can diagnose failures without echoing submitted values.
+                    result = {"isError": True, "content": [{"type": "text", "text": (
+                        "retry contract mismatch: " + json.dumps({
+                            "call_id": mid, "prior_ids": elicitation_ids[:-1],
+                            "state": params.get("requestState"),
+                            "response_keys": sorted((params.get("inputResponses") or {}).keys()),
+                            "action": (params.get("inputResponses") or {}).get("opaque-form-key", {}).get("action"),
+                            "arguments": arguments,
+                        })
+                    )}]}
             else:
                 result = {"content": [{"type": "text", "text": f"ran {name}"}]}
             reply = {"jsonrpc": "2.0", "id": mid, "result": result}

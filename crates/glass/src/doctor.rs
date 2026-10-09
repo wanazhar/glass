@@ -95,14 +95,30 @@ pub fn inspect(cfg: &crate::config::Config, config_path: &Path, session_dir: &Pa
     });
 
     let policy = match cfg.sandbox {
+        crate::sandbox::Policy::Off
+            if cfg.permission_profile == crate::sandbox::PermissionProfile::ReadOnly => "strict",
+        crate::sandbox::Policy::Off
+            if cfg.permission_profile == crate::sandbox::PermissionProfile::WorkspaceEdit => "workspace",
         crate::sandbox::Policy::Off => "off",
         crate::sandbox::Policy::Workspace => "workspace",
         crate::sandbox::Policy::Strict => "strict",
     };
+    let profile = match cfg.permission_profile {
+        crate::sandbox::PermissionProfile::Unrestricted => "unrestricted",
+        crate::sandbox::PermissionProfile::WorkspaceEdit => "workspace-edit",
+        crate::sandbox::PermissionProfile::ReadOnly => "read-only",
+    };
+    let extension_policy = if cfg.extension_isolation == "strict" {
+        "strict declaration required; filesystem and TCP-port bounds depend on OS support; egress is port-only"
+    } else {
+        "off; extensions remain trusted local programs with credential environment scrubbing"
+    };
     checks.push(Check {
-        area: "sandbox",
+        area: "permissions",
         status: if policy == "off" { "notice" } else { "ok" },
-        detail: format!("shell policy: {policy}; extension confinement is not probed"),
+        detail: format!(
+            "configured profile: {profile}; configured shell policy: {policy}; effective runtime policy is not evaluated by offline doctor; extension isolation: {extension_policy}"
+        ),
     });
 
     let missing = cfg

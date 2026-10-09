@@ -43,7 +43,6 @@ pub struct ElicitationRequest {
     pub server: String,
     pub message: String,
     pub mode: String,
-    pub url: Option<String>,
     pub host: Option<String>,
     pub fields: Vec<ElicitationField>,
 }
@@ -214,7 +213,6 @@ impl ElicitationRequest {
                 message,
                 mode: mode.into(),
                 host: url.host_str().map(str::to_string),
-                url: Some(url.to_string()),
                 fields: vec![],
             });
         }
@@ -388,7 +386,6 @@ impl ElicitationRequest {
             server: server.into(),
             message,
             mode: mode.into(),
-            url: None,
             host: None,
             fields,
         })
@@ -771,10 +768,6 @@ mod tests {
         let safe_url = json!({"mode":"url", "message":"Continue", "url":"https://login.example.test/oauth/start?state=opaque"});
         let parsed = ElicitationRequest::parse("fixture", &safe_url).unwrap();
         assert_eq!(parsed.host.as_deref(), Some("login.example.test"));
-        assert_eq!(
-            parsed.url.as_deref(),
-            Some("https://login.example.test/oauth/start?state=opaque")
-        );
     }
 
     #[test]

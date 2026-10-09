@@ -366,7 +366,9 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
     }
     if let Some(v) = raw.notify {
         cfg.notify = notify::Mode::parse(&v).ok_or_else(|| {
-            LoadError::Invalid(format!("notify must be auto, osc, bell, or off (got `{v}`)"))
+            LoadError::Invalid(format!(
+                "notify must be auto, osc, osc777, bell, or off (got `{v}`)"
+            ))
         })?;
     }
     if let Some(v) = raw.fallback {

@@ -71,10 +71,11 @@ class Bridge:
         self.proc.wait(timeout=10)
 
 
-def config(path, tools=None):
+def config(path, tools=None, extra=()):
     fixture = [sys.executable, str(FIXTURE)]
     if tools is not None:
         fixture += ['--tools', str(tools)]
+    fixture += list(extra)
     path.write_text(json.dumps({'servers': {'fixture': {'command': fixture}}}))
     return path
 
@@ -111,6 +112,31 @@ def main():
         assert out == 'echo: x', out
         out = bridge.tool('mcp_call', {'tool': 'mcp__fixture__echo', 'arguments': 'not json'})
         assert 'not valid JSON' in out, out
+        bridge.close()
+
+        # CacheableResult TTL: the deferred index re-fetches tools/list once
+        # the server's ttlMs has expired, so a catalogue that shrank on the
+        # server side stops being searchable — while the declared manifest,
+        # which the harness has already frozen, stays the two meta-tools.
+        bridge = Bridge(
+            config(
+                root / 'mcp-ttl.json',
+                tools=45,
+                extra=['--ttl-ms', '0', '--drop-after-first', 'tool_7'],
+            )
+        )
+        manifest = bridge.hello()
+        names = {t['name'] for t in manifest['tools']}
+        assert names == {'mcp_search', 'mcp_call'}, names
+        # tool_7 was dropped by the server's second tools/list: with the
+        # refresh it is unsearchable, without it the stale index still
+        # answers.
+        out = bridge.tool('mcp_search', {'query': 'fixture__tool_7'})
+        assert 'mcp__fixture__tool_7' not in out, f'an expired index must be re-fetched: {out}'
+        assert 'no tools match' in out, out
+        # And the refreshed index still answers for the tools that remain.
+        out = bridge.tool('mcp_search', {'query': 'fixture__tool_6'})
+        assert 'mcp__fixture__tool_6 —' in out, out
         bridge.close()
 
         # Stateless stdio (2026-07-28): the server/discover probe selects the

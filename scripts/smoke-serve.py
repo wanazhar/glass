@@ -212,6 +212,74 @@ def main():
                 t.visible('— finished —', timeout=15)
             finally:
                 t.close()
+
+            # Lifecycle: `stop` shuts a server down over its socket, `logs`
+            # reads the durable log, `respawn` restarts a detached server.
+            # A fresh workspace so `serve` with no id creates its own
+            # session instead of shadowing the one above.
+            lifecycle = root / 'repo2'
+            lifecycle.mkdir()
+            default = subprocess.Popen(
+                [str(f.BINARY), 'serve'],
+                cwd=lifecycle, env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            data = root / 'data/glass-core'
+            deadline = time.monotonic() + 10
+            found = []
+            while not found:
+                assert time.monotonic() < deadline, 'serve never created its default socket'
+                found = sorted(data.glob('serve-*.sock'))
+                if not found:
+                    time.sleep(0.05)
+            sock_path = found[0]
+            session_id = sock_path.stem[len('serve-'):]
+
+            # logs reads the session log whether or not a server runs.
+            out = subprocess.run(
+                [str(f.BINARY), 'logs', session_id],
+                cwd=lifecycle, env=env, capture_output=True, text=True, timeout=30,
+            )
+            assert out.returncode == 0, (out.stdout, out.stderr)
+            assert session_id in out.stdout, out.stdout
+
+            # stop: acknowledged, then the server exits and removes its
+            # socket.
+            out = subprocess.run(
+                [str(f.BINARY), 'stop', session_id],
+                cwd=lifecycle, env=env, capture_output=True, text=True, timeout=30,
+            )
+            assert out.returncode == 0, (out.stdout, out.stderr)
+            assert 'stopped session' in out.stdout, out.stdout
+            default.wait(timeout=10)
+            deadline = time.monotonic() + 10
+            while sock_path.exists():
+                assert time.monotonic() < deadline, 'the socket must be removed on exit'
+                time.sleep(0.05)
+
+            # respawn: a fresh detached server for the same session, and
+            # the same socket path back in place. stdout is DEVNULL so the
+            # detached child cannot hold a capture pipe open.
+            out = subprocess.run(
+                [str(f.BINARY), 'respawn', session_id],
+                cwd=lifecycle, env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
+            )
+            assert out.returncode == 0, out.returncode
+            deadline = time.monotonic() + 10
+            while not sock_path.exists():
+                assert time.monotonic() < deadline, 'respawn never rebound the socket'
+                time.sleep(0.05)
+            revived = Client(sock_path)
+            frame = revived.next()
+            assert frame['t'] == 'replay', frame
+            revived.close()
+            # Clean the detached server up; nothing else can.
+            out = subprocess.run(
+                [str(f.BINARY), 'stop', session_id],
+                cwd=lifecycle, env=env, capture_output=True, text=True, timeout=30,
+            )
+            assert out.returncode == 0, (out.stdout, out.stderr)
         finally:
             serve.send_signal(signal.SIGTERM)
             try:
@@ -219,11 +287,20 @@ def main():
             except subprocess.TimeoutExpired:
                 serve.kill()
                 serve.wait()
+            # Best-effort: a detached server left behind by a failed run.
+            try:
+                subprocess.run(
+                    [str(f.BINARY), 'stop'],
+                    cwd=repo, env=env,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+                )
+            except Exception:
+                pass
             server.shutdown()
     print(
         'PASS serve/attach: replay, prompt streaming, multi-client broadcast, '
         'cancel from any client, idempotent request_id, cursor-based reattach '
-        'with reset, survival across disconnects, PTY attach'
+        'with reset, survival across disconnects, PTY attach, stop/logs/respawn'
     )
 
 

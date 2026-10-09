@@ -11,7 +11,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use super::protocol::parse_manifest;
 use super::protocol::{
     self, MAX_REPLY_BYTES, Manifest, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS, Request, SubagentTask,
-    is_nested_call, is_subagent_call, is_subagents_call, parse_subagent_tasks,
+    envelope_report, is_custom_append, is_custom_read, is_nested_call, is_subagent_call,
+    is_subagents_call, parse_subagent_tasks,
 };
 
 /// Callback the host uses to run a tool an extension asked for.
@@ -69,6 +70,14 @@ pub struct Extension {
     /// Runs a delegated task. Set by the REPL so the host, not the
     /// extension process, owns the nested agent loop.
     subagent: Option<SubagentFn>,
+    /// Durable entries this extension owns, seeded at startup and
+    /// grown by its own appends. `read_custom` is served from here,
+    /// so an extension can reconstruct state after a restart
+    /// without the entries entering the model context.
+    custom: std::collections::BTreeMap<String, Vec<String>>,
+    /// Appends queued by the extension, drained by the agent into
+    /// the session log after the tool call or turn that queued them.
+    pending_custom: Vec<(String, Option<String>)>,
 }
 
 impl Extension {
@@ -131,6 +140,8 @@ impl Extension {
             raw_fd,
             next_id: 0,
             subagent: None,
+            custom: std::collections::BTreeMap::new(),
+            pending_custom: Vec::new(),
             child,
             stopped: false,
             cancel,
@@ -232,6 +243,13 @@ impl Extension {
                 };
                 let runner = self.subagent.as_mut()?;
                 let outputs = runner(&tasks);
+                // Frame every report so its content cannot read as
+                // session instructions: the envelope travels with the
+                // report into the tool result the model sees.
+                let outputs: Vec<String> = outputs
+                    .iter()
+                    .map(|output| envelope_report(output))
+                    .collect();
                 let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
                 if batched {
                     self.reply(protocol::subagents_result_json(&call_id, &outputs, None))?;
@@ -239,6 +257,53 @@ impl Extension {
                     let out = outputs.first().cloned().unwrap_or_default();
                     self.reply(protocol::subagent_result_json(&call_id, &out))?;
                 }
+                deadline =
+                    std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+                continue;
+            }
+            if is_custom_append(&v) {
+                // A durable entry for the session log. The host owns
+                // the log, so the extension asks rather than writes;
+                // the entry is acked immediately and the agent
+                // appends it after the current work.
+                let kind = v
+                    .get("kind")
+                    .and_then(|k| k.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let data = v
+                    .get("data")
+                    .and_then(|d| d.as_str())
+                    .map(str::to_string);
+                let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
+                let (ok, error) = match self.append_custom(kind, data) {
+                    Ok(()) => (true, None),
+                    Err(e) => (false, Some(e)),
+                };
+                self.reply(protocol::custom_result_json(
+                    &call_id,
+                    ok,
+                    &[],
+                    error.as_deref(),
+                ))?;
+                deadline =
+                    std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+                continue;
+            }
+            if is_custom_read(&v) {
+                let kind = v
+                    .get("kind")
+                    .and_then(|k| k.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
+                let entries = self.read_custom(&kind);
+                self.reply(protocol::custom_result_json(
+                    &call_id,
+                    true,
+                    &entries,
+                    None,
+                ))?;
                 deadline =
                     std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
                 continue;
@@ -464,6 +529,57 @@ impl Extension {
 
     pub fn has_command(&self, name: &str) -> bool {
         self.manifest.commands.iter().any(|c| c.name == name)
+    }
+
+    /// Queue a durable entry for the session log.
+    ///
+    /// Kinds are namespaced `<extension-name>/…` so one
+    /// extension cannot write into another's state. The
+    /// entry is acked immediately; the agent appends it to
+    /// the log after the tool call or turn that queued it.
+    pub fn append_custom(&mut self, kind: String, data: Option<String>) -> Result<(), String> {
+        let prefix = format!("{}/", self.manifest.name);
+        if !kind.starts_with(&prefix) {
+            return Err(format!("custom kinds are namespaced: `{prefix}…`"));
+        }
+        self.custom
+            .entry(kind.clone())
+            .or_default()
+            .extend(data.clone());
+        self.pending_custom.push((kind, data));
+        Ok(())
+    }
+
+    /// Take the entries queued for the session log.
+    pub fn take_custom(&mut self) -> Vec<(String, Option<String>)> {
+        std::mem::take(&mut self.pending_custom)
+    }
+
+    /// Seed the extension's entries from the session log, and
+    /// hand them to the extension process so it can rebuild
+    /// state that outlives a restart.
+    pub fn seed_custom(&mut self, entries: Vec<(String, Vec<String>)>) {
+        let prefix = format!("{}/", self.manifest.name);
+        let mine: Vec<(String, Vec<String>)> = entries
+            .into_iter()
+            .filter(|(kind, _)| kind.starts_with(&prefix))
+            .collect();
+        if mine.is_empty() {
+            return;
+        }
+        for (kind, data) in &mine {
+            self.custom.insert(kind.clone(), data.clone());
+        }
+        // Best-effort: an extension that does not answer the
+        // seed keeps working, it just starts with empty state.
+        let req = Request::SeedCustom { entries: mine };
+        let _ = self.request(&req, REQUEST_TIMEOUT_MS, None);
+    }
+
+    /// The extension's entries for one kind, seeded and
+    /// appended, in append order.
+    pub fn read_custom(&self, kind: &str) -> Vec<String> {
+        self.custom.get(kind).cloned().unwrap_or_default()
     }
 
     /// Shut the extension down, escalating to a kill if it ignores the request.

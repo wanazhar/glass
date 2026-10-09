@@ -5,10 +5,11 @@
 //! back. Short turns stay silent — notifying for every one-line answer is
 //! noise — but a failed turn always notifies, however fast it failed.
 //!
-//! `auto` picks OSC 9 on terminals known to surface it and falls back to the
-//! bell everywhere else. tmux is deliberately not treated as OSC-capable:
-//! the sequence is swallowed unless passthrough is configured, so the bell,
-//! which sets the window flag, is the honest choice.
+//! `auto` picks OSC 777 on terminals known to surface it, OSC 9 on
+//! terminals known to surface that, and falls back to the bell
+//! everywhere else. tmux is deliberately not treated as OSC-capable:
+//! the sequence is swallowed unless passthrough is configured, so the
+//! bell, which sets the window flag, is the honest choice.
 
 use std::io::Write;
 use std::time::Duration;
@@ -16,11 +17,14 @@ use std::time::Duration;
 /// How a finished turn gets attention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
-    /// OSC 9 where the terminal supports it, bell otherwise.
+    /// OSC 777 where the terminal supports it, OSC 9 where that is
+    /// supported, bell otherwise.
     #[default]
     Auto,
     /// OSC 9 unconditionally.
     Osc,
+    /// OSC 777 `notify` unconditionally.
+    Osc777,
     /// The terminal bell.
     Bell,
     /// Never notify.
@@ -33,6 +37,7 @@ impl Mode {
         match s.trim().to_ascii_lowercase().as_str() {
             "auto" => Some(Mode::Auto),
             "osc" => Some(Mode::Osc),
+            "osc777" | "osc-777" => Some(Mode::Osc777),
             "bell" => Some(Mode::Bell),
             "off" | "none" | "disabled" => Some(Mode::Off),
             _ => None,
@@ -68,11 +73,15 @@ pub fn sequence(
         return None;
     }
     let osc = format!("\x1b]9;{message}\x07");
+    let osc777 = format!("\x1b]777;notify;glass-core;{message}\x07");
     match mode {
         Mode::Off => None,
         Mode::Bell => Some("\x07".into()),
         Mode::Osc => Some(osc),
-        Mode::Auto => Some(if osc_capable(term_program, term) {
+        Mode::Osc777 => Some(osc777),
+        Mode::Auto => Some(if notify777_capable(term_program, term) {
+            osc777
+        } else if osc_capable(term_program, term) {
             osc
         } else {
             "\x07".into()
@@ -93,6 +102,19 @@ pub fn emit(mode: Mode, message: &str) {
     let mut out = std::io::stdout();
     let _ = out.write_all(seq.as_bytes());
     let _ = out.flush();
+}
+
+/// Terminals that surface OSC 777 `notify` as a desktop
+/// notification. The set Copilot CLI shipped the sequence for
+/// (2026-10): Ghostty and WezTerm.
+fn notify777_capable(program: Option<&str>, term: Option<&str>) -> bool {
+    const PROGRAMS: &[&str] = &["WezTerm"];
+    if let Some(p) = program
+        && PROGRAMS.iter().any(|k| p.eq_ignore_ascii_case(k))
+    {
+        return true;
+    }
+    matches!(term, Some(t) if t.contains("ghostty") || t.contains("wezterm"))
 }
 
 /// Terminals that surface OSC 9 as a desktop notification.
@@ -127,6 +149,8 @@ mod tests {
     fn mode_parses_and_rejects_unknown_values() {
         assert_eq!(Mode::parse("auto"), Some(Mode::Auto));
         assert_eq!(Mode::parse(" OSC "), Some(Mode::Osc));
+        assert_eq!(Mode::parse("osc777"), Some(Mode::Osc777));
+        assert_eq!(Mode::parse("OSC-777"), Some(Mode::Osc777));
         assert_eq!(Mode::parse("Bell"), Some(Mode::Bell));
         assert_eq!(Mode::parse("off"), Some(Mode::Off));
         assert_eq!(Mode::parse("sometimes"), None);
@@ -142,15 +166,25 @@ mod tests {
         let osc = sequence(Mode::Osc, None, Some("dumb"), "done").unwrap();
         assert!(osc.starts_with("\x1b]9;"));
         assert!(osc.ends_with('\x07'));
+        let osc777 = sequence(Mode::Osc777, None, Some("dumb"), "done").unwrap();
+        assert!(osc777.starts_with("\x1b]777;notify;glass-core;"));
+        assert!(osc777.ends_with('\x07'));
         assert_eq!(sequence(Mode::Bell, None, Some("xterm-kitty"), "done").unwrap(), "\x07");
     }
 
     #[test]
-    fn auto_prefers_osc_on_capable_terminals_and_bells_elsewhere() {
+    fn auto_prefers_osc777_then_osc_then_bell() {
         let seq = sequence(Mode::Auto, Some("iTerm.app"), Some("xterm"), "done").unwrap();
         assert!(seq.starts_with("\x1b]9;"), "iTerm must get OSC 9");
         let seq = sequence(Mode::Auto, None, Some("xterm-kitty"), "done").unwrap();
         assert!(seq.starts_with("\x1b]9;"), "kitty must get OSC 9");
+        let seq = sequence(Mode::Auto, None, Some("xterm-ghostty"), "done").unwrap();
+        assert!(
+            seq.starts_with("\x1b]777;notify;"),
+            "ghostty must get OSC 777: {seq:?}"
+        );
+        let seq = sequence(Mode::Auto, Some("WezTerm"), Some("xterm"), "done").unwrap();
+        assert!(seq.starts_with("\x1b]777;notify;"), "WezTerm must get OSC 777");
         let seq = sequence(Mode::Auto, None, Some("xterm-256color"), "done").unwrap();
         assert_eq!(seq, "\x07", "an unknown terminal gets the bell");
     }

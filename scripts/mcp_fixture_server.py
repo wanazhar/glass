@@ -8,6 +8,13 @@ def main():
     count = 2
     if "--tools" in sys.argv:
         count = int(sys.argv[sys.argv.index("--tools") + 1])
+    ttl_ms = None
+    if "--ttl-ms" in sys.argv:
+        ttl_ms = int(sys.argv[sys.argv.index("--ttl-ms") + 1])
+    drop_after_first = None
+    if "--drop-after-first" in sys.argv:
+        drop_after_first = sys.argv[sys.argv.index("--drop-after-first") + 1]
+    lists = 0
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -28,6 +35,7 @@ def main():
         elif method == "notifications/initialized":
             continue
         elif method == "tools/list":
+            lists += 1
             tools = [
                 {
                     "name": "echo",
@@ -52,7 +60,12 @@ def main():
                         "inputSchema": {"type": "object"},
                     }
                 )
-            reply = {"jsonrpc": "2.0", "id": mid, "result": {"tools": tools}}
+            if drop_after_first is not None and lists > 1:
+                tools = [t for t in tools if t["name"] != drop_after_first]
+            result = {"tools": tools}
+            if ttl_ms is not None:
+                result["ttlMs"] = ttl_ms
+            reply = {"jsonrpc": "2.0", "id": mid, "result": result}
         elif method == "tools/call":
             params = msg.get("params") or {}
             name = params.get("name")

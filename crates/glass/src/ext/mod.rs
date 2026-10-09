@@ -18,6 +18,21 @@ pub struct Registry {
     failures: Vec<String>,
     sources: std::collections::BTreeMap<String, String>,
     runner_factory: Option<Box<dyn Fn() -> SubagentFn>>,
+    /// The tool list declared to the model, frozen after the
+    /// first turn. See [`Registry::declared_tools`].
+    frozen_tools: Option<Vec<(String, String, String)>>,
+    /// Whether a change against the frozen list has been
+    /// noted in the transcript already.
+    freeze_noted: bool,
+}
+
+/// What changed against the frozen tool list.
+#[derive(Debug, Default)]
+pub struct FreezeDiff {
+    /// Tools the live list has that the frozen list lacks.
+    pub added: Vec<String>,
+    /// Tools the frozen list declares that the live list lacks.
+    pub removed: Vec<String>,
 }
 
 impl Registry {
@@ -27,6 +42,8 @@ impl Registry {
             failures: Vec::new(),
             sources: std::collections::BTreeMap::new(),
             runner_factory: None,
+            frozen_tools: None,
+            freeze_noted: false,
         }
     }
 
@@ -74,6 +91,47 @@ impl Registry {
             ext.set_subagent(make());
         }
         self.runner_factory = Some(Box::new(make));
+    }
+
+    /// Drain durable entries queued by any extension, for the
+    /// agent to append to the session log.
+    pub fn drain_custom(&mut self) -> Vec<(String, Option<String>)> {
+        self.exts.iter_mut().flat_map(|e| e.take_custom()).collect()
+    }
+
+    /// Seed every extension with the durable entries it owns
+    /// from the session log.
+    ///
+    /// Called once, after the session is open: the log is the
+    /// store, and an extension rebuilds the state it owns from
+    /// its own namespaced entries. Kinds are `owner/kind`, so
+    /// each extension receives only its own.
+    pub fn seed_custom(&mut self, records: &[crate::session::Record]) {
+        let mut by_owner: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<String, Vec<String>>,
+        > = std::collections::BTreeMap::new();
+        for record in records {
+            if let crate::session::Record::Custom { kind, data } = record {
+                let owner = kind.split('/').next().unwrap_or_default().to_string();
+                by_owner
+                    .entry(owner)
+                    .or_default()
+                    .entry(kind.clone())
+                    .or_default()
+                    .extend(data.clone());
+            }
+        }
+        for e in self.exts.iter_mut() {
+            let mine: Vec<(String, Vec<String>)> = by_owner
+                .remove(&e.manifest.name)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            if !mine.is_empty() {
+                e.seed_custom(mine);
+            }
+        }
     }
 
     pub fn source(&self, name: &str) -> Option<&str> {
@@ -190,6 +248,42 @@ impl Registry {
             .iter()
             .flat_map(|e| e.manifest.tools.iter().map(tool_triple))
             .collect()
+    }
+
+    /// The tool list to declare to the model.
+    ///
+    /// Frozen after the first call: the list is part of the
+    /// cacheable prefix, so a mid-session change would turn
+    /// every later turn into a cache miss. An extension
+    /// enabled or disabled between turns is therefore noted
+    /// once — the diff comes back so the caller can record it
+    /// in the transcript — and applies to the next session.
+    /// This is the stability Claude Code's byte-stable tool
+    /// list buys (2.1.268).
+    pub fn declared_tools(&mut self) -> (Vec<(String, String, String)>, FreezeDiff) {
+        let live = self.tools();
+        let Some(frozen) = &self.frozen_tools else {
+            self.frozen_tools = Some(live.clone());
+            return (live, FreezeDiff::default());
+        };
+        if frozen == &live {
+            return (frozen.clone(), FreezeDiff::default());
+        }
+        let added: Vec<String> = live
+            .iter()
+            .map(|(n, _, _)| n.clone())
+            .filter(|n| !frozen.iter().any(|(f, _, _)| f == n))
+            .collect();
+        let removed: Vec<String> = frozen
+            .iter()
+            .map(|(n, _, _)| n.clone())
+            .filter(|n| !live.iter().any(|(t, _, _)| t == n))
+            .collect();
+        if self.freeze_noted {
+            return (frozen.clone(), FreezeDiff::default());
+        }
+        self.freeze_noted = true;
+        (frozen.clone(), FreezeDiff { added, removed })
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
@@ -485,10 +579,16 @@ for line in sys.stdin:
             })
         });
         let mut nohost = |_n: &str, _a: &str| String::new();
-        assert_eq!(
-            reg.run_tool("batch", "{}", &mut nohost).as_deref(),
-            Some("done:one|done:two"),
-            "both reports must come back, in request order"
+        let joined = reg.run_tool("batch", "{}", &mut nohost).unwrap_or_default();
+        // Both reports come back, in request order, each framed
+        // so its content cannot read as session instructions.
+        assert!(
+            joined.contains("<subagent-report>\ndone:one\n</subagent-report>"),
+            "the first report must come back framed: {joined}"
+        );
+        assert!(
+            joined.contains("<subagent-report>\ndone:two\n</subagent-report>"),
+            "the second report must come back framed: {joined}"
         );
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }

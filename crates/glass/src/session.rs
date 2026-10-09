@@ -69,11 +69,30 @@ pub enum Record {
     /// Replay uses it to rebuild the projection, so a resumed session does not
     /// silently revert to the history compaction was supposed to drop — and
     /// then re-compact, and re-pay for a summary, on its first turn.
+    ///
+    /// `system` is the system prompt in effect at the boundary, captured
+    /// because the compacted history was shaped under it. Replay keeps the
+    /// compacted region under that prompt, so a session resumed after its
+    /// prompt config changed is not silently re-interpreted under a new one;
+    /// the next compaction re-captures the current prompt. This mirrors pi's
+    /// `CompactionEntry.systemMessage`.
     Compacted {
         kept: usize,
         dropped: usize,
         summary: Option<String>,
         tail_start: usize,
+        system: Option<String>,
+    },
+    /// A durable, display-only entry an extension owns.
+    ///
+    /// Extension state that must survive a restart without entering the
+    /// model context: the log is the store, and the owning extension
+    /// reads its entries back at startup. Kinds are namespaced
+    /// `<extension-name>/…` so two extensions cannot collide. This
+    /// mirrors pi's `CustomEntry`.
+    Custom {
+        kind: String,
+        data: Option<String>,
     },
 }
 
@@ -120,10 +139,14 @@ impl Record {
                 dropped,
                 summary,
                 tail_start,
+                system,
             } => json!({
                 "k": "compacted", "kept": kept, "dropped": dropped,
-                "sum": summary, "tail": tail_start
+                "sum": summary, "tail": tail_start, "sys": system
             }),
+            Record::Custom { kind, data } => {
+                json!({ "k": "custom", "c": kind, "d": data })
+            }
         }
     }
 
@@ -176,6 +199,11 @@ impl Record {
                 dropped: v.get("dropped").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
                 summary: s("sum"),
                 tail_start: v.get("tail").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+                system: s("sys"),
+            },
+            "custom" => Record::Custom {
+                kind: s("c")?,
+                data: s("d"),
             },
             _ => return None,
         })
@@ -263,6 +291,10 @@ impl Record {
             Record::Compacted { kept, dropped, .. } => (
                 Role::Meta,
                 format!("context compacted: dropped {dropped}, kept {kept}"),
+            ),
+            Record::Custom { kind, .. } => (
+                Role::Meta,
+                format!("[extension entry: {kind}]"),
             ),
         }
     }
@@ -1415,6 +1447,7 @@ mod tests {
                 dropped: 9,
                 summary: Some("sum".into()),
                 tail_start: 0,
+                system: Some("sys".into()),
             },
         ];
         for c in cases {
@@ -1627,6 +1660,7 @@ mod tests {
             dropped: total.saturating_sub(kept),
             tail_start,
             summary: Some("did the migration".into()),
+            system: None,
         });
         drop(s);
 
@@ -1706,6 +1740,7 @@ mod tests {
                 dropped: total.saturating_sub(kept),
                 tail_start,
                 summary: None,
+                system: None,
             });
         }
         drop(s);
@@ -2001,6 +2036,7 @@ mod tests {
             dropped: tail_start,
             summary: Some("SUMMARY-CONTAINS-SECRET-OLD-ANSWER".into()),
             tail_start,
+            system: None,
         });
         s.context_command("forget", "1").unwrap();
         let text = format!("{:?}", s.messages());
@@ -2333,10 +2369,58 @@ mod tests {
             dropped: 5,
             summary: None,
             tail_start: 0,
+            system: None,
         }
         .to_entry();
         assert_eq!(role, Role::Meta);
         assert!(text.contains("dropped 5"));
+    }
+
+    #[test]
+    fn custom_records_roundtrip_and_stay_out_of_context() {
+        let r = Record::Custom {
+            kind: "ext/state".into(),
+            data: Some("v1".into()),
+        };
+        let j = r.to_json();
+        assert_eq!(j["k"], "custom");
+        let back = Record::from_json(&j).expect("must roundtrip");
+        assert_eq!(j, back.to_json(), "roundtrip changed the record");
+        assert!(
+            back.to_message().is_none(),
+            "custom entries never enter the model context"
+        );
+        let (role, text) = back.to_entry();
+        assert_eq!(role, Role::Meta);
+        assert!(text.contains("ext/state"), "{text}");
+
+        // A record without data still roundtrips; the kind is the
+        // only required field.
+        let bare = Record::Custom {
+            kind: "ext/flag".into(),
+            data: None,
+        };
+        let back = Record::from_json(&bare.to_json()).expect("must roundtrip");
+        assert!(matches!(back, Record::Custom { data: None, .. }));
+    }
+
+    #[test]
+    fn a_compaction_checkpoint_roundtrips() {
+        let r = Record::Compacted {
+            kept: 1,
+            dropped: 2,
+            summary: None,
+            tail_start: 0,
+            system: Some("prompt text".into()),
+        };
+        let back = Record::from_json(&r.to_json()).expect("must roundtrip");
+        assert!(matches!(
+            back,
+            Record::Compacted {
+                system: Some(system),
+                ..
+            } if system == "prompt text"
+        ));
     }
 
     #[test]

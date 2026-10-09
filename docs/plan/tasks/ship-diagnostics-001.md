@@ -1,6 +1,6 @@
 ---
 id: ship-diagnostics-001
-status: in-progress
+status: complete
 scope: ship-next-20 items 7 and 20
 ---
 

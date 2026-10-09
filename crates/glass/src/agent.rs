@@ -252,6 +252,7 @@ impl<'a> Agent<'a> {
         extensions: &'a mut ext::Registry,
         workspace: &'a Path,
     ) -> Self {
+        extensions.bind_session_path(session.path.clone());
         Self {
             provider,
             session,
@@ -401,6 +402,10 @@ impl<'a> Agent<'a> {
         &mut self,
         mut pump: impl FnMut(&mut Option<String>),
     ) -> Result<TurnOutput, provider::Error> {
+        self.session.validate_writes();
+        if let Some(error) = self.session.write_error() {
+            return Err(provider::Error::Config(format!("session log is not writable; no provider request was made: {error}")));
+        }
         let messages = self.session.messages();
         self.ensure_context_fits(&messages)?;
 
@@ -681,6 +686,10 @@ impl<'a> Agent<'a> {
         &mut self,
         mut pump: impl FnMut(&mut Option<String>),
     ) -> Result<(TurnOutput, Stop), provider::Error> {
+        self.session.validate_writes();
+        if let Some(error) = self.session.write_error() {
+            return Err(provider::Error::Config(format!("session log is not writable; turn refused: {error}")));
+        }
         let mut last = TurnOutput {
             text: String::new(),
             tool_calls: Vec::new(),
@@ -822,11 +831,15 @@ impl<'a> Agent<'a> {
                 } else {
                     None
                 };
-                self.session.append(Record::ToolCall {
+                if let Err(error) = self.session.append_checked(&[Record::ToolCall {
                     id: call.id.clone(),
                     name: call.name.clone(),
                     arguments: call.arguments.clone(),
-                });
+                }]) {
+                    return Err(provider::Error::Config(format!(
+                        "cannot record tool intent; action was not run: {error}"
+                    )));
+                }
                 if let Some(body) = cached {
                     self.session.append(Record::ToolResult {
                         name: call.name.clone(),
@@ -1359,9 +1372,7 @@ impl<'a> Agent<'a> {
         if self.read_only {
             return self.system_prompt();
         }
-        crate::session::Session::raw_records(&self.session.path)
-            .ok()
-            .and_then(|records| latest_system_checkpoint(&records))
+        latest_system_checkpoint(&self.session.history_records())
             .unwrap_or_else(|| self.system_prompt())
     }
 
@@ -1848,6 +1859,24 @@ mod warm_integration {
         fn context_window(&self) -> u32 {
             200_000
         }
+    }
+
+    #[test]
+    fn poisoned_session_refuses_before_provider_request() {
+        let dir = std::env::temp_dir().join(format!("glass-poisoned-agent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("original".into()));
+        std::fs::write(&session.path, "{\"k\":\"user\",\"t\":\"external\"}\n").unwrap();
+        let provider = CapturingProvider { tools: std::sync::Mutex::new(Vec::new()) };
+        let mut state = State::new();
+        let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
+        let mut extensions = Registry::empty();
+        let mut agent = Agent::new(&provider, &mut session, &mut state, &no_mods, &mut extensions, Path::new("."));
+        assert!(agent.run_turn(no_pump).is_err());
+        assert!(provider.tools.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A provider with a tiny window, so a short conversation still

@@ -36,6 +36,11 @@ pub struct FreezeDiff {
 }
 
 impl Registry {
+    pub fn bind_session_path(&mut self, path: std::path::PathBuf) {
+        for extension in &mut self.exts {
+            extension.bind_session_path(path.clone());
+        }
+    }
     pub fn empty() -> Self {
         Self {
             exts: Vec::new(),
@@ -93,8 +98,8 @@ impl Registry {
         self.runner_factory = Some(Box::new(make));
     }
 
-    /// Drain durable entries queued by any extension, for the
-    /// agent to append to the session log.
+    /// Drain entries queued by deferred extension implementations.
+    /// Custom append requests are persisted synchronously before ack.
     pub fn drain_custom(&mut self) -> Vec<(String, Option<String>)> {
         self.exts.iter_mut().flat_map(|e| e.take_custom()).collect()
     }
@@ -517,6 +522,38 @@ for line in sys.stdin:
         assert_eq!(reg.tools().len(), 1);
         assert_eq!(reg.commands().len(), 1);
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
+    fn custom_append_ack_follows_the_actual_session_log_write() {
+        let Some(py) = python() else { return };
+        let script = r#"
+import json,sys
+def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
+for line in sys.stdin:
+ r=json.loads(line); t=r.get("type"); i=r.get("id")
+ if t=="hello": send({"id":i,"protocol":PROTO,"name":"durable","version":"1","tools":[{"name":"durable_tool","description":"d","schema":{"type":"object"}}]})
+ elif t=="run_tool":
+  send({"type":"append_custom","call_id":i,"kind":"durable/state","data":"saved"})
+  rep=json.loads(sys.stdin.readline())
+  send({"id":i,"output":str(rep.get("ok"))})
+ elif t=="goodbye": break
+"#;
+        let dir = std::env::temp_dir().join(format!("glass-custom-ack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("extension.py");
+        std::fs::write(&file, script.replace("PROTO", &PROTOCOL_VERSION.to_string())).unwrap();
+        let session = crate::session::Session::create(&dir).unwrap();
+        let mut reg = Registry::load(&[format!("{py} {}", file.display())], &dir, "mock");
+        reg.bind_session_path(session.path.clone());
+        let mut nohost = |_name: &str, _args: &str| String::new();
+        assert_eq!(reg.run_tool("durable_tool", "{}", &mut nohost).as_deref(), Some("True"));
+        let records = crate::session::Session::raw_records(&session.path).unwrap();
+        assert!(matches!(records.as_slice(), [crate::session::Record::Custom { kind, data: Some(value) }] if kind == "durable/state" && value == "saved"));
+        reg.shutdown();
+        drop(session);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

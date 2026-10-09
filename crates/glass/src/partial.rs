@@ -214,10 +214,35 @@ impl Writer {
         }
         self.live.at = now();
         if let Ok(data) = serde_json::to_vec(&self.live) {
-            let _ = std::fs::write(&self.path, data);
+            // Keep the previous good snapshot intact until the new one is
+            // complete. The sidecar contains private prompt text, so create
+            // the staging file with owner-only permissions as well.
+            let tmp = self
+                .path
+                .with_extension(format!("live.{}.tmp", std::process::id()));
+            let result = (|| -> std::io::Result<()> {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&tmp)?;
+                file.write_all(&data)?;
+                file.flush()?;
+                file.sync_all()?;
+                std::fs::rename(&tmp, &self.path)?;
+                Ok(())
+            })();
+            if result.is_ok() {
+                self.last_write = Instant::now();
+                self.dirty = false;
+            } else {
+                let _ = std::fs::remove_file(&tmp);
+                // Retain dirty so a later tick or phase boundary retries.
+            }
         }
-        self.last_write = Instant::now();
-        self.dirty = false;
     }
 
     /// The turn is over, however it ended: the final records on disk are the
@@ -254,6 +279,29 @@ mod tests {
         // finish removes the sidecar entirely.
         w.finish();
         assert!(!path(&session).exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn failed_atomic_snapshot_keeps_previous_snapshot_and_stays_dirty() {
+        let dir = scratch("atomic-failure");
+        let session = dir.join("s.jsonl");
+        let mut w = Writer::new(&session, 10).unwrap();
+        w.begin_turn(1);
+        w.text("previous");
+        w.flush(true);
+        let old = std::fs::read(path(&session)).unwrap();
+        // A directory at the staging path makes the write fail while the
+        // previous committed snapshot remains available for recovery.
+        let tmp = path(&session).with_extension(format!("live.{}.tmp", std::process::id()));
+        std::fs::create_dir(&tmp).unwrap();
+        w.text(" retry");
+        w.flush(true);
+        assert!(w.dirty);
+        assert_eq!(std::fs::read(path(&session)).unwrap(), old);
+        std::fs::remove_dir(&tmp).unwrap();
+        w.flush(true);
+        assert_eq!(load(&session).unwrap().text, "previous retry");
         std::fs::remove_dir_all(&dir).ok();
     }
 

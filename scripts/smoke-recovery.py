@@ -131,10 +131,19 @@ def main():
             session_id = logs[-1].stem
             sidecar = data / f'{session_id}.live.json'
             assert sidecar.exists(), 'a kill leaves the sidecar behind'
-
             # 2. Resume: the interrupted call and the partial must both be in
             #    the next request, and the command must NOT run again.
-            resumed = run('--resume', session_id, 'continue')
+            deadline = time.monotonic() + 20
+            while True:
+                resumed = run('--resume', session_id, 'continue')
+                if resumed.returncode == 0:
+                    break
+                if 'session is already open for writing' not in resumed.stderr or time.monotonic() >= deadline:
+                    raise AssertionError(resumed)
+                # A killed harness may leave a spawned command finishing.
+                # The lock correctly prevents recovery until its descriptor
+                # closes; retry the same non-effectful resume after release.
+                time.sleep(0.1)
             assert resumed.returncode == 0, resumed
             body = json.loads(resumed.stdout)
             assert body['status'] == 'finished' and body['text'] == 'RESUMED-OK', body

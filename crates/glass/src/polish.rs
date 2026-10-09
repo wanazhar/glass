@@ -95,7 +95,7 @@ pub fn sessions(workspace: &Path) -> Vec<Session> {
     paths.sort_by_key(|e| std::cmp::Reverse(e.metadata().ok().and_then(|m| m.modified().ok())));
     paths
         .into_iter()
-        .filter_map(|e| Session::open(&config::data_dir(), &e.path().to_string_lossy()).ok())
+        .filter_map(|e| Session::open_readonly(&config::data_dir(), &e.path().to_string_lossy()).ok())
         .filter(|s| metadata(s).workspace == root)
         .collect()
 }
@@ -151,6 +151,7 @@ pub fn browser(
             &actions,
         ) {
             Some(0) => {
+                if s.id == current.id { return Ok(None); }
                 return Session::open(&config::data_dir(), &s.id)
                     .map(Some)
                     .map_err(|e| e.to_string());
@@ -532,15 +533,7 @@ pub fn path_picker(keys: &KeyReader, workspace: &Path) -> Option<String> {
     }
 }
 pub(crate) fn raw_records(s: &Session) -> Vec<Record> {
-    std::fs::read_to_string(&s.path)
-        .ok()
-        .map(|text| {
-            text.lines()
-                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                .filter_map(|v| Record::from_json(&v))
-                .collect()
-        })
-        .unwrap_or_else(|| s.records.clone())
+    s.history_records()
 }
 pub fn completion(s: &Session, checkpoint: Option<&Checkpoint>, width: usize) -> String {
     let records = raw_records(s);
@@ -817,7 +810,7 @@ mod tests {
         let mut m = metadata(&s);
         m.title = "Renamed".into();
         save(&s, &m).unwrap();
-        assert_eq!(title(&Session::open(&root, &s.id).unwrap()), "Renamed");
+        assert_eq!(title(&Session::open_readonly(&root, &s.id).unwrap()), "Renamed");
         assert!(bind(&s, &other).is_err());
         std::fs::remove_dir_all(root).ok();
         std::fs::remove_dir_all(other).ok();

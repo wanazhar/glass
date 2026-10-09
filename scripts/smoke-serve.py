@@ -124,6 +124,7 @@ def main():
             one = Client(sock)
             replay = one.next()
             assert replay['t'] == 'replay' and replay['entries'] == [], replay
+            session_id = replay['session']
             one.send({'t': 'prompt', 'text': 'hello'})
             text, done = one.until_done()
             assert text == 'SERVER-HELLO' and done['stop'] == 'finished', (text, done)
@@ -169,6 +170,75 @@ def main():
             frame = two.next()
             assert frame['t'] == 'duplicate' and frame['request_id'] == 'req-1', frame
             assert Endpoint.calls == before + 1, 'a duplicate must not reach the model'
+
+            # Request IDs survive a server restart with the same session log.
+            one.close()
+            two.close()
+            serve.terminate()
+            serve.wait(timeout=10)
+            sock.unlink(missing_ok=True)
+            serve = subprocess.Popen(
+                [str(f.BINARY), 'serve', session_id, '--socket', str(sock)],
+                cwd=repo, env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            deadline = time.monotonic() + 10
+            while not sock.exists():
+                assert time.monotonic() < deadline, 'restarted serve never created its socket'
+                time.sleep(0.05)
+            after_restart = Client(sock)
+            replay = after_restart.next()
+            assert replay['session'] == session_id, replay
+            after_restart.send({'t': 'prompt', 'text': 'dedupe me', 'request_id': 'req-1'})
+            frame = after_restart.next()
+            assert frame['t'] == 'duplicate' and frame['status'] == 'completed', frame
+            assert Endpoint.calls == before + 1, 'a persisted duplicate must not reach the model'
+            after_restart.close()
+            Endpoint.mode = 'hang'
+            crash_client = Client(sock)
+            crash_client.next()
+            before_crash = Endpoint.calls
+            crash_client.send({'t': 'prompt', 'text': 'interrupted request', 'request_id': 'req-crash'})
+            assert crash_client.next()['t'] == 'text'
+            serve.kill()
+            serve.wait(timeout=10)
+            crash_client.close()
+            sock.unlink(missing_ok=True)
+
+            # An accepted request without a completion record is reported as
+            # interrupted and is never automatically submitted a second time.
+            serve = subprocess.Popen(
+                [str(f.BINARY), 'serve', session_id, '--socket', str(sock)],
+                cwd=repo, env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            deadline = time.monotonic() + 10
+            while not sock.exists():
+                assert time.monotonic() < deadline, 'serve never resumed the same session'
+                time.sleep(0.05)
+            after_restart = Client(sock)
+            after_restart.next()
+            before_duplicate = Endpoint.calls
+            after_restart.send({'t': 'prompt', 'text': 'interrupted request', 'request_id': 'req-crash'})
+            frame = after_restart.next()
+            assert frame['t'] == 'duplicate' and frame['status'] == 'accepted', frame
+            assert 'interrupted' in frame['message'], frame
+            assert Endpoint.calls == before_duplicate == before_crash + 1
+            after_restart.close()
+            serve.terminate()
+            serve.wait(timeout=10)
+            sock.unlink(missing_ok=True)
+
+            Endpoint.mode = 'text'
+            serve = subprocess.Popen(
+                [str(f.BINARY), 'serve', session_id, '--socket', str(sock)],
+                cwd=repo, env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            deadline = time.monotonic() + 10
+            while not sock.exists():
+                assert time.monotonic() < deadline, 'serve never resumed after interrupted request'
+                time.sleep(0.05)
 
             # The server survives disconnects and a late attach still gets
             # the whole history.

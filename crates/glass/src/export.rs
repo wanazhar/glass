@@ -10,16 +10,7 @@ use crate::session::{Record, Session};
 
 /// The raw log, not the compaction projection.
 pub fn raw_records(session: &Session) -> Vec<Record> {
-    std::fs::read_to_string(&session.path)
-        .ok()
-        .map(|text| {
-            text.lines()
-                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                .filter_map(|v| Record::from_json(&v))
-                .collect::<Vec<_>>()
-        })
-        .filter(|records| !records.is_empty())
-        .unwrap_or_else(|| session.records.clone())
+    session.history_records()
 }
 
 /// Render one session as Markdown.
@@ -101,7 +92,8 @@ pub fn markdown(session: &Session, thinking: bool, records: &[Record]) -> String
             // metadata and the call/result plumbing are not content.
             Record::ToolResult { .. }
             | Record::Compacted { .. }
-            | Record::ToolCall { .. } => {}
+            | Record::ToolCall { .. }
+            | Record::ServeRequest { .. } => {}
         }
     }
     out

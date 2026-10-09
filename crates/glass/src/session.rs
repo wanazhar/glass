@@ -6,6 +6,7 @@
 //! from here. Keeping a single format is what stops the two code paths from
 //! drifting apart.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -14,9 +15,11 @@ use std::path::{Path, PathBuf};
 use glass_mod_api::Message;
 use glass_tui::Role;
 
+type FileStamp = (u64, std::time::SystemTime, i64, i64, u64, u64);
+
 /// One recorded event. Kept flat and stringly-typed on purpose: a log format
 /// that needs a schema migration is a log format that loses data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Record {
     User(String),
     Assistant(String),
@@ -94,6 +97,13 @@ pub enum Record {
         kind: String,
         data: Option<String>,
     },
+    /// Durable serve request dedupe state. Accepted requests are never
+    /// automatically replayed after a crash; completion only improves the
+    /// response sent to a later duplicate.
+    ServeRequest {
+        id: String,
+        status: String,
+    },
 }
 
 impl Record {
@@ -146,6 +156,9 @@ impl Record {
             }),
             Record::Custom { kind, data } => {
                 json!({ "k": "custom", "c": kind, "d": data })
+            }
+            Record::ServeRequest { id, status } => {
+                json!({"k":"serve_request", "id":id, "status":status})
             }
         }
     }
@@ -204,6 +217,10 @@ impl Record {
             "custom" => Record::Custom {
                 kind: s("c")?,
                 data: s("d"),
+            },
+            "serve_request" => Record::ServeRequest {
+                id: s("id")?,
+                status: s("status")?,
             },
             _ => return None,
         })
@@ -293,6 +310,9 @@ impl Record {
                 format!("context compacted: dropped {dropped}, kept {kept}"),
             ),
             Record::Custom { kind, .. } => (Role::Meta, format!("[extension entry: {kind}]")),
+            Record::ServeRequest { id, status } => {
+                (Role::Meta, format!("[serve request {id}: {status}]"))
+            }
         }
     }
 }
@@ -515,6 +535,9 @@ pub struct Session {
     #[allow(dead_code)]
     pub path: PathBuf,
     file: Option<File>,
+    _writer_lock: Option<File>,
+    raw_index: RefCell<Vec<Record>>,
+    raw_stamp: RefCell<FileStamp>,
     /// Everything recorded this process, in order.
     pub records: Vec<Record>,
     /// Total records ever appended, including compaction markers.
@@ -526,12 +549,84 @@ pub struct Session {
     /// compaction and a projection-relative index would point at the
     /// wrong slice of the log.
     log_len: usize,
+    write_error: Option<String>,
     /// Number of user turns replayed or started, used by jump-to-turn.
     #[allow(dead_code)]
     pub turn: usize,
 }
 
+fn acquire_writer_lock(path: &Path) -> std::io::Result<File> {
+    let canonical = if path.exists() {
+        path.canonicalize()?
+    } else {
+        let parent = path.parent().ok_or_else(|| std::io::Error::other("session path has no parent"))?.canonicalize()?;
+        parent.join(path.file_name().ok_or_else(|| std::io::Error::other("session path has no filename"))?)
+    };
+    let lock_path = canonical.with_extension("writer.lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    fs2::FileExt::try_lock_exclusive(&file).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!(
+                "session is already open for writing ({}): {error}",
+                path.display()
+            ),
+        )
+    })?;
+    Ok(file)
+}
+
+fn file_stamp(metadata: &fs::Metadata) -> FileStamp {
+    use std::os::unix::fs::MetadataExt;
+    (
+        metadata.len(),
+        metadata.modified().unwrap_or(std::time::UNIX_EPOCH),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+        metadata.dev(),
+        metadata.ino(),
+    )
+}
+
+fn read_snapshot(path: &Path) -> std::io::Result<(Vec<Record>, FileStamp)> {
+    loop {
+        let before = file_stamp(&fs::metadata(path)?);
+        let records = Session::raw_records(path)?;
+        let after = file_stamp(&fs::metadata(path)?);
+        if before == after { return Ok((records, after)); }
+    }
+}
+
 impl Session {
+    pub(crate) fn append_custom_path(
+        path: &Path,
+        kind: &str,
+        data: Option<&str>,
+    ) -> std::io::Result<()> {
+        let record = Record::Custom {
+            kind: kind.to_string(),
+            data: data.map(str::to_string),
+        };
+        let mut bytes = serde_json::to_vec(&record.to_json()).map_err(std::io::Error::other)?;
+        bytes.push(b'\n');
+        let mut file = OpenOptions::new().read(true).append(true).open(path)?;
+        let start = file.metadata()?.len();
+        let result = file.write_all(&bytes).and_then(|()| file.flush()).and_then(|()| {
+            if LOG_FSYNC.load(std::sync::atomic::Ordering::Relaxed) { file.sync_data() } else { Ok(()) }
+        });
+        if let Err(error) = result {
+            let rollback = file.set_len(start).and_then(|()| file.sync_data());
+            return Err(if let Err(rollback_error) = rollback {
+                std::io::Error::other(format!("custom append failed ({error}); rollback failed ({rollback_error})"))
+            } else { error });
+        }
+        Ok(())
+    }
     /// Read durable records without repairing, opening for append, or replaying the session.
     pub fn raw_records(path: &Path) -> std::io::Result<Vec<Record>> {
         let text = match fs::read_to_string(path) {
@@ -546,11 +641,34 @@ impl Session {
             .collect())
     }
 
+    /// Open a read-only snapshot without repair, locking, or recovery writes.
+    pub fn open_readonly(dir: &Path, target: &str) -> std::io::Result<Self> {
+        let path = if target.ends_with(".jsonl") { PathBuf::from(target) } else { dir.join(format!("{target}.jsonl")) };
+        let (raw, raw_stamp) = read_snapshot(&path)?;
+        let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| target.to_string());
+        let log_len = raw.len();
+        let raw_index = raw.clone();
+        let (records, turn) = apply_projection(raw);
+        Ok(Self {
+            id,
+            path,
+            file: None,
+            _writer_lock: None,
+            raw_index: RefCell::new(raw_index),
+            raw_stamp: RefCell::new(raw_stamp),
+            records,
+            turn,
+            log_len,
+            write_error: None,
+        })
+    }
+
     /// Open a new session file under the state directory.
     pub fn create(dir: &Path) -> std::io::Result<Self> {
         fs::create_dir_all(dir)?;
         let id = new_id();
         let path = dir.join(format!("{id}.jsonl"));
+        let writer_lock = acquire_writer_lock(&path)?;
         let mut options = OpenOptions::new();
         options.create_new(true).append(true);
         {
@@ -562,9 +680,13 @@ impl Session {
             id,
             path,
             file: Some(file),
+            _writer_lock: Some(writer_lock),
+            raw_index: RefCell::new(Vec::new()),
+            raw_stamp: RefCell::new((0, std::time::UNIX_EPOCH, 0, 0, 0, 0)),
             records: Vec::new(),
             turn: 0,
             log_len: 0,
+            write_error: None,
         })
     }
 
@@ -575,6 +697,9 @@ impl Session {
         } else {
             dir.join(format!("{target}.jsonl"))
         };
+        // The lock precedes repair: two resume processes must never repair or
+        // append the same log concurrently.
+        let writer_lock = acquire_writer_lock(&path)?;
         let repair = repair_log(&path)?;
         match &repair {
             Repair::None => {}
@@ -629,6 +754,7 @@ impl Session {
         // records on disk are the immutable log; `records` is the projection
         // the model sees, and they are allowed to differ.
         let repairs = interrupted_calls(&records);
+        let raw_index = records.clone();
         let mut raw_turn = 0u64;
         let mut assistants_by_turn: HashMap<u64, Vec<String>> = HashMap::new();
         for record in &records {
@@ -646,14 +772,20 @@ impl Session {
         let live_file = crate::partial::path(&path);
         let log_len = records.len();
         let (records, turn) = apply_projection(records);
+        let metadata = fs::metadata(&path)?;
+        let raw_stamp = file_stamp(&metadata);
 
         let mut session = Self {
             id,
             path,
             file: Some(file),
+            _writer_lock: Some(writer_lock),
+            raw_index: RefCell::new(raw_index),
+            raw_stamp: RefCell::new(raw_stamp),
             records,
             turn,
             log_len,
+            write_error: None,
         };
         for repair in repairs {
             session.append(repair);
@@ -688,18 +820,11 @@ impl Session {
     }
 
     pub fn raw_turns(&self) -> std::io::Result<usize> {
-        let mut count = 0;
-        for line in BufReader::new(File::open(&self.path)?).lines() {
-            let line = line?;
-            if serde_json::from_str::<serde_json::Value>(&line)
-                .ok()
-                .and_then(|v| v.get("k").and_then(|k| k.as_str()).map(|k| k == "user"))
-                .unwrap_or(false)
-            {
-                count += 1;
-            }
-        }
-        Ok(count)
+        Ok(self
+            .read_history_records()
+            .iter()
+            .filter(|r| matches!(r, Record::User(_)))
+            .count())
     }
 
     /// Fork raw history through a completed user turn, preserving compaction indices.
@@ -733,7 +858,9 @@ impl Session {
             "branched from {} through turn {through}; workspace files unchanged",
             self.id
         )));
-        Self::open(dir, &fork.id)
+        let fork_id = fork.id.clone();
+        drop(fork);
+        Self::open(dir, &fork_id)
     }
 
     /// Most recently modified session, if any.
@@ -758,40 +885,127 @@ impl Session {
         self.log_len
     }
 
+    pub fn write_error(&self) -> Option<&str> { self.write_error.as_deref() }
+
+    pub(crate) fn validate_writes(&mut self) { self.sync_external_index(); }
+
     pub fn append(&mut self, record: Record) {
-        if let Some(f) = self.file.as_mut()
-            && let Ok(line) = serde_json::to_string(&record.to_json())
-        {
-            let _ = writeln!(f, "{line}");
-            let _ = f.flush();
-            if LOG_FSYNC.load(std::sync::atomic::Ordering::Relaxed) {
-                let _ = f.sync_data();
-            }
+        if self.write_error.is_some() { return; }
+        self.sync_external_index();
+        if self.write_error.is_some() { return; }
+        let Some(start) = self.file.as_ref().and_then(|file| file.metadata().ok()).map(|m| m.len()) else {
+            self.write_error = Some("cannot inspect session log before append; writes and effects are disabled".into());
+            return;
+        };
+        let result = if let Some(f) = self.file.as_mut() {
+            serde_json::to_string(&record.to_json()).map_err(std::io::Error::other).and_then(|line| writeln!(f, "{line}").map_err(std::io::Error::other))
+                .and_then(|()| f.flush())
+                .and_then(|()| {
+                    if LOG_FSYNC.load(std::sync::atomic::Ordering::Relaxed) {
+                        f.sync_data()
+                    } else {
+                        Ok(())
+                    }
+                })
+        } else {
+            Err(std::io::Error::other("session file closed"))
+        };
+        if let Err(error) = result {
+            self.rollback_failed_write(start, &error);
+            return;
         }
         self.records.push(record);
         self.log_len += 1;
+        if let Some(record) = self.records.last() { self.raw_index.borrow_mut().push(record.clone()); }
+        self.refresh_stamp();
     }
 
     /// Append a recovery group and report write failures so its sidecar can
     /// remain available for another resume attempt.
-    fn append_checked(&mut self, records: &[Record]) -> std::io::Result<()> {
+    pub(crate) fn append_checked(&mut self, records: &[Record]) -> std::io::Result<()> {
+        if let Some(error) = &self.write_error { return Err(std::io::Error::other(error.clone())); }
+        self.sync_external_index();
+        if let Some(error) = &self.write_error { return Err(std::io::Error::other(error.clone())); }
         let mut bytes = Vec::new();
         for record in records {
             serde_json::to_writer(&mut bytes, &record.to_json()).map_err(std::io::Error::other)?;
             bytes.push(b'\n');
         }
-        let file = self
-            .file
-            .as_mut()
-            .ok_or_else(|| std::io::Error::other("session file closed"))?;
-        file.write_all(&bytes)?;
-        file.flush()?;
-        if LOG_FSYNC.load(std::sync::atomic::Ordering::Relaxed) {
-            file.sync_data()?;
+        let Some(start) = self.file.as_ref().and_then(|file| file.metadata().ok()).map(|m| m.len()) else {
+            let error = std::io::Error::other("cannot inspect session log before append");
+            self.write_error = Some(error.to_string());
+            return Err(error);
+        };
+        if self.file.is_none() {
+            let error = std::io::Error::other("session file closed");
+            self.write_error = Some(error.to_string());
+            return Err(error);
+        }
+        let file = self.file.as_mut().expect("checked session file");
+        let result = file.write_all(&bytes).and_then(|()| file.flush()).and_then(|()| {
+            if LOG_FSYNC.load(std::sync::atomic::Ordering::Relaxed) { file.sync_data() } else { Ok(()) }
+        });
+        if let Err(error) = result {
+            self.rollback_failed_write(start, &error);
+            return Err(error);
         }
         self.records.extend_from_slice(records);
         self.log_len += records.len();
+        self.raw_index.borrow_mut().extend_from_slice(records);
+        self.refresh_stamp();
         Ok(())
+    }
+
+    fn rollback_failed_write(&mut self, start: u64, error: &std::io::Error) {
+        let rollback = self.file.as_mut().map(|file| file.set_len(start).and_then(|()| file.sync_data())).unwrap_or_else(|| Err(std::io::Error::other("session file closed")));
+        let message = if let Err(rollback_error) = rollback {
+            format!("session append failed ({error}) and rollback failed ({rollback_error}); writes and effects are disabled")
+        } else {
+            format!("session append failed: {error}")
+        };
+        eprintln!("glass-core: {message}");
+        self.write_error = Some(message);
+    }
+
+    fn refresh_stamp(&self) {
+        if let Ok(metadata) = fs::metadata(&self.path) {
+            *self.raw_stamp.borrow_mut() = file_stamp(&metadata);
+        }
+    }
+
+    /// Incorporate checked writes made through a host-owned session path
+    /// (for example an extension custom entry) before advancing local indexes.
+    fn sync_external_index(&mut self) {
+        let Ok(metadata) = fs::metadata(&self.path) else {
+            self.write_error = Some("session log path is unavailable; writes and effects are disabled".into());
+            return;
+        };
+        let stamp = file_stamp(&metadata);
+        if stamp == *self.raw_stamp.borrow() { return; }
+        if let Ok(text) = fs::read_to_string(&self.path)
+            && text.lines().any(|line| !line.trim().is_empty() && serde_json::from_str::<serde_json::Value>(line).is_err()) {
+                self.write_error = Some("session log has an incomplete external append; writes and effects are disabled until resume repair".into());
+                return;
+            }
+        if let Ok(records) = Self::raw_records(&self.path) {
+            let old_len = self.raw_index.borrow().len();
+            if records.len() < old_len || !records.starts_with(&self.raw_index.borrow()) {
+                self.write_error = Some("session log changed outside its writer; further writes and effects are disabled".into());
+                return;
+            }
+            let unseen: Vec<Record> = records.iter().skip(old_len).cloned().collect();
+            if unseen.iter().any(|record| !matches!(record, Record::Custom { .. } | Record::ServeRequest { .. })) {
+                self.write_error = Some("unexpected external session records changed turn or context indexes; writes and effects are disabled".into());
+                return;
+            }
+            self.log_len = records.len();
+            *self.raw_index.borrow_mut() = records.clone();
+            // Custom entries are display-only, but remain in raw history.
+            self.records.extend(unseen);
+            *self.raw_stamp.borrow_mut() = stamp;
+        } else {
+            self.write_error = Some("cannot reread externally changed session log; writes and effects are disabled".into());
+        }
     }
 
     fn recover_partial(
@@ -979,16 +1193,34 @@ impl Session {
         latest_reasoning(&records)
     }
 
+    pub fn history_records(&self) -> Vec<Record> {
+        self.read_history_records()
+    }
+
     fn read_history_records(&self) -> Vec<Record> {
+        if let Ok(metadata) = fs::metadata(&self.path) {
+            let stamp = file_stamp(&metadata);
+            if stamp == *self.raw_stamp.borrow() {
+                return self.raw_index.borrow().clone();
+            }
+            if let Ok((records, stamp)) = read_snapshot(&self.path) {
+                *self.raw_index.borrow_mut() = records.clone();
+                *self.raw_stamp.borrow_mut() = stamp;
+                return records;
+            }
+        }
         let Ok(file) = File::open(&self.path) else {
             return self.records.clone();
         };
-        BufReader::new(file)
+        let records: Vec<Record> = BufReader::new(file)
             .lines()
             .map_while(Result::ok)
             .filter_map(|line| serde_json::from_str(&line).ok())
             .filter_map(|value| Record::from_json(&value))
-            .collect()
+            .collect();
+        *self.raw_index.borrow_mut() = records.clone();
+        self.refresh_stamp();
+        records
     }
 }
 
@@ -1409,6 +1641,127 @@ mod tests {
     }
 
     #[test]
+    fn history_index_updates_on_append_and_invalidates_for_external_append() {
+        let dir = tmpdir("raw-index");
+        let mut s = Session::create(&dir).unwrap();
+        s.append(Record::User("first".into()));
+        assert_eq!(s.history_records().len(), 1);
+        let mut external = OpenOptions::new().append(true).open(&s.path).unwrap();
+        writeln!(external, "{{\"k\":\"assistant\",\"t\":\"external\"}}").unwrap();
+        external.flush().unwrap();
+        assert_eq!(s.history_records().len(), 2);
+        assert_eq!(s.raw_turns().unwrap(), 1);
+    }
+
+    #[test]
+    fn external_rewrite_poison_prevents_append_behind_changed_history() {
+        let dir = tmpdir("external-rewrite");
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("original".into()));
+        fs::write(&session.path, "{\"k\":\"user\",\"t\":\"replacement\"}\n").unwrap();
+        session.append(Record::Assistant("must not land".into()));
+        assert!(session.write_error().is_some());
+        assert_eq!(fs::read_to_string(&session.path).unwrap().lines().count(), 1);
+    }
+
+    #[test]
+    fn writer_lock_contention_returns_actionable_error() {
+        let dir = tmpdir("writer-lock");
+        let session = Session::create(&dir).unwrap();
+        let error = acquire_writer_lock(&session.path).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        assert!(error.to_string().contains("already open for writing"));
+    }
+
+    #[test]
+    fn writer_lock_resolves_symlink_aliases_to_one_log() {
+        let dir = tmpdir("writer-lock-alias");
+        let session = Session::create(&dir).unwrap();
+        let alias = dir.join("alias.jsonl");
+        std::os::unix::fs::symlink(&session.path, &alias).unwrap();
+        let error = acquire_writer_lock(&alias).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    }
+
+    #[test]
+    fn failed_checked_append_does_not_advance_memory_indexes() {
+        let dir = tmpdir("checked-write-failure");
+        let mut session = Session::create(&dir).unwrap();
+        session.file = None;
+        assert!(session.append_checked(&[Record::ToolCall { id: "c1".into(), name: "bash".into(), arguments: "{}".into() }]).is_err());
+        assert_eq!(session.log_len(), 0);
+        assert!(session.history_records().is_empty());
+        assert!(session.write_error().is_some());
+    }
+
+    #[test]
+    fn read_only_open_needs_no_writer_lock_and_does_not_repair() {
+        let dir = tmpdir("read-only");
+        let mut writer = Session::create(&dir).unwrap();
+        writer.append(Record::User("open".into()));
+        writeln!(OpenOptions::new().append(true).open(&writer.path).unwrap(), "{{broken").unwrap();
+        let before = fs::read(&writer.path).unwrap();
+        let readonly = Session::open_readonly(&dir, &writer.id).unwrap();
+        assert_eq!(readonly.raw_turns().unwrap(), 1);
+        assert_eq!(fs::read(&writer.path).unwrap(), before, "read-only open must not repair");
+        assert!(Session::raw_records(&writer.path).unwrap().iter().any(|r| matches!(r, Record::User(t) if t == "open")));
+        let error = Session::open(&dir, &writer.id).err().unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    }
+
+    #[test]
+    fn served_request_state_survives_reopen() {
+        let dir = tmpdir("serve-dedupe");
+        let mut session = Session::create(&dir).unwrap();
+        session
+            .append_checked(&[Record::ServeRequest {
+                id: "client-42".into(),
+                status: "accepted".into(),
+            }])
+            .unwrap();
+        session
+            .append_checked(&[Record::ServeRequest {
+                id: "client-42".into(),
+                status: "completed".into(),
+            }])
+            .unwrap();
+        let id = session.id.clone();
+        drop(session);
+        let reopened = Session::open(&dir, &id).unwrap();
+        let states: Vec<_> = reopened
+            .history_records()
+            .into_iter()
+            .filter_map(|record| match record {
+                Record::ServeRequest { id, status } => Some((id, status)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            states,
+            [
+                ("client-42".into(), "accepted".into()),
+                ("client-42".into(), "completed".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn custom_append_is_checked_and_visible_before_acknowledgment() {
+        let dir = tmpdir("custom-ack");
+        let mut session = Session::create(&dir).unwrap();
+        Session::append_custom_path(&session.path, "ext/state", Some("saved")).unwrap();
+        assert!(
+            Session::append_custom_path(&dir.join("missing.jsonl"), "ext/state", None).is_err()
+        );
+        session.append(Record::User("next".into()));
+        assert_eq!(session.log_len(), 2);
+        let records = Session::raw_records(&session.path).unwrap();
+        assert!(
+            matches!(records.as_slice(), [Record::Custom { kind, data: Some(data) }, Record::User(user)] if kind == "ext/state" && data == "saved" && user == "next")
+        );
+    }
+
+    #[test]
     fn branch_uses_raw_turns_and_keeps_original_log_unchanged() {
         let dir = tmpdir("branch");
         let mut s = Session::create(&dir).unwrap();
@@ -1497,9 +1850,13 @@ mod tests {
             id: "t".into(),
             path: "t".into(),
             file: None,
+            _writer_lock: None,
+            raw_index: RefCell::new(Vec::new()),
+            raw_stamp: RefCell::new((0, std::time::UNIX_EPOCH, 0, 0, 0, 0)),
             records: vec![],
             turn: 0,
             log_len: 0,
+            write_error: None,
         };
         s.records = vec![
             Record::User("hi".into()),
@@ -1881,6 +2238,7 @@ mod tests {
                 .contains("this is not json")
         );
         // Stable across a second open: the bad line is gone, one note only.
+        drop(s);
         let again = Session::open(&dir, "sess").unwrap();
         assert_eq!(
             again
@@ -2271,6 +2629,7 @@ mod tests {
             1,
             "the answered call gained nothing"
         );
+        drop(s);
         let again = Session::open(&dir, "s").unwrap();
         assert_eq!(
             again
@@ -2399,9 +2758,13 @@ mod tests {
             id: "t".into(),
             path: "t".into(),
             file: None,
+            _writer_lock: None,
+            raw_index: RefCell::new(Vec::new()),
+            raw_stamp: RefCell::new((0, std::time::UNIX_EPOCH, 0, 0, 0, 0)),
             records: vec![],
             turn: 0,
             log_len: 0,
+            write_error: None,
         };
         s.records = vec![
             Record::User("q1".into()),

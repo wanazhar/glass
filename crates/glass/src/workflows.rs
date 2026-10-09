@@ -71,7 +71,7 @@ pub fn plan(
             let p = factory_for_worker()?;
             let mut session =
                 Session::create(&config::data_dir().join("plans")).map_err(|e| e.to_string())?;
-            session.append(Record::User(request));
+            session.append_checked(&[Record::User(request)]).map_err(|e| format!("cannot record planning prompt: {e}"))?;
             let mut state = tools::State::new();
             let mods = Vec::new();
             let mut extensions = ext::Registry::empty();
@@ -231,7 +231,7 @@ pub fn init_draft(
     let request = init_request(notes);
     let mut session =
         Session::create(&config::data_dir().join("init")).map_err(|e| e.to_string())?;
-    session.append(Record::User(request));
+    session.append_checked(&[Record::User(request)]).map_err(|e| format!("cannot record setup prompt: {e}"))?;
     let mut state = tools::State::new();
     let mods = Vec::new();
     let mut extensions = ext::Registry::empty();

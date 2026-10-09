@@ -14,6 +14,7 @@ pub mod palette;
 pub mod term;
 pub mod text;
 pub mod theme;
+pub mod tool_output;
 pub mod transcript;
 
 // Re-exported so the harness does not need its own crossterm/ratatui
@@ -72,3 +73,5 @@ impl Role {
         }
     }
 }
+
+mod table;

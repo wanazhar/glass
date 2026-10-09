@@ -35,7 +35,7 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
             latest_user = max(i for i, message in enumerate(body['messages']) if message['role'] == 'user')
             results = [message for message in body['messages'][latest_user + 1:] if message['role'] == 'tool']
             if not results:
-                command = "printf 'tool-output-preserved\\n'" if mode == 'success' else "printf 'failure-preview\\n'; exit 3"
+                command = "printf 'tool-output-preserved\\nline-2\\nline-3\\nline-4\\nline-5\\n'" if mode == 'success' else "printf 'failure-preview\\n'; exit 3"
                 frames = [{'choices': [{'delta': {'tool_calls': [{'index': 0, 'id': mode, 'function': {'name': 'bash', 'arguments': json.dumps({'command': command})}}]}}]}]
             else: frames = [{'choices': [{'delta': {'content': 'Task completed.'}}]}]
         elif mode == 'error':
@@ -183,7 +183,7 @@ with tempfile.TemporaryDirectory(prefix='gc-chat-design-') as tmp:
                 Endpoint.mode = mode; t.received = ''; t.send(mode + ' tool')
                 t.wait('Task completed.'); t.idle()
                 plain = '\n'.join(screen_rows(t))
-                if mode == 'success': assert plain.count('✓ bash') == 1 and '└' not in plain, plain
+                if mode == 'success': assert plain.count('✓ bash') == 1 and '└ tool-output-preserved' in plain and '+ 2 more lines' in plain, plain
                 else: assert '× bash · failed' in plain and 'failure-preview' in plain, plain
                 t.send('/details'); t.visible('Tool details'); os.write(t.master, b'\r')
                 t.visible('Tool actions'); choose(t, 'Read command and recorded output')

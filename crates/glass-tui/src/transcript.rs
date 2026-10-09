@@ -392,6 +392,11 @@ impl Transcript {
 }
 
 fn display_line_for_match(text: &str, role: Role, query: &str, width: u16) -> usize {
+    if role == Role::Assistant {
+        let query=query.to_lowercase();
+        return crate::markdown::lines(text,usize::from(width)).iter()
+            .position(|row|row.to_string().to_lowercase().contains(&query)).unwrap_or(0);
+    }
     let mut preceding = 0;
     let lines: Vec<_> = text.lines().collect();
     for (line_index, raw) in lines.iter().enumerate() {

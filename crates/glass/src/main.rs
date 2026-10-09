@@ -3658,6 +3658,7 @@ struct Painter {
     waiting: std::cell::Cell<bool>,
     tool_started: std::cell::Cell<Option<std::time::Instant>>,
     tool_name: std::cell::RefCell<String>,
+    tool_runs: std::cell::RefCell<std::collections::HashMap<String, (String, String, std::time::Instant)>>,
     response_started: std::cell::Cell<bool>,
     response_prefix: std::cell::RefCell<String>,
     waiting_started: std::cell::Cell<Option<std::time::Instant>>,
@@ -3681,6 +3682,7 @@ impl Painter {
             waiting: std::cell::Cell::new(false),
             tool_started: std::cell::Cell::new(None),
             tool_name: std::cell::RefCell::new(String::new()),
+            tool_runs: std::cell::RefCell::new(std::collections::HashMap::new()),
             response_started: std::cell::Cell::new(false),
             response_prefix: std::cell::RefCell::new(String::new()),
             waiting_started: std::cell::Cell::new(None),
@@ -3723,6 +3725,7 @@ impl Painter {
         self.response_started.set(false);
         self.response_prefix.borrow_mut().clear();
         self.tool_started.set(None);
+        self.tool_runs.borrow_mut().clear();
         self.waiting_started.set(None);
         self.last_tick.set(None);
         self.mid_line.set(false);
@@ -3772,82 +3775,41 @@ impl Painter {
                 self.waiting.set(true);
                 self.draw_activity(&mut io);
             }
-            Progress::ToolStart { name, command, .. } => {
-                if let Some(command) = command.filter(|_| !self.compact_tools.get()) {
-                    let rows = glass_tui::text::wrap_words(
-                        &glass_tui::markdown::sanitize(&format!("$ {command}")),
-                        self.width.get().saturating_sub(3).max(1) as usize,
-                    );
-                    for row in rows.iter().take(4) {
-                        self.notice(
-                            &mut io,
-                            &glass_tui::theme::ansi(glass_tui::theme::Tone::Secondary),
-                            row,
-                        );
-                    }
-                    if rows.len() > 4 {
-                        self.notice(
-                            &mut io,
-                            &glass_tui::theme::ansi(glass_tui::theme::Tone::Muted),
-                            "… full command: /details",
-                        );
-                    }
-                }
+            Progress::ToolStart { call_id, name, command } => {
+                self.tool_runs.borrow_mut().insert(call_id.to_string(), (name.to_string(), command.unwrap_or("").to_string(), std::time::Instant::now()));
                 self.tool_started.set(Some(std::time::Instant::now()));
-                *self.tool_name.borrow_mut() = glass_tui::text::clip(name, 32);
+                *self.tool_name.borrow_mut() = format!("{} running{}",name,command.map(|c|format!(" · {}",glass_tui::markdown::sanitize(c))).unwrap_or_default());
                 self.waiting_started.set(Some(std::time::Instant::now()));
                 self.activity_frame.set(0);
                 self.last_tick.set(Some(std::time::Instant::now()));
                 self.waiting.set(true);
                 self.draw_activity(&mut io);
             }
-            Progress::ToolEnd { summary, output, .. } => {
-                let elapsed = self
-                    .tool_started
-                    .take()
-                    .map(|t| t.elapsed().as_secs_f32())
-                    .unwrap_or(0.0);
-                let failed = (summary.starts_with("[exit ") && !summary.starts_with("[exit 0]"))
-                    || summary.starts_with("error:")
-                    || summary.contains("killed")
-                    || summary.starts_with("refused:")
-                    || summary.starts_with("blocked");
-                let name = self.tool_name.borrow();
-                let budget = self.width.get().saturating_sub(2) as usize;
-                let label = if failed {
-                    format!("× {name} · failed · {elapsed:.1}s")
-                } else {
-                    format!("✓ {name} · {elapsed:.1}s")
-                };
-                let color = glass_tui::theme::ansi(if failed {
-                    glass_tui::theme::Tone::Error
-                } else {
-                    glass_tui::theme::Tone::Success
-                });
-                let _ = writeln!(
-                    io,
-                    "  {color}{}\x1b[0m",
-                    first_line(&label, budget.saturating_sub(1))
-                );
-                if failed || (!self.compact_tools.get() && !output.is_empty()) {
-                    let clean =
-                        glass_tui::markdown::sanitize(if failed { &summary } else { output });
-                    for row in glass_tui::text::wrap_words(&clean, budget.saturating_sub(1).max(1))
-                        .into_iter()
-                        .take(3)
-                    {
-                        let _ = writeln!(
-                            io,
-                            "  {}{row}\x1b[0m",
-                            glass_tui::theme::ansi(if failed {
-                                glass_tui::theme::Tone::Error
-                            } else {
-                                glass_tui::theme::Tone::Muted
-                            })
-                        );
-                    }
+            Progress::ToolEnd { call_id, summary, output } => {
+                let (name,command,started)=self.tool_runs.borrow_mut().remove(call_id)
+                    .unwrap_or_else(||("tool".into(),String::new(),std::time::Instant::now()));
+                let remaining=self.tool_runs.borrow().values().next().cloned();
+                self.tool_started.set(remaining.as_ref().map(|(_,_,start)|*start));
+                if let Some((name,command,start))=remaining {
+                    *self.tool_name.borrow_mut()=format!("{name} running · {command}");
+                    self.waiting_started.set(Some(start));
+                }
+                let elapsed=started.elapsed().as_secs_f32();
+                let failed = summary.strip_prefix("[exit ").and_then(|s|s.split_once(']'))
+                    .map(|(code,_)|code!="0").unwrap_or_else(||summary.starts_with("error:")
+                        || summary.starts_with("killed") || summary.starts_with("refused:") || summary.starts_with("blocked"));
+                let margin=if self.width.get()>=24 {2} else {1};
+                let width=self.width.get().saturating_sub(margin+1).max(1) as usize;
+                for row in glass_tui::tool_output::lines(&name,&command,failed,elapsed,if failed && output.is_empty() {&summary} else {output},width,self.compact_tools.get()) {
+                    let _=write!(io,"{}"," ".repeat(margin as usize));
+                    glass_tui::markdown::write_ansi(&mut io,&row);
+                    let _=write!(io,"\r\n");
                 }
                 self.mid_line.set(false);
+                if self.tool_started.get().is_some() {
+                    self.waiting.set(true);
+                    self.draw_activity(&mut io);
+                }
             }
             Progress::BlockedByGuard(paths) => {
                 self.flush(&mut io);
@@ -4036,7 +3998,7 @@ impl Painter {
         let frame = self.activity_frame.get();
         let phase = self.live.borrow().phase().to_string();
         let label = if self.tool_started.get().is_some() {
-            format!("{} running", self.tool_name.borrow())
+            format!("{}", self.tool_name.borrow())
         } else if phase == "Answer streaming" {
             phase.clone()
         } else if phase == "Provider reasoning" {
@@ -4580,7 +4542,7 @@ mod painter_tests {
     #[test]
     fn fenced_code_is_a_distinct_block() {
         let out = paint(&Painter::new(), &["```sh\nls\n```"]);
-        assert!(out.contains("sh ─────"));
+        assert!(out.contains("╭─ sh"));
         assert!(out.contains("│ "));
         assert!(!out.contains("```"));
     }

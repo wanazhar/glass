@@ -939,10 +939,11 @@ whose names look like secrets (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`,
 children, so the model cannot read the harness's own API key out of `env`;
 `sandbox_env = "inherit"` restores the full environment.
 
-One honest boundary: **extensions are not sandboxed** — they are ordinary
-local programs you chose to run, and mcp-bridge spawns servers the same way.
-The jail is for the model's shell, which is the surface prompt injection
-reaches.
+With the default unrestricted permission profile, extensions are trusted local
+programs. The opt-in `workspace-edit` and `read-only` profiles also confine
+extensions and inherited MCP children using reviewed capability sidecars. See
+[security confinement](docs/security-confinement.md) for enforced boundaries and
+platform limits; missing strict declarations refuse startup.
 
 Linux uses Landlock via raw syscalls (kernel 5.13 or newer; no new
 dependency). macOS wraps commands with `sandbox-exec`; network restrictions

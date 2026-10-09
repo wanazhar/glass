@@ -2,7 +2,7 @@
 
 Review date: 2026-10-09
 
-Reviewed the frozen integration commit `fbc56a03335e1f32e1b6f0096524326313921c4d` and the root's uncommitted MCP input hardening in `crates/glass/src/input.rs`. This review covers permission approvals and profiles, extension/MCP input handling, provider diagnostic redaction, and doctor output. It does not approve the whole 20-item release.
+Reviewed integration commit `fbc56a03335e1f32e1b6f0096524326313921c4d`, the MCP input hardening, and the final review-fix commit `9c895e39507335ef46af68f78990550db947ceec`. This review covers permission approvals and profiles, extension/MCP input handling, provider diagnostic redaction, and doctor output. It does not approve the whole 20-item release.
 
 ## Findings and disposition
 
@@ -20,6 +20,6 @@ The supplied release binary for `fbc56a0` had SHA-256 `80b42e4974b94dd0588f7d5a8
 - `scripts/smoke-elicitation-pty.py` passed at 40x24 and 20x8.
 - `scripts/smoke-mcp.py`, `scripts/smoke-chat.py`, and `scripts/smoke-doctor.py` passed.
 
-On the patched working tree, `CARGO_NET_OFFLINE=true cargo test --locked -p glass-core input::tests:: -- --test-threads=1` passed 6/6. The updated `scripts/smoke-workflows.py` still fails its 20x8 assertion because it waits for the full modal title `Review extension capabilities`; the actual clipped title is `Review extension capabil`. The test needs a compact-size assertion. This is a test assertion issue; the workflow had already passed through the prompt sequence at larger sizes.
+On the patched working tree, `CARGO_NET_OFFLINE=true cargo test --locked -p glass-core input::tests:: -- --test-threads=1` passed 6/6. The workflow smoke assertion was then shortened for compact terminals; `/tmp/gc-review-fix-workflows.log` records `scripts/smoke-workflows.py` passing all six workflows at 80x24, 40x12, 24x10, and 20x8, including extension capability review and enablement.
 
-The supplied release binary predates the uncommitted MCP parser hardening and workflow assertion update. Final release verification must rebuild the exact final root tree and rerun the affected focused probes. No remaining source blocker was found in this review after the parser patch; the tiny-terminal workflow assertion remains outstanding.
+The supplied release binary predates the MCP parser hardening and workflow assertion update. Root reports that the final 9c895e3 workspace test suite (571 tests) and strict Clippy pass; I have not independently rerun those checks. The final release is still rebuilding, so the focused PTY evidence above is from the previous supplied release or current debug build as noted. No remaining source blocker was found in this review; final release verification should use the exact final root tree.

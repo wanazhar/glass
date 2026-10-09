@@ -307,7 +307,7 @@ pub fn manage(
                             keys,
                             "Custom extension",
                             &format!(
-                                "{command}\n\nTrusted local executable with filesystem, network and host-tool access. No sandbox."
+                                "{command}\n\nLocal executable. Unrestricted mode trusts it with filesystem, network and host-tool access. Opt-in permission profiles apply declared confinement."
                             ),
                         );
                         continue;
@@ -372,7 +372,7 @@ pub fn manage(
                     keys,
                     "Extension access",
                     &format!(
-                        "{details}\n\n{access}\n\nExtensions are not sandboxed. Provider-secret environment variables are filtered. Source is copied from this GC binary; no download or package install occurs.\n\n{}",
+                        "{details}\n\n{access}\n\nUnrestricted mode trusts extensions as local programs. Opt-in permission profiles enforce declared confinement; inspect capabilities before enabling. Provider-secret environment variables are filtered. Source is copied from this GC binary; no download or package install occurs.\n\n{}",
                         spec.as_deref().unwrap_or("Bundled extension")
                     ),
                 );

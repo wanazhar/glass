@@ -44,6 +44,8 @@ jobs:
           python3 scripts/smoke-live.py
           python3 scripts/smoke-navigation.py
           python3 scripts/smoke-inline-scroll.py
+          python3 scripts/smoke-reader.py
+          python3 scripts/smoke-doctor.py
           python3 scripts/smoke-trust.py
           python3 scripts/smoke-sandbox.py
           python3 scripts/smoke-init.py
@@ -55,6 +57,7 @@ jobs:
           python3 scripts/smoke-memory.py
           python3 scripts/smoke-image.py
           python3 scripts/smoke-plugin.py
+          python3 scripts/smoke-plugin-integrity.py
           python3 scripts/smoke-oracle.py
           python3 scripts/smoke-worktree.py
           python3 scripts/smoke-loop.py

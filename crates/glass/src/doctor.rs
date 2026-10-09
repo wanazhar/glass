@@ -21,10 +21,6 @@ pub struct Report {
 }
 
 impl Report {
-    pub fn json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{\"schema\":1,\"checks\":[]}".into())
-    }
-
     pub fn text(&self) -> String {
         self.checks
             .iter()
@@ -198,14 +194,12 @@ fn session_integrity(dir: &Path) -> (&'static str, String) {
         } else if path
             .file_name()
             .is_some_and(|n| n.to_string_lossy().ends_with(".live.json"))
-        {
-            if std::fs::read(&path)
+            && std::fs::read(&path)
                 .ok()
                 .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
                 .is_none()
-            {
-                malformed += 1;
-            }
+        {
+            malformed += 1;
         }
     }
     if malformed == 0 {
@@ -247,12 +241,14 @@ mod tests {
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::write(sessions.join("s.jsonl"), b"{\"type\":\"user\"}\nnot-json\n").unwrap();
         std::fs::write(sessions.join("s.live.json"), b"incomplete sidecar").unwrap();
-        let mut cfg = config::Config::default();
-        cfg.base_url = "https://secret.example/path?token=do-not-print".into();
-        cfg.api_key_env = Some("GC_DOCTOR_SECRET_ENV_NAME".into());
-        cfg.sandbox = sandbox::Policy::Off;
+        let cfg = config::Config {
+            base_url: "https://secret.example/path?token=do-not-print".into(),
+            api_key_env: Some("GC_DOCTOR_SECRET_ENV_NAME".into()),
+            sandbox: sandbox::Policy::Off,
+            ..config::Config::default()
+        };
         let report = inspect(&cfg, &root.join("config.toml"), &sessions);
-        let output = report.json();
+        let output = serde_json::to_string_pretty(&report).unwrap();
         assert!(output.contains("2 malformed record"));
         assert!(!output.contains("secret.example"));
         assert!(!output.contains("do-not-print"));

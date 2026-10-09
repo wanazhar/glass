@@ -4,8 +4,6 @@ import json
 import os
 from pathlib import Path
 import tempfile
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from pty_vt import Terminal
 
 with tempfile.TemporaryDirectory(prefix='gc-reader-pty-') as tmp:
@@ -33,6 +31,14 @@ with tempfile.TemporaryDirectory(prefix='gc-reader-pty-') as tmp:
         try:
             terminal.idle()
             terminal.send('DRAFT_REMAINS')
+            terminal.send('\x06')  # Ctrl+F opens directly into reader search.
+            terminal.send('TOOL_OUTPUT_SEARCH_MARKER\r')
+            terminal.visible('TOOL_OUTPUT_SEARCH_MARKER' if size[0] > 20 else 'TOOL_OUTPUT_SE')
+            terminal.send('\x1b')  # cancel search before closing reader
+            terminal.collect(.1)
+            terminal.send('\x1b')
+            terminal.collect(.2)
+            terminal.visible('DRAFT_REMAINS')
             terminal.send('\x02')  # Ctrl+B opens reader at the top.
             terminal.collect(.1)
             terminal.send('\x06')  # Ctrl+F enters reader search.
@@ -48,6 +54,20 @@ with tempfile.TemporaryDirectory(prefix='gc-reader-pty-') as tmp:
             terminal.send('\x1b')  # close reader
             terminal.collect(.2)
             terminal.visible('DRAFT_REMAINS')
+        finally:
+            terminal.close()
+        # The palette's /search entry dispatches to the same reader API and
+        # starts with a live search query while keeping the draft editor free.
+        terminal = Terminal(root, env, size, args=('resume', 'reader-fixture'))
+        try:
+            terminal.idle()
+            terminal.send('/search\r')
+            terminal.send('TOOL_OUTPUT_SEARCH_MARKER\r')
+            terminal.visible('TOOL_OUTPUT_SEARCH_MARKER' if size[0] > 20 else 'TOOL_OUTPUT_SE')
+            terminal.send('\x1b')
+            terminal.collect(.1)
+            terminal.send('\x1b')
+            terminal.collect(.2)
         finally:
             terminal.close()
 print('PASS: Ctrl+F full-output search, query cancellation, draft independence, 40x24 and 20x8 PTY')

@@ -14,6 +14,11 @@ and grants no child filesystem write rights. Both `bash` and background jobs
 use the same initialized OS ruleset. If an explicitly selected profile cannot
 be installed, the host refuses those commands rather than running them bare.
 The existing `sandbox` setting remains separate and keeps its old default.
+On Linux, each base-profile path is opened with symlink resolution disabled
+from a pinned root, and Landlock receives those open descriptors. Workspace
+rules stay attached to the originally pinned workspace directory if its name
+is later replaced. Missing optional cache or runtime directories are skipped;
+an existing path that cannot be safely pinned makes an opt-in profile refuse.
 
 `sandbox::SessionApprovals` is the host integration hook for exact command
 approvals. An approval lasts only for that in-memory session and matches the

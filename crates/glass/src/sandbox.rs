@@ -274,6 +274,7 @@ fn build_state(cfg: &config::Config, policy: Policy, warnings: &mut Vec<String>)
         writable_paths(&cfg.workspace)
     };
     match landlock::build(
+        &cfg.workspace,
         &writable,
         &readable_paths(&cfg.workspace),
         strict,
@@ -775,7 +776,6 @@ mod landlock {
     use super::*;
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, RawFd};
-    use std::os::unix::ffi::OsStrExt;
 
     // Landlock uses the same syscall numbers on x86_64 and aarch64.
     const SYS_CREATE_RULESET: libc::c_long = 444;
@@ -831,11 +831,13 @@ mod landlock {
     pub struct PathRoots {
         filesystem: std::fs::File,
         workspace: std::fs::File,
+        workspace_path: PathBuf,
     }
 
     impl PathRoots {
         pub fn new(workspace: &std::path::Path) -> Result<Self, String> {
             use std::os::fd::FromRawFd;
+            let workspace_path = workspace.to_path_buf();
             let filesystem = unsafe {
                 libc::open(
                     c"/".as_ptr(),
@@ -874,6 +876,7 @@ mod landlock {
             Ok(Self {
                 filesystem,
                 workspace,
+                workspace_path,
             })
         }
 
@@ -902,6 +905,12 @@ mod landlock {
             }
             openat2_file(root, relative, flags | libc::O_NOFOLLOW | libc::O_CLOEXEC)
                 .map_err(|error| format!("openat2 refused {}: {error}", path.display()))
+        }
+
+        fn workspace_fd(&self) -> Result<std::fs::File, String> {
+            self.workspace
+                .try_clone()
+                .map_err(|error| format!("cannot clone pinned workspace descriptor: {error}"))
         }
 
         fn capability_relative(&self, path: &std::path::Path) -> Result<PathBuf, String> {
@@ -993,6 +1002,65 @@ mod landlock {
             reads.push(roots.open(&path, libc::O_PATH)?);
         }
         Ok((writes, reads))
+    }
+
+    pub(super) fn pin_profile_paths(
+        roots: &PathRoots,
+        paths: &[PathBuf],
+    ) -> Result<Vec<std::fs::File>, String> {
+        let mut pinned = Vec::with_capacity(paths.len());
+        for path in paths {
+            if path == &roots.workspace_path {
+                pinned.push(roots.workspace_fd()?);
+                continue;
+            }
+            let resolved = if matches!(
+                path.as_path(),
+                p if p == std::path::Path::new("/bin")
+                    || p == std::path::Path::new("/sbin")
+                    || p == std::path::Path::new("/lib")
+                    || p == std::path::Path::new("/lib64")
+            ) {
+                match path.canonicalize() {
+                    Ok(resolved) => resolved,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => {
+                        return Err(format!(
+                            "cannot resolve runtime directory {}: {error}",
+                            path.display()
+                        ));
+                    }
+                }
+            } else {
+                path.clone()
+            };
+            match std::fs::symlink_metadata(&resolved) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "cannot inspect permission path {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+            match roots.open(&resolved, libc::O_PATH) {
+                Ok(file) => pinned.push(file),
+                Err(error) => {
+                    return Err(format!(
+                        "cannot safely pin permission path {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+        Ok(pinned)
+    }
+
+    fn pin_dev_null(roots: &PathRoots) -> Result<std::fs::File, String> {
+        roots
+            .open(std::path::Path::new("/dev/null"), libc::O_PATH)
+            .map_err(|error| format!("cannot safely pin /dev/null: {error}"))
     }
 
     fn pin_declared_path(
@@ -1140,6 +1208,7 @@ mod landlock {
     /// (network rules on an older kernel), which the caller surfaces as
     /// warnings rather than silence.
     pub fn build(
+        workspace: &std::path::Path,
         writable: &[PathBuf],
         readable: &[PathBuf],
         strict: bool,
@@ -1147,6 +1216,31 @@ mod landlock {
     ) -> Result<(RawFd, Vec<String>), String> {
         let mut notes = Vec::new();
         let abi = abi().ok_or("Landlock is not available on this kernel")?;
+        let roots = PathRoots::new(workspace)?;
+        let writable = pin_profile_paths(&roots, writable)?;
+        let readable = if strict {
+            pin_profile_paths(&roots, readable)?
+        } else {
+            Vec::new()
+        };
+        let dev_null = if writable.is_empty() {
+            None
+        } else {
+            Some(pin_dev_null(&roots)?)
+        };
+        build_pinned(writable, readable, dev_null, strict, ports, abi, &mut notes)
+    }
+
+    pub(super) fn build_pinned(
+        writable: Vec<std::fs::File>,
+        readable: Vec<std::fs::File>,
+        dev_null: Option<std::fs::File>,
+        strict: bool,
+        ports: Option<&[u16]>,
+        abi: u32,
+        notes: &mut Vec<String>,
+    ) -> Result<(RawFd, Vec<String>), String> {
+        use std::os::fd::AsRawFd;
         let writes = write_rights(abi);
         let mut handled = writes;
         if strict {
@@ -1194,24 +1288,26 @@ mod landlock {
         let fd = fd as RawFd;
         let extra = if strict { READ_RIGHTS | EXECUTE } else { 0 };
         let mut failure = None;
-        for path in writable {
-            if let Err(e) = add(fd, path, writes | extra) {
+        for path in &writable {
+            if let Err(e) = add_fd(fd, path.as_raw_fd(), writes | extra) {
                 failure = Some(e);
                 break;
             }
         }
-        if failure.is_none() && !writable.is_empty() {
+        if failure.is_none()
+            && let Some(null) = &dev_null
+        {
             // /dev/null is a file: only file rights are valid there, and a
             // rule may only grant rights the ruleset handles — hence READ_FILE
             // only under strict, where reads are handled.
-            let null = WRITE_FILE | if strict { READ_FILE } else { 0 };
-            if let Err(e) = add(fd, std::path::Path::new("/dev/null"), null) {
+            let null_rights = WRITE_FILE | if strict { READ_FILE } else { 0 };
+            if let Err(e) = add_fd(fd, null.as_raw_fd(), null_rights) {
                 failure = Some(e);
             }
         }
         if failure.is_none() && strict {
             for path in readable {
-                if let Err(e) = add(fd, path, READ_RIGHTS | EXECUTE) {
+                if let Err(e) = add_fd(fd, path.as_raw_fd(), READ_RIGHTS | EXECUTE) {
                     failure = Some(e);
                     break;
                 }
@@ -1229,7 +1325,7 @@ mod landlock {
             }
         }
         match failure {
-            None => Ok((fd, notes)),
+            None => Ok((fd, notes.clone())),
             Some(e) => {
                 unsafe { libc::close(fd) };
                 Err(e)
@@ -1261,41 +1357,6 @@ mod landlock {
                 "landlock_add_rule net port {port}: {}",
                 std::io::Error::last_os_error()
             ));
-        }
-        Ok(())
-    }
-
-    fn add(fd: RawFd, path: &std::path::Path, rights: u64) -> Result<(), String> {
-        let Ok(c) = CString::new(path.as_os_str().as_bytes()) else {
-            return Ok(()); // a path we cannot express simply stays unallowed
-        };
-        let pfd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
-        if pfd < 0 {
-            // A missing allowlist entry (no ~/.cargo, no /lib64) is fine.
-            return Ok(());
-        }
-        #[repr(C)]
-        struct PathBeneath {
-            allowed: u64,
-            parent: RawFd,
-        }
-        let rule = PathBeneath {
-            allowed: rights,
-            parent: pfd,
-        };
-        let rc = unsafe {
-            libc::syscall(
-                SYS_ADD_RULE,
-                fd,
-                RULE_PATH_BENEATH,
-                &rule as *const PathBeneath,
-                0u32,
-            )
-        };
-        let error = std::io::Error::last_os_error();
-        unsafe { libc::close(pfd) };
-        if rc < 0 {
-            return Err(format!("landlock_add_rule {}: {error}", path.display()));
         }
         Ok(())
     }
@@ -1365,6 +1426,7 @@ mod landlock {
             std::fs::create_dir_all(&ws).unwrap();
             std::fs::write(dir.join("secret.txt"), "SECRET-READABLE").unwrap();
             let fd = build(
+                &ws,
                 std::slice::from_ref(&ws),
                 std::slice::from_ref(&ws),
                 false,
@@ -1419,7 +1481,7 @@ mod landlock {
                 PathBuf::from("/etc"),
             ]
             .to_vec();
-            let fd = build(std::slice::from_ref(&ws), &readable, true, None)
+            let fd = build(&ws, std::slice::from_ref(&ws), &readable, true, None)
                 .expect("ruleset")
                 .0;
             let mut cmd = Command::new("/bin/sh");
@@ -1449,7 +1511,8 @@ mod landlock {
             let ws = dir.join("ws");
             std::fs::create_dir_all(&ws).unwrap();
             let ghost = dir.join("does-not-exist");
-            build(&[ws, ghost], &[], false, None).expect("a missing dir must be skipped");
+            build(&ws, &[ws.clone(), ghost], &[], false, None)
+                .expect("a missing dir must be skipped");
             let _ = std::fs::remove_dir_all(&dir);
         }
 
@@ -1465,6 +1528,7 @@ mod landlock {
             let allowed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let denied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let (fd, notes) = build(
+                &dir,
                 std::slice::from_ref(&dir),
                 std::slice::from_ref(&dir),
                 false,
@@ -1629,7 +1693,7 @@ mod tests {
             PathBuf::from("/lib64"),
             PathBuf::from("/etc"),
         ];
-        let (fd, _) = landlock::build(&[], &readable, true, Some(&[])).unwrap();
+        let (fd, _) = landlock::build(&workspace, &[], &readable, true, Some(&[])).unwrap();
         let mut child = Command::new("/bin/sh");
         child.arg("-c").arg(format!(
             "printf no > '{}'; printf no > '{}'",
@@ -1643,6 +1707,125 @@ mod tests {
         assert!(!inside.exists(), "read-only must deny workspace writes");
         assert!(!outside.exists(), "read-only must deny outside writes");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn base_workspace_profile_keeps_pinned_inode_when_path_becomes_symlink() {
+        if landlock::abi().is_none() {
+            return;
+        }
+        use std::os::unix::process::CommandExt;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gc-base-race-{}", std::process::id()));
+        let workspace = dir.join("workspace");
+        let outside = PathBuf::from(std::env::var_os("HOME").expect("HOME is set"))
+            .join(format!(".gc-base-race-outside-{nonce}"));
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let roots = landlock::PathRoots::new(&workspace).unwrap();
+        let writable =
+            landlock::pin_profile_paths(&roots, std::slice::from_ref(&workspace)).unwrap();
+
+        let pinned_path = dir.join("workspace-pinned");
+        std::fs::rename(&workspace, &pinned_path).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &workspace).unwrap();
+        let mut notes = Vec::new();
+        let (fd, _) = landlock::build_pinned(
+            writable,
+            Vec::new(),
+            None,
+            false,
+            None,
+            landlock::abi().unwrap(),
+            &mut notes,
+        )
+        .unwrap();
+        let mut child = Command::new("/bin/sh");
+        child.arg("-c").arg(format!(
+            "printf ok > '{}/allowed'; printf no > '{}/denied' 2>/dev/null || true",
+            pinned_path.display(),
+            workspace.display()
+        ));
+        unsafe {
+            child.pre_exec(move || landlock::enter(fd));
+        }
+        assert!(child.status().unwrap().success());
+        assert!(pinned_path.join("allowed").exists());
+        assert!(!outside.join("denied").exists());
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn base_read_only_profile_does_not_follow_replaced_workspace_path() {
+        if landlock::abi().is_none() {
+            return;
+        }
+        use std::os::unix::process::CommandExt;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gc-base-read-race-{}", std::process::id()));
+        let workspace = dir.join("workspace");
+        let outside = PathBuf::from(std::env::var_os("HOME").expect("HOME is set"))
+            .join(format!(".gc-base-read-race-outside-{nonce}"));
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(workspace.join("inside.txt"), "PINNED-READABLE").unwrap();
+        std::fs::write(outside.join("secret.txt"), "OUTSIDE-SECRET").unwrap();
+        let roots = landlock::PathRoots::new(&workspace).unwrap();
+        let readable = landlock::pin_profile_paths(
+            &roots,
+            &[
+                workspace.clone(),
+                PathBuf::from("/usr"),
+                PathBuf::from("/bin"),
+                PathBuf::from("/sbin"),
+                PathBuf::from("/lib"),
+                PathBuf::from("/lib64"),
+                PathBuf::from("/etc"),
+            ],
+        )
+        .unwrap();
+
+        let pinned_path = dir.join("workspace-pinned");
+        std::fs::rename(&workspace, &pinned_path).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &workspace).unwrap();
+        let mut notes = Vec::new();
+        let (fd, _) = landlock::build_pinned(
+            Vec::new(),
+            readable,
+            None,
+            true,
+            None,
+            landlock::abi().unwrap(),
+            &mut notes,
+        )
+        .unwrap();
+        let mut child = Command::new("/bin/sh");
+        child.arg("-c").arg(format!(
+            "cat '{}/inside.txt'; cat '{}/secret.txt' 2>/dev/null || echo READ-DENIED",
+            pinned_path.display(),
+            workspace.display()
+        ));
+        unsafe {
+            child.pre_exec(move || landlock::enter(fd));
+        }
+        let output = child.output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("PINNED-READABLE"), "{stdout}");
+        assert!(stdout.contains("READ-DENIED"), "{stdout}");
+        assert!(!stdout.contains("OUTSIDE-SECRET"), "{stdout}");
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(outside);
     }
 
     #[test]
@@ -1832,6 +2015,7 @@ mod tests {
         let mut test_state = State::off();
         test_state.extension_strict = true;
         let shell_jail = landlock::build(
+            &workspace,
             std::slice::from_ref(&allowed),
             &[
                 PathBuf::from("/usr"),

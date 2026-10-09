@@ -39,10 +39,16 @@ while isolation is off, so enable flows can review needs first. Example:
 }
 ```
 
-Paths are resolved to canonical paths before installing Landlock rules, so a
-path declaration cannot be redirected later through a symlink. The descriptor
-itself may not be a symlink. The interpreter/runtime and common system runtime
-directories are readable; extension-specific files and data must be declared.
+On Linux, the entrypoint and sidecar are opened beneath pinned directory
+descriptors with `openat2` symlink resolution disabled. The sidecar is parsed
+from that already-open regular-file descriptor. Declared capability paths are
+resolved beneath a pinned workspace descriptor, and Landlock rules are
+installed from the pinned filesystem descriptors themselves. Replacing a
+pathname with a symlink after validation therefore cannot redirect the rule to
+another object. If safe `openat2` resolution or the required Landlock ABI is
+unavailable, strict mode refuses startup. The interpreter/runtime and common
+system runtime directories are readable; extension-specific files and data
+must be declared.
 Extensions and their MCP grandchildren have sensitive environment variables
 removed. Linux Landlock provides filesystem rights and TCP destination-port
 rules when ABI 4 is available. Port rules do not filter hosts or local bind

@@ -553,6 +553,7 @@ pub struct ExtensionFilesystem {
 
 /// Read `<script-or-binary>.capabilities.json` before startup. Strict mode
 /// refuses missing, invalid, or unresolvable declarations.
+#[allow(dead_code)] // state-aware launch-readiness helper for the host integration
 pub fn extension_capabilities(
     spec: &str,
     workspace: &std::path::Path,
@@ -570,96 +571,139 @@ pub fn inspect_extension_capabilities(
     spec: &str,
     workspace: &std::path::Path,
 ) -> Result<ExtensionCapabilities, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let roots = landlock::PathRoots::new(workspace)?;
+        let (caps, _sidecar) = load_extension_capabilities(spec, &roots)?;
+        let (_writes, _reads) = landlock::pin_capability_paths(&caps, &roots)?;
+        Ok(caps)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("safe capability path inspection requires Linux openat2".into())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn load_extension_capabilities(
+    spec: &str,
+    roots: &landlock::PathRoots,
+) -> Result<(ExtensionCapabilities, PathBuf), String> {
     let parts = crate::ext::host::arguments(spec)?;
     let target = parts.last().ok_or("extension command is empty")?;
     let raw = PathBuf::from(target);
-    let raw_entrypoint_is_relative =
-        !raw.is_absolute() && (target.contains('/') || target.contains('\\'));
-    let candidates = if raw.is_absolute() || raw_entrypoint_is_relative {
+    let relative_with_path = !raw.is_absolute() && (target.contains('/') || target.contains('\\'));
+    let candidates = if raw.is_absolute() || relative_with_path {
         vec![if raw.is_absolute() {
             raw.clone()
         } else {
-            workspace.join(&raw)
+            std::env::current_dir()
+                .map_err(|error| format!("cannot resolve current directory: {error}"))?
+                .join(&raw)
         }]
     } else {
+        let cwd = std::env::current_dir()
+            .map_err(|error| format!("cannot resolve current directory: {error}"))?;
         std::env::var_os("PATH")
             .into_iter()
             .flat_map(|paths| {
                 std::env::split_paths(&paths)
-                    .map(|dir| dir.join(&raw))
+                    .map(|dir| {
+                        if dir.is_absolute() {
+                            dir.join(&raw)
+                        } else {
+                            cwd.join(dir).join(&raw)
+                        }
+                    })
                     .collect::<Vec<_>>()
             })
             .collect()
     };
-    let path = candidates
-        .into_iter()
-        .find_map(|candidate| candidate.canonicalize().ok())
-        .ok_or_else(|| format!("extension entrypoint {target} cannot be resolved"))?;
-    if raw_entrypoint_is_relative
-        && !path.starts_with(
-            workspace
-                .canonicalize()
-                .unwrap_or_else(|_| workspace.to_path_buf()),
-        )
+    #[cfg(target_os = "linux")]
     {
-        return Err(format!(
-            "relative extension entrypoint {target} escapes the workspace through a symlink"
-        ));
+        let mut last_error = None;
+        for candidate in candidates {
+            match roots.open(&candidate, libc::O_PATH | libc::O_CLOEXEC) {
+                Ok(entrypoint) => {
+                    if entrypoint
+                        .metadata()
+                        .map_err(|error| error.to_string())?
+                        .file_type()
+                        .is_symlink()
+                    {
+                        last_error =
+                            Some(format!("entrypoint {} is a symlink", candidate.display()));
+                        continue;
+                    }
+                    let mut sidecar_name = candidate.as_os_str().to_os_string();
+                    sidecar_name.push(".capabilities.json");
+                    let sidecar = PathBuf::from(sidecar_name);
+                    let descriptor = roots.open(&sidecar, libc::O_RDONLY | libc::O_CLOEXEC)
+                        .map_err(|error| format!("strict extension isolation requires capability declaration {} as a regular no-symlink file: {error}", sidecar.display()))?;
+                    let caps = parse_pinned_sidecar(descriptor, &sidecar)?;
+                    return Ok((caps, sidecar));
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(format!(
+            "strict extension isolation cannot safely resolve entrypoint `{target}` or its sidecar: {}",
+            last_error.unwrap_or_else(|| "no candidate path".into())
+        ))
     }
-    let sidecar = PathBuf::from(format!("{}.capabilities.json", path.display()));
-    if std::fs::symlink_metadata(&sidecar).is_ok_and(|meta| meta.file_type().is_symlink()) {
-        return Err(format!(
-            "extension capability declaration {} must not be a symlink",
-            sidecar.display()
-        ));
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = candidates;
+        Err("strict extension capability inspection requires Linux openat2".into())
     }
-    let bytes = std::fs::read(&sidecar).map_err(|error| {
+}
+
+#[cfg(target_os = "linux")]
+fn parse_pinned_sidecar(
+    descriptor: std::fs::File,
+    sidecar: &std::path::Path,
+) -> Result<ExtensionCapabilities, String> {
+    let metadata = descriptor.metadata().map_err(|error| {
         format!(
-            "strict extension isolation requires capability declaration {}: {error}",
+            "cannot inspect extension capability declaration {}: {error}",
             sidecar.display()
         )
     })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "extension capability declaration {} is not a regular file",
+            sidecar.display()
+        ));
+    }
+    if metadata.len() > 32 * 1024 {
+        return Err(format!(
+            "extension capability declaration {} exceeds 32 KiB",
+            sidecar.display()
+        ));
+    }
+    use std::io::Read;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    descriptor
+        .take(32 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            format!(
+                "cannot read pinned extension capability declaration {}: {error}",
+                sidecar.display()
+            )
+        })?;
     if bytes.len() > 32 * 1024 {
         return Err(format!(
             "extension capability declaration {} exceeds 32 KiB",
             sidecar.display()
         ));
     }
-    let mut caps: ExtensionCapabilities = serde_json::from_slice(&bytes).map_err(|error| {
+    serde_json::from_slice(&bytes).map_err(|error| {
         format!(
             "invalid extension capability declaration {}: {error}",
             sidecar.display()
         )
-    })?;
-    let canonical_workspace = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_path_buf());
-    for path in caps
-        .filesystem
-        .read
-        .iter_mut()
-        .chain(caps.filesystem.write.iter_mut())
-    {
-        let relative = !path.is_absolute();
-        let resolved = if path.is_absolute() {
-            path.clone()
-        } else {
-            workspace.join(&*path)
-        };
-        *path = resolved.canonicalize().map_err(|error| {
-            format!(
-                "extension capability path {} cannot be resolved: {error}",
-                resolved.display()
-            )
-        })?;
-        if relative && !path.starts_with(&canonical_workspace) {
-            return Err(format!(
-                "relative extension capability {} escapes the workspace through a symlink",
-                resolved.display()
-            ));
-        }
-    }
-    Ok(caps)
+    })
 }
 
 /// Apply a per-extension jail in the child process. MCP subprocesses inherit
@@ -671,18 +715,15 @@ pub fn harden_extension(
     workspace: &std::path::Path,
 ) -> Result<Vec<String>, String> {
     use std::os::unix::process::CommandExt;
-    let Some(caps) = extension_capabilities(spec, workspace)? else {
+    if !extension_isolation_strict() {
         return Ok(Vec::new());
-    };
+    }
+    let roots = landlock::PathRoots::new(workspace)?;
+    let (caps, _sidecar) = load_extension_capabilities(spec, &roots)?;
     if landlock::abi().is_none_or(|version| version < 4) {
         return Err("strict extension network capabilities require Landlock ABI 4 (Linux 6.7+); refusing downgrade".into());
     }
-    let mut reads = vec!["/usr", "/bin", "/lib", "/lib64", "/etc"]
-        .into_iter()
-        .map(PathBuf::from)
-        .collect::<Vec<_>>();
-    reads.extend(caps.filesystem.read.iter().cloned());
-    let (fd, notes) = landlock::build(&caps.filesystem.write, &reads, true, Some(&caps.network))?;
+    let (fd, notes) = landlock::build_extension(&caps, &roots)?;
     unsafe {
         cmd.pre_exec(move || landlock::enter(fd));
     }
@@ -722,15 +763,19 @@ mod landlock {
 
     use super::*;
     use std::ffi::CString;
-    use std::os::fd::RawFd;
+    use std::os::fd::{AsRawFd, RawFd};
     use std::os::unix::ffi::OsStrExt;
 
     // Landlock uses the same syscall numbers on x86_64 and aarch64.
     const SYS_CREATE_RULESET: libc::c_long = 444;
     const SYS_ADD_RULE: libc::c_long = 445;
     const SYS_RESTRICT_SELF: libc::c_long = 446;
+    const SYS_OPENAT2: libc::c_long = 437;
     const CREATE_VERSION: u32 = 1 << 0;
     const RULE_PATH_BENEATH: u32 = 1;
+    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+    const RESOLVE_BENEATH: u64 = 0x08;
 
     const EXECUTE: u64 = 1 << 0;
     const WRITE_FILE: u64 = 1 << 1;
@@ -767,6 +812,277 @@ mod landlock {
             )
         };
         (v >= 1).then_some(v as u32)
+    }
+
+    /// Stable roots shared by sidecar reading, capability resolution and
+    /// Landlock rule installation. Relative paths always remain beneath the
+    /// same pinned workspace inode, even if its pathname is renamed.
+    pub struct PathRoots {
+        filesystem: std::fs::File,
+        workspace: std::fs::File,
+    }
+
+    impl PathRoots {
+        pub fn new(workspace: &std::path::Path) -> Result<Self, String> {
+            use std::os::fd::FromRawFd;
+            let filesystem = unsafe {
+                libc::open(
+                    c"/".as_ptr(),
+                    libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                )
+            };
+            if filesystem < 0 {
+                return Err(format!(
+                    "cannot pin filesystem root: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            let filesystem = unsafe { std::fs::File::from_raw_fd(filesystem) };
+            let workspace_relative = workspace.strip_prefix("/").map_err(|_| {
+                format!(
+                    "workspace {} must be absolute under strict extension isolation",
+                    workspace.display()
+                )
+            })?;
+            if workspace_relative.as_os_str().is_empty() {
+                return Err(
+                    "strict extension isolation cannot use filesystem root as workspace".into(),
+                );
+            }
+            let workspace = openat2_file(
+                filesystem.as_raw_fd(),
+                workspace_relative,
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+            .map_err(|error| {
+                format!(
+                    "cannot safely pin workspace {}: {error}",
+                    workspace.display()
+                )
+            })?;
+            Ok(Self {
+                filesystem,
+                workspace,
+            })
+        }
+
+        pub fn open(
+            &self,
+            path: &std::path::Path,
+            flags: libc::c_int,
+        ) -> Result<std::fs::File, String> {
+            let (root, relative) = if path.is_absolute() {
+                (
+                    self.filesystem.as_raw_fd(),
+                    path.strip_prefix("/")
+                        .map_err(|_| "invalid absolute path")?,
+                )
+            } else {
+                (self.workspace.as_raw_fd(), path)
+            };
+            if relative.as_os_str().is_empty() || relative == std::path::Path::new(".") {
+                if !path.is_absolute() {
+                    return self
+                        .workspace
+                        .try_clone()
+                        .map_err(|error| error.to_string());
+                }
+                return Err("strict extension capabilities cannot name filesystem root".into());
+            }
+            openat2_file(root, relative, flags | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .map_err(|error| format!("openat2 refused {}: {error}", path.display()))
+        }
+
+        fn capability_relative(&self, path: &std::path::Path) -> Result<PathBuf, String> {
+            if path
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+            {
+                return Err(format!(
+                    "invalid workspace capability path {}",
+                    path.display()
+                ));
+            }
+            if path.as_os_str().is_empty() {
+                return Ok(PathBuf::from("."));
+            }
+            Ok(path.to_path_buf())
+        }
+    }
+
+    fn openat2_file(
+        root: RawFd,
+        path: &std::path::Path,
+        flags: libc::c_int,
+    ) -> Result<std::fs::File, String> {
+        use std::os::fd::FromRawFd;
+        use std::os::unix::ffi::OsStrExt;
+        if path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return Err(format!("path {} contains `..`", path.display()));
+        }
+        let c = CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| format!("path {} contains NUL", path.display()))?;
+        let how = OpenHow {
+            flags: flags as u64,
+            mode: 0,
+            resolve: RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS,
+        };
+        let fd = unsafe {
+            libc::syscall(
+                SYS_OPENAT2,
+                root,
+                c.as_ptr(),
+                &how,
+                std::mem::size_of::<OpenHow>(),
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(unsafe { std::fs::File::from_raw_fd(fd as i32) })
+    }
+
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+
+    pub fn pin_capability_paths(
+        caps: &ExtensionCapabilities,
+        roots: &PathRoots,
+    ) -> Result<(Vec<std::fs::File>, Vec<std::fs::File>), String> {
+        let mut writes = Vec::new();
+        let mut reads = Vec::new();
+        for path in &caps.filesystem.write {
+            writes.push(pin_declared_path(roots, path)?);
+        }
+        for path in &caps.filesystem.read {
+            reads.push(pin_declared_path(roots, path)?);
+        }
+        for path in [
+            "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/run", "/dev", "/proc",
+            "/sys",
+        ] {
+            let path = PathBuf::from(path);
+            let path = match path.canonicalize() {
+                Ok(path) => path,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "cannot resolve runtime path {}: {error}",
+                        path.display()
+                    ));
+                }
+            };
+            reads.push(roots.open(&path, libc::O_PATH)?);
+        }
+        Ok((writes, reads))
+    }
+
+    fn pin_declared_path(
+        roots: &PathRoots,
+        path: &std::path::Path,
+    ) -> Result<std::fs::File, String> {
+        let file = if path.is_absolute() {
+            roots.open(path, libc::O_PATH)?
+        } else {
+            let relative = roots.capability_relative(path)?;
+            roots.open(&relative, libc::O_PATH)?
+        };
+        if file
+            .metadata()
+            .map_err(|error| error.to_string())?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(format!(
+                "declared capability {} escapes the workspace through a symlink",
+                path.display()
+            ));
+        }
+        Ok(file)
+    }
+
+    pub fn build_extension(
+        caps: &ExtensionCapabilities,
+        roots: &PathRoots,
+    ) -> Result<(RawFd, Vec<String>), String> {
+        let abi = abi().ok_or("Landlock is not available on this kernel")?;
+        if abi < 4 {
+            return Err("strict extension isolation requires Landlock ABI 4 (Linux 6.7+) for network default-deny; refusing downgrade".into());
+        }
+        let (writes, reads) = pin_capability_paths(caps, roots)?;
+        build_extension_pinned(caps, abi, writes, reads)
+    }
+
+    pub(super) fn build_extension_pinned(
+        caps: &ExtensionCapabilities,
+        abi: u32,
+        writes: Vec<std::fs::File>,
+        reads: Vec<std::fs::File>,
+    ) -> Result<(RawFd, Vec<String>), String> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::MetadataExt;
+        let mut grants = std::collections::BTreeMap::<(u64, u64), (RawFd, u64)>::new();
+        for file in &reads {
+            let meta = file.metadata().map_err(|e| e.to_string())?;
+            grants
+                .entry((meta.dev(), meta.ino()))
+                .and_modify(|grant| grant.1 |= READ_RIGHTS | EXECUTE)
+                .or_insert((file.as_raw_fd(), READ_RIGHTS | EXECUTE));
+        }
+        for file in &writes {
+            let meta = file.metadata().map_err(|e| e.to_string())?;
+            grants
+                .entry((meta.dev(), meta.ino()))
+                .and_modify(|grant| grant.1 |= write_rights(abi) | READ_RIGHTS | EXECUTE)
+                .or_insert((file.as_raw_fd(), write_rights(abi) | READ_RIGHTS | EXECUTE));
+        }
+        let fs_handled = write_rights(abi) | READ_RIGHTS | EXECUTE;
+        let net_handled = NET_CONNECT_TCP;
+        #[repr(C)]
+        struct RulesetAttr {
+            fs: u64,
+            net: u64,
+        }
+        let attr = RulesetAttr {
+            fs: fs_handled,
+            net: net_handled,
+        };
+        let fd = unsafe {
+            libc::syscall(
+                SYS_CREATE_RULESET,
+                &attr as *const RulesetAttr,
+                std::mem::size_of::<RulesetAttr>(),
+                0u32,
+            )
+        };
+        if fd < 0 {
+            return Err(format!(
+                "landlock_create_ruleset: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let fd = fd as RawFd;
+        for (path_fd, rights) in grants.values() {
+            if let Err(error) = add_fd(fd, *path_fd, *rights) {
+                unsafe { libc::close(fd) };
+                return Err(error);
+            }
+        }
+        for port in &caps.network {
+            if let Err(error) = add_port(fd, *port, NET_CONNECT_TCP) {
+                unsafe { libc::close(fd) };
+                return Err(error);
+            }
+        }
+        let _ = (writes, reads); // keep pinned objects alive until every rule is installed
+        Ok((fd, Vec::new()))
     }
 
     /// Write-ish rights this ABI knows about.
@@ -957,6 +1273,34 @@ mod landlock {
         unsafe { libc::close(pfd) };
         if rc < 0 {
             return Err(format!("landlock_add_rule {}: {error}", path.display()));
+        }
+        Ok(())
+    }
+
+    fn add_fd(fd: RawFd, path_fd: RawFd, rights: u64) -> Result<(), String> {
+        #[repr(C)]
+        struct PathBeneath {
+            allowed: u64,
+            parent: RawFd,
+        }
+        let rule = PathBeneath {
+            allowed: rights,
+            parent: path_fd,
+        };
+        let rc = unsafe {
+            libc::syscall(
+                SYS_ADD_RULE,
+                fd,
+                RULE_PATH_BENEATH,
+                &rule as *const PathBeneath,
+                0u32,
+            )
+        };
+        if rc < 0 {
+            return Err(format!(
+                "landlock_add_rule pinned fd {path_fd}: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         Ok(())
     }
@@ -1326,7 +1670,80 @@ mod tests {
         assert!(
             inspect_extension_capabilities(&spec, &ws)
                 .unwrap_err()
-                .contains("must not be a symlink")
+                .contains("openat2 refused")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pinned_sidecar_fd_cannot_be_redirected_after_open() {
+        let dir = std::env::temp_dir().join(format!("gc-sidecar-race-{}", std::process::id()));
+        let ws = dir.join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let sidecar = ws.join("extension.py.capabilities.json");
+        let safe = r#"{"filesystem":{"read":[],"write":[]},"network":[],"subprocess":false}"#;
+        let outside = dir.join("outside.json");
+        std::fs::write(&sidecar, safe).unwrap();
+        std::fs::write(&outside, "not valid capabilities").unwrap();
+        let roots = landlock::PathRoots::new(&ws).unwrap();
+        let descriptor = roots.open(&sidecar, libc::O_RDONLY).unwrap();
+        std::fs::rename(&sidecar, ws.join("pinned.json")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &sidecar).unwrap();
+        let parsed = parse_pinned_sidecar(descriptor, &sidecar).unwrap();
+        assert!(parsed.filesystem.read.is_empty());
+        assert!(roots.open(&sidecar, libc::O_RDONLY).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pinned_capability_fd_survives_path_replacement_before_rule_install() {
+        if landlock::abi().is_none_or(|abi| abi < 4) {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("gc-cap-race-{}", std::process::id()));
+        let ws = dir.join("workspace");
+        let allowed = ws.join("allowed");
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&allowed).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let roots = landlock::PathRoots::new(&ws).unwrap();
+        let caps = ExtensionCapabilities {
+            filesystem: ExtensionFilesystem {
+                read: vec![],
+                write: vec![PathBuf::from("allowed")],
+            },
+            network: vec![],
+            subprocess: false,
+        };
+        let (writes, reads) = landlock::pin_capability_paths(&caps, &roots).unwrap();
+        std::fs::rename(&allowed, ws.join("pinned")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &allowed).unwrap();
+        let (fd, _) =
+            landlock::build_extension_pinned(&caps, landlock::abi().unwrap(), writes, reads)
+                .unwrap();
+        use std::os::unix::process::CommandExt;
+        let mut child = Command::new("/bin/sh");
+        child.arg("-c").arg(format!(
+            "printf ok > '{}/ok'; printf no > '{}/escape' 2>/dev/null || true",
+            ws.join("pinned").display(),
+            outside.display()
+        ));
+        unsafe {
+            child.pre_exec(move || landlock::enter(fd));
+        }
+        let status = child.status().unwrap();
+        assert!(status.success());
+        assert!(
+            ws.join("pinned/ok").exists(),
+            "pinned directory remains writable"
+        );
+        assert!(
+            !outside.join("escape").exists(),
+            "replacement symlink target remains denied"
         );
         let _ = std::fs::remove_dir_all(dir);
     }

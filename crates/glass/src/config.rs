@@ -62,6 +62,10 @@ pub struct Config {
     pub trust: Trust,
     /// OS-level confinement for shell commands.
     pub sandbox: sandbox::Policy,
+    /// Model shell write profile. Defaults to legacy unrestricted execution.
+    pub permission_profile: sandbox::PermissionProfile,
+    /// Extension confinement: off (legacy) or strict (declaration required).
+    pub extension_isolation: String,
     /// Outbound TCP ports a confined shell may connect to (Landlock ABI 4+).
     /// An empty list denies all outbound TCP; binds are never restricted.
     pub sandbox_ports: Vec<u16>,
@@ -99,6 +103,8 @@ impl Default for Config {
             fallback: Vec::new(),
             trust: Trust::default(),
             sandbox: sandbox::Policy::default(),
+            permission_profile: sandbox::PermissionProfile::default(),
+            extension_isolation: "off".into(),
             sandbox_ports: vec![443, 80],
             sandbox_env: String::new(),
             log_fsync: "off".into(),
@@ -242,6 +248,8 @@ struct Raw {
     fallback: Option<Vec<String>>,
     trust: Option<String>,
     sandbox: Option<String>,
+    permission_profile: Option<String>,
+    extension_isolation: Option<String>,
     sandbox_ports: Option<Vec<u16>>,
     sandbox_env: Option<String>,
     log_fsync: Option<String>,
@@ -390,6 +398,22 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
                 "sandbox must be off, workspace, or strict (got `{v}`)"
             ))
         })?;
+    }
+    if let Some(v) = raw.permission_profile {
+        cfg.permission_profile = sandbox::PermissionProfile::parse(&v).ok_or_else(|| {
+            LoadError::Invalid(format!(
+                "permission_profile must be unrestricted, workspace-edit, or read-only (got `{v}`)"
+            ))
+        })?;
+    }
+    if let Some(v) = raw.extension_isolation {
+        let v = v.trim().to_ascii_lowercase();
+        if !matches!(v.as_str(), "off" | "strict") {
+            return Err(LoadError::Invalid(format!(
+                "extension_isolation must be off or strict (got `{v}`)"
+            )));
+        }
+        cfg.extension_isolation = v;
     }
     if let Some(ports) = raw.sandbox_ports {
         cfg.sandbox_ports = ports;
@@ -608,6 +632,48 @@ mod tests {
 
         let p = write(&d, "bad.toml", "sandbox_env = \"leak\"\n");
         assert!(load(&p).unwrap_err().to_string().contains("sandbox_env"));
+    }
+
+    #[test]
+    fn permission_profiles_and_extension_isolation_validate_with_legacy_defaults() {
+        let d = scratch("permission-profiles");
+        let defaults = load(&d.join("none.toml")).unwrap();
+        assert_eq!(
+            defaults.permission_profile,
+            sandbox::PermissionProfile::Unrestricted
+        );
+        assert_eq!(defaults.extension_isolation, "off");
+        let p = write(
+            &d,
+            "profiles.toml",
+            "permission_profile = \"read-only\"\nextension_isolation = \"strict\"\n",
+        );
+        let cfg = load(&p).unwrap();
+        assert_eq!(cfg.permission_profile, sandbox::PermissionProfile::ReadOnly);
+        assert_eq!(cfg.extension_isolation, "strict");
+        let p = write(
+            &d,
+            "bad-profile.toml",
+            "permission_profile = \"mostly-safe\"\n",
+        );
+        assert!(
+            load(&p)
+                .unwrap_err()
+                .to_string()
+                .contains("permission_profile")
+        );
+        let p = write(
+            &d,
+            "bad-extension.toml",
+            "extension_isolation = \"best-effort\"\n",
+        );
+        assert!(
+            load(&p)
+                .unwrap_err()
+                .to_string()
+                .contains("extension_isolation")
+        );
+        std::fs::remove_dir_all(d).ok();
     }
 
     #[test]

@@ -57,8 +57,92 @@ impl Policy {
     }
 }
 
+/// Model shell permission profile. It is separate from extension confinement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PermissionProfile {
+    #[default]
+    Unrestricted,
+    WorkspaceEdit,
+    ReadOnly,
+}
+
+impl PermissionProfile {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "unrestricted" => Some(Self::Unrestricted),
+            "workspace-edit" | "workspace_edit" => Some(Self::WorkspaceEdit),
+            "read-only" | "read_only" => Some(Self::ReadOnly),
+            _ => None,
+        }
+    }
+}
+
+/// Exact command approvals held only for the lifetime of one session.
+#[derive(Debug, Default)]
+#[allow(dead_code)] // host approval integration hook, intentionally not implicitly granted
+pub struct SessionApprovals(std::collections::BTreeSet<String>);
+
+#[allow(dead_code)] // exposed for the host approval UI to consume in the next integration step
+impl SessionApprovals {
+    pub fn approve_exact(&mut self, command: &str) {
+        self.0.insert(command.to_owned());
+    }
+    pub fn permits_exact(&self, command: &str) -> bool {
+        self.0.contains(command)
+    }
+
+    /// Check an exception request. A caller may show an interactive prompt
+    /// only for `NeedsInteractiveApproval`; headless callers must surface the
+    /// refusal and must not launch the command with a wider policy.
+    pub fn decision(&self, command: &str, headless: bool) -> ApprovalDecision {
+        if self.permits_exact(command) {
+            ApprovalDecision::Approved
+        } else if headless {
+            ApprovalDecision::RefusedHeadless
+        } else {
+            ApprovalDecision::NeedsInteractiveApproval
+        }
+    }
+}
+
+/// Apply the configured jail or a previously approved exact-command
+/// exception to this one child. Approval bypasses only this child's jail; it
+/// never mutates the process-wide profile or approves another command.
+#[allow(dead_code)] // consumed by the host's per-command approval integration
+pub fn harden_command(
+    cmd: &mut Command,
+    command: &str,
+    approvals: &SessionApprovals,
+    exception_requested: bool,
+    headless: bool,
+) -> Result<(), String> {
+    if !exception_requested {
+        harden(cmd);
+        return Ok(());
+    }
+    match approvals.decision(command, headless) {
+        ApprovalDecision::Approved => Ok(()),
+        ApprovalDecision::NeedsInteractiveApproval => Err(
+            "this exact command needs an interactive permission decision before execution".into(),
+        ),
+        ApprovalDecision::RefusedHeadless => Err(
+            "headless mode cannot approve this exact-command exception; retry in an interactive session".into(),
+        ),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum ApprovalDecision {
+    Approved,
+    NeedsInteractiveApproval,
+    RefusedHeadless,
+}
+
 struct State {
     policy: Policy,
+    permission_profile: PermissionProfile,
+    extension_strict: bool,
     /// Linux: prepared Landlock ruleset, applied in each child before exec.
     #[cfg(target_os = "linux")]
     jail: Option<std::os::fd::RawFd>,
@@ -78,6 +162,8 @@ impl State {
     fn off() -> Self {
         Self {
             policy: Policy::Off,
+            permission_profile: PermissionProfile::Unrestricted,
+            extension_strict: false,
             #[cfg(target_os = "linux")]
             jail: None,
             #[cfg(target_os = "macos")]
@@ -105,6 +191,14 @@ fn writable_paths(workspace: &std::path::Path) -> Vec<PathBuf> {
         out.push(home.join(".cargo"));
     }
     out
+}
+
+fn workspace_edit_paths(workspace: &std::path::Path) -> Vec<PathBuf> {
+    vec![
+        workspace.to_path_buf(),
+        std::env::temp_dir(),
+        PathBuf::from("/var/tmp"),
+    ]
 }
 
 /// Paths a `strict` command may read and execute beneath.
@@ -138,37 +232,49 @@ fn readable_paths(workspace: &std::path::Path) -> Vec<PathBuf> {
 /// Initialise the process-wide sandbox state. Returns warnings to print.
 pub fn init(cfg: &config::Config) -> Vec<String> {
     let mut warnings = Vec::new();
+    let effective = match cfg.permission_profile {
+        PermissionProfile::ReadOnly => Policy::Strict,
+        PermissionProfile::WorkspaceEdit if cfg.sandbox == Policy::Off => Policy::Workspace,
+        _ => cfg.sandbox,
+    };
     let scrub = match cfg.sandbox_env.as_str() {
         "inherit" => false,
         "scrub" => true,
         // Default follows the sandbox: confinement on means the model should
         // not be able to read the harness's own credentials out of `env`.
-        _ => cfg.sandbox != Policy::Off,
+        _ => effective != Policy::Off,
     };
-    let state = if cfg.sandbox == Policy::Off {
+    let state = if effective == Policy::Off {
         State {
+            permission_profile: cfg.permission_profile,
             scrub_env: scrub,
             ..State::off()
         }
     } else {
-        let mut state = build_state(cfg, cfg.sandbox, &mut warnings);
+        let mut state = build_state(cfg, effective, &mut warnings);
+        state.permission_profile = cfg.permission_profile;
         state.scrub_env = scrub;
         state
     };
+    let mut state = state;
+    state.extension_strict = cfg.extension_isolation == "strict";
     let _ = STATE.set(state);
     warnings
 }
 
 #[cfg(target_os = "linux")]
-fn build_state(
-    cfg: &config::Config,
-    policy: Policy,
-    warnings: &mut Vec<String>,
-) -> State {
+fn build_state(cfg: &config::Config, policy: Policy, warnings: &mut Vec<String>) -> State {
     let strict = policy == Policy::Strict;
     let ports = cfg.sandbox_ports.as_slice();
+    let writable = if cfg.permission_profile == PermissionProfile::ReadOnly {
+        Vec::new()
+    } else if cfg.permission_profile == PermissionProfile::WorkspaceEdit {
+        workspace_edit_paths(&cfg.workspace)
+    } else {
+        writable_paths(&cfg.workspace)
+    };
     match landlock::build(
-        &writable_paths(&cfg.workspace),
+        &writable,
         &readable_paths(&cfg.workspace),
         strict,
         Some(ports),
@@ -177,21 +283,25 @@ fn build_state(
             warnings.extend(notes);
             State {
                 policy,
+                permission_profile: PermissionProfile::Unrestricted,
                 jail: Some(fd),
                 refusal: None,
                 scrub_env: false,
+                extension_strict: false,
             }
         }
         Err(e) => {
-            if strict {
+            if strict || cfg.permission_profile != PermissionProfile::Unrestricted {
                 warnings.push(format!(
                     "sandbox = strict could not be set up ({e}); shell commands will be refused"
                 ));
                 State {
                     policy,
+                    permission_profile: PermissionProfile::Unrestricted,
                     jail: None,
                     refusal: Some("the Landlock ruleset could not be created".into()),
                     scrub_env: false,
+                    extension_strict: false,
                 }
             } else {
                 warnings.push(format!(
@@ -204,22 +314,20 @@ fn build_state(
 }
 
 #[cfg(target_os = "macos")]
-fn build_state(
-    cfg: &config::Config,
-    policy: Policy,
-    warnings: &mut Vec<String>,
-) -> State {
+fn build_state(cfg: &config::Config, policy: Policy, warnings: &mut Vec<String>) -> State {
     if !std::path::Path::new("/usr/bin/sandbox-exec").exists() {
-        if policy == Policy::Strict {
+        if policy == Policy::Strict || cfg.permission_profile != PermissionProfile::Unrestricted {
             warnings.push(
                 "sandbox = strict needs /usr/bin/sandbox-exec; shell commands will be refused"
                     .into(),
             );
             return State {
                 policy,
+                permission_profile: PermissionProfile::Unrestricted,
                 profile: None,
                 refusal: Some("sandbox-exec is not available".into()),
                 scrub_env: false,
+                extension_strict: false,
             };
         }
         warnings.push("sandbox unavailable (no sandbox-exec); commands run unsandboxed".into());
@@ -227,9 +335,16 @@ fn build_state(
     }
     let profile = mac::profile(
         &cfg.workspace,
-        &writable_paths(&cfg.workspace),
+        &if cfg.permission_profile == PermissionProfile::ReadOnly {
+            Vec::new()
+        } else if cfg.permission_profile == PermissionProfile::WorkspaceEdit {
+            workspace_edit_paths(&cfg.workspace)
+        } else {
+            writable_paths(&cfg.workspace)
+        },
         &readable_paths(&cfg.workspace),
         policy == Policy::Strict,
+        cfg.permission_profile == PermissionProfile::ReadOnly,
     );
     warnings.push(
         "sandbox: outbound network is not restricted on macOS in this version; \
@@ -238,25 +353,26 @@ fn build_state(
     );
     State {
         policy,
+        permission_profile: PermissionProfile::Unrestricted,
         profile: Some(profile),
         refusal: None,
         scrub_env: false,
+        extension_strict: false,
     }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn build_state(
-    _cfg: &config::Config,
-    policy: Policy,
-    warnings: &mut Vec<String>,
-) -> State {
-    if policy == Policy::Strict {
-        warnings
-            .push("sandbox = strict is not supported on this platform; commands will be refused".into());
+fn build_state(_cfg: &config::Config, policy: Policy, warnings: &mut Vec<String>) -> State {
+    if policy == Policy::Strict || _cfg.permission_profile != PermissionProfile::Unrestricted {
+        warnings.push(
+            "sandbox = strict is not supported on this platform; commands will be refused".into(),
+        );
         State {
             policy,
+            permission_profile: PermissionProfile::Unrestricted,
             refusal: Some("unsupported platform".into()),
             scrub_env: false,
+            extension_strict: false,
         }
     } else {
         warnings.push("sandbox is not supported on this platform; running unsandboxed".into());
@@ -362,9 +478,242 @@ pub fn scrub_env(cmd: &mut Command) {
     }
 }
 
+/// Remove credential-like variables unconditionally, for extension children.
+/// Their grandchildren inherit this scrubbed environment.
+pub fn scrub_sensitive_env(cmd: &mut Command) {
+    let safe = std::env::vars_os()
+        .filter(|(key, _)| !is_sensitive(&key.to_string_lossy()))
+        .collect::<Vec<_>>();
+    cmd.env_clear().envs(safe);
+}
+
 /// The effective policy, for diagnostics.
 pub fn policy() -> Policy {
     STATE.get().map(|s| s.policy).unwrap_or(Policy::Off)
+}
+
+/// Whether strict extension declarations must be inspected before launch.
+pub fn extension_isolation_strict() -> bool {
+    STATE.get().is_some_and(|state| state.extension_strict)
+}
+
+/// Permission profile label for status and doctor surfaces.
+#[allow(dead_code)]
+pub fn permission_profile_label() -> &'static str {
+    match STATE
+        .get()
+        .map(|state| state.permission_profile)
+        .unwrap_or_default()
+    {
+        PermissionProfile::Unrestricted => "unrestricted",
+        PermissionProfile::WorkspaceEdit => "workspace-edit",
+        PermissionProfile::ReadOnly => "read-only",
+    }
+}
+
+/// Extension confinement label for status and doctor surfaces.
+#[allow(dead_code)]
+pub fn extension_isolation_label() -> &'static str {
+    if extension_isolation_strict() {
+        "strict"
+    } else {
+        "off"
+    }
+}
+
+/// A value-free summary suitable for diagnostic display.
+#[allow(dead_code)]
+pub fn security_summary() -> String {
+    let refusal = refusal()
+        .map(|reason| format!("; refused: {reason}"))
+        .unwrap_or_default();
+    format!(
+        "permission_profile={}; extension_isolation={}{}",
+        permission_profile_label(),
+        extension_isolation_label(),
+        refusal
+    )
+}
+
+/// Filesystem and network access declared before an extension process starts.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionCapabilities {
+    pub filesystem: ExtensionFilesystem,
+    pub network: Vec<u16>,
+    pub subprocess: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionFilesystem {
+    pub read: Vec<PathBuf>,
+    pub write: Vec<PathBuf>,
+}
+
+/// Read `<script-or-binary>.capabilities.json` before startup. Strict mode
+/// refuses missing, invalid, or unresolvable declarations.
+pub fn extension_capabilities(
+    spec: &str,
+    workspace: &std::path::Path,
+) -> Result<Option<ExtensionCapabilities>, String> {
+    if !extension_isolation_strict() {
+        return Ok(None);
+    }
+    inspect_extension_capabilities(spec, workspace).map(Some)
+}
+
+/// Inspect and validate the pre-execution capability sidecar without launching
+/// the extension. Status/enable flows can use this even while isolation is off.
+#[allow(dead_code)] // host extension review integration hook
+pub fn inspect_extension_capabilities(
+    spec: &str,
+    workspace: &std::path::Path,
+) -> Result<ExtensionCapabilities, String> {
+    let parts = crate::ext::host::arguments(spec)?;
+    let target = parts.last().ok_or("extension command is empty")?;
+    let raw = PathBuf::from(target);
+    let raw_entrypoint_is_relative =
+        !raw.is_absolute() && (target.contains('/') || target.contains('\\'));
+    let candidates = if raw.is_absolute() || raw_entrypoint_is_relative {
+        vec![if raw.is_absolute() {
+            raw.clone()
+        } else {
+            workspace.join(&raw)
+        }]
+    } else {
+        std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|paths| {
+                std::env::split_paths(&paths)
+                    .map(|dir| dir.join(&raw))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+    let path = candidates
+        .into_iter()
+        .find_map(|candidate| candidate.canonicalize().ok())
+        .ok_or_else(|| format!("extension entrypoint {target} cannot be resolved"))?;
+    if raw_entrypoint_is_relative
+        && !path.starts_with(
+            workspace
+                .canonicalize()
+                .unwrap_or_else(|_| workspace.to_path_buf()),
+        )
+    {
+        return Err(format!(
+            "relative extension entrypoint {target} escapes the workspace through a symlink"
+        ));
+    }
+    let sidecar = PathBuf::from(format!("{}.capabilities.json", path.display()));
+    if std::fs::symlink_metadata(&sidecar).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(format!(
+            "extension capability declaration {} must not be a symlink",
+            sidecar.display()
+        ));
+    }
+    let bytes = std::fs::read(&sidecar).map_err(|error| {
+        format!(
+            "strict extension isolation requires capability declaration {}: {error}",
+            sidecar.display()
+        )
+    })?;
+    if bytes.len() > 32 * 1024 {
+        return Err(format!(
+            "extension capability declaration {} exceeds 32 KiB",
+            sidecar.display()
+        ));
+    }
+    let mut caps: ExtensionCapabilities = serde_json::from_slice(&bytes).map_err(|error| {
+        format!(
+            "invalid extension capability declaration {}: {error}",
+            sidecar.display()
+        )
+    })?;
+    let canonical_workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    for path in caps
+        .filesystem
+        .read
+        .iter_mut()
+        .chain(caps.filesystem.write.iter_mut())
+    {
+        let relative = !path.is_absolute();
+        let resolved = if path.is_absolute() {
+            path.clone()
+        } else {
+            workspace.join(&*path)
+        };
+        *path = resolved.canonicalize().map_err(|error| {
+            format!(
+                "extension capability path {} cannot be resolved: {error}",
+                resolved.display()
+            )
+        })?;
+        if relative && !path.starts_with(&canonical_workspace) {
+            return Err(format!(
+                "relative extension capability {} escapes the workspace through a symlink",
+                resolved.display()
+            ));
+        }
+    }
+    Ok(caps)
+}
+
+/// Apply a per-extension jail in the child process. MCP subprocesses inherit
+/// Landlock restrictions. Landlock cannot deny subprocess creation itself.
+#[cfg(target_os = "linux")]
+pub fn harden_extension(
+    cmd: &mut Command,
+    spec: &str,
+    workspace: &std::path::Path,
+) -> Result<Vec<String>, String> {
+    use std::os::unix::process::CommandExt;
+    let Some(caps) = extension_capabilities(spec, workspace)? else {
+        return Ok(Vec::new());
+    };
+    if landlock::abi().is_none_or(|version| version < 4) {
+        return Err("strict extension network capabilities require Landlock ABI 4 (Linux 6.7+); refusing downgrade".into());
+    }
+    let mut reads = vec!["/usr", "/bin", "/lib", "/lib64", "/etc"]
+        .into_iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    reads.extend(caps.filesystem.read.iter().cloned());
+    let (fd, notes) = landlock::build(&caps.filesystem.write, &reads, true, Some(&caps.network))?;
+    unsafe {
+        cmd.pre_exec(move || landlock::enter(fd));
+    }
+    let process_note = if caps.subprocess {
+        "extension subprocesses are allowed and inherit the same Landlock jail"
+    } else {
+        "Landlock cannot deny subprocess creation; any child inherits the same jail"
+    };
+    let mut notes = notes;
+    notes.push(format!(
+        "declared capabilities: read {:?}; write {:?}; TCP destination ports {:?}",
+        caps.filesystem.read, caps.filesystem.write, caps.network
+    ));
+    notes.push("Landlock network rules constrain destination ports only; they do not filter destination hosts or local bind addresses".into());
+    notes.push(process_note.into());
+    let _ = workspace;
+    Ok(notes)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn harden_extension(
+    _cmd: &mut Command,
+    spec: &str,
+    workspace: &std::path::Path,
+) -> Result<Vec<String>, String> {
+    if extension_capabilities(spec, workspace)?.is_some() {
+        return Err(
+            "strict extension isolation requires Linux Landlock; refusing downgrade".into(),
+        );
+    }
+    Ok(Vec::new())
 }
 
 #[cfg(target_os = "linux")]
@@ -494,10 +843,7 @@ mod landlock {
                 std::mem::size_of::<RulesetAttr>(),
             )
         } else {
-            (
-                (&attr.fs as *const u64).cast(),
-                std::mem::size_of::<u64>(),
-            )
+            ((&attr.fs as *const u64).cast(), std::mem::size_of::<u64>())
         };
         let fd = unsafe { libc::syscall(SYS_CREATE_RULESET, ptr, size, 0u32) };
         if fd < 0 {
@@ -515,7 +861,7 @@ mod landlock {
                 break;
             }
         }
-        if failure.is_none() {
+        if failure.is_none() && !writable.is_empty() {
             // /dev/null is a file: only file rights are valid there, and a
             // rule may only grant rights the ruleset handles — hence READ_FILE
             // only under strict, where reads are handled.
@@ -798,19 +1144,24 @@ mod mac {
         writable: &[PathBuf],
         readable: &[PathBuf],
         strict: bool,
+        read_only: bool,
     ) -> String {
         let mut p = String::from("(version 1)\n(allow default)\n(deny file-write*)\n");
-        p.push_str(&format!(
-            "(allow file-write* (subpath \"{}\"))\n",
-            workspace.display()
-        ));
+        if !read_only {
+            p.push_str(&format!(
+                "(allow file-write* (subpath \"{}\"))\n",
+                workspace.display()
+            ));
+        }
         for dir in writable {
             p.push_str(&format!(
                 "(allow file-write* (subpath \"{}\"))\n",
                 dir.display()
             ));
         }
-        p.push_str("(allow file-write* (literal \"/dev/null\"))\n");
+        if !read_only {
+            p.push_str("(allow file-write* (literal \"/dev/null\"))\n");
+        }
         if strict {
             p.push_str("(deny file-read*)\n");
             p.push_str(&format!(
@@ -851,5 +1202,302 @@ mod tests {
         for safe in ["PATH", "HOME", "CARGO_HOME", "RUSTUP_HOME", "EDITOR", "PWD"] {
             assert!(!is_sensitive(safe), "{safe}");
         }
+    }
+
+    #[test]
+    fn permission_profiles_keep_unrestricted_as_default_and_parse_opt_ins() {
+        assert_eq!(
+            PermissionProfile::default(),
+            PermissionProfile::Unrestricted
+        );
+        assert_eq!(
+            PermissionProfile::parse("workspace-edit"),
+            Some(PermissionProfile::WorkspaceEdit)
+        );
+        assert_eq!(
+            PermissionProfile::parse("read-only"),
+            Some(PermissionProfile::ReadOnly)
+        );
+        assert_eq!(PermissionProfile::parse("surprise"), None);
+    }
+
+    #[test]
+    fn command_approval_is_exact_and_session_scoped() {
+        let mut approvals = SessionApprovals::default();
+        approvals.approve_exact("printf ok > /tmp/x");
+        assert!(approvals.permits_exact("printf ok > /tmp/x"));
+        assert_eq!(
+            approvals.decision("printf ok > /tmp/x", true),
+            ApprovalDecision::Approved
+        );
+        assert!(!approvals.permits_exact("printf other > /tmp/x"));
+        assert_eq!(
+            approvals.decision("printf other > /tmp/x", true),
+            ApprovalDecision::RefusedHeadless
+        );
+        assert_eq!(
+            approvals.decision("printf other > /tmp/x", false),
+            ApprovalDecision::NeedsInteractiveApproval
+        );
+        assert!(!SessionApprovals::default().permits_exact("printf ok > /tmp/x"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn read_only_landlock_denies_workspace_and_outside_writes() {
+        if landlock::abi().is_none() {
+            return;
+        }
+        use std::os::unix::process::CommandExt;
+        let dir = std::env::temp_dir().join(format!("gc-readonly-{}", std::process::id()));
+        let workspace = dir.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let inside = workspace.join("no.txt");
+        let outside = dir.join("outside.txt");
+        let readable = vec![
+            workspace.clone(),
+            PathBuf::from("/usr"),
+            PathBuf::from("/bin"),
+            PathBuf::from("/lib"),
+            PathBuf::from("/lib64"),
+            PathBuf::from("/etc"),
+        ];
+        let (fd, _) = landlock::build(&[], &readable, true, Some(&[])).unwrap();
+        let mut child = Command::new("/bin/sh");
+        child.arg("-c").arg(format!(
+            "printf no > '{}'; printf no > '{}'",
+            inside.display(),
+            outside.display()
+        ));
+        unsafe {
+            child.pre_exec(move || landlock::enter(fd));
+        }
+        let _ = child.status().unwrap();
+        assert!(!inside.exists(), "read-only must deny workspace writes");
+        assert!(!outside.exists(), "read-only must deny outside writes");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn strict_extension_requires_a_complete_sidecar_and_rejects_symlink_sidecars() {
+        let dir = std::env::temp_dir().join(format!("gc-ext-caps-{}", std::process::id()));
+        let ws = dir.join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let script = ws.join("ext.py");
+        std::fs::write(&script, "pass\n").unwrap();
+        let spec = format!("python3 {}", script.display());
+        assert!(
+            inspect_extension_capabilities(&spec, &ws).is_err(),
+            "missing declaration refuses"
+        );
+        let sidecar = PathBuf::from(format!("{}.capabilities.json", script.display()));
+        std::fs::write(
+            &sidecar,
+            r#"{"filesystem":{"read":[],"write":[]},"network":[],"subprocess":false}"#,
+        )
+        .unwrap();
+        assert!(inspect_extension_capabilities(&spec, &ws).is_ok());
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let link = ws.join("escape");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        std::fs::write(
+            &sidecar,
+            r#"{"filesystem":{"read":["escape"],"write":[]},"network":[],"subprocess":false}"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        assert!(
+            inspect_extension_capabilities(&spec, &ws)
+                .unwrap_err()
+                .contains("escapes the workspace")
+        );
+        std::fs::write(
+            &sidecar,
+            r#"{"filesystem":{"read":[],"write":[]},"network":[],"subprocess":false}"#,
+        )
+        .unwrap();
+        let real = dir.join("real.json");
+        std::fs::rename(&sidecar, &real).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &sidecar).unwrap();
+        #[cfg(unix)]
+        assert!(
+            inspect_extension_capabilities(&spec, &ws)
+                .unwrap_err()
+                .contains("must not be a symlink")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn declared_extension_jail_denies_undeclared_writes_in_child_processes() {
+        if landlock::abi().is_none() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("gc-ext-jail-{}", std::process::id()));
+        let workspace = dir.join("workspace");
+        let allowed = workspace.join("allowed");
+        let denied = workspace.join("denied");
+        std::fs::create_dir_all(&allowed).unwrap();
+        std::fs::create_dir_all(&denied).unwrap();
+        let script = workspace.join("ext.py");
+        std::fs::write(&script, "pass\n").unwrap();
+        let sidecar = PathBuf::from(format!("{}.capabilities.json", script.display()));
+        std::fs::write(&sidecar, format!(
+            "{{\"filesystem\":{{\"read\":[\"{}\"],\"write\":[\"{}\"]}},\"network\":[],\"subprocess\":true}}",
+            workspace.display(), allowed.display()
+        )).unwrap();
+        let mut test_state = State::off();
+        test_state.extension_strict = true;
+        let shell_jail = landlock::build(
+            std::slice::from_ref(&allowed),
+            &[
+                PathBuf::from("/usr"),
+                PathBuf::from("/bin"),
+                PathBuf::from("/lib"),
+                PathBuf::from("/lib64"),
+                PathBuf::from("/etc"),
+                workspace.clone(),
+            ],
+            true,
+            Some(&[]),
+        )
+        .unwrap()
+        .0;
+        test_state.policy = Policy::Workspace;
+        test_state.permission_profile = PermissionProfile::WorkspaceEdit;
+        test_state.jail = Some(shell_jail);
+        let _ = STATE.set(test_state);
+        let missing_script = workspace.join("missing-capability.py");
+        std::fs::write(&missing_script, "pass\n").unwrap();
+        let mut blocked_extension = Command::new("/bin/sh");
+        blocked_extension.arg("-c").arg(format!(
+            "touch '{}'",
+            denied.join("preflight-ran").display()
+        ));
+        let missing_error = harden_extension(
+            &mut blocked_extension,
+            &format!("python3 {}", missing_script.display()),
+            &workspace,
+        )
+        .unwrap_err();
+        assert!(missing_error.contains("requires capability declaration"));
+        assert!(
+            !denied.join("preflight-ran").exists(),
+            "missing strict declaration refuses before spawn"
+        );
+        let spec = format!("python3 {}", script.display());
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(format!(
+            "printf ok > '{}/parent'; /bin/sh -c \"printf ok > '{}/child'; printf no > '{}/denied' 2>/dev/null\"",
+            allowed.display(), allowed.display(), denied.display()
+        ));
+        let notes = harden_extension(&mut command, &spec, &workspace).unwrap();
+        assert!(
+            notes
+                .iter()
+                .any(|line| line.contains("inherit the same Landlock jail"))
+        );
+        let result = command.output().unwrap();
+        assert!(
+            allowed.join("parent").exists(),
+            "declared write path must be allowed"
+        );
+        assert!(
+            allowed.join("child").exists(),
+            "grandchild must inherit the allowed path"
+        );
+        assert!(
+            !denied.join("denied").exists(),
+            "undeclared path must be denied in a grandchild"
+        );
+        assert!(String::from_utf8_lossy(&result.stderr).contains("Permission denied"));
+
+        // The production background-job runner uses the shared shell hardener
+        // too; verify its child inherits the same deny boundary.
+        let jobs_dir = dir.join("job-logs");
+        let mut jobs = crate::jobs::Jobs::default();
+        jobs.start(
+            &format!(
+                "printf ok > '{}/background'; printf no > '{}/background' 2>/dev/null",
+                allowed.display(),
+                denied.display()
+            ),
+            &workspace,
+            &jobs_dir,
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while jobs.list().contains("running") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "background permission probe must finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            allowed.join("background").exists(),
+            "background write inside declared workspace succeeds"
+        );
+        assert!(
+            !denied.join("background").exists(),
+            "background write outside declared root is denied"
+        );
+
+        let approved_path = dir.join("exact-approved.txt");
+        let exact = format!("printf ok > '{}'", approved_path.display());
+        let mut exception_command = Command::new("/bin/sh");
+        exception_command.arg("-c").arg(&exact);
+        let approvals = SessionApprovals::default();
+        assert!(
+            harden_command(&mut exception_command, &exact, &approvals, true, true)
+                .unwrap_err()
+                .contains("headless mode cannot approve")
+        );
+        assert!(
+            harden_command(
+                &mut Command::new("/bin/true"),
+                &exact,
+                &approvals,
+                true,
+                false
+            )
+            .unwrap_err()
+            .contains("interactive permission decision")
+        );
+        let mut approvals = approvals;
+        approvals.approve_exact(&exact);
+        let mut exception_command = Command::new("/bin/sh");
+        exception_command.arg("-c").arg(&exact);
+        harden_command(&mut exception_command, &exact, &approvals, true, true).unwrap();
+        assert!(exception_command.status().unwrap().success());
+        assert!(
+            approved_path.exists(),
+            "approved exception applies to this child"
+        );
+
+        let next_path = dir.join("next-command.txt");
+        let next = format!("printf no > '{}'", next_path.display());
+        let mut next_command = Command::new("/bin/sh");
+        next_command.arg("-c").arg(&next);
+        harden_command(&mut next_command, &next, &approvals, false, true).unwrap();
+        let _ = next_command.status().unwrap();
+        assert!(
+            !next_path.exists(),
+            "approval does not widen the next child"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn extension_scrub_removes_explicitly_set_secret_environment() {
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg("test -z \"${GLASS_TEST_API_KEY:-}\"");
+        command.env("GLASS_TEST_API_KEY", "never-inherited");
+        scrub_sensitive_env(&mut command);
+        assert!(command.status().unwrap().success());
     }
 }

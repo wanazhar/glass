@@ -13,6 +13,7 @@
 //! config dir); a repository cannot add one, so this stays outside the
 //! trust-gate surface.
 
+use ring::digest::{digest, SHA256};
 use std::path::{Path, PathBuf};
 
 use crate::auth;
@@ -75,7 +76,51 @@ pub fn valid_name(name: &str) -> bool {
 /// Load one plugin directory. `None` means "not a plugin" or "rejected";
 /// `report` collects the spec-mandated diagnostics either way.
 pub fn load_one(dir: &Path, report: &mut Vec<String>) -> Option<Plugin> {
+    if dir.parent() == Some(plugins_dir().as_path()) {
+        let lock = match read_lock() {
+            Ok(lock) => lock,
+            Err(error) => {
+                report.push(format!(
+                    "plugin {}: integrity receipt is invalid: {error}",
+                    dir.display()
+                ));
+                return None;
+            }
+        };
+        let label = dir.file_name().unwrap_or_default().to_string_lossy();
+        if let Some(entry) = lock.plugins.get(label.as_ref()) {
+            let current = match content_hash(dir) {
+                Ok(hash) => hash,
+                Err(error) => {
+                    report.push(format!(
+                        "plugin {label}: integrity verification failed: {error}"
+                    ));
+                    return None;
+                }
+            };
+            if current != entry.hash {
+                report.push(format!(
+                    "plugin {label}: integrity verification failed; content changed since install"
+                ));
+                return None;
+            }
+        } else {
+            report.push(format!(
+                "plugin {label}: legacy unmanaged install; integrity unverified"
+            ));
+        }
+    }
     let manifest_path = dir.join("plugin.json");
+    if std::fs::metadata(&manifest_path)
+        .map(|m| m.len() > 262_144)
+        .unwrap_or(false)
+    {
+        report.push(format!(
+            "plugin {}: plugin.json exceeds size limit",
+            dir.display()
+        ));
+        return None;
+    }
     let text = std::fs::read_to_string(&manifest_path).ok()?;
     let value: serde_json::Value = match serde_json::from_str(&text) {
         Ok(v) => v,
@@ -96,7 +141,9 @@ pub fn load_one(dir: &Path, report: &mut Vec<String>) -> Option<Plugin> {
     // Unknown top-level fields are non-fatal, per the spec's closed schema.
     for key in obj.keys() {
         if !ALLOWED_FIELDS.contains(&key.as_str()) {
-            report.push(format!("plugin {label}: unknown manifest field `{key}` ignored"));
+            report.push(format!(
+                "plugin {label}: unknown manifest field `{key}` ignored"
+            ));
         }
     }
 
@@ -110,7 +157,9 @@ pub fn load_one(dir: &Path, report: &mut Vec<String>) -> Option<Plugin> {
     let name = match obj.get("name").and_then(|v| v.as_str()) {
         Some(n) if valid_name(n) => n.to_string(),
         Some(n) => {
-            report.push(format!("plugin {label}: invalid plugin name `{n}`; rejected"));
+            report.push(format!(
+                "plugin {label}: invalid plugin name `{n}`; rejected"
+            ));
             return None;
         }
         None => {
@@ -198,56 +247,50 @@ pub fn load_all(report: &mut Vec<String>) -> Vec<Plugin> {
     out
 }
 
-/// Drift hash for the install lock: relative paths, sizes, and mtimes.
-///
-/// FNV-1a over cheap metadata rather than file contents: the point is to
-/// notice that an installed plugin changed underfoot, not to resist a
-/// collision attack, and hashing whole plugin trees (node_modules and all)
-/// at every startup would be a cost with no benefit.
-pub fn tree_hash(root: &Path) -> String {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut entries: Vec<(String, u64, u64)> = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
+/// Content and relative path hash. Symlinks are rejected rather than followed.
+fn content_hash(root: &Path) -> Result<String, String> {
+    let canonical = root.canonicalize().map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+    let mut stack = vec![canonical.clone()];
     while let Some(dir) = stack.pop() {
-        let Ok(read) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in read.flatten() {
+        for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
-            let Ok(meta) = entry.metadata() else { continue };
-            if meta.is_dir() {
-                stack.push(path);
-                continue;
+            let kind = entry.file_type().map_err(|e| e.to_string())?;
+            if kind.is_symlink() {
+                return Err(format!("symlink is not allowed: {}", path.display()));
             }
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .into_owned();
-            let mtime = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            entries.push((rel, meta.len(), mtime));
+            if kind.is_dir() {
+                stack.push(path);
+            } else if kind.is_file() {
+                let rel = path
+                    .strip_prefix(&canonical)
+                    .map_err(|e| e.to_string())?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+                entries.push((rel, bytes));
+            }
         }
     }
-    entries.sort();
-    let mut hash = OFFSET;
-    let mut eat = |bytes: &[u8]| {
-        for b in bytes {
-            hash ^= *b as u64;
-            hash = hash.wrapping_mul(PRIME);
-        }
-    };
-    for (rel, len, mtime) in entries {
-        eat(rel.as_bytes());
-        eat(&len.to_le_bytes());
-        eat(&mtime.to_le_bytes());
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut data = Vec::new();
+    for (path, bytes) in entries {
+        data.extend_from_slice(&(path.len() as u64).to_le_bytes());
+        data.extend_from_slice(path.as_bytes());
+        data.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        data.extend_from_slice(&bytes);
     }
-    format!("{hash:016x}")
+    Ok(hex(digest(&SHA256, &data).as_ref()))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Kept for the existing list drift field; now cryptographic and content based.
+pub fn tree_hash(root: &Path) -> String {
+    content_hash(root).unwrap_or_default()
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -261,6 +304,12 @@ struct Lock {
 struct LockEntry {
     source: String,
     hash: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    revision: Option<String>,
+    #[serde(default)]
+    capabilities: serde_json::Value,
 }
 
 fn lock_path() -> PathBuf {
@@ -268,10 +317,15 @@ fn lock_path() -> PathBuf {
 }
 
 fn load_lock() -> Lock {
-    std::fs::read(lock_path())
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    read_lock().unwrap_or_default()
+}
+
+fn read_lock() -> Result<Lock, String> {
+    match std::fs::read(lock_path()) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Lock::default()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 fn save_lock(lock: &Lock) -> Result<(), String> {
@@ -279,6 +333,45 @@ fn save_lock(lock: &Lock) -> Result<(), String> {
         &lock_path(),
         &serde_json::to_vec_pretty(lock).map_err(|e| e.to_string())?,
     )
+}
+
+fn git_revision(path: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["-C"])
+        .arg(path)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let rev = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit())).then_some(rev)
+}
+
+fn capabilities(dir: &Path) -> Result<serde_json::Value, String> {
+    let bytes = std::fs::read(dir.join("plugin.json")).map_err(|e| e.to_string())?;
+    if bytes.len() > 262_144 {
+        return Err("plugin.json exceeds size limit".into());
+    }
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let value = manifest
+        .pointer("/extensions/org.glass-core/capabilities")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !value.is_object() {
+        return Err("capabilities must be an object".into());
+    }
+    for key in value.as_object().unwrap().keys() {
+        if !["filesystem", "network", "subprocess"].contains(&key.as_str()) {
+            return Err(format!("unknown capability `{key}`"));
+        }
+    }
+    let encoded = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
+    if encoded.len() > 16_384 {
+        return Err("capabilities exceed size limit".into());
+    }
+    Ok(value)
 }
 
 /// `gc plugin …` entry point.
@@ -348,7 +441,14 @@ pub fn command(args: &[String]) -> Result<(), String> {
                 .ok_or("usage: glass-core plugin remove <name>")?;
             remove(name)
         }
-        _ => Err("usage: glass-core plugin list|add|remove".into()),
+        Some("verify") => verify(),
+        Some("update") => {
+            let name = args
+                .get(1)
+                .ok_or("usage: glass-core plugin update <name> [--accept-permissions]")?;
+            update(name, args.iter().any(|a| a == "--accept-permissions"))
+        }
+        _ => Err("usage: glass-core plugin list|add|remove|verify|update".into()),
     }
 }
 
@@ -400,6 +500,9 @@ fn add(source: &str) -> Result<(), String> {
         LockEntry {
             source: source.to_string(),
             hash: tree_hash(&installed.dir),
+            version: installed.version.clone(),
+            revision: git_revision(&installed.dir),
+            capabilities: capabilities(&installed.dir)?,
         },
     );
     save_lock(&lock)?;
@@ -409,6 +512,129 @@ fn add(source: &str) -> Result<(), String> {
         installed.skills.len(),
         if installed.mcp.is_some() { "yes" } else { "no" }
     );
+    Ok(())
+}
+
+fn verify() -> Result<(), String> {
+    let mut lock = load_lock();
+    let mut names: Vec<_> = lock.plugins.keys().cloned().collect();
+    names.sort();
+    if names.is_empty() {
+        println!("no managed plugins to verify");
+        return Ok(());
+    }
+    let mut failed = false;
+    for name in names {
+        let dir = plugins_dir().join(&name);
+        let actual = content_hash(&dir);
+        let entry = lock.plugins.get_mut(&name).unwrap();
+        match actual {
+            Ok(hash) if hash == entry.hash => println!(
+                "{name}: verified v{} ({})",
+                entry.version,
+                entry.revision.as_deref().unwrap_or("no git revision")
+            ),
+            Ok(_) => {
+                println!("{name}: FAILED content differs from receipt");
+                failed = true;
+            }
+            Err(e) => {
+                println!("{name}: FAILED {e}");
+                failed = true;
+            }
+        }
+    }
+    if failed {
+        Err("one or more plugin integrity checks failed".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn update(name: &str, accept_permissions: bool) -> Result<(), String> {
+    if !valid_name(name) {
+        return Err("invalid plugin name".into());
+    }
+    let plugins = plugins_dir();
+    let dest = plugins.join(name);
+    let mut lock = load_lock();
+    let old = lock
+        .plugins
+        .get(name)
+        .ok_or("plugin is unmanaged; update is unavailable")?;
+    let source = old.source.clone();
+    let stage = plugins.join(format!(".staging-update-{}-{}", std::process::id(), name));
+    let _ = std::fs::remove_dir_all(&stage);
+    if source.contains("://") || source.ends_with(".git") {
+        let status = std::process::Command::new("git")
+            .args(["clone", "--depth", "1", "--quiet", &source])
+            .arg(&stage)
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&stage);
+            return Err(format!("git clone failed for {source}"));
+        }
+    } else {
+        copy_dir(Path::new(&source), &stage)?;
+    }
+    let mut report = Vec::new();
+    let candidate = load_one(&stage, &mut report).ok_or_else(|| {
+        let _ = std::fs::remove_dir_all(&stage);
+        "updated source is not a valid plugin".to_string()
+    })?;
+    if candidate.name != name {
+        let _ = std::fs::remove_dir_all(&stage);
+        return Err("updated source plugin name changed".into());
+    }
+    let old_caps = old.capabilities.clone();
+    let new_caps = capabilities(&stage)?;
+    if old_caps != new_caps {
+        println!(
+            "capabilities changed for {name}:\n  old: {}\n  new: {}",
+            old_caps, new_caps
+        );
+        if !accept_permissions {
+            let _ = std::fs::remove_dir_all(&stage);
+            return Err("capability change requires --accept-permissions".into());
+        }
+    }
+    // Keep user data out of the replacement. A backup permits rollback if rename fails.
+    let backup = plugins.join(format!(".backup-update-{}-{}", std::process::id(), name));
+    let _ = std::fs::remove_dir_all(&backup);
+    replace_staged(&stage, &dest, &backup)?;
+    let receipt = LockEntry {
+        source,
+        hash: content_hash(&dest)?,
+        version: candidate.version,
+        revision: git_revision(&dest),
+        capabilities: new_caps,
+    };
+    lock.plugins.insert(name.to_string(), receipt);
+    if let Err(e) = save_lock(&lock) {
+        let _ = std::fs::remove_dir_all(&dest);
+        let _ = std::fs::rename(&backup, &dest);
+        return Err(format!(
+            "could not save plugin receipt; previous plugin restored: {e}"
+        ));
+    }
+    std::fs::remove_dir_all(&backup).map_err(|e| e.to_string())?;
+    println!("updated plugin `{name}`");
+    Ok(())
+}
+
+fn replace_staged(stage: &Path, dest: &Path, backup: &Path) -> Result<(), String> {
+    std::fs::rename(dest, backup).map_err(|e| e.to_string())?;
+    if let Err(error) = std::fs::rename(stage, dest) {
+        let restored = std::fs::rename(backup, dest);
+        return Err(format!(
+            "atomic plugin replacement failed: {error}{}",
+            restored
+                .err()
+                .map(|e| format!("; rollback failed: {e}"))
+                .unwrap_or_default()
+        ));
+    }
     Ok(())
 }
 
@@ -439,17 +665,24 @@ fn remove(name: &str) -> Result<(), String> {
 fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
     let root = from.canonicalize().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(to).map_err(|e| e.to_string())?;
-    for entry in std::fs::read_dir(&root).map_err(|e| e.to_string())?.flatten() {
+    for entry in std::fs::read_dir(&root)
+        .map_err(|e| e.to_string())?
+        .flatten()
+    {
         let path = entry.path();
-        let meta = entry.metadata().map_err(|e| e.to_string())?;
+        let meta = entry.file_type().map_err(|e| e.to_string())?;
         let target = to.join(entry.file_name());
+        if meta.is_symlink() {
+            return Err(format!(
+                "symlink is not allowed in plugin source: {}",
+                path.display()
+            ));
+        }
         if meta.is_dir() {
             copy_dir(&path, &target)?;
         } else if meta.is_file() {
             std::fs::copy(&path, &target).map_err(|e| e.to_string())?;
         }
-        // Symlinks are skipped: the spec's containment rules apply at load
-        // time, and copying an escape out of an untrusted tree is not our job.
     }
     Ok(())
 }
@@ -492,7 +725,15 @@ mod tests {
         for good in ["a", "my-plugin", "acme.tools", "lint3r"] {
             assert!(valid_name(good), "{good}");
         }
-        for bad in ["", "My-Plugin", "-start", "end-", "has--double", "too..many", "s p a c e"] {
+        for bad in [
+            "",
+            "My-Plugin",
+            "-start",
+            "end-",
+            "has--double",
+            "too..many",
+            "s p a c e",
+        ] {
             assert!(!valid_name(bad), "{bad}");
         }
     }
@@ -528,7 +769,10 @@ mod tests {
         .unwrap();
         let mut report = Vec::new();
         assert!(load_one(&dir, &mut report).is_some());
-        assert!(report.iter().any(|r| r.contains("future_field")), "{report:?}");
+        assert!(
+            report.iter().any(|r| r.contains("future_field")),
+            "{report:?}"
+        );
         // Wrong schema: rejected outright.
         std::fs::write(
             dir.join("plugin.json"),
@@ -538,7 +782,10 @@ mod tests {
         .unwrap();
         let mut report = Vec::new();
         assert!(load_one(&dir, &mut report).is_none());
-        assert!(report.iter().any(|r| r.contains("unsupported")), "{report:?}");
+        assert!(
+            report.iter().any(|r| r.contains("unsupported")),
+            "{report:?}"
+        );
         // Invalid name: rejected.
         std::fs::write(
             dir.join("plugin.json"),
@@ -566,10 +813,7 @@ mod tests {
         let mut report = Vec::new();
         let plugin = load_one(&dir, &mut report).expect("plugin still loads");
         assert!(plugin.skills.is_empty(), "escaping skill must be skipped");
-        assert!(
-            report.iter().any(|r| r.contains("escapes")),
-            "{report:?}"
-        );
+        assert!(report.iter().any(|r| r.contains("escapes")), "{report:?}");
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -584,5 +828,22 @@ mod tests {
         std::fs::write(dir.join("extra.txt"), "x").unwrap();
         assert_ne!(before, tree_hash(&dir));
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn failed_staged_replacement_restores_previous_plugin() {
+        let root = scratch("replace-fail");
+        let dest = root.join("plugin");
+        let backup = root.join("backup");
+        let stage = root.join("missing-stage");
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(dest.join("marker"), "old version").unwrap();
+        assert!(replace_staged(&stage, &dest, &backup).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("marker")).unwrap(),
+            "old version"
+        );
+        assert!(!backup.exists());
+        std::fs::remove_dir_all(root).ok();
     }
 }

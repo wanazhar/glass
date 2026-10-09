@@ -89,7 +89,7 @@ impl Reader {
         self.draw()
     }
 
-    pub fn event(&mut self, event: &Event) -> io::Result<Action> {
+    pub fn event(&mut self, event: &Event, composer_has_draft: bool) -> io::Result<Action> {
         let area = Transcript::content_rect(body_rect());
         let draw;
         match event {
@@ -133,6 +133,11 @@ impl Reader {
                     }
                     return Ok(Action::Handled);
                 }
+                // The composer remains editable while reading. Submitting its
+                // draft must resume the normal send/queue path, not expand a card.
+                if key.code == KeyCode::Enter && composer_has_draft {
+                    return Ok(Action::CloseAndPass);
+                }
                 match key.code {
                     KeyCode::Esc => return Ok(Action::Close),
                     KeyCode::End => {
@@ -159,9 +164,9 @@ impl Reader {
                             self.draw()?;
                             return Ok(Action::Handled);
                         }
-                        return Ok(Action::Handled);
+                        return Ok(Action::Close);
                     }
-                    KeyCode::Char('l') => {
+                    KeyCode::Char('l') if !composer_has_draft => {
                         if let Some(index) = self.selected_tool_card_index()
                             && let Some(card) = self.entries[index].tool_card.as_ref()
                             && let Some(path) = card.spill.as_deref()
@@ -261,7 +266,7 @@ impl Reader {
         } else if self.transcript.follow {
             "PgUp/↑ · PgDn/↓ · End/Esc bottom · Wheel".to_string()
         } else if self.unread == 0 {
-            "End / Esc back to bottom".to_string()
+            "Enter send draft · End/Esc bottom".to_string()
         } else {
             format!("End / Esc bottom · {} new updates", self.unread)
         };

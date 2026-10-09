@@ -72,6 +72,8 @@ with tempfile.TemporaryDirectory(prefix='gc-reader-pty-') as tmp:
             terminal.collect(.2)
             if size[0] > 20:
                 terminal.visible('L load full output (64 KiB cap)')
+            terminal.send('\x15')  # Clear composer draft before using Enter for card actions.
+            terminal.collect(.1)
             terminal.send('\r')  # collapse the selected exact-ID tool card
             terminal.visible('L load full output (64 KiB cap)' if size[0] > 20 else 'L load')
             terminal.send('\r')  # restore the complete output
@@ -91,6 +93,8 @@ with tempfile.TemporaryDirectory(prefix='gc-reader-pty-') as tmp:
                 terminal.collect(.1)
             terminal.send('\x1b')  # close reader
             terminal.collect(.2)
+            terminal.send('DRAFT_REMAINS')
+            terminal.collect(.1)
             terminal.visible('DRAFT_REMAINS')
             terminal.send('\x02')  # Ctrl+B opens reader at the top.
             terminal.collect(.1)

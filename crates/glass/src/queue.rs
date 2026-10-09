@@ -56,7 +56,14 @@ impl Queue {
         }
     }
 
+    /// Deliver a pending correction before later queued work. The active
+    /// Agent owns cancellation; the REPL owns durable delivery on continuation.
+    pub fn take_next(&mut self) -> Option<String> {
+        self.steer.take().or_else(|| self.pending.pop_front())
+    }
+
     /// Take the next follow-up, if any.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn take_follow_up(&mut self) -> Option<String> {
         self.pending.pop_front()
     }
@@ -103,6 +110,17 @@ pub fn classify(text: &str, alt: bool, turn_running: bool) -> Option<Intent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_correction_is_delivered_before_queued_work_once() {
+        let mut queue = Queue::new();
+        queue.push(Intent::FollowUp("later".into()));
+        queue.push(Intent::Steer("first correction".into()));
+        queue.push(Intent::Steer("latest correction".into()));
+        assert_eq!(queue.take_next().as_deref(), Some("latest correction"));
+        assert_eq!(queue.take_next().as_deref(), Some("later"));
+        assert!(queue.take_next().is_none());
+    }
 
     #[test]
     fn later_steer_replaces_earlier() {

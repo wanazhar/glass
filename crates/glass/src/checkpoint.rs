@@ -12,7 +12,7 @@ pub struct Checkpoint {
 }
 fn git(workspace: &Path, args: &[&str], index: Option<&Path>) -> Result<Vec<u8>, String> {
     let mut c = Command::new("git");
-    c.current_dir(workspace).args(args);
+    c.current_dir(workspace).args(args).env("LC_ALL", "C");
     if let Some(i) = index {
         c.env("GIT_INDEX_FILE", i);
     }
@@ -67,6 +67,20 @@ pub fn snapshot(w: &Path, dir: &Path, tag: &str) -> Result<String, String> {
     let _ = std::fs::remove_file(index);
     result
 }
+/// Automatic snapshots are optional outside Git; explicit Git actions still explain
+/// their requirements. Never initialize or modify a repository implicitly.
+pub fn begin_if_repository(
+    w: &Path,
+    dir: &Path,
+    label: &str,
+) -> Result<Option<Checkpoint>, String> {
+    match root(w) {
+        Ok(_) => begin(w, dir, label).map(Some),
+        Err(error) if error.contains("not a git repository") => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 pub fn begin(w: &Path, dir: &Path, label: &str) -> Result<Checkpoint, String> {
     let c = Checkpoint {
         before: snapshot(w, dir, &format!("{label}/before"))?,
@@ -305,6 +319,16 @@ mod tests {
         .unwrap();
         (w, d)
     }
+    #[test]
+    fn automatic_checkpoint_is_optional_in_plain_directories() {
+        let (w, d) = repo();
+        std::fs::remove_dir_all(w.join(".git")).unwrap();
+        assert!(begin_if_repository(&w, &d, "task").unwrap().is_none());
+        assert!(!w.join(".git").exists());
+        assert!(!d.exists());
+        std::fs::remove_dir_all(w.parent().unwrap()).unwrap();
+    }
+
     #[test]
     fn undo_preserves_dirty_baseline_index_and_unrelated_later_edits() {
         let (w, d) = repo();

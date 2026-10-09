@@ -41,14 +41,24 @@ while isolation is off, so enable flows can review needs first. Example:
 
 On Linux, the entrypoint and sidecar are opened beneath pinned directory
 descriptors with `openat2` symlink resolution disabled. The sidecar is parsed
-from that already-open regular-file descriptor. Declared capability paths are
-resolved beneath a pinned workspace descriptor, and Landlock rules are
-installed from the pinned filesystem descriptors themselves. Replacing a
+from a bounded in-memory snapshot of that already-open regular-file descriptor;
+metadata is checked around the read, and concurrent modification is refused.
+The validated entrypoint inode is included in the read rules, so replacing its
+pathname with a different file does not itself grant access to the replacement
+(a separate directory capability may already cover it). Relative capability
+paths are resolved beneath the pinned workspace descriptor;
+absolute declarations are resolved beneath a pinned filesystem root. Landlock
+rules are installed from the pinned filesystem descriptors themselves. Replacing a
 pathname with a symlink after validation therefore cannot redirect the rule to
 another object. If safe `openat2` resolution or the required Landlock ABI is
 unavailable, strict mode refuses startup. The interpreter/runtime and common
 system runtime directories are readable; extension-specific files and data
 must be declared.
+
+Strict isolation constrains what the extension process can access; it does not
+authenticate extension code against in-place modification of an already
+declared entrypoint. Use the extension registry's separate integrity checks
+when code authenticity is required.
 Extensions and their MCP grandchildren have sensitive environment variables
 removed. Linux Landlock provides filesystem rights and TCP destination-port
 rules when ABI 4 is available. Port rules do not filter hosts or local bind

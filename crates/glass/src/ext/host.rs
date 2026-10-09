@@ -141,6 +141,9 @@ impl Extension {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| format!("cannot start extension `{cmd}`: {e}"))?;
+        // The pre-exec jail closure owns its ruleset descriptor. Drop the
+        // command now so the host does not retain one ruleset FD per extension.
+        drop(command);
 
         let raw_fd = child.stdout.as_ref().map(fd_of).unwrap_or(-1);
         let mut ext = Self {

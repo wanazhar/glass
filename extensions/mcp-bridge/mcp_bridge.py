@@ -997,6 +997,10 @@ def serve():
                     handler = request_input if req.get("interactive_input") is True else None
                     output = bridge.run_tool(req.get("name") or "", arguments, handler)
                 send({"id": req.get("id"), "output": output})
+            elif kind == "tool_result":
+                # No transformation is configured; acknowledge the unchanged
+                # result so the host can finish the turn instead of waiting.
+                send({"id": req.get("id"), "body": req.get("body") or ""})
             elif kind in ("goodbye", "shutdown"):
                 break
     finally:

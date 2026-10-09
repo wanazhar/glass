@@ -188,6 +188,9 @@ pub struct Agent<'a> {
     project_instructions: Option<String>,
     /// Called as the loop makes progress. `None` disables reporting entirely.
     pub on_progress: Option<ProgressSink<'a>>,
+    /// Interactive user-input channel, borrowed from the existing terminal reader.
+    /// Headless/ACP agents leave this unset and never advertise elicitation support.
+    input_keys: Option<&'a crate::input::KeyReader>,
     /// Cached system-prompt contribution from extensions.
     ext_prompt: String,
     /// Size of the cacheable prefix, recomputed each request.
@@ -277,6 +280,7 @@ impl<'a> Agent<'a> {
             catalogue: None,
             project_instructions: None,
             on_progress: None,
+            input_keys: None,
             ext_prompt: String::new(),
             prefix_bytes: 0,
             steer: None,
@@ -382,6 +386,12 @@ impl<'a> Agent<'a> {
     /// Attach a progress observer.
     pub fn with_progress(mut self, f: impl Fn(Progress<'_>) + 'a) -> Self {
         self.on_progress = Some(Box::new(f));
+        self
+    }
+
+    /// Bind MCP elicitation to the already-running UI key reader for this turn.
+    pub fn with_input_keys(mut self, keys: &'a crate::input::KeyReader) -> Self {
+        self.input_keys = Some(keys);
         self
     }
 
@@ -1290,9 +1300,20 @@ impl<'a> Agent<'a> {
         } else if self.extensions.has_tool(&call.name) {
             // The bridge lets an extension call tools on the host while it
             // runs — only `bash` and `state`, the model's own tools.
+            let input_keys = self.input_keys;
             let out = with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
-                self.extensions
-                    .run_tool(&call.name, &call.arguments, bridge)
+                if let Some(keys) = input_keys {
+                    let mut host_input = crate::input::mcp_input_callback(keys);
+                    self.extensions.run_tool_with_input(
+                        &call.name,
+                        &call.arguments,
+                        bridge,
+                        &mut host_input,
+                    )
+                } else {
+                    self.extensions
+                        .run_tool(&call.name, &call.arguments, bridge)
+                }
             });
             match out {
                 Some(out) => outcome.body = out,

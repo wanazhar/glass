@@ -51,6 +51,9 @@ with tempfile.TemporaryDirectory(prefix='gc-doctor-smoke-') as tmp:
     report = json.loads(result.stdout)
     assert report['status'] == 'ok', result.stdout
     assert report['report']['schema'] == 1
+    permissions = next(c for c in report['report']['checks'] if c['area'] == 'permissions')
+    assert 'configured profile: unrestricted' in permissions['detail']
+    assert 'effective runtime policy is not evaluated by offline doctor' in permissions['detail']
     assert any(c['area'] == 'authentication' and c['status'] == 'notice' for c in report['report']['checks'])
     assert any(c['area'] == 'sessions' and 'malformed record' in c['detail'] for c in report['report']['checks'])
     for secret in ('url-user', 'url-pass', 'URL_SECRET_DO_NOT_PRINT', 'ENV_SECRET_DO_NOT_PRINT', missing_name, str(root)):

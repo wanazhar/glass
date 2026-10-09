@@ -167,6 +167,9 @@ fn enable(
     registry: &mut ext::Registry,
     command: &str,
 ) -> Result<bool, String> {
+    if !crate::permissions::confirm_extension_enable(keys, command, &cfg.workspace) {
+        return Ok(false);
+    }
     let command_for_worker = command.to_string();
     let workspace = cfg.workspace.clone();
     let model = cfg.model.clone();

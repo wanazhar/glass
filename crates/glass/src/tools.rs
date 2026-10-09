@@ -81,7 +81,12 @@ pub fn bash_cancellable(
     if command.trim().is_empty() {
         return Outcome::err("error: `command` is empty".to_string());
     }
-    if let Some(reason) = crate::sandbox::refusal() {
+    let approvals = match crate::permissions::approvals_for_command(&command) {
+        Ok(approvals) => approvals,
+        Err(error) => return Outcome::err(format!("error: permission approval unavailable: {error}")),
+    };
+    let exception = approvals.permits_exact(&command);
+    if !exception && let Some(reason) = crate::sandbox::refusal() {
         return Outcome::err(format!(
             "error: sandbox = strict is not available ({reason}); refusing to run commands unsandboxed"
         ));
@@ -114,7 +119,15 @@ pub fn bash_cancellable(
         .unwrap_or(DEFAULT_TIMEOUT_MS)
         .clamp(100, MAX_TIMEOUT_MS);
 
-    let mut builder = crate::sandbox::shell(&command);
+    // Approved exceptions must bypass macOS's sandbox-exec wrapper as well as
+    // Linux's Landlock pre-exec hook. They apply only to exact command bytes.
+    let mut builder = if exception {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c").arg(&command);
+        cmd
+    } else {
+        crate::sandbox::shell(&command)
+    };
     builder
         .current_dir(&cwd)
         // Put the child in its own process group. Killing only the shell
@@ -128,7 +141,15 @@ pub fn bash_cancellable(
         .stderr(Stdio::piped());
     // Kernel-level confinement, when a policy is active: applied after fork
     // and before exec so the shell and everything it spawns inherits it.
-    crate::sandbox::harden(&mut builder);
+    if let Err(error) = crate::sandbox::harden_command(
+        &mut builder,
+        &command,
+        &approvals,
+        exception,
+        false,
+    ) {
+        return Outcome::err(format!("error: {error}"));
+    }
     crate::sandbox::scrub_env(&mut builder);
     let mut child = match builder.spawn() {
         Ok(c) => c,

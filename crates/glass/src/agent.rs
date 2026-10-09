@@ -731,6 +731,11 @@ impl<'a> Agent<'a> {
                 Event::Done => break,
             }
         }
+        let mut identities = std::collections::HashSet::new();
+        if out.tool_calls.iter().any(|call| call.id.is_empty() || call.name.is_empty()
+            || !identities.insert(call.id.as_str())) {
+            return Err(provider::Error::Transport("provider returned missing or duplicate tool call identity; no tools executed".into()));
+        }
         if out.text.trim().is_empty() && out.tool_calls.is_empty() {
             self.emit(Progress::ProviderFailure(
                 "provider returned no text or tool calls",
@@ -778,6 +783,8 @@ impl<'a> Agent<'a> {
             live.begin_turn(turn);
         }
         self.overflow_recovered = false;
+        let mut repairs = 0;
+        let mut repair_tools = None;
         for round in 0..self.max_tool_rounds {
             let out = match self.turn(&mut pump) {
                 Ok(out) => out,
@@ -861,6 +868,45 @@ impl<'a> Agent<'a> {
                 return Ok((last, Stop::Finished));
             }
 
+            // Validation is separate from execution errors: reject a malformed
+            // batch before any side effect, resolve every call, then re-ask.
+            let schemas = repair_tools.get_or_insert_with(|| {
+                let mut tools = self.tool_set();
+                for (name, description, schema) in self.extensions.declared_tools().0 {
+                    if !tools.iter().any(|(n, _, _)| n == &name) {
+                        tools.push((name, description, schema));
+                    }
+                }
+                tools.into_iter().map(|(n, _, schema)| {
+                    (n, serde_json::from_str(&schema).unwrap_or(serde_json::Value::Bool(false)))
+                }).collect::<Vec<_>>()
+            });
+            let errors: Vec<_> = out.tool_calls.iter()
+                .map(|call| crate::tool_repair::validate(call, schemas).err()).collect();
+            if errors.iter().any(Option::is_some) {
+                repairs += 1;
+                let exhausted = repairs > crate::tool_repair::MAX_REPAIRS;
+                let notice = if exhausted {
+                    "Tool repair exhausted; rejected batch did not execute".to_string()
+                } else {
+                    format!("Tool repair {repairs}/{} · rejected batch did not execute", crate::tool_repair::MAX_REPAIRS)
+                };
+                self.emit(Progress::ProviderNotice(&notice));
+                for (call, error) in out.tool_calls.iter().zip(errors) {
+                    self.session.append_checked(&[Record::ToolCall {
+                        id: call.id.clone(), name: call.name.clone(), arguments: call.arguments.clone(),
+                    }]).map_err(|e|provider::Error::Config(format!("cannot record rejected tool call: {e}")))?;
+                    self.emit_tool_start(call);
+                    let error = error.unwrap_or_else(|| "another call in this batch was invalid; resubmit this call with the corrected batch".into());
+                    self.finish_tool(call, tools::Outcome::err(crate::tool_repair::feedback(&error, repairs.min(crate::tool_repair::MAX_REPAIRS))));
+                }
+                self.session.append(Record::Meta(notice));
+                if exhausted {
+                    return Err(provider::Error::Config("tool call repair exhausted after two correction requests; no calls in the rejected batch executed; use /retry or switch model".into()));
+                }
+                continue;
+            }
+
             // Independent calls run together. Correctness comes from the
             // plan, not from hope: same-path writes are serialized, destructive
             // commands run alone, and results are reassembled in call order so
@@ -922,7 +968,12 @@ impl<'a> Agent<'a> {
                         call.name
                     )));
                 } else {
-                    executable.push(call.clone());
+                    let mut executable_call = call.clone();
+                    // Execute the same parsed object that validation examined.
+                    // Canonical keys also resolve escaped/duplicate JSON keys
+                    // consistently; raw arguments remain in the intent record.
+                    executable_call.arguments = crate::tool_repair::wire_arguments(&call.arguments);
+                    executable.push(executable_call);
                 }
             }
             self.run_tool_batch(&executable, &mut |slot| pump(slot));
@@ -1389,12 +1440,12 @@ impl<'a> Agent<'a> {
             });
             match out {
                 Some(out) => outcome.body = out,
-                None => outcome.body = format!("`{}` did not return a result", call.name),
+                None => outcome.body = format!("error: `{}` did not return a result", call.name),
             }
         } else {
             // A tool was declared but nothing answered: report that honestly
             // rather than returning a silent empty success.
-            outcome.body = format!("`{}` did not return a result", call.name);
+            outcome.body = format!("error: `{}` did not return a result", call.name);
         }
 
         let mut body = outcome.body;

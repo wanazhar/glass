@@ -58,6 +58,26 @@ model pays for on every single request. `state` exists because with only `bash`
 there is no durable place for the model to record what it is doing, and that is
 exactly what context compaction needs to survive a long task.
 
+## Tool call repair
+
+GC validates completed model tool calls before execution. Malformed JSON,
+nonobject arguments, invalid fields and unknown tools produce an instructive
+error and a visible `Tool repair 1/2` notice. The model gets up to two correction
+requests within the normal turn budget. A batch containing an invalid call runs
+no tools; corrected calls still pass permissions and read-before-write guards.
+Shell failures remain ordinary tool results; GC never guesses a command or
+replays completed actions as part of repair. Incomplete provider streams remain
+fatal, and interrupted partial calls never execute.
+
+Raw rejected arguments stay in the local session audit. Provider replay uses
+an empty-object placeholder for malformed input, paired with an explanatory
+error result. Anthropic receives `is_error` for standard error results.
+Validation covers JSON types, required/properties/items, alternatives, enums,
+constants, numeric and length bounds. This is not a full JSON Schema engine:
+extensions remain responsible for complex constraints such as `$ref`, regex
+patterns and semantic validation. Repair adds no default tool or successful-turn
+network request. Escape/Ctrl+C and follow-up prompts remain responsive.
+
 ## Native files and owned background jobs
 
 The default model tools remain `bash` and `state`. Bash children receive `GC_BIN`,

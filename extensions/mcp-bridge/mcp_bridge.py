@@ -28,6 +28,7 @@ reported on stderr and skipped; it never hangs a turn.
 """
 
 import json
+import hashlib
 import ipaddress
 import os
 import select
@@ -53,6 +54,68 @@ DEFER_AT = 40  # switch to search/call meta-tools above this many tools
 MAX_HTTP_RESPONSE = 8 * 1024 * 1024
 # Agent Plugins 1.0 schema identifiers (agent-plugins.org).
 PLUGIN_MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+MAX_PLUGIN_LOCK_BYTES = 1024 * 1024
+
+
+def plugin_content_hash(root):
+    """Match Rust plugins::content_hash and reject all symlinks in the tree."""
+    root = os.path.abspath(root)
+    if os.path.islink(root):
+        raise ValueError("plugin root is a symlink")
+    root = os.path.realpath(root)
+    files = []
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.is_symlink():
+                    raise ValueError(f"symlink is not allowed: {entry.path}")
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(entry.path)
+                elif entry.is_file(follow_symlinks=False):
+                    relative = os.path.relpath(entry.path, root).replace(os.sep, "/")
+                    with open(entry.path, "rb") as stream:
+                        content = stream.read()
+                    files.append((relative.encode("utf-8"), content))
+    files.sort(key=lambda item: item[0])
+    hashed = hashlib.sha256()
+    for path, content in files:
+        hashed.update(len(path).to_bytes(8, "little"))
+        hashed.update(path)
+        hashed.update(len(content).to_bytes(8, "little"))
+        hashed.update(content)
+    return hashed.hexdigest()
+
+
+def plugin_receipts(plugins):
+    """Read managed receipts; malformed receipt state disables plugin MCP."""
+    path = os.path.join(plugins, "lock.json")
+    try:
+        with open(path, "rb") as stream:
+            raw = stream.read(MAX_PLUGIN_LOCK_BYTES + 1)
+    except FileNotFoundError:
+        return {}, False
+    except OSError as error:
+        print(f"mcp-bridge: cannot read plugin integrity receipts: {error}", file=sys.stderr)
+        return {}, True
+    if len(raw) > MAX_PLUGIN_LOCK_BYTES:
+        print("mcp-bridge: plugin integrity receipts exceed size limit; plugin MCP disabled", file=sys.stderr)
+        return {}, True
+    try:
+        lock = json.loads(raw)
+        entries = lock.get("plugins") if isinstance(lock, dict) else None
+        if not isinstance(entries, dict):
+            raise ValueError("plugins must be an object")
+        for name, receipt in entries.items():
+            if not isinstance(name, str) or not isinstance(receipt, dict):
+                raise ValueError("invalid plugin receipt entry")
+            if not isinstance(receipt.get("hash"), str) or len(receipt["hash"]) != 64:
+                raise ValueError(f"invalid SHA256 receipt for {name}")
+        return entries, False
+    except (ValueError, UnicodeDecodeError, TypeError) as error:
+        print(f"mcp-bridge: invalid plugin integrity receipts: {error}; plugin MCP disabled", file=sys.stderr)
+        return {}, True
 
 
 def stateless_meta(version):
@@ -109,10 +172,25 @@ def plugin_servers():
     plugins = os.path.join(config_dir(), "plugins")
     if not os.path.isdir(plugins):
         return out
+    receipts, receipt_error = plugin_receipts(plugins)
+    if receipt_error:
+        return out
     for name in sorted(os.listdir(plugins)):
         pdir = os.path.join(plugins, name)
         if name == "data" or not os.path.isdir(pdir):
             continue
+        receipt = receipts.get(name)
+        if receipt is not None:
+            try:
+                actual = plugin_content_hash(pdir)
+            except (OSError, ValueError) as error:
+                print(f"mcp-bridge: plugin {name}: integrity verification failed: {error}; MCP disabled", file=sys.stderr)
+                continue
+            if actual != receipt["hash"]:
+                print(f"mcp-bridge: plugin {name}: integrity verification failed; content changed since install; MCP disabled", file=sys.stderr)
+                continue
+        else:
+            print(f"mcp-bridge: plugin {name}: legacy unmanaged install; integrity unverified", file=sys.stderr)
         mcp = os.path.join(pdir, "mcp.json")
         if not os.path.isfile(mcp):
             continue

@@ -150,8 +150,11 @@ mod tests {
     }
 
     fn session_with(records: Vec<Record>) -> (Session, std::path::PathBuf) {
+        static NEXT_DIR: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let nonce = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "gc-export-{}-{}",
+            "gc-export-{}-{}-{nonce}",
             std::process::id(),
             records.len()
         ));

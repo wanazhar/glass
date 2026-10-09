@@ -48,11 +48,21 @@ pub fn sanitize(text: &str) -> String {
 fn inline(text: &str) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut rest = text;
-    while let Some(start) = rest.find(['`', '*']) {
+    while let Some(start) = rest.find(['`', '*', '\\']) {
         if start > 0 {
             spans.push(Span::raw(rest[..start].to_string()));
         }
         let tail = &rest[start..];
+        if let Some(escaped) = tail.strip_prefix('\\') {
+            if let Some(c) = escaped.chars().next().filter(|c| c.is_ascii_punctuation()) {
+                spans.push(Span::raw(c.to_string()));
+                rest = &escaped[c.len_utf8()..];
+                continue;
+            }
+            spans.push(Span::raw("\\"));
+            rest = escaped;
+            continue;
+        }
         let marker = if tail.starts_with("**") {
             "**"
         } else if tail.starts_with('`') {
@@ -138,7 +148,14 @@ fn wrap_spans(
         hanging.clone()
     };
     let mut used = crate::text::width(&prefix);
-    let mut row = vec![Span::raw(prefix)];
+    let prefix_style = Style::new().fg(crate::theme::color(if prefix.contains('✓') {
+        crate::theme::Tone::Success
+    } else if prefix.contains('│') {
+        crate::theme::Tone::Muted
+    } else {
+        crate::theme::Tone::Accent
+    }));
+    let mut row = vec![Span::styled(prefix, prefix_style)];
     let mut has_word = false;
     for (index, word) in words.iter().enumerate().skip(cursor.word) {
         let skip = if index == cursor.word {
@@ -207,6 +224,7 @@ fn wrap_spans(
 pub struct Presentation {
     fence: Option<(char, usize)>,
     continuation: Option<String>,
+    previous_blank: bool,
 }
 impl Presentation {
     pub fn line(&mut self, raw: &str, width: usize, complete: bool) -> Vec<Line<'static>> {
@@ -218,6 +236,16 @@ impl Presentation {
     fn render(&mut self, raw: &str, width: usize, complete: bool, cursor: Cursor) -> Vec<Row> {
         let clean = sanitize(raw);
         let trimmed = clean.trim_start();
+        if self.fence.is_none() && complete {
+            if trimmed.is_empty() {
+                if self.previous_blank {
+                    return Vec::new();
+                }
+                self.previous_blank = true;
+            } else {
+                self.previous_blank = false;
+            }
+        }
         let marker = trimmed.chars().next().filter(|c| matches!(c, '`' | '~'));
         let count = marker
             .map(|m| trimmed.chars().take_while(|c| *c == m).count())
@@ -232,7 +260,7 @@ impl Presentation {
                 return vec![Row {
                     line: Line::from(Span::styled(
                         crate::text::clip(
-                            &format!("{} ─────", if label.is_empty() { "code" } else { label }),
+                            &format!("╭─ {}", if label.is_empty() { "code" } else { label }),
                             width,
                         ),
                         Style::new().fg(crate::theme::color(crate::theme::Tone::Muted)),
@@ -253,7 +281,7 @@ impl Presentation {
                 self.fence = None;
                 return vec![Row {
                     line: Line::from(Span::styled(
-                        "─".repeat(width.min(24)),
+                        format!("╰{}", "─".repeat(width.saturating_sub(1).min(30))),
                         Style::new().fg(crate::theme::color(crate::theme::Tone::Muted)),
                     )),
                     end: Cursor {
@@ -311,23 +339,41 @@ impl Presentation {
                     })
                     .collect(),
                 width,
-                "",
-                "",
+                if heading == 1 { "◆ " } else { "▸ " },
+                "  ",
                 cursor,
             );
         }
+        let indent = " ".repeat((clean.len() - trimmed.len()).min(width / 3));
         let (content, first, hanging) = if let Some(content) = trimmed
             .strip_prefix("- ")
             .or_else(|| trimmed.strip_prefix("* "))
             .or_else(|| trimmed.strip_prefix("+ "))
         {
-            (content, "• ".to_string(), "  ".to_string())
+            if let Some(content) = content
+                .strip_prefix("[x] ")
+                .or_else(|| content.strip_prefix("[X] "))
+            {
+                (content, format!("{indent}✓ "), format!("{indent}  "))
+            } else if let Some(content) = content.strip_prefix("[ ] ") {
+                (content, format!("{indent}□ "), format!("{indent}  "))
+            } else {
+                (
+                    content,
+                    format!("{indent}{} ", if indent.is_empty() { "•" } else { "◦" }),
+                    format!("{indent}  "),
+                )
+            }
         } else if let Some(content) = trimmed.strip_prefix("> ") {
             (content, "│ ".to_string(), "│ ".to_string())
         } else if let Some((number, content)) = trimmed.split_once(". ").filter(|(number, _)| {
             !number.is_empty() && number.len() <= 4 && number.chars().all(|c| c.is_ascii_digit())
         }) {
-            (content, format!("{number}. "), " ".repeat(number.len() + 2))
+            (
+                content,
+                format!("{indent}{number}. "),
+                " ".repeat(indent.len() + number.len() + 2),
+            )
         } else {
             (
                 clean.as_str(),
@@ -340,10 +386,34 @@ impl Presentation {
 }
 
 pub fn lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    let width = width.clamp(1, 88);
     let mut presentation = Presentation::default();
-    text.lines()
-        .flat_map(|line| presentation.line(line, width.clamp(1, 88), true))
-        .collect()
+    let mut table = None;
+    let mut source = text.lines().peekable();
+    let mut rows = Vec::new();
+    while let Some(line) = source.next() {
+        if let Some(active) = table.as_mut() {
+            if let Some(rendered) = crate::table::Table::row(active, line, width) {
+                rows.extend(rendered);
+                continue;
+            }
+            table = None;
+        }
+        if presentation.fence.is_none()
+            && let Some(headers) = crate::table::cells(line)
+            && source
+                .peek()
+                .is_some_and(|next| crate::table::separator(next, headers.len()))
+        {
+            source.next();
+            let active = crate::table::Table::new(headers);
+            rows.extend(active.header(width));
+            table = Some(active);
+            continue;
+        }
+        rows.extend(presentation.line(line, width, true));
+    }
+    rows
 }
 
 /// A line-oriented streaming view. Completed rows enter scrollback immediately;
@@ -355,6 +425,8 @@ pub struct Stream {
     pending: String,
     committed: Cursor,
     visible: bool,
+    table_header: Option<String>,
+    table: Option<crate::table::Table>,
 }
 impl Stream {
     pub fn write(&mut self, io: &mut impl std::io::Write, text: &str, width: usize) {
@@ -405,6 +477,18 @@ impl Stream {
             self.pending.clear();
             self.committed = Cursor::default();
         }
+        if let Some(header) = self.table_header.take() {
+            let margin = if width >= 24 {
+                2
+            } else if width >= 10 {
+                1
+            } else {
+                0
+            };
+            let column = width.saturating_sub(margin * 2).clamp(1, 88);
+            write_block(io, self.presentation.line(&header, column, true), margin);
+        }
+        self.table = None;
         self.presentation = Presentation::default();
     }
     fn render(&mut self, io: &mut impl std::io::Write, width: usize, complete: bool) {
@@ -416,6 +500,36 @@ impl Stream {
             0
         };
         let column = width.saturating_sub(margin * 2).clamp(1, 88);
+        if self.presentation.fence.is_none() {
+            if complete {
+                if let Some(mut table) = self.table.take()
+                    && let Some(rows) = table.row(&self.pending, column)
+                {
+                    write_block(io, rows, margin);
+                    self.table = Some(table);
+                    return;
+                }
+                if let Some(header) = self.table_header.take() {
+                    let headers = crate::table::cells(&header).unwrap();
+                    if crate::table::separator(&self.pending, headers.len()) {
+                        let table = crate::table::Table::new(headers);
+                        write_block(io, table.header(column), margin);
+                        self.table = Some(table);
+                        return;
+                    }
+                    write_block(io, self.presentation.line(&header, column, true), margin);
+                }
+                if crate::table::cells(&self.pending).is_some() {
+                    self.table_header = Some(self.pending.clone());
+                    return;
+                }
+            } else if self.table.is_some()
+                || self.table_header.is_some()
+                || self.pending.trim_start().starts_with('|')
+            {
+                return;
+            }
+        }
         let safe = if complete || self.presentation.fence.is_some() {
             self.pending.as_str()
         } else {
@@ -439,6 +553,34 @@ impl Stream {
             }
         }
     }
+}
+fn write_block(io: &mut impl std::io::Write, rows: Vec<Line<'static>>, margin: usize) {
+    for row in rows {
+        let _ = write!(io, "{}", " ".repeat(margin));
+        write_ansi(io, &row);
+        let _ = write!(io, "\r\n");
+    }
+}
+pub(crate) fn border_style() -> Style {
+    Style::new().fg(crate::theme::color(crate::theme::Tone::Border))
+}
+pub(crate) fn cell_lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    wrap_spans(inline(&sanitize(text)), width, "", "", Cursor::default())
+        .into_iter()
+        .map(|r| r.line)
+        .collect()
+}
+pub(crate) fn indented_cell_lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    wrap_spans(
+        inline(&sanitize(text)),
+        width,
+        "  ",
+        "  ",
+        Cursor::default(),
+    )
+    .into_iter()
+    .map(|r| r.line)
+    .collect()
 }
 fn stable_inline(text: &str) -> &str {
     if text.len() > 4096 {
@@ -520,6 +662,80 @@ pub fn write_ansi(io: &mut impl std::io::Write, line: &Line<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_blocks_match_streaming_at_phone_and_desktop_widths() {
+        let source = "# Results\n\n\n| Change | Status |\n| --- | --- |\n| `src/lib.rs` | **Done** |\n| 界 Unicode | ready to ship |\n\n- [x] Built\n  - Nested detail\n- [ ] Review\n\n```rust\nlet x = 1;\n```\nFinal text";
+        for width in [20usize, 40, 90] {
+            let margin = if width >= 24 { 2 } else { 1 };
+            let expected = lines(source, width - margin * 2)
+                .iter()
+                .map(|r| r.to_string())
+                .collect::<Vec<_>>();
+            let mut stream = Stream::default();
+            let mut output = Vec::new();
+            for c in source.chars() {
+                stream.write(&mut output, &c.to_string(), width);
+            }
+            stream.flush(&mut output, width);
+            let actual = project(&output)
+                .into_iter()
+                .map(|row| {
+                    row.trim_end()
+                        .strip_prefix(&" ".repeat(margin))
+                        .unwrap_or(row.trim_end())
+                        .to_string()
+                })
+                .filter(|r| !r.is_empty())
+                .collect::<Vec<_>>();
+            let expected = expected
+                .into_iter()
+                .map(|r| r.trim_end().to_string())
+                .filter(|r| !r.is_empty())
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "width {width}");
+            assert!(
+                actual
+                    .iter()
+                    .all(|r| crate::text::width(r) <= width - margin * 2)
+            );
+            assert!(actual.iter().any(|r| r.contains("✓ Built")));
+            assert!(actual.iter().any(|r| r.contains("◦ Nested")));
+        }
+    }
+    #[test]
+    fn table_candidates_fences_and_escapes_do_not_drop_content() {
+        for source in [
+            "| plain | prose |",
+            "| plain | prose |\nNot a table",
+            "```text\n| one | two |\n| --- | --- |\n```",
+            "| A | B |\n| --- | --- |\n| \\*literal\\* | x\\|y |",
+        ] {
+            let mut stream = Stream::default();
+            let mut output = Vec::new();
+            stream.write(&mut output, source, 80);
+            stream.flush(&mut output, 80);
+            let text = project(&output).join("\n");
+            assert!(
+                text.contains(if source.contains("literal") {
+                    "*literal*"
+                } else if source.contains("plain") {
+                    "plain"
+                } else {
+                    "one"
+                }),
+                "{text}"
+            );
+            if source.contains("literal") {
+                assert!(text.contains("x|y"));
+            }
+        }
+    }
+    #[test]
+    fn extra_vertical_spacing_is_collapsed() {
+        let rows = lines("First\n\n\n\nSecond", 40);
+        assert_eq!(rows.len(), 3);
+    }
+
     #[test]
     fn code_copy_preserves_exact_newlines_and_markers() {
         assert_eq!(

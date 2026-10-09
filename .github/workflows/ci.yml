@@ -46,6 +46,7 @@ jobs:
           python3 scripts/smoke-inline-scroll.py
           python3 scripts/smoke-scroll-submit.py
           python3 scripts/smoke-context.py
+          python3 scripts/smoke-blocks.py
           python3 scripts/smoke-reader.py
           python3 scripts/smoke-doctor.py
           python3 scripts/smoke-trust.py

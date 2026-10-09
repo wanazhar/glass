@@ -192,8 +192,10 @@ before running the PTY suites.
 ### Appearance and add-on controls
 
 Main chat uses the same Markdown presentation as the transcript and response
-viewer: styled headings, emphasis, inline code, hanging bullets, and distinct
-fenced code. Prose wraps at words inside a reading column capped at 88 cells,
+viewer: colored headings, emphasis, inline code, nested lists, task checks, and
+framed code blocks. Pipe-framed Markdown tables become aligned columns on wide
+screens and labeled fields on narrow screens. Tables stream row by row; malformed
+or unsupported table syntax remains readable source text. Prose wraps at words inside a reading column capped at 88 cells,
 with two-cell margins (one on the smallest phone screens). Neutral body text
 remains legible without inheriting a terminal's yellow foreground.
 
@@ -205,9 +207,10 @@ that bound. Exact source text remains in logs and clipboard copies. Resizing
 changes subsequent rows; printed terminal scrollback is retained. Provider text
 cannot emit terminal controls or clipboard commands through rendering.
 
-Tool cards show the actual command by default (up to four wrapped rows), a
-completion status, and up to three output rows. Failures show a red status and
-short error preview. `/tools` switches to compact cards. Full commands and
+Each completed tool call forms one block: outcome and duration, the command
+(up to two wrapped rows), and an indented preview of up to three output rows.
+A remaining-line count points to `/details`. Failures retain their exit code
+and show a red status. Running commands appear in the animated activity row. `/tools` switches to compact cards. Full commands and
 recorded output remain available in `/details` and the transcript. Cancelled or interrupted responses flush their remaining
 text without carrying Markdown state into the next turn.
 

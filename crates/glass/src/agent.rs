@@ -54,6 +54,8 @@ pub struct TurnOutput {
     pub text: String,
     pub tool_calls: Vec<ToolCall>,
     pub usage: Option<crate::provider::Usage>,
+    /// Latest model request input, separate from aggregated turn usage.
+    pub last_input: Option<u32>,
     pub warnings: Vec<String>,
 }
 
@@ -497,6 +499,11 @@ impl<'a> Agent<'a> {
             reasoning: self.reasoning,
         };
 
+        let manifest = crate::context_audit::capture(&req, self.catalogue.as_deref(), &self.ext_prompt,
+            latest_system_checkpoint(&self.session.history_records()).is_some() && !self.read_only);
+        crate::context_audit::save(self.session, &manifest)
+            .map_err(|e| provider::Error::Config(format!("cannot record request context; no provider request was made: {e}")))?;
+
         self.emit(Progress::Waiting);
         let receiver = if let Some(factory) = self.stream_factory.clone() {
             let (tx, rx) = std::sync::mpsc::sync_channel(64);
@@ -610,6 +617,7 @@ impl<'a> Agent<'a> {
             text: String::new(),
             tool_calls: Vec::new(),
             usage: None,
+            last_input: None,
             warnings: Vec::new(),
         };
 
@@ -688,7 +696,7 @@ impl<'a> Agent<'a> {
                     name,
                     arguments,
                 }),
-                Event::Usage(u) => out.usage = Some(u),
+                Event::Usage(u) => { out.last_input = Some(u.prompt_total()); out.usage = Some(u); },
                 Event::Warning(w) => {
                     let w = crate::live::sanitize_provider_detail(&w);
                     self.emit(Progress::ProviderNotice(&w));
@@ -746,6 +754,7 @@ impl<'a> Agent<'a> {
             text: String::new(),
             tool_calls: Vec::new(),
             usage: None,
+            last_input: None,
             warnings: Vec::new(),
         };
 
@@ -784,6 +793,7 @@ impl<'a> Agent<'a> {
                 return Ok((out, Stop::Cancelled));
             }
             last.text.clone_from(&out.text);
+            last.last_input = out.last_input;
             if let Some(u) = out.usage {
                 let total = last
                     .usage
@@ -1627,6 +1637,10 @@ impl<'a> Agent<'a> {
             reasoning: None,
         };
 
+        let manifest = format!("Compaction summary request\n{}", crate::context_audit::capture(&req, None, "", false));
+        crate::context_audit::save(self.session, &manifest)
+            .map_err(|e| provider::Error::Config(format!("cannot record summary context: {e}")))?;
+
         let stream = match provider::stream_with_retry(
             self.provider,
             &req,
@@ -1751,6 +1765,35 @@ mod warm_integration {
         fn context_window(&self) -> u32 {
             200_000
         }
+    }
+
+    #[test]
+    fn latest_request_input_is_separate_from_aggregated_tool_turn_usage() {
+        struct Rounds(AtomicU64);
+        impl Provider for Rounds {
+            fn id(&self) -> &str { "rounds" }
+            fn context_window(&self) -> u32 { 200_000 }
+            fn stream(&self, _: &Request<'_>) -> Result<Box<dyn Iterator<Item=Event> + '_>, Error> {
+                let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+                let mut events = if first { vec![Event::ToolCall { id:"call".into(), name:"state".into(), arguments:"{}".into() }] }
+                    else { vec![Event::Text("done".into())] };
+                events.push(Event::Usage(crate::provider::Usage { input:if first { 90_000 } else { 1000 }, output:10, ..Default::default() }));
+                events.push(Event::Done);
+                Ok(Box::new(events.into_iter()))
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("gc-usage-rounds-{}",std::process::id()));
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("task".into()));
+        let mut state = State::new(); let mods = Vec::new();
+        let mut extensions = Registry::load(&[], &dir, "rounds");
+        let provider = Rounds(AtomicU64::new(0));
+        let (out, stop) = Agent::new(&provider,&mut session,&mut state,&mods,&mut extensions,&dir).run_turn(no_pump).unwrap();
+        assert_eq!(stop,Stop::Finished);
+        assert_eq!(out.usage.unwrap().prompt_total(),91_000);
+        assert_eq!(out.last_input,Some(1000));
+        assert_eq!(crate::context_audit::reports(&session).len(),2);
+        drop(session); std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn counting_factory(calls: Arc<AtomicU64>) -> ProviderFactory {

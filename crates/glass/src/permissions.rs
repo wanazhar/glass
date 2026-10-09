@@ -59,9 +59,8 @@ pub fn persist_profile(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(_) => return Err("cannot read config.toml; profile was not changed".into()),
     };
-    if !text.is_empty() && toml::from_str::<toml::Value>(&text).is_err() {
-        return Err("config.toml is invalid; profile was not changed".into());
-    }
+    let mut expected: toml::Value = toml::from_str(&text)
+        .map_err(|_| "config.toml is invalid; profile was not changed".to_string())?;
     let value = match profile {
         sandbox::PermissionProfile::Unrestricted => "unrestricted",
         sandbox::PermissionProfile::WorkspaceEdit => "workspace-edit",
@@ -96,21 +95,33 @@ pub fn persist_profile(
     if !found {
         // TOML keys after a table header belong to that table. Insert a new
         // root key before the first section instead of appending at EOF.
-        if let Some(insert_at) = output
-            .starts_with('[')
-            .then_some(0)
-            .or_else(|| output.find("\n[").map(|section| section + 1))
-        {
-            output.insert_str(
-                insert_at,
-                &format!("permission_profile = \"{value}\"\n\n"),
-            );
+        let mut offset = 0;
+        let insert_at = output.split_inclusive('\n').find_map(|line| {
+            let start = offset;
+            offset += line.len();
+            line.trim_start().starts_with('[').then_some(start)
+        });
+        if let Some(insert_at) = insert_at {
+            output.insert_str(insert_at, &format!("permission_profile = \"{value}\"\n\n"));
         } else {
             if !output.is_empty() && !output.ends_with("\n\n") {
                 output.push('\n');
             }
             output.push_str(&format!("permission_profile = \"{value}\"\n"));
         }
+    }
+    expected
+        .as_table_mut()
+        .ok_or("config.toml must be a table; profile was not changed")?
+        .insert(
+            "permission_profile".into(),
+            toml::Value::String(value.into()),
+        );
+    // Text editing preserves comments, but multiline strings and quoted keys
+    // can resemble TOML structure. Never write unless the parsed result changes
+    // exactly the requested root field and nothing else.
+    if toml::from_str::<toml::Value>(&output).ok().as_ref() != Some(&expected) {
+        return Err("cannot safely update this config layout; edit the root permission_profile key manually".into());
     }
     crate::auth::secure_write(path, output.as_bytes())
         .map_err(|_| String::from("cannot save config.toml; profile was not changed"))?;
@@ -146,7 +157,7 @@ pub fn approve_exact_command(keys: &KeyReader) -> Option<String> {
 fn capabilities_summary(label: &str, spec: &str, workspace: &std::path::Path) -> String {
     match sandbox::inspect_extension_capabilities(spec, workspace) {
         Ok(capabilities) => format!(
-            "{label}\nFilesystem reads: {}\nFilesystem writes: {}\nTCP destination ports: {}\nSubprocesses: {}\n\nNetwork policy is port-only, not hostname filtering. Subprocess limits depend on the active OS confinement support.",
+            "{label}\nFilesystem reads: {}\nFilesystem writes: {}\nTCP destination ports: {}\nSubprocesses: {}\n\nNetwork policy limits outbound TCP ports, not hosts, UDP or Unix sockets. Process creation cannot be denied; children inherit the jail.",
             show_paths(&capabilities.filesystem.read),
             show_paths(&capabilities.filesystem.write),
             if capabilities.network.is_empty() {
@@ -300,11 +311,7 @@ pub fn review(keys: &KeyReader, cfg: &config::Config, extension_specs: &[String]
 
 /// Show declared capabilities and get an explicit go-ahead before spawning an
 /// extension from the extension manager.
-pub fn confirm_extension_enable(
-    keys: &KeyReader,
-    spec: &str,
-    workspace: &std::path::Path,
-) -> bool {
+pub fn confirm_extension_enable(keys: &KeyReader, spec: &str, workspace: &std::path::Path) -> bool {
     let summary = capabilities_summary("Extension capability review", spec, workspace);
     modal::info(keys, "Review extension capabilities", &summary);
     modal::choose(
@@ -334,8 +341,11 @@ mod tests {
     #[test]
     fn profile_persistence_inserts_a_root_key_before_tables_and_preserves_config() {
         let path = temp_path();
-        std::fs::write(&path, "provider = \"openai\"\n\n[connection]\nname = \"local\"\n")
-            .unwrap();
+        std::fs::write(
+            &path,
+            "provider = \"openai\"\n\n[connection]\nname = \"local\"\n",
+        )
+        .unwrap();
         persist_profile(&path, sandbox::PermissionProfile::ReadOnly).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let parsed: toml::Value = toml::from_str(&text).unwrap();
@@ -343,18 +353,55 @@ mod tests {
         assert_eq!(parsed["connection"]["name"].as_str(), Some("local"));
         persist_profile(&path, sandbox::PermissionProfile::WorkspaceEdit).unwrap();
         let parsed: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(parsed["permission_profile"].as_str(), Some("workspace-edit"));
+        assert_eq!(
+            parsed["permission_profile"].as_str(),
+            Some("workspace-edit")
+        );
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn exact_command_approval_is_session_scoped_and_byte_exact() {
         clear_session_approvals().unwrap();
-        assert!(!approvals_for_command("cargo test").unwrap().permits_exact("cargo test"));
+        assert!(
+            !approvals_for_command("cargo test")
+                .unwrap()
+                .permits_exact("cargo test")
+        );
         approve_session_command("cargo test").unwrap();
-        assert!(approvals_for_command("cargo test").unwrap().permits_exact("cargo test"));
-        assert!(!approvals_for_command("cargo test ").unwrap().permits_exact("cargo test "));
+        assert!(
+            approvals_for_command("cargo test")
+                .unwrap()
+                .permits_exact("cargo test")
+        );
+        assert!(
+            !approvals_for_command("cargo test ")
+                .unwrap()
+                .permits_exact("cargo test ")
+        );
         clear_session_approvals().unwrap();
-        assert!(!approvals_for_command("cargo test").unwrap().permits_exact("cargo test"));
+        assert!(
+            !approvals_for_command("cargo test")
+                .unwrap()
+                .permits_exact("cargo test")
+        );
+    }
+
+    #[test]
+    fn profile_persistence_handles_indented_tables_and_refuses_ambiguous_text() {
+        let path = temp_path();
+        std::fs::write(
+            &path,
+            "provider = \"openai\"\n  [connection]\nname = \"local\"\n",
+        )
+        .unwrap();
+        persist_profile(&path, sandbox::PermissionProfile::ReadOnly).unwrap();
+        let value: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["permission_profile"].as_str(), Some("read-only"));
+        let original = "note = '''\n[not_a_table]\npermission_profile = \"unrestricted\"\n'''\n";
+        std::fs::write(&path, original).unwrap();
+        assert!(persist_profile(&path, sandbox::PermissionProfile::ReadOnly).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let _ = std::fs::remove_file(path);
     }
 }

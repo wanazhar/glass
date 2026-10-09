@@ -395,6 +395,18 @@ impl<'a> Agent<'a> {
         self
     }
 
+    fn command_approvals(&self, call: &ToolCall) -> crate::sandbox::SessionApprovals {
+        // Headless and delegated agents never inherit the interactive parent
+        // session's exceptions. Snapshot explicit grants before worker dispatch.
+        if self.input_keys.is_some() {
+            call.arg_str("command")
+                .and_then(|command| crate::permissions::approvals_for_command(&command).ok())
+                .unwrap_or_default()
+        } else {
+            crate::sandbox::SessionApprovals::default()
+        }
+    }
+
     pub fn with_prompt(
         mut self,
         base: String,
@@ -424,7 +436,9 @@ impl<'a> Agent<'a> {
     ) -> Result<TurnOutput, provider::Error> {
         self.session.validate_writes();
         if let Some(error) = self.session.write_error() {
-            return Err(provider::Error::Config(format!("session log is not writable; no provider request was made: {error}")));
+            return Err(provider::Error::Config(format!(
+                "session log is not writable; no provider request was made: {error}"
+            )));
         }
         let messages = self.session.messages();
         self.ensure_context_fits(&messages)?;
@@ -669,10 +683,12 @@ impl<'a> Agent<'a> {
                 }),
                 Event::Usage(u) => out.usage = Some(u),
                 Event::Warning(w) => {
+                    let w = crate::live::sanitize_provider_detail(&w);
                     self.emit(Progress::ProviderNotice(&w));
                     out.warnings.push(w);
                 }
                 Event::Error(e) => {
+                    let e = crate::live::sanitize_provider_detail(&e);
                     if !out.text.is_empty() {
                         self.session.append(Record::Assistant(out.text.clone()));
                     }
@@ -692,7 +708,9 @@ impl<'a> Agent<'a> {
             }
         }
         if out.text.trim().is_empty() && out.tool_calls.is_empty() {
-            self.emit(Progress::ProviderFailure("provider returned no text or tool calls"));
+            self.emit(Progress::ProviderFailure(
+                "provider returned no text or tool calls",
+            ));
             return Err(provider::Error::Transport(
                 "provider returned no text or tool calls; check /status and /login".into(),
             ));
@@ -713,7 +731,9 @@ impl<'a> Agent<'a> {
     ) -> Result<(TurnOutput, Stop), provider::Error> {
         self.session.validate_writes();
         if let Some(error) = self.session.write_error() {
-            return Err(provider::Error::Config(format!("session log is not writable; turn refused: {error}")));
+            return Err(provider::Error::Config(format!(
+                "session log is not writable; turn refused: {error}"
+            )));
         }
         let mut last = TurnOutput {
             text: String::new(),
@@ -1024,13 +1044,18 @@ impl<'a> Agent<'a> {
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_cancel = cancel.clone();
         let (tx, rx) = std::sync::mpsc::channel();
+        let approvals: std::collections::HashMap<_, _> = calls
+            .iter()
+            .enumerate()
+            .map(|(i, call)| (i, self.command_approvals(call)))
+            .collect();
         std::thread::spawn(move || {
             let results = concurrency::execute(&plan, concurrency::MAX_PARALLEL, |i| {
                 let inner = by_index.get(&i).unwrap();
                 if worker_cancel.load(std::sync::atomic::Ordering::Acquire) {
                     return tools::Outcome::err("Cancelled before execution");
                 }
-                tools::bash_cancellable(inner, &workspace, &worker_cancel)
+                tools::bash_with_approvals(inner, &workspace, &worker_cancel, &approvals[&i])
             });
             let _ = tx.send(results);
         });
@@ -1127,13 +1152,19 @@ impl<'a> Agent<'a> {
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_cancel = cancel.clone();
         let flag = std::sync::Arc::clone(&done);
+        let approvals = self.command_approvals(call);
         std::thread::spawn(move || {
             let inner = ToolCall {
                 id: "worker".into(),
                 name: "bash".into(),
                 arguments: args,
             };
-            let _ = tx.send(tools::bash_cancellable(&inner, &workspace, &worker_cancel));
+            let _ = tx.send(tools::bash_with_approvals(
+                &inner,
+                &workspace,
+                &worker_cancel,
+                &approvals,
+            ));
             flag.store(true, std::sync::atomic::Ordering::Release);
         });
 
@@ -1290,7 +1321,12 @@ impl<'a> Agent<'a> {
                 self.emit(Progress::BlockedByGuard(&refusal));
                 return self.finish_tool(call, tools::Outcome::err(refusal));
             }
-            let r = tools::bash(call, self.workspace);
+            let r = tools::bash_with_approvals(
+                call,
+                self.workspace,
+                &std::sync::atomic::AtomicBool::new(false),
+                &self.command_approvals(call),
+            );
 
             // Verification happens in apply_bash_result, which every bash
             // result passes through.
@@ -1909,11 +1945,20 @@ mod warm_integration {
         let mut session = Session::create(&dir).unwrap();
         session.append(Record::User("original".into()));
         std::fs::write(&session.path, "{\"k\":\"user\",\"t\":\"external\"}\n").unwrap();
-        let provider = CapturingProvider { tools: std::sync::Mutex::new(Vec::new()) };
+        let provider = CapturingProvider {
+            tools: std::sync::Mutex::new(Vec::new()),
+        };
         let mut state = State::new();
         let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
         let mut extensions = Registry::empty();
-        let mut agent = Agent::new(&provider, &mut session, &mut state, &no_mods, &mut extensions, Path::new("."));
+        let mut agent = Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &no_mods,
+            &mut extensions,
+            Path::new("."),
+        );
         assert!(agent.run_turn(no_pump).is_err());
         assert!(provider.tools.lock().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);

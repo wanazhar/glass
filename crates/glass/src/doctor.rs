@@ -96,9 +96,15 @@ pub fn inspect(cfg: &crate::config::Config, config_path: &Path, session_dir: &Pa
 
     let policy = match cfg.sandbox {
         crate::sandbox::Policy::Off
-            if cfg.permission_profile == crate::sandbox::PermissionProfile::ReadOnly => "strict",
+            if cfg.permission_profile == crate::sandbox::PermissionProfile::ReadOnly =>
+        {
+            "strict"
+        }
         crate::sandbox::Policy::Off
-            if cfg.permission_profile == crate::sandbox::PermissionProfile::WorkspaceEdit => "workspace",
+            if cfg.permission_profile == crate::sandbox::PermissionProfile::WorkspaceEdit =>
+        {
+            "workspace"
+        }
         crate::sandbox::Policy::Off => "off",
         crate::sandbox::Policy::Workspace => "workspace",
         crate::sandbox::Policy::Strict => "strict",
@@ -124,7 +130,7 @@ pub fn inspect(cfg: &crate::config::Config, config_path: &Path, session_dir: &Pa
     let missing = cfg
         .extensions
         .iter()
-        .filter(|item| !executable_available(item))
+        .filter(|item| !executable_available(item, &cfg.workspace))
         .count();
     checks.push(Check {
         area: "extensions",
@@ -150,15 +156,18 @@ pub fn inspect(cfg: &crate::config::Config, config_path: &Path, session_dir: &Pa
     Report { schema: 1, checks }
 }
 
-fn executable_available(reference: &str) -> bool {
-    let path = Path::new(reference);
-    if path.components().count() > 1 || path.is_absolute() {
-        return is_executable(path);
+fn executable_available(reference: &str, workspace: &Path) -> bool {
+    let Ok(arguments) = crate::ext::host::arguments(reference) else {
+        return false;
+    };
+    let path = Path::new(&arguments[0]);
+    if arguments[0].contains('/') || path.is_absolute() {
+        return is_executable(&workspace.join(path));
     }
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .any(|dir| is_executable(&dir.join(reference)))
+        .any(|dir| is_executable(&dir.join(path)))
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -292,14 +301,20 @@ mod tests {
         std::fs::write(&target, "fixture").unwrap();
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(!is_executable(&target));
-        assert!(!executable_available(target.to_str().unwrap()));
+        assert!(!executable_available(target.to_str().unwrap(), &root));
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(is_executable(&target));
-        assert!(executable_available(target.to_str().unwrap()));
+        assert!(executable_available(target.to_str().unwrap(), &root));
         assert!(
-            executable_available("sh"),
+            executable_available("sh", &root),
             "PATH lookup should require a runnable file"
         );
+        assert!(executable_available("sh script.py", &root));
+        assert!(executable_available(
+            "[\"sh\", \"script with spaces.py\"]",
+            &root
+        ));
+        assert!(executable_available("./extension", &root));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

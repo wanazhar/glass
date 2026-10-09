@@ -472,6 +472,7 @@ mod tests {
             role: Role::Tool,
             text: "many tool output lines\n".repeat(20),
             turn: 1,
+            tool_card: None,
         }]);
         viewer.layout.set_width(20);
         let original = viewer.layout.total_lines();
@@ -490,6 +491,7 @@ mod tests {
                 role: Role::User,
                 text: format!("message {i}"),
                 turn: i,
+                tool_card: None,
             })
             .collect()
     }
@@ -649,11 +651,13 @@ mod tests {
                 role: Role::Tool,
                 text: "command: run\n".to_string() + &"hidden output needle\n".repeat(20),
                 turn: 1,
+                tool_card: None,
             },
             Entry {
                 role: Role::User,
                 text: "needle in a later message".into(),
                 turn: 2,
+                tool_card: None,
             },
         ]);
         assert_eq!(t.search("needle"), 2);

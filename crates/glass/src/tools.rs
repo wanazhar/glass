@@ -65,8 +65,7 @@ impl Outcome {
 
 /// Run `call` and capture its output.
 ///
-/// Deliberately not a permission gate: glass ships no approval layer, and the
-/// `Mod::authorize` hook exists for anyone who wants one.
+/// Enforce the startup policy without inheriting another session's exceptions.
 pub fn bash(call: &ToolCall, workspace: &std::path::Path) -> Outcome {
     bash_cancellable(call, workspace, &std::sync::atomic::AtomicBool::new(false))
 }
@@ -75,16 +74,26 @@ pub fn bash_cancellable(
     workspace: &std::path::Path,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Outcome {
+    bash_with_approvals(
+        call,
+        workspace,
+        cancel,
+        &crate::sandbox::SessionApprovals::default(),
+    )
+}
+
+pub fn bash_with_approvals(
+    call: &ToolCall,
+    workspace: &std::path::Path,
+    cancel: &std::sync::atomic::AtomicBool,
+    approvals: &crate::sandbox::SessionApprovals,
+) -> Outcome {
     let Some(command) = call.arg_str("command") else {
         return Outcome::err("error: `command` is required and must be a string".to_string());
     };
     if command.trim().is_empty() {
         return Outcome::err("error: `command` is empty".to_string());
     }
-    let approvals = match crate::permissions::approvals_for_command(&command) {
-        Ok(approvals) => approvals,
-        Err(error) => return Outcome::err(format!("error: permission approval unavailable: {error}")),
-    };
     let exception = approvals.permits_exact(&command);
     if !exception && let Some(reason) = crate::sandbox::refusal() {
         return Outcome::err(format!(
@@ -103,6 +112,13 @@ pub fn bash_cancellable(
         }
         _ => workspace.to_path_buf(),
     };
+    if exception
+        && !matches!((cwd.canonicalize(), workspace.canonicalize()), (Ok(cwd), Ok(root)) if cwd == root)
+    {
+        return Outcome::err(
+            "error: this exact-command exception applies only in the session workspace; use the default cwd and explicit paths",
+        );
+    }
 
     // Models send `timeout_ms` as a JSON number, not a string, so this has to
     // read the raw value. Using `arg_str` here silently returns None and every
@@ -141,13 +157,9 @@ pub fn bash_cancellable(
         .stderr(Stdio::piped());
     // Kernel-level confinement, when a policy is active: applied after fork
     // and before exec so the shell and everything it spawns inherits it.
-    if let Err(error) = crate::sandbox::harden_command(
-        &mut builder,
-        &command,
-        &approvals,
-        exception,
-        false,
-    ) {
+    if let Err(error) =
+        crate::sandbox::harden_command(&mut builder, &command, approvals, exception, false)
+    {
         return Outcome::err(format!("error: {error}"));
     }
     crate::sandbox::scrub_env(&mut builder);
@@ -455,6 +467,64 @@ mod tests {
         assert_eq!(out.body, "[exit 0]\nhello\n");
         assert_eq!(out.exit_code, Some(0));
         assert!(!out.truncated);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn command_exceptions_require_an_explicit_session_snapshot() {
+        const CHILD: &str = "GC_TEST_APPROVAL_SNAPSHOT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tools::tests::command_exceptions_require_an_explicit_session_snapshot",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            return;
+        }
+        let root =
+            std::env::temp_dir().join(format!("gc-approval-snapshot-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let cfg = crate::config::Config {
+            workspace: workspace.clone(),
+            permission_profile: crate::sandbox::PermissionProfile::ReadOnly,
+            ..Default::default()
+        };
+        crate::sandbox::init(&cfg);
+        let outside = root.join("outside");
+        let command = format!("printf approved > {}", outside.display());
+        crate::permissions::approve_session_command(&command).unwrap();
+        let tool = call(&serde_json::json!({"command":command}).to_string());
+        let _ = bash(&tool, &workspace);
+        assert!(
+            !outside.exists(),
+            "headless/delegated calls inherited an ambient grant"
+        );
+        let approvals = crate::permissions::approvals_for_command(&command).unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let result = bash_with_approvals(&tool, &workspace, &cancel, &approvals);
+        assert_eq!(result.exit_code, Some(0), "{}", result.body);
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "approved");
+        std::fs::remove_file(&outside).unwrap();
+        let shifted = call(&serde_json::json!({"command":command,"cwd":root}).to_string());
+        let result = bash_with_approvals(&shifted, &workspace, &cancel, &approvals);
+        assert!(result.body.contains("session workspace"));
+        assert!(!outside.exists());
+        let _ = bash(&tool, &workspace);
+        assert!(
+            !outside.exists(),
+            "explicit exception widened later unapproved commands"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

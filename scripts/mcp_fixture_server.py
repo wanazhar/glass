@@ -8,6 +8,7 @@ def main():
     count = 2
     if "--tools" in sys.argv:
         count = int(sys.argv[sys.argv.index("--tools") + 1])
+    elicitation = "--elicitation" in sys.argv
     ttl_ms = None
     if "--ttl-ms" in sys.argv:
         ttl_ms = int(sys.argv[sys.argv.index("--ttl-ms") + 1])
@@ -15,6 +16,7 @@ def main():
     if "--drop-after-first" in sys.argv:
         drop_after_first = sys.argv[sys.argv.index("--drop-after-first") + 1]
     lists = 0
+    elicitation_ids = []
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -52,6 +54,8 @@ def main():
                     "inputSchema": {"type": "object"},
                 },
             ]
+            if elicitation:
+                tools.append({"name": "ask", "description": "Ask for reviewed input.", "inputSchema": {"type": "object", "properties": {"original": {"type": "string"}}}})
             for i in range(max(0, count - 2)):
                 tools.append(
                     {
@@ -81,6 +85,23 @@ def main():
                     "content": [{"type": "text", "text": "it broke"}],
                     "isError": True,
                 }
+            elif name == "ask" and elicitation:
+                elicitation_ids.append(mid)
+                if "inputResponses" not in params:
+                    result = {"resultType": "input_required", "inputRequests": {
+                        "opaque-form-key": {"method": "elicitation/create", "params": {
+                            "mode": "form", "message": "Choose a label",
+                            "requestedSchema": {"type": "object", "properties": {"label": {"type": "string", "title": "Label"}}, "required": ["label"]}
+                        }}
+                    }, "requestState": "fixture-state-exact"}
+                elif (len(elicitation_ids) == 2 and elicitation_ids[0] != mid
+                      and params.get("requestState") == "fixture-state-exact"
+                      and set(params.get("inputResponses", {})) == {"opaque-form-key"}
+                      and params["inputResponses"]["opaque-form-key"].get("action") == "accept"
+                      and params.get("arguments") == {"original": "unchanged"}):
+                    result = {"content": [{"type": "text", "text": "finished without echoing input"}]}
+                else:
+                    result = {"isError": True, "content": [{"type": "text", "text": "retry contract mismatch"}]}
             else:
                 result = {"content": [{"type": "text", "text": f"ran {name}"}]}
             reply = {"jsonrpc": "2.0", "id": mid, "result": result}

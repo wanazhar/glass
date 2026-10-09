@@ -139,10 +139,12 @@ def plugin_receipts(plugins):
         return {}, True
 
 
-def stateless_meta(version):
+def stateless_meta(version, elicitation=False):
     return {
         "io.modelcontextprotocol/protocolVersion": version,
-        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientCapabilities": (
+            {"elicitation": {"form": {}, "url": {}}} if elicitation else {}
+        ),
         "io.modelcontextprotocol/clientInfo": CLIENT_INFO,
     }
 
@@ -313,6 +315,7 @@ class BaseServer:
         self.ttl_ms = None
         self.cache_scope = None
         self.listed_at = 0.0
+        self.input_handler = None
 
     def list_tools(self):
         result = self.request("tools/list", {}, INIT_TIMEOUT)
@@ -330,24 +333,59 @@ class BaseServer:
             return False
         return (time.time() - self.listed_at) * 1000.0 > self.ttl_ms
 
-    def call_tool(self, tool, arguments):
+    def call_tool(self, tool, arguments, input_handler=None):
         if self.dead:
             return f"mcp({self.name}): server is not running ({self.dead})"
         try:
-            result = self.request(
-                "tools/call",
-                {"name": tool, "arguments": arguments or {}},
-                CALL_TIMEOUT,
-            )
+            original = {"name": tool, "arguments": arguments or {}}
+            responses = {}
+            request_state = None
+            handler = input_handler or self.input_handler
+            for _round in range(6):
+                params = dict(original)
+                if responses:
+                    params["inputResponses"] = responses
+                    if request_state is not None:
+                        params["requestState"] = request_state
+                result = self.request("tools/call", params, CALL_TIMEOUT,
+                                      elicitation=handler is not None)
+                if result.get("resultType") != "input_required":
+                    break
+                if _round >= 5:
+                    return f"mcp({self.name}): input request round limit reached; retry the tool"
+                if handler is None:
+                    return json.dumps({
+                        "resultType": "input_required",
+                        "error": {
+                            "code": "interactive_input_unavailable",
+                            "message": f"mcp({self.name}) needs user input; run this tool in an interactive session to continue",
+                        },
+                    }, separators=(",", ":"))
+                requests = result.get("inputRequests")
+                state = result.get("requestState")
+                if not isinstance(requests, dict) or not requests or len(requests) > 8:
+                    return f"mcp({self.name}): server returned invalid input_requests"
+                if state is not None and (not isinstance(state, str) or len(state.encode("utf-8")) > 65536):
+                    return f"mcp({self.name}): server returned invalid request_state"
+                next_responses = {}
+                for key, request in requests.items():
+                    if not isinstance(key, str) or len(key.encode("utf-8")) > 256 or not isinstance(request, dict):
+                        return f"mcp({self.name}): server returned invalid input_request"
+                    if request.get("method") != "elicitation/create" or not isinstance(request.get("params"), dict):
+                        return f"mcp({self.name}): unsupported input request method"
+                    try:
+                        answer = handler(self.name, request["params"])
+                    except Exception:
+                        answer = {"action": "decline"}
+                    if not isinstance(answer, dict) or answer.get("action") not in ("accept", "decline", "cancel"):
+                        answer = {"action": "decline"}
+                    next_responses[key] = answer
+                responses = next_responses
+                request_state = state
         except Exception as error:
             if isinstance(error, (EOFError, BrokenPipeError, OSError)):
                 self.dead = "connection closed"
             return f"mcp({self.name}): {error}"
-        if result.get("resultType") == "input_required":
-            return (
-                f"mcp({self.name}): the tool needs input from the client "
-                "(multi round-trip requests are not supported yet)"
-            )
         parts = []
         for item in result.get("content") or []:
             if isinstance(item, dict) and item.get("type") == "text":
@@ -454,13 +492,13 @@ class Server(BaseServer):
         line, _, self.buffer = self.buffer.partition(b"\n")
         return json.loads(line.decode("utf-8", "replace"))
 
-    def request(self, method, params, timeout, pad=True):
+    def request(self, method, params, timeout, pad=True, elicitation=False):
         self.next_id += 1
         message = {"jsonrpc": "2.0", "id": self.next_id, "method": method}
         if params is not None:
             message["params"] = dict(params)
         if pad and self.stateless and isinstance(message.get("params"), dict):
-            message["params"].setdefault("_meta", stateless_meta(self.version))
+            message["params"].setdefault("_meta", stateless_meta(self.version, elicitation))
         self.send(message)
         deadline = time.monotonic() + timeout
         while True:
@@ -676,7 +714,7 @@ class HttpServer(BaseServer):
         except (socket.timeout, TimeoutError) as error:
             raise TimeoutError("HTTP response timed out") from error
 
-    def request(self, method, params, timeout, pad=True):
+    def request(self, method, params, timeout, pad=True, elicitation=False):
         self.next_id += 1
         payload = {
             "jsonrpc": "2.0",
@@ -685,7 +723,7 @@ class HttpServer(BaseServer):
             "params": dict(params or {}),
         }
         if pad and self.stateless:
-            payload["params"].setdefault("_meta", stateless_meta(self.version))
+            payload["params"].setdefault("_meta", stateless_meta(self.version, elicitation))
         reply = self.post(payload, timeout)
         if not isinstance(reply, dict):
             raise RuntimeError("server returned an invalid JSON-RPC response")
@@ -853,7 +891,7 @@ class Bridge:
             "their descriptions carry the server name."
         )
 
-    def run_tool(self, name, arguments):
+    def run_tool(self, name, arguments, input_handler=None):
         if self.deferred:
             if name == "mcp_search":
                 # The index is a cache: honour each server's TTL
@@ -878,18 +916,18 @@ class Bridge:
                         return f"mcp_call: arguments is not valid JSON ({error})"
                 if not isinstance(raw, dict):
                     raw = {}
-                return self.call(target, raw)
+                return self.call(target, raw, input_handler)
             return f"unknown tool {name}"
         if name not in self.entries:
             return f"unknown tool {name}"
-        return self.call(name, arguments or {})
+        return self.call(name, arguments or {}, input_handler)
 
-    def call(self, full, arguments):
+    def call(self, full, arguments, input_handler=None):
         entry = self.entries.get(full)
         if entry is None:
             return f"mcp: unknown tool {full}; use mcp_search for the catalogue"
         server, tool, _ = entry
-        return self.servers[server].call_tool(tool, arguments)
+        return self.servers[server].call_tool(tool, arguments, input_handler)
 
     def shutdown(self):
         for server in self.servers.values():
@@ -911,6 +949,24 @@ def read_line():
 
 def serve():
     bridge = Bridge()
+    input_counter = 0
+
+    def request_input(server, params):
+        nonlocal input_counter
+        input_counter += 1
+        call_id = f"mcp-input-{input_counter}"
+        send({"type": "request_input", "call_id": call_id,
+              "server": str(server)[:256], "params": params})
+        reply = read_line()
+        if not isinstance(reply, dict) or reply.get("type") != "request_input_result" or reply.get("call_id") != call_id:
+            return {"action": "decline"}
+        response = reply.get("response")
+        if not isinstance(response, dict) or response.get("action") not in ("accept", "decline", "cancel"):
+            return {"action": "decline"}
+        if len(json.dumps(response, ensure_ascii=False).encode("utf-8")) > 32 * 1024:
+            return {"action": "decline"}
+        return response
+
     tools = bridge.manifest_tools()
     manifest = {
         "name": "mcp-bridge",
@@ -938,7 +994,8 @@ def serve():
                 except ValueError:
                     output = "arguments are not valid JSON"
                 else:
-                    output = bridge.run_tool(req.get("name") or "", arguments)
+                    handler = request_input if req.get("interactive_input") is True else None
+                    output = bridge.run_tool(req.get("name") or "", arguments, handler)
                 send({"id": req.get("id"), "output": output})
             elif kind in ("goodbye", "shutdown"):
                 break

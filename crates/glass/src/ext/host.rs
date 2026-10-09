@@ -11,12 +11,14 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use super::protocol::parse_manifest;
 use super::protocol::{
     self, MAX_REPLY_BYTES, Manifest, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS, Request, SubagentTask,
-    envelope_report, is_custom_append, is_custom_read, is_nested_call, is_subagent_call,
-    is_subagents_call, parse_subagent_tasks,
+    envelope_report, input_result_json, is_custom_append, is_custom_read, is_input_request,
+    is_nested_call, is_subagent_call, is_subagents_call, parse_subagent_tasks,
 };
 
 /// Callback the host uses to run a tool an extension asked for.
 pub type HostToolBridge<'a> = dyn FnMut(&str, &str) -> String + 'a;
+/// Interactive MCP input callback. The returned JSON is private callback data.
+pub type HostInputFn<'a> = dyn FnMut(&str, &serde_json::Value) -> serde_json::Value + 'a;
 
 /// Callback the host uses to run delegated tasks in fresh contexts.
 ///
@@ -195,7 +197,17 @@ impl Extension {
         &mut self,
         req: &Request,
         timeout_ms: u64,
+        host_tools: Option<&mut HostToolBridge<'_>>,
+    ) -> Option<serde_json::Value> {
+        self.request_with_input(req, timeout_ms, host_tools, None)
+    }
+
+    fn request_with_input(
+        &mut self,
+        req: &Request,
+        timeout_ms: u64,
         mut host_tools: Option<&mut HostToolBridge<'_>>,
+        mut host_input: Option<&mut HostInputFn<'_>>,
     ) -> Option<serde_json::Value> {
         self.next_id += 1;
         let id = self.next_id;
@@ -335,6 +347,18 @@ impl Extension {
 
                 let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
                 self.reply(protocol::nested_call_result_json(&call_id, &out))?;
+                deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+                continue;
+            }
+            if is_input_request(&v) {
+                let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
+                let server = v.get("server").and_then(|x| x.as_str()).unwrap_or("");
+                let params = v.get("params").cloned().unwrap_or(serde_json::Value::Null);
+                let response = match host_input.as_deref_mut() {
+                    Some(callback) => callback(server, &params),
+                    None => serde_json::json!({"action":"decline"}),
+                };
+                self.reply(input_result_json(&call_id, &response))?;
                 deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
                 continue;
             }
@@ -527,6 +551,32 @@ impl Extension {
         self.request(&req, REQUEST_TIMEOUT_MS * 10, Some(host_tools))
             .and_then(|v| v.get("output").and_then(|o| o.as_str()).map(str::to_string))
             .filter(|s| !s.is_empty())
+    }
+
+    /// Execute a tool with a scoped host input callback. The callback is present only for
+    /// the duration of this request and is never retained or logged by the extension host.
+    pub fn run_tool_with_input(
+        &mut self,
+        name: &str,
+        arguments: &str,
+        host_tools: &mut HostToolBridge,
+        host_input: &mut HostInputFn<'_>,
+    ) -> Option<String> {
+        if !self.manifest.tools.iter().any(|t| t.name == name) {
+            return None;
+        }
+        let req = Request::RunToolInput {
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        };
+        self.request_with_input(
+            &req,
+            REQUEST_TIMEOUT_MS * 10,
+            Some(host_tools),
+            Some(host_input),
+        )
+        .and_then(|v| v.get("output").and_then(|o| o.as_str()).map(str::to_string))
+        .filter(|s| !s.is_empty())
     }
 
     pub fn has_command(&self, name: &str) -> bool {

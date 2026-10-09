@@ -64,6 +64,16 @@ class Bridge:
         )
         return self.recv()['output']
 
+    def tool_with_input(self, name, arguments, response):
+        self.id += 1
+        self.send({'type': 'run_tool', 'id': self.id, 'name': name,
+                   'interactive_input': True, 'arguments': json.dumps(arguments)})
+        request = self.recv()
+        assert request.get('type') == 'request_input', request
+        assert request.get('server') == 'fixture', request
+        self.send({'type': 'request_input_result', 'call_id': request['call_id'], 'response': response})
+        return self.recv()['output'], request
+
     def close(self):
         self.id += 1
         self.send({'type': 'goodbye', 'id': self.id})
@@ -80,7 +90,76 @@ def config(path, tools=None, extra=()):
     return path
 
 
+def input_round_trip_checks():
+    """Exercise exact MRTR request/retry semantics against a deterministic server stub."""
+    no_input_meta = BRIDGE_MODULE.stateless_meta('2026-07-28')
+    input_meta = BRIDGE_MODULE.stateless_meta('2026-07-28', elicitation=True)
+    assert 'elicitation' not in no_input_meta['io.modelcontextprotocol/clientCapabilities']
+    assert input_meta['io.modelcontextprotocol/clientCapabilities']['elicitation'] == {'form': {}, 'url': {}}
+    server = BRIDGE_MODULE.BaseServer('fixture')
+    calls = []
+    replies = [
+        {'resultType': 'input_required', 'inputRequests': {
+            'opaque-request-key': {'method': 'elicitation/create', 'params': {
+                'mode': 'form', 'message': 'Enter a label',
+                'requestedSchema': {'type': 'object', 'properties': {'label': {'type': 'string'}}}
+            }}
+        }, 'requestState': 'opaque-state-unchanged'},
+        {'content': [{'type': 'text', 'text': 'completed safely'}]},
+    ]
+
+    def request(method, params, timeout, pad=True, elicitation=False):
+        calls.append((method, dict(params), elicitation, len(calls) + 1))
+        return replies.pop(0)
+
+    server.request = request
+    private = 'private-form-value'
+    output = server.call_tool('save', {'original': 7},
+                              lambda name, params: {'action': 'accept', 'content': {'label': private}})
+    assert output == 'completed safely', output
+    assert len(calls) == 2 and calls[0][3] != calls[1][3], calls
+    assert calls[0][1] == {'name': 'save', 'arguments': {'original': 7}}, calls[0]
+    assert calls[1][1] == {
+        'name': 'save', 'arguments': {'original': 7},
+        'inputResponses': {'opaque-request-key': {'action': 'accept', 'content': {'label': private}}},
+        'requestState': 'opaque-state-unchanged'
+    }, calls[1]
+    assert calls[0][2] and calls[1][2], calls
+    assert private not in output
+
+    headless = BRIDGE_MODULE.BaseServer('headless')
+    headless.request = lambda method, params, timeout, pad=True, elicitation=False: (
+        calls.append((method, dict(params), elicitation, len(calls) + 1)) or
+        {'resultType': 'input_required', 'inputRequests': {'k': {'method': 'elicitation/create', 'params': {'mode':'form','message':'x','requestedSchema':{'type':'object','properties':{'x':{'type':'string'}}}}}}}
+    )
+    refusal = headless.call_tool('save', {'original': 9})
+    refusal = json.loads(refusal)
+    assert refusal['resultType'] == 'input_required'
+    assert refusal['error']['code'] == 'interactive_input_unavailable'
+    assert 'interactive' in refusal['error']['message'], refusal
+    assert calls[-1][2] is False, calls[-1]
+
+    # Exercise the real extension wire with a local MCP stdio fixture.
+    with tempfile.TemporaryDirectory(prefix='gc-mcp-input-') as tmp:
+        root = Path(tmp)
+        cfg = root / 'mcp.json'
+        config(cfg, extra=['--elicitation'])
+        bridge = Bridge(cfg)
+        manifest = bridge.hello()
+        assert 'mcp__fixture__ask' in {t['name'] for t in manifest['tools']}, manifest
+        private_value = 'never-echo-this-private-input'
+        output, request = bridge.tool_with_input(
+            'mcp__fixture__ask', {'original': 'unchanged'},
+            {'action': 'accept', 'content': {'label': private_value}})
+        assert output == 'finished without echoing input', output
+        assert private_value not in output
+        assert request['params']['mode'] == 'form', request
+        bridge.close()
+        assert private_value not in bridge.proc.stderr.read()
+
+
 def main():
+    input_round_trip_checks()
     with tempfile.TemporaryDirectory(prefix='gc-mcp-') as tmp:
         root = Path(tmp)
 

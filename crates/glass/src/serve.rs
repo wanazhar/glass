@@ -108,9 +108,9 @@ fn entries_between(records: &[Record], start: usize, end: usize) -> Vec<Value> {
         .filter_map(|record| match record {
             Record::User(text) => Some(json!({"role": "user", "text": text})),
             Record::Assistant(text) => Some(json!({"role": "assistant", "text": text})),
-            Record::Bash { command, output, .. } => {
-                Some(json!({"role": "tool", "text": format!("$ {command}\n{output}")}))
-            }
+            Record::Bash {
+                command, output, ..
+            } => Some(json!({"role": "tool", "text": format!("$ {command}\n{output}")})),
             _ => None,
         })
         .collect()
@@ -198,6 +198,9 @@ pub fn serve(
     }
     let mods = crate::mods::load(&cfg.mods)?;
     let mut extensions = ext::Registry::load(&cfg.extensions, &cfg.workspace, &cfg.model);
+    if let Ok(records) = Session::raw_records(&session.path) {
+        extensions.seed_custom(&records);
+    }
     let ledger_path = session.path.with_extension("cost.json");
     let ledger = crate::budget::load(&ledger_path, cfg.cost_limit);
     let factory: crate::warmer::ProviderFactory = {
@@ -213,11 +216,7 @@ pub fn serve(
             )
         })
     };
-    let instructions = crate::trust::gated(
-        &cfg,
-        &crate::agents_md::load(&cfg.workspace),
-        false,
-    );
+    let instructions = crate::trust::gated(&cfg, &crate::agents_md::load(&cfg.workspace), false);
 
     let clients = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Client>::new()));
     let mut mailbox = crate::inbox::Mailbox::open(&session.id);
@@ -320,7 +319,9 @@ pub fn serve(
                 }
             }
         };
-        let Some((origin, message)) = message else { continue };
+        let Some((origin, message)) = message else {
+            continue;
+        };
 
         // Send to the client that asked, if it is still attached.
         let to_origin = |value: Value| {
@@ -391,17 +392,14 @@ pub fn serve(
                     .with_live(cfg.live_flush_ms as u64)
                     .with_stream_factory(std::sync::Arc::clone(&factory))
                     .with_progress(move |progress| match progress {
-                        Progress::Text(t) => {
-                            broadcast(&outer, json!({"t": "text", "delta": t}))
-                        }
+                        Progress::Text(t) => broadcast(&outer, json!({"t": "text", "delta": t})),
                         Progress::ToolStart { name, command } => broadcast(
                             &outer,
                             json!({"t": "tool", "name": name, "command": command}),
                         ),
-                        Progress::ToolEnd { summary, .. } => broadcast(
-                            &outer,
-                            json!({"t": "tool_end", "summary": summary}),
-                        ),
+                        Progress::ToolEnd { summary, .. } => {
+                            broadcast(&outer, json!({"t": "tool_end", "summary": summary}))
+                        }
                         _ => {}
                     });
                     let outer = std::rc::Rc::clone(&clients);
@@ -414,13 +412,12 @@ pub fn serve(
                         for (i, c) in slots.iter_mut().enumerate() {
                             loop {
                                 match c.try_incoming() {
-                                    Incoming::Message(message) => match message
-                                        .get("t")
-                                        .and_then(Value::as_str)
-                                    {
-                                        Some("cancel") => *steer = Some(String::new()),
-                                        _ => queued.push(message),
-                                    },
+                                    Incoming::Message(message) => {
+                                        match message.get("t").and_then(Value::as_str) {
+                                            Some("cancel") => *steer = Some(String::new()),
+                                            _ => queued.push(message),
+                                        }
+                                    }
                                     Incoming::Malformed | Incoming::Idle => break,
                                     Incoming::Closed => {
                                         dead.push(i);
@@ -464,9 +461,7 @@ pub fn serve(
                 break 'serve;
             }
             other => {
-                to_origin(
-                    json!({"t": "error", "message": format!("unknown message {:?}", other)}),
-                );
+                to_origin(json!({"t": "error", "message": format!("unknown message {:?}", other)}));
             }
         }
     }
@@ -501,22 +496,29 @@ pub fn stop(session_id: Option<&str>) -> Result<(), String> {
     let id = socket_session(&socket).unwrap_or_else(|| "unknown".into());
     let mut stream = UnixStream::connect(&socket)
         .map_err(|e| format!("cannot connect to {}: {e}", socket.display()))?;
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
-        .map_err(|e| e.to_string())?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     send(&mut stream, json!({"t": "stop"}));
     let mut buf = [0u8; 512];
-    let mut seen = String::new();
+    let mut pending = Vec::new();
+    let mut oversized_frame = false;
     let mut stopped = false;
+    let mut completed = false;
     loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        stream
+            .set_read_timeout(Some(remaining))
+            .map_err(|e| e.to_string())?;
         match stream.read(&mut buf) {
-            Ok(0) => break,
+            Ok(0) => {
+                completed = true;
+                break;
+            }
             Ok(n) => {
-                let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
-                if chunk.contains("\"stopped\"") {
-                    stopped = true;
-                }
-                seen.push_str(&chunk);
+                pending.extend_from_slice(&buf[..n]);
+                stopped |= consume_stop_frames(&mut pending, &mut oversized_frame);
             }
             Err(e)
                 if e.kind() == std::io::ErrorKind::WouldBlock
@@ -527,14 +529,39 @@ pub fn stop(session_id: Option<&str>) -> Result<(), String> {
             Err(e) => return Err(e.to_string()),
         }
     }
-    if stopped {
+    if stop_completed(stopped, completed, &pending) {
         println!("glass-core: stopped session {id}");
         Ok(())
     } else {
         Err(format!(
-            "server for session {id} did not acknowledge the stop: {seen}"
+            "server for session {id} did not complete the stop (acknowledged: {stopped}, EOF: {completed})"
         ))
     }
+}
+
+const MAX_STOP_FRAME: usize = 64 * 1024;
+
+fn consume_stop_frames(pending: &mut Vec<u8>, oversized_frame: &mut bool) -> bool {
+    let mut stopped = false;
+    while let Some(pos) = pending.iter().position(|b| *b == b'\n') {
+        let frame: Vec<_> = pending.drain(..=pos).collect();
+        if !*oversized_frame
+            && frame.len() <= MAX_STOP_FRAME
+            && let Ok(value) = serde_json::from_slice::<Value>(&frame[..frame.len() - 1])
+        {
+            stopped |= value.get("t").and_then(Value::as_str) == Some("stopped");
+        }
+        *oversized_frame = false;
+    }
+    if pending.len() > MAX_STOP_FRAME {
+        pending.clear();
+        *oversized_frame = true;
+    }
+    stopped
+}
+
+fn stop_completed(stopped: bool, eof: bool, pending: &[u8]) -> bool {
+    stopped && eof && pending.is_empty()
 }
 
 /// Respawn a served session: stop the running server, if any,
@@ -586,14 +613,15 @@ pub fn logs(session_id: Option<&str>, workspace: &Path) -> Result<(), String> {
     let dir = config::data_dir();
     let id = match session_id {
         Some(id) => id.to_string(),
-        None => crate::polish::sessions(workspace)
-            .into_iter()
-            .next()
-            .map(|s| s.id)
+        None => newest_session_id_readonly(&dir, workspace)
             .ok_or_else(|| "no sessions in this workspace".to_string())?,
     };
-    let session = Session::open(&dir, &id).map_err(|e| e.to_string())?;
-    let records = crate::export::raw_records(&session);
+    let path = if id.ends_with(".jsonl") {
+        PathBuf::from(&id)
+    } else {
+        dir.join(format!("{id}.jsonl"))
+    };
+    let records = Session::raw_records(&path).map_err(|e| e.to_string())?;
     let entries: Vec<String> = records
         .iter()
         .rev()
@@ -603,9 +631,7 @@ pub fn logs(session_id: Option<&str>, workspace: &Path) -> Result<(), String> {
             Record::User(text) => Some(format!("❯ {text}")),
             Record::Assistant(text) => Some(text.clone()),
             Record::Bash {
-                command,
-                exit_code,
-                ..
+                command, exit_code, ..
             } => Some(format!(
                 "$ {command}{}",
                 exit_code
@@ -615,9 +641,7 @@ pub fn logs(session_id: Option<&str>, workspace: &Path) -> Result<(), String> {
             Record::ToolResult { name, body, .. } if name != "bash" => {
                 Some(format!("  {name}: {}", glass_tui::text::clip(body, 200)))
             }
-            Record::Custom { kind, .. } => {
-                Some(format!("  [extension entry: {kind}]"))
-            }
+            Record::Custom { kind, .. } => Some(format!("  [extension entry: {kind}]")),
             _ => None,
         })
         .collect();
@@ -625,11 +649,29 @@ pub fn logs(session_id: Option<&str>, workspace: &Path) -> Result<(), String> {
         println!("no activity in session {id}");
         return Ok(());
     }
-    println!("glass-core: last {} entries of session {id}\n", entries.len());
+    println!(
+        "glass-core: last {} entries of session {id}\n",
+        entries.len()
+    );
     for entry in entries {
         println!("{entry}\n");
     }
     Ok(())
+}
+
+fn newest_session_id_readonly(dir: &Path, workspace: &Path) -> Option<String> {
+    let root = workspace.canonicalize().unwrap_or_else(|_| workspace.into());
+    let mut files: Vec<_> = std::fs::read_dir(dir).ok()?.filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
+        .collect();
+    files.sort_by_key(|entry| std::cmp::Reverse(entry.metadata().ok().and_then(|m| m.modified().ok())));
+    files.into_iter().find_map(|entry| {
+        let metadata_path = entry.path().with_extension("meta.json");
+        let metadata: crate::polish::Metadata = serde_json::from_slice(&std::fs::read(metadata_path).ok()?).ok()?;
+        if metadata.workspace == root {
+            entry.path().file_stem().map(|stem| stem.to_string_lossy().into_owned())
+        } else { None }
+    })
 }
 
 /// A small terminal client for a served session.
@@ -715,11 +757,7 @@ pub fn attach(socket: Option<&str>) -> Result<(), String> {
 
             // Keep the input line visible; single-row viewport in v1.
             if !shown_prompt {
-                let _ = write!(
-                    out,
-                    "\x1b[2K\r\x1b[90m❯\x1b[0m {}",
-                    raw(editor.text())
-                );
+                let _ = write!(out, "\x1b[2K\r\x1b[90m❯\x1b[0m {}", raw(editor.text()));
                 let _ = out.flush();
                 shown_prompt = true;
             }
@@ -844,5 +882,33 @@ mod tests {
         assert_eq!(entries.len(), REPLAY_ENTRIES, "the window is retained");
         assert_eq!(cursor, REPLAY_ENTRIES + 1);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stop_ack_requires_complete_exact_json_frame_and_eof() {
+        let mut pending = b"{\"t\":\"stopped\"}".to_vec();
+        let mut oversized = false;
+        assert!(
+            !consume_stop_frames(&mut pending, &mut oversized),
+            "unterminated frame is ignored"
+        );
+        pending.extend_from_slice(b"\nnoise\n{\"t\":\"not-stopped\"}\n{\"t\":\"stopped\"}");
+        assert!(
+            consume_stop_frames(&mut pending, &mut oversized),
+            "split exact frame is acknowledged"
+        );
+        assert!(
+            !pending.is_empty(),
+            "a partial trailing frame remains incomplete"
+        );
+        assert!(
+            !stop_completed(true, false, &[]),
+            "timeout is not shutdown completion"
+        );
+        assert!(
+            !stop_completed(true, true, &pending),
+            "trailing partial frame is incomplete"
+        );
+        assert!(stop_completed(true, true, &[]));
     }
 }

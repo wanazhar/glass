@@ -292,10 +292,7 @@ impl Record {
                 Role::Meta,
                 format!("context compacted: dropped {dropped}, kept {kept}"),
             ),
-            Record::Custom { kind, .. } => (
-                Role::Meta,
-                format!("[extension entry: {kind}]"),
-            ),
+            Record::Custom { kind, .. } => (Role::Meta, format!("[extension entry: {kind}]")),
         }
     }
 }
@@ -535,6 +532,20 @@ pub struct Session {
 }
 
 impl Session {
+    /// Read durable records without repairing, opening for append, or replaying the session.
+    pub fn raw_records(path: &Path) -> std::io::Result<Vec<Record>> {
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        Ok(text
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter_map(|v| Record::from_json(&v))
+            .collect())
+    }
+
     /// Open a new session file under the state directory.
     pub fn create(dir: &Path) -> std::io::Result<Self> {
         fs::create_dir_all(dir)?;
@@ -2320,6 +2331,48 @@ mod tests {
             .position(|m| matches!(m, Message::ToolResult { call_id, body, .. } if call_id == "c1" && body.contains("interrupted")))
             .expect("the repair is in context, so tool_use always pairs with tool_result");
         assert!(result_at > call_at, "the result follows its call");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn raw_records_reads_without_repairing_a_torn_log() {
+        let dir = tmpdir("raw-read-only");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        let bytes = b"{\"k\":\"user\",\"t\":\"live\"}\n{\"k\":\"call\"";
+        fs::write(&path, bytes).unwrap();
+        let sidecar = crate::partial::path(&path);
+        fs::write(&sidecar, b"live sidecar").unwrap();
+        let records = Session::raw_records(&path).unwrap();
+        assert!(matches!(records.as_slice(), [Record::User(text)] if text == "live"));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(fs::read(&sidecar).unwrap(), b"live sidecar");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn raw_history_keeps_custom_records_removed_from_compaction_projection() {
+        let dir = tmpdir("raw-custom");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                "{\"k\":\"custom\",\"c\":\"ext/state\",\"d\":\"saved\"}\n",
+                "{\"k\":\"compacted\",\"kept\":0,\"dropped\":1,\"tail\":2,\"sys\":null}\n",
+                "{\"k\":\"user\",\"t\":\"tail\"}\n",
+            ),
+        )
+        .unwrap();
+        let reopened = Session::open(&dir, "s").unwrap();
+        assert!(
+            !reopened
+                .records
+                .iter()
+                .any(|r| matches!(r, Record::Custom { .. }))
+        );
+        let raw = Session::raw_records(&path).unwrap();
+        assert!(raw.iter().any(|r| matches!(r, Record::Custom { kind, data: Some(d) } if kind == "ext/state" && d == "saved")));
         fs::remove_dir_all(&dir).ok();
     }
 

@@ -55,3 +55,6 @@
 
 - [Round-3 ports](plan/tasks/round3-ports-001.md): subagent report framing, frozen tool list, compaction prompt checkpoint, MCP TTL, OSC 777, /name, serve stop/respawn/logs, extension durable entries, /skill-doctor, /code-review.
 - [Round-3 verification](plan/reviews/round3-ports-001-01.md): unit, Clippy, release and full smoke evidence, with the envelope and freeze limitations stated.
+
+- [Round 3 regression fixes](plan/tasks/round3-regressions-001.md): read-only logs, resumed checkpoints, extension state and graceful stop verification.
+- [Round 3 verification](plan/reviews/round3-regressions-001-01.md): full release suite and runtime integration evidence.

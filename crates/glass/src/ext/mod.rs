@@ -128,9 +128,7 @@ impl Registry {
                 .unwrap_or_default()
                 .into_iter()
                 .collect();
-            if !mine.is_empty() {
-                e.seed_custom(mine);
-            }
+            e.seed_custom(mine);
         }
     }
 
@@ -572,10 +570,7 @@ for line in sys.stdin:
         );
         reg.set_subagent(|| {
             Box::new(|tasks: &[crate::ext::protocol::SubagentTask]| {
-                tasks
-                    .iter()
-                    .map(|t| format!("done:{}", t.task))
-                    .collect()
+                tasks.iter().map(|t| format!("done:{}", t.task)).collect()
             })
         });
         let mut nohost = |_n: &str, _a: &str| String::new();

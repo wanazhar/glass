@@ -261,7 +261,12 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                     let ledger = std::sync::Arc::clone(&ledger);
                     let path = std::sync::Arc::clone(&ledger_path);
                     std::sync::Arc::new(move || {
-                        crate::make_provider(&configured, std::sync::Arc::clone(&ledger), std::sync::Arc::clone(&path), None)
+                        crate::make_provider(
+                            &configured,
+                            std::sync::Arc::clone(&ledger),
+                            std::sync::Arc::clone(&path),
+                            None,
+                        )
                     })
                 };
                 let provider = match factory() {
@@ -283,6 +288,9 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 let open_tools = std::cell::RefCell::new(Vec::<String>::new());
                 let session_id_owned = session_id.to_string();
                 let emit = |update: Value| notify(&session_id_owned, update);
+                if let Ok(records) = Session::raw_records(&conversation.session.path) {
+                    extensions.seed_custom(&records);
+                }
                 let agent_result = {
                     let mut agent = Agent::new(
                         provider.as_ref(),
@@ -375,7 +383,10 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                         if let Some(usage) = out.usage {
                             let used = usage.prompt_total() as u64;
                             let size = provider.context_window() as u64;
-                            let spent = ledger.lock().map(|l| (l.spent, l.unknown)).unwrap_or((0.0, true));
+                            let spent = ledger
+                                .lock()
+                                .map(|l| (l.spent, l.unknown))
+                                .unwrap_or((0.0, true));
                             let update = if !spent.1 && spent.0 > 0.0 {
                                 json!({"sessionUpdate": "usage_update", "used": used,
                                     "size": size, "cost": {"amount": spent.0, "currency": "USD"}})

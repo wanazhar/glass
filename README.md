@@ -960,9 +960,10 @@ the host to run a tool while it executes. That last one is what makes codemode
 possible.
 
 The declared tool list is frozen once the first turn runs: it is part of the
-cacheable prompt prefix, so an extension enabled or disabled mid-session is
-noted once in the transcript and applies to the next session instead of
-invalidating the cache for every later turn.
+cacheable prompt prefix. New tool declarations take effect in the next
+session; changes are noted once in the transcript. Disabling an extension
+still stops its process immediately, so its frozen declarations can remain
+present while calls return an unavailable-tool error.
 
 An extension can keep durable state that never enters the model context.
 `append_custom` records an entry, `read_custom` reads a kind back, and at
@@ -970,7 +971,11 @@ startup the host seeds each extension (`seed_custom`) with the entries it owns
 from the session log — so state survives restarts without a side file. Kinds
 are namespaced by the manifest name (`my-ext/state`), so one extension cannot
 write another's; entries are appended to the log by the harness, in causal
-order, and exports show them as `[extension entry: kind]`.
+order, and exports show them as `[extension entry: kind]`. An append reply
+acknowledges the in-memory queue; the entry reaches the log when the current
+tool or turn callback completes. A crash before that drain can lose the queued
+entry. Startup seeding reads raw history even after compaction, and ACP
+switches rebuild state for the selected session.
 
 Every exchange is bounded by a timeout and a byte cap. A wedged, hostile, or
 crashed extension degrades into a warning, never a hung session. A failed
@@ -1247,7 +1252,8 @@ SIGTERM shuts it down cleanly. `stop` asks over the same socket: a turn still
 running finishes first, then the server shuts down and removes its socket.
 `respawn` stops the server if one is running and starts a fresh one for the
 same session in its own process group, so it outlives the shell; `logs` reads
-the durable log and works whether or not a server is running. `stop` and
+the durable log without repairing it or consuming live recovery data, and
+works whether or not a server is running. `stop` and
 `respawn` take the newest served session when the id is omitted. Slash
 commands and modals remain in the interactive session.
 

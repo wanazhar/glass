@@ -58,3 +58,26 @@ focusable list/detail row with clipped headings and explicit scroll keys. Search
 uses /search or Ctrl+F while reader focused; Esc cancels search before closing
 reader. Diff/activity/doctor use palette commands and selectable rows; Enter
 opens details, Esc returns. Keep existing motion rather than adding reduced motion.
+
+## Tracked completion
+
+- [ ] 1 Incremental session index
+- [ ] 2 Checked effect intent writes
+- [ ] 3 Session writer locks
+- [ ] 4 Atomic partial snapshots
+- [ ] 5 Durable extension acknowledgments
+- [ ] 6 Cross-restart submission dedupe
+- [ ] 7 Performance regression CI
+- [ ] 8 Conversation search
+- [ ] 9 Persistent reading anchor
+- [ ] 10 Expandable tool cards
+- [ ] 11 Diff browser
+- [ ] 12 Reconnecting attach
+- [ ] 13 Unified activity dashboard
+- [ ] 14 Provider health
+- [ ] 15 Permission profiles
+- [ ] 16 Extension isolation
+- [ ] 17 Capability manifests
+- [ ] 18 Plugin pins and integrity
+- [ ] 19 MCP input-request modals
+- [ ] 20 Doctor CLI and modal

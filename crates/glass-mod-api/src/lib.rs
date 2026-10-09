@@ -69,41 +69,45 @@ impl ToolCall {
     /// of a JSON dependency, which is what lets it stay dependency-free at
     /// all. Callers that need structure hand the text to their own parser.
     pub fn arg_raw(&self, key: &str) -> Option<String> {
-        let needle = format!("\"{key}\"");
-        let start = self.arguments.find(&needle)? + needle.len();
-        let rest = self.arguments[start..].trim_start();
-        let rest = rest.strip_prefix(':')?.trim_start();
-        // Scan to the end of this value, tracking nesting and string state so
-        // braces, brackets, and escaped quotes inside the value are respected.
-        let bytes = rest.as_bytes();
-        let mut depth = 0usize;
-        let mut in_string = false;
-        let mut escaped = false;
-        for (i, &b) in bytes.iter().enumerate() {
-            if in_string {
-                if escaped {
-                    escaped = false;
-                } else if b == b'\\' {
-                    escaped = true;
-                } else if b == b'"' {
-                    in_string = false;
-                }
-                continue;
+        // Only inspect object members: a nested field or quoted command text
+        // must never shadow the top-level argument validated by the harness.
+        let mut rest = self.arguments.trim_start().strip_prefix('{')?;
+        loop {
+            rest = rest.trim_start();
+            if rest.starts_with('}') { return None; }
+            let key_text = rest.strip_prefix('"')?;
+            let mut escaped = false;
+            let mut key_end = None;
+            for (i, c) in key_text.char_indices() {
+                if escaped { escaped = false; }
+                else if c == '\\' { escaped = true; }
+                else if c == '"' { key_end = Some(i); break; }
             }
-            match b {
-                b'"' => in_string = true,
-                b'{' | b'[' => depth += 1,
-                b'}' | b']' => {
-                    if depth == 0 {
-                        return Some(rest[..i].trim().to_string());
-                    }
-                    depth -= 1;
+            let key_end = key_end?;
+            let matches = &key_text[..key_end] == key;
+            rest = key_text[key_end + 1..].trim_start().strip_prefix(':')?.trim_start();
+            let mut depth = 0usize;
+            let mut in_string = false;
+            let mut escaped = false;
+            let mut end = rest.len();
+            for (i, b) in rest.bytes().enumerate() {
+                if in_string {
+                    if escaped { escaped = false; }
+                    else if b == b'\\' { escaped = true; }
+                    else if b == b'"' { in_string = false; }
+                    continue;
                 }
-                b',' if depth == 0 => return Some(rest[..i].trim().to_string()),
-                _ => {}
+                match b {
+                    b'"' => in_string = true,
+                    b'{' | b'[' => depth += 1,
+                    b'}' | b']' if depth > 0 => depth -= 1,
+                    b'}' | b',' if depth == 0 => { end = i; break; }
+                    _ => {}
+                }
             }
+            if matches { return Some(rest[..end].trim().to_string()); }
+            rest = rest[end..].strip_prefix(',')?;
         }
-        Some(rest.trim().to_string())
     }
 
     /// Best-effort extraction of a string argument.
@@ -369,6 +373,13 @@ mod tests {
             .arg_raw("command")
             .unwrap();
         assert_eq!(v, r#""echo \"hi\"""#);
+    }
+
+    #[test]
+    fn nested_and_quoted_keys_cannot_shadow_top_level_arguments() {
+        assert_eq!(call(r#"{"nested":{"command":"wrong"},"command":"correct"}"#).arg_str("command").as_deref(), Some("correct"));
+        assert_eq!(call(r#"{"note":"command","command":"correct"}"#).arg_str("command").as_deref(), Some("correct"));
+        assert!(call(r#"{"nested":{"command":"wrong"}}"#).arg_str("command").is_none());
     }
 
     #[test]

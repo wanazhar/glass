@@ -102,7 +102,7 @@ fn build_messages(system: &str, messages: &[glass_mod_api::Message]) -> Vec<Valu
                 name,
                 arguments,
             } => {
-                let call = json!({"id":id,"type":"function","function":{"name":name,"arguments":arguments}});
+                let call = json!({"id":id,"type":"function","function":{"name":name,"arguments":crate::tool_repair::wire_arguments(arguments)}});
                 if let Some(last) = out.last_mut().filter(|v| v["role"] == "assistant") {
                     if !last["tool_calls"].is_array() {
                         last["tool_calls"] = json!([]);
@@ -137,7 +137,7 @@ fn responses_input(messages: &[glass_mod_api::Message]) -> Vec<Value> {
                 id,
                 name,
                 arguments,
-            } => json!({"type":"function_call", "call_id":id, "name":name, "arguments":arguments}),
+            } => json!({"type":"function_call", "call_id":id, "name":name, "arguments":crate::tool_repair::wire_arguments(arguments)}),
             Message::ToolResult { call_id, body, .. } => {
                 json!({"type":"function_call_output", "call_id":call_id, "output":body})
             }
@@ -342,7 +342,7 @@ impl<R: Read> StreamEvents<R> {
             return;
         }
         if self.acc.tools.values().any(|p| {
-            p.id.is_empty() || p.name.is_empty() || serde_json::from_str::<Value>(&p.args).is_err()
+            p.id.is_empty() || p.name.is_empty()
         }) {
             self.fail("Provider returned an incomplete or invalid tool call".into());
             return;
@@ -1001,14 +1001,15 @@ mod protocol_regressions {
         assert!(matches!(&output[0],Event::Error(s) if s.contains("socket closed")));
     }
     #[test]
-    fn invalid_tool_arguments_are_fatal() {
+    fn invalid_tool_arguments_are_delivered_for_agent_validation() {
         let output = events(
             &[
                 json!({"choices":[{"delta":{"tool_calls":[{"id":"c","index":0,"function":{"name":"bash","arguments":"{"}}]}}]}),
             ],
             true,
         );
-        assert!(matches!(&output[0], Event::Error(_)));
+        assert!(matches!(&output[0], Event::ToolCall { arguments, .. } if arguments == "{"));
+        assert!(matches!(output.last(), Some(Event::Done)));
     }
     #[test]
     fn responses_history_contains_request_and_result() {

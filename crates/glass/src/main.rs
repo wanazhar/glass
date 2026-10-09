@@ -51,6 +51,7 @@ mod status;
 mod subagent;
 mod surface;
 mod tools;
+mod tool_repair;
 mod trust;
 mod verify;
 mod warmer;
@@ -3860,8 +3861,13 @@ impl Painter {
             Progress::ProviderNotice(text) => {
                 self.flush(&mut io);
                 self.waiting.set(false);
-                self.notice(&mut io, &glass_tui::theme::ansi(glass_tui::theme::Tone::Warning),
-                    &format!("Provider fallback — {} · /status /model", live::sanitize_provider_detail(text)));
+                let detail = live::sanitize_provider_detail(text);
+                let notice = if text.starts_with("Tool repair") {
+                    format!("⟳ {detail}")
+                } else {
+                    format!("Provider fallback — {detail} · /status /model")
+                };
+                self.notice(&mut io, &glass_tui::theme::ansi(glass_tui::theme::Tone::Warning), &notice);
             }
             Progress::ProviderFailure(text) => {
                 self.flush(&mut io);

@@ -155,7 +155,7 @@ impl Anthropic {
                     name,
                     arguments,
                 } => {
-                    let block = json!({"type":"tool_use", "id":id, "name":name, "input":serde_json::from_str::<Value>(arguments).unwrap_or_else(|_| json!({}))});
+                    let block = json!({"type":"tool_use", "id":id, "name":name, "input":serde_json::from_str::<Value>(&crate::tool_repair::wire_arguments(arguments)).unwrap_or_else(|_| json!({}))});
                     if let Some(last) = out.last_mut().filter(|v| v["role"] == "assistant") {
                         last["content"].as_array_mut().unwrap().push(block);
                     } else {
@@ -169,7 +169,8 @@ impl Anthropic {
                     let block = json!({
                         "type": "tool_result",
                         "tool_use_id": call_id,
-                        "content": [{ "type": "text", "text": body }]
+                        "content": [{ "type": "text", "text": body }],
+                        "is_error": body.starts_with("error:") || body.starts_with("blocked") || body.starts_with("[exit ") && !body.starts_with("[exit 0]")
                     });
                     // Merge into the previous user turn if it is already a
                     // tool-result carrier, otherwise start a new one.
@@ -433,7 +434,7 @@ impl<R: Read> StreamEvents<R> {
                     self.outbox.push_back(Event::ToolCall {
                         id,
                         name,
-                        arguments: args,
+                        arguments: if args.is_empty() { "{}".into() } else { args },
                     });
                 }
             }

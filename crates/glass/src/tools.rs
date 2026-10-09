@@ -55,7 +55,10 @@ impl Outcome {
     /// A tool that did not run, with a message for the model.
     pub fn err(msg: impl Into<String>) -> Self {
         Self {
-            body: msg.into(),
+            body: {
+                let message = msg.into();
+                if message.starts_with("error:") { message } else { format!("error: {message}") }
+            },
             truncated: false,
             exit_code: None,
             spill: None,

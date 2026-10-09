@@ -49,6 +49,7 @@ jobs:
           python3 scripts/smoke-blocks.py
           python3 scripts/smoke-native-files-jobs.py
           python3 scripts/smoke-job-unicode.py
+          python3 scripts/smoke-tool-repair.py
           python3 scripts/smoke-reader.py
           python3 scripts/smoke-doctor.py
           python3 scripts/smoke-trust.py

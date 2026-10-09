@@ -1,6 +1,6 @@
 ---
 id: ship-security-001
-status: pending
+status: in-progress
 depends-on: [ship-terminal-001]
 scope: ship-next-20 items 15-19
 ---
@@ -15,6 +15,11 @@ legacy default and two built-in tools; no blanket prompts on existing installs.
 
 permissions.rs/config.rs, agent.rs/tools.rs/jobs.rs, sandbox.rs, ext protocol/host/
 registry, plugins.rs, MCP bridge.py, modal.rs/main.rs and integration tests.
+
+Foundation work for items 15–17 proceeds in isolated security paths while
+terminal integration proceeds. UI approvals and MCP input routing follow the
+terminal merge. Plugin integrity has passed its focused independent review;
+the complete security wave remains gated on final integration verification.
 
 ## Contracts
 

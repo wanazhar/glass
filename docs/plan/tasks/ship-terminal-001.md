@@ -1,6 +1,6 @@
 ---
 id: ship-terminal-001
-status: pending
+status: in-progress
 depends-on: [ship-reliability-001, ship-reader-001]
 scope: integrate reader and ship-next-20 items 10-14
 ---

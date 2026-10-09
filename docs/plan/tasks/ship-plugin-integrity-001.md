@@ -1,6 +1,6 @@
 ---
 id: ship-plugin-integrity-001
-status: in-progress
+status: complete
 scope: ship-next-20 item 18 and plugin capability inspection
 ---
 

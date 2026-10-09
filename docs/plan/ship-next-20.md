@@ -61,15 +61,15 @@ opens details, Esc returns. Keep existing motion rather than adding reduced moti
 
 ## Tracked completion
 
-- [ ] 1 Incremental session index
-- [ ] 2 Checked effect intent writes
-- [ ] 3 Session writer locks
-- [ ] 4 Atomic partial snapshots
-- [ ] 5 Durable extension acknowledgments
-- [ ] 6 Cross-restart submission dedupe
-- [ ] 7 Performance regression CI
-- [ ] 8 Conversation search
-- [ ] 9 Persistent reading anchor
+- [x] 1 Incremental session index
+- [x] 2 Checked effect intent writes
+- [x] 3 Session writer locks
+- [x] 4 Atomic partial snapshots
+- [x] 5 Durable extension acknowledgments
+- [x] 6 Cross-restart submission dedupe
+- [x] 7 Performance regression CI
+- [x] 8 Conversation search
+- [x] 9 Persistent reading anchor
 - [ ] 10 Expandable tool cards
 - [ ] 11 Diff browser
 - [ ] 12 Reconnecting attach
@@ -78,6 +78,12 @@ opens details, Esc returns. Keep existing motion rather than adding reduced moti
 - [ ] 15 Permission profiles
 - [ ] 16 Extension isolation
 - [ ] 17 Capability manifests
-- [ ] 18 Plugin pins and integrity
+- [x] 18 Plugin pins and integrity
 - [ ] 19 MCP input-request modals
-- [ ] 20 Doctor CLI and modal
+- [x] 20 Doctor CLI and modal
+
+## Verified checkpoints
+
+Wave 1 plus reader and plugin integrity passed independent verification: see
+[wave 1 review](reviews/ship-wave1-001-01.md). Remaining terminal and security
+items are still in progress. No release was published.

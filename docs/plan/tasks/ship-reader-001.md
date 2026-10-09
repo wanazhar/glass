@@ -1,6 +1,6 @@
 ---
 id: ship-reader-001
-status: in-progress
+status: complete
 scope: shared transcript search and reading anchors (items 8-9)
 ---
 

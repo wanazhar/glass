@@ -21,6 +21,7 @@ pub struct Live {
     reasoning: String,
     phase: &'static str,
     view: Option<(Tui, Transcript, bool)>,
+    parked_view: Option<(Transcript, bool)>,
     dirty: bool,
     turn: usize,
     thinking_scroll: usize,
@@ -34,6 +35,7 @@ impl Live {
             reasoning: String::new(),
             phase: "Waiting for provider",
             view: None,
+            parked_view: None,
             dirty: true,
             turn: 0,
             thinking_scroll: 0,
@@ -170,13 +172,18 @@ impl Live {
         let tui = Terminal::new(CrosstermBackend::new(glass_tui::theme::TerminalWriter(
             io::stdout(),
         )))?;
-        self.view = Some((tui, Transcript::new(self.rows()), thinking));
+        let transcript = match self.parked_view.take() {
+            Some((view, old_thinking)) if old_thinking == thinking => view,
+            _ => Transcript::new(self.rows()),
+        };
+        self.view = Some((tui, transcript, thinking));
         self.dirty = true;
         self.draw()
     }
     pub fn close(&mut self) -> io::Result<()> {
-        if let Some((mut tui, _, _)) = self.view.take() {
+        if let Some((mut tui, view, thinking)) = self.view.take() {
             tui.show_cursor().ok();
+            self.parked_view = Some((view, thinking));
 
             surface::overlay(false)?;
         }

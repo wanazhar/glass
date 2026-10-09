@@ -24,6 +24,18 @@ pub struct Transcript {
     collapsed: Vec<bool>,
     original: Vec<(String, Role, usize)>,
     inline_hint: Option<String>,
+    anchor: Option<Anchor>,
+    matches: Vec<usize>,
+    match_index: Option<usize>,
+}
+
+#[derive(Clone)]
+struct Anchor {
+    text: String,
+    role: Role,
+    turn: usize,
+    occurrence: usize,
+    line: usize,
 }
 
 impl Transcript {
@@ -42,6 +54,9 @@ impl Transcript {
             collapsed,
             original: rows,
             inline_hint: None,
+            anchor: None,
+            matches: Vec::new(),
+            match_index: None,
         }
     }
 
@@ -54,9 +69,14 @@ impl Transcript {
         if self.original == rows {
             return false;
         }
+        let anchor = self.capture_anchor();
         self.collapsed.resize(rows.len(), false);
         self.original = rows;
         self.rebuild();
+        self.restore_anchor(anchor);
+        if !self.matches.is_empty() {
+            self.refresh_search_matches();
+        }
         true
     }
 
@@ -75,8 +95,9 @@ impl Transcript {
 
     /// Set the wrapping width before applying an initial page offset.
     pub fn set_width(&mut self, width: u16) {
+        let anchor = self.capture_anchor();
         self.layout.set_width(width.max(1));
-        self.clamp(1);
+        self.restore_anchor(anchor);
     }
 
     /// Clamp `scroll` so the viewport can always be filled.
@@ -92,11 +113,12 @@ impl Transcript {
     pub fn step(&mut self, delta: isize, height: u16) {
         self.scroll = (self.scroll as isize + delta).max(0) as usize;
         self.clamp(height);
-        self.follow = delta >= 0 && self.scroll
-            == self
-                .layout
-                .total_lines()
-                .saturating_sub(height.max(1) as usize);
+        self.follow = delta >= 0
+            && self.scroll
+                == self
+                    .layout
+                    .total_lines()
+                    .saturating_sub(height.max(1) as usize);
     }
 
     /// Scroll by half a viewport for the fullscreen transcript.
@@ -117,6 +139,107 @@ impl Transcript {
     pub fn top(&mut self) {
         self.scroll = 0;
         self.follow = false;
+    }
+
+    /// Search complete raw entry strings, including command and tool output.
+    /// Match positions are entry anchors, so jump targets remain valid on reflow.
+    pub fn search(&mut self, query: &str) -> usize {
+        self.matches.clear();
+        self.match_index = None;
+        if query.is_empty() {
+            return 0;
+        }
+        let needle = query.to_lowercase();
+        for i in 0..self.layout.len() {
+            if let Some(text) = self.layout.entry_text(i) {
+                let lower = text.to_lowercase();
+                if lower.contains(&needle) {
+                    let role = self.original.get(i).map(|row| row.1).unwrap_or(Role::Meta);
+                    let line = display_line_for_match(text, role, query, self.layout.width());
+                    let boundary = usize::from(i > 0);
+                    self.matches
+                        .push(self.layout.line_for_entry(i).unwrap_or(0) + boundary + line);
+                }
+            }
+        }
+        self.matches.len()
+    }
+
+    pub fn search_next(&mut self, reverse: bool, height: u16) -> bool {
+        if self.matches.is_empty() {
+            return false;
+        }
+        let next = match self.match_index {
+            None => {
+                if reverse {
+                    self.matches.len() - 1
+                } else {
+                    0
+                }
+            }
+            Some(i) if reverse => (i + self.matches.len() - 1) % self.matches.len(),
+            Some(i) => (i + 1) % self.matches.len(),
+        };
+        self.match_index = Some(next);
+        self.scroll = self.matches[next];
+        self.follow = false;
+        self.clamp(height);
+        self.anchor = self.capture_anchor();
+        true
+    }
+
+    fn refresh_search_matches(&mut self) {
+        // The caller only invokes this when a search was already active.
+        // The query itself is held by the reader; matching is refreshed there.
+        self.matches.retain(|i| *i < self.layout.len());
+    }
+
+    fn capture_anchor(&self) -> Option<Anchor> {
+        if self.layout.is_empty() {
+            return None;
+        }
+        let entry = self.layout.entry_at_line(self.scroll);
+        let (text, role, turn) = self.original.get(entry)?;
+        let occurrence = self.original[..entry]
+            .iter()
+            .filter(|row| row.0 == *text && row.1 == *role && row.2 == *turn)
+            .count();
+        let start = self.layout.line_for_entry(entry).unwrap_or(0);
+        Some(Anchor {
+            text: text.clone(),
+            role: *role,
+            turn: *turn,
+            occurrence,
+            line: self.scroll.saturating_sub(start),
+        })
+    }
+
+    fn restore_anchor(&mut self, anchor: Option<Anchor>) {
+        let Some(anchor) = anchor else {
+            self.clamp(1);
+            return;
+        };
+        let mut seen = 0;
+        let found = self.original.iter().enumerate().find_map(|(i, row)| {
+            if row.0 == anchor.text && row.1 == anchor.role && row.2 == anchor.turn {
+                let current = seen;
+                seen += 1;
+                (current == anchor.occurrence).then_some(i)
+            } else {
+                None
+            }
+        });
+        if let Some(entry) = found {
+            self.scroll = self
+                .layout
+                .line_for_entry(entry)
+                .unwrap_or(0)
+                .saturating_add(anchor.line);
+            self.clamp(1);
+            self.anchor = self.capture_anchor();
+        } else {
+            self.clamp(1);
+        }
     }
 
     /// Pin to the newest content.
@@ -178,6 +301,11 @@ impl Transcript {
             .split(area);
 
         let view = chunks[0];
+        if self.layout.width() != view.width {
+            let anchor = self.capture_anchor();
+            self.layout.set_width(view.width.max(1));
+            self.restore_anchor(anchor);
+        }
         if self.follow {
             self.follow_tail(view.height);
         }
@@ -253,6 +381,41 @@ impl Transcript {
             frame.render_widget(Paragraph::new(overlay.lines.join("\n")), rect);
         }
     }
+}
+
+fn display_line_for_match(text: &str, role: Role, query: &str, width: u16) -> usize {
+    let mut preceding = 0;
+    let lines: Vec<_> = text.lines().collect();
+    for (line_index, raw) in lines.iter().enumerate() {
+        let content_width = if line_index == 0 && role != Role::Assistant && role != Role::User {
+            usize::from(width).saturating_sub(crate::text::width(&crate::text::clip(
+                &format!(" {} ", role.label()),
+                usize::from(width.saturating_sub(1)),
+            )))
+        } else if line_index == 0 && role == Role::User {
+            usize::from(width).saturating_sub(2)
+        } else {
+            usize::from(width)
+        }
+        .max(1);
+        let wrapped = wrap_width(raw, content_width);
+        let query = query.to_lowercase();
+        let lowered = raw.to_lowercase();
+        if let Some(byte) = lowered.find(&query) {
+            let char_offset = lowered[..byte].chars().count();
+            let mut consumed = 0;
+            for (wrapped_index, part) in wrapped.iter().enumerate() {
+                let part_len = part.chars().count();
+                if char_offset < consumed + part_len {
+                    return preceding + wrapped_index;
+                }
+                consumed += part_len + 1;
+            }
+            return preceding + wrapped.len().saturating_sub(1);
+        }
+        preceding += wrapped.len().max(1);
+    }
+    0
 }
 
 /// Wrap text to `width` columns on whitespace where possible, hard-splitting
@@ -477,5 +640,50 @@ mod tests {
         assert!(t.is_empty());
         t.step(5, H);
         assert_eq!(t.scroll, 0);
+    }
+
+    #[test]
+    fn search_matches_full_raw_tool_output_and_navigates() {
+        let mut t = Transcript::new(vec![
+            Entry {
+                role: Role::Tool,
+                text: "command: run\n".to_string() + &"hidden output needle\n".repeat(20),
+                turn: 1,
+            },
+            Entry {
+                role: Role::User,
+                text: "needle in a later message".into(),
+                turn: 2,
+            },
+        ]);
+        assert_eq!(t.search("needle"), 2);
+        assert!(t.search_next(false, H));
+        assert_eq!(t.layout.entry_at_line(t.scroll), 0);
+        assert!(t.search_next(false, H));
+        let second = t.matches[1];
+        assert!(second >= t.scroll && second < t.scroll + H as usize);
+        assert!(t.search_next(true, H));
+        let first = t.matches[0];
+        assert!(first >= t.scroll && first < t.scroll + H as usize);
+    }
+
+    #[test]
+    fn stable_anchor_survives_reflow_and_appends() {
+        let mut t = Transcript::new(entries(80));
+        t.top();
+        t.step(22, H);
+        let text = t
+            .layout
+            .entry_text(t.layout.entry_at_line(t.scroll))
+            .unwrap()
+            .to_string();
+        t.set_width(20);
+        let entry = t.layout.entry_at_line(t.scroll);
+        assert_eq!(t.layout.entry_text(entry), Some(text.as_str()));
+        t.replace_entries(entries(100));
+        assert_eq!(
+            t.layout.entry_text(t.layout.entry_at_line(t.scroll)),
+            Some(text.as_str())
+        );
     }
 }

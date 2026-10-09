@@ -95,6 +95,19 @@ impl Layout {
         }
     }
 
+    /// First wrapped row for an entry.
+    pub fn line_for_entry(&self, entry: usize) -> Option<usize> {
+        self.starts
+            .get(entry)
+            .copied()
+            .filter(|_| entry < self.entries.len())
+    }
+
+    /// Raw entry text, including full tool output rather than its rendered preview.
+    pub fn entry_text(&self, entry: usize) -> Option<&str> {
+        self.entries.get(entry).map(|row| row.0.as_str())
+    }
+
     /// Recompute the line index. Requires every entry to be laid out, so this
     /// is the one genuinely O(history) pass; it only runs when entries change,
     /// not on scroll or on every keystroke.

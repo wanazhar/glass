@@ -1,6 +1,6 @@
 # Twenty-item shipping round
 
-Status: approved for implementation by the user's “ship all” instruction.
+Status: all 20 items implemented and verified locally on 2026-10-09.
 
 ## Delivery
 
@@ -70,20 +70,22 @@ opens details, Esc returns. Keep existing motion rather than adding reduced moti
 - [x] 7 Performance regression CI
 - [x] 8 Conversation search
 - [x] 9 Persistent reading anchor
-- [ ] 10 Expandable tool cards
-- [ ] 11 Diff browser
-- [ ] 12 Reconnecting attach
-- [ ] 13 Unified activity dashboard
-- [ ] 14 Provider health
-- [ ] 15 Permission profiles
-- [ ] 16 Extension isolation
-- [ ] 17 Capability manifests
+- [x] 10 Expandable tool cards
+- [x] 11 Diff browser
+- [x] 12 Reconnecting attach
+- [x] 13 Unified activity dashboard
+- [x] 14 Provider health
+- [x] 15 Permission profiles
+- [x] 16 Extension isolation
+- [x] 17 Capability manifests
 - [x] 18 Plugin pins and integrity
-- [ ] 19 MCP input-request modals
+- [x] 19 MCP input-request modals
 - [x] 20 Doctor CLI and modal
 
 ## Verified checkpoints
 
 Wave 1 plus reader and plugin integrity passed independent verification: see
-[wave 1 review](reviews/ship-wave1-001-01.md). Remaining terminal and security
-items are still in progress. No release was published.
+[wave 1 review](reviews/ship-wave1-001-01.md). All remaining terminal and security items passed the
+[final verification](reviews/ship-final-001-01.md), including 571 tests, strict
+Clippy, 40 release smoke suites, small-screen PTYs and performance budgets.
+No release was published.

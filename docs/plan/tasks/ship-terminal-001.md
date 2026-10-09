@@ -1,6 +1,6 @@
 ---
 id: ship-terminal-001
-status: in-progress
+status: complete
 depends-on: [ship-reliability-001, ship-reader-001]
 scope: integrate reader and ship-next-20 items 10-14
 ---
@@ -39,3 +39,10 @@ Actual VT PTYs at 40x24/20x8, long output and resize, expanded cards/search;
 Git diff fixture with multiple files/hunks and long lines; mock provider phases
 and errors; disposable serve kill/restart reconnection with one prompt execution.
 Tests cover entry anchors and tool call/result identity, no text-equality IDs.
+
+## Final verification
+
+Completed in root source checkpoint `1890e59`; see
+[final evidence](../reviews/ship-final-001-01.md). Independent review blockers were
+fixed before the clean release run. All 40 smoke suites, 571 workspace tests,
+strict Clippy and performance gates passed, with real PTYs at 40x24 and 20x8.

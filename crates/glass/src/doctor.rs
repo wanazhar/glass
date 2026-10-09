@@ -141,12 +141,30 @@ pub fn inspect(cfg: &crate::config::Config, config_path: &Path, session_dir: &Pa
 fn executable_available(reference: &str) -> bool {
     let path = Path::new(reference);
     if path.components().count() > 1 || path.is_absolute() {
-        return path.is_file();
+        return is_executable(path);
     }
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .any(|dir| dir.join(reference).is_file())
+        .any(|dir| is_executable(&dir.join(reference)))
+}
+
+fn is_executable(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn session_integrity(dir: &Path) -> (&'static str, String) {
@@ -250,5 +268,26 @@ mod tests {
         let r = inspect(&cfg, &root.join("config.toml"), &root.join("missing"));
         assert_eq!(r.checks.last().unwrap().status, "ok");
         assert!(!root.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extension_reference_requires_executable_permission() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch();
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("extension");
+        std::fs::write(&target, "fixture").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!is_executable(&target));
+        assert!(!executable_available(target.to_str().unwrap()));
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(is_executable(&target));
+        assert!(executable_available(target.to_str().unwrap()));
+        assert!(
+            executable_available("sh"),
+            "PATH lookup should require a runnable file"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

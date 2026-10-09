@@ -20,6 +20,8 @@ pub struct Reader {
     terminal: Tui,
     transcript: Transcript,
     unread: usize,
+    search: Option<String>,
+    match_count: usize,
 }
 
 impl Reader {
@@ -36,6 +38,8 @@ impl Reader {
             terminal,
             transcript,
             unread: 0,
+            search: None,
+            match_count: 0,
         };
         reader.draw()?;
         Ok(reader)
@@ -45,6 +49,9 @@ impl Reader {
         let following = self.transcript.follow;
         if !self.transcript.replace_entries(entries) {
             return Ok(());
+        }
+        if let Some(query) = &self.search {
+            self.match_count = self.transcript.search(query);
         }
         if following {
             self.unread = 0;
@@ -74,8 +81,43 @@ impl Reader {
             }
             Event::Key(key) => {
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                if let Some(query) = self.search.as_mut() {
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.search = None;
+                            self.match_count = 0;
+                        }
+                        KeyCode::Enter | KeyCode::Down => {
+                            self.transcript.search_next(false, area.height);
+                        }
+                        KeyCode::Up => {
+                            self.transcript.search_next(true, area.height);
+                        }
+                        KeyCode::Backspace => {
+                            query.pop();
+                            self.match_count = self.transcript.search(query);
+                        }
+                        KeyCode::Char(c) if !ctrl => {
+                            query.push(c);
+                            self.match_count = self.transcript.search(query);
+                        }
+                        _ => return Ok(Action::Handled),
+                    }
+                    draw = true;
+                    if draw {
+                        self.draw()?;
+                    }
+                    return Ok(Action::Handled);
+                }
                 match key.code {
-                    KeyCode::Esc | KeyCode::End => return Ok(Action::Close),
+                    KeyCode::Esc => return Ok(Action::Close),
+                    KeyCode::End => {
+                        self.transcript.follow_tail(area.height);
+                    }
+                    KeyCode::Char('f') if ctrl => {
+                        self.search = Some(String::new());
+                        self.match_count = 0;
+                    }
                     KeyCode::Char('g' | 't') if ctrl => return Ok(Action::CloseAndPass),
                     KeyCode::Home if ctrl => self.transcript.top(),
                     KeyCode::PageUp => self.transcript.step(-(area.height as isize), area.height),
@@ -111,7 +153,12 @@ impl Reader {
     }
 
     fn draw(&mut self) -> io::Result<()> {
-        let hint = if self.transcript.follow {
+        let hint = if let Some(query) = &self.search {
+            format!(
+                "/{}  · {} matches · Enter/↓ next · ↑ previous · Esc cancel",
+                query, self.match_count
+            )
+        } else if self.transcript.follow {
             "PgUp/Ctrl+B ↑ · PgDn/Ctrl+F ↓ · End/Esc bottom · Wheel".to_string()
         } else if self.unread == 0 {
             "End / Esc back to bottom".to_string()

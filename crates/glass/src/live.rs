@@ -21,7 +21,7 @@ pub struct Live {
     reasoning: String,
     phase: &'static str,
     view: Option<(Tui, Transcript, bool)>,
-    parked_view: Option<(Transcript, bool)>,
+    parked_views: [Option<Transcript>; 2],
     dirty: bool,
     turn: usize,
     thinking_scroll: usize,
@@ -35,7 +35,7 @@ impl Live {
             reasoning: String::new(),
             phase: "Waiting for provider",
             view: None,
-            parked_view: None,
+            parked_views: [None, None],
             dirty: true,
             turn: 0,
             thinking_scroll: 0,
@@ -172,10 +172,9 @@ impl Live {
         let tui = Terminal::new(CrosstermBackend::new(glass_tui::theme::TerminalWriter(
             io::stdout(),
         )))?;
-        let transcript = match self.parked_view.take() {
-            Some((view, old_thinking)) if old_thinking == thinking => view,
-            _ => Transcript::new(self.rows()),
-        };
+        let transcript = self
+            .take_parked_view(thinking)
+            .unwrap_or_else(|| Transcript::new(self.rows()));
         self.view = Some((tui, transcript, thinking));
         self.dirty = true;
         self.draw()
@@ -183,11 +182,19 @@ impl Live {
     pub fn close(&mut self) -> io::Result<()> {
         if let Some((mut tui, view, thinking)) = self.view.take() {
             tui.show_cursor().ok();
-            self.parked_view = Some((view, thinking));
+            self.park_view(thinking, view);
 
             surface::overlay(false)?;
         }
         Ok(())
+    }
+
+    fn take_parked_view(&mut self, thinking: bool) -> Option<Transcript> {
+        self.parked_views[usize::from(thinking)].take()
+    }
+
+    fn park_view(&mut self, thinking: bool, view: Transcript) {
+        self.parked_views[usize::from(thinking)] = Some(view);
     }
     pub fn event(&mut self, ev: &Event) -> bool {
         if !self.active() {
@@ -328,10 +335,52 @@ impl Drop for Live {
 mod tests {
     use super::*;
 
+    fn transcript_entries(count: usize) -> Vec<Entry> {
+        (0..count)
+            .map(|turn| Entry {
+                role: Role::User,
+                text: format!("history marker {turn}"),
+                turn,
+            })
+            .collect()
+    }
+
     #[test]
     fn live_view_wheel_deltas_only_scroll_for_wheel_events() {
         assert_eq!(wheel_lines(MouseEventKind::ScrollUp), Some(-3));
         assert_eq!(wheel_lines(MouseEventKind::ScrollDown), Some(3));
         assert_eq!(wheel_lines(MouseEventKind::Moved), None);
+    }
+
+    #[test]
+    fn transcript_and_reasoning_views_keep_independent_paused_positions() {
+        let mut live = Live::new();
+        let mut transcript = Transcript::new(transcript_entries(80));
+        transcript.top();
+        transcript.step(23, 10);
+        let paused_line = transcript.scroll;
+        let paused_entry = transcript.layout.entry_at_line(paused_line);
+        let paused_text = transcript.layout.entry_text(paused_entry).unwrap().to_string();
+        live.park_view(false, transcript);
+
+        let mut reasoning = Transcript::new(transcript_entries(30));
+        reasoning.top();
+        reasoning.step(7, 10);
+        let reasoning_line = reasoning.scroll;
+        live.park_view(true, reasoning);
+
+        // Switching to reasoning and back must not evict the transcript state.
+        let reasoning = live.take_parked_view(true).unwrap();
+        assert_eq!(reasoning.scroll, reasoning_line);
+        live.park_view(true, reasoning);
+        let mut transcript = live.take_parked_view(false).unwrap();
+        assert_eq!(transcript.scroll, paused_line);
+        transcript.replace_entries(transcript_entries(100));
+        let entry = transcript.layout.entry_at_line(transcript.scroll);
+        assert_eq!(transcript.layout.entry_text(entry), Some(paused_text.as_str()));
+        live.park_view(false, transcript);
+
+        assert_eq!(live.take_parked_view(true).unwrap().scroll, reasoning_line);
+        assert_eq!(live.take_parked_view(false).unwrap().scroll, paused_line);
     }
 }

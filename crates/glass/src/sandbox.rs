@@ -574,7 +574,7 @@ pub fn inspect_extension_capabilities(
     #[cfg(target_os = "linux")]
     {
         let roots = landlock::PathRoots::new(workspace)?;
-        let (caps, _sidecar) = load_extension_capabilities(spec, &roots)?;
+        let (caps, _sidecar, _entrypoint) = load_extension_capabilities(spec, &roots)?;
         let (_writes, _reads) = landlock::pin_capability_paths(&caps, &roots)?;
         Ok(caps)
     }
@@ -588,33 +588,23 @@ pub fn inspect_extension_capabilities(
 fn load_extension_capabilities(
     spec: &str,
     roots: &landlock::PathRoots,
-) -> Result<(ExtensionCapabilities, PathBuf), String> {
+) -> Result<(ExtensionCapabilities, PathBuf, std::fs::File), String> {
     let parts = crate::ext::host::arguments(spec)?;
     let target = parts.last().ok_or("extension command is empty")?;
     let raw = PathBuf::from(target);
     let relative_with_path = !raw.is_absolute() && (target.contains('/') || target.contains('\\'));
-    let candidates = if raw.is_absolute() || relative_with_path {
-        vec![if raw.is_absolute() {
-            raw.clone()
-        } else {
-            std::env::current_dir()
-                .map_err(|error| format!("cannot resolve current directory: {error}"))?
-                .join(&raw)
-        }]
+    // A trailing argument is interpreted from the extension's configured
+    // current directory (the workspace), even when it has no slash. Only a
+    // bare one-token command is resolved through PATH.
+    let path_is_executable = parts.len() == 1;
+    let candidates = if raw.is_absolute() || relative_with_path || !path_is_executable {
+        vec![raw.clone()]
     } else {
-        let cwd = std::env::current_dir()
-            .map_err(|error| format!("cannot resolve current directory: {error}"))?;
         std::env::var_os("PATH")
             .into_iter()
             .flat_map(|paths| {
                 std::env::split_paths(&paths)
-                    .map(|dir| {
-                        if dir.is_absolute() {
-                            dir.join(&raw)
-                        } else {
-                            cwd.join(dir).join(&raw)
-                        }
-                    })
+                    .map(|dir| dir.join(&raw))
                     .collect::<Vec<_>>()
             })
             .collect()
@@ -641,7 +631,7 @@ fn load_extension_capabilities(
                     let descriptor = roots.open(&sidecar, libc::O_RDONLY | libc::O_CLOEXEC)
                         .map_err(|error| format!("strict extension isolation requires capability declaration {} as a regular no-symlink file: {error}", sidecar.display()))?;
                     let caps = parse_pinned_sidecar(descriptor, &sidecar)?;
-                    return Ok((caps, sidecar));
+                    return Ok((caps, sidecar, entrypoint));
                 }
                 Err(error) => last_error = Some(error),
             }
@@ -660,7 +650,7 @@ fn load_extension_capabilities(
 
 #[cfg(target_os = "linux")]
 fn parse_pinned_sidecar(
-    descriptor: std::fs::File,
+    mut descriptor: std::fs::File,
     sidecar: &std::path::Path,
 ) -> Result<ExtensionCapabilities, String> {
     let metadata = descriptor.metadata().map_err(|error| {
@@ -682,8 +672,10 @@ fn parse_pinned_sidecar(
         ));
     }
     use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     descriptor
+        .by_ref()
         .take(32 * 1024 + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| {
@@ -695,6 +687,23 @@ fn parse_pinned_sidecar(
     if bytes.len() > 32 * 1024 {
         return Err(format!(
             "extension capability declaration {} exceeds 32 KiB",
+            sidecar.display()
+        ));
+    }
+    let after = descriptor
+        .metadata()
+        .map_err(|error| format!("cannot recheck capability declaration: {error}"))?;
+    if bytes.len() as u64 != metadata.len()
+        || metadata.dev() != after.dev()
+        || metadata.ino() != after.ino()
+        || metadata.len() != after.len()
+        || metadata.mtime() != after.mtime()
+        || metadata.mtime_nsec() != after.mtime_nsec()
+        || metadata.ctime() != after.ctime()
+        || metadata.ctime_nsec() != after.ctime_nsec()
+    {
+        return Err(format!(
+            "extension capability declaration {} changed while it was read",
             sidecar.display()
         ));
     }
@@ -719,13 +728,15 @@ pub fn harden_extension(
         return Ok(Vec::new());
     }
     let roots = landlock::PathRoots::new(workspace)?;
-    let (caps, _sidecar) = load_extension_capabilities(spec, &roots)?;
+    let (caps, _sidecar, entrypoint) = load_extension_capabilities(spec, &roots)?;
     if landlock::abi().is_none_or(|version| version < 4) {
         return Err("strict extension network capabilities require Landlock ABI 4 (Linux 6.7+); refusing downgrade".into());
     }
-    let (fd, notes) = landlock::build_extension(&caps, &roots)?;
+    let (fd, notes) = landlock::build_extension(&caps, &roots, entrypoint)?;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
     unsafe {
-        cmd.pre_exec(move || landlock::enter(fd));
+        cmd.pre_exec(move || landlock::enter(fd.as_raw_fd()));
     }
     let process_note = if caps.subprocess {
         "extension subprocesses are allowed and inherit the same Landlock jail"
@@ -1011,12 +1022,14 @@ mod landlock {
     pub fn build_extension(
         caps: &ExtensionCapabilities,
         roots: &PathRoots,
+        entrypoint: std::fs::File,
     ) -> Result<(RawFd, Vec<String>), String> {
         let abi = abi().ok_or("Landlock is not available on this kernel")?;
         if abi < 4 {
             return Err("strict extension isolation requires Landlock ABI 4 (Linux 6.7+) for network default-deny; refusing downgrade".into());
         }
-        let (writes, reads) = pin_capability_paths(caps, roots)?;
+        let (writes, mut reads) = pin_capability_paths(caps, roots)?;
+        reads.push(entrypoint);
         build_extension_pinned(caps, abi, writes, reads)
     }
 
@@ -1031,17 +1044,27 @@ mod landlock {
         let mut grants = std::collections::BTreeMap::<(u64, u64), (RawFd, u64)>::new();
         for file in &reads {
             let meta = file.metadata().map_err(|e| e.to_string())?;
+            let read_access = if meta.is_dir() {
+                READ_RIGHTS
+            } else {
+                READ_FILE
+            };
             grants
                 .entry((meta.dev(), meta.ino()))
-                .and_modify(|grant| grant.1 |= READ_RIGHTS | EXECUTE)
-                .or_insert((file.as_raw_fd(), READ_RIGHTS | EXECUTE));
+                .and_modify(|grant| grant.1 |= read_access | EXECUTE)
+                .or_insert((file.as_raw_fd(), read_access | EXECUTE));
         }
         for file in &writes {
             let meta = file.metadata().map_err(|e| e.to_string())?;
+            let read_access = if meta.is_dir() {
+                READ_RIGHTS
+            } else {
+                READ_FILE
+            };
             grants
                 .entry((meta.dev(), meta.ino()))
-                .and_modify(|grant| grant.1 |= write_rights(abi) | READ_RIGHTS | EXECUTE)
-                .or_insert((file.as_raw_fd(), write_rights(abi) | READ_RIGHTS | EXECUTE));
+                .and_modify(|grant| grant.1 |= write_rights(abi) | read_access | EXECUTE)
+                .or_insert((file.as_raw_fd(), write_rights(abi) | read_access | EXECUTE));
         }
         let fs_handled = write_rights(abi) | READ_RIGHTS | EXECUTE;
         let net_handled = NET_CONNECT_TCP;
@@ -1699,6 +1722,40 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn relative_extension_entrypoint_uses_workspace_cwd_not_host_cwd() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let name = format!("gc-security-cwd-{suffix}.py");
+        let host_script = std::env::current_dir().unwrap().join(&name);
+        let host_sidecar = PathBuf::from(format!("{}.capabilities.json", host_script.display()));
+        let dir = std::env::temp_dir().join(format!("gc-workspace-cwd-{suffix}"));
+        let workspace = dir.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join(&name), "pass\n").unwrap();
+        std::fs::write(
+            format!("{}.capabilities.json", workspace.join(&name).display()),
+            r#"{"filesystem":{"read":[],"write":[]},"network":[12345],"subprocess":false}"#,
+        )
+        .unwrap();
+        std::fs::write(&host_script, "pass\n").unwrap();
+        std::fs::write(
+            &host_sidecar,
+            r#"{"filesystem":{"read":[],"write":[]},"network":[23456],"subprocess":false}"#,
+        )
+        .unwrap();
+
+        let inspected = inspect_extension_capabilities(&format!("python3 {name}"), &workspace);
+        let _ = std::fs::remove_file(host_sidecar);
+        let _ = std::fs::remove_file(host_script);
+        let _ = std::fs::remove_dir_all(dir);
+        assert_eq!(inspected.unwrap().network, vec![12345]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn pinned_capability_fd_survives_path_replacement_before_rule_install() {
         if landlock::abi().is_none_or(|abi| abi < 4) {
             return;
@@ -1725,6 +1782,11 @@ mod tests {
         let (fd, _) =
             landlock::build_extension_pinned(&caps, landlock::abi().unwrap(), writes, reads)
                 .unwrap();
+        let descriptor_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert!(
+            descriptor_flags >= 0 && descriptor_flags & libc::FD_CLOEXEC != 0,
+            "kernel ruleset descriptors must not leak through exec"
+        );
         use std::os::unix::process::CommandExt;
         let mut child = Command::new("/bin/sh");
         child.arg("-c").arg(format!(

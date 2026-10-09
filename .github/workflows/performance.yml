@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - 'crates/glass/**'
+      - 'crates/glass-tui/**'
       - 'scripts/check-performance.py'
       - '.github/workflows/performance.yml'
 
@@ -23,10 +24,11 @@ jobs:
         env:
           GLASS_CORE_TEST_BINARY: ${{ github.workspace }}/target/release/glass-core
           GC_PERF_REPORT: perf-report.json
-          GC_PERF_STARTUP_BUDGET_MS: '1500'
-          GC_PERF_KEY_BUDGET_MS: '1500'
+          GC_PERF_STARTUP_BUDGET_MS: '250'
+          GC_PERF_KEY_BUDGET_MS: '200'
+          GC_PERF_FRAME_BUDGET_MS: '200'
           GC_PERF_HISTORY_BUDGET_MS: '10000'
-          GC_PERF_RSS_BUDGET_KIB: '524288'
+          GC_PERF_RSS_BUDGET_KIB: '131072'
         run: python3 scripts/check-performance.py
       - uses: actions/upload-artifact@v4
         if: always()

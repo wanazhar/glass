@@ -29,6 +29,7 @@ mod mods;
 mod notify;
 mod onboarding;
 mod partial;
+mod permissions;
 mod plugins;
 mod polish;
 mod pricing;

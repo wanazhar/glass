@@ -121,6 +121,9 @@ fn choices(schema: &Value) -> Result<Vec<(Value, String)>, String> {
 
 impl ElicitationRequest {
     pub fn parse(server: &str, params: &Value) -> Result<Self, String> {
+        if server.is_empty() || server.len() > 128 || server.chars().any(char::is_control) {
+            return Err("input request has an invalid server name".into());
+        }
         let raw = serde_json::to_vec(params).map_err(|_| "invalid input request")?;
         if raw.len() > MAX_INPUT_BYTES {
             return Err("input request exceeds size limit".into());
@@ -329,9 +332,17 @@ impl ElicitationRequest {
         let title = format!("MCP input · {}", self.server);
         if self.mode == "url" {
             let host = self.host.as_deref().unwrap_or("unknown host");
+            modal::info(
+                keys,
+                &format!("MCP URL destination · {}", self.server),
+                &format!(
+                    "HTTPS host: {host}\n\n{}\n\nGlass will not open the URL automatically.",
+                    self.message
+                ),
+            );
             let choice = modal::choose(
                 keys,
-                &title,
+                &format!("MCP URL · {host}"),
                 &format!(
                     "{}\nHTTPS destination: {host}\nGlass will not open this URL.",
                     self.message
@@ -346,6 +357,7 @@ impl ElicitationRequest {
                 json!({"action": match choice { Some(0) => "accept", Some(2) => "cancel", _ => "decline" }}),
             );
         }
+        modal::info(keys, &title, &self.message);
         let mut content = Map::new();
         for field in &self.fields {
             let value = if !field.choices.is_empty() && field.kind == "string" {
@@ -396,7 +408,7 @@ impl ElicitationRequest {
                 let answer = modal::field(
                     keys,
                     &format!("{title} · {}", field.title),
-                    &field.description,
+                    &format!("{} · {}", self.message, field.description),
                     &initial,
                     false,
                 );
@@ -680,5 +692,12 @@ mod tests {
         let insecure =
             json!({"mode":"url", "message":"Continue", "url":"http://example.test/auth"});
         assert!(ElicitationRequest::parse("fixture", &insecure).is_err());
+        let safe_url = json!({"mode":"url", "message":"Continue", "url":"https://login.example.test/oauth/start?state=opaque"});
+        let parsed = ElicitationRequest::parse("fixture", &safe_url).unwrap();
+        assert_eq!(parsed.host.as_deref(), Some("login.example.test"));
+        assert_eq!(
+            parsed.url.as_deref(),
+            Some("https://login.example.test/oauth/start?state=opaque")
+        );
     }
 }

@@ -221,10 +221,18 @@ pub fn serve(
     let clients = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Client>::new()));
     let mut mailbox = crate::inbox::Mailbox::open(&session.id);
     let mut pending: VecDeque<Value> = VecDeque::new();
-    // Idempotent submissions: a retried prompt must not run twice. In-process
-    // only — a durable table would need a storage decision this protocol has
-    // not made yet.
-    let mut seen_requests: VecDeque<String> = VecDeque::new();
+    // The accepted marker is committed before any prompt work starts. On a
+    // restart an accepted-but-uncompleted request is reported as interrupted,
+    // never replayed because its effects may have partially landed.
+    let mut seen_requests: std::collections::HashMap<String, String> =
+        Session::raw_records(&session.path)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|record| match record {
+                Record::ServeRequest { id, status } => Some((id, status)),
+                _ => None,
+            })
+            .collect();
     let failure;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
 
@@ -359,16 +367,26 @@ pub fn serve(
                     continue;
                 }
                 if let Some(id) = message.get("request_id").and_then(Value::as_str) {
-                    if seen_requests.iter().any(|seen| seen == id) {
-                        to_origin(json!({"t": "duplicate", "request_id": id}));
+                    if let Some(status) = seen_requests.get(id) {
+                        to_origin(json!({"t": "duplicate", "request_id": id, "status": status,
+                            "message": if status == "accepted" { "prior request was interrupted; it will not be replayed" } else { "request already completed" }}));
                         continue;
                     }
-                    if seen_requests.len() >= 64 {
-                        seen_requests.pop_front();
+                    if let Err(error) = session.append_checked(&[Record::ServeRequest {
+                        id: id.to_string(),
+                        status: "accepted".into(),
+                    }]) {
+                        to_origin(
+                            json!({"t":"error", "message": format!("cannot durably accept request; prompt was not run: {error}")}),
+                        );
+                        continue;
                     }
-                    seen_requests.push_back(id.to_string());
+                    seen_requests.insert(id.to_string(), "accepted".into());
                 }
-                session.append(Record::User(text));
+                if let Err(error) = session.append_checked(&[Record::User(text)]) {
+                    to_origin(json!({"t":"error", "message": format!("cannot durably record prompt; it was not run: {error}")}));
+                    continue;
+                }
                 let provider = match factory() {
                     Ok(p) => p,
                     Err(e) => {
@@ -448,6 +466,18 @@ pub fn serve(
                     Stop::Steered => "steered",
                     Stop::ToolBudget => "tool_budget",
                 };
+                if let Some(id) = message.get("request_id").and_then(Value::as_str) {
+                    if let Err(error) = session.append_checked(&[Record::ServeRequest {
+                        id: id.to_string(),
+                        status: "completed".into(),
+                    }]) {
+                        to_origin(
+                            json!({"t":"error", "message": format!("turn completed but request status could not be recorded: {error}")}),
+                        );
+                    } else {
+                        seen_requests.insert(id.to_string(), "completed".into());
+                    }
+                }
                 broadcast(&clients, json!({"t": "done", "stop": stop, "text": text}));
             }
             Some("cancel") => { /* no turn running: nothing to cancel */ }
@@ -660,17 +690,29 @@ pub fn logs(session_id: Option<&str>, workspace: &Path) -> Result<(), String> {
 }
 
 fn newest_session_id_readonly(dir: &Path, workspace: &Path) -> Option<String> {
-    let root = workspace.canonicalize().unwrap_or_else(|_| workspace.into());
-    let mut files: Vec<_> = std::fs::read_dir(dir).ok()?.filter_map(Result::ok)
+    let root = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.into());
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
         .collect();
-    files.sort_by_key(|entry| std::cmp::Reverse(entry.metadata().ok().and_then(|m| m.modified().ok())));
+    files.sort_by_key(|entry| {
+        std::cmp::Reverse(entry.metadata().ok().and_then(|m| m.modified().ok()))
+    });
     files.into_iter().find_map(|entry| {
         let metadata_path = entry.path().with_extension("meta.json");
-        let metadata: crate::polish::Metadata = serde_json::from_slice(&std::fs::read(metadata_path).ok()?).ok()?;
+        let metadata: crate::polish::Metadata =
+            serde_json::from_slice(&std::fs::read(metadata_path).ok()?).ok()?;
         if metadata.workspace == root {
-            entry.path().file_stem().map(|stem| stem.to_string_lossy().into_owned())
-        } else { None }
+            entry
+                .path()
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+        } else {
+            None
+        }
     })
 }
 

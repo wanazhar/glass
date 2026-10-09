@@ -251,7 +251,10 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                         continue;
                     }
                 };
-                conversation.session.append(Record::User(text));
+                if let Err(error) = conversation.session.append_checked(&[Record::User(text)]) {
+                    reply_error(&id, -32000, &format!("cannot durably record prompt; it was not run: {error}"));
+                    continue;
+                }
 
                 let ledger_path = conversation.session.path.with_extension("cost.json");
                 let ledger = crate::budget::load(&ledger_path, conversation.cfg.cost_limit);

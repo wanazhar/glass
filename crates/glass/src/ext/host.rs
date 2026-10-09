@@ -78,6 +78,7 @@ pub struct Extension {
     /// Appends queued by the extension, drained by the agent into
     /// the session log after the tool call or turn that queued them.
     pending_custom: Vec<(String, Option<String>)>,
+    session_path: Option<std::path::PathBuf>,
 }
 
 impl Extension {
@@ -142,6 +143,7 @@ impl Extension {
             subagent: None,
             custom: std::collections::BTreeMap::new(),
             pending_custom: Vec::new(),
+            session_path: None,
             child,
             stopped: false,
             cancel,
@@ -263,9 +265,8 @@ impl Extension {
             }
             if is_custom_append(&v) {
                 // A durable entry for the session log. The host owns
-                // the log, so the extension asks rather than writes;
-                // the entry is acked immediately and the agent
-                // appends it after the current work.
+                // the log, so success is returned only after the checked
+                // append has completed.
                 let kind = v
                     .get("kind")
                     .and_then(|k| k.as_str())
@@ -520,23 +521,30 @@ impl Extension {
         self.manifest.commands.iter().any(|c| c.name == name)
     }
 
-    /// Queue a durable entry for the session log.
+    /// Append a durable entry for the session log.
     ///
     /// Kinds are namespaced `<extension-name>/…` so one
     /// extension cannot write into another's state. The
-    /// entry is acked immediately; the agent appends it to
-    /// the log after the tool call or turn that queued it.
+    /// acknowledgment follows the checked append.
     pub fn append_custom(&mut self, kind: String, data: Option<String>) -> Result<(), String> {
         let prefix = format!("{}/", self.manifest.name);
         if !kind.starts_with(&prefix) {
             return Err(format!("custom kinds are namespaced: `{prefix}…`"));
         }
+        let path = self.session_path.as_ref().ok_or_else(|| {
+            "session log is unavailable; custom entry was not acknowledged".to_string()
+        })?;
+        crate::session::Session::append_custom_path(path, &kind, data.as_deref())
+            .map_err(|error| format!("cannot durably append custom entry: {error}"))?;
         self.custom
             .entry(kind.clone())
             .or_default()
             .extend(data.clone());
-        self.pending_custom.push((kind, data));
         Ok(())
+    }
+
+    pub fn bind_session_path(&mut self, path: std::path::PathBuf) {
+        self.session_path = Some(path);
     }
 
     /// Take the entries queued for the session log.

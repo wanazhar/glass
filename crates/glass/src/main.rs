@@ -649,7 +649,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("resume") => match resume {
             Some(id) => Session::open(&dir, id).map_err(|e| format!("cannot resume {id}: {e}"))?,
             None => match polish::sessions(&cfg.workspace).into_iter().next() {
-                Some(s) => s,
+                Some(s) => Session::open(&dir, &s.id).map_err(|e| e.to_string())?,
                 None => Session::create(&dir).map_err(|e| e.to_string())?,
             },
         },
@@ -732,7 +732,7 @@ fn headless_info(args: &[String], cfg: &config::Config) -> Result<bool, String> 
             .skip(1)
             .find(|a| !a.starts_with('-'))
             .ok_or("requires a session ID; use glass-core sessions --json")?;
-        let session = Session::open(&config::data_dir(), id).map_err(|e| e.to_string())?;
+        let session = Session::open_readonly(&config::data_dir(), id).map_err(|e| e.to_string())?;
         polish::bind(&session, &cfg.workspace)?;
         let text = match command {
             "context" => polish::context_report(
@@ -820,7 +820,7 @@ fn headless_export(cfg: &config::Config, args: &[String]) -> Result<(), String> 
         i += 1;
     }
     let session = match id {
-        Some(id) => Session::open(&config::data_dir(), &id).map_err(|e| e.to_string())?,
+        Some(id) => Session::open_readonly(&config::data_dir(), &id).map_err(|e| e.to_string())?,
         None if latest => polish::sessions(&cfg.workspace)
             .into_iter()
             .next()
@@ -889,7 +889,10 @@ fn headless(
             "--resume" if prompt.is_empty() => {
                 i += 1;
                 let id = args.get(i).ok_or("--resume requires a session ID")?;
-                session = Session::open(&config::data_dir(), id).map_err(|e| e.to_string())?;
+                if session.id != *id {
+                    drop(session);
+                    session = Session::open(&config::data_dir(), id).map_err(|e| e.to_string())?;
+                }
                 polish::bind(&session, &cfg.workspace)?;
             }
             "--attach" if prompt.is_empty() => {
@@ -1009,7 +1012,7 @@ fn headless(
         extensions.seed_custom(&records);
     }
     if !recovering {
-        session.append(Record::User(prompt));
+        session.append_checked(&[Record::User(prompt)]).map_err(|e| format!("cannot durably record prompt; no provider request was made: {e}"))?;
     }
     let p = match factory() {
         Ok(p) => p,
@@ -2967,8 +2970,12 @@ fn repl(
                 continue;
             }
         };
-        if !recovering {
-            session.append(Record::User(text.clone()));
+        if !recovering
+            && let Err(error) = session.append_checked(&[Record::User(text.clone())])
+        {
+            modal::info(&keys, "Session log write failed", &format!("Prompt was not sent: {error}"));
+            editor.set_text(&text);
+            continue;
         }
         // The typed prompt is still on the prompt row. Clear those
         // rows and print the prompt once, whole: a prompt must be
@@ -3056,7 +3063,7 @@ fn repl(
                     Err(e) => ui_println!("checkpoint: {e}"),
                 }
             }
-            let turn_failed = outcome.is_err();
+            let mut turn_failed = outcome.is_err();
             // The tab status reflects the turn's verdict: finished, failed
             // (first line of the reason), or back to idle after a cancel.
             crate::status::set(
@@ -3181,7 +3188,11 @@ fn repl(
             next = pending.take_follow_up();
             if let Some(q) = &next {
                 ui_println!("\n\x1b[38;5;39m❯\x1b[0m {q}");
-                session.append(Record::User(q.clone()));
+                if let Err(error) = session.append_checked(&[Record::User(q.clone())]) {
+                    ui_println!("\nCannot record follow-up; it was not sent: {error}");
+                    turn_failed = true;
+                    break;
+                }
             } else if crate::notify::wanted(
                 false,
                 turn_finished,

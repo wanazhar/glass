@@ -30,6 +30,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::hash::{Hash, Hasher};
 
 use serde_json::{Value, json};
 
@@ -41,6 +42,93 @@ use crate::session::{Record, Session};
 const REPLAY_ENTRIES: usize = 200;
 /// Concurrent attaches per served session.
 const MAX_CLIENTS: usize = 4;
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct AttachState {
+    session: Option<String>,
+    cursor: usize,
+    request_seq: u64,
+    pending: Option<PendingRequest>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct PendingRequest {
+    id: String,
+    text: String,
+}
+
+fn attach_state_path(socket: &Path) -> PathBuf {
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    socket.hash(&mut hash);
+    config::data_dir().join(format!("attach-{:016x}.json", hash.finish()))
+}
+
+fn load_attach_state(path: &Path) -> AttachState {
+    std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+}
+
+fn save_attach_state(path: &Path, state: &AttachState) -> Result<(), String> {
+    let bytes = serde_json::to_vec(state).map_err(|error| error.to_string())?;
+    crate::auth::secure_write(path, &bytes)
+}
+
+fn update_attach_state(path: &Path, state: &mut AttachState, message: &Value) -> Result<(), String> {
+    match message.get("t").and_then(Value::as_str) {
+        Some("replay") => {
+            let session = message.get("session").and_then(Value::as_str).map(str::to_owned);
+            if state.session != session {
+                state.cursor = 0;
+                state.pending = None;
+                state.session = session;
+            }
+            if let Some(cursor) = message.get("cursor").and_then(Value::as_u64) {
+                state.cursor = cursor.min(usize::MAX as u64) as usize;
+            }
+        }
+        Some("done" | "error" | "duplicate") => {
+            if let Some(cursor) = message.get("cursor").and_then(Value::as_u64) {
+                state.cursor = cursor.min(usize::MAX as u64) as usize;
+            }
+            let response_id = message.get("request_id").and_then(Value::as_str);
+            if state.pending.as_ref().is_some_and(|pending| response_id == Some(pending.id.as_str())) {
+                state.pending = None;
+            }
+        }
+        _ => return Ok(()),
+    }
+    save_attach_state(path, state)
+}
+
+fn attach_message(state: &AttachState) -> Value {
+    json!({"t":"attach", "since":state.cursor, "session":state.session})
+}
+
+fn connect_cancellable(path: &Path, keys: &crate::input::KeyReader, out: &mut std::io::Stdout) -> Result<Option<UnixStream>, String> {
+    let mut delay = std::time::Duration::from_millis(250);
+    loop {
+        match UnixStream::connect(path) {
+            Ok(stream) => {
+                stream.set_nonblocking(true).map_err(|error| error.to_string())?;
+                let _ = writeln!(out, "\r\n\x1b[32mconnection available · replay cursor retained\x1b[0m");
+                let _ = out.flush();
+                return Ok(Some(stream));
+            }
+            Err(error) => {
+                let _ = write!(out, "\r\x1b[33mconnection lost · retrying in {:.2}s · Ctrl-C cancel\x1b[0m", delay.as_secs_f32());
+                let _ = out.flush();
+                if let Some(glass_tui::crossterm::event::Event::Key(key)) = keys.next_timeout(delay)
+                    && key.modifiers.contains(glass_tui::crossterm::event::KeyModifiers::CONTROL)
+                    && matches!(key.code, glass_tui::crossterm::event::KeyCode::Char('c' | 'd'))
+                {
+                    return Ok(None);
+                }
+                delay = (delay * 2).min(std::time::Duration::from_secs(5));
+                let _ = error;
+            }
+        }
+    }
+}
 
 fn send(stream: &mut UnixStream, value: Value) {
     if let Ok(mut line) = serde_json::to_string(&value) {
@@ -342,17 +430,19 @@ pub fn serve(
 
         match message.get("t").and_then(Value::as_str) {
             Some("attach") => {
+                let claimed_session = message.get("session").and_then(Value::as_str);
+                let wrong_session = claimed_session.is_some_and(|id| id != session.id);
                 let since = message
                     .get("since")
                     .and_then(Value::as_u64)
-                    .map(|n| n as usize);
+                    .map(|n| n as usize).filter(|_| !wrong_session);
                 let (entries, cursor, reset) = replay_from(&session, since);
                 to_origin(json!({
                     "t": "replay",
                     "session": session.id,
                     "entries": entries,
                     "cursor": cursor,
-                    "reset": reset,
+                    "reset": reset || wrong_session,
                 }));
             }
             Some("prompt") => {
@@ -369,6 +459,7 @@ pub fn serve(
                 if let Some(id) = message.get("request_id").and_then(Value::as_str) {
                     if let Some(status) = seen_requests.get(id) {
                         to_origin(json!({"t": "duplicate", "request_id": id, "status": status,
+                            "cursor":crate::export::raw_records(&session).len(),
                             "message": if status == "accepted" { "prior request was interrupted; it will not be replayed" } else { "request already completed" }}));
                         continue;
                     }
@@ -411,13 +502,16 @@ pub fn serve(
                     .with_stream_factory(std::sync::Arc::clone(&factory))
                     .with_progress(move |progress| match progress {
                         Progress::Text(t) => broadcast(&outer, json!({"t": "text", "delta": t})),
-                        Progress::ToolStart { name, command } => broadcast(
+                        Progress::ToolStart { call_id, name, command } => broadcast(
                             &outer,
-                            json!({"t": "tool", "name": name, "command": command}),
+                            json!({"t": "tool", "call_id": call_id, "name": name, "command": command}),
                         ),
                         Progress::ToolEnd { summary, .. } => {
                             broadcast(&outer, json!({"t": "tool_end", "summary": summary}))
                         }
+                        Progress::Retrying { attempt, delay_s, reason } => broadcast(&outer, json!({"t":"retrying", "attempt":attempt, "delay_s":delay_s, "reason":crate::live::sanitize_provider_detail(&reason)})),
+                        Progress::ProviderNotice(text) => broadcast(&outer, json!({"t":"provider_notice", "message":crate::live::sanitize_provider_detail(text)})),
+                        Progress::ProviderFailure(text) => broadcast(&outer, json!({"t":"provider_error", "message":crate::live::sanitize_provider_detail(text)})),
                         _ => {}
                     });
                     let outer = std::rc::Rc::clone(&clients);
@@ -455,7 +549,7 @@ pub fn serve(
                     Err(e) => {
                         broadcast(
                             &clients,
-                            json!({"t": "error", "message": format!("turn failed: {e}")}),
+                            json!({"t": "error", "request_id":message.get("request_id"), "cursor":crate::export::raw_records(&session).len(), "message": format!("turn failed: {e}")}),
                         );
                         continue;
                     }
@@ -478,7 +572,7 @@ pub fn serve(
                         seen_requests.insert(id.to_string(), "completed".into());
                     }
                 }
-                broadcast(&clients, json!({"t": "done", "stop": stop, "text": text}));
+                broadcast(&clients, json!({"t": "done", "request_id":message.get("request_id"), "cursor":crate::export::raw_records(&session).len(), "stop": stop, "text": text}));
             }
             Some("cancel") => { /* no turn running: nothing to cancel */ }
             Some("stop") => {
@@ -725,13 +819,10 @@ pub fn attach(socket: Option<&str>) -> Result<(), String> {
         Some(path) => PathBuf::from(path),
         None => default_socket()?,
     };
-    let mut stream = UnixStream::connect(&socket)
-        .map_err(|e| format!("cannot connect to {}: {e}", socket.display()))?;
-    stream.set_nonblocking(true).map_err(|e| e.to_string())?;
-    send(&mut stream, json!({"t": "attach"}));
-
     crate::term::enter().map_err(|e| format!("cannot set up terminal: {e}"))?;
     let keys = crate::input::KeyReader::spawn();
+    let state_path = attach_state_path(&socket);
+    let mut state = load_attach_state(&state_path);
     let mut editor = glass_tui::Editor::new();
     let mut inbuf: Vec<u8> = Vec::new();
     let mut out = std::io::stdout();
@@ -741,25 +832,45 @@ pub fn attach(socket: Option<&str>) -> Result<(), String> {
         socket.display()
     );
     let mut shown_prompt = false;
-    // Every submission carries a request id so a retry over a flaky link
-    // cannot run the same prompt twice.
-    let mut request_seq: u64 = 0;
-
     let result = (|| -> Result<(), String> {
+        let Some(mut stream) = connect_cancellable(&socket, &keys, &mut out)? else {
+            return Ok(());
+        };
+        send(&mut stream, attach_message(&state));
         loop {
             // Drain the server.
             let mut chunk = [0u8; 8192];
+            let mut disconnected = false;
             loop {
                 match stream.read(&mut chunk) {
-                    Ok(0) => return Err("server closed the connection".into()),
+                    Ok(0) => { disconnected = true; break; }
                     Ok(n) => inbuf.extend_from_slice(&chunk[..n]),
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(e) => return Err(e.to_string()),
+                    Err(_) => { disconnected = true; break; }
                 }
+            }
+            if disconnected {
+                inbuf.clear();
+                let Some(reconnected) = connect_cancellable(&socket, &keys, &mut out)? else { return Ok(()); };
+                stream = reconnected;
+                send(&mut stream, attach_message(&state));
+                shown_prompt = false;
+                continue;
             }
             while let Some(pos) = inbuf.iter().position(|b| *b == b'\n') {
                 let line: Vec<u8> = inbuf.drain(..=pos).collect();
                 if let Ok(value) = serde_json::from_slice::<Value>(&line[..line.len() - 1]) {
+                    let previous_session = state.session.clone();
+                    update_attach_state(&state_path, &mut state, &value)?;
+                    if value.get("t").and_then(Value::as_str) == Some("replay")
+                        && previous_session.is_some()
+                        && previous_session == state.session
+                        && let Some(pending) = &state.pending
+                    {
+                        // Replay confirms this is still the request's session
+                        // before any uncertain prompt is resent.
+                        send(&mut stream, json!({"t":"prompt", "text":pending.text, "request_id":pending.id}));
+                    }
                     shown_prompt = render(&mut out, value, shown_prompt)?;
                 }
             }
@@ -780,14 +891,24 @@ pub fn attach(socket: Option<&str>) -> Result<(), String> {
                     }
                     _ => match editor.key(key) {
                         glass_tui::Edit::Submit(text) => {
+                            if state.pending.is_some() {
+                                let _ = writeln!(out, "\r\n\x1b[33mwaiting for the prior request to resolve\x1b[0m");
+                                continue;
+                            }
                             let _ = write!(out, "\x1b[36m❯\x1b[0m {}\r\n", raw(&text));
-                            request_seq += 1;
+                            state.request_seq = state.request_seq.saturating_add(1);
+                            let pending = PendingRequest {
+                                id: format!("{}-{}", std::process::id(), state.request_seq),
+                                text,
+                            };
+                            state.pending = Some(pending.clone());
+                            save_attach_state(&state_path, &state)?;
                             send(
                                 &mut stream,
                                 json!({
                                     "t": "prompt",
-                                    "text": text,
-                                    "request_id": format!("{}-{request_seq}", std::process::id()),
+                                    "text": pending.text,
+                                    "request_id": pending.id,
                                 }),
                             );
                             shown_prompt = false;
@@ -815,6 +936,9 @@ pub fn attach(socket: Option<&str>) -> Result<(), String> {
 fn render(out: &mut std::io::Stdout, value: Value, shown: bool) -> Result<bool, String> {
     match value.get("t").and_then(Value::as_str) {
         Some("replay") => {
+            if value.get("reset").and_then(Value::as_bool) == Some(true) {
+                let _ = writeln!(out, "\r\n\x1b[33mconnection history reset · session changed or saved cursor expired\x1b[0m");
+            }
             if let Some(entries) = value.get("entries").and_then(Value::as_array) {
                 for entry in entries {
                     let role = entry.get("role").and_then(Value::as_str).unwrap_or("");
@@ -855,6 +979,24 @@ fn render(out: &mut std::io::Stdout, value: Value, shown: bool) -> Result<bool, 
             let message = value.get("message").and_then(Value::as_str).unwrap_or("");
             let _ = write!(out, "\r\n\x1b[31m{message}\x1b[0m\r\n");
         }
+        Some("duplicate") => {
+            let message = value.get("message").and_then(Value::as_str).unwrap_or("request was already accepted");
+            let _ = writeln!(out, "\r\n\x1b[33mrequest already handled · {message}\x1b[0m");
+        }
+        Some("retrying") => {
+            let attempt = value.get("attempt").and_then(Value::as_u64).unwrap_or(0);
+            let delay = value.get("delay_s").and_then(Value::as_u64).unwrap_or(0);
+            let reason = value.get("reason").and_then(Value::as_str).unwrap_or("transient provider failure");
+            let _ = writeln!(out, "\r\n\x1b[33mprovider retry {attempt} in {delay}s · {reason} · /retry /status\x1b[0m");
+        }
+        Some("provider_notice") => {
+            let message = value.get("message").and_then(Value::as_str).unwrap_or("fallback active");
+            let _ = writeln!(out, "\r\n\x1b[33mprovider fallback · {message} · /status /model\x1b[0m");
+        }
+        Some("provider_error") => {
+            let message = value.get("message").and_then(Value::as_str).unwrap_or("provider stream failed");
+            let _ = writeln!(out, "\r\n\x1b[31mprovider error · {message} · recover with /retry, /status or /login\x1b[0m");
+        }
         _ => return Ok(shown),
     }
     Ok(false)
@@ -883,6 +1025,7 @@ mod tests {
         s.append(Record::User("one".into()));
         s.append(Record::Assistant("two".into()));
         s.append(Record::Bash {
+            call_id: None,
             command: "true".into(),
             output: "ok".into(),
             exit_code: Some(0),
@@ -924,6 +1067,30 @@ mod tests {
         assert_eq!(entries.len(), REPLAY_ENTRIES, "the window is retained");
         assert_eq!(cursor, REPLAY_ENTRIES + 1);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn attach_state_survives_restart_with_exact_cursor_and_pending_request_id() {
+        let dir = scratch("attach-state");
+        let path = dir.join("attach.json");
+        let state = AttachState {
+            session: Some("session-a".into()),
+            cursor: 17,
+            request_seq: 9,
+            pending: Some(PendingRequest { id: "request-exact-9".into(), text: "do it once".into() }),
+        };
+        save_attach_state(&path, &state).unwrap();
+        let mut restarted = load_attach_state(&path);
+        assert_eq!(attach_message(&restarted)["since"], 17);
+        assert_eq!(restarted.pending.as_ref().unwrap().id, "request-exact-9");
+        update_attach_state(&path, &mut restarted, &json!({"t":"replay", "session":"session-a", "cursor":18})).unwrap();
+        assert_eq!(restarted.cursor, 18);
+        assert_eq!(restarted.pending.as_ref().unwrap().id, "request-exact-9");
+        update_attach_state(&path, &mut restarted, &json!({"t":"duplicate", "request_id":"request-exact-9", "cursor":20})).unwrap();
+        assert_eq!(restarted.cursor, 20);
+        assert!(restarted.pending.is_none());
+        assert_eq!(restarted.request_seq, 9);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

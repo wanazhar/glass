@@ -90,11 +90,16 @@ pub enum Progress<'a> {
     Reasoning(&'a str),
     /// A tool is about to run.
     ToolStart {
+        call_id: &'a str,
         name: &'a str,
         command: Option<&'a str>,
     },
     /// A tool finished, with the tail of its output.
-    ToolEnd { summary: String, output: &'a str },
+    ToolEnd {
+        call_id: &'a str,
+        summary: String,
+        output: &'a str,
+    },
     /// Context was compacted.
     Compacted { kept: usize, dropped: usize },
     /// The user interrupted the turn with a correction.
@@ -107,6 +112,10 @@ pub enum Progress<'a> {
         delay_s: u64,
         reason: String,
     },
+    /// A provider notice such as an automatic model fallback.
+    ProviderNotice(&'a str),
+    /// A failed provider stream with a caller-safe cause.
+    ProviderFailure(&'a str),
 }
 
 /// Run `f` with the host-tool bridge an extension may use during a hook.
@@ -239,6 +248,7 @@ impl<'a> Agent<'a> {
         }
         let command = call.arg_str("command");
         self.emit(Progress::ToolStart {
+            call_id: &call.id,
             name: &call.name,
             command: command.as_deref().filter(|c| !c.is_empty()),
         });
@@ -648,7 +658,10 @@ impl<'a> Agent<'a> {
                     arguments,
                 }),
                 Event::Usage(u) => out.usage = Some(u),
-                Event::Warning(w) => out.warnings.push(w),
+                Event::Warning(w) => {
+                    self.emit(Progress::ProviderNotice(&w));
+                    out.warnings.push(w);
+                }
                 Event::Error(e) => {
                     if !out.text.is_empty() {
                         self.session.append(Record::Assistant(out.text.clone()));
@@ -662,12 +675,14 @@ impl<'a> Agent<'a> {
                                 .into(),
                         ));
                     }
+                    self.emit(Progress::ProviderFailure(&e));
                     return Err(provider::Error::Transport(e));
                 }
                 Event::Done => break,
             }
         }
         if out.text.trim().is_empty() && out.tool_calls.is_empty() {
+            self.emit(Progress::ProviderFailure("provider returned no text or tool calls"));
             return Err(provider::Error::Transport(
                 "provider returned no text or tool calls; check /status and /login".into(),
             ));
@@ -1176,6 +1191,7 @@ impl<'a> Agent<'a> {
             }
         }
         self.session.append(Record::Bash {
+            call_id: Some(call.id.clone()),
             command,
             output: output.body.clone(),
             exit_code: outcome.exit_code,
@@ -1190,6 +1206,7 @@ impl<'a> Agent<'a> {
         // The chip closes here because this is the funnel every bash
         // result passes through — inline, pumped, or fanned out.
         self.emit(Progress::ToolEnd {
+            call_id: &call.id,
             summary: summarize_output(&output.body),
             output: &output.body,
         });
@@ -1324,6 +1341,7 @@ impl<'a> Agent<'a> {
         }
 
         self.emit(Progress::ToolEnd {
+            call_id: &call.id,
             summary: summarize_output(&output.body),
             output: &output.body,
         });
@@ -1340,6 +1358,7 @@ impl<'a> Agent<'a> {
         // Log before the result so the transcript reads in causal order.
         if let Some((cmd, shown)) = display_bash {
             self.session.append(Record::Bash {
+                call_id: Some(call.id.clone()),
                 command: cmd,
                 output: shown,
                 exit_code: outcome.exit_code,

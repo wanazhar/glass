@@ -27,11 +27,26 @@ pub use transcript::Transcript;
 pub use transcript::wrap_width;
 
 /// One renderable entry in the transcript.
+#[derive(Clone, Debug)]
 pub struct Entry {
     pub role: Role,
     pub text: String,
     /// Conversation turn, used by jump-to-turn.
     pub turn: usize,
+    /// Exact durable tool identity for expandable cards. `None` keeps legacy
+    /// entries and non-tool transcript rows on the same rendering path.
+    pub tool_card: Option<ToolCard>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolCard {
+    pub call_id: String,
+    pub command: String,
+    pub output: String,
+    pub status: String,
+    pub elapsed_ms: Option<u64>,
+    pub spill: Option<String>,
+    pub truncated: bool,
 }
 
 /// Which role produced a log line, used only for colour.

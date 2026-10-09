@@ -729,6 +729,7 @@ mod tests {
             Record::User("u".into()),
             Record::Reasoning("r".into()),
             Record::Bash {
+                call_id: None,
                 command: "c".into(),
                 output: "o".into(),
                 exit_code: Some(0),

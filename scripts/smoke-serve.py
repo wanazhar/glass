@@ -278,10 +278,51 @@ def main():
             try:
                 t.visible('attached', timeout=10)
                 t.send('pty hello')
+                t.send('\r')
                 t.visible('SERVER-HELLO', timeout=15)
                 t.visible('— finished —', timeout=15)
             finally:
                 t.close()
+
+            # A dropped SSH-style attach reconnects with its saved raw cursor
+            # and resends the exact pending ID. Killing the serving process
+            # after acceptance must not execute the prompt a second time.
+            Endpoint.mode = 'hang'
+            t = f.Terminal(repo, env, args=('attach', '--socket', str(sock)), size=(40, 24))
+            try:
+                t.visible('attached', timeout=10)
+                before = Endpoint.calls
+                t.send('restart attach exactly once')
+                t.send('\r')
+                t.visible('waiting for the prior request to resolve', timeout=10)
+                deadline = time.monotonic() + 5
+                while Endpoint.calls == before:
+                    assert time.monotonic() < deadline, 'mock provider did not receive attach request'
+                    time.sleep(0.02)
+                time.sleep(0.15)  # ensure the request acceptance is durable
+                serve.kill()
+                serve.wait(timeout=10)
+                sock.unlink(missing_ok=True)
+                Endpoint.mode = 'text'
+                serve = subprocess.Popen(
+                    [str(f.BINARY), 'serve', session_id, '--socket', str(sock)],
+                    cwd=repo, env=env,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                deadline = time.monotonic() + 10
+                while not sock.exists():
+                    assert time.monotonic() < deadline, 'restarted attach server never created its socket'
+                    time.sleep(0.05)
+                t.visible('request already handled', timeout=15)
+                assert Endpoint.calls == before + 1, 'pending request ID executed twice after reconnect'
+                records = [json.loads(line) for path in (root / 'data/glass-core').rglob('*.jsonl')
+                           for line in path.read_text().splitlines() if line.strip()]
+                occurrences = sum(1 for record in records
+                                  if record.get('k') == 'user' and record.get('t') == 'restart attach exactly once')
+                assert occurrences == 1, f'prompt was durably appended {occurrences} times'
+            finally:
+                t.close()
+                Endpoint.mode = 'text'
 
             # Lifecycle: `stop` shuts a server down over its socket, `logs`
             # reads the durable log, `respawn` restarts a detached server.
@@ -370,7 +411,8 @@ def main():
     print(
         'PASS serve/attach: replay, prompt streaming, multi-client broadcast, '
         'cancel from any client, idempotent request_id, cursor-based reattach '
-        'with reset, survival across disconnects, PTY attach, stop/logs/respawn'
+        'with reset, durable PTY reconnect after mock restart with one execution, '
+        'stop/logs/respawn'
     )
 
 

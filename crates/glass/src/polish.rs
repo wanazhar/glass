@@ -570,6 +570,60 @@ struct ToolDetail {
     spill: Option<String>,
     truncated: bool,
 }
+
+#[derive(Clone, Copy)]
+pub(crate) enum ActivityAction {
+    Tool,
+    Subagent,
+    Job(u32),
+    Loop(usize),
+}
+
+#[derive(Clone)]
+pub(crate) struct ActivityItem {
+    pub label: String,
+    pub status: String,
+    pub detail: String,
+    pub action: ActivityAction,
+}
+
+/// Read-only snapshot assembled from the existing session, Jobs and Loops
+/// owners; this view intentionally owns no lifecycle state of its own.
+pub(crate) fn activity_items(s: &Session, jobs: &mut crate::jobs::Jobs) -> Vec<ActivityItem> {
+    let mut items = Vec::new();
+    for entry in s.history_entries() {
+        let Some(card) = entry.tool_card else { continue; };
+        let subagent = card.command.starts_with("run_subagents");
+        items.push(ActivityItem {
+            label: format!("{} · {}", if subagent { "subagent" } else { "tool" }, glass_tui::text::clip(&card.command.replace('\n', " "), 56)),
+            status: card.status.clone(),
+            detail: crate::session::tool_card_text(&card, true),
+            action: if subagent { ActivityAction::Subagent } else { ActivityAction::Tool },
+        });
+    }
+    let job_list = jobs.list();
+    for row in job_list.lines() {
+        let (head, rest) = row.split_once(':').unwrap_or((row, "unknown"));
+        let Ok(id) = head.parse::<u32>() else { continue; };
+        let status = rest.split_once(" — ").map(|(s, _)| s).unwrap_or("unknown").trim().to_string();
+        items.push(ActivityItem {
+            label: format!("job {id} · {}", glass_tui::text::clip(rest.trim(), 52)),
+            status,
+            detail: row.to_string(),
+            action: ActivityAction::Job(id),
+        });
+    }
+    for (index, entry) in crate::loops::load(s).entries.iter().enumerate() {
+        items.push(ActivityItem {
+            label: format!("loop {} · {}", index + 1, glass_tui::text::clip(&entry.prompt, 52)),
+            status: format!("scheduled · next in {}s · ran {}×", entry.next_at.saturating_sub(crate::loops::now()), entry.runs),
+            detail: format!("Prompt: {}\nEvery: {} seconds\nNext at: {}\nRuns: {}", entry.prompt, entry.every_s, entry.next_at, entry.runs),
+            action: ActivityAction::Loop(index),
+        });
+    }
+    items.reverse();
+    items
+}
 fn tool_details(records: &[Record]) -> Vec<ToolDetail> {
     records
         .iter()
@@ -644,6 +698,9 @@ pub fn details(keys: &KeyReader, s: &Session) {
             actions.push("Copy command".into());
         }
         actions.push("Copy recorded output".into());
+        if entry.spill.is_some() {
+            actions.push("Load spill (up to 64 KiB)".into());
+        }
         while let Some(action) = modal::choose(
             keys,
             "Tool actions",
@@ -670,6 +727,28 @@ pub fn details(keys: &KeyReader, s: &Session) {
                     "Command / recorded output",
                     &format!("{command}Recorded output\n{}\n\n{location}", entry.output),
                 );
+            } else if actions[action] == "Load spill (up to 64 KiB)" {
+                let path = entry.spill.as_deref().expect("spill action requires a path");
+                let loaded = std::fs::File::open(path)
+                    .map_err(|error| format!("cannot open recorded spill: {error}"))
+                    .and_then(|file| {
+                        use std::io::Read;
+                        let mut bytes = Vec::with_capacity(64 * 1024);
+                        file.take(64 * 1024 + 1).read_to_end(&mut bytes)
+                            .map_err(|error| format!("cannot read recorded spill: {error}"))?;
+                        let truncated = bytes.len() > 64 * 1024;
+                        bytes.truncate(64 * 1024);
+                        let text = String::from_utf8_lossy(&bytes);
+                        Ok((text.into_owned(), truncated))
+                    });
+                match loaded {
+                    Ok((text, truncated)) => modal::info(
+                        keys,
+                        "Recorded spill output",
+                        &format!("{}{}", text, if truncated { "\n\n[display capped at 64 KiB]" } else { "" }),
+                    ),
+                    Err(error) => modal::info(keys, "Recorded spill output", &error),
+                }
             } else {
                 let copied = if actions[action] == "Copy command" {
                     entry.command.as_deref().unwrap()
@@ -882,6 +961,7 @@ mod tests {
         let mut s = Session::create(&root).unwrap();
         s.append(Record::User("test".into()));
         s.append(Record::Bash {
+            call_id: None,
             command: "false".into(),
             output: "".into(),
             exit_code: Some(1),
@@ -891,6 +971,27 @@ mod tests {
         let report = review_report(&s, None);
         assert!(report.contains("[exit 1] false"));
         assert!(report.contains("No completed answer"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn unified_activity_snapshots_tools_subagents_jobs_and_loops_from_existing_owners() {
+        let root = scratch();
+        let mut s = Session::create(&root).unwrap();
+        s.append(Record::User("start work".into()));
+        s.append(Record::ToolCall { id: "tool-a".into(), name: "state".into(), arguments: r#"{"items":["ready"]}"#.into() });
+        s.append(Record::ToolResult { name: "state".into(), call_id: "tool-a".into(), body: "state updated".into() });
+        s.append(Record::ToolCall { id: "agent-a".into(), name: "run_subagents".into(), arguments: r#"{"tasks":["inspect"]}"#.into() });
+        s.append(Record::ToolResult { name: "run_subagents".into(), call_id: "agent-a".into(), body: "inspection done".into() });
+        crate::loops::command(&s, "1h check status").unwrap();
+        let mut jobs = crate::jobs::Jobs::default();
+        jobs.start("echo activity-job", &root, &root.join("jobs")).unwrap();
+        let items = activity_items(&s, &mut jobs);
+        assert!(items.iter().any(|item| matches!(item.action, ActivityAction::Tool) && item.detail.contains("state updated")));
+        assert!(items.iter().any(|item| matches!(item.action, ActivityAction::Subagent) && item.detail.contains("inspection done")));
+        assert!(items.iter().any(|item| matches!(item.action, ActivityAction::Job(_))));
+        assert!(items.iter().any(|item| matches!(item.action, ActivityAction::Loop(_)) && item.status.contains("scheduled")));
+        drop(jobs);
         std::fs::remove_dir_all(root).ok();
     }
 }

@@ -1174,6 +1174,7 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
         ),
         ("retry", "", "Recover a failed response", false),
         ("details", "", "Expand tool activity and output", false),
+        ("activity", "", "Inspect tools, subagents, jobs and loops", false),
         (
             "thinking",
             "",
@@ -2042,6 +2043,48 @@ fn repl(
             polish::details(&keys, &session);
             continue;
         }
+        if text == "/activity" {
+            let items = polish::activity_items(&session, &mut jobs);
+            if items.is_empty() {
+                modal::info(&keys, "Activity", "No tools, subagents, jobs or loops in this session yet.");
+                continue;
+            }
+            let labels = items.iter().map(|item| format!("{} · {}", item.status, item.label)).collect::<Vec<_>>();
+            let searchable = items.iter().map(|item| format!("{}\n{}\n{}", item.label, item.status, item.detail)).collect::<Vec<_>>();
+            while let Some(index) = modal::choose_search(&keys, "Activity", "Tools, subagents, jobs and loops · choose a row", &labels, &searchable) {
+                let item = &items[index];
+                match item.action {
+                    polish::ActivityAction::Tool => {
+                        modal::info(&keys, "Tool activity", &item.detail);
+                        polish::details(&keys, &session);
+                    }
+                    polish::ActivityAction::Subagent => modal::info(&keys, "Subagent activity", &item.detail),
+                    polish::ActivityAction::Job(id) => {
+                        match modal::choose(&keys, "Background job", &item.label, &["Read output".into(), "Stop job…".into()]) {
+                            Some(0) => match jobs.output(id) {
+                                Ok(output) => modal::info(&keys, &format!("Job {id} output"), &output),
+                                Err(error) => modal::info(&keys, "Job output", &error),
+                            },
+                            Some(1) if modal::choose(&keys, "Stop background job?", &item.detail, &["Cancel".into(), "Stop owned job".into()]) == Some(1) => match jobs.stop(id) {
+                                Ok(message) => modal::info(&keys, "Background job", &message),
+                                Err(error) => modal::info(&keys, "Background job", &error),
+                            },
+                            _ => {}
+                        }
+                    }
+                    polish::ActivityAction::Loop(index) => {
+                        modal::info(&keys, "Scheduled loop", &item.detail);
+                        if modal::choose(&keys, "Loop action", &item.label, &["Keep scheduled".into(), "Remove loop…".into()]) == Some(1)
+                            && modal::choose(&keys, "Remove loop?", &item.label, &["Cancel".into(), "Remove loop".into()]) == Some(1)
+                        {
+                            let result = crate::loops::command(&session, &format!("rm {}", index + 1));
+                            modal::info(&keys, "Scheduled loop", &result.unwrap_or_else(|error| error));
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         if text == "/review" {
             modal::info(
                 &keys,
@@ -2507,11 +2550,7 @@ fn repl(
                 checkpoint::Checkpoint::load(&checkpoint_dir, label.trim())
             };
             match selected.and_then(|c| c.diff()) {
-                Ok(d) => modal::info(
-                    &keys,
-                    "Workspace diff",
-                    if d.is_empty() { "No changes" } else { &d },
-                ),
+                Ok(d) => modal::diff(&keys, "Workspace diff", &d),
                 Err(e) => modal::info(&keys, "Workspace diff", &e),
             }
             continue;
@@ -3729,7 +3768,7 @@ impl Painter {
                 self.waiting.set(true);
                 self.draw_activity(&mut io);
             }
-            Progress::ToolStart { name, command } => {
+            Progress::ToolStart { name, command, .. } => {
                 if let Some(command) = command.filter(|_| !self.compact_tools.get()) {
                     let rows = glass_tui::text::wrap_words(
                         &glass_tui::markdown::sanitize(&format!("$ {command}")),
@@ -3758,7 +3797,7 @@ impl Painter {
                 self.waiting.set(true);
                 self.draw_activity(&mut io);
             }
-            Progress::ToolEnd { summary, output } => {
+            Progress::ToolEnd { summary, output, .. } => {
                 let elapsed = self
                     .tool_started
                     .take()
@@ -3831,8 +3870,20 @@ impl Painter {
                 self.notice(
                     &mut io,
                     &glass_tui::theme::ansi(glass_tui::theme::Tone::Warning),
-                    &format!("⟳ retry {attempt} in {delay_s}s — {reason}"),
+                    &format!("⟳ retry {attempt} in {delay_s}s — {} · /status /retry", live::sanitize_provider_detail(&reason)),
                 );
+            }
+            Progress::ProviderNotice(text) => {
+                self.flush(&mut io);
+                self.waiting.set(false);
+                self.notice(&mut io, &glass_tui::theme::ansi(glass_tui::theme::Tone::Warning),
+                    &format!("Provider fallback — {} · /status /model", live::sanitize_provider_detail(text)));
+            }
+            Progress::ProviderFailure(text) => {
+                self.flush(&mut io);
+                self.waiting.set(false);
+                self.notice(&mut io, &glass_tui::theme::ansi(glass_tui::theme::Tone::Error),
+                    &format!("Provider error — {} · recover with /retry, /status or /login", live::sanitize_provider_detail(text)));
             }
             Progress::Compacted { kept, dropped } => {
                 self.flush(&mut io);
@@ -3973,23 +4024,25 @@ impl Painter {
     }
     fn draw_activity(&self, io: &mut impl Write) {
         let frame = self.activity_frame.get();
+        let phase = self.live.borrow().phase().to_string();
         let label = if self.tool_started.get().is_some() {
             format!("{} running", self.tool_name.borrow())
-        } else if self.live.borrow().phase() == "Answer streaming" {
-            "Answer streaming".into()
-        } else if self.live.borrow().phase() == "Provider reasoning" {
+        } else if phase == "Answer streaming" {
+            phase.clone()
+        } else if phase == "Provider reasoning" {
             "Reasoning".into()
         } else if self.width.get() < 32 {
-            "Waiting".into()
+            glass_tui::text::clip(&phase, 22)
         } else {
-            "Waiting for provider".into()
+            phase
         };
         let elapsed = self
             .waiting_started
             .get()
             .map(|start| start.elapsed().as_secs_f32())
             .unwrap_or(0.0);
-        let detail = format!("{label} · {elapsed:.1}s");
+        let provider_detail = self.live.borrow().provider_detail().map(str::to_string);
+        let detail = if let Some(detail) = provider_detail { format!("{label} · {detail}") } else { format!("{label} · {elapsed:.1}s") };
         let content = first_line(
             &format!("{} {detail}", glass_tui::theme::frame(frame)),
             self.width.get().saturating_sub(3) as usize,
@@ -4404,6 +4457,7 @@ mod painter_tests {
                 painter.render_text_transition(
                     &mut capture,
                     &Progress::ToolStart {
+                        call_id: "test-call",
                         name: "bash",
                         command: Some("pwd"),
                     },
@@ -4411,6 +4465,7 @@ mod painter_tests {
                 painter.render_text_transition(
                     &mut capture,
                     &Progress::ToolEnd {
+                        call_id: "test-call",
                         summary: "done".into(),
                         output: "workspace",
                     },
@@ -4431,6 +4486,7 @@ mod painter_tests {
         p.render_text_transition(
             &mut out,
             &Progress::ToolStart {
+                call_id: "test-call",
                 name: "bash",
                 command: Some("pwd"),
             },
@@ -4438,6 +4494,7 @@ mod painter_tests {
         p.render_text_transition(
             &mut out,
             &Progress::ToolEnd {
+                call_id: "test-call",
                 summary: "done".into(),
                 output: "workspace",
             },

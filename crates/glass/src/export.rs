@@ -39,6 +39,7 @@ pub fn markdown(session: &Session, thinking: bool, records: &[Record]) -> String
                 exit_code,
                 truncated,
                 spill,
+                ..
             } => {
                 out.push_str(&fence(&format!("$ {command}"), Some("sh")));
                 out.push('\n');
@@ -130,6 +131,7 @@ mod tests {
                 arguments: "{}".into(),
             },
             Record::Bash {
+                call_id: Some("c1".into()),
                 command: "cargo test".into(),
                 output: "ok 3 passed".into(),
                 exit_code: Some(0),

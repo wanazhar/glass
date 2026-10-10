@@ -112,3 +112,8 @@ These are implementation checkpoints, not acceptance or full-roadmap completion.
   configured/runtime confinement and exact exceptions without shell execution;
   compound-command limits are illustrated explicitly. `gc policy extension SPEC`
   validates capability declarations without launching or activating the extension.
+
+- Format benchmark fixture: `scripts/bench-edit-formats.py` compares process-inclusive
+  native revision and bundled hashline reads/edits on small, 1 MiB, repeated Unicode
+  and CRLF files; reports byte-exact correctness, request/response size and medians.
+  It does not claim model success rates. Execution remains deferred to final validation.

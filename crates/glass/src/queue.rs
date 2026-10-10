@@ -13,7 +13,9 @@
 //! The queue is a plain FIFO with one steer slot, because a steer must apply
 //! before the next model request or it has missed its chance.
 
+use crate::session::{Record, Session};
 use std::collections::VecDeque;
+use std::path::PathBuf;
 
 /// How a message typed during a turn is treated.
 #[derive(Debug, PartialEq, Eq)]
@@ -22,17 +24,177 @@ pub enum Intent {
     FollowUp(String),
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Queue {
     /// Ordered follow-ups, delivered when the current turn finishes.
     pending: VecDeque<String>,
+    #[serde(skip)]
+    path: Option<PathBuf>,
+    #[serde(default)]
+    delivered: u64,
     /// The next steer, applied at the next safe point.
     steer: Option<String>,
 }
 
 impl Queue {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Load a session-owned queue. Delivery receipts prevent replay after a crash.
+    pub fn open(session: &Session) -> Result<Self, String> {
+        let path = session.path.with_extension("queue.json");
+        let mut queue: Self = match std::fs::read(&path) {
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|e| format!("Invalid queue: {e}"))?
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self { path: Some(path), ..Self::default() });
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        queue.path = Some(path);
+        if queue.is_empty() { return Ok(queue); }
+        let records = Session::raw_records(&session.path).map_err(|e| e.to_string())?;
+        for pair in records.windows(2) {
+            if !matches!(&pair[1], Record::User(_)) { continue; }
+            if let Record::Custom { kind, data: Some(data) } = &pair[0]
+                && kind == "queue/delivery"
+                && let Ok(sequence) = data.parse::<u64>()
+                && sequence > queue.delivered
+            {
+                queue.take_next();
+                queue.delivered = sequence;
+            }
+        }
+        queue.save()?;
+        Ok(queue)
+    }
+
+    fn save(&self) -> Result<(), String> {
+        if let Some(path) = &self.path {
+            crate::auth::secure_write(path, &serde_json::to_vec(self).map_err(|e| e.to_string())?)?;
+        }
+        Ok(())
+    }
+
+    pub fn push_checked(&mut self, intent: Intent) -> Result<(), String> {
+        let previous = self.clone();
+        self.push(intent);
+        if let Err(error) = self.save() {
+            *self = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Commit the prompt and its receipt before removing it from durable storage.
+    pub fn deliver(&mut self, session: &mut Session) -> Result<Option<String>, String> {
+        let mut updated = self.clone();
+        let Some(text) = updated.take_next() else {
+            return Ok(None);
+        };
+        updated.delivered = updated
+            .delivered
+            .checked_add(1)
+            .ok_or("Queue sequence exhausted")?;
+        session
+            .append_checked(&[
+                Record::Custom {
+                    kind: "queue/delivery".into(),
+                    data: Some(updated.delivered.to_string()),
+                },
+                Record::User(text.clone()),
+            ])
+            .map_err(|e| e.to_string())?;
+        *self = updated;
+        // A failed sidecar update is recoverable from the committed receipt.
+        if let Err(error) = self.save() {
+            eprintln!("Queue receipt saved; queue checkpoint pending: {error}");
+        }
+        Ok(Some(text))
+    }
+
+    pub fn correction(&self) -> Option<&str> { self.steer.as_deref() }
+
+    pub fn manage(&mut self, keys: &crate::input::KeyReader) {
+        loop {
+            let entries = self.describe();
+            if entries.is_empty() {
+                crate::modal::info(
+                    keys,
+                    "Follow-up queue",
+                    "No queued messages. Alt+Enter queues a follow-up during a turn.",
+                );
+                return;
+            }
+            let Some(index) =
+                crate::modal::choose(keys, "Follow-up queue", "Saved with this session", &entries)
+            else {
+                return;
+            };
+            let actions = [
+                "Edit",
+                "Move earlier",
+                "Move later",
+                "Promote to correction",
+                "Delete",
+            ]
+            .map(String::from);
+            let Some(action) =
+                crate::modal::choose(keys, "Queued message", &entries[index], &actions)
+            else {
+                continue;
+            };
+            let previous = self.clone();
+            let steer_selected = self.steer.is_some() && index == 0;
+            let offset = usize::from(self.steer.is_some());
+            let pending_index = index.saturating_sub(offset);
+            match action {
+                0 => {
+                    let current = if steer_selected {
+                        self.steer.as_ref().unwrap()
+                    } else {
+                        &self.pending[pending_index]
+                    };
+                    if let Some(text) =
+                        crate::modal::field(keys, "Edit queued message", "Message", current, false)
+                        && !text.trim().is_empty()
+                    {
+                            if steer_selected {
+                                self.steer = Some(text);
+                            } else {
+                                self.pending[pending_index] = text;
+                            }
+                    }
+                }
+                1 if !steer_selected && pending_index > 0 => {
+                    self.pending.swap(pending_index, pending_index - 1)
+                }
+                2 if !steer_selected && pending_index + 1 < self.pending.len() => {
+                    self.pending.swap(pending_index, pending_index + 1)
+                }
+                3 if !steer_selected => {
+                    let text = self.pending.remove(pending_index).unwrap();
+                    if let Some(old) = self.steer.replace(text) {
+                        self.pending.push_front(old);
+                    }
+                }
+                4 => {
+                    if steer_selected {
+                        self.steer = None;
+                    } else {
+                        self.pending.remove(pending_index);
+                    }
+                }
+                _ => {}
+            }
+            if let Err(error) = self.save() {
+                *self = previous;
+                crate::modal::info(keys, "Queue was not changed", &error);
+            }
+        }
     }
 
     /// Record input. Empty text is ignored rather than queued as a no-op.
@@ -110,6 +272,60 @@ pub fn classify(text: &str, alt: bool, turn_running: bool) -> Option<Intent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queue_survives_restart_and_committed_delivery_is_not_replayed() {
+        let dir = std::env::temp_dir().join(format!(
+            "gc-queue-{}-{}",
+            std::process::id(),
+            crate::auth::random(8).unwrap()
+        ));
+        let mut session = Session::create(&dir).unwrap();
+        let mut queue = Queue::open(&session).unwrap();
+        queue
+            .push_checked(Intent::FollowUp("first".into()))
+            .unwrap();
+        queue
+            .push_checked(Intent::FollowUp("second".into()))
+            .unwrap();
+        let old_checkpoint = std::fs::read(queue.path.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            queue.deliver(&mut session).unwrap().as_deref(),
+            Some("first")
+        );
+        // Simulate a crash after the durable session receipt but before sidecar rename.
+        std::fs::write(queue.path.as_ref().unwrap(), old_checkpoint).unwrap();
+        let mut recovered = Queue::open(&session).unwrap();
+        assert_eq!(recovered.describe(), ["queued: second"]);
+        assert_eq!(
+            recovered.deliver(&mut session).unwrap().as_deref(),
+            Some("second")
+        );
+        assert!(Queue::open(&session).unwrap().is_empty());
+        assert_eq!(
+            session
+                .records
+                .iter()
+                .filter(|r| matches!(r, Record::User(_)))
+                .count(),
+            2
+        );
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_queue_save_preserves_previous_contents() {
+        let mut queue = Queue::new();
+        queue.push(Intent::FollowUp("keep".into()));
+        queue.path = Some(PathBuf::from("/dev/null/impossible"));
+        assert!(
+            queue
+                .push_checked(Intent::FollowUp("not acknowledged".into()))
+                .is_err()
+        );
+        assert_eq!(queue.describe(), ["queued: keep"]);
+    }
 
     #[test]
     fn pending_correction_is_delivered_before_queued_work_once() {

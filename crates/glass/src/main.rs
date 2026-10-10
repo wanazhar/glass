@@ -1296,8 +1296,19 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
         ("editor", "", "Edit your draft in VISUAL or EDITOR", false),
         ("redraw", "", "Repaint after terminal drift", false),
         ("clear", "", "Start a fresh session", false),
+        (
+            "queue",
+            "",
+            "Manage saved follow-ups: edit, reorder, promote or delete",
+            false,
+        ),
         ("compact", "[focus]", "Compact the conversation now", false),
-        ("compaction", "[focus]", "Compact the conversation now (alias)", false),
+        (
+            "compaction",
+            "[focus]",
+            "Compact the conversation now (alias)",
+            false,
+        ),
         ("diff", "[checkpoint]", "Review task changes", false),
         ("budget", "[USD|off]", "Show or set spending limit", false),
         (
@@ -1637,7 +1648,8 @@ fn repl(
             }
         }
     }
-    let mut pending = queue::Queue::new();
+    let mut pending = queue::Queue::open(&session)?;
+    if !pending.is_empty() { ui_println!("Saved follow-ups available · /queue to review"); }
 
     let warmer = crate::warmer::Warmer::new(Arc::clone(&factory));
 
@@ -2093,12 +2105,17 @@ fn repl(
             }
             continue;
         }
+        if text == "/queue" {
+            pending.manage(&keys);
+            continue;
+        }
         if text == "/sessions" {
             warmer.begin_turn();
             match polish::browser(&keys, &session, &cfg.workspace) {
                 Ok(Some(s)) => {
                     permissions::clear_session_approvals()?;
                     session = s;
+                    pending = queue::Queue::open(&session)?;
                     state = tools::State::new();
                     totals = Totals::new();
                     for r in &session.records {
@@ -2865,6 +2882,7 @@ fn repl(
                     let parent_metadata = polish::metadata(&session);
                     polish::save(&s, &parent_metadata)?;
                     session = s;
+                    pending = queue::Queue::open(&session)?;
                     polish::bind(&session, &cfg.workspace)?;
                     state = tools::State::new();
                     checkpoint_dir = config::data_dir().join("checkpoints").join(&session.id);
@@ -2968,7 +2986,11 @@ fn repl(
         // `/compact [focus]` compacts now, below the automatic threshold. A
         // manual compaction is a statement about what the user wants, not a
         // measurement; the optional focus steers what the summary keeps.
-        if text == "/compact" || text.starts_with("/compact ") || text == "/compaction" || text.starts_with("/compaction ") {
+        if text == "/compact"
+            || text.starts_with("/compact ")
+            || text == "/compaction"
+            || text.starts_with("/compaction ")
+        {
             provider = match factory() {
                 Ok(p) => p,
                 Err(e) => {
@@ -2976,7 +2998,10 @@ fn repl(
                     continue;
                 }
             };
-            let focus = text.strip_prefix("/compact ").or_else(|| text.strip_prefix("/compaction ")).map(str::trim);
+            let focus = text
+                .strip_prefix("/compact ")
+                .or_else(|| text.strip_prefix("/compaction "))
+                .map(str::trim);
             ui_print!("\x1b[90mcompacting…\x1b[0m\r");
             let _ = std::io::stdout().flush();
             match compact::run_manual(provider.as_ref(), &mut session, &state, focus) {
@@ -3186,6 +3211,7 @@ fn repl(
                     // conversation; a new session supersedes it.
                     warmer.begin_turn();
                     session = s;
+                    pending = queue::Queue::open(&session)?;
                     polish::bind(&session, &cfg.workspace)?;
                     checkpoint_dir = config::data_dir().join("checkpoints").join(&session.id);
                     let limit = ledger.lock().unwrap().limit;
@@ -3331,8 +3357,12 @@ fn repl(
                         &painter,
                         &team_owner,
                     ) {
-                        pending.push(queue::Intent::Steer(s.clone()));
-                        *steer_slot = Some(s);
+                        if let Err(error) = pending.push_checked(queue::Intent::Steer(s.clone())) {
+                            draft.set_text(&s);
+                            ui_println!("Cannot save correction: {error}");
+                        } else {
+                            *steer_slot = Some(s);
+                        }
                     }
                 });
                 painter.flush(&mut surface::BodyWriter);
@@ -3371,6 +3401,7 @@ fn repl(
                     Err(e) => e.to_string().lines().next().unwrap_or("").to_string(),
                 },
             );
+            let cancelled = matches!(&outcome, Ok((_, Stop::Cancelled)));
             let mut turn_finished = false;
             let mut turn_summary = Vec::new();
             match outcome {
@@ -3385,7 +3416,7 @@ fn repl(
                             ui_println!("\x1b[33m⚡ stopped to apply your correction\x1b[0m")
                         }
                         Stop::Cancelled => {
-                            pending = queue::Queue::new();
+                            // Queued follow-ups survive cancellation and restart.
                             ui_println!(
                                 "Cancelled · partial output saved · owned shell process groups stopped"
                             );
@@ -3487,14 +3518,19 @@ fn repl(
                 break;
             }
 
-            next = pending.take_next();
-            if let Some(q) = &next {
-                ui_println!("\n\x1b[38;5;39m❯\x1b[0m {q}");
-                if let Err(error) = session.append_checked(&[Record::User(q.clone())]) {
-                    ui_println!("\nCannot record follow-up; it was not sent: {error}");
+            if cancelled {
+                break;
+            }
+            next = match pending.deliver(&mut session) {
+                Ok(next) => next,
+                Err(error) => {
+                    ui_println!("Cannot record follow-up; it remains queued: {error}");
                     turn_failed = true;
                     break;
                 }
+            };
+            if let Some(q) = &next {
+                ui_println!("\n\x1b[38;5;39m❯\x1b[0m {q}");
             } else if crate::notify::wanted(
                 false,
                 turn_finished,
@@ -3665,6 +3701,15 @@ fn drain_input(
         match editor.key(edit_key) {
             glass_tui::Edit::Continue => dirty = true,
             glass_tui::Edit::Submit(text) => {
+                if text == "/queue" {
+                    let old_correction = pending.correction().map(str::to_owned);
+                    pending.manage(keys);
+                    dirty = true;
+                    if pending.correction() != old_correction.as_deref()
+                        && let Some(correction) = pending.correction()
+                    { return Some(correction.to_string()); }
+                    continue;
+                }
                 let Some(intent) = queue::classify(&text, alt, true) else {
                     continue;
                 };
@@ -3682,7 +3727,12 @@ fn drain_input(
                         return Some(s);
                     }
                     queue::Intent::FollowUp(s) => {
-                        pending.push(queue::Intent::FollowUp(s.clone()));
+                        if let Err(error) = pending.push_checked(queue::Intent::FollowUp(s.clone()))
+                        {
+                            editor.set_text(&s);
+                            ui_println!("Cannot save follow-up: {error}");
+                            continue;
+                        }
                         painter.append_live_entry(glass_tui::Role::User, format!("Queued: {s}"));
                         ui_println!("\x1b[90m· queued\x1b[0m");
                         dirty = true;

@@ -1423,6 +1423,7 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
 
     let mut entries = Vec::new();
     for (record_index, (record, (turn, epoch))) in records.iter().zip(scopes).enumerate() {
+        if matches!(record, Record::Custom { kind, .. } if kind == "queue/delivery") { continue; }
         let key = |id: &str| (turn, epoch, id.to_owned());
         let entry = match record {
             Record::ToolCall {

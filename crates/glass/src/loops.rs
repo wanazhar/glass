@@ -62,9 +62,10 @@ fn load_checked(s: &Session) -> Result<Loops, String> {
     Ok(loops)
 }
 
-#[cfg(test)]
 pub fn load(s: &Session) -> Loops {
-    load_checked(s).expect("valid test schedule")
+    // Read-only activity summaries tolerate unavailable schedules. Mutations and
+    // dispatch always use load_checked and preserve corrupt files.
+    load_checked(s).unwrap_or_default()
 }
 
 fn save(s: &Session, loops: &Loops) -> Result<(), String> {
@@ -103,6 +104,18 @@ pub fn parse_every(text: &str) -> Option<u64> {
 /// Missed intervals skip: a session resumed after a day fires each loop once,
 /// not 2,880 times.
 pub fn due(s: &Session) -> Option<String> {
+    // Idle input pumps run frequently. Poll a session at most four times per
+    // second, with no thread or timer service and a single bounded cache slot.
+    thread_local! {
+        static LAST: std::cell::RefCell<Option<(PathBuf, std::time::Instant)>> = const { std::cell::RefCell::new(None) };
+    }
+    let skip = LAST.with(|last| {
+        let mut last = last.borrow_mut();
+        if last.as_ref().is_some_and(|(path, at)| path == &s.path && at.elapsed() < std::time::Duration::from_millis(250)) { return true; }
+        *last = Some((s.path.clone(), std::time::Instant::now()));
+        false
+    });
+    if skip { return None; }
     // A damaged or unwritable schedule must never execute an unacknowledged run.
     due_checked(s).ok().flatten()
 }

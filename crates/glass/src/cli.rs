@@ -425,6 +425,11 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
         return Ok(false);
     }
     let (usage, description, examples) = match command {
+        "attention" => (
+            "gc attention SESSION [--json]",
+            "Inspect recent recorded failures and teammate events with exact raw-record positions. The interactive /attention view searches event previews.",
+            "gc attention SESSION_ID",
+        ),
         "history" => (
             "gc history SESSION [--json]",
             "Inspect retained history boundaries, compaction summary previews and branch lineage without opening a session for writing.",

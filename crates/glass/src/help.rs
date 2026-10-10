@@ -14,6 +14,9 @@ const START: &[Item] = &[
     ),
 ];
 const SESSIONS: &[Item] = &[
+    ("gc attention ID", "Find recorded failures and teammate event targets."),
+    ("gc history ID", "Inspect compaction boundaries and branch lineage."),
+    ("gc handoff ID [--json]", "Preview bounded context with omitted-history references."),
     (
         "gc sessions [--json]",
         "List conversations in this project.",
@@ -34,6 +37,9 @@ const SESSIONS: &[Item] = &[
     ("gc export ID", "Export a conversation to Markdown."),
 ];
 const TOOLS: &[Item] = &[
+    ("gc contract SCHEMA RESULT", "Validate a local JSON result contract."),
+    ("gc diagnostics ID", "Preview redacted local diagnostic metadata."),
+    ("gc memory --help", "Review opt-in attributed project memory."),
     (
         "gc workspace --help",
         "Tasks, debug evidence, artifacts, handoffs and role budgets.",
@@ -67,7 +73,7 @@ const TOOLS: &[Item] = &[
         "Read, edit and write files with revision checks.",
     ),
     (
-        "gc worktree list|apply",
+        "gc worktree list|new|show|cleanup-preview|apply",
         "Inspect and reclaim isolated workspace changes.",
     ),
     (
@@ -123,6 +129,7 @@ const KEYS: &[Item] = &[
 const RUN: &[Item] = &[
     ("--trust", "Allow this workspace’s AGENTS.md for the run."),
     ("--json", "Return structured JSON for scripts."),
+    ("--output-schema FILE", "Validate the final JSON answer; allow one format correction."),
     ("--plan", "Inspect and plan with read-only tools."),
     ("--resume ID", "Continue a saved conversation."),
     (

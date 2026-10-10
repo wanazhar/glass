@@ -22,6 +22,7 @@ mod contracts;
 mod diagnostics;
 mod diagnostic_bundle;
 mod history_inspector;
+mod attention;
 mod doctor;
 mod export;
 mod ext;
@@ -176,6 +177,12 @@ fn main() {
             if let Err(error) = project_memory::command(&args[1..]) {
                 cli::error("Project memory", &error);
                 std::process::exit(2);
+            }
+            return;
+        }
+        Some("attention") => {
+            if let Err(error) = attention::command(&args[1..]) {
+                cli::error("Attention", &error); std::process::exit(2);
             }
             return;
         }
@@ -1259,6 +1266,8 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
     let builtin = [
         ("help", "", "Show help", false),
         ("history", "", "Inspect compaction receipts and branch lineage", false),
+        ("attention", "", "Review failures and teammate event targets", false),
+        ("hub", "", "Conversations, teammates, attention and tasks", false),
         ("handoff", "", "Preview a bounded portable handoff", false),
         (
             "workspace",
@@ -2157,6 +2166,19 @@ fn repl(
                 Err(e) => modal::info(&keys, "Init error", &e),
             }
             continue;
+        }
+        if text == "/attention" { attention::view(&keys, &session); continue; }
+        if text == "/hub" {
+            let choices = ["Conversations", "Persistent teammates", "Attention", "Tasks and findings", "Usage and cache", "History boundaries"].map(String::from);
+            match modal::choose(&keys,"Workspace hub","Search a workflow · loads details only when selected",&choices) {
+                Some(0) => text = "/sessions".into(),
+                Some(1) => { team::view(&keys,&session.id); continue; },
+                Some(2) => { attention::view(&keys,&session); continue; },
+                Some(3) => { workspace::view(&keys,&cfg.workspace); continue; },
+                Some(4) => text = "/requests".into(),
+                Some(5) => { structured::view(&keys,"History boundaries",&history_inspector::receipts(&session).to_string()); continue; },
+                _ => continue,
+            }
         }
         if text == "/history" || text == "/handoff" {
             let value = if text == "/handoff" { history_inspector::handoff(&session) }

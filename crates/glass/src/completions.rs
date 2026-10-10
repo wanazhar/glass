@@ -33,6 +33,7 @@ pub const COMMANDS: &[&str] = &[
     "inspect",
     "contract",
     "history",
+    "attention",
     "handoff",
     "diagnostics",
     "memory",

@@ -74,3 +74,11 @@ Finish the durable queue, then transcript/context/review contracts. Build artifa
 These are implementation checkpoints, not acceptance or full-roadmap completion.
 
 - History inspection and handoffs: bounded summary and state previews, raw history retrieval references, typed branch lineage; branch explorer and receiving-host import remain open.
+
+- Attention: searchable provider/tool failures and teammate event previews with exact
+  session/raw-record/turn targets, at most 128 entries, 32 KiB UTF-8 previews.
+- Workspace hub: shared workflow entry point for conversations, teammates, attention,
+  tasks/findings, requests and history. Cross-workspace status search and background
+  submission remain open; this navigation entry point alone does not complete item 1.
+- Automation polling is throttled to four reads per second per active input thread,
+  with a single cached session identity and no service startup.

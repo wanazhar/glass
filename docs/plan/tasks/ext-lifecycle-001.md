@@ -1,7 +1,7 @@
 ---
 id: ext-lifecycle-001
 scope: roadmap item 32 — extension cancellation, shutdown and nested-call lineage contracts
-status: ready
+status: implemented
 depends-on: []
 ---
 
@@ -77,3 +77,34 @@ those in this wave.
 - `cargo test --locked --workspace` green.
 - Confirm no `cancel` flag is dropped on the floor: a cancelled `/extensions`
   startup still cancels.
+
+## Implementation notes
+
+The extension host now owns a `Cancel` token that outlives the handshake:
+`finish_startup` clears the flag the startup modal set and returns the live
+ token instead of replacing it with a permanently clear one. Every wait polls
+that token — and the per-call token — inside the poll loop, so a cancel stops
+the wait within one poll interval rather than after the reply timeout.
+
+Calls report a `CallOutcome`, which separates a completed result, an
+unavailable tool, a cancellation (with the path it took) and a genuine
+failure. A cancel drains the pipe for one bounded window first, so a reply the
+extension already finished writing is reported as finished rather than
+cancelled.
+
+`Request::RunTool` / `RunToolInput` carry the originating `call_id` and the
+full `CallLineage`. Nested dispatch extends the host's chain, refuses a
+claimed lineage that re-parents or loops, and stops at
+`MAX_NESTED_CALL_DEPTH` with an explicit error instead of recursing.
+
+`Registry::shutdown` reports one outcome per extension, keeps the
+process-group kill and the `Drop` guarantee, and is idempotent at both the
+registry and the single-extension level. `disable` stops only the named
+extension.
+
+The scoped entry points (`run_tool_scoped`, `run_tool_with_input_scoped`,
+`run_command_scoped`, `cancel_token`, `cancel`, `cancel_all`, `force_stop`,
+`last_shutdown`, `CallOutcome::describe`) are the wire-up surface the agent
+loop consumes; the unscoped wrappers keep the current call sites compiling.
+Wiring `agent.rs` to build a `CallScope` per model tool call is the follow-up
+that owns that file.

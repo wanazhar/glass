@@ -191,11 +191,16 @@ fn enable(
             &command_for_worker,
             &workspace.to_string_lossy(),
             &model,
-            cancel,
+            ext::Cancel::from_shared(cancel),
         )
     }) {
         Some(Ok(mut extension)) => {
-            extension.finish_startup();
+            // The startup modal's flag is set when the modal closes, on
+            // success as well as on cancel. `finish_startup` clears it and
+            // hands back the extension's live token, so cancelling a
+            // `/extensions` start still works while an extension enabled
+            // through it does not stay permanently cancelled.
+            let live = extension.finish_startup();
             let names = extension
                 .manifest
                 .tools
@@ -210,6 +215,10 @@ fn enable(
                 return Err("Extension tool conflicts with an enabled mod or core tool".into());
             }
             registry.register(extension, command)?;
+            debug_assert!(
+                !live.is_cancelled(),
+                "a freshly enabled extension must not start cancelled"
+            );
             Ok(true)
         }
         Some(Err(error)) => Err(error),

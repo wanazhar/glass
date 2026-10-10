@@ -793,6 +793,7 @@ impl<'a> Agent<'a> {
                 "session log is not writable; turn refused: {error}"
             )));
         }
+        crate::reminders::apply(self.session).map_err(provider::Error::Config)?;
         let mut last = TurnOutput {
             text: String::new(),
             tool_calls: Vec::new(),

@@ -13,7 +13,11 @@ fn path(root: &Path) -> Result<PathBuf, String> {
     Ok(crate::config::data_dir().join("memory").join(format!("{}.json", crate::workspace::hash(root.as_os_str().as_encoded_bytes()))))
 }
 fn load(path: &Path) -> Result<Store, String> {
-    if !path.exists() { return Ok(Store::default()); }
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound => return Ok(Store::default()),
+        Err(e)=>return Err(e.to_string()),
+        Ok(_)=>{},
+    }
     let store: Store = serde_json::from_slice(&crate::requests::bounded(path, 64 * 1024)?).map_err(|e| format!("Invalid project memory: {e}"))?;
     if store.facts.len() > 128 || store.facts.iter().any(|(key, fact)| key.is_empty() || key.len()>128 || fact.text.len()>4096 || fact.source.len()>1024) { return Err("Project memory exceeds bounds".into()); }
     Ok(store)
@@ -25,12 +29,12 @@ pub fn context(root: &Path) -> Result<Option<String>, String> {
     let mut facts = Vec::new();
     let mut bytes = 0;
     for (key, fact) in store.facts.iter().take(16) {
-        let value = json!({"key":key,"fact":fact.text,"source":fact.source,"human_reviewed_unix":fact.reviewed_at,"freshness":"Review date is recorded; facts may become stale."});
+        let value = json!({"key":key,"fact":fact.text,"source":fact.source,"saved_unix":fact.reviewed_at,"freshness":"Review date is recorded; facts may become stale."});
         bytes += value.to_string().len();
         if bytes > 8192 { break; }
         facts.push(value);
     }
-    Ok((!facts.is_empty()).then(|| format!("\nProject memory (user enabled, user reviewed reference facts; original instructions take precedence):\n{}", json!(facts))))
+    Ok((!facts.is_empty()).then(|| format!("\nProject memory (explicitly enabled and saved reference facts; original instructions take precedence):\n{}", json!(facts))))
 }
 pub fn command(args: &[String]) -> Result<(), String> {
     let help = "gc memory [list|enable|disable|set KEY TEXT SOURCE|forget KEY] [--json]\nMemory is disabled by default. set records an explicit review action; facts are never extracted automatically from conversations. Context retrieval is capped at 16 facts / 8 KiB. List retains every fact and its review date.";

@@ -23,6 +23,8 @@ mod diagnostics;
 mod diagnostic_bundle;
 mod history_inspector;
 mod attention;
+mod settings;
+mod reminders;
 mod doctor;
 mod export;
 mod ext;
@@ -178,6 +180,10 @@ fn main() {
                 cli::error("Project memory", &error);
                 std::process::exit(2);
             }
+            return;
+        }
+        Some("settings") => {
+            if let Err(error)=settings::command(&args[1..]) {cli::error("Settings",&error);std::process::exit(2);}
             return;
         }
         Some("usage") => {
@@ -1277,6 +1283,8 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
     let builtin = [
         ("help", "", "Show help", false),
         ("history", "", "Inspect compaction receipts and branch lineage", false),
+        ("constraints", "[list|on|off|clear|add TEXT]", "Opt-in turn-boundary task reminders", false),
+        ("settings", "", "Effective settings and layer provenance", false),
         ("usage", "", "Reported usage, cost completeness and cache changes", false),
         ("attention", "", "Review failures and teammate event targets", false),
         ("hub", "", "Conversations, teammates, attention and tasks", false),
@@ -2176,6 +2184,20 @@ fn repl(
                 Ok(Some(path)) => ui_println!("\x1b[32mwrote\x1b[0m {path}"),
                 Ok(None) => {}
                 Err(e) => modal::info(&keys, "Init error", &e),
+            }
+            continue;
+        }
+        if text == "/constraints" || text.starts_with("/constraints ") {
+            match reminders::command(&session,text.strip_prefix("/constraints").unwrap_or("")) {
+                Ok(value)=>structured::view(&keys,"Constraint reminders",&value),
+                Err(error)=>modal::info(&keys,"Constraints unavailable",&error),
+            }
+            continue;
+        }
+        if text == "/settings" {
+            match settings::snapshot(&cfg) {
+                Ok(value)=>structured::view(&keys,"Effective settings",&value.to_string()),
+                Err(error)=>modal::info(&keys,"Settings unavailable",&error),
             }
             continue;
         }

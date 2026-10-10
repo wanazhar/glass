@@ -89,3 +89,13 @@ These are implementation checkpoints, not acceptance or full-roadmap completion.
   used by completed printing and replayed extension tool cards. Final PTY parity pending.
 - Contract correction: reject a correction whose input exceeds the safe context window;
   retain the original answer and record invalid corrected results as failed diagnostics.
+
+- Effective settings: on-demand layer attribution for default/global/account/addon/
+  profile/runtime changes, explicit equal-value ambiguity, hashes instead of prompt,
+  endpoint and executable argument copies. Workspace reset uses the existing profile UI.
+- Constraint reminders: `/constraints add TEXT`, explicit on/off, clear and list;
+  max 16 items / 512 bytes, durable turn/fingerprint receipts deduplicate retries.
+  Delivery occurs before a turn at a safe boundary, with no cached system-prefix change.
+  Corrupt sidecars refuse delivery rather than silently running without requested constraints.
+- Memory attribution now says explicitly saved facts rather than asserting a human
+  reviewed data written through a CLI the model can also invoke.

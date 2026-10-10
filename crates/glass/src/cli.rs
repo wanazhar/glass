@@ -425,6 +425,11 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
         return Ok(false);
     }
     let (usage, description, examples) = match command {
+        "settings" => (
+            "gc settings [--json]",
+            "Inspect effective settings and the last layer that changed each value. Prompt contents, executable arguments and credentials are omitted. Reset the workspace binding through /profiles.",
+            "gc settings --json",
+        ),
         "usage" => (
             "gc usage SESSION [--json]",
             "Inspect bounded recent reported usage, cache hit ratio and cost completeness. Missing usage and provider quotas remain explicitly unknown.",

@@ -1141,7 +1141,7 @@ fn headless(
     .with_plan_mode(planning)
     .prime_extensions()
     .with_prompt(cfg.system_prompt.clone(), catalogue, prompt_instructions)
-    .with_limits(cfg.max_tokens, cfg.reasoning_budget, 24)
+    .with_limits(cfg.max_tokens, cfg.reasoning_budget, usize::MAX)
     .with_recovery(recovering)
     .with_live(cfg.live_flush_ms as u64)
     .with_stream_factory(Arc::clone(&factory))
@@ -1297,6 +1297,7 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
         ("redraw", "", "Repaint after terminal drift", false),
         ("clear", "", "Start a fresh session", false),
         ("compact", "[focus]", "Compact the conversation now", false),
+        ("compaction", "[focus]", "Compact the conversation now (alias)", false),
         ("diff", "[checkpoint]", "Review task changes", false),
         ("budget", "[USD|off]", "Show or set spending limit", false),
         (
@@ -2967,7 +2968,7 @@ fn repl(
         // `/compact [focus]` compacts now, below the automatic threshold. A
         // manual compaction is a statement about what the user wants, not a
         // measurement; the optional focus steers what the summary keeps.
-        if text == "/compact" || text.starts_with("/compact ") {
+        if text == "/compact" || text.starts_with("/compact ") || text == "/compaction" || text.starts_with("/compaction ") {
             provider = match factory() {
                 Ok(p) => p,
                 Err(e) => {
@@ -2975,7 +2976,7 @@ fn repl(
                     continue;
                 }
             };
-            let focus = text.strip_prefix("/compact ").map(str::trim);
+            let focus = text.strip_prefix("/compact ").or_else(|| text.strip_prefix("/compaction ")).map(str::trim);
             ui_print!("\x1b[90mcompacting…\x1b[0m\r");
             let _ = std::io::stdout().flush();
             match compact::run_manual(provider.as_ref(), &mut session, &state, focus) {
@@ -3304,7 +3305,7 @@ fn repl(
                     catalogue.clone(),
                     turn_instructions,
                 )
-                .with_limits(cfg.max_tokens, cfg.reasoning_budget, 24)
+                .with_limits(cfg.max_tokens, cfg.reasoning_budget, usize::MAX)
                 .with_recovery(recovering)
                 .with_live(cfg.live_flush_ms as u64)
                 .with_stream_factory(Arc::clone(&factory))

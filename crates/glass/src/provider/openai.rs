@@ -232,7 +232,7 @@ impl Provider for OpenAiCompat {
                     body["reasoning_effort"] = json!(effort_label(budget));
                 }
             } else if m.contains("glm") || m.contains("qwen3") || m.contains("deepseek") {
-                body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
+                body["thinking"] = if budget == 0 { json!({"type":"disabled"}) } else { json!({ "type": "enabled", "budget_tokens": budget }) };
             }
         }
 

@@ -41,6 +41,7 @@ pub struct Entry {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCard {
+    pub expanded: bool,
     pub call_id: String,
     pub command: String,
     pub output: String,

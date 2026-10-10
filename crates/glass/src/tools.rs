@@ -126,16 +126,18 @@ pub fn bash_owned(
         ));
     }
 
-    let cwd = match call.arg_str("cwd") {
-        Some(rel) if !rel.trim().is_empty() => {
-            let joined = workspace.join(rel.trim());
-            if joined.is_dir() {
-                joined
-            } else {
-                workspace.to_path_buf()
+    let cwd = match call.arg_raw("cwd") {
+        Some(_) => {
+            let Some(rel) = call.arg_str("cwd").filter(|s| !s.trim().is_empty()) else {
+                return Outcome::err("`cwd` must be a nonempty directory path string; omit it to use the workspace");
+            };
+            let joined = workspace.join(&rel);
+            if !joined.is_dir() {
+                return Outcome::err(format!("`cwd` is not an accessible directory: {}; nothing executed", joined.display()));
             }
+            joined
         }
-        _ => workspace.to_path_buf(),
+        None => workspace.to_path_buf(),
     };
     if exception
         && !matches!((cwd.canonicalize(), workspace.canonicalize()), (Ok(cwd), Ok(root)) if cwd == root)
@@ -148,17 +150,21 @@ pub fn bash_owned(
     // Models send `timeout_ms` as a JSON number, not a string, so this has to
     // read the raw value. Using `arg_str` here silently returns None and every
     // command would quietly get the default timeout.
-    let timeout = call
-        .arg_raw("timeout_ms")
-        .and_then(|raw| {
-            raw.trim_matches('"')
-                .parse::<f64>()
-                .ok()
-                .filter(|v| v.is_finite() && *v > 0.0)
-                .map(|v| v as u64)
-        })
-        .unwrap_or(DEFAULT_TIMEOUT_MS)
-        .clamp(100, MAX_TIMEOUT_MS);
+    let timeout = match call.arg_raw("timeout_ms") {
+        None => DEFAULT_TIMEOUT_MS,
+        Some(raw) => {
+            let value = serde_json::from_str::<serde_json::Value>(&raw);
+            let millis = match value.as_ref().ok() {
+                Some(serde_json::Value::Number(n)) => n.as_u64(),
+                Some(serde_json::Value::String(s)) => s.parse::<u64>().ok(),
+                _ => None,
+            };
+            let Some(millis) = millis.filter(|n| *n > 0) else {
+                return Outcome::err("`timeout_ms` must be a positive integer in milliseconds; nothing executed");
+            };
+            millis.clamp(100, MAX_TIMEOUT_MS)
+        }
+    };
 
     // Approved exceptions must bypass macOS's sandbox-exec wrapper as well as
     // Linux's Landlock pre-exec hook. They apply only to exact command bytes.
@@ -322,12 +328,15 @@ fn kill_group(child: &mut Child) {
         kill(pgid, SIGTERM);
     }
     std::thread::sleep(std::time::Duration::from_millis(100));
+    // The shell may exit on TERM while a descendant ignores it and keeps
+    // stdout open. Signal the owned group before reaping its leader, even
+    // when that leader has already exited.
+    unsafe {
+        kill(pgid, SIGKILL);
+    }
     for _ in 0..4 {
         if child.try_wait().ok().flatten().is_some() {
             break;
-        }
-        unsafe {
-            kill(pgid, SIGKILL);
         }
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
@@ -405,7 +414,7 @@ fn open_spill() -> Option<(std::fs::File, PathBuf)> {
 }
 
 /// Durable working state, written by the model, read by the compactor.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct State {
     items: Vec<String>,
 }
@@ -648,14 +657,37 @@ mod tests {
     }
 
     #[test]
-    fn non_numeric_timeout_falls_back_to_default() {
-        // Garbage must not become a 0ms timeout that kills everything instantly.
+    fn non_numeric_timeout_is_rejected_before_execution() {
         let out = bash(
             &call(r#"{"command":"echo ok","timeout_ms":"soon"}"#),
             std::path::Path::new("."),
         );
-        assert_eq!(out.body, "[exit 0]\nok\n");
-        assert!(!out.body.contains("killed"));
+        assert!(out.body.contains("timeout_ms"));
+        assert!(out.body.contains("nothing executed"));
+        assert_eq!(out.exit_code, None);
+    }
+
+    #[test]
+    fn invalid_explicit_shell_inputs_do_not_spawn() {
+        let root = std::env::temp_dir().join(format!("gc-input-validation-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let marker = root.join("should-not-exist");
+        for extra in [
+            serde_json::json!({"cwd":"missing"}),
+            serde_json::json!({"cwd":""}),
+            serde_json::json!({"cwd":42}),
+            serde_json::json!({"timeout_ms":0}),
+            serde_json::json!({"timeout_ms":1.5}),
+            serde_json::json!({"timeout_ms":true}),
+            serde_json::json!({"timeout_ms":null}),
+        ] {
+            let mut args = extra;
+            args["command"] = serde_json::json!("touch should-not-exist");
+            let out = bash(&call(&args.to_string()), &root);
+            assert_eq!(out.exit_code, None, "{}", out.body);
+            assert!(!marker.exists(), "invalid arguments executed the shell: {args}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -673,6 +705,17 @@ mod tests {
             "took {:?}",
             started.elapsed()
         );
+    }
+
+    #[test]
+    fn timeout_kills_term_ignoring_descendants_after_shell_exit() {
+        let started = std::time::Instant::now();
+        let out = bash(
+            &call(r#"{"command":"sh -c 'trap \"\" TERM; sleep 5' & sleep 5","timeout_ms":200}"#),
+            std::path::Path::new("."),
+        );
+        assert!(out.body.contains("killed"), "{}", out.body);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "descendant retained the output pipe");
     }
 
     #[test]

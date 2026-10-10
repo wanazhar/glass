@@ -75,6 +75,7 @@ impl Live {
                             start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
                         });
                     }
+                    card.expanded = self.expanded_cards.contains(&(e.turn, card.call_id.clone()));
                     crate::session::tool_card_text(
                         card,
                         self.expanded_cards
@@ -149,10 +150,11 @@ impl Live {
                 self.tool_started
                     .insert((*call_id).to_string(), Instant::now());
                 self.entries.push(Entry {
-                    role: Role::Bash,
+                    role: if *name == "bash" { Role::Bash } else { Role::Tool },
                     text: format!("{name}\n{}", command.unwrap_or("")),
                     turn: self.turn,
                     tool_card: Some(glass_tui::ToolCard {
+                    expanded: false,
                         call_id: (*call_id).to_string(),
                         command: command.unwrap_or(name).to_string(),
                         output: String::new(),

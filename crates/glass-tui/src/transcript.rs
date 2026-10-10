@@ -40,12 +40,15 @@ struct Anchor {
 
 impl Transcript {
     pub fn new(entries: Vec<super::Entry>) -> Self {
+        let cards = entries.iter().enumerate().filter_map(|(i,e)| e.tool_card.clone().map(|c| (i,c))).collect();
         let rows: Vec<(String, Role, usize)> = entries
             .into_iter()
             .map(|e| (e.text, e.role, e.turn))
             .collect();
         let collapsed = vec![false; rows.len()];
-        let layout = Layout::new(rows.clone());
+        let mut layout = Layout::new(rows.clone());
+        layout.set_cards(cards);
+        layout.set_width(80);
         let scroll = layout.total_lines().saturating_sub(1);
         Self {
             layout,
@@ -62,12 +65,14 @@ impl Transcript {
 
     /// Refresh live records without resetting the reader's scroll position.
     pub fn replace_entries(&mut self, entries: Vec<super::Entry>) -> bool {
+        let cards = entries.iter().enumerate().filter_map(|(i,e)| e.tool_card.clone().map(|c| (i,c))).collect();
+        let cards_changed = self.layout.set_cards(cards);
         let rows: Vec<_> = entries
             .into_iter()
             .map(|e| (e.text, e.role, e.turn))
             .collect();
         if self.original == rows {
-            return false;
+            return cards_changed;
         }
         let anchor = self.capture_anchor();
         self.collapsed.resize(rows.len(), false);
@@ -287,7 +292,9 @@ impl Transcript {
                 }
             })
             .collect();
+        let cards = self.layout.cards();
         self.layout = Layout::new(rows);
+        self.layout.set_cards(cards);
         self.layout.set_width(width);
         self.scroll = keep.min(self.layout.total_lines().saturating_sub(1));
     }

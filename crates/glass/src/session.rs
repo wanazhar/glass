@@ -1439,6 +1439,7 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
                 let output = body.unwrap_or("").to_string();
                 let status = if body.is_some() { "completed" } else { "interrupted" };
                 let card = glass_tui::ToolCard {
+                    expanded: false,
                     call_id: id.clone(),
                     command: heading.clone(),
                     output: output.clone(),
@@ -1459,6 +1460,7 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
             } => {
                 let status = exit_code.map_or_else(|| "signal".into(), |code| format!("exit {code}"));
                 let card = glass_tui::ToolCard {
+                    expanded: false,
                     call_id: call_id.clone().or_else(|| legacy_bash_calls.get(&record_index).map(|key| key.2.clone()))
                         .unwrap_or_else(|| format!("legacy-bash-record-{record_index}")),
                     command: command.clone(),
@@ -1538,6 +1540,7 @@ pub(crate) fn tool_card_text(card: &glass_tui::ToolCard, expanded: bool) -> Stri
 #[test]
 fn tool_card_preview_truncates_at_unicode_boundary() {
     let card=glass_tui::ToolCard {
+                    expanded: false,
         call_id:"unicode".into(), command:"printf".into(), output:format!("{}😀tail","a".repeat(359)),
         status:"exit 0".into(), elapsed_ms:None, spill:None, truncated:false,
     };
@@ -1644,7 +1647,7 @@ fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
     }
     // The model's own durable notes, taken from the last one it wrote.
     if let Some(state) = records.iter().rev().find_map(|r| match r {
-        Record::State(items) if !items.is_empty() => Some(items.clone()),
+        Record::State(items) => Some(items.clone()),
         _ => None,
     }) {
         out.push(Record::State(state));
@@ -1766,6 +1769,20 @@ mod tests {
         assert_eq!(session.log_len(), 0);
         assert!(session.history_records().is_empty());
         assert!(session.write_error().is_some());
+    }
+
+    #[test]
+    fn compacted_projection_does_not_resurrect_cleared_state() {
+        let records = vec![
+            Record::User("task".into()),
+            Record::State(vec!["obsolete".into()]),
+            Record::State(vec![]),
+            Record::Assistant("tail".into()),
+            Record::Compacted { kept: 1, dropped: 3, summary: None, tail_start: 3, system: None },
+        ];
+        let (projected, _) = apply_projection(records);
+        let states = projected.iter().filter_map(|r| match r { Record::State(items) => Some(items), _ => None }).collect::<Vec<_>>();
+        assert_eq!(states, vec![&Vec::<String>::new()]);
     }
 
     #[test]
@@ -2061,6 +2078,7 @@ mod tests {
     fn tool_card_preview_is_bounded_but_expansion_keeps_full_output() {
         let output = (0..12).map(|n| format!("line {n} {}", "x".repeat(100))).collect::<Vec<_>>().join("\n");
         let card = glass_tui::ToolCard {
+                    expanded: false,
             call_id: "call-exact".into(),
             command: "$ cargo test".into(),
             output: output.clone(),

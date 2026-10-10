@@ -345,6 +345,7 @@ pub fn choose_search(
     items: &[String],
     searchable: &[String],
 ) -> Option<usize> {
+    let normalized=items.iter().enumerate().map(|(i,item)|searchable.get(i).unwrap_or(item).to_lowercase()).collect::<Vec<_>>();
     let mut screen = Screen::new();
     let mut query = Editor::new();
     let mut selected = 0usize;
@@ -353,13 +354,7 @@ pub fn choose_search(
         let matches: Vec<_> = items
             .iter()
             .enumerate()
-            .filter(|(i, s)| {
-                searchable
-                    .get(*i)
-                    .unwrap_or(s)
-                    .to_lowercase()
-                    .contains(&needle)
-            })
+            .filter(|(i, _)| normalized[*i].contains(&needle))
             .collect();
         selected = selected.min(matches.len().saturating_sub(1));
         let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));

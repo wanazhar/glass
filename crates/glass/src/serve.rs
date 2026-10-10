@@ -267,9 +267,9 @@ pub fn serve(
         std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
             .map_err(|e| e.to_string())?;
     }
-    println!("glass-core: serving session {}", session.id);
-    println!("glass-core: socket {}", socket_path.display());
-    println!(
+    crate::cli_println!("glass-core: serving session {}", session.id);
+    crate::cli_println!("glass-core: socket {}", socket_path.display());
+    crate::cli_println!(
         "glass-core: attach with `glass-core attach --socket {}`",
         socket_path.display()
     );
@@ -673,7 +673,7 @@ pub fn stop(session_id: Option<&str>) -> Result<(), String> {
         }
     }
     if stop_completed(stopped, completed, &pending) {
-        println!("glass-core: stopped session {id}");
+        crate::cli_println!("glass-core: stopped session {id}");
         Ok(())
     } else {
         Err(format!(
@@ -742,8 +742,8 @@ pub fn respawn(session_id: Option<&str>) -> Result<(), String> {
     cmd.spawn()
         .map_err(|e| format!("cannot respawn the server: {e}"))?;
     match &id {
-        Some(id) => println!("glass-core: respawning session {id}"),
-        None => println!("glass-core: respawning the newest session"),
+        Some(id) => crate::cli_println!("glass-core: respawning session {id}"),
+        None => crate::cli_println!("glass-core: respawning the newest session"),
     }
     Ok(())
 }
@@ -789,15 +789,15 @@ pub fn logs(session_id: Option<&str>, workspace: &Path) -> Result<(), String> {
         })
         .collect();
     if entries.is_empty() {
-        println!("no activity in session {id}");
+        crate::cli_println!("no activity in session {id}");
         return Ok(());
     }
-    println!(
+    crate::cli_println!(
         "glass-core: last {} entries of session {id}\n",
         entries.len()
     );
     for entry in entries {
-        println!("{entry}\n");
+        crate::cli_println!("{entry}\n");
     }
     Ok(())
 }

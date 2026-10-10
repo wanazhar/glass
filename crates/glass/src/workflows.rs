@@ -1012,13 +1012,9 @@ pub fn headless_info(args: &[String], cfg: &config::Config) -> Result<bool, Stri
     };
     if args.iter().any(|a| a == "--json") {
         crate::emit_json(value);
-    } else if let Some(text) = value["text"].as_str() {
-        println!("{text}");
     } else {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?
-        );
+        crate::cli::report(command, &value);
+        if command == "init" {crate::cli::written(&value);}
     }
     Ok(true)
 }

@@ -139,7 +139,7 @@ pub fn command(cfg: &config::Config, args: &[String]) -> Result<(), String> {
         target.clone()
     };
     send(&id, &text, "cli")?;
-    println!("sent to {id}");
+    crate::cli_println!("sent to {id}");
     Ok(())
 }
 

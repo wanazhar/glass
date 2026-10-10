@@ -1542,3 +1542,17 @@ Run `gc help` for a quick start. Use `gc help commands`, `gc help run`, or
 `gc help keys` for focused command, headless, and keyboard guides; `gc help all`
 shows the full guide. Help adapts to terminal width and uses plain text when
 piped or when `NO_COLOR` is set.
+
+### Consistent command output and resuming
+
+Human-facing commands (`gc status`, `gc doctor`, `gc sessions`, `gc profiles`,
+`gc extensions`, file tools, teammates, plugins, worktrees and server commands)
+share the help palette, readable labels and terminal-width wrapping. Use
+`gc COMMAND --help` for a focused guide. `--json` and protocol streams keep
+machine-readable output; exported Markdown remains a plain document.
+
+`gc resume` opens a searchable picker for the current project's conversations,
+newest first. Type a title or thread ID, use arrows and Enter to resume, or Esc
+or Ctrl+C to cancel. F1 shows the full selected label. `gc resume ID` opens a
+specific conversation directly. Over SSH without a terminal, use
+`gc sessions --json` and `gc run --resume ID <prompt>`.

@@ -966,7 +966,7 @@ pub fn enabled(owner: &str) -> bool {
 const HELP: &str = "gc agent [--session MAIN_ID] ACTION\n  create NAME TASK [--model ID] [--tokens N] [--write] [--worktree]\n  list | inspect ID | transcript ID [--before BYTE] | interactions [--before BYTE]\n  send ID MESSAGE | resume ID MESSAGE | wait ID [SECONDS]\n  interrupt ID | archive ID | discard ID | budget ID TOKENS\nDefault: read-only, two active workers, 100000 cumulative tokens, 4096 output/response.\nFollow-ups retain context. Complete transcripts are fetched only on demand.\nThe default model is pinned when the main session opens; --model overrides it.\nIdle workers consume no model requests. --session selects a running owner from another shell.\n";
 pub fn command(args: &[String]) -> Result<(), String> {
     if args.is_empty() || args.iter().any(|s| s == "--help" || s == "-h") {
-        print!("{HELP}");
+        crate::cli::text("Teammates", HELP);
         return Ok(());
     }
     let mut args = args.to_vec();
@@ -1046,14 +1046,14 @@ pub fn command(args: &[String]) -> Result<(), String> {
             let v = client(&owner, &req)?;
             if v["agent"]["status"] != "working" || start.elapsed() >= Duration::from_secs(seconds)
             {
-                println!("{v}");
+                crate::cli::agent(&v);
                 break;
             }
             std::thread::sleep(Duration::from_millis(150));
         }
     } else {
         let value = client(&owner, &req)?;
-        println!("{value}");
+        crate::cli::agent(&value);
     }
     Ok(())
 }

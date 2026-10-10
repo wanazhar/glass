@@ -71,3 +71,5 @@
 - [Streaming and scrolling presentation](plan/reviews/stream-scroll-presentation-001-01.md): atomic styled rows, color separation, retained statistics, clean scrolling footer and Unicode preview safety.
 
 - [CLI help](plan/reviews/cli-help-001-01.md): terminal-aware command guides, examples, color and pipe behavior.
+
+- [CLI design and resume](plan/reviews/cli-design-resume-001-01.md): shared command presentation and a searchable startup session picker.

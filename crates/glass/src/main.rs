@@ -26,6 +26,8 @@ mod attention;
 mod settings;
 mod reminders;
 mod rewind;
+mod transactions;
+mod navigation;
 mod doctor;
 mod export;
 mod ext;
@@ -167,6 +169,19 @@ fn main() {
                 cli::error("Workspace", &e);
                 std::process::exit(2);
             }
+            return;
+        }
+        Some("structure") => {
+            let status=std::process::Command::new("python3").arg("-c").arg(include_str!("../../../extensions/structure/structure.py")).args(&args[1..]).env("GC_BIN",std::env::current_exe().unwrap_or_else(|_|"glass-core".into())).status();
+            match status {Ok(status)=>std::process::exit(status.code().unwrap_or(1)),Err(error)=>{cli::error("Structural edit",&error.to_string());std::process::exit(2);}}
+        }
+        Some("companion") => {
+            let status=std::process::Command::new("python3").arg("-c").arg(include_str!("../../../extensions/companion/companion.py")).args(&args[1..]).status();
+            match status {Ok(status)=>std::process::exit(status.code().unwrap_or(1)),Err(error)=>{cli::error("Companion",&error.to_string());std::process::exit(2);}}
+        }
+        Some("hub") => {if let Err(error)=navigation::command(&args[1..]) {cli::error("Workspace hub",&error);std::process::exit(2);}return;}
+        Some("transaction") => {
+            if let Err(error)=transactions::command(&args[1..]) {cli::error("File transaction",&error);std::process::exit(2);}
             return;
         }
         Some("contract") => {
@@ -1251,12 +1266,12 @@ fn headless(
             (partial, "error", Some(e.to_string()))
         }
     };
-    if error.is_none() && let Some(schema) = &output_schema {
-        if contracts::parse(schema, &text).is_err() {
-            match contracts::repair(p.as_ref(), &mut session, schema, &text, cfg.max_tokens) {
-                Ok(corrected) => text = corrected,
-                Err(reason) => { status = "invalid_output"; error = Some(format!("Final answer contract failed after one correction: {reason}")); },
-            }
+    if error.is_none() && let Some(schema) = &output_schema
+        && contracts::parse(schema, &text).is_err()
+    {
+        match contracts::repair(p.as_ref(), &mut session, schema, &text, cfg.max_tokens) {
+            Ok(corrected) => text = corrected,
+            Err(reason) => { status = "invalid_output"; error = Some(format!("Final answer contract failed after one correction: {reason}")); },
         }
     }
     let structured = output_schema.as_ref().and_then(|schema| contracts::parse(schema,&text).ok());
@@ -1285,6 +1300,7 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
     let builtin = [
         ("help", "", "Show help", false),
         ("history", "", "Inspect compaction receipts and branch lineage", false),
+        ("branches", "", "Browse retained conversation alternatives", false),
         ("queue-run", "", "Run saved follow-ups now", false),
         ("rewind", "", "Fork earlier context; optionally restore guarded files", false),
         ("turns", "", "Review observed changes by turn", false),
@@ -2215,10 +2231,12 @@ fn repl(
             continue;
         }
         if text == "/attention" { attention::view(&keys, &session); continue; }
+        let mut hub_resume=None;
+        if text == "/branches" { hub_resume=navigation::view(&keys,&session,&cfg.workspace,true);if hub_resume.is_none(){continue;}text="/sessions".into(); }
         if text == "/hub" {
             let choices = ["Conversations", "Persistent teammates", "Attention", "Tasks and findings", "Usage and cache", "History boundaries"].map(String::from);
             match modal::choose(&keys,"Workspace hub","Search a workflow · loads details only when selected",&choices) {
-                Some(0) => text = "/sessions".into(),
+                Some(0) => {hub_resume=navigation::view(&keys,&session,&cfg.workspace,false);if hub_resume.is_none(){continue;}text="/sessions".into();},
                 Some(1) => { team::view(&keys,&session.id); continue; },
                 Some(2) => { attention::view(&keys,&session); continue; },
                 Some(3) => { workspace::view(&keys,&cfg.workspace); continue; },
@@ -2252,7 +2270,8 @@ fn repl(
         }
         if text == "/sessions" {
             warmer.begin_turn();
-            match polish::browser(&keys, &session, &cfg.workspace) {
+            let selected=match hub_resume.take() {Some(id) if id==session.id=>Ok(None),Some(id)=>Session::open(&config::data_dir(),&id).map(Some).map_err(|e|e.to_string()),None=>polish::browser(&keys,&session,&cfg.workspace)};
+            match selected {
                 Ok(Some(s)) => {
                     permissions::clear_session_approvals()?;
                     session = s;
@@ -3512,8 +3531,6 @@ fn repl(
 
                 painter.reset();
                 let mut draft = glass_tui::Editor::new();
-                let (_, nh) = term_size();
-                let draft_row = nh.saturating_sub(2);
                 let result = agent.run_turn(&mut |steer_slot: &mut Option<String>| {
                     if painter.refresh_geometry(!busy_palette.active()) && !busy_palette.active() {
                         surface::composer(&draft, true, true);
@@ -3524,8 +3541,6 @@ fn repl(
                         &mut draft,
                         &mut pending,
                         &mut busy_palette,
-                        draft_row,
-                        w,
                         &painter,
                         &team_owner,
                     ) {
@@ -3564,6 +3579,7 @@ fn repl(
                     Err(e) => ui_println!("checkpoint: {e}"),
                 }
             }
+            if let Err(error)=navigation::record(&session,&cfg.workspace,&cfg.model,match &outcome {Err(_)=>"blocked",Ok((_,Stop::Cancelled))=>"cancelled",Ok(_)=>"completed"}) {ui_println!("navigation receipt: {error}");}
             let mut turn_failed = outcome.is_err();
             // The tab status reflects the turn's verdict: finished, failed
             // (first line of the reason), or back to idle after a cancel.
@@ -3766,8 +3782,6 @@ fn drain_input(
     editor: &mut glass_tui::Editor,
     pending: &mut queue::Queue,
     palette: &mut glass_tui::palette::Palette,
-    _row: u16,
-    _width: u16,
     painter: &Painter,
     team_owner: &str,
 ) -> Option<String> {
@@ -4222,7 +4236,8 @@ impl Painter {
     }
 
     fn set_width(&self, width: u16) {
-        self.width.set(width.max(1));
+        // Reserve the same two columns as the inline reader and scrollbar.
+        self.width.set(width.saturating_sub(2).max(1));
     }
 
     fn refresh_geometry(&self, reader_allowed: bool) -> bool {

@@ -62,6 +62,7 @@ pub(crate) struct Thread {
 pub(crate) fn index(dir: &Path, workspace: &Path) -> Vec<Thread> {
     index_scoped(dir, Some(workspace))
 }
+pub(crate) fn all(dir:&Path)->Vec<Thread> { index_scoped(dir,None) }
 fn index_scoped(dir: &Path, workspace: Option<&Path>) -> Vec<Thread> {
     let root = workspace
         .unwrap_or(Path::new("/"))

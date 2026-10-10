@@ -24,6 +24,8 @@ pub struct Registry {
     /// Whether a change against the frozen list has been
     /// noted in the transcript already.
     freeze_noted: bool,
+    deferred: bool,
+    scope: std::collections::BTreeSet<String>,
 }
 
 /// What changed against the frozen tool list.
@@ -49,6 +51,8 @@ impl Registry {
             runner_factory: None,
             frozen_tools: None,
             freeze_noted: false,
+            deferred: std::env::var("GC_DEFER_TOOLS").as_deref()==Ok("1"),
+            scope: std::collections::BTreeSet::new(),
         }
     }
 
@@ -265,6 +269,7 @@ impl Registry {
     /// list buys (2.1.268).
     pub fn declared_tools(&mut self) -> (Vec<(String, String, String)>, FreezeDiff) {
         let live = self.tools();
+        if self.deferred { return (live.into_iter().filter(|(name,_,_)|self.scope.contains(name)).collect(),FreezeDiff::default()); }
         let Some(frozen) = &self.frozen_tools else {
             self.frozen_tools = Some(live.clone());
             return (live, FreezeDiff::default());
@@ -287,6 +292,23 @@ impl Registry {
         }
         self.freeze_noted = true;
         (frozen.clone(), FreezeDiff { added, removed })
+    }
+
+    pub fn clear_scope(&mut self) { if self.deferred { self.scope.clear(); } }
+    pub fn capabilities(&mut self, request:&serde_json::Value)->Result<serde_json::Value,String> {
+        let object=request.as_object().ok_or("capabilities must be an object")?;
+        if object.keys().any(|k|!matches!(k.as_str(),"search"|"activate")) {return Err("Unknown capability operation".into());}
+        if let Some(activate)=object.get("activate") {
+            if !self.deferred {return Err("Request-scoped tools require GC_DEFER_TOOLS=1; the default session schema remains frozen".into());}
+            let names=activate.as_array().ok_or("activate must be tool names")?;
+            if names.len()>16 {return Err("Activate at most 16 capabilities".into());}
+            let mut scope=std::collections::BTreeSet::new();
+            for name in names {let name=name.as_str().ok_or("Capability name must be text")?;if !self.has_tool(name) {return Err(format!("Unknown configured capability {name}"));}scope.insert(name.to_owned());}
+            self.scope=scope;
+        }
+        let query=object.get("search").map(|v|v.as_str().ok_or("search must be text")).transpose()?.unwrap_or("").to_lowercase();
+        let tools=self.tools().into_iter().filter(|(n,d,_)|format!("{n} {d}").to_lowercase().contains(&query)).take(64).map(|(name,description,_)|serde_json::json!({"name":name,"description":description.chars().take(240).collect::<String>(),"active":!self.deferred||self.scope.contains(&name)})).collect::<Vec<_>>();
+        Ok(serde_json::json!({"capabilities":tools,"deferred":self.deferred,"scope":"Current user turn; resets at the next user turn. Explicit activation changes tool-schema prefix; request audit records the fingerprint."}))
     }
 
     pub fn has_tool(&self, name: &str) -> bool {

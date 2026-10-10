@@ -148,7 +148,7 @@ pub fn command(s: &Session, args: &str) -> Result<String, String> {
     let args = args.trim();
     if args == "history" {
         let loops = load_checked(s)?;
-        return Ok(serde_json::to_string_pretty(&loops.history).map_err(|e| e.to_string())?);
+        return serde_json::to_string_pretty(&loops.history).map_err(|e| e.to_string());
     }
     if args.is_empty() || args == "list" {
         let loops = load_checked(s)?;

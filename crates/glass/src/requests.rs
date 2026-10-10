@@ -335,32 +335,6 @@ pub fn view(keys: &crate::input::KeyReader, session: &Session) {
         Err(e) => crate::modal::info(keys, "Requests", &e),
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn delta_tracks_changes_without_contents() {
-        let messages = vec![glass_mod_api::Message::User("PRIVATE_MESSAGE".into())];
-        let tools = vec![];
-        let req = Request {
-            model: "mock",
-            system: "PRIVATE_SYSTEM",
-            messages: &messages,
-            tools: &tools,
-            max_tokens: 10,
-            reasoning: None,
-        };
-        let a = Snapshot::capture(&req);
-        let mut b = a.clone();
-        b.messages.push(hash(b"new"));
-        let delta = b.delta(Some(&a));
-        assert_eq!(delta["new_or_changed_messages"], 1);
-        assert_eq!(delta["prefix_changed"], false);
-        assert!(!serde_json::to_string(&a).unwrap().contains("PRIVATE"));
-        b.model = "other".into();
-        assert_eq!(b.delta(Some(&a))["model_changed"], true);
-    }
-}
 
 /// Aggregate only the bounded recent request window; absent usage is unknown.
 pub fn usage_summary(session: &Session) -> Result<serde_json::Value, String> {
@@ -392,4 +366,31 @@ pub fn usage_summary(session: &Session) -> Result<serde_json::Value, String> {
         "non_completed_requests":failures,"observed_prefix_changes":invalidations,
         "quota":null,"quota_note":"No authoritative provider quota is available from request usage.","teammates":teammates,
         "cache_note":"Prefix changes explain local invalidation boundaries, not a provider cache-miss cause. Missing usage is never assumed to be zero."}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn delta_tracks_changes_without_contents() {
+        let messages = vec![glass_mod_api::Message::User("PRIVATE_MESSAGE".into())];
+        let tools = vec![];
+        let req = Request {
+            model: "mock",
+            system: "PRIVATE_SYSTEM",
+            messages: &messages,
+            tools: &tools,
+            max_tokens: 10,
+            reasoning: None,
+        };
+        let a = Snapshot::capture(&req);
+        let mut b = a.clone();
+        b.messages.push(hash(b"new"));
+        let delta = b.delta(Some(&a));
+        assert_eq!(delta["new_or_changed_messages"], 1);
+        assert_eq!(delta["prefix_changed"], false);
+        assert!(!serde_json::to_string(&a).unwrap().contains("PRIVATE"));
+        b.model = "other".into();
+        assert_eq!(b.delta(Some(&a))["model_changed"], true);
+    }
 }

@@ -866,6 +866,7 @@ impl Session {
             "branched from {} through turn {through}; workspace files unchanged",
             self.id
         )));
+        crate::navigation::lineage(&fork,&self.id,through).map_err(std::io::Error::other)?;
         let fork_id = fork.id.clone();
         drop(fork);
         Self::open(dir, &fork_id)
@@ -1448,7 +1449,7 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
                     call_id: id.clone(),
                     command: heading.clone(),
                     output: output.clone(),
-                    status: status.into(),
+                    status,
                     elapsed_ms: None,
                     spill: None,
                     truncated: false,

@@ -43,7 +43,8 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    fn ok(body: String) -> Self {
+    /// A successful result body returned to the model.
+    pub fn ok(body: String) -> Self {
         Self {
             body,
             truncated: false,
@@ -430,6 +431,17 @@ impl State {
 
     /// Handle a `state` tool call. No `items` argument means read-back.
     pub fn apply(&mut self, call: &ToolCall) -> Outcome {
+        let rev = crate::workspace::hash(serde_json::to_string(&self.items).unwrap_or_default().as_bytes());
+        // A caller that read a revision must still hold it, so a concurrent
+        // update cannot be silently overwritten by a stale replacement.
+        if let Some(expected) = call.arg_raw("expected")
+            && serde_json::from_str::<String>(&expected).ok().as_deref() != Some(rev.as_str())
+        {
+            return Outcome::err("Stale state revision; read state with revision:true before replacing notes");
+        }
+        if call.arg_raw("items").is_none() && call.arg_raw("revision").as_deref() == Some("true") {
+            return Outcome::ok(serde_json::json!({"items":self.items,"revision":rev,"ownership":"current session; durable log writer lock"}).to_string());
+        }
         // Absent or null means read-back, which is how the model recovers
         // state after a compaction without having to guess.
         let raw = match call.arg_raw("items") {
@@ -439,6 +451,7 @@ impl State {
 
         match serde_json::from_str::<Vec<String>>(&raw) {
             Ok(items) => {
+                if items.len()>128 || items.iter().any(|s|s.len()>4096) || items.iter().map(String::len).sum::<usize>()>65536 {return Outcome::err("State limited to 128 items, 4 KiB each and 64 KiB total");}
                 let cleaned: Vec<String> = items
                     .into_iter()
                     .map(|s| s.trim().to_string())

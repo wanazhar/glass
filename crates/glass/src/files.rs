@@ -521,6 +521,19 @@ pub fn execute(root: &Path, action: &str, v: &Value) -> Result<Value, String> {
         json!({"kind":"file_change","path":target.label,"operation":action,"status":if dry_run {"proposed"} else if changed {"applied"} else {"unchanged"},"applied":!dry_run && changed,"created":created,"base_revision":existing.as_ref().map(|_| revision(bytes)),"revision":revision(result.as_bytes()),"bytes":result.len(),"changed":changed,"preview":diff,"diagnostics":diagnostics}),
     )
 }
+pub(crate) fn snapshot_text(root:&Path,path:&str)->Result<Option<String>,String> {
+    let target=Target::new(root,path)?;
+    target.read()?.map(|(bytes,_)|text(&bytes).map(str::to_owned)).transpose()
+}
+pub(crate) fn remove_created(root:&Path,path:&str,expected:&str)->Result<(),String> {
+    let target=Target::new(root,path)?;
+    fs2::FileExt::try_lock_exclusive(&target.dir).map_err(error)?;
+    let Some((bytes,_))=target.read()? else {return Ok(());};
+    if revision(&bytes)!=expected {return Err("Recovery refuses a changed created file".into());}
+    if unsafe {libc::unlinkat(target.dir.as_raw_fd(),target.name.as_ptr(),0)}<0 {return Err(error(std::io::Error::last_os_error()));}
+    target.dir.sync_all().map_err(error)
+}
+
 pub fn command(args: &[String]) -> Result<(), String> {
     let json_output =
         args.iter().any(|s| s == "--json") || std::env::var_os("GC_FILE_JSON").is_some();

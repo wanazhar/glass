@@ -793,6 +793,7 @@ impl<'a> Agent<'a> {
                 "session log is not writable; turn refused: {error}"
             )));
         }
+        self.extensions.clear_scope();
         crate::reminders::apply(self.session).map_err(provider::Error::Config)?;
         let mut last = TurnOutput {
             text: String::new(),
@@ -1521,7 +1522,11 @@ impl<'a> Agent<'a> {
             // result passes through.
             outcome = r;
         } else if call.name == "state" {
-            outcome = self.state.apply(call);
+            if let Some(capabilities)=call.arg_raw("capabilities") {
+                outcome=match serde_json::from_str(&capabilities).map_err(|e|e.to_string()).and_then(|value|self.extensions.capabilities(&value)) {
+                    Ok(value)=>tools::Outcome::ok(value.to_string()),Err(error)=>tools::Outcome::err(error),
+                };
+            } else { outcome = self.state.apply(call); }
         } else if self.extensions.has_tool(&call.name) {
             // The bridge lets an extension call tools on the host while it
             // runs — only `bash` and `state`, the model's own tools.

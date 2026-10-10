@@ -1,5 +1,6 @@
 # Glass Core design and delivery
 
+- [Six-codebase deep-read](../research/six-codebases-2026-10-10.md): Codex, Pi, OMP, T3 Code, Crush and OpenCode inspected in-tree; 38 feature candidates with verified gaps, per-codebase source findings and a suggested next wave.
 - [Expanded roadmap](../research/t3code-parity-2026-10-10.md): T3 Code, Codex, Pi and OMP research, 43 candidates and tooling-first delivery order.
 - [Turn recovery](plan/tasks/turn-recovery-001.md): stable prompt recovery, local compaction fallback and consistent tool cards.
 - [Tooling foundation](plan/tasks/tooling-foundation-001.md): revision-checked read continuation, mutation previews, explicit shell inputs and durable state recovery.

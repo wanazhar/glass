@@ -83,6 +83,7 @@ const TOOLS: &[Item] = &[
     ),
 ];
 const CONNECT: &[Item] = &[
+    ("gc settings [--json]", "Inspect effective settings and configuration provenance."),
     (
         "gc status [--json]",
         "Inspect the active provider, model and saved connections.",

@@ -532,6 +532,12 @@ impl<'a> Agent<'a> {
         let mut trace = crate::requests::Trace::begin(self.session, &req);
         trace.pricing(self.provider.rate_card());
         self.emit(Progress::Waiting);
+        // Durable coordinate for the retries of this request. Captured before
+        // the request goes out so every retry of it records the same index,
+        // which is what lets the inspector attach a retry to the failure it
+        // belongs to without needing a clock.
+        let request_anchor = self.session.log_len();
+        let attempt_log = self.session.path.clone();
         let receiver = if let Some(factory) = self.stream_factory.clone() {
             let (tx, rx) = std::sync::mpsc::sync_channel(64);
             let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -628,6 +634,17 @@ impl<'a> Agent<'a> {
                 &provider::RETRY_DELAYS,
                 |attempt, delay, why| {
                     trace.retry();
+                    // One durable line per retry: attempt number, the backoff
+                    // actually applied, and the caller-safe cause. Diagnostics
+                    // only — a failed write never fails the turn.
+                    let _ = crate::attempt_log::append(
+                        &attempt_log,
+                        attempt,
+                        delay,
+                        why,
+                        request_anchor,
+                        crate::transport::request_id(why),
+                    );
                     if let Some(live) = self.live.as_mut() {
                         live.retry(attempt as u32, delay);
                     }
@@ -662,6 +679,17 @@ impl<'a> Agent<'a> {
                         reason,
                     }) => {
                         trace.retry();
+                        // Same durable lineage as the in-process retry loop:
+                        // the streaming worker reports the attempt back here,
+                        // which is the only place that still has the session.
+                        let _ = crate::attempt_log::append(
+                            &attempt_log,
+                            attempt,
+                            delay_s,
+                            &reason,
+                            request_anchor,
+                            crate::transport::request_id(&reason),
+                        );
                         if let Some(live) = self.live.as_mut() {
                             live.retry(attempt as u32, delay_s);
                         }

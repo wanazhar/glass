@@ -476,7 +476,7 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
             "gc inspect report.json",
         ),
         "policy" => (
-            "gc policy [shell COMMAND | provider KIND ENDPOINT] [--json]",
+            "gc policy [shell COMMAND | explain COMMAND | extension SPEC | provider KIND ENDPOINT] [--json]",
             "Inspect global hard denials and explain a decision. Shell patterns match text; they are not a replacement for kernel confinement.",
             "gc policy\ngc policy shell 'git push'",
         ),

@@ -140,3 +140,44 @@ These are implementation checkpoints, not acceptance or full-roadmap completion.
 - Command discovery: prompt-history selection is `/prompts`; `/history` is reserved
   for retained conversation and compaction receipts. Removed the duplicate palette
   name and unreachable prompt-history handler. Ctrl+R remains prompt search.
+
+## Wave verified 2026-10-10: items 24, 30, 32, 42
+
+Four roadmap items landed as disjoint worktree tasks and merged to master; each
+was verified independently and again on the integrated tree.
+
+- `8811ea5` (item 30): LSP diagnostic deltas — the last-shown set is the
+  baseline, so a tool result leads with newly introduced, resolved and
+  reworded problems and collapses an unchanged file to one line. Multi-file
+  write checks iterate every written path under stated file-count and
+  wall-clock bounds. Code actions and renames carry the SHA-256 revision of
+  every target and refuse to apply when any revision moved, reusing the
+  revision-checked edit path. [Smoke](../../../scripts/smoke-lsp.py) PASS.
+- `77bd85a` (item 24): recovery inspector — one durable attempt record per
+  retry (attempt number, applied backoff, caller-safe cause, session record
+  index, provider request id when one came back); per-failure class to one
+  bounded safe action with no replayed-mutation promise; transport reset
+  appends exactly one marker and preserves the session log; navigable
+  `/recovery` with the raw JSON export kept, and the shareable bundle still
+  omits ids, prompts, credentials and endpoints while the local inspector
+  shows them. [Smoke](../../../scripts/smoke-recovery.py) both phases PASS.
+- `50f407a` (item 32): extension lifecycle — a cancel token outlives the
+  startup handshake so a cancel reaches a running call within one poll
+  interval; `CallOutcome` separates completed, unavailable, cancelled (with
+  the path taken) and failed; nested calls carry the originating `call_id`
+  and `CallLineage` with cyclic, re-parented and over-deep chains refused
+  explicitly; per-extension shutdown outcomes stay idempotent behind the
+  process-group kill and `Drop` guarantee. Wiring the agent loop's per-call
+  scope is the remaining follow-up for item 43.
+- `d82ffd3` (item 42): state receipts — explicit request ids recorded
+  durably; a replayed id returns its recorded receipt without re-applying
+  and the same id with different content fails loudly; receipts are written
+  only after the log append succeeds; legacy receipt-free logs restore
+  unchanged; the revision read-back reports computed ownership instead of a
+  hardcoded string. [Smoke](../../../scripts/smoke-state-receipts.py) PASS.
+
+Integrated verification on master at a fresh release build: 629 + 13 + 91
+tests pass, 0 fail; strict Clippy clean; smoke-lsp, smoke-recovery and
+smoke-state-receipts all PASS. Items 24 and 30 are complete; item 32 is
+delivered except the agent-loop call-scope wiring; item 42 receipts are
+delivered and the remaining state-ownership surface stays open.

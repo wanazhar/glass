@@ -20,6 +20,7 @@ mod diagnostics;
 mod files;
 mod export;
 mod ext;
+mod help;
 mod history;
 mod inbox;
 mod input;
@@ -76,95 +77,6 @@ macro_rules! ui_print {
     ($($argument:tt)*) => {{ let _ = surface::emit(&glass_tui::theme::neutralize(&format!($($argument)*))); }};
 }
 
-const HELP: &str = "\
-glass-core — a minimal coding harness
-
-  glass-core        start in the current directory
-  glass-core resume    reopen the most recent session
-  glass-core resume <id>     reopen a specific session
-  glass-core run [--json] [--plan] [--resume ID] [--attach FILE] [--budget USD] <prompt>
-  glass-core run --json --resume ID --retry [--model MODEL] [--connection ID]
-  glass-core sessions [--json]   list conversations in this project
-  glass-core status [--json]     connection information
-  glass-core context|review|details ID [--json]   inspect without a terminal
-  glass-core doctor [--json] [--probe]    check provider compatibility
-  glass-core profiles|extensions [--json]    inspect saved settings
-  glass-core export <id|--latest> [--out PATH] [--thinking] [--json]
-  glass-core acp         Agent Client Protocol server (editors drive glass over stdio)
-  glass-core plugin list|add|remove    manage Agent Plugins (skills + MCP servers)
-  glass-core worktree list|apply       reclaim work fan-out left in isolated checkouts
-  glass-core send <id|--latest> <msg>  message a running session (it runs a turn)
-  glass-core serve [ID] [--socket PATH]   run a session on a Unix socket
-  glass-core attach [--socket PATH]       attach a terminal client to a served session
-  glass-core file --help    native revision-checked reads/edits/writes and diagnostics
-  glass-core list        list saved sessions
-  glass-core search <pat>    find sessions whose messages match
-
-In the prompt:
-  PageUp / Ctrl-B: scroll conversation inline; Ctrl-F: search transcript
-  Inside reader: Ctrl-F search / next; PageDown moves toward newest
-  End or Esc: return to bottom · mouse wheel: scroll when terminal supports it
-  ctrl-g      fullscreen transcript (scroll, collapse, follow)
-  / or ctrl-p command palette (type to filter, arrows, Enter/Tab, Esc)
-  ctrl-c      interrupt the current turn
-  ctrl-r      search prompt history
-  ctrl-x      external editor (VISUAL or EDITOR)
-  Tab         search project file paths
-  Alt+Enter   insert newline (also Ctrl/Shift+Enter where supported)
-  ctrl-d      quit
-  up/down     prompt history; line motion in a multi-line draft
-  /btw <q>    ask a side question without recording it
-  /model [m] choose provider/model, or enter a custom model ID
-  /clear      start a fresh session in this terminal
-  /compact [focus]  summarize the conversation now, optionally focused
-  /dashboard  workspace overview and quick actions
-  /theme      choose expressive color palettes
-  /security   review permission profiles, command approvals, and extension capabilities
-  /permissions review permission profiles, command approvals, and extension capabilities
-  /mods       toggle built-in mods for this session
-  /extensions discover, enable, inspect, and disable extensions
-  /plan [task] inspect read-only and review before execution
-  /init [notes]  draft AGENTS.md for this repository in a read-only run
-  /git        review files/hunks, stage, and draft commits
-  /doctor     offline local checks, provider checks, optional tool probe
-  /search     search the conversation transcript
-  /profiles   persist project settings and extensions
-  /responses  formatted responses and exact code copying
-  /export [path]  write the conversation to a Markdown file
-  /skills     list loaded skills
-  /diff       review the last task's patch
-  /budget [USD|off]  show or set the session spending limit
-  /loop <interval> <prompt>  repeat a prompt while the session is idle (30m, 2h)
-  /loop list|rm <n>|clear    inspect or manage loops
-  /send <session-id> <msg>   message another running session (it runs a turn)
-  /forget [turn]     hide a turn from future context (raw history stays)
-  /unforget <turn>   restore a forgotten turn
-  /rewrite <turn> <text>  replace one turn's message for future context
-  /branch [turn]    fork conversation through a turn; files stay as they are
-  /checkpoint      save a workspace checkpoint
-  /checkpoints     list saved checkpoints
-  /restore <name>  restore a saved baseline, keeping an undo backup
-  /undo       restore last task's files; refuse subsequent edits
-  /bg <cmd>   start a background command (stopped when session exits)
-  /jobs       list background jobs
-  /job <id> [stop]  show output or stop a job
-  /login      guided provider and account setup
-  /logout     remove saved credentials
-  /status     connection and session status
-  /sessions   preview, rename, resume, branch or delete conversations
-  /retry      retry, switch model or reconnect after a failed response
-  /details    expand recorded tool output
-  /context    inspect instructions, usage and attachments
-  /attach     pick a text file to attach
-  /review     task summary, commands and workspace changes
-  /history    search and restore a prompt
-  /editor     edit your draft in an external editor
-  /redraw     repaint after terminal drift
-  /help       browse help in a modal
-
-glass-core ships no permission system: bash runs what the model asks
-for. Run it somewhere you are willing to lose.
-";
 
 static JSON_EMITTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 fn emit_json(value: serde_json::Value) {
@@ -190,7 +102,10 @@ fn main() {
 
     match args.first().map(String::as_str) {
         Some("--help") | Some("-h") | Some("help") => {
-            print!("{HELP}");
+            if let Err(error) = help::show(&args[1..]) {
+                eprintln!("gc help: {error}");
+                std::process::exit(2);
+            }
             return;
         }
         Some("--version") | Some("-V") => {

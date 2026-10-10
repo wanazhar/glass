@@ -1535,3 +1535,10 @@ are not automatically copied into model prompts. Usage and cost are shown only
 when known, with separate reservations for interrupted requests. See the
 [implementation contract](docs/plan/persistent-agents.md) for exact bounds and
 transport cancellation behavior.
+
+### CLI help
+
+Run `gc help` for a quick start. Use `gc help commands`, `gc help run`, or
+`gc help keys` for focused command, headless, and keyboard guides; `gc help all`
+shows the full guide. Help adapts to terminal width and uses plain text when
+piped or when `NO_COLOR` is set.

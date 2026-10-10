@@ -1513,7 +1513,9 @@ pub(crate) fn tool_card_text(card: &glass_tui::ToolCard, expanded: bool) -> Stri
         } else {
             let mut preview = card.output.lines().take(4).collect::<Vec<_>>().join("\n");
             if preview.len() > 360 {
-                preview.truncate(360);
+                let mut end = 360;
+            while !preview.is_char_boundary(end) { end -= 1; }
+            preview.truncate(end);
                 preview.push('…');
             }
             text.push_str(&preview);
@@ -1531,6 +1533,17 @@ pub(crate) fn tool_card_text(card: &glass_tui::ToolCard, expanded: bool) -> Stri
         text.push_str("\n[full output spill available in /details]");
     }
     text
+}
+
+#[test]
+fn tool_card_preview_truncates_at_unicode_boundary() {
+    let card=glass_tui::ToolCard {
+        call_id:"unicode".into(), command:"printf".into(), output:format!("{}😀tail","a".repeat(359)),
+        status:"exit 0".into(), elapsed_ms:None, spill:None, truncated:false,
+    };
+    let text=tool_card_text(&card,false);
+    assert!(text.contains("expand full output"));
+    assert!(!text.contains("tail"));
 }
 
 fn latest_reasoning(records: &[Record]) -> String {

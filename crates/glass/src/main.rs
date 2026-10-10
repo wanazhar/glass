@@ -3214,6 +3214,7 @@ fn repl(
                 },
             );
             let mut turn_finished = false;
+            let mut turn_summary = Vec::new();
             match outcome {
                 Ok((out, stop)) => {
                     retry_available = false;
@@ -3236,7 +3237,9 @@ fn repl(
                     for w in &out.warnings {
                         ui_println!("\x1b[33m⚠ {w}\x1b[0m");
                     }
-                    ui_println!("\x1b[90mContext: request {} · /context\x1b[0m", context_audit::reports(&session).len());
+                    let context_line = format!("Context: request {} · /context", context_audit::reports(&session).len());
+                    ui_println!("\x1b[90m{context_line}\x1b[0m");
+                    turn_summary.push(context_line);
                     if let Some(u) = out.usage {
                         totals.add(&u);
                         totals.last_input = out.last_input.map(u64::from);
@@ -3260,6 +3263,7 @@ fn repl(
                                 rows.push(format!("{}% context", (input * 100 / window as u64).min(999)));
                             }
                             rows.push(cost);
+                            turn_summary.extend(rows.iter().cloned());
                             for row in rows {
                                 for line in
                                     glass_tui::text::wrap_words(&row, width.saturating_sub(1))
@@ -3268,12 +3272,10 @@ fn repl(
                                 }
                             }
                         } else {
-                            ui_println!(
-                                "{}{} · {}",
-                                usage_line(&u, card.as_ref(), false),
-                                totals.suffix(provider.context_window(), None, false),
-                                cost
-                            );
+                            let report = format!("{}{} · {}", usage_line(&u, card.as_ref(), false),
+                                totals.suffix(provider.context_window(), None, false), cost);
+                            ui_println!("{report}");
+                            turn_summary.push(glass_tui::markdown::sanitize(&report));
                         }
                     }
                 }
@@ -3285,6 +3287,12 @@ fn repl(
                     );
                     last_error = Some(e.to_string());
                 }
+            }
+
+            if !turn_summary.is_empty() {
+                let summary = turn_summary.join("\n");
+                session.append(Record::Meta(summary.clone()));
+                painter.append_live_entry(glass_tui::Role::Meta, summary);
             }
 
             if turn_failed {
@@ -3302,6 +3310,7 @@ fn repl(
 
             if let Some(msg) = last_error {
                 session.append(Record::Meta(format!("error: {msg}")));
+                painter.append_live_entry(glass_tui::Role::Meta, format!("error: {msg}"));
                 retry_available = true;
                 ui_println!(
                     "/retry: Retry · Switch model · Sign in. Partial output is saved; completed tools stay in context."
@@ -3339,10 +3348,12 @@ fn repl(
                 crate::notify::emit(cfg.notify, &message);
             }
         }
-        ui_println!(
-            "\x1b[90m{}\x1b[0m",
-            polish::completion(&session, latest_checkpoint.as_ref(), term_size().0 as usize)
-        );
+        let completion = polish::completion(&session, latest_checkpoint.as_ref(), term_size().0 as usize);
+        ui_println!("\x1b[90m{completion}\x1b[0m");
+        if !session.records.last().is_some_and(|r| matches!(r, Record::Meta(t) if t.starts_with("error:"))) {
+            session.append(Record::Meta(completion.clone()));
+            painter.append_live_entry(glass_tui::Role::Meta, completion);
+        }
         ui_println!();
 
         // Scroll the prompt back to just under the last output line.

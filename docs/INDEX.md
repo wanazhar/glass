@@ -68,3 +68,4 @@
 - [Persistent teammates](plan/persistent-agents.md): reusable workers, mailboxes, interaction previews, transcript paging, human steering and token budgets.
 - [Persistent teammate verification](plan/reviews/persistent-agents-001-01.md): release PTYs, live Kilo review, runtime/UI reviews and performance evidence.
 - [Empty provider response and error replay fixes](plan/reviews/empty-provider-response-001-01.md): bounded reasoning recovery, stream diagnostics, context inspection and red wrapped transcript errors.
+- [Streaming and scrolling presentation](plan/reviews/stream-scroll-presentation-001-01.md): atomic styled rows, color separation, retained statistics, clean scrolling footer and Unicode preview safety.

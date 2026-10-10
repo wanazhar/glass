@@ -630,38 +630,64 @@ fn code_line(body: String) -> Line<'static> {
 }
 /// Emit styles chosen by our renderer; never serialize provider control bytes.
 pub fn write_ansi(io: &mut impl std::io::Write, line: &Line<'_>) {
+    use std::io::Write as _;
+    // A terminal surface may save/restore attributes around each write. Keep
+    // SGR and its text in one write so styles survive cursor restoration.
+    let mut row = Vec::with_capacity(line.spans.iter().map(|s| s.content.len()).sum::<usize>() + 96);
+    let io_row = &mut row;
     let mut active = None;
     for span in &line.spans {
-        if active != Some(span.style) {
+        let style = line.style.patch(span.style);
+        if active != Some(style) {
             let _ = write!(
-                io,
+                io_row,
                 "\x1b[0m{}",
                 crate::theme::ansi(crate::theme::Tone::Body)
             );
-            if span.style.add_modifier.contains(Modifier::BOLD) {
-                let _ = write!(io, "\x1b[1m");
+            if style.add_modifier.contains(Modifier::BOLD) {
+                let _ = write!(io_row, "\x1b[1m");
             }
-            if span.style.add_modifier.contains(Modifier::ITALIC) {
-                let _ = write!(io, "\x1b[3m");
+            if style.add_modifier.contains(Modifier::ITALIC) {
+                let _ = write!(io_row, "\x1b[3m");
             }
             if !crate::theme::no_color() {
-                if let Some(Color::Indexed(n)) = span.style.fg {
-                    let _ = write!(io, "\x1b[38;5;{n}m");
+                if let Some(Color::Indexed(n)) = style.fg {
+                    let _ = write!(io_row, "\x1b[38;5;{n}m");
                 }
-                if let Some(Color::Indexed(n)) = span.style.bg {
-                    let _ = write!(io, "\x1b[48;5;{n}m");
+                if let Some(Color::Indexed(n)) = style.bg {
+                    let _ = write!(io_row, "\x1b[48;5;{n}m");
                 }
             }
-            active = Some(span.style);
+            active = Some(style);
         }
-        let _ = write!(io, "{}", sanitize(&span.content));
+        let _ = write!(io_row, "{}", sanitize(&span.content));
     }
-    let _ = write!(io, "\x1b[0m");
+    let _ = write!(io_row, "\x1b[0m");
+    let _ = io.write_all(&row);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn styled_row_is_one_terminal_write() {
+        struct Sink { writes: usize, bytes: Vec<u8> }
+        impl std::io::Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let mut sink=Sink {writes:0, bytes:Vec::new()};
+        let line=Line::from(vec![Span::styled("command",Style::new().fg(Color::Indexed(183))),Span::raw(" output")]);
+        write_ansi(&mut sink,&line);
+        assert_eq!(sink.writes,1,"SGR and text must share the cursor save/restore scope");
+        let text=String::from_utf8(sink.bytes).unwrap();
+        assert!(text.contains("command") && text.contains(" output"));
+    }
+
     #[test]
     fn native_blocks_match_streaming_at_phone_and_desktop_widths() {
         let source = "# Results\n\n\n| Change | Status |\n| --- | --- |\n| `src/lib.rs` | **Done** |\n| 界 Unicode | ready to ship |\n\n- [x] Built\n  - Nested detail\n- [ ] Review\n\n```rust\nlet x = 1;\n```\nFinal text";

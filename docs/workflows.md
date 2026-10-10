@@ -53,6 +53,24 @@ Choose exact model IDs available on your configured connection. Role creation re
 
 Checkpoints are explicit, read-only teammate requests against the current Git diff. A reviewer role must be configured first. Repeating the same trigger and patch reuses the existing checkpoint instead of paying twice. Different changes produce another checkpoint. Ordinary turns do not start reviewer or watcher models. Use `--session MAIN_ID` when controlling agents from another shell. Persistent teammate transcripts, steering and worktrees remain available through `/agents` and `gc agent --help`.
 
+### Model-managed worker limits
+
+The main model receives a small delegation guide in its normal system prompt. `gc agent --help` exposes the controls; `create`, `inspect`, `wait`, and `list` return structured receipts. There is no transcript injection or model polling.
+
+```sh
+gc agent create parser-review "Review parser.rs and its focused tests" --tokens 200000 --output 24000 --rounds 30
+gc agent inspect parser-review
+gc agent limits parser-review --output 32000 --reasoning 1024 --rounds 40
+gc agent budget parser-review 300000
+gc agent resume parser-review "Continue from recorded findings; do not repeat completed actions"
+```
+
+Defaults are 100,000 cumulative tokens, 16,000 output tokens per response and 24 tool rounds. The main model can explicitly change these controls. Output allowances include provider reasoning where the provider counts it as output. `--reasoning` is a model-dependent hint, not a guarantee; `0` restores provider default and does not disable thinking. Limits changes apply when the next worker turn starts, including after steering. Existing requests retain their accepted reservation. Physical provider ceilings still apply. If the remaining cumulative allowance would clamp output below configured reasoning, GC refuses locally with recovery guidance instead of sending an invalid request.
+
+Receipts distinguish cumulative allowance, reported usage, missing-usage estimates, active reservations, remaining tokens, adapter context window, and the latest estimated request input. Output headroom is an estimate, not a promise that another request will fit. Context window is unknown until the worker constructs a request. A low-allowance notification is emitted once at 20% remaining (reset when budget changes). Completion notices include usage and remaining allowance. Failure receipts identify context allowance, exhausted cumulative allowance, exhausted output, or exhausted rounds and suggest the appropriate control.
+
+A context-allowance refusal attempts deterministic compaction once if it can actually free history; it does not make a paid summarization call or replay completed tools. Output-limit failures return control to the main model, which decides whether to increase output, adjust reasoning or split work. There is no blind retry, automatic budget increase or silent reset of cumulative usage. Raising the budget counts all prior usage; main-model allocations use the existing explicit agent controls, not a new global billing guarantee.
+
 ## Requests, context and cache
 
 `/requests` and `gc requests SESSION_ID --json` show the last 100 request records from a bounded tail read. Each record includes requested model, wall duration, first event latency, event byte/count totals, retries, outcome and reported usage. Cost is `null` when exact pricing or usage is unavailable.

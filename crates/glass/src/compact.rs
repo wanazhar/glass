@@ -154,11 +154,11 @@ pub fn shrink_tool_results(records: &mut [Record], pressure: f32) -> usize {
         if protected.contains(&i) {
             continue;
         }
-        if let Record::ToolResult { body, name, .. } = &records[i] {
+        if let Record::ToolResult { body, name, call_id } = &records[i] {
             let bytes = body.len();
             records[i] = Record::ToolResult {
                 name: name.clone(),
-                call_id: String::new(),
+                call_id: call_id.clone(),
                 body: format!("[{bytes} bytes of {name} output dropped to save context]"),
             };
             shrunk += 1;
@@ -240,13 +240,13 @@ fn clip_record(text: &str, cap: usize) -> String {
 pub fn evict_oversized(records: &mut [Record], cap: usize) -> usize {
     let mut evicted = 0;
     for r in records.iter_mut() {
-        let (name, bytes) = match r {
-            Record::ToolResult { body, name, .. } if body.len() > cap => (name.clone(), body.len()),
+        let (name, call_id, bytes) = match r {
+            Record::ToolResult { body, name, call_id } if body.len() > cap => (name.clone(), call_id.clone(), body.len()),
             _ => continue,
         };
         *r = Record::ToolResult {
             name,
-            call_id: String::new(),
+            call_id,
             body: format!(
                 "[{bytes} bytes of output dropped to recover from a context overflow; \
                  re-run the command if it is still needed]"
@@ -650,7 +650,7 @@ mod tests {
         assert_eq!(evict_oversized(&mut recs, 2_000), 1);
         assert!(matches!(
             &recs[0],
-            Record::ToolResult { body, .. } if body.contains("dropped to recover")
+            Record::ToolResult { body, call_id, .. } if body.contains("dropped to recover") && call_id == "c1"
         ));
         assert!(matches!(
             &recs[1],

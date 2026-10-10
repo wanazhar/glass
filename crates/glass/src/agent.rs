@@ -451,8 +451,14 @@ impl<'a> Agent<'a> {
                 "session log is not writable; no provider request was made: {error}"
             )));
         }
-        let messages = self.session.messages();
+        let mut messages = self.session.messages();
+        let context_epoch = self.session.log_len();
         self.ensure_context_fits(&messages)?;
+        // Compaction updates records; send that projection, not the stale
+        // pre-compaction request. Avoid rebuilding on ordinary requests.
+        if self.session.log_len() != context_epoch {
+            messages = self.session.messages();
+        }
 
         let mut tools = self.tool_set();
         // Extension tools are appended and can never shadow a builtin, so a
@@ -820,7 +826,7 @@ impl<'a> Agent<'a> {
                 // something actually got freed; otherwise the original error
                 // is the honest report.
                 Err(e)
-                    if !self.overflow_recovered && compact::looks_like_overflow(&e.to_string()) =>
+                    if !self.overflow_recovered && (compact::looks_like_overflow(&e.to_string()) || e.to_string().contains("teammate request context exceeds remaining")) =>
                 {
                     self.overflow_recovered = true;
                     if !self.force_compact() {
@@ -2414,6 +2420,34 @@ mod recovery_tests {
     }
 
     #[test]
+    fn proactive_compaction_sends_the_rebuilt_context_on_the_first_request() {
+        struct Capture(std::cell::Cell<usize>);
+        impl Provider for Capture {
+            fn id(&self) -> &str { "mock" }
+            fn context_window(&self) -> u32 { 1000 }
+            fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item=Event> + '_>, provider::Error> {
+                self.0.set(req.messages.len());
+                Ok(Box::new(vec![Event::Text("done".into()), Event::Done].into_iter()))
+            }
+        }
+        let dir=scratch("fresh-projection");
+        let mut session=Session::create(&dir).unwrap();
+        for i in 0..12 {
+            session.append(if i%2==0 { Record::User("u".repeat(1000)) } else { Record::Assistant("a".repeat(1000)) });
+        }
+        let mut state=State::new();
+        let mods:Vec<Box<dyn Mod_>>=Vec::new();
+        let mut registry=ext::Registry::empty();
+        let provider=Capture(std::cell::Cell::new(0));
+        let mut agent=Agent::new(&provider,&mut session,&mut state,&mods,&mut registry,Path::new("."));
+        agent.turn(no_pump).unwrap();
+        assert!(provider.0.get()<12,"request must use the compacted records immediately");
+        drop(agent);
+        assert!(session.records.iter().any(|r|matches!(r,Record::Compacted{..})));
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn an_overflow_refusal_evicts_the_hog_and_retries_once() {
         let dir = scratch("once");
         let mut session = Session::create(&dir).unwrap();
@@ -2430,6 +2464,48 @@ mod recovery_tests {
         let provider = RefusesOnce {
             calls: Arc::clone(&calls),
             message: overflow(),
+        };
+        {
+            let mut agent = Agent::new(
+                &provider,
+                &mut session,
+                &mut state,
+                &no_mods,
+                &mut extensions,
+                Path::new("."),
+            );
+            let (out, stop) = agent.run_turn(no_pump).expect("recovery must succeed");
+            assert!(matches!(stop, Stop::Finished));
+            assert_eq!(out.text, "recovered");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "one refusal, one retry");
+        assert!(
+            session.records.iter().any(|r| matches!(
+                r,
+                Record::ToolResult { body, .. } if body.contains("dropped to recover")
+            )),
+            "the oversized result must be evicted"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_redacted_teammate_allowance_refusal_compacts_without_repeating_tools() {
+        let dir = scratch("teammate-allowance");
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("do work".into()));
+        session.append(Record::ToolResult {
+            name: "bash".into(),
+            call_id: "c1".into(),
+            body: "x".repeat(40_000),
+        });
+        let mut state = State::new();
+        let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
+        let mut extensions = ext::Registry::empty();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = RefusesOnce {
+            calls: Arc::clone(&calls),
+            message: "teammate request context exceeds remaining token budget: next_input_estimate=9000, remaining=3000",
         };
         {
             let mut agent = Agent::new(

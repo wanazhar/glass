@@ -134,7 +134,7 @@ pub fn compose_prompt(task: &SubagentTask) -> String {
         return format!(
             "{body}\n\nDelegated task: {task}\n\n\
              Do the task using {tools}. Do not ask the user questions. \
-             Reply with a concise report of what you found or changed.",
+             Reply with a concise report of what you found or changed. Read relevant ranges first, avoid whole-repository dumps, and retain concise progress and paths in your report. Output allowance includes reasoning; prioritize an actionable report.",
             task = task.task
         );
     }
@@ -143,7 +143,7 @@ pub fn compose_prompt(task: &SubagentTask) -> String {
          Task: {task}\n\n\
          Do the task using {tools}. Do not ask the user \
          questions. When you are done, reply with a concise report \
-         of what you found or changed.",
+         of what you found or changed. Read relevant ranges first, avoid whole-repository dumps, and retain concise progress and paths in your report. Output allowance includes reasoning; prioritize an actionable report.",
         task = task.task
     )
 }

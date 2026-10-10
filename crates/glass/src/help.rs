@@ -97,7 +97,7 @@ const CONNECT: &[Item] = &[
         "Inspect saved profiles and extensions.",
     ),
     (
-        "gc plugin list|add|remove",
+        "gc plugin list|add|update|rollback|remove",
         "Manage plugins, skills and MCP servers.",
     ),
 ];

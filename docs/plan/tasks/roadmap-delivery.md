@@ -136,3 +136,7 @@ These are implementation checkpoints, not acceptance or full-roadmap completion.
   checked before the durable delivery receipt is written. It reuses the existing
   queue delivery transaction and does not append a duplicate user message.
   Saved text bypasses slash-command interpretation; empty queues stay idle.
+
+- Command discovery: prompt-history selection is `/prompts`; `/history` is reserved
+  for retained conversation and compaction receipts. Removed the duplicate palette
+  name and unreachable prompt-history handler. Ctrl+R remains prompt search.

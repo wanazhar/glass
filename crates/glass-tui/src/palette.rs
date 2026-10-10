@@ -80,6 +80,8 @@ impl Palette {
     pub fn cancel(&mut self, editor: &mut Editor) {
         if let Some(draft) = self.saved_draft.take() {
             editor.set_text(&draft);
+        } else if self.active && editor.text().starts_with('/') {
+            editor.clear();
         }
         self.close();
     }
@@ -372,6 +374,17 @@ mod tests {
         assert!(p.key(&mut e, KeyCode::Enter.into()).is_none());
         assert_eq!(e.text(), "/xyz");
     }
+    #[test]
+    fn escape_clears_a_slash_query() {
+        let mut palette = Palette::new(vec![]);
+        let mut editor = Editor::new();
+        editor.set_text("/help");
+        palette.open_managed(&mut editor).unwrap();
+        palette.key(&mut editor, KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE));
+        assert!(!palette.active());
+        assert_eq!(editor.text(), "");
+    }
+
     #[test]
     fn cancel_preserves_a_noncommand_draft() {
         let mut p = palette();

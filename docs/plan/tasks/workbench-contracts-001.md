@@ -18,3 +18,9 @@ Part of the full roadmap sweep, not a claim that all roadmap items are complete.
 Desktop and 40×24/20×8 PTYs: active-turn slash open/filter/Esc, turn completion while palette is open, Ctrl-C, reasoning view, queue promotion, reader restore, attachment range selection and removal, findings evidence/disposition.
 
 Headless: invalid finding imports cannot partially apply; stale/Unicode artifact ranges fail safely; private diagnostic save cannot overwrite; bundles omit secret fixtures; disabled memory injects nothing, enabled retrieval is bounded and attributable, concurrent writes cannot silently replace facts.
+
+## Result contracts
+
+`gc contract SCHEMA.json RESULT.json` validates bounded local contracts. `gc run --output-schema FILE` validates the final answer and permits at most one tool-free formatting correction. Original outputs remain in the transcript; invalid corrected outputs fail visibly. `gc agent create ... --schema FILE` lets the parent define a persistent teammate's deliverable; invalid output blocks the worker with a precise validation path while retaining its transcript. Valid output has a durable artifact reference; receipts include the schema fingerprint rather than resending the schema.
+
+The native schema vocabulary covers types, properties, required/additional properties, arrays, prefix items, uniqueness, lengths, numeric bounds, enum/const, combinators and local JSON Pointer references. Regex, formats, remote references and other unsupported keywords fail explicitly. This is a bounded vocabulary, not a claim of general JSON Schema conformance. Numeric arithmetic uses JSON floating point semantics.

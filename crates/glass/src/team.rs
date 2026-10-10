@@ -145,6 +145,10 @@ pub struct Info {
     pub pending_messages: Vec<(String, String)>,
     #[serde(default)]
     pub transport_pending: bool,
+    #[serde(default)]
+    pub result_schema: Option<Value>,
+    #[serde(default)]
+    pub deliverable: Option<PathBuf>,
 }
 impl Info {
     fn remaining(&self) -> u64 {
@@ -159,6 +163,8 @@ impl Info {
     }
     fn receipt(&self) -> Value {
         let mut value = json!(self);
+        value.as_object_mut().unwrap().remove("result_schema");
+        value["result_contract"] = self.result_schema.as_ref().map(|schema| json!({"enabled":true,"fingerprint":crate::workspace::hash(schema.to_string().as_bytes())})).unwrap_or(Value::Null);
         value["remaining_tokens"] = json!(self.remaining());
         value["reasoning_control"] = json!("provider/model dependent; zero uses provider default, not thinking disabled");
         value["next_output_headroom_estimate"] = json!(self.remaining().saturating_sub(self.last_request_input_estimate).min(u64::from(self.output_limit)));
@@ -167,6 +173,7 @@ impl Info {
             Some("context_allowance") => "Compact history or allocate more cumulative tokens with budget, then resume. Completed tools remain recorded.",
             Some("allowance_exhausted") => "Raise the cumulative allowance explicitly with budget, or reuse findings in a focused new worker.",
             Some("output_exhausted") => "Increase output allowance with limits, optionally lower reasoning, then resume. Do not replay completed tools.",
+            Some("result_contract") => "Read the preserved partial answer and validation error; send a targeted correction. Completed tools remain in context.",
             Some("round_limit") => "Inspect progress; raise rounds with limits and resume if useful.",
             Some(_) => "Inspect the error and transcript before resuming or switching worker.",
             None => "",
@@ -330,6 +337,12 @@ impl Hub {
                     );
                 }
                 let task = message(req)?;
+                let result_schema = req.get("result_schema").cloned();
+                if let Some(schema) = &result_schema {
+                    if schema.to_string().len() > 64 * 1024 { return Err("Result schema exceeds 64 KiB".into()); }
+                    crate::contracts::inspect(schema,0)?;
+                }
+
                 if let Some(model)=req["model"].as_str() && (model.is_empty()||model.len()>256||model.chars().any(char::is_control)){return Err("model ID must be 1–256 characters without control bytes".into());}
                 let role = if let Some(name)=req["role"].as_str() {
                     if !matches!(name,"executor"|"reviewer"|"research"){return Err("Unknown agent role".into());}
@@ -396,6 +409,7 @@ impl Hub {
                     cost_complete: true,
                     pending_messages: vec![(from.into(), task.clone())],
                     transport_pending: false,
+                    result_schema, deliverable: None,
                 };
                 self.interaction(from, &id, &task)?;
                 self.persist(&info)?;
@@ -581,6 +595,7 @@ impl Hub {
                 Some(if text.contains("teammate request context exceeds") { "context_allowance" }
                 else if text.contains("teammate token") { "allowance_exhausted" }
                 else if text.contains("output limit reached before an answer") { "output_exhausted" }
+                else if text.contains("Result contract failed") { "result_contract" }
                 else if text.contains("Tool round limit") { "round_limit" } else { "provider_or_runtime" }.into())
             } else { None };
             let info = w.info.clone();
@@ -669,7 +684,11 @@ impl Hub {
                 &mut registry,
                 &info.workspace,
             )
-            .with_prompt(crate::subagent::compose_prompt(&task), None, None)
+            .with_prompt({
+                let mut prompt = crate::subagent::compose_prompt(&task);
+                if let Some(schema) = &info.result_schema { prompt.push_str(&format!("\nFinal deliverable contract: return only JSON satisfying this schema. Preserve incomplete work in the transcript if you cannot complete it; do not invent findings.\n{schema}")); }
+                prompt
+            }, None, None)
             .with_plan_mode(info.read_only)
             .with_stream_factory(Arc::clone(&stream_factory))
             .with_limits(turn_info.output_limit, turn_info.reasoning_limit, turn_info.round_limit)
@@ -750,6 +769,20 @@ impl Hub {
                 );
                 return Ok(());
             }
+            let deliverable = if let Some(schema) = &info.result_schema {
+                let candidate = session.records.iter().rev().find_map(|record| if let Record::Assistant(text) = record { Some(text.as_str()) } else { None }).unwrap_or("");
+                match crate::contracts::parse(schema,candidate) {
+                    Ok(value) => {
+                        let path = self.dir.join(format!("{id}.deliverable.json"));
+                        save(&path,&json!({"schema_version":1,"agent":id,"schema_fingerprint":crate::workspace::hash(schema.to_string().as_bytes()),"status":"complete","value":value,"transcript":session.path}))?;
+                        Some(path)
+                    }
+                    Err(error) => {
+                        self.finish(id,"blocked",&format!("Result contract failed: {error}. Partial answer and tools remain in the transcript; send a focused correction or inspect before resuming."));
+                        return Ok(());
+                    }
+                }
+            } else { None };
             let mut state = self.state.lock().unwrap();
             if !state.agents[id].queue.is_empty() {
                 drop(state);
@@ -759,6 +792,7 @@ impl Hub {
             // idle and launch a worker, rather than enqueue to a retiring one.
             let w = state.agents.get_mut(id).unwrap();
             w.info.status = "idle".into();
+            w.info.deliverable = deliverable;
             let text = session
                 .records
                 .iter()
@@ -1097,7 +1131,7 @@ pub fn enabled(owner: &str) -> bool {
     get(owner).is_some()
 }
 
-const HELP: &str = "gc agent [--session MAIN_ID] ACTION\n  create NAME TASK [--model ID] [--tokens N] [--output N] [--reasoning N] [--rounds N] [--role executor|reviewer|research] [--write] [--worktree]\n  handoff FILE.json (validate and notify parent)\n  checkpoint changes|completion (explicit, read-only, configured reviewer budget)\n  list | inspect ID | transcript ID [--before BYTE] | interactions [--before BYTE]\n  send ID MESSAGE | resume ID MESSAGE | wait ID [SECONDS]\n  limits ID [--output N] [--reasoning N] [--rounds N] (next worker turn)\n  interrupt ID | archive ID | discard ID | budget ID TOKENS\nDefault: read-only, two active workers, 100000 cumulative tokens (repeated inputs count), 16000 output/response, 24 rounds. Limits are configurable; provider context/output ceilings still apply.\nFollow-ups retain context. Complete transcripts are fetched only on demand.\nReceipts show remaining allowance, last input estimate, context window, output/round limits and recovery.\nBudget counts cumulative input + output (including repeated/cached inputs); context window is per request.\nAt 20% remaining, the parent receives one warning. No automatic budget increases or blind output-limit retries.\nReasoning is a provider-dependent hint; 0 uses its default, not disabled thinking.\nThe default model is pinned when the main session opens; --model overrides it.\nIdle workers consume no model requests. --session selects a running owner from another shell.\n";
+const HELP: &str = "gc agent [--session MAIN_ID] ACTION\n  create NAME TASK [--model ID] [--tokens N] [--output N] [--reasoning N] [--rounds N] [--role executor|reviewer|research] [--schema FILE.json] [--write] [--worktree]\n  handoff FILE.json (validate and notify parent)\n  checkpoint changes|completion (explicit, read-only, configured reviewer budget)\n  list | inspect ID | transcript ID [--before BYTE] | interactions [--before BYTE]\n  send ID MESSAGE | resume ID MESSAGE | wait ID [SECONDS]\n  limits ID [--output N] [--reasoning N] [--rounds N] (next worker turn)\n  interrupt ID | archive ID | discard ID | budget ID TOKENS\nDefault: read-only, two active workers, 100000 cumulative tokens (repeated inputs count), 16000 output/response, 24 rounds. Limits are configurable; provider context/output ceilings still apply.\nFollow-ups retain context. Complete transcripts are fetched only on demand.\nReceipts show remaining allowance, last input estimate, context window, output/round limits and recovery.\nBudget counts cumulative input + output (including repeated/cached inputs); context window is per request.\nAt 20% remaining, the parent receives one warning. No automatic budget increases or blind output-limit retries.\nReasoning is a provider-dependent hint; 0 uses its default, not disabled thinking.\nThe default model is pinned when the main session opens; --model overrides it.\nIdle workers consume no model requests. --session selects a running owner from another shell.\n";
 pub fn command(args: &[String]) -> Result<(), String> {
     if args.is_empty() || args.iter().any(|s| s == "--help" || s == "-h") {
         crate::cli::text("Teammates", HELP);
@@ -1140,6 +1174,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
         let mut i = 2;
         while i < args.len() {
             match args[i].as_str() {
+                "--schema" => { i += 1; req["result_schema"] = crate::contracts::load(Path::new(args.get(i).ok_or("--schema requires a file")?))?; },
                 "--write" => req["write"] = json!(true),
                 "--worktree" => req["worktree"] = json!(true),
                 "--model" | "--tokens" | "--role" | "--output" | "--reasoning" | "--rounds" => {

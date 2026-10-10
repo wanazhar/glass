@@ -18,7 +18,9 @@ mod completions;
 mod concurrency;
 mod config;
 mod context_audit;
+mod contracts;
 mod diagnostics;
+mod diagnostic_bundle;
 mod doctor;
 mod export;
 mod ext;
@@ -43,6 +45,7 @@ mod policy;
 mod polish;
 mod pricing;
 mod profiles;
+mod project_memory;
 mod provider;
 mod queue;
 mod reader;
@@ -157,6 +160,27 @@ fn main() {
         Some("workspace") => {
             if let Err(e) = workspace::command(&args[1..]) {
                 cli::error("Workspace", &e);
+                std::process::exit(2);
+            }
+            return;
+        }
+        Some("contract") => {
+            if let Err(error) = contracts::command(&args[1..]) {
+                cli::error("Result contract", &error);
+                std::process::exit(2);
+            }
+            return;
+        }
+        Some("memory") => {
+            if let Err(error) = project_memory::command(&args[1..]) {
+                cli::error("Project memory", &error);
+                std::process::exit(2);
+            }
+            return;
+        }
+        Some("diagnostics") => {
+            if let Err(error) = diagnostic_bundle::command(&args[1..]) {
+                cli::error("Diagnostics", &error);
                 std::process::exit(2);
             }
             return;
@@ -541,7 +565,7 @@ fn run_resume(args: &[String]) -> Result<Option<&str>, String> {
                     .map(|s| Some(s.as_str()))
                     .ok_or("--resume requires a session ID".into());
             }
-            "--attach" | "--budget" | "--model" | "--connection" => i += 2,
+            "--attach" | "--budget" | "--model" | "--connection" | "--output-schema" => i += 2,
             "--json" | "--retry" | "--plan" | "--trust" => i += 1,
             _ => break,
         }
@@ -938,6 +962,7 @@ fn headless(
     let mut json = false;
     let mut recovering = false;
     let mut planning = false;
+    let mut output_schema = None;
     let mut limit = cfg.cost_limit;
     let mut prompt = Vec::new();
     let mut i = 0;
@@ -946,6 +971,10 @@ fn headless(
             "--json" if prompt.is_empty() => json = true,
             "--retry" if prompt.is_empty() => recovering = true,
             "--plan" if prompt.is_empty() => planning = true,
+            "--output-schema" if prompt.is_empty() => {
+                i += 1;
+                output_schema = Some(contracts::load(std::path::Path::new(args.get(i).ok_or("--output-schema requires a schema file")?))?);
+            },
             "--trust" if prompt.is_empty() => {} // consumed by run(); accepted here
             "--budget" if prompt.is_empty() => {
                 i += 1;
@@ -1028,6 +1057,9 @@ fn headless(
     }
     if prompt.trim().is_empty() && !recovering {
         return Err("prompt is empty".into());
+    }
+    if let Some(schema) = &output_schema {
+        prompt.push_str(&format!("\n\nFinal answer contract: return only JSON satisfying this schema. Complete the task normally first. Unsupported constraints were rejected locally before this request.\n{schema}"));
     }
     let path = Arc::new(Mutex::new(session.path.with_extension("cost.json")));
     let ledger = budget::load(&path.lock().unwrap(), limit);
@@ -1153,8 +1185,7 @@ fn headless(
     if let Some(c) = checkpoint.as_mut() {
         checkpoint_error = c.finish(&dir).err();
     }
-    let l = ledger.lock().unwrap();
-    let (text, status, error) = match result {
+    let (mut text, mut status, mut error) = match result {
         Ok((out, Stop::Finished)) => (out.text, "finished", None),
         Ok((out, Stop::Cancelled)) => (
             out.text,
@@ -1186,12 +1217,22 @@ fn headless(
             (partial, "error", Some(e.to_string()))
         }
     };
+    if error.is_none() && let Some(schema) = &output_schema {
+        if contracts::parse(schema, &text).is_err() {
+            match contracts::repair(p.as_ref(), &mut session, schema, &text, cfg.max_tokens) {
+                Ok(corrected) => text = corrected,
+                Err(reason) => { status = "invalid_output"; error = Some(format!("Final answer contract failed after one correction: {reason}")); },
+            }
+        }
+    }
+    let structured = output_schema.as_ref().and_then(|schema| contracts::parse(schema,&text).ok());
+    let l = ledger.lock().unwrap();
     if let Some(e) = &error {
         session.append(Record::Meta(format!("error: {e}")));
     }
     if json {
         emit_json(
-            serde_json::json!({"session": session.id, "status": status, "text": text, "error": error, "cost_usd": if l.unknown { None } else { Some(l.spent) }, "checkpoint_error": checkpoint_error}),
+            serde_json::json!({"session": session.id, "status": status, "text": text, "error": error, "cost_usd": if l.unknown { None } else { Some(l.spent) }, "checkpoint_error": checkpoint_error,"structured":structured}),
         );
     } else {
         cli::markdown("Task result", &format!("{text}\n"));
@@ -1302,6 +1343,8 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
             "Manage saved follow-ups: edit, reorder, promote or delete",
             false,
         ),
+        ("diagnostics", "", "Preview a private diagnostic bundle", false),
+        ("recovery", "", "Inspect recent failure classes, retries and cache changes", false),
         ("compact", "[focus]", "Compact the conversation now", false),
         (
             "compaction",
@@ -2105,6 +2148,13 @@ fn repl(
             }
             continue;
         }
+        if text == "/diagnostics" || text == "/recovery" {
+            match diagnostic_bundle::snapshot(&session) {
+                Ok(value) => structured::view(&keys, "Recovery and diagnostics", &value.to_string()),
+                Err(error) => modal::info(&keys, "Diagnostics unavailable", &error),
+            }
+            continue;
+        }
         if text == "/queue" {
             pending.manage(&keys);
             continue;
@@ -2204,7 +2254,7 @@ fn repl(
                 polish::path_picker(&keys, &cfg.workspace)
             };
             if let Some(p) = path {
-                match polish::attach(&mut session, &cfg.workspace, &p) {
+                match polish::attach_picker(&keys, &mut session, &cfg.workspace, &p) {
                     Ok(()) => ui_println!("Attached {p} · /context to inspect or remove"),
                     Err(e) => modal::info(&keys, "Attachment error", &e),
                 }
@@ -3316,6 +3366,13 @@ fn repl(
             let turn_instructions = polish::prompt_context(&session, &project_instructions);
             painter.seed_live(session.history_entries(), session.reasoning_history());
             let turn_started = std::time::Instant::now();
+            let mut busy_commands = command_catalogue(extensions);
+            for command in &mut busy_commands {
+                if !matches!(command.name.as_str(), "queue" | "agents" | "thinking" | "details" | "help") {
+                    command.description = format!("After this turn · {}", command.description);
+                }
+            }
+            let mut busy_palette = glass_tui::palette::Palette::new(busy_commands);
             let outcome = {
                 let mut agent = Agent::new(
                     provider.as_ref(),
@@ -3344,14 +3401,15 @@ fn repl(
                 let (_, nh) = term_size();
                 let draft_row = nh.saturating_sub(2);
                 let result = agent.run_turn(&mut |steer_slot: &mut Option<String>| {
-                    if painter.refresh_geometry(true) {
+                    if painter.refresh_geometry(!busy_palette.active()) && !busy_palette.active() {
                         surface::composer(&draft, true, true);
                     }
-                    painter.tick();
+                    if !busy_palette.active() { painter.tick(); }
                     if let Some(s) = drain_input(
                         &keys,
                         &mut draft,
                         &mut pending,
+                        &mut busy_palette,
                         draft_row,
                         w,
                         &painter,
@@ -3365,6 +3423,10 @@ fn repl(
                         }
                     }
                 });
+                if busy_palette.active() {
+                    busy_palette.cancel(&mut draft);
+                    surface::overlay(false).ok();
+                }
                 painter.flush(&mut surface::BodyWriter);
                 editor.set_text(draft.text());
                 painter.live.borrow_mut().finish();
@@ -3586,6 +3648,7 @@ fn drain_input(
     keys: &input::KeyReader,
     editor: &mut glass_tui::Editor,
     pending: &mut queue::Queue,
+    palette: &mut glass_tui::palette::Palette,
     _row: u16,
     _width: u16,
     painter: &Painter,
@@ -3596,6 +3659,49 @@ fn drain_input(
     let mut dirty = false;
 
     while let Some(ev) = keys.try_next() {
+        if palette.active() {
+            let selected = match ev {
+                Event::Key(key) => palette.key(editor, key),
+                Event::Paste(text) => { editor.insert_str(&text); palette.changed(editor); None },
+                _ => None,
+            };
+            if !palette.active() {
+                surface::overlay(false).ok();
+                if let Some(draft) = palette.take_draft() { editor.set_text(&draft); }
+                dirty = true;
+            }
+            if let Some(command) = selected {
+                match command.as_str() {
+                    "/queue" => {
+                        let old = pending.correction().map(str::to_owned);
+                        pending.manage(keys);
+                        if pending.correction() != old.as_deref()
+                            && let Some(correction) = pending.correction()
+                        { return Some(correction.to_string()); }
+                    }
+                    "/agents" => team::view(keys, team_owner),
+                    "/details" => {
+                        let entries = painter.live.borrow().snapshot();
+                        if let Err(error) = painter.open_reader(entries, false) { ui_println!("Reader unavailable: {error}"); }
+                    }
+                    "/thinking" => {
+                        if let Err(error) = painter.live.borrow_mut().toggle(true) { ui_println!("Reasoning view unavailable: {error}"); }
+                    }
+                    "/help" => modal::info(keys, "Commands during a turn", "Queue, agents, thinking and details are available now. Other commands are marked After this turn. Enter sends a correction; Alt+Enter saves a follow-up. Esc closes the palette."),
+                    _ => modal::info(keys, "Available after this turn", "This command changes session or provider state. Finish or cancel the current turn, then invoke it again. Your draft is preserved."),
+                }
+            }
+            continue;
+        }
+        if let Event::Key(key) = &ev
+            && key.code == KeyCode::Char('/') && editor.text().is_empty()
+            && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            editor.insert_str("/");
+            surface::overlay(true).ok();
+            if palette.open_managed(editor).is_err() { surface::overlay(false).ok(); }
+            continue;
+        }
         let resized = painter.refresh_geometry(true);
         if resized {
             surface::composer(editor, true, true);
@@ -3742,6 +3848,11 @@ fn drain_input(
         }
     }
 
+    if palette.active() {
+        let (width, height) = term_size();
+        palette.render(editor.text(), width, height);
+        return None;
+    }
     painter.live.borrow_mut().draw().ok();
     if dirty {
         surface::composer(editor, true, true);

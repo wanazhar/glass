@@ -328,20 +328,20 @@ pub fn attach_excerpt(s: &Session, workspace: &Path, path: &str, first: usize, c
     save(s, &meta)
 }
 
-pub fn attach_picker(keys: &KeyReader, s: &mut Session, workspace: &Path, path: &str) -> Result<(), String> {
+pub fn attach_picker(keys: &KeyReader, s: &mut Session, workspace: &Path, path: &str) -> Result<bool, String> {
     let choices = ["Whole file or image", "Line range", "Preview current attachment"].map(String::from);
-    let Some(choice) = modal::choose(keys, "Attach context", path, &choices) else { return Ok(()) };
+    let Some(choice) = modal::choose(keys, "Attach context", path, &choices) else { return Ok(false) };
     match choice {
-        0 => attach(s, workspace, path),
+        0 => attach(s, workspace, path).map(|_|true),
         1 => {
-            let Some(range) = modal::field(keys, "Attach line range", "FIRST:COUNT · e.g. 20:40", "", false) else { return Ok(()) };
+            let Some(range) = modal::field(keys, "Attach line range", "FIRST:COUNT · e.g. 20:40", "", false) else { return Ok(false) };
             let (first, count) = range.split_once(':').ok_or("Use FIRST:COUNT")?;
-            attach_excerpt(s, workspace, path, first.trim().parse().map_err(|_| "Invalid first line")?, count.trim().parse().map_err(|_| "Invalid line count")?)
+            attach_excerpt(s, workspace, path, first.trim().parse().map_err(|_| "Invalid first line")?, count.trim().parse().map_err(|_| "Invalid line count")?).map(|_|true)
         }
         _ => {
             if let Some(item) = metadata(s).attachments.iter().find(|a| a.path.ends_with(path)) {
                 modal::markdown(keys, "Context snapshot", &format!("{} · ~{} tokens\n\n{}", item.source.as_deref().unwrap_or("saved attachment"), item.text.len().div_ceil(4), item.text));
-                Ok(())
+                Ok(false)
             } else { Err("No snapshot attached for this path yet".into()) }
         }
     }

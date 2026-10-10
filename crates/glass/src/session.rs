@@ -858,6 +858,10 @@ impl Session {
             fs::remove_file(&fork.path)?;
             return Err(std::io::Error::other("turn does not exist"));
         }
+        fork.append_checked(&[Record::Custom {
+            kind: "session/branch".into(),
+            data: Some(serde_json::json!({"source_session":self.id,"through_turn":through,"files":"unchanged"}).to_string()),
+        }])?;
         fork.append(Record::Meta(format!(
             "branched from {} through turn {through}; workspace files unchanged",
             self.id

@@ -29,17 +29,42 @@ pub struct Entry {
 #[serde(default)]
 pub struct Loops {
     pub entries: Vec<Entry>,
+    /// Bounded dispatch receipts; these do not claim task completion.
+    pub history: Vec<Dispatch>,
 }
 
 fn path(s: &Session) -> PathBuf {
     s.path.with_extension("loops.json")
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Dispatch {
+    pub at: u64,
+    pub prompt: String,
+    pub missed_intervals: u64,
+    pub status: String,
+}
+
+fn load_checked(s: &Session) -> Result<Loops, String> {
+    let path = path(s);
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Loops::default()),
+        Err(error) => return Err(format!("automation schedule: {error}")),
+        Ok(_) => {},
+    }
+    let bytes = crate::requests::bounded(&path, 1024 * 1024)?;
+    let loops: Loops = serde_json::from_slice(&bytes).map_err(|e| format!("automation schedule: {e}"))?;
+    if loops.entries.len() > 16 || loops.history.len() > 64
+        || loops.entries.iter().any(|e| e.every_s == 0 || e.prompt.is_empty() || e.prompt.len() > 8000)
+        || loops.history.iter().any(|e| e.prompt.len() > 8000) {
+        return Err("Automation schedule exceeds limits or contains invalid entries".into());
+    }
+    Ok(loops)
+}
+
+#[cfg(test)]
 pub fn load(s: &Session) -> Loops {
-    std::fs::read(path(s))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    load_checked(s).expect("valid test schedule")
 }
 
 fn save(s: &Session, loops: &Loops) -> Result<(), String> {
@@ -70,7 +95,7 @@ pub fn parse_every(text: &str) -> Option<u64> {
         (t.as_str(), 1)
     };
     let n: u64 = digits.trim().parse().ok()?;
-    (n > 0).then(|| n.saturating_mul(multiplier))
+    if n == 0 { None } else { n.checked_mul(multiplier) }
 }
 
 /// The first due prompt, advanced and persisted. `None` when nothing is due.
@@ -78,15 +103,24 @@ pub fn parse_every(text: &str) -> Option<u64> {
 /// Missed intervals skip: a session resumed after a day fires each loop once,
 /// not 2,880 times.
 pub fn due(s: &Session) -> Option<String> {
-    let mut loops = load(s);
-    let now = now();
-    let idx = loops.entries.iter().position(|e| e.next_at <= now)?;
+    // A damaged or unwritable schedule must never execute an unacknowledged run.
+    due_checked(s).ok().flatten()
+}
+
+pub fn due_checked(s: &Session) -> Result<Option<String>, String> {
+    let mut loops = load_checked(s)?;
+    let at = now();
+    let Some(idx) = loops.entries.iter().position(|e| e.next_at <= at) else { return Ok(None); };
     let entry = &mut loops.entries[idx];
-    entry.runs += 1;
-    entry.next_at = now + entry.every_s;
+    let missed_intervals = at.saturating_sub(entry.next_at) / entry.every_s;
+    entry.runs = entry.runs.checked_add(1).ok_or("Automation run counter overflow")?;
+    entry.next_at = at.checked_add(entry.every_s).ok_or("Automation interval exceeds supported date range")?;
     let prompt = entry.prompt.clone();
-    let _ = save(s, &loops);
-    Some(prompt)
+    loops.history.push(Dispatch { at, prompt: prompt.clone(), missed_intervals,
+        status: "dispatched; completion is recorded in the conversation".into() });
+    if loops.history.len() > 64 { loops.history.remove(0); }
+    save(s, &loops)?;
+    Ok(Some(prompt))
 }
 
 fn human(seconds: u64) -> String {
@@ -100,8 +134,12 @@ fn human(seconds: u64) -> String {
 /// `/loop` command handling. `args` is everything after the command word.
 pub fn command(s: &Session, args: &str) -> Result<String, String> {
     let args = args.trim();
+    if args == "history" {
+        let loops = load_checked(s)?;
+        return Ok(serde_json::to_string_pretty(&loops.history).map_err(|e| e.to_string())?);
+    }
     if args.is_empty() || args == "list" {
-        let loops = load(s);
+        let loops = load_checked(s)?;
         if loops.entries.is_empty() {
             return Ok(
                 "no loops. Add one with `/loop 30m check the build`, remove with \
@@ -129,7 +167,7 @@ pub fn command(s: &Session, args: &str) -> Result<String, String> {
             .trim()
             .parse()
             .map_err(|_| "usage: /loop rm <n> (see /loop list)".to_string())?;
-        let mut loops = load(s);
+        let mut loops = load_checked(s)?;
         if n == 0 || n > loops.entries.len() {
             return Err(format!("no loop {n}; there are {}", loops.entries.len()));
         }
@@ -154,14 +192,14 @@ pub fn command(s: &Session, args: &str) -> Result<String, String> {
     if prompt.len() > 8_000 {
         return Err("the loop prompt is longer than 8 KB".into());
     }
-    let mut loops = load(s);
+    let mut loops = load_checked(s)?;
     if loops.entries.len() >= 16 {
         return Err("16 loops is the cap; remove one first".into());
     }
     loops.entries.push(Entry {
         prompt: prompt.to_string(),
         every_s: every,
-        next_at: now() + every,
+        next_at: now().checked_add(every).ok_or("Automation interval exceeds supported date range")?,
         runs: 0,
     });
     save(s, &loops)?;
@@ -176,6 +214,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn corrupt_schedule_is_preserved_and_never_dispatched() {
+        let root = std::env::temp_dir().join(format!("gc-loops-corrupt-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let s = Session::create(&root).unwrap();
+        std::fs::write(path(&s), b"{broken").unwrap();
+        assert!(due_checked(&s).is_err());
+        assert!(command(&s, "1s hello").is_err());
+        assert_eq!(std::fs::read(path(&s)).unwrap(), b"{broken");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+
+    #[test]
     fn intervals_parse_with_suffixes_and_bare_seconds() {
         assert_eq!(parse_every("90"), Some(90));
         assert_eq!(parse_every("45s"), Some(45));
@@ -186,6 +237,7 @@ mod tests {
         assert_eq!(parse_every("0m"), None);
         assert_eq!(parse_every("soon"), None);
         assert_eq!(parse_every("-5m"), None);
+        assert_eq!(parse_every("18446744073709551615h"), None);
     }
 
     #[test]
@@ -208,6 +260,8 @@ mod tests {
         assert_eq!(due(&s), None, "not due again immediately");
         let after = load(&s);
         assert_eq!(after.entries[0].runs, 1);
+        assert_eq!(after.history.len(), 1);
+        assert!(after.history[0].missed_intervals >= 10);
         assert!(
             after.entries[0].next_at >= now() + 59,
             "missed intervals skip forward instead of stacking"

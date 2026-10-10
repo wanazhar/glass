@@ -410,7 +410,7 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
         if command == "run" {
             if matches!(
                 arg,
-                "--resume" | "--model" | "--connection" | "--attach" | "--budget"
+                "--resume" | "--model" | "--connection" | "--attach" | "--budget" | "--output-schema"
             ) {
                 index += 2;
                 continue;
@@ -425,6 +425,21 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
         return Ok(false);
     }
     let (usage, description, examples) = match command {
+        "contract" => (
+            "gc contract SCHEMA.json RESULT.json",
+            "Validate a bounded local JSON result contract. Unsupported schema keywords fail explicitly; no provider request is made.",
+            "gc contract result-schema.json result.json",
+        ),
+        "diagnostics" => (
+            "gc diagnostics SESSION [--json] [--save FILE]",
+            "Preview allowlisted local diagnostic metadata. Prompts, commands, outputs and credentials are omitted. Saving creates a new private file; nothing is uploaded.",
+            "gc diagnostics SESSION_ID\ngc diagnostics SESSION_ID --save diagnostic.json",
+        ),
+        "memory" => (
+            "gc memory [list|enable|disable|set KEY TEXT SOURCE|forget KEY] [--json]",
+            "Review opt-in project memory with source attribution. Memory is disabled by default. Explicitly saved facts are included within a bounded context budget when enabled.",
+            "gc memory list\ngc memory set build 'cargo build' README.md\ngc memory enable",
+        ),
         "skill" => (
             "gc skill capture SESSION NAME FROM THROUGH\ngc skill save NAME REVIEWED_DRAFT.md",
             "Capture selected successful steps as a draft. Review it before explicitly saving; capturing never executes commands or installs anything.",
@@ -525,7 +540,7 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
             "gc plugin list\ngc plugin verify",
         ),
         "worktree" => (
-            "gc worktree list [--json]\ngc worktree apply [NAME] [--remove]",
+            "gc worktree list [--json]\ngc worktree new NAME [BASE]\ngc worktree show NAME\ngc worktree cleanup-preview NAME\ngc worktree apply [NAME] [--remove]",
             "Inspect isolated workspaces and apply their changes to the current Git workspace. --remove removes the worktree after applying it.",
             "gc worktree list",
         ),

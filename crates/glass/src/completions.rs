@@ -31,6 +31,9 @@ pub const COMMANDS: &[&str] = &[
     "workspace",
     "policy",
     "inspect",
+    "contract",
+    "diagnostics",
+    "memory",
     "skill",
 ];
 pub const FLAGS: &[&str] = &[
@@ -44,6 +47,7 @@ pub const FLAGS: &[&str] = &[
     "--trust",
     "--plan",
     "--retry",
+    "--output-schema",
 ];
 pub fn command(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str){

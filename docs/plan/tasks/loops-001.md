@@ -41,3 +41,11 @@ resume, and — combined with `serve` — the autonomy story with no daemon.
   missed-interval skip, add/list/rm/clear command flows.
 - `scripts/smoke-loop.py`: PTY `/loop 1s say tick`; the mock endpoint counts
   ≥2 turns with no further input; list shows a run count; clear works.
+
+## Roadmap hardening (verification pending)
+
+Sidecar loads are bounded to 1 MiB and reject malformed files, invalid intervals
+and oversized entry lists instead of silently replacing them. Arithmetic is checked.
+Dispatch returns a prompt only after schedule and receipt persistence succeeds;
+`/loop history` shows the last 64 dispatches and skipped interval counts. A dispatch
+receipt does not assert successful completion. Startup remains service-free.

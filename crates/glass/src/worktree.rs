@@ -75,15 +75,12 @@ fn resolve(target: Option<&str>) -> Result<PathBuf, String> {
 pub fn apply_patch(workspace: &Path, checkout: &Path, remove: bool) -> Result<String, String> {
     let common_a = git_ok(checkout, &["rev-parse", "--git-common-dir"])?;
     let common_b = git_ok(workspace, &["rev-parse", "--git-common-dir"])?;
-    let resolve = |p: &str| {
+    let resolve_common = |base: &Path, p: &str| -> Result<PathBuf, String> {
         let path = Path::new(p.trim());
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            workspace.join(path)
-        }
+        let path = if path.is_absolute() { path.to_path_buf() } else { base.join(path) };
+        path.canonicalize().map_err(|e| format!("repository identity: {e}"))
     };
-    if resolve(&common_a) != resolve(&common_b) {
+    if resolve_common(checkout, &common_a)? != resolve_common(workspace, &common_b)? {
         return Err("the worktree belongs to a different repository".into());
     }
 
@@ -158,6 +155,34 @@ pub fn apply_patch(workspace: &Path, checkout: &Path, remove: bool) -> Result<St
 pub fn command(args: &[String]) -> Result<(), String> {
     let workspace = std::env::current_dir().map_err(|e| e.to_string())?;
     match args.first().map(String::as_str) {
+        Some("new") => {
+            let name = args.get(1).ok_or("gc worktree new NAME [BASE]")?;
+            if args.len() > 3 || name.is_empty() || name.len() > 80
+                || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return Err("Use a worktree name of 1–80 letters, digits, hyphens or underscores".into());
+            }
+            let base = args.get(2).map(String::as_str).unwrap_or("HEAD");
+            let revision = git_ok(&workspace, &["rev-parse", "--verify", "--end-of-options", &format!("{base}^{{commit}}")])?;
+            let root = worktrees_root();
+            std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+            let checkout = root.join(name);
+            if checkout.exists() { return Err("Worktree already exists; use gc worktree show NAME to inspect and reuse it".into()); }
+            let out = Command::new("git").arg("-C").arg(&workspace)
+                .args(["worktree", "add", "--detach"]).arg(&checkout).arg(revision.trim())
+                .output().map_err(|e| e.to_string())?;
+            if !out.status.success() { return Err(String::from_utf8_lossy(&out.stderr).trim().into()); }
+            crate::cli::report("Task worktree", &serde_json::json!({"path":checkout,"base":revision.trim(),"branch":"detached","next":"Run gc from this directory. The parent working tree is unchanged."}));
+            Ok(())
+        }
+        Some("show" | "cleanup-preview") => {
+            if args.len() != 2 { return Err("gc worktree show|cleanup-preview NAME".into()); }
+            let checkout = resolve(Some(&args[1]))?;
+            let status = git_ok(&checkout, &["status", "--porcelain"])?;
+            let head = git_ok(&checkout, &["rev-parse", "HEAD"])?;
+            let branch = git_ok(&checkout, &["branch", "--show-current"])?;
+            crate::cli::report("Worktree preview", &serde_json::json!({"path":checkout,"head":head.trim(),"branch":branch.trim(),"changes":status,"clean":status.is_empty(),"removed":false,"cleanup":"Preview only. Check active agents and preserve commits before explicitly removing a worktree with Git."}));
+            Ok(())
+        }
         Some("list") | None => {
             let json = args.iter().any(|a| a == "--json");
             let root = worktrees_root();

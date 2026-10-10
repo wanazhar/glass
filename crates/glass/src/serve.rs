@@ -40,6 +40,9 @@ use crate::ext;
 use crate::session::{Record, Session};
 
 const REPLAY_ENTRIES: usize = 200;
+const REPLAY_BYTES: usize = 256 * 1024;
+const REPLAY_ENTRY_BYTES: usize = 32 * 1024;
+const PROTOCOL_VERSION: u64 = 1;
 /// Concurrent attaches per served session.
 const MAX_CLIENTS: usize = 4;
 
@@ -101,7 +104,7 @@ fn update_attach_state(path: &Path, state: &mut AttachState, message: &Value) ->
 }
 
 fn attach_message(state: &AttachState) -> Value {
-    json!({"t":"attach", "since":state.cursor, "session":state.session})
+    json!({"t":"attach", "protocol_version":PROTOCOL_VERSION, "since":state.cursor, "session":state.session})
 }
 
 fn connect_cancellable(path: &Path, keys: &crate::input::KeyReader, out: &mut std::io::Stdout) -> Result<Option<UnixStream>, String> {
@@ -221,7 +224,36 @@ fn replay_from(session: &Session, since: Option<usize>) -> (Vec<Value>, usize, b
         Some(n) if n <= cursor => (n.max(floor), n < floor),
         _ => (floor, since.is_some()),
     };
-    (entries_between(&records, start, cursor), cursor, reset)
+    let entries = entries_between(&records, start, cursor);
+    let (entries, clipped) = bound_replay(entries);
+    (entries, cursor, reset || clipped)
+}
+
+/// Retain recent entries within a wire-size budget. Clipped text remains UTF-8;
+/// each entry tells clients explicitly when the full transcript is needed.
+fn bound_replay(entries: Vec<Value>) -> (Vec<Value>, bool) {
+    let mut retained = Vec::new();
+    let mut bytes = 2;
+    let mut clipped = false;
+    for mut entry in entries.into_iter().rev() {
+        if let Some(text) = entry.get("text").and_then(Value::as_str)
+            && text.len() > REPLAY_ENTRY_BYTES {
+            let mut end = REPLAY_ENTRY_BYTES;
+            while !text.is_char_boundary(end) { end -= 1; }
+            let source_bytes = text.len();
+            let preview = text[..end].to_owned();
+            entry["source_bytes"] = json!(source_bytes);
+            entry["text"] = json!(preview);
+            entry["truncated"] = json!(true);
+            clipped = true;
+        }
+        let size = serde_json::to_vec(&entry).map(|v| v.len() + 1).unwrap_or(REPLAY_BYTES);
+        if bytes + size > REPLAY_BYTES { clipped = true; break; }
+        bytes += size;
+        retained.push(entry);
+    }
+    retained.reverse();
+    (retained, clipped)
 }
 
 /// The newest server socket in the data dir, for `attach` without `--socket`.
@@ -430,6 +462,10 @@ pub fn serve(
 
         match message.get("t").and_then(Value::as_str) {
             Some("attach") => {
+                if message.get("protocol_version").is_some_and(|v| v.as_u64() != Some(PROTOCOL_VERSION)) {
+                    to_origin(json!({"t":"error","message":"Unsupported attach protocol version","protocol_version":PROTOCOL_VERSION}));
+                    continue;
+                }
                 let claimed_session = message.get("session").and_then(Value::as_str);
                 let wrong_session = claimed_session.is_some_and(|id| id != session.id);
                 let since = message
@@ -439,6 +475,8 @@ pub fn serve(
                 let (entries, cursor, reset) = replay_from(&session, since);
                 to_origin(json!({
                     "t": "replay",
+                    "protocol_version": PROTOCOL_VERSION,
+                    "replay_byte_limit": REPLAY_BYTES,
                     "session": session.id,
                     "entries": entries,
                     "cursor": cursor,
@@ -1029,6 +1067,18 @@ fn raw(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replay_is_bounded_and_marks_utf8_previews() {
+        let entries = (0..200).map(|n| json!({"role":"tool","text":"界".repeat(40_000),"n":n})).collect();
+        let (entries, clipped) = bound_replay(entries);
+        assert!(clipped);
+        assert!(serde_json::to_vec(&entries).unwrap().len() <= REPLAY_BYTES);
+        assert_eq!(entries.last().unwrap()["n"], 199);
+        assert!(entries.iter().all(|e| e["truncated"] == true));
+        assert!(entries.iter().all(|e| e["text"].as_str().unwrap().len() <= REPLAY_ENTRY_BYTES));
+    }
+
 
     fn scratch(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("gc-serve-{}-{tag}", std::process::id()));

@@ -117,3 +117,12 @@ These are implementation checkpoints, not acceptance or full-roadmap completion.
   native revision and bundled hashline reads/edits on small, 1 MiB, repeated Unicode
   and CRLF files; reports byte-exact correctness, request/response size and medians.
   It does not claim model success rates. Execution remains deferred to final validation.
+
+- Turn changes and rewind: completed checkpoint receipts retain observed interval
+  boundaries; `/turns` opens native diffs. `/rewind` retains the original thread,
+  defaults to keeping files, and offers confirmed file restoration with stale-edit
+  checks and a recovery checkpoint. Active indexed sessions and writing teammates
+  block file restoration. External editors and newly created sessions are outside
+  this coordination guard; receipts do not claim exclusive agent authorship.
+  Checkpoint labels are validated, reads bounded and writes private.
+  Regression fixtures added; build and PTY execution remain deferred.

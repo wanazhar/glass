@@ -110,6 +110,8 @@ const INTEGRATE: &[Item] = &[
     ("gc acp", "Serve the Agent Client Protocol over stdio."),
 ];
 const KEYS: &[Item] = &[
+    ("/turns", "Review observed workspace changes by turn."),
+    ("/rewind", "Fork earlier context and optionally restore checkpointed files."),
     ("/ or Ctrl+P", "Open the command palette; Esc closes it."),
     (
         "PageUp / Ctrl+B",

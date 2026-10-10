@@ -81,7 +81,33 @@ pub fn begin_if_repository(
     }
 }
 
+fn valid_label(label: &str) -> Result<(), String> {
+    if label.is_empty()
+        || label.len() > 128
+        || matches!(label, "." | "..")
+        || !label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+    {
+        return Err("Invalid checkpoint label".into());
+    }
+    Ok(())
+}
+
+pub fn record_turn(
+    session: &mut crate::session::Session,
+    checkpoint: &Checkpoint,
+) -> Result<(), String> {
+    let turn = session.raw_turns().map_err(|e| e.to_string())?;
+    session.append_checked(&[crate::session::Record::Custom {
+        kind:"turn/checkpoint".into(),
+        data:Some(serde_json::json!({"turn":turn,"label":checkpoint.label,"before":checkpoint.before,"after":checkpoint.after,
+            "attribution":"Observed changes during this turn, not proof of exclusive authorship; concurrent external changes may be included."}).to_string()),
+    }]).map_err(|e|e.to_string())
+}
+
 pub fn begin(w: &Path, dir: &Path, label: &str) -> Result<Checkpoint, String> {
+    valid_label(label)?;
     let c = Checkpoint {
         before: snapshot(w, dir, &format!("{label}/before"))?,
         after: None,
@@ -101,19 +127,24 @@ impl Checkpoint {
         self.save(dir)
     }
     pub fn save(&self, dir: &Path) -> Result<(), String> {
-        let temp = dir.join(format!("{}.tmp", self.label));
-        std::fs::write(&temp, serde_json::to_vec(self).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        std::fs::rename(temp, dir.join(format!("{}.json", self.label))).map_err(|e| e.to_string())
+        valid_label(&self.label)?;
+        crate::auth::secure_write(
+            &dir.join(format!("{}.json", self.label)),
+            &serde_json::to_vec(self).map_err(|e| e.to_string())?,
+        )
     }
     pub fn load(dir: &Path, label: &str) -> Result<Self, String> {
-        if label.contains('/') || label.contains('\\') || label == "." || label == ".." {
-            return Err("invalid checkpoint".into());
+        valid_label(label)?;
+        let checkpoint: Self = serde_json::from_slice(&crate::requests::bounded(
+            &dir.join(format!("{label}.json")),
+            65536,
+        )?)
+        .map_err(|e| e.to_string())?;
+        valid_label(&checkpoint.label)?;
+        if checkpoint.label != label {
+            return Err("Checkpoint label differs from its receipt".into());
         }
-        serde_json::from_slice(
-            &std::fs::read(dir.join(format!("{label}.json"))).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())
+        Ok(checkpoint)
     }
     pub fn changed_files(&self) -> Result<Vec<String>, String> {
         let after = self.after.as_deref().ok_or("checkpoint is still running")?;
@@ -486,6 +517,18 @@ mod tests {
                 & 0o111,
             0
         );
+        std::fs::remove_dir_all(w.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn checkpoint_labels_reject_paths_and_mismatched_receipts() {
+        for label in ["", ".", "..", "../escape", "a/b", "a\\b", "with space"] {
+            assert!(valid_label(label).is_err());
+        }
+        assert!(valid_label("task-123.before").is_ok());
+        let (w, d) = repo();
+        let c = begin(&w, &d, "original").unwrap();
+        std::fs::write(d.join("different.json"), serde_json::to_vec(&c).unwrap()).unwrap();
+        assert!(Checkpoint::load(&d, "different").is_err());
         std::fs::remove_dir_all(w.parent().unwrap()).unwrap();
     }
 }

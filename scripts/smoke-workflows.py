@@ -165,7 +165,7 @@ def run():
             assert result["status"] == "finished", result
             assert not (repo / "forbidden-plan-write").exists()
             assert all(t["function"]["name"] == "inspect" for t in Endpoint.requests[-1]["tools"])
-            assert "Plan mode blocks execution" in json.dumps(Endpoint.requests[-1])
+            assert any(message.get("role")=="tool" and ("Plan mode blocks execution" in message.get("content","") or "unknown tool; available tools: inspect" in message.get("content","")) for message in Endpoint.requests[-1]["messages"]), "unavailable plan tools must return explicit refusal feedback"
             assert (repo / "example.txt").read_text() == source
             (cfg / "config.toml").write_text(config_text)
             assert cli("doctor", "--json")["status"] == "ok"
@@ -225,9 +225,11 @@ def run():
                     # On every size, the Git picker and hunk menu are navigable.
                     (repo / "example.txt").write_text(source.replace("line-2\n", "changed-2\n").replace("line-32\n", "changed-32\n"))
                     t.send("/git"); t.visible("Git review"); choose(t, "example.txt")
-                    t.visible("Stage whole"); choose(t, "Stage individual")
-                    t.visible("Stage a hunk"); key(t, "\r"); t.visible("Selected hunk"); choose(t, "Stage this")
-                    t.visible("Stage a hunk")
+                    t.visible("Stage whole"); choose(t, "Review individual")
+                    t.visible("Review a hunk"); key(t, "\r"); t.visible("Selected hunk"); choose(t, "Mark reviewed")
+                    t.visible("Hunk reviewed"); back(t); t.visible("Review a hunk"); t.visible("✓")
+                    key(t,"\r"); t.visible("Selected hunk"); choose(t,"Stage this")
+                    t.visible("Review a hunk")
                     staged = subprocess.check_output(["git", "-C", str(repo), "diff", "--cached"], text=True)
                     assert "+changed-2" in staged and "+changed-32" not in staged, staged
                     back(t); t.visible("Git review"); back(t); t.idle()

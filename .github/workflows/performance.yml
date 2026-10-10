@@ -7,6 +7,7 @@ on:
       - 'crates/glass/**'
       - 'crates/glass-tui/**'
       - 'scripts/check-performance.py'
+      - 'scripts/smoke-workflow-next.py'
       - '.github/workflows/performance.yml'
 
 permissions:
@@ -32,9 +33,13 @@ jobs:
           GC_PERF_HISTORY_BUDGET_MS: '10000'
           GC_PERF_RSS_BUDGET_KIB: '131072'
         run: python3 scripts/check-performance.py
+      - name: Measure deterministic coding workflow
+        run: python3 scripts/smoke-workflow-next.py > workflow-report.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: glass-core-performance-${{ github.run_id }}
-          path: perf-report.json
+          path: |
+            perf-report.json
+            workflow-report.json
           if-no-files-found: warn

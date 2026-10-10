@@ -238,6 +238,10 @@ fn build_lines(text: &str, role: Role, width: u16) -> Vec<Line<'static>> {
         return crate::text::wrap_words(&crate::markdown::sanitize(text), width.max(1) as usize)
             .into_iter().map(|row| Line::from(Span::styled(row, ratatui::style::Style::new().fg(ratatui::style::Color::Red)))).collect();
     }
+    if role == Role::Meta && text.starts_with("Context: request ") {
+        return text.lines().flat_map(|line| crate::text::wrap_words(line, width.max(1) as usize))
+            .map(|row| Line::from(Span::styled(row, role_style(role)))).collect();
+    }
     if role == Role::Meta {
         return vec![Line::from(Span::styled(
             truncate(text, width as usize),
@@ -313,6 +317,15 @@ fn role_style(role: Role) -> ratatui::style::Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turn_summary_replays_every_line() {
+        let rows=build_lines("Context: request 2 · /context\nTurn: 120 input · 20 output\n140 session total tokens\n8% context\ncost unavailable",Role::Meta,20);
+        let text=rows.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("cost unavailable"));
+        assert!(text.contains("8% context"));
+        assert!(rows.iter().all(|r| crate::text::width(&r.to_string())<=20));
+    }
 
     #[test]
     fn persisted_errors_are_red_and_wrap_fully() {

@@ -95,7 +95,7 @@ with tempfile.TemporaryDirectory(prefix='gc-reader-pty-') as tmp:
             if size[0] > 20:
                 terminal.visible('L load full output (64 KiB cap)')
                 terminal.send('l')  # explicitly load the selected card's spill, capped at 64 KiB
-                terminal.visible('Tool call-7 · spill loaded')
+                terminal.visible('Full output loaded')
                 terminal.visible('SPILL_ONLY_SEARCH_MARKER')
                 terminal.send('\x06')
                 terminal.collect(.2)

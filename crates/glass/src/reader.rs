@@ -234,37 +234,23 @@ impl Reader {
                 "/{}  · {} matches · Enter/↓ next · ↑ previous · Esc cancel",
                 query, self.match_count
             )
-        } else if let Some(index) = self.selected_tool_card_index() {
+        } else if self.selected_card.is_some() && let Some(index) = self.selected_tool_card_index() {
             let entry = &self.entries[index];
-            let Some(card) = entry.tool_card.as_ref() else {
-                unreachable!("selected tool card must have metadata")
-            };
-            let action = if self
-                .expanded_cards
-                .contains(&(entry.turn, card.call_id.clone()))
-            {
-                "Enter collapse"
-            } else {
-                "Enter expand"
-            };
-            let loaded_spill = self.loaded_spills.get(&(entry.turn, card.call_id.clone()));
-            if card.spill.is_some() && loaded_spill.is_none() {
+            let card = entry.tool_card.as_ref().unwrap();
+            let key = (entry.turn, card.call_id.clone());
+            if card.spill.is_some() && !self.loaded_spills.contains_key(&key) {
                 "L load full output (64 KiB cap)".to_string()
-            } else if let Some(loaded) = loaded_spill {
-                let status = match loaded {
-                    Ok((_, true)) => "spill loaded 64 KiB",
-                    Ok((_, false)) => "spill loaded",
-                    Err(_) => "spill load failed",
-                };
-                format!("Tool {} · {status} · {action}", card.call_id)
+            } else if let Some(loaded) = self.loaded_spills.get(&key) {
+                match loaded {
+                    Ok((_, false)) => "Full output loaded · Enter collapse · Esc back",
+                    Ok((_, true)) => "Output loaded (64 KiB cap) · Esc back",
+                    Err(_) => "Output load failed · /details · Esc back",
+                }.to_string()
             } else {
-                format!(
-                    "Tool {} · {action} · PgUp/PgDn · End/Esc bottom",
-                    card.call_id,
-                )
+                "Selected output · Enter expand/collapse · Esc back".to_string()
             }
         } else if self.transcript.follow {
-            "PgUp/↑ · PgDn/↓ · End/Esc bottom · Wheel".to_string()
+            String::new()
         } else if self.unread == 0 {
             "Enter send draft · End/Esc bottom".to_string()
         } else {

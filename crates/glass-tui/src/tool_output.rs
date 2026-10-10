@@ -128,6 +128,7 @@ pub fn lines(
     } else if shown == 0 && !compact {
         rows.push(line("└ ", "No output", Tone::Muted, width));
     }
+    rows.push(Line::default());
     rows
 }
 fn line(prefix: &str, body: &str, tone: Tone, width: usize) -> Line<'static> {

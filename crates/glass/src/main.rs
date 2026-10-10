@@ -25,6 +25,7 @@ mod history_inspector;
 mod attention;
 mod settings;
 mod reminders;
+mod rewind;
 mod doctor;
 mod export;
 mod ext;
@@ -1178,7 +1179,7 @@ fn headless(
     let (mut checkpoint, mut checkpoint_error) = if planning {
         (None, None)
     } else {
-        match checkpoint::begin_if_repository(&cfg.workspace, &dir, "task-1") {
+        match checkpoint::begin_if_repository(&cfg.workspace, &dir, &format!("task-{}",session.log_len())) {
             Ok(c) => (c, None),
             Err(e) => (None, Some(e)),
         }
@@ -1216,6 +1217,7 @@ fn headless(
     });
     if let Some(c) = checkpoint.as_mut() {
         checkpoint_error = c.finish(&dir).err();
+        if checkpoint_error.is_none() {checkpoint_error=checkpoint::record_turn(&mut session,c).err();}
     }
     let (mut text, mut status, mut error) = match result {
         Ok((out, Stop::Finished)) => (out.text, "finished", None),
@@ -1283,6 +1285,8 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
     let builtin = [
         ("help", "", "Show help", false),
         ("history", "", "Inspect compaction receipts and branch lineage", false),
+        ("rewind", "", "Fork earlier context; optionally restore guarded files", false),
+        ("turns", "", "Review observed changes by turn", false),
         ("constraints", "[list|on|off|clear|add TEXT]", "Opt-in turn-boundary task reminders", false),
         ("settings", "", "Effective settings and layer provenance", false),
         ("usage", "", "Reported usage, cost completeness and cache changes", false),
@@ -2993,6 +2997,15 @@ fn repl(
             let _ = args;
             continue;
         }
+        if text == "/turns" {rewind::review(&keys,&session);continue;}
+        let mut prepared_branch=None;
+        if text == "/rewind" {
+            match rewind::choose(&keys,&session,&cfg.workspace) {
+                Ok(Some((fork,through)))=>{prepared_branch=Some(fork);text=format!("/branch {through}");},
+                Ok(None)=>continue,
+                Err(error)=>{modal::info(&keys,"Rewind unavailable",&error);continue;},
+            }
+        }
         if let Some(args) = text
             .strip_prefix("/branch")
             .filter(|s| s.is_empty() || s.starts_with(' '))
@@ -3004,14 +3017,15 @@ fn repl(
                 args.trim().parse::<usize>()
             };
             match through.map_err(|e| e.to_string()).and_then(|t| {
-                session
-                    .branch(&config::data_dir(), t)
-                    .map_err(|e| e.to_string())
+                match prepared_branch.take() {
+                    Some(fork)=>Ok(fork),
+                    None=>session.branch(&config::data_dir(),t).map_err(|e|e.to_string()),
+                }
             }) {
                 Ok(s) => {
                     permissions::clear_session_approvals()?;
                     ui_println!(
-                        "branch {} — conversation forked; workspace files unchanged",
+                        "branch {} — conversation alternative retained",
                         s.id
                     );
                     warmer.begin_turn();
@@ -3529,7 +3543,10 @@ fn repl(
 
             if let Some(c) = task_checkpoint.as_mut() {
                 match c.finish(&checkpoint_dir) {
-                    Ok(()) => latest_checkpoint = task_checkpoint,
+                    Ok(()) => {
+                        if let Err(error)=checkpoint::record_turn(&mut session,c) {ui_println!("checkpoint receipt: {error}");}
+                        latest_checkpoint = task_checkpoint;
+                    },
                     Err(e) => ui_println!("checkpoint: {e}"),
                 }
             }

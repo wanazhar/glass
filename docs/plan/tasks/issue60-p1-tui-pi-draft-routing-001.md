@@ -1,7 +1,7 @@
 ---
 id: issue60-p1-tui-pi-draft-routing-001
 scope: glass-dev/tui-pi-slash-composer-routing
-status: in-progress
+status: complete
 depends-on: [issue60-p1-tui-command-routing-001]
 ---
 
@@ -152,3 +152,19 @@ and check the retained buffer.
 - `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check --manifest-path Cargo.toml -p glass-dev --lib --bins --locked` — passed; `glass-browser` reports 72 existing dead-code warnings and `glass-dev` has no new warnings.
 - `cargo fmt --all -- --check` and `git diff --check` — passed.
 - `python3 scripts/check-documentation-depth.py`, `python3 scripts/check-release-documentation.py --require-previous-version`, and `python3 scripts/check-tui-shortcuts.py` — passed (93 guides/19 contracts; 1,565 Markdown documents with 0 current-claim failures; 15 implementation keys/63 documentation markers).
+
+## Review 04 follow-up
+
+Independent review 04 of implementation commit `9a2277b4` returned PASS with
+no blocking findings. It confirmed that clearing composer focus after the
+restore releases the keyboard to Tasks for both the direct composer-origin and
+modal-origin `/todo` paths while retaining text and cursor, and that both
+regressions assert the overlay contract rather than the review-03 defect. It
+found no new defect in the review-01 denial or review-02 mode-only restoration
+paths.
+
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo test --manifest-path Cargo.toml -p glass-dev --lib --locked` — passed (499 tests; 0 failed).
+- `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target cargo check --manifest-path Cargo.toml -p glass-dev --lib --bins --locked` — passed; `glass-browser` reports 72 existing dead-code warnings and `glass-dev` has no new warnings.
+- `cargo fmt --all -- --check` and `git diff --check` — passed.
+- `python3 scripts/check-documentation-depth.py`, `python3 scripts/check-release-documentation.py --require-previous-version`, and `python3 scripts/check-tui-shortcuts.py` — passed (93 guides/19 contracts; 1,567 Markdown documents with 0 current-claim failures; 15 implementation keys/63 documentation markers).
+- Independent [review 04](../reviews/issue60-p1-tui-pi-draft-routing-001-04.md) passed at implementation commit `9a2277b4` with no blocking findings, after three blocked rounds ([review 01](../reviews/issue60-p1-tui-pi-draft-routing-001-01.md), [review 02](../reviews/issue60-p1-tui-pi-draft-routing-001-02.md), [review 03](../reviews/issue60-p1-tui-pi-draft-routing-001-03.md)) each followed by a remediation commit.

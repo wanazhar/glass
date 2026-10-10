@@ -415,63 +415,241 @@ fn open_spill() -> Option<(std::fs::File, PathBuf)> {
 }
 
 /// Durable working state, written by the model, read by the compactor.
-#[derive(Default, Clone)]
+///
+/// The revision guard answers "did anyone write since I read?". The receipt
+/// ledger answers the other half — "have I already applied this request?" — so
+/// a retried write collapses onto its recorded receipt instead of failing as
+/// stale or applying a second time. See `crate::session::state_receipts`.
+#[derive(Clone, Default)]
 pub struct State {
     items: Vec<String>,
+    receipts: crate::session::state_receipts::Ledger,
+    /// The session this state belongs to, when one was opened before it was
+    /// built. `None` means unbound, and ownership says so rather than
+    /// asserting a writer this process cannot verify.
+    owner: Option<crate::session::state_receipts::SessionContext>,
 }
 
 impl State {
     pub fn new() -> Self {
-        Self::default()
+        // Restore sites build state by replaying a session log, so adopt the
+        // session that log belongs to and the receipts it already holds. An
+        // adopted ledger is what makes a retry after a restart return a
+        // receipt instead of writing the same notes a second time.
+        let Some(owner) = crate::session::state_receipts::adopt() else {
+            return Self::default();
+        };
+        Self {
+            items: Vec::new(),
+            receipts: crate::session::state_receipts::Ledger::restore(&owner.receipts),
+            owner: Some(owner),
+        }
     }
 
     pub fn items(&self) -> &[String] {
         &self.items
     }
 
+    /// Revision a caller must present to replace the notes it just read.
+    pub fn revision(&self) -> String {
+        crate::session::state_receipts::revision_of(&self.items)
+    }
+
     /// Handle a `state` tool call. No `items` argument means read-back.
     pub fn apply(&mut self, call: &ToolCall) -> Outcome {
-        let rev = crate::workspace::hash(serde_json::to_string(&self.items).unwrap_or_default().as_bytes());
+        let base = self.revision();
+        let request_id = call
+            .arg_raw("request_id")
+            .and_then(|raw| serde_json::from_str::<String>(&raw).ok())
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty());
+        let items = match call.arg_raw("items") {
+            Some(raw) if !raw.is_empty() && raw != "null" => match parse_items(&raw) {
+                Ok(items) => Some(items),
+                Err(outcome) => return outcome,
+            },
+            // Absent or null means read-back, which is how the model recovers
+            // state after a compaction without having to guess.
+            _ => None,
+        };
+
+        // A known request id is answered before the revision guard runs. A
+        // retry presents the revision its own write replaced, which is now
+        // stale by definition; answering that as stale would tell the caller
+        // nothing about whether the work landed.
+        if let (Some(id), Some(items)) = (&request_id, &items) {
+            let content = crate::session::state_receipts::revision_of(items);
+            if let Some(previous) = self.receipts.get(id) {
+                if previous.revision == content {
+                    return Outcome::ok(self.replayed_body(previous));
+                }
+                return Outcome::err(format!(
+                    "request_id {id} was already applied with different content \
+                     (recorded revision {}, this request {content}); \
+                     send a new request_id for different notes",
+                    previous.revision
+                ));
+            }
+        }
+
         // A caller that read a revision must still hold it, so a concurrent
         // update cannot be silently overwritten by a stale replacement.
         if let Some(expected) = call.arg_raw("expected")
-            && serde_json::from_str::<String>(&expected).ok().as_deref() != Some(rev.as_str())
+            && serde_json::from_str::<String>(&expected).ok().as_deref() != Some(base.as_str())
         {
             return Outcome::err("Stale state revision; read state with revision:true before replacing notes");
         }
-        if call.arg_raw("items").is_none() && call.arg_raw("revision").as_deref() == Some("true") {
-            return Outcome::ok(serde_json::json!({"items":self.items,"revision":rev,"ownership":"current session; durable log writer lock"}).to_string());
+        if items.is_none() && call.arg_raw("revision").as_deref() == Some("true") {
+            return Outcome::ok(self.revision_read_back(&base));
         }
-        // Absent or null means read-back, which is how the model recovers
-        // state after a compaction without having to guess.
-        let raw = match call.arg_raw("items") {
-            Some(r) if !r.is_empty() && r != "null" => r,
-            _ => return Outcome::ok(self.render()),
-        };
+        let Some(items) = items else { return Outcome::ok(self.render()) };
 
-        match serde_json::from_str::<Vec<String>>(&raw) {
-            Ok(items) => {
-                if items.len()>128 || items.iter().any(|s|s.len()>4096) || items.iter().map(String::len).sum::<usize>()>65536 {return Outcome::err("State limited to 128 items, 4 KiB each and 64 KiB total");}
-                let cleaned: Vec<String> = items
-                    .into_iter()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if cleaned.is_empty() {
-                    self.items.clear();
-                    Outcome::ok("state cleared".to_string())
-                } else {
-                    let n = cleaned.len();
-                    self.items = cleaned;
-                    Outcome::ok(format!("state recorded ({n} items)"))
-                }
+        let count = items.len();
+        let bytes: usize = items.iter().map(String::len).sum();
+        self.items = items;
+        let revision = self.revision();
+        let mut body = if count == 0 {
+            "state cleared".to_string()
+        } else {
+            format!("state recorded ({count} items)")
+        };
+        // A write that changed nothing needs no log record, so its receipt
+        // lives in this session only. Say which, rather than implying a
+        // durable record the log never received.
+        let unchanged = revision == base;
+        if let Some(id) = request_id {
+            let receipt = crate::session::state_receipts::Receipt {
+                request_id: id.clone(),
+                revision: revision.clone(),
+                base_revision: base.clone(),
+                items: count,
+                bytes,
+                actor: self.actor(),
+                applied_at: crate::loops::now(),
+            };
+            let evicted = self.receipts.record(receipt.clone());
+            if !unchanged {
+                crate::session::state_receipts::stage(crate::session::state_receipts::Staged {
+                    base_revision: base,
+                    items: self.items.clone(),
+                    receipt,
+                });
             }
-            Err(e) => Outcome {
-                body: format!("error: `items` must be an array of strings: {e}"),
-                truncated: false,
-                exit_code: None,
-                spill: None,
-            },
+            body.push_str(&format!(
+                "\nreceipt: request {id} · revision {} · {count} items, {bytes} B · {}{}",
+                short_revision(&revision),
+                self.actor(),
+                if unchanged {
+                    " · notes were already identical, so no log record was needed"
+                } else {
+                    " · recorded with this change in the session log"
+                },
+            ));
+            body.push_str(&match &evicted {
+                Some(evicted) => format!(
+                    "\nledger: {} of {} request ids retained; evicted oldest id {}",
+                    self.receipts.len(),
+                    self.receipts.bound(),
+                    evicted.request_id
+                ),
+                None => format!(
+                    "\nledger: {} of {} request ids retained; eviction oldest-first",
+                    self.receipts.len(),
+                    self.receipts.bound()
+                ),
+            });
+        }
+        Outcome::ok(body)
+    }
+
+    /// Who the log says accepted this process's writes, or that nobody is
+    /// bound — never a guess presented as a fact.
+    fn actor(&self) -> String {
+        self.owner
+            .as_ref()
+            .map(|owner| owner.session.clone())
+            .unwrap_or_else(|| "unbound writer".to_string())
+    }
+
+    /// The answer to a repeated request: what was applied, not a new write.
+    fn replayed_body(&self, receipt: &crate::session::state_receipts::Receipt) -> String {
+        format!(
+            "state request {} was already applied — not applied again\n{}",
+            receipt.request_id,
+            receipt.render()
+        )
+    }
+
+    fn revision_read_back(&self, revision: &str) -> String {
+        let (summary, detail) = self.ownership(revision);
+        serde_json::json!({
+            "items": self.items,
+            "revision": revision,
+            "ownership": summary,
+            "owner": detail,
+            "requires_revision": revision,
+            "receipt_ledger": self.receipts.report(),
+        })
+        .to_string()
+    }
+
+    /// Who can actually write these notes, computed rather than asserted.
+    ///
+    /// The writer lock is the fact behind it: `Session` holds an exclusive
+    /// `flock` on its log, so "this process holds it" is a checked claim, and
+    /// a read-only snapshot reports that appends are refused rather than
+    /// pretending they are not.
+    fn ownership(&self, revision: &str) -> (String, serde_json::Value) {
+        let requires = serde_json::Value::from(revision);
+        match &self.owner {
+            Some(owner) if owner.durable_writer => (
+                format!(
+                    "session {}: this process holds the exclusive log writer lock; \
+                     replace notes by sending expected=\"{}\"",
+                    owner.session,
+                    short_revision(revision)
+                ),
+                serde_json::json!({
+                    "session": owner.session,
+                    "durable_writer": true,
+                    "log_append": "accepted: this process holds the session log writer lock",
+                    "concurrent_writers": "excluded by the exclusive session log writer lock",
+                    "requires_revision": requires,
+                    "guard": "send expected = requires_revision; a stale value is rejected instead of overwriting",
+                }),
+            ),
+            Some(owner) => (
+                format!(
+                    "session {}: opened read-only, so this process cannot append to its log; \
+                     replace notes by sending expected=\"{}\"",
+                    owner.session,
+                    short_revision(revision)
+                ),
+                serde_json::json!({
+                    "session": owner.session,
+                    "durable_writer": false,
+                    "log_append": "refused: this process holds no writer lock for the session log",
+                    "concurrent_writers": "possible: another process may hold the session log writer lock",
+                    "requires_revision": requires,
+                    "guard": "send expected = requires_revision; a stale value is rejected instead of overwriting",
+                }),
+            ),
+            None => (
+                format!(
+                    "unbound: no session log is bound to this state, so only this process can \
+                     replace these notes and whoever appends them decides durability; \
+                     replace notes by sending expected=\"{}\"",
+                    short_revision(revision)
+                ),
+                serde_json::json!({
+                    "session": serde_json::Value::Null,
+                    "durable_writer": false,
+                    "log_append": "unknown: this state is not bound to a session log writer",
+                    "concurrent_writers": "possible: no writer lock is bound to this state",
+                    "requires_revision": requires,
+                    "guard": "send expected = requires_revision; a stale value is rejected instead of overwriting",
+                }),
+            ),
         }
     }
 
@@ -495,6 +673,44 @@ impl State {
             "State recorded earlier in this session (your own notes, keep it accurate):\n{}",
             self.render()
         ))
+    }
+
+    /// Request ids the ledger still answers for, for tests that assert what
+    /// it kept.
+    #[cfg(test)]
+    fn retained_receipts(&self) -> usize {
+        self.receipts.len()
+    }
+}
+
+fn short_revision(revision: &str) -> &str {
+    revision.get(..8).unwrap_or(revision)
+}
+
+/// Validate and normalize `items`, preserving the existing bounds.
+fn parse_items(raw: &str) -> Result<Vec<String>, Outcome> {
+    match serde_json::from_str::<Vec<String>>(raw) {
+        Ok(items) => {
+            if items.len() > 128
+                || items.iter().any(|s| s.len() > 4096)
+                || items.iter().map(String::len).sum::<usize>() > 65536
+            {
+                return Err(Outcome::err(
+                    "State limited to 128 items, 4 KiB each and 64 KiB total",
+                ));
+            }
+            Ok(items
+                .into_iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect())
+        }
+        Err(e) => Err(Outcome {
+            body: format!("error: `items` must be an array of strings: {e}"),
+            truncated: false,
+            exit_code: None,
+            spill: None,
+        }),
     }
 }
 
@@ -867,5 +1083,171 @@ mod tests {
         });
         let ctx = s.as_context().unwrap();
         assert!(ctx.contains("step 1 done"));
+    }
+
+    fn state_call(args: &str) -> ToolCall {
+        ToolCall {
+            id: "t".into(),
+            name: "state".into(),
+            arguments: args.into(),
+        }
+    }
+
+    #[test]
+    fn a_retried_request_id_returns_its_receipt_without_applying_twice() {
+        let mut s = State::new();
+        let base = s.revision();
+        let first = s.apply(&state_call(&format!(
+            r#"{{"request_id":"req-1","items":["first"],"expected":"{base}"}}"#
+        )));
+        assert!(first.body.contains("state recorded (1 items)"));
+        assert!(first.body.contains("receipt: request req-1"));
+
+        // The retry presents the revision its own write replaced, which is now
+        // stale by definition. It must still get the receipt, not a stale
+        // error that says nothing about whether the work landed.
+        let retry = s.apply(&state_call(&format!(
+            r#"{{"request_id":"req-1","items":["first"],"expected":"{base}"}}"#
+        )));
+        assert!(
+            retry.body.contains("already applied"),
+            "a known id must answer with its receipt: {}",
+            retry.body
+        );
+        assert!(retry.body.contains("req-1"));
+        assert_eq!(s.items(), &["first".to_string()]);
+        assert_eq!(s.retained_receipts(), 1, "the retry records nothing new");
+    }
+
+    #[test]
+    fn a_clear_is_a_request_too_and_a_repeat_cannot_double_clear() {
+        let mut s = State::new();
+        s.apply(&state_call(r#"{"request_id":"set","items":["note"]}"#));
+        let cleared = s.apply(&state_call(r#"{"request_id":"clear","items":[]}"#));
+        assert!(cleared.body.contains("state cleared"));
+        let repeat = s.apply(&state_call(r#"{"request_id":"clear","items":[]}"#));
+        assert!(repeat.body.contains("already applied"), "{}", repeat.body);
+        assert!(s.items().is_empty());
+        assert_eq!(s.retained_receipts(), 2);
+    }
+
+    #[test]
+    fn the_same_request_id_with_different_notes_fails_explicitly() {
+        let mut s = State::new();
+        s.apply(&state_call(r#"{"request_id":"req-2","items":["one"]}"#));
+        let conflict = s.apply(&state_call(r#"{"request_id":"req-2","items":["two"]}"#));
+        assert!(
+            conflict.body.contains("already applied with different content"),
+            "{}",
+            conflict.body
+        );
+        // A client error changes nothing and is reported as one.
+        assert_eq!(conflict.exit_code, None);
+        assert_eq!(s.items(), &["one".to_string()]);
+        assert_eq!(s.retained_receipts(), 1);
+    }
+
+    #[test]
+    fn a_concurrent_update_still_trips_the_stale_revision_guard() {
+        let mut s = State::new();
+        let revision = s.revision();
+        s.apply(&state_call(r#"{"request_id":"a","items":["someone else wrote this"]}"#));
+        let stale = s.apply(&state_call(
+            &format!(r#"{{"request_id":"b","items":["mine"],"expected":"{revision}"}}"#),
+        ));
+        assert!(stale.body.contains("Stale state revision"), "{}", stale.body);
+        assert_eq!(s.items(), &["someone else wrote this".to_string()]);
+    }
+
+    #[test]
+    fn the_revision_read_back_states_real_ownership_and_the_revision_to_send() {
+        let mut unbound = State::new();
+        let read = unbound.apply(&state_call(r#"{"revision":true}"#));
+        let value: serde_json::Value = serde_json::from_str(&read.body).unwrap();
+        assert_eq!(value["requires_revision"], value["revision"]);
+        assert_eq!(value["owner"]["session"], serde_json::Value::Null);
+        assert!(
+            value["ownership"].as_str().unwrap().starts_with("unbound:"),
+            "an unbound state must not claim a writer: {}",
+            value["ownership"]
+        );
+
+        let dir = std::env::temp_dir().join(format!("gc-state-ownership-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = crate::session::Session::create(&dir).unwrap();
+        let mut bound = State::new();
+        let read = bound.apply(&state_call(r#"{"revision":true}"#));
+        let value: serde_json::Value = serde_json::from_str(&read.body).unwrap();
+        assert_eq!(value["owner"]["session"], session.id.as_str());
+        assert_eq!(value["owner"]["durable_writer"], true);
+        assert!(
+            value["ownership"].as_str().unwrap().contains(&session.id),
+            "ownership must name the session that can actually write: {}",
+            value["ownership"]
+        );
+        drop(session);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_read_only_snapshot_reports_that_it_cannot_append() {
+        let dir = std::env::temp_dir().join(format!("gc-state-readonly-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = {
+            let session = crate::session::Session::create(&dir).unwrap();
+            session.id.clone()
+        };
+        let readonly = crate::session::Session::open_readonly(&dir, &id).unwrap();
+        let mut state = State::new();
+        let value: serde_json::Value =
+            serde_json::from_str(&state.apply(&state_call(r#"{"revision":true}"#)).body).unwrap();
+        assert_eq!(value["owner"]["durable_writer"], false);
+        assert!(
+            value["owner"]["log_append"]
+                .as_str()
+                .unwrap()
+                .starts_with("refused:"),
+            "a snapshot must not claim it can write: {}",
+            value["owner"]["log_append"]
+        );
+        drop(readonly);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_receipt_ledger_is_bounded_and_reports_what_it_evicted() {
+        let mut s = State::new();
+        // Walk past the ledger bound with requests the log never sees, so the
+        // bound is what is under test rather than a session's log size.
+        for i in 0..=crate::session::state_receipts::LEDGER_CAPACITY {
+            s.apply(&state_call(&format!(
+                r#"{{"request_id":"req-{i}","items":["note {i}"]}}"#
+            )));
+        }
+        assert_eq!(s.retained_receipts(), crate::session::state_receipts::LEDGER_CAPACITY);
+        // The evicted id is applied afresh rather than silently deduped.
+        let evicted = s.apply(&state_call(
+            r#"{"request_id":"req-0","items":["note 0"]}"#,
+        ));
+        assert!(
+            evicted.body.contains("state recorded"),
+            "an evicted id must not still be treated as applied: {}",
+            evicted.body
+        );
+        assert!(evicted.body.contains("evicted oldest id"), "{}", evicted.body);
+        assert!(evicted.body.contains("ledger:"), "{}", evicted.body);
+
+        let read = s.apply(&state_call(r#"{"revision":true}"#));
+        let value: serde_json::Value = serde_json::from_str(&read.body).unwrap();
+        assert_eq!(
+            value["receipt_ledger"]["bound"],
+            crate::session::state_receipts::LEDGER_CAPACITY
+        );
+        assert!(
+            value["receipt_ledger"]["evicted"].as_u64().unwrap() >= 1,
+            "eviction is reported, not silent: {}",
+            read.body
+        );
+        assert!(value["receipt_ledger"]["eviction"].is_string());
     }
 }

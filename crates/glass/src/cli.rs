@@ -425,6 +425,11 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
         return Ok(false);
     }
     let (usage, description, examples) = match command {
+        "usage" => (
+            "gc usage SESSION [--json]",
+            "Inspect bounded recent reported usage, cache hit ratio and cost completeness. Missing usage and provider quotas remain explicitly unknown.",
+            "gc usage SESSION_ID",
+        ),
         "attention" => (
             "gc attention SESSION [--json]",
             "Inspect recent recorded failures and teammate events with exact raw-record positions. The interactive /attention view searches event previews.",

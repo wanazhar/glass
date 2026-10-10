@@ -82,3 +82,10 @@ These are implementation checkpoints, not acceptance or full-roadmap completion.
   submission remain open; this navigation entry point alone does not complete item 1.
 - Automation polling is throttled to four reads per second per active input thread,
   with a single cached session identity and no service startup.
+
+- Usage center: bounded recent request totals, reported cache ratio, known cost subtotal,
+  explicit completeness and quota unknowns, live teammate usage separated from estimates.
+- Rendering: live tool status now preserves failed outcomes with the same classification
+  used by completed printing and replayed extension tool cards. Final PTY parity pending.
+- Contract correction: reject a correction whose input exceeds the safe context window;
+  retain the original answer and record invalid corrected results as failed diagnostics.

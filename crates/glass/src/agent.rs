@@ -212,6 +212,8 @@ pub struct Agent<'a> {
     breaker: compact::Breaker,
     /// Whether this turn already spent its one context-overflow recovery.
     overflow_recovered: bool,
+    empty_recovered: bool,
+    empty_correction: bool,
     /// Throttled partial-output sidecar, when the session wants one.
     live: Option<crate::partial::Writer>,
 }
@@ -295,6 +297,8 @@ impl<'a> Agent<'a> {
             read_only: false,
             breaker: compact::Breaker::default(),
             overflow_recovered: false,
+            empty_recovered: false,
+            empty_correction: false,
             live: None,
         }
     }
@@ -480,7 +484,10 @@ impl<'a> Agent<'a> {
             self.session.append(Record::Meta(note));
         }
 
-        let system = self.effective_system();
+        let mut system = self.effective_system();
+        if self.empty_correction {
+            system.push_str("\nYour preceding response contained reasoning but no answer or tool call. Continue the current task from the existing tool results. Return a user-facing answer or a valid tool call; do not repeat completed actions.\n");
+        }
         let model = self.provider.id().to_string();
 
         // Size of the prefix a provider would cache: system prompt plus tool
@@ -783,6 +790,7 @@ impl<'a> Agent<'a> {
             live.begin_turn(turn);
         }
         self.overflow_recovered = false;
+        self.empty_recovered = false;
         let mut repairs = 0;
         let mut repair_tools = None;
         for round in 0..self.max_tool_rounds {
@@ -803,6 +811,16 @@ impl<'a> Agent<'a> {
                         return Err(e);
                     }
                     self.turn(&mut pump)?
+                }
+                Err(e) if !self.empty_recovered && e.to_string().contains("reasoning arrived without an answer") => {
+                    self.empty_recovered = true;
+                    let detail = format!("Reasoning-only response; recovering once without replaying completed tools. {e}");
+                    self.session.append(Record::Meta(detail.clone()));
+                    self.emit(Progress::ProviderNotice(&detail));
+                    self.empty_correction = true;
+                    let recovered = self.turn(&mut pump);
+                    self.empty_correction = false;
+                    recovered?
                 }
                 Err(e) => return Err(e),
             };

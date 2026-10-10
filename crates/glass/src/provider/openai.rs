@@ -254,7 +254,12 @@ impl Provider for OpenAiCompat {
         }
 
         let key = self.api_key.clone();
-        Ok(Box::new(StreamEvents::new(reader).map(move |event| {
+        let mut stream = StreamEvents::new(reader);
+        stream.acc.model = self.model.chars().take(160).collect();
+        stream.acc.finish = "not reported".into();
+        stream.acc.response_id = "not reported".into();
+        stream.acc.delta_keys = "none".into();
+        Ok(Box::new(stream.map(move |event| {
             super::redact_event(event, key.as_deref())
         })))
     }
@@ -298,6 +303,11 @@ struct Accum {
     usage: Option<Usage>,
     /// Guards `seal` against running twice.
     sealed: bool,
+    events: usize,
+    finish: String,
+    model: String,
+    response_id: String,
+    delta_keys: String,
 }
 
 /// One tool call, reconstructed from however many deltas it spanned.
@@ -345,6 +355,23 @@ impl<R: Read> StreamEvents<R> {
             p.id.is_empty() || p.name.is_empty()
         }) {
             self.fail("Provider returned an incomplete or invalid tool call".into());
+            return;
+        }
+        if self.acc.text.trim().is_empty() && self.acc.tools.is_empty() {
+            let usage = self.acc.usage.as_ref().map(|u| format!("{} input / {} output", u.prompt_total(), u.output))
+                .unwrap_or_else(|| "not reported".into());
+            let cause = match self.acc.finish.as_str() {
+                "length" => "output limit reached before an answer; increase the output budget or reduce reasoning",
+                "content_filter" => "provider filtered the answer; revise the request or switch model",
+                _ if !self.acc.reasoning.is_empty() => "reasoning arrived without an answer; retry or switch model",
+                _ => "provider completed an empty answer; retry or switch model",
+            };
+            if let Some(u) = self.acc.usage.take() {
+                self.outbox.push_back(Event::Usage(u));
+            }
+            self.fail(format!("provider returned no text or tool calls: {cause}. Stream diagnostics: events={}, finish={}, model={}, response={}, reasoning={} chars, usage={}, delta fields={}",
+                self.acc.events, self.acc.finish, self.acc.model, self.acc.response_id,
+                self.acc.reasoning.chars().count(), usage, self.acc.delta_keys));
             return;
         }
         self.acc.sealed = true;
@@ -425,6 +452,12 @@ impl<R: Read> StreamEvents<R> {
 
     /// Fold one delta object into the accumulator.
     fn consume(&mut self, v: &Value) {
+        self.acc.events += 1;
+        for (key, target) in [("model", &mut self.acc.model), ("id", &mut self.acc.response_id)] {
+            if let Some(value) = v[key].as_str().or_else(|| v["response"][key].as_str()) {
+                *target = value.chars().take(160).collect();
+            }
+        }
         if let Some(err) = v
             .get("error")
             .and_then(|e| e.get("message"))
@@ -526,12 +559,18 @@ impl<R: Read> StreamEvents<R> {
             self.read_usage(v);
             return;
         };
+        if let Some(reason) = choice["finish_reason"].as_str() {
+            self.acc.finish = reason.chars().take(80).collect();
+        }
         if choice["finish_reason"] == "length" {
             self.outbox.push_back(Event::Warning(
                 "Response reached the output token limit".into(),
             ));
         }
-        let delta = choice.get("delta").or_else(|| choice.get("message"));
+        let delta = choice.get("delta").filter(|d| !d.is_null()).or_else(|| choice.get("message"));
+        if let Some(fields) = delta.and_then(Value::as_object) && !fields.is_empty() {
+            self.acc.delta_keys = fields.keys().take(16).map(|k| k.chars().take(40).collect::<String>()).collect::<Vec<_>>().join(",");
+        }
 
         if let Some(t) = delta
             .and_then(|d| d.get("reasoning_content").and_then(Value::as_str))
@@ -551,6 +590,23 @@ impl<R: Read> StreamEvents<R> {
         {
             self.acc.text.push_str(t);
             self.outbox.push_back(Event::Text(t.to_string()));
+        }
+
+        if let Some(d) = delta {
+            // Some compatible endpoints return typed text parts or refusals.
+            if let Some(parts) = d["content"].as_array() {
+                for part in parts {
+                    if matches!(part["type"].as_str(), Some("text" | "output_text"))
+                        && let Some(t) = part["text"].as_str().filter(|t| !t.is_empty()) {
+                        self.acc.text.push_str(t);
+                        self.outbox.push_back(Event::Text(t.into()));
+                    }
+                }
+            }
+            if let Some(t) = d["refusal"].as_str().filter(|t| !t.is_empty()) {
+                self.acc.text.push_str(t);
+                self.outbox.push_back(Event::Text(t.into()));
+            }
         }
 
         if let Some(calls) = delta
@@ -982,6 +1038,26 @@ mod protocol_regressions {
             assert!(!output.contains(&Event::Done));
         }
     }
+    #[test]
+    fn empty_stream_explains_finish_reason_usage_and_shape() {
+        let output = events(&[json!({"id":"r-empty","model":"actual-model","choices":[{"delta":{"reasoning_content":"private reasoning"},"finish_reason":"length"}],"usage":{"prompt_tokens":40,"completion_tokens":20}})], true);
+        assert!(output.iter().any(|e| matches!(e, Event::Usage(u) if u.output == 20)));
+        let error = output.iter().find_map(|e| if let Event::Error(t)=e {Some(t)} else {None}).unwrap();
+        for field in ["output limit", "finish=length", "actual-model", "r-empty", "40 input / 20 output", "17 chars", "reasoning_content"] {
+            assert!(error.contains(field), "{error}");
+        }
+        assert!(!error.contains("private reasoning"));
+        assert!(!output.contains(&Event::Done));
+    }
+
+    #[test]
+    fn compatible_typed_text_and_refusals_are_visible() {
+        for delta in [json!({"content":[{"type":"text","text":"visible"}]}),json!({"refusal":"visible"})] {
+            let output=events(&[json!({"choices":[{"delta":delta,"finish_reason":"stop"}]})],true);
+            assert_eq!(output, vec![Event::Text("visible".into()),Event::Done]);
+        }
+    }
+
     #[test]
     fn chat_stream_is_finite() {
         assert_eq!(

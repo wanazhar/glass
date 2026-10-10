@@ -234,6 +234,10 @@ fn entry_lines(text: &str, role: Role, width: u16, boundary: bool) -> Vec<Line<'
 /// A `Role::Meta` entry renders as a single dim line regardless of content,
 /// which is both cheaper and visually correct for compaction markers.
 fn build_lines(text: &str, role: Role, width: u16) -> Vec<Line<'static>> {
+    if role == Role::Meta && text.starts_with("error:") {
+        return crate::text::wrap_words(&crate::markdown::sanitize(text), width.max(1) as usize)
+            .into_iter().map(|row| Line::from(Span::styled(row, ratatui::style::Style::new().fg(ratatui::style::Color::Red)))).collect();
+    }
     if role == Role::Meta {
         return vec![Line::from(Span::styled(
             truncate(text, width as usize),
@@ -301,7 +305,7 @@ fn role_style(role: Role) -> ratatui::style::Style {
         Role::Assistant => Style::new().fg(Color::Green),
         Role::Bash => Style::new().fg(Color::Yellow),
         Role::Tool => Style::new().fg(Color::Magenta),
-        Role::System => Style::new().fg(Color::Red).add_modifier(Modifier::DIM),
+        Role::System => Style::new().fg(Color::Red),
         Role::Meta => Style::new().fg(Color::DarkGray),
     }
 }
@@ -309,6 +313,15 @@ fn role_style(role: Role) -> ratatui::style::Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persisted_errors_are_red_and_wrap_fully() {
+        let text="error: provider returned no text or tool calls; finish=stop";
+        let rows=build_lines(text,Role::Meta,20);
+        assert!(rows.len()>1);
+        assert!(rows.iter().flat_map(|r| &r.spans).all(|s| s.style.fg==Some(ratatui::style::Color::Red)));
+        assert!(rows.iter().flat_map(|r| &r.spans).any(|s| s.content.contains("finish=stop")));
+    }
 
     #[test]
     fn replacing_same_length_text_updates_the_layout() {

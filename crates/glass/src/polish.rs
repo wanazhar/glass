@@ -22,6 +22,8 @@ pub struct Metadata {
 pub struct Attachment {
     pub path: PathBuf,
     #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
     pub text: String,
     /// `"image/png"` etc. for image attachments; `text` is empty and `data`
     /// holds the base64 payload instead.
@@ -256,7 +258,7 @@ pub fn attach(s: &mut Session, workspace: &Path, path: &str) -> Result<(), Strin
         .join(path)
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
+    let bytes = crate::requests::bounded(&p, 2 * 1024 * 1024)?;
     let mut m = metadata(s);
     m.attachments.retain(|a| a.path != p);
     if let Some(media) = image_media_type(&bytes) {
@@ -278,6 +280,7 @@ pub fn attach(s: &mut Session, workspace: &Path, path: &str) -> Result<(), Strin
         let media = media.to_string();
         m.attachments.push(Attachment {
             path: p,
+            source: None,
             text: String::new(),
             media_type: Some(media.clone()),
             data: Some(data.clone()),
@@ -298,21 +301,66 @@ pub fn attach(s: &mut Session, workspace: &Path, path: &str) -> Result<(), Strin
     }
     m.attachments.push(Attachment {
         path: p,
+        source: Some("whole file snapshot".into()),
         text,
         media_type: None,
         data: None,
     });
     save(s, &m)
 }
+/// Build an attributed bounded excerpt without running a model or project code.
+pub fn attach_excerpt(s: &Session, workspace: &Path, path: &str, first: usize, count: usize) -> Result<(), String> {
+    if first == 0 || count == 0 { return Err("Line numbers and count must be positive".into()); }
+    let path = workspace.join(path).canonicalize().map_err(|e| e.to_string())?;
+    let bytes = crate::requests::bounded(&path, 8 * 1024 * 1024)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| "Select a UTF-8 text file")?;
+    let mut excerpt = String::new();
+    let mut lines = 0;
+    for line in text.lines().skip(first - 1).take(count) {
+        if excerpt.len().saturating_add(line.len()).saturating_add(1) > 32768 { return Err("Excerpt exceeds 32 KiB; narrow the range".into()); }
+        excerpt.push_str(line); excerpt.push('\n'); lines += 1;
+    }
+    if lines == 0 { return Err("No lines at this range".into()); }
+    let mut meta = metadata(s);
+    meta.attachments.retain(|a| a.path != path);
+    if meta.attachments.iter().map(|a| a.text.len()).sum::<usize>() + excerpt.len() > 131072 { return Err("Context attachments exceed 128 KiB".into()); }
+    meta.attachments.push(Attachment { path, source: Some(format!("lines {first}–{} · revision {}", first + lines - 1, crate::workspace::hash(&bytes))), text:excerpt,media_type:None,data:None });
+    save(s, &meta)
+}
+
+pub fn attach_picker(keys: &KeyReader, s: &mut Session, workspace: &Path, path: &str) -> Result<(), String> {
+    let choices = ["Whole file or image", "Line range", "Preview current attachment"].map(String::from);
+    let Some(choice) = modal::choose(keys, "Attach context", path, &choices) else { return Ok(()) };
+    match choice {
+        0 => attach(s, workspace, path),
+        1 => {
+            let Some(range) = modal::field(keys, "Attach line range", "FIRST:COUNT · e.g. 20:40", "", false) else { return Ok(()) };
+            let (first, count) = range.split_once(':').ok_or("Use FIRST:COUNT")?;
+            attach_excerpt(s, workspace, path, first.trim().parse().map_err(|_| "Invalid first line")?, count.trim().parse().map_err(|_| "Invalid line count")?)
+        }
+        _ => {
+            if let Some(item) = metadata(s).attachments.iter().find(|a| a.path.ends_with(path)) {
+                modal::markdown(keys, "Context snapshot", &format!("{} · ~{} tokens\n\n{}", item.source.as_deref().unwrap_or("saved attachment"), item.text.len().div_ceil(4), item.text));
+                Ok(())
+            } else { Err("No snapshot attached for this path yet".into()) }
+        }
+    }
+}
+
 pub fn prompt_context(s: &Session, instructions: &Option<String>) -> Option<String> {
     let mut text = instructions.clone().unwrap_or_default();
     let m = metadata(s);
+    match crate::project_memory::context(&m.workspace) {
+        Ok(Some(memory)) => text.push_str(&format!("\n<project_memory path=\"local-reviewed-facts\">\n{memory}\n</project_memory>")),
+        Ok(None) => {},
+        Err(error) => eprintln!("Project memory was not loaded: {error}"),
+    }
     // Images ride as conversation records, not prompt text; only text
     // snapshots belong in the system prompt.
     for a in m.attachments.iter().filter(|a| a.data.is_none()) {
         text.push_str(&format!(
-            "\n<attached_file path={:?}>\n{}\n</attached_file>",
-            a.path, a.text
+            "\n<attached_file path={:?}>\nSource: {}\n{}\n</attached_file>",
+            a.path, a.source.as_deref().unwrap_or("saved file snapshot"), a.text
         ));
     }
     (!text.is_empty()).then_some(text)
@@ -470,7 +518,7 @@ pub fn context(
         rows.extend(
             m.attachments
                 .iter()
-                .map(|a| format!("Remove {}", a.path.display())),
+                .map(|a| format!("Remove {} · {} · ~{} tokens", a.path.display(), a.source.as_deref().unwrap_or("snapshot"), a.text.len().div_ceil(4))),
         );
         match modal::choose(
             keys,

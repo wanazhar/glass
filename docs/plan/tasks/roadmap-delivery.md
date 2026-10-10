@@ -131,3 +131,8 @@ These are implementation checkpoints, not acceptance or full-roadmap completion.
   content and restoration failures report their actual outcome and backup path.
   Automation saves enforce the same 1 MiB limit as reads, including JSON escaping.
   Handoff previews no longer associate an older answer with a newer failed turn.
+
+- Resume queue: `/queue-run` sends saved work immediately, with provider readiness
+  checked before the durable delivery receipt is written. It reuses the existing
+  queue delivery transaction and does not append a duplicate user message.
+  Saved text bypasses slash-command interpretation; empty queues stay idle.

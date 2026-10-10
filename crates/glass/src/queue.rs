@@ -118,6 +118,10 @@ impl Queue {
 
     pub fn correction(&self) -> Option<&str> { self.steer.as_deref() }
 
+    pub fn next_prompt(&self) -> Option<&str> {
+        self.steer.as_deref().or_else(|| self.pending.front().map(String::as_str))
+    }
+
     pub fn manage(&mut self, keys: &crate::input::KeyReader) {
         loop {
             let entries = self.describe();
@@ -421,4 +425,15 @@ mod tests {
         let _ = q.take_follow_up();
         assert!(!q.is_empty(), "the steer is still pending");
     }
+    #[test]
+    fn preview_next_prompt_does_not_remove_saved_work() {
+        let mut queue=Queue::default();
+        queue.push(Intent::FollowUp("later".into()));
+        queue.push(Intent::Steer("first".into()));
+        assert_eq!(queue.next_prompt(),Some("first"));
+        assert_eq!(queue.next_prompt(),Some("first"));
+        assert_eq!(queue.take_next().as_deref(),Some("first"));
+        assert_eq!(queue.next_prompt(),Some("later"));
+    }
+
 }

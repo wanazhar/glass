@@ -1285,6 +1285,7 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
     let builtin = [
         ("help", "", "Show help", false),
         ("history", "", "Inspect compaction receipts and branch lineage", false),
+        ("queue-run", "", "Run saved follow-ups now", false),
         ("rewind", "", "Fork earlier context; optionally restore guarded files", false),
         ("turns", "", "Review observed changes by turn", false),
         ("constraints", "[list|on|off|clear|add TEXT]", "Opt-in turn-boundary task reminders", false),
@@ -1735,7 +1736,7 @@ fn repl(
         }
     }
     let mut pending = queue::Queue::open(&session)?;
-    if !pending.is_empty() { ui_println!("Saved follow-ups available · /queue to review"); }
+    if !pending.is_empty() { ui_println!("Saved follow-ups available · /queue to review · /queue-run to run"); }
 
     let warmer = crate::warmer::Warmer::new(Arc::clone(&factory));
 
@@ -2063,6 +2064,7 @@ fn repl(
             editor.set_text(&draft);
         }
         let mut text = text.trim().to_string();
+        let run_saved_queue = text == "/queue-run";
         if text.is_empty() {
             continue;
         }
@@ -3385,7 +3387,7 @@ fn repl(
         // extension claims it, say so rather than sending it to the model as a
         // prompt, where it would read as confused text.
         if let Some(rest) = text.strip_prefix('/')
-            && !recovering
+            && !recovering && !run_saved_queue
         {
             let (cmd, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
             if extensions.has_command(cmd) {
@@ -3397,6 +3399,11 @@ fn repl(
             }
             ui_println!("\x1b[31munknown command /{cmd}\x1b[0m — try /help");
             continue;
+        }
+
+        if run_saved_queue {
+            if let Some(prompt) = pending.next_prompt() { text = prompt.to_owned(); }
+            else { modal::info(&keys,"Follow-up queue","No saved follow-ups to run."); continue; }
         }
 
         // A new turn supersedes any cache refresh the previous
@@ -3428,7 +3435,14 @@ fn repl(
                 continue;
             }
         };
-        if !recovering && let Err(error) = session.append_checked(&[Record::User(text.clone())]) {
+        if run_saved_queue {
+            match pending.deliver(&mut session) {
+                Ok(Some(prompt)) => text = prompt,
+                Ok(None) => continue,
+                Err(error) => { modal::info(&keys,"Follow-up remains queued",&error); continue; },
+            }
+        }
+        if !recovering && !run_saved_queue && let Err(error) = session.append_checked(&[Record::User(text.clone())]) {
             modal::info(
                 &keys,
                 "Session log write failed",

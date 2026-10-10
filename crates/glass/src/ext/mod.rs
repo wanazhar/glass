@@ -9,6 +9,8 @@ pub mod protocol;
 
 use std::path::Path;
 
+pub use host::{CallOutcome, CallScope, CallStop, Cancel, CancelPath, ShutdownOutcome};
+
 use host::{Extension, HostInputFn, HostToolBridge, SubagentFn};
 use protocol::{ExtConcurrency, ToolSpec, tool_triple};
 
@@ -26,6 +28,9 @@ pub struct Registry {
     freeze_noted: bool,
     deferred: bool,
     scope: std::collections::BTreeSet<String>,
+    /// Per-extension results from the most recent shutdown, kept so a caller
+    /// that ignored the return value can still read what happened.
+    last_shutdown: Option<Vec<ShutdownOutcome>>,
 }
 
 /// What changed against the frozen tool list.
@@ -53,6 +58,7 @@ impl Registry {
             freeze_noted: false,
             deferred: std::env::var("GC_DEFER_TOOLS").as_deref()==Ok("1"),
             scope: std::collections::BTreeSet::new(),
+            last_shutdown: None,
         }
     }
 
@@ -145,10 +151,17 @@ impl Registry {
         self.sources.get(name).map(String::as_str)
     }
     pub fn reload(&mut self, specs: &[String], workspace: &Path, model: &str) {
-        self.shutdown();
+        // A reload that could not stop every old extension would silently
+        // leave their processes behind, so the outcomes are kept alongside
+        // the new load's failures instead of being thrown away.
+        let stopped = self.shutdown();
+        self.failures = stopped
+            .iter()
+            .filter(|o| o.killed || o.error.is_some())
+            .map(|o| o.describe())
+            .collect();
         self.exts.clear();
         self.sources.clear();
-        self.failures.clear();
         for spec in specs {
             if let Err(error) = self.enable(spec, workspace, model) {
                 self.failures.push(format!("{spec}: {error}"));
@@ -214,6 +227,8 @@ impl Registry {
                 .enumerate()
                 .any(|(i, name)| tools[..i].contains(name));
         if collision {
+            // A rejected extension must not leave a process behind, and the
+            // kill is the same one a session shutdown would use.
             extension.shutdown();
             return Err("extension name or tool conflicts with an existing capability".into());
         }
@@ -224,15 +239,6 @@ impl Registry {
             .insert(extension.manifest.name.clone(), spec.into());
         self.exts.push(extension);
         Ok(())
-    }
-
-    /// Stop a loaded extension for this session, including its owned processes.
-    pub fn disable(&mut self, name: &str) {
-        if let Some(index) = self.exts.iter().position(|e| e.manifest.name == name) {
-            let mut extension = self.exts.remove(index);
-            self.sources.remove(name);
-            extension.shutdown();
-        }
     }
 
     /// Scheduling class an extension declared for one of its tools.
@@ -367,17 +373,53 @@ impl Registry {
     /// `host_tools` is the bridge the extension uses to call back into the
     /// harness while it runs. Codemode depends on this: its whole value is that
     /// one script can drive many tools without the model seeing each result.
+    ///
+    /// This entry point carries no call scope, so the work is unattributed and
+    /// only the extension's own token can cancel it. Callers that know which
+    /// model tool call they are serving — which is every caller inside the
+    /// agent loop — use [`Registry::run_tool_scoped`] so the work is
+    /// attributable and cancellable from the caller's token too.
     pub fn run_tool(
         &mut self,
         name: &str,
         arguments: &str,
         host_tools: &mut HostToolBridge<'_>,
     ) -> Option<String> {
-        let idx = self.tool_owner(name)?;
-        self.exts[idx].run_tool(name, arguments, host_tools)
+        self.run_tool_scoped(
+            &CallScope::unscoped(),
+            name,
+            arguments,
+            host_tools,
+        )
+        .into_output()
+    }
+
+    /// Run an extension tool, reporting exactly how the call ended.
+    ///
+    /// `scope` carries the model tool call this work descends from and the
+    /// token that may still cancel it. Without it the call is uncancellable
+    /// from the caller's side and cannot be traced back to the call that
+    /// caused it, which is the gap this closes.
+    pub fn run_tool_scoped(
+        &mut self,
+        scope: &CallScope,
+        name: &str,
+        arguments: &str,
+        host_tools: &mut HostToolBridge<'_>,
+    ) -> CallOutcome {
+        let Some(idx) = self.tool_owner(name) else {
+            return CallOutcome {
+                output: None,
+                stop: CallStop::Unknown,
+            };
+        };
+        self.exts[idx].run_tool_scoped(name, arguments, host_tools, scope)
     }
 
     /// Run an extension tool with an interactive elicitation callback bound only to this call.
+    ///
+    /// Like [`Registry::run_tool`], this carries no call scope; see
+    /// [`Registry::run_tool_with_input_scoped`] for the scoped form.
     pub fn run_tool_with_input(
         &mut self,
         name: &str,
@@ -385,8 +427,91 @@ impl Registry {
         host_tools: &mut HostToolBridge<'_>,
         host_input: &mut HostInputFn<'_>,
     ) -> Option<String> {
-        let idx = self.tool_owner(name)?;
-        self.exts[idx].run_tool_with_input(name, arguments, host_tools, host_input)
+        self.run_tool_with_input_scoped(
+            &CallScope::unscoped(),
+            name,
+            arguments,
+            host_tools,
+            host_input,
+        )
+        .into_output()
+    }
+
+    /// Run an extension tool with a scoped input callback, reporting exactly
+    /// how the call ended.
+    pub fn run_tool_with_input_scoped(
+        &mut self,
+        scope: &CallScope,
+        name: &str,
+        arguments: &str,
+        host_tools: &mut HostToolBridge<'_>,
+        host_input: &mut HostInputFn<'_>,
+    ) -> CallOutcome {
+        let Some(idx) = self.tool_owner(name) else {
+            return CallOutcome {
+                output: None,
+                stop: CallStop::Unknown,
+            };
+        };
+        self.exts[idx].run_tool_with_input_scoped(name, arguments, host_tools, host_input, scope)
+    }
+
+    /// Cancel every extension currently loaded.
+    ///
+    /// Cooperative: each extension stops waiting and its current exchange
+    /// ends as cancelled. Processes that do not stop on their own are still
+    /// taken down by `Drop` and by the next shutdown, so a cancel never
+    /// leaves a process the session can no longer account for.
+    // Consumed by the agent loop's cancel and shutdown reporting paths,
+    // which another task in this wave owns.
+    #[allow(dead_code)]
+    pub fn cancel_all(&self) {
+        for e in &self.exts {
+            e.cancel();
+        }
+    }
+
+    /// Cancel one extension by name. Returns whether it was loaded.
+    // Consumed by the agent loop's cancel and shutdown reporting paths,
+    // which another task in this wave owns.
+    #[allow(dead_code)]
+    pub fn cancel(&self, name: &str) -> bool {
+        match self.exts.iter().find(|e| e.manifest.name == name) {
+            Some(e) => {
+                e.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Stop one extension the hard way, killing its process group.
+    ///
+    /// The fallback for an extension that will not stop cooperatively, and
+    /// the path that says so: the return value names whether the kill fired
+    /// or the extension had already stopped on its own, so a caller can
+    /// report which of the two happened instead of assuming.
+    ///
+    /// One extension being stopped this way leaves every other extension
+    /// running — a wedged extension must not take the session down with it.
+    // Consumed by the agent loop's cancel and shutdown reporting paths,
+    // which another task in this wave owns.
+    #[allow(dead_code)]
+    pub fn force_stop(&mut self, name: &str) -> Option<CancelPath> {
+        let index = self.exts.iter().position(|e| e.manifest.name == name)?;
+        Some(self.exts[index].force_stop())
+    }
+
+    /// The token that cancels one extension, so a caller can hold it across a
+    /// call it did not itself start.
+    // Consumed by the agent loop's cancel and shutdown reporting paths,
+    // which another task in this wave owns.
+    #[allow(dead_code)]
+    pub fn cancel_token(&self, name: &str) -> Option<Cancel> {
+        self.exts
+            .iter()
+            .find(|e| e.manifest.name == name)
+            .map(|e| e.cancel_token())
     }
 
     /// Give every extension a chance to rewrite a tool result.
@@ -433,15 +558,73 @@ impl Registry {
     /// extension that does not recognise the command must not be able to stall
     /// the dispatch until its timeout.
     pub fn run_command(&mut self, name: &str, args: &str) -> Option<String> {
-        let idx = self.exts.iter().position(|e| e.has_command(name))?;
-        self.exts[idx].run_command(name, args)
+        self.run_command_scoped(name, args, &CallScope::unscoped())
+            .into_output()
     }
 
-    /// Shut every extension down cleanly.
-    pub fn shutdown(&mut self) {
-        for e in &mut self.exts {
-            e.shutdown();
-        }
+    /// Invoke an extension slash command under an explicit scope.
+    pub fn run_command_scoped(
+        &mut self,
+        name: &str,
+        args: &str,
+        scope: &CallScope,
+    ) -> CallOutcome {
+        let Some(idx) = self.exts.iter().position(|e| e.has_command(name)) else {
+            return CallOutcome {
+                output: None,
+                stop: CallStop::Unknown,
+            };
+        };
+        self.exts[idx].run_command_scoped(name, args, scope)
+    }
+
+    /// Shut every extension down, reporting each one's outcome.
+    ///
+    /// One extension's failure to stop is reported and the rest still shut
+    /// down: disabling or misbehaving one extension must not leave the
+    /// session's other processes running. Every line goes to stderr so an
+    /// operator sees which path each extension took.
+    ///
+    /// Idempotent. A second call signals nothing — each extension is already
+    /// stopped — and reports each one as `already_stopped`.
+    pub fn shutdown(&mut self) -> Vec<ShutdownOutcome> {
+        let outcomes: Vec<ShutdownOutcome> = self
+            .exts
+            .iter_mut()
+            .map(|e| {
+                let outcome = e.shutdown();
+                if outcome.killed || outcome.error.is_some() {
+                    eprintln!("glass-core: {}", outcome.describe());
+                }
+                outcome
+            })
+            .collect();
+        self.last_shutdown = Some(outcomes.clone());
+        outcomes
+    }
+
+    /// Stop one extension, leaving every other extension running.
+    ///
+    /// Returns what happened to it. The remaining extensions keep their
+    /// processes, their cancel tokens and their state, so a session with one
+    /// extension disabled still has the rest of its capabilities.
+    pub fn disable(&mut self, name: &str) -> Option<ShutdownOutcome> {
+        let index = self.exts.iter().position(|e| e.manifest.name == name)?;
+        let mut extension = self.exts.remove(index);
+        self.sources.remove(name);
+        Some(extension.shutdown())
+    }
+
+    /// The outcome of the last [`Registry::shutdown`], one line per extension.
+    ///
+    /// Empty before any shutdown has run. This is what makes a per-extension
+    /// result reportable after the fact: `shutdown` already returned them, but
+    /// a caller that discarded the return value can still read them here.
+    // Consumed by the agent loop's cancel and shutdown reporting paths,
+    // which another task in this wave owns.
+    #[allow(dead_code)]
+    pub fn last_shutdown(&self) -> &[ShutdownOutcome] {
+        self.last_shutdown.as_deref().unwrap_or(&[])
     }
 }
 
@@ -525,11 +708,19 @@ for line in sys.stdin:
         assert!(e.has_command("tcmd"));
         assert_eq!(e.system_prompt().as_deref(), Some("from ext"));
         let mut nohost = |_n: &str, _a: &str| String::new();
+        let scope = CallScope::from_call("call_1", Cancel::new());
         assert_eq!(
-            e.run_tool("ping", "{}", &mut nohost).as_deref(),
+            e.run_tool_scoped("ping", "{}", &mut nohost, &scope)
+                .into_output()
+                .as_deref(),
             Some("pong")
         );
-        assert_eq!(e.run_command("tcmd", "x").as_deref(), Some("cmd out"));
+        assert_eq!(
+            e.run_command_scoped("tcmd", "x", &scope)
+                .into_output()
+                .as_deref(),
+            Some("cmd out")
+        );
         assert_eq!(
             e.rewrite_tool_result("c1", "bash", "original", &mut nohost)
                 .as_deref(),
@@ -691,6 +882,615 @@ for line in sys.stdin:
             out.contains("at least one task"),
             "an empty batch must be refused with a reason: {out}"
         );
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// An extension that answers `run_tool` only after a long pause, and that
+    /// records how the host called it on disk.
+    const SLOW_HELPER: &str = r#"
+import json, sys, time
+def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    r=json.loads(line); t=r.get("type"); i=r.get("id")
+    if t=="hello":
+        send({"id":i,"protocol":PROTO,"name":"slow","version":"1",
+              "tools":[{"name":"slow","description":"d","schema":{"type":"object"}}],
+              "commands":[{"name":"slowcmd","description":"c"}]})
+    elif t=="run_tool":
+        with open(MARKER,"w") as f:
+            json.dump({"call_id":r.get("call_id"),"lineage":r.get("lineage")},f)
+        time.sleep(DELAY)
+        send({"id":i,"output":"finished"})
+    elif t=="command":
+        time.sleep(DELAY)
+        send({"id":i,"output":"cmd out"})
+    elif t=="goodbye": break
+"#;
+
+    fn slow_script(marker: &str, delay_secs: f64) -> String {
+        SLOW_HELPER
+            .replace("PROTO", &PROTOCOL_VERSION.to_string())
+            .replace("MARKER", &serde_json::to_string(marker).unwrap())
+            .replace("DELAY", &delay_secs.to_string())
+    }
+
+    /// An extension that records every `run_tool` it is given, so a test can
+    /// see whether the host dispatched at all.
+    const LINEAGE_HELPER: &str = r#"
+import json, sys
+def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    r=json.loads(line); t=r.get("type"); i=r.get("id")
+    if t=="hello":
+        send({"id":i,"protocol":PROTO,"name":"lin","version":"1",
+              "tools":[{"name":"lin","description":"d","schema":{"type":"object"}}]})
+    elif t=="run_tool":
+        send({"id":i,"output":json.dumps({"call_id":r.get("call_id"),"lineage":r.get("lineage")})})
+    elif t=="goodbye": break
+"#;
+
+    fn lineage_script() -> String {
+        LINEAGE_HELPER.replace("PROTO", &PROTOCOL_VERSION.to_string())
+    }
+
+    fn marker_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("glass-cancel-{}-{tag}.json", std::process::id()))
+    }
+
+    /// A cancel issued from the caller's token must stop a call already in
+    /// flight, promptly. Before the token reached the running exchange, this
+    /// waited out the full request timeout instead.
+    #[test]
+    fn a_cancel_reaches_a_call_that_is_already_running() {
+        let Some(py) = python() else { return };
+        let marker = marker_path("running");
+        let p = echo_ext(&slow_script(&marker.to_string_lossy(), 30.0));
+        let mut reg = Registry::load(
+            &[format!("{py} {}", p.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        let scope = CallScope::from_call("call_1", Cancel::new());
+        // Cancel from another thread once the extension has been dispatched,
+        // so this exercises a cancel that arrives mid-exchange.
+        let token = scope.cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            token.cancel();
+        });
+        let started = std::time::Instant::now();
+        let mut nohost = |_n: &str, _a: &str| String::new();
+        let outcome = reg.run_tool_scoped(&scope, "slow", "{}", &mut nohost);
+        let elapsed = started.elapsed();
+        assert!(
+            outcome.is_cancelled(),
+            "a cancelled call is reported as cancelled, not as a failure: {:?}",
+            outcome.stop
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "cancelling must stop the wait promptly, took {elapsed:?}"
+        );
+        assert!(
+            marker.exists(),
+            "the call was dispatched before it was cancelled"
+        );
+        let _ = std::fs::remove_file(&marker);
+        reg.shutdown();
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// A cancel that arrives before dispatch must not send the request. If it
+    /// did, the extension would run a tool call the session has already
+    /// abandoned.
+    #[test]
+    fn a_cancel_before_dispatch_never_reaches_the_extension() {
+        let Some(py) = python() else { return };
+        let marker = marker_path("predispatch");
+        let p = echo_ext(&slow_script(&marker.to_string_lossy(), 0.0));
+        let mut reg = Registry::load(
+            &[format!("{py} {}", p.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        let scope = CallScope::from_call("call_1", Cancel::new());
+        scope.cancel.cancel();
+        let mut nohost = |_n: &str, _a: &str| String::new();
+        let outcome = reg.run_tool_scoped(&scope, "slow", "{}", &mut nohost);
+        assert!(outcome.is_cancelled(), "{:?}", outcome.stop);
+        assert!(
+            !outcome.is_completed(),
+            "an abandoned call must not carry an output"
+        );
+        assert!(
+            !marker.exists(),
+            "the extension must not be asked to run a cancelled call"
+        );
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// Cancellation and failure are different facts, and a transcript that
+    /// conflates them tells the model the wrong thing about its own turn.
+    #[test]
+    fn a_cancel_is_reported_distinctly_from_an_extension_failure() {
+        let Some(py) = python() else { return };
+        // This extension exits instead of answering, so the call genuinely
+        // fails rather than being cancelled.
+        let body = r#"
+import json, sys, os
+def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
+for line in sys.stdin:
+    r=json.loads(line); t=r.get("type"); i=r.get("id")
+    if t=="hello":
+        send({"id":i,"protocol":PROTO,"name":"dies","version":"1",
+              "tools":[{"name":"dies","description":"d","schema":{"type":"object"}}]})
+    elif t=="run_tool": os._exit(0)
+    elif t=="goodbye": break
+"#
+        .replace("PROTO", &PROTOCOL_VERSION.to_string());
+        let p = echo_ext(&body);
+        let mut reg = Registry::load(
+            &[format!("{py} {}", p.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        let mut nohost = |_n: &str, _a: &str| String::new();
+        let scope = CallScope::unscoped();
+        let failed = reg.run_tool_scoped(&scope, "dies", "{}", &mut nohost);
+        assert!(
+            matches!(failed.stop, CallStop::Failed(_)),
+            "a dead pipe is a failure: {:?}",
+            failed.stop
+        );
+        let failure_line = failed.describe("dies");
+        assert!(
+            failure_line.starts_with("error:"),
+            "a failure reads as an error: {failure_line}"
+        );
+        assert!(
+            !failure_line.contains("cancelled"),
+            "a failure must not be reported as a cancellation: {failure_line}"
+        );
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
+    fn the_transcript_line_says_which_path_a_cancellation_took() {
+        let cooperative = CallOutcome {
+            output: None,
+            stop: CallStop::Cancelled(CancelPath::Cooperative),
+        };
+        let line = cooperative.describe("slow");
+        assert!(line.starts_with("cancelled:"), "{line}");
+        assert!(
+            line.contains("left running"),
+            "the model is told the extension was not killed: {line}"
+        );
+
+        let killed = CallOutcome {
+            output: None,
+            stop: CallStop::Cancelled(CancelPath::Killed),
+        };
+        let line = killed.describe("slow");
+        assert!(line.contains("killed"), "{line}");
+
+        // A completed call reports its output, not a cancellation, whatever
+        // the extension's own state happens to be.
+        let done = CallOutcome {
+            output: Some("real output".into()),
+            stop: CallStop::Cancelled(CancelPath::Cooperative),
+        };
+        assert_eq!(done.describe("slow"), "real output");
+    }
+
+    /// A tool call the extension finished before the cancel landed must be
+    /// reported as finished. Reporting it as cancelled would tell the model
+    /// its work did not happen when it did.
+    #[test]
+    fn work_that_finished_before_a_cancel_is_not_reported_as_cancelled() {
+        let Some(py) = python() else { return };
+        let marker = marker_path("drain");
+        let p = echo_ext(&slow_script(&marker.to_string_lossy(), 0.0));
+        let mut reg = Registry::load(
+            &[format!("{py} {}", p.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        let scope = CallScope::from_call("call_1", Cancel::new());
+        // Cancel while the reply is on its way back.
+        scope.cancel.cancel();
+        let mut nohost = |_n: &str, _a: &str| String::new();
+        let outcome = reg.run_tool_scoped(&scope, "slow", "{}", &mut nohost);
+        if !outcome.is_cancelled() {
+            assert_eq!(
+                outcome.output.as_deref(),
+                Some("finished"),
+                "a completed call keeps its output"
+            );
+        }
+        let _ = std::fs::remove_file(&marker);
+        reg.shutdown();
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// The startup token must survive the handshake and still reach a tool
+    /// call afterwards. It used to be replaced with a fresh, permanently
+    /// clear flag, which left it dropped on the floor.
+    #[test]
+    fn a_startup_cancel_token_still_reaches_a_tool_call_after_the_handshake() {
+        let Some(py) = python() else { return };
+        let marker = marker_path("survives");
+        let p = echo_ext(&slow_script(&marker.to_string_lossy(), 30.0));
+        let token = Cancel::new();
+        let mut reg = Registry::empty();
+        let mut extension = Extension::spawn_cancellable(
+            &format!("{py} {}", p.display()),
+            "/tmp",
+            "test-model",
+            token.clone(),
+        )
+        .expect("handshake must succeed");
+        // What `addons.rs` does after a `/extensions` enable.
+        let live = extension.finish_startup();
+        assert!(
+            !live.is_cancelled(),
+            "finishing startup must leave a usable token, not a poisoned one"
+        );
+        assert!(
+            extension.is_live(),
+            "the extension reports itself live after startup"
+        );
+        reg.register(extension, "spec").expect("registers");
+
+        // Cancel through the same flag the startup caller holds.
+        live.cancel();
+        assert!(
+            reg.cancel_token("slow").is_some_and(|t| t.is_cancelled()),
+            "the registry hands out the very same token"
+        );
+        let scope = CallScope::from_call("call_1", Cancel::new());
+        let mut nohost = |_n: &str, _a: &str| String::new();
+        let outcome = reg.run_tool_scoped(&scope, "slow", "{}", &mut nohost);
+        assert!(
+            outcome.is_cancelled(),
+            "a token set after startup still cancels: {:?}",
+            outcome.stop
+        );
+        let _ = std::fs::remove_file(&marker);
+        reg.shutdown();
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// A cancelled `/extensions` startup must still cancel — the startup
+    /// path is what a user actually presses Esc on.
+    #[test]
+    fn a_cancelled_startup_still_cancels() {
+        let Some(py) = python() else { return };
+        // This extension never answers the handshake, so only the cancel can
+        // end the wait.
+        let body = r#"
+import json, sys, time
+def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
+for line in sys.stdin:
+    r=json.loads(line)
+    if r.get("type")=="hello": time.sleep(60)
+    elif r.get("type")=="goodbye": break
+"#;
+        let p = echo_ext(body);
+        let token = Cancel::new();
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watcher = flag.clone();
+        let trigger = token.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            watcher.store(true, std::sync::atomic::Ordering::Release);
+            trigger.cancel();
+        });
+        let started = std::time::Instant::now();
+        let err = Extension::spawn_cancellable(
+            &format!("{py} {}", p.display()),
+            "/tmp",
+            "test-model",
+            token.clone(),
+        )
+        .err()
+        .expect("a cancelled handshake must fail");
+        let elapsed = started.elapsed();
+        assert!(
+            err.contains("cancelled"),
+            "a cancelled startup must not be reported as a broken extension: {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "the cancel must end the handshake promptly, took {elapsed:?}"
+        );
+        assert!(
+            flag.load(std::sync::atomic::Ordering::Acquire),
+            "the test actually cancelled"
+        );
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// The originating model tool call id must arrive with the request and
+    /// come back unchanged, or extension work cannot be attributed to the
+    /// call that caused it.
+    #[test]
+    fn the_originating_call_id_round_trips_to_the_extension() {
+        let Some(py) = python() else { return };
+        let p = echo_ext(&lineage_script());
+        let mut reg = Registry::load(
+            &[format!("{py} {}", p.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        let mut nohost = |_n: &str, _a: &str| String::new();
+        let scope = CallScope::from_call("call_round_trip", Cancel::new());
+        let outcome = reg.run_tool_scoped(&scope, "lin", "{}", &mut nohost);
+        let body: serde_json::Value = serde_json::from_str(
+            &outcome.output.expect("the extension answered"),
+        )
+        .expect("the extension echoed valid JSON");
+        assert_eq!(body["call_id"], "call_round_trip");
+        let lineage = crate::ext::protocol::CallLineage::from_json(&body["lineage"])
+            .expect("the extension received a well-formed lineage");
+        assert_eq!(lineage.origin(), "call_round_trip");
+        assert_eq!(lineage.depth(), 0);
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// A scope already at the nesting bound must be refused before dispatch,
+    /// not after the extension has started working.
+    #[test]
+    fn an_over_deep_scope_is_refused_before_the_extension_is_dispatched() {
+        let Some(py) = python() else { return };
+        let mut chain = crate::ext::protocol::CallLineage::root("call_root");
+        for level in 1..=crate::ext::protocol::MAX_NESTED_CALL_DEPTH {
+            chain = chain.descend(&format!("n{level}")).expect("within the bound");
+        }
+        assert_eq!(chain.depth(), crate::ext::protocol::MAX_NESTED_CALL_DEPTH);
+        let p = echo_ext(&lineage_script());
+        let mut reg = Registry::load(
+            &[format!("{py} {}", p.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        let scope = CallScope {
+            lineage: chain,
+            cancel: Cancel::new(),
+        };
+        let mut nohost = |_n: &str, _a: &str| String::new();
+        let outcome = reg.run_tool_scoped(&scope, "lin", "{}", &mut nohost);
+        assert!(
+            !outcome.is_completed(),
+            "an over-deep call must not run: {:?}",
+            outcome.output
+        );
+        let line = outcome.describe("lin");
+        assert!(line.contains("deep"), "the refusal says why: {line}");
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// A nested call whose lineage loops must be refused by the host instead
+    /// of being dispatched, and the extension must be told rather than left
+    /// waiting.
+    #[test]
+    fn a_cyclic_nested_lineage_is_refused_with_a_reason() {
+        let Some(py) = python() else { return };
+        // The extension claims the host's own root is its nested call id,
+        // which would loop the chain back onto itself.
+        let body = r#"
+import json, sys
+def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
+for line in sys.stdin:
+    r=json.loads(line); t=r.get("type"); i=r.get("id")
+    if t=="hello":
+        send({"id":i,"protocol":PROTO,"name":"cyc","version":"1",
+              "tools":[{"name":"cyc","description":"d","schema":{"type":"object"}}]})
+    elif t=="run_tool":
+        send({"type":"call_tool","call_id":"call_root","name":"bash","arguments":"{}",
+              "lineage":{"origin":"call_root","depth":1,"path":["call_root","call_root"]}})
+        rep=json.loads(sys.stdin.readline())
+        send({"id":i,"output":str(rep.get("body"))})
+    elif t=="goodbye": break
+"#
+        .replace("PROTO", &PROTOCOL_VERSION.to_string());
+        let p = echo_ext(&body);
+        let mut reg = Registry::load(
+            &[format!("{py} {}", p.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        let mut nohost = |_n: &str, _a: &str| String::new();
+        let scope = CallScope::from_call("call_root", Cancel::new());
+        let out = reg
+            .run_tool_scoped(&scope, "cyc", "{}", &mut nohost)
+            .into_output()
+            .unwrap_or_default();
+        assert!(
+            out.contains("repeats") || out.contains("cyclic"),
+            "a looping lineage must be refused with a reason: {out}"
+        );
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// One extension ignoring shutdown must not hide the others' outcomes,
+    /// and every extension must actually be stopped.
+    #[test]
+    fn shutdown_reports_each_extension_separately() {
+        let Some(py) = python() else { return };
+        // This one ignores `goodbye` and never exits.
+        let stubborn = r#"
+import json, sys, time
+def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
+line = sys.stdin.readline()
+r = json.loads(line)
+send({"id": r["id"], "protocol": PROTO, "name": "stubborn", "version": "1",
+      "tools": [{"name": "stub", "description": "d", "schema": {"type": "object"}}]})
+# Never read stdin again and never exit. This is what forces the host to
+# escalate to the process-group kill.
+while True:
+    time.sleep(3600)
+"#
+        .replace("PROTO", &PROTOCOL_VERSION.to_string());
+        let well = LINEAGE_HELPER.replace("PROTO", &PROTOCOL_VERSION.to_string())
+            .replace("\"lin\"", "\"polite\"")
+            .replace("\"lin\"", "\"polite\"");
+        let a = echo_ext(&stubborn);
+        let b = echo_ext(&well);
+        let mut reg = Registry::load(
+            &[format!("{py} {}", a.display()), format!("{py} {}", b.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        assert_eq!(reg.len(), 2);
+        let outcomes = reg.shutdown();
+        assert_eq!(outcomes.len(), 2, "every extension reports an outcome");
+        let by_name: std::collections::BTreeMap<&str, &ShutdownOutcome> =
+            outcomes.iter().map(|o| (o.name.as_str(), o)).collect();
+        assert!(
+            by_name["stubborn"].killed,
+            "an extension that ignores goodbye must be killed"
+        );
+        assert!(
+            !by_name["stubborn"].error.is_some(),
+            "being killed is not an error: {:?}",
+            by_name["stubborn"].error
+        );
+        assert!(
+            !by_name["polite"].killed,
+            "a cooperative extension is not killed: {:?}",
+            by_name["polite"]
+        );
+        // Both outcomes are reported by name, not collapsed into one.
+        assert!(by_name["stubborn"].describe().contains("killed"));
+        assert!(by_name["polite"].describe().contains("stopped on request"));
+        let _ = std::fs::remove_dir_all(a.parent().unwrap());
+        let _ = std::fs::remove_dir_all(b.parent().unwrap());
+    }
+
+    #[test]
+    fn shutdown_is_idempotent() {
+        let Some(py) = python() else { return };
+        let p = echo_ext(&helper_script());
+        let mut reg = Registry::load(
+            &[format!("{py} {}", p.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        let first = reg.shutdown();
+        assert_eq!(first.len(), 1);
+        assert!(!first[0].already_stopped, "the first call does the work");
+        assert!(reg.last_shutdown().len() == 1, "the outcome is retained");
+
+        let second = reg.shutdown();
+        assert_eq!(second.len(), 1);
+        assert!(
+            second[0].already_stopped,
+            "a second shutdown signals nothing: {:?}",
+            second[0]
+        );
+        assert!(
+            !second[0].killed,
+            "a second shutdown must not re-kill an exited process"
+        );
+        // And it is idempotent all the way down to one extension.
+        assert!(reg.exts[0].shutdown().already_stopped);
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// Disabling one extension must leave the session's other extensions
+    /// running and usable.
+    #[test]
+    fn disabling_one_extension_leaves_the_others_running() {
+        let Some(py) = python() else { return };
+        let stub = r#"
+import json, sys, time
+def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
+for line in sys.stdin:
+    r=json.loads(line); t=r.get("type"); i=r.get("id")
+    if t=="hello":
+        send({"id":i,"protocol":PROTO,"name":"doomed","version":"1",
+              "tools":[{"name":"doomed","description":"d","schema":{"type":"object"}}]})
+"#
+        .replace("PROTO", &PROTOCOL_VERSION.to_string());
+        let keeper = LINEAGE_HELPER.replace("PROTO", &PROTOCOL_VERSION.to_string());
+        let a = echo_ext(&stub);
+        let b = echo_ext(&keeper);
+        let mut reg = Registry::load(
+            &[format!("{py} {}", a.display()), format!("{py} {}", b.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        assert_eq!(reg.len(), 2);
+        let outcome = reg.disable("doomed").expect("the extension was loaded");
+        assert_eq!(outcome.name, "doomed");
+        assert_eq!(reg.len(), 1, "only the named extension is removed");
+        assert!(!reg.has_tool("doomed"), "its tool is gone");
+        assert!(reg.has_tool("lin"), "the other extension keeps its tool");
+
+        // And the survivor still answers.
+        let mut nohost = |_n: &str, _a: &str| String::new();
+        let scope = CallScope::unscoped();
+        let out = reg.run_tool_scoped(&scope, "lin", "{}", &mut nohost);
+        assert_eq!(out.stop, CallStop::Unknown);
+        assert!(out.is_completed(), "the survivor still works");
+        reg.shutdown();
+        let _ = std::fs::remove_dir_all(a.parent().unwrap());
+        let _ = std::fs::remove_dir_all(b.parent().unwrap());
+    }
+
+    /// Cancelling one extension must not disturb another's running call.
+    #[test]
+    fn cancelling_one_extension_leaves_the_others_alone() {
+        let Some(py) = python() else { return };
+        let p = echo_ext(&lineage_script());
+        let mut reg = Registry::load(
+            &[format!("{py} {}", p.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        let mut nohost = |_n: &str, _a: &str| String::new();
+        let scope = CallScope::unscoped();
+        assert!(reg.run_tool_scoped(&scope, "lin", "{}", &mut nohost).is_completed());
+        assert!(reg.cancel("lin"), "the extension was found");
+        assert!(reg.cancel_token("lin").is_some_and(|t| t.is_cancelled()));
+        // Cancelling everything covers every loaded extension at once.
+        let b = echo_ext(&lineage_script().replace("\"lin\"", "\"lin2\""));
+        let reg2 = Registry::load(
+            &[format!("{py} {}", b.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        reg2.cancel_all();
+        assert!(
+            reg2
+                .cancel_token("lin2")
+                .is_some_and(|t| t.is_cancelled()),
+            "cancel_all reaches every loaded extension"
+        );
+        let _ = std::fs::remove_dir_all(b.parent().unwrap());
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// A hard stop says which path it took, and leaves the rest of the
+    /// registry alone.
+    #[test]
+    fn a_hard_stop_reports_that_it_killed() {
+        let Some(py) = python() else { return };
+        let p = echo_ext(&lineage_script());
+        let mut reg = Registry::load(
+            &[format!("{py} {}", p.display())],
+            std::path::Path::new("/tmp"),
+            "test-model",
+        );
+        assert_eq!(reg.force_stop("lin"), Some(CancelPath::Killed));
+        // A second hard stop finds nothing left to kill and says so.
+        assert_eq!(reg.force_stop("lin"), Some(CancelPath::Cooperative));
+        assert_eq!(reg.force_stop("absent"), None);
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 }

@@ -99,6 +99,9 @@ fn save(path: &Path, value: &impl Serialize) -> Result<(), String> {
     file.sync_data().map_err(|e| e.to_string())?;
     fs::rename(tmp, path).map_err(|e| e.to_string())
 }
+fn default_output_limit() -> u32 { 16_000 }
+fn default_round_limit() -> usize { 24 }
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Info {
     pub id: String,
@@ -110,6 +113,20 @@ pub struct Info {
     pub workspace: PathBuf,
     pub read_only: bool,
     pub token_limit: u64,
+    #[serde(default = "default_output_limit")]
+    pub output_limit: u32,
+    #[serde(default)]
+    pub reasoning_limit: Option<u32>,
+    #[serde(default = "default_round_limit")]
+    pub round_limit: usize,
+    #[serde(default)]
+    pub context_window: u32,
+    #[serde(default)]
+    pub last_request_input_estimate: u64,
+    #[serde(default)]
+    pub failure_kind: Option<String>,
+    #[serde(default)]
+    pub budget_warning_sent: bool,
     pub input: u64,
     pub output: u64,
     #[serde(default)]
@@ -129,6 +146,56 @@ pub struct Info {
     #[serde(default)]
     pub transport_pending: bool,
 }
+impl Info {
+    fn remaining(&self) -> u64 {
+        self.token_limit.saturating_sub(self.input.saturating_add(self.output)
+            .saturating_add(self.estimated_tokens).saturating_add(self.reserved_tokens))
+    }
+    fn summary(&self) -> Value {
+        let mut v = self.receipt();
+        v["pending_messages"] = json!(self.pending_messages.len());
+        v["result"] = json!(short(&self.result, 480));
+        v
+    }
+    fn receipt(&self) -> Value {
+        let mut value = json!(self);
+        value["remaining_tokens"] = json!(self.remaining());
+        value["reasoning_control"] = json!("provider/model dependent; zero uses provider default, not thinking disabled");
+        value["next_output_headroom_estimate"] = json!(self.remaining().saturating_sub(self.last_request_input_estimate).min(u64::from(self.output_limit)));
+        value["budget_warning"] = json!(self.remaining() <= self.token_limit / 5);
+        value["recovery"] = json!(match self.failure_kind.as_deref() {
+            Some("context_allowance") => "Compact history or allocate more cumulative tokens with budget, then resume. Completed tools remain recorded.",
+            Some("allowance_exhausted") => "Raise the cumulative allowance explicitly with budget, or reuse findings in a focused new worker.",
+            Some("output_exhausted") => "Increase output allowance with limits, optionally lower reasoning, then resume. Do not replay completed tools.",
+            Some("round_limit") => "Inspect progress; raise rounds with limits and resume if useful.",
+            Some(_) => "Inspect the error and transcript before resuming or switching worker.",
+            None => "",
+        });
+        value
+    }
+}
+fn limit_values(req: &Value, mut output_limit: u32, mut reasoning_limit: Option<u32>, mut round_limit: usize) -> Result<(u32, Option<u32>, usize), String> {
+    if let Some(value) = req.get("output") {
+        output_limit = value.as_u64().filter(|n| (256..=128_000).contains(n))
+            .ok_or("output must be 256–128000 tokens")? as u32;
+    }
+    if let Some(value) = req.get("reasoning") {
+        let n = value.as_u64().filter(|n| *n <= 128_000).ok_or("reasoning must be 0–128000; 0 uses provider default")?;
+        reasoning_limit = if n == 0 { None } else { Some(n as u32) };
+    }
+    if let Some(value) = req.get("rounds") {
+        round_limit = value.as_u64().filter(|n| (1..=128).contains(n)).ok_or("rounds must be 1–128")? as usize;
+    }
+    if reasoning_limit.is_some_and(|n| n >= output_limit) {
+        return Err("reasoning must leave room for an answer within output allowance".into());
+    }
+    Ok((output_limit, reasoning_limit, round_limit))
+}
+fn limits(req: &Value, info: &mut Info) -> Result<(), String> {
+    (info.output_limit, info.reasoning_limit, info.round_limit) = limit_values(req, info.output_limit, info.reasoning_limit, info.round_limit)?;
+    Ok(())
+}
+
 struct Worker {
     info: Info,
     queue: VecDeque<(String, String)>,
@@ -252,7 +319,7 @@ impl Hub {
                 let task=format!("Explicit {trigger} review checkpoint. Review current workspace changes read-only. Patch fingerprint {fingerprint}. Inspect current files; previews may be truncated or stale. Report concrete findings with paths and line numbers, checks actually performed, and unresolved questions. Do not modify files or run external side effects.\n\nPatch excerpt:\n{excerpt}");
                 return self.request(&json!({"action":"create","from":from,"name":name,"text":task,"role":"reviewer","tokens":role.tokens}));
             }
-            "list" => return Ok(json!(self.snapshot().iter().map(|i|json!({"id":i.id,"name":i.name,"status":i.status,"activity":i.activity,"model":i.model,"input":i.input,"output":i.output,"cost_usd":i.cost_usd,"usage_known":i.usage_known,"estimated_tokens":i.estimated_tokens,"reserved_tokens":i.reserved_tokens,"pending_messages":i.pending_messages.len(),"transport_pending":i.transport_pending})).collect::<Vec<_>>())) ,
+            "list" => return Ok(json!(self.snapshot().iter().map(Info::summary).collect::<Vec<_>>())),
             "interactions" => {return window(&self.dir.join("interactions.jsonl"),req["before"].as_u64());}
             "create" => {
                 let name = req["name"].as_str().unwrap_or("review");
@@ -274,6 +341,7 @@ impl Hub {
                     return Err("token budget must be 1024–10000000".into());
                 }
 
+                let requested_limits = limit_values(req, default_output_limit(), None, default_round_limit())?;
                 let mut state = self.state.lock().unwrap();
                 if state.agents.len() >= MAX_AGENTS {
                     return Err("32 agents already retained; reuse an existing agent".into());
@@ -313,6 +381,9 @@ impl Hub {
                     workspace,
                     read_only: req["write"] != true,
                     token_limit: limit,
+                    output_limit: requested_limits.0, reasoning_limit: requested_limits.1,
+                    round_limit: requested_limits.2, context_window: 0,
+                    last_request_input_estimate: 0, failure_kind: None, budget_warning_sent: false,
                     input: 0,
                     output: 0,
                     usage_known: true,
@@ -350,7 +421,7 @@ impl Hub {
                 drop(state);
                 drop(session);
                 self.launch(id);
-                return Ok(json!(info));
+                return Ok(info.receipt());
             }
             _ => {}
         }
@@ -375,7 +446,7 @@ impl Hub {
         match action {
             "inspect" => {
                 return Ok(
-                    json!({"agent":worker.info,"partial":worker.partial,"queued":worker.queue.len()}),
+                    json!({"agent":worker.info.receipt(),"partial":worker.partial,"queued":worker.queue.len()}),
                 );
             }
             "transcript" => {
@@ -395,12 +466,19 @@ impl Hub {
                 }
                 self.interaction(from, &key, "[interrupt requested]")?;
             }
+            "limits" => {
+                let mut updated = worker.info.clone();
+                limits(req, &mut updated)?;
+                self.interaction(from, &key, &format!("[limits: output={}, reasoning={:?}, rounds={}; apply at next worker turn]", updated.output_limit, updated.reasoning_limit, updated.round_limit))?;
+                worker.info = updated;
+            }
             "budget" => {
                 let n = req["tokens"]
                     .as_u64()
                     .filter(|n| (1024..=10_000_000).contains(n))
                     .ok_or("budget requires 1024–10000000 tokens")?;
                 worker.info.token_limit = n;
+                worker.info.budget_warning_sent = false;
                 self.interaction(from, &key, &format!("[token budget changed to {n}]"))?;
             }
             "discard" => {
@@ -465,14 +543,14 @@ impl Hub {
                 if launch {
                     self.launch(key);
                 }
-                return Ok(json!(info));
+                return Ok(info.receipt());
             }
             _ => return Err("unknown action; run gc agent --help".into()),
         }
         let info = worker.info.clone();
         self.persist(&info)?;
         state.revision += 1;
-        Ok(json!(info))
+        Ok(info.receipt())
     }
     fn launch(self: &Arc<Self>, id: String) {
         let hub = Arc::clone(self);
@@ -499,12 +577,18 @@ impl Hub {
             w.info.activity = status.into();
             w.info.updated = crate::loops::now();
             w.info.result = short(text, 2048);
+            w.info.failure_kind = if status == "blocked" {
+                Some(if text.contains("teammate request context exceeds") { "context_allowance" }
+                else if text.contains("teammate token") { "allowance_exhausted" }
+                else if text.contains("output limit reached before an answer") { "output_exhausted" }
+                else if text.contains("Tool round limit") { "round_limit" } else { "provider_or_runtime" }.into())
+            } else { None };
             let info = w.info.clone();
             let durable = self
                 .interaction(id, "main", &info.result)
                 .and_then(|()| self.persist(&info));
             let notice = match durable {
-                Ok(()) => format!("Teammate {} ({id}) {status}: {}", info.name, info.result),
+                Ok(()) => format!("Teammate {} ({id}) {status}: {} · remaining={} tokens; {}", info.name, info.result, info.remaining(), info.receipt()["recovery"].as_str().unwrap_or("")),
                 Err(e) => format!("Teammate {} persistence failed: {e}", info.name),
             };
             Self::notice(&mut state, notice);
@@ -573,6 +657,7 @@ impl Hub {
                 }
                 self.persist(&worker.info)?;
             }
+            let turn_info = self.state.lock().unwrap().agents[id].info.clone();
             let task=crate::ext::protocol::SubagentTask{task:"Continue your assigned work. Preserve the task through follow-ups; report concise findings with paths and verification. Do not delegate recursively.".into(),read_only:info.read_only,..Default::default()};
             let mut delivered: Option<(String, String)> = None;
             let last = std::cell::Cell::new(Instant::now() - Duration::from_secs(1));
@@ -587,7 +672,7 @@ impl Hub {
             .with_prompt(crate::subagent::compose_prompt(&task), None, None)
             .with_plan_mode(info.read_only)
             .with_stream_factory(Arc::clone(&stream_factory))
-            .with_limits(4096, None, 12)
+            .with_limits(turn_info.output_limit, turn_info.reasoning_limit, turn_info.round_limit)
             .with_progress(|p| {
                 let mut state = self.state.lock().unwrap();
                 let w = state.agents.get_mut(id).unwrap();
@@ -639,6 +724,7 @@ impl Hub {
                 let mut state = self.state.lock().unwrap();
                 let w = state.agents.get_mut(id).unwrap();
                 w.info.turns += 1;
+                w.info.failure_kind = None;
                 self.persist(&w.info)?;
             }
             if stop == Stop::Cancelled {
@@ -695,7 +781,7 @@ impl Hub {
             self.persist(&saved)?;
             Self::notice(
                 &mut state,
-                format!("Teammate {} ({id}) finished: {}", saved.name, saved.result),
+                format!("Teammate {} ({id}) finished: {} · {} remaining / {} cumulative tokens ({} reported input, {} output, {} estimated)", saved.name, saved.result, saved.remaining(), saved.token_limit, saved.input, saved.output, saved.estimated_tokens),
             );
             return Ok(());
         }
@@ -739,6 +825,8 @@ impl Provider for Meter {
                     "previous provider requests are draining; wait before retrying".into(),
                 ));
             }
+            worker.info.context_window = self.inner.context_window();
+            worker.info.last_request_input_estimate = estimated_input;
             let mut prospective = worker.info.clone();
             let i = &mut prospective;
             if i.input
@@ -747,12 +835,16 @@ impl Provider for Meter {
                 >= i.token_limit
             {
                 return Err(provider::Error::Config(
-                    "teammate token budget reached; inspect before continuing".into(),
+                    format!("teammate token budget reached: allowance={}, reported={}, estimated={}, reserved={}; explicitly raise budget or reuse findings in a focused worker", i.token_limit, i.input.saturating_add(i.output), i.estimated_tokens, i.reserved_tokens),
                 ));
             }
             let remaining=i.token_limit.saturating_sub(i.input.saturating_add(i.output).saturating_add(i.reserved_tokens).saturating_add(i.estimated_tokens));
-            if estimated_input>=remaining{return Err(provider::Error::Config("teammate request context exceeds remaining token budget; use a focused task or explicitly raise the budget".into()));}
+            if estimated_input>=remaining{let _=self.hub.persist(i); return Err(provider::Error::Config(format!("teammate request context exceeds remaining token budget: next_input_estimate={estimated_input}, remaining={remaining}, allowance={}, reported={}, estimated={}, reserved={}; compact history or explicitly raise budget and resume",i.token_limit,i.input.saturating_add(i.output),i.estimated_tokens,i.reserved_tokens)));}
             let max_tokens=u64::from(req.max_tokens).min(remaining-estimated_input) as u32;
+            if req.reasoning.is_some_and(|n| n >= max_tokens) {
+                let _ = self.hub.persist(i);
+                return Err(provider::Error::Config(format!("teammate request context exceeds remaining allowance for configured reasoning: next_input_estimate={estimated_input}, remaining={remaining}, bounded_output={max_tokens}, reasoning={}; increase budget or lower reasoning with limits, then resume", req.reasoning.unwrap_or(0))));
+            }
             let reservation=estimated_input.saturating_add(u64::from(max_tokens));
             i.transport_pending = true;
             i.reserved_tokens = i.reserved_tokens.saturating_add(reservation);
@@ -831,9 +923,14 @@ impl Drop for MeterStream<'_> {
             w.info.cost_usd = None;
             w.info.cost_complete = false;
         }
+        let warning = if !w.info.budget_warning_sent && w.info.remaining() <= w.info.token_limit / 5 {
+            w.info.budget_warning_sent = true;
+            Some(format!("Teammate {} allowance low: {} remaining of {} cumulative tokens; last request input ~{}, output limit {}. Inspect before assigning more work; budget and limits are adjustable.", w.info.name, w.info.remaining(), w.info.token_limit, w.info.last_request_input_estimate, w.info.output_limit))
+        } else { None };
         if !self.hub.stop.load(Ordering::Acquire) {
             let _ = self.hub.persist(&w.info);
         }
+        if let Some(warning) = warning { Hub::notice(&mut state, warning); }
         state.revision += 1;
     }
 }
@@ -1000,7 +1097,7 @@ pub fn enabled(owner: &str) -> bool {
     get(owner).is_some()
 }
 
-const HELP: &str = "gc agent [--session MAIN_ID] ACTION\n  create NAME TASK [--model ID] [--tokens N] [--role executor|reviewer|research] [--write] [--worktree]\n  handoff FILE.json (validate and notify parent)\n  checkpoint changes|completion (explicit, read-only, configured reviewer budget)\n  list | inspect ID | transcript ID [--before BYTE] | interactions [--before BYTE]\n  send ID MESSAGE | resume ID MESSAGE | wait ID [SECONDS]\n  interrupt ID | archive ID | discard ID | budget ID TOKENS\nDefault: read-only, two active workers, 100000 cumulative tokens, 4096 output/response.\nFollow-ups retain context. Complete transcripts are fetched only on demand.\nThe default model is pinned when the main session opens; --model overrides it.\nIdle workers consume no model requests. --session selects a running owner from another shell.\n";
+const HELP: &str = "gc agent [--session MAIN_ID] ACTION\n  create NAME TASK [--model ID] [--tokens N] [--output N] [--reasoning N] [--rounds N] [--role executor|reviewer|research] [--write] [--worktree]\n  handoff FILE.json (validate and notify parent)\n  checkpoint changes|completion (explicit, read-only, configured reviewer budget)\n  list | inspect ID | transcript ID [--before BYTE] | interactions [--before BYTE]\n  send ID MESSAGE | resume ID MESSAGE | wait ID [SECONDS]\n  limits ID [--output N] [--reasoning N] [--rounds N] (next worker turn)\n  interrupt ID | archive ID | discard ID | budget ID TOKENS\nDefault: read-only, two active workers, 100000 cumulative tokens (repeated inputs count), 16000 output/response, 24 rounds. Limits are configurable; provider context/output ceilings still apply.\nFollow-ups retain context. Complete transcripts are fetched only on demand.\nReceipts show remaining allowance, last input estimate, context window, output/round limits and recovery.\nBudget counts cumulative input + output (including repeated/cached inputs); context window is per request.\nAt 20% remaining, the parent receives one warning. No automatic budget increases or blind output-limit retries.\nReasoning is a provider-dependent hint; 0 uses its default, not disabled thinking.\nThe default model is pinned when the main session opens; --model overrides it.\nIdle workers consume no model requests. --session selects a running owner from another shell.\n";
 pub fn command(args: &[String]) -> Result<(), String> {
     if args.is_empty() || args.iter().any(|s| s == "--help" || s == "-h") {
         crate::cli::text("Teammates", HELP);
@@ -1045,11 +1142,11 @@ pub fn command(args: &[String]) -> Result<(), String> {
             match args[i].as_str() {
                 "--write" => req["write"] = json!(true),
                 "--worktree" => req["worktree"] = json!(true),
-                "--model" | "--tokens" | "--role" => {
+                "--model" | "--tokens" | "--role" | "--output" | "--reasoning" | "--rounds" => {
                     let key = args[i].trim_start_matches("--");
                     i += 1;
                     let v = args.get(i).ok_or("option requires value")?;
-                    req[key] = if key == "tokens" {
+                    req[key] = if matches!(key, "tokens" | "output" | "reasoning" | "rounds") {
                         json!(v.parse::<u64>().map_err(|_| "invalid token budget")?)
                     } else {
                         json!(v)
@@ -1063,6 +1160,14 @@ pub fn command(args: &[String]) -> Result<(), String> {
         req["text"] = json!(text.join(" "));
     } else if !matches!(action, "list" | "interactions") {
         req["id"] = json!(args.get(1).ok_or(HELP)?);
+        if action == "limits" {
+            if args.len() < 4 || !args.len().is_multiple_of(2) { return Err("limits ID --output N | --reasoning N | --rounds N".into()); }
+            for pair in args[2..].chunks_exact(2) {
+                let key = pair[0].strip_prefix("--").filter(|k| matches!(*k,"output"|"reasoning"|"rounds")).ok_or("unknown limits option")?;
+                if req.get(key).is_some() { return Err("duplicate limits option".into()); }
+                req[key] = json!(pair[1].parse::<u64>().map_err(|_| "invalid limit")?);
+            }
+        }
         if action == "budget" {
             req["tokens"] = json!(
                 args.get(2)
@@ -1138,7 +1243,7 @@ fn offline(owner: &str, req: &Value) -> Result<Value, String> {
         }
     }
     if req["action"] == "list" {
-        return Ok(json!(infos.iter().map(|i|json!({"id":i.id,"name":i.name,"status":i.status,"model":i.model,"input":i.input,"output":i.output,"cost_usd":i.cost_usd,"offline":true})).collect::<Vec<_>>()));
+        return Ok(json!(infos.iter().map(|i| { let mut v=i.summary(); v["offline"]=json!(true); v }).collect::<Vec<_>>()));
     }
     let id = req["id"].as_str().unwrap_or("");
     let info = infos
@@ -1157,7 +1262,7 @@ fn offline(owner: &str, req: &Value) -> Result<Value, String> {
             req["before"].as_u64(),
         )
     } else {
-        Ok(json!({"agent":info,"offline":true,"partial":"","queued":info.pending_messages.len()}))
+        Ok(json!({"agent":info.receipt(),"offline":true,"partial":"","queued":info.pending_messages.len()}))
     }
 }
 fn client(owner: &str, req: &Value) -> Result<Value, String> {
@@ -1502,6 +1607,8 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
                     info.reserved_tokens,
                     info.estimated_tokens
                 ));
+                rows.push(format!("{} remaining · output {} · reasoning {:?} · rounds {}", info.remaining(), info.output_limit, info.reasoning_limit, info.round_limit));
+                rows.push(format!("context {} · last input ~{} · {}", info.context_window, info.last_request_input_estimate, info.failure_kind.as_deref().unwrap_or("no failure")));
                 rows.extend(
                     cache.rows(
                         &hub.dir
@@ -1956,6 +2063,57 @@ mod tests {
         meter.stream(&req).unwrap().for_each(drop);
         let info=g.hub.snapshot().remove(0);
         assert_eq!(info.reserved_tokens,0);assert!(!info.transport_pending);assert_eq!(info.estimated_tokens,100);assert!(!info.usage_known);
+        drop(meter);drop(g);fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn worker_limits_validate_atomically_and_receipts_bound_mailboxes() {
+        let (g, dir, _) = fixture();
+        for extra in [json!({"output": 128}), json!({"rounds": 0}), json!({"output":4096,"reasoning":4096})] {
+            let mut req=json!({"action":"create","name":"bad","text":"check","worktree":true});
+            for (key,value) in extra.as_object().unwrap() { req[key]=value.clone(); }
+            assert!(g.hub.request(&req).is_err());
+        }
+        assert_eq!(fs::read_dir(dir.join("sessions")).unwrap().count(),0);
+        assert!(!dir.join("worktrees").exists());
+        g.hub.request(&json!({"action":"create","name":"review","text":"check","output":24000,"rounds":30,"reasoning":1024})).unwrap();
+        settled(&g.hub);
+        let info=g.hub.snapshot().remove(0);
+        assert_eq!(info.output_limit,24000);
+        assert_eq!(info.round_limit,30);
+        assert!(g.hub.request(&json!({"action":"limits","id":"review","output":512})).is_err());
+        assert_eq!(g.hub.snapshot()[0].output_limit,24000);
+        let mut with_mail=info;
+        with_mail.pending_messages.push(("main".into(),"PRIVATE_PENDING_TASK".into()));
+        let summary=with_mail.summary();
+        assert_eq!(summary["pending_messages"],1);
+        assert!(!summary.to_string().contains("PRIVATE_PENDING_TASK"));
+        assert_eq!(summary["remaining_tokens"],99880);
+        drop(g);fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn context_refusal_preserves_the_latest_estimate_and_actionable_receipt() {
+        let(g,dir,requests)=fixture();
+        g.hub.request(&json!({"action":"create","name":"review","text":"check"})).unwrap();settled(&g.hub);
+        let id=g.hub.snapshot()[0].id.clone();
+        g.hub.state.lock().unwrap().agents.get_mut(&id).unwrap().info.token_limit=1024;
+        let meter=Meter{inner:Box::new(Fake{requests:Arc::clone(&requests)}),hub:Arc::clone(&g.hub),id:id.clone()};
+        let messages=[glass_mod_api::Message::User("x".repeat(8000))];
+        let req=provider::Request{model:"fake",system:"",messages:&messages,tools:&[],max_tokens:100,reasoning:None};
+        let err=match meter.stream(&req){Err(e)=>e,Ok(_)=>panic!("context must exceed allowance")};
+        g.hub.finish(&id,"blocked",&err.to_string());
+        let info=g.hub.snapshot().remove(0);
+        assert!(info.last_request_input_estimate>1024);
+        assert_eq!(info.context_window,100_000);
+        assert_eq!(info.failure_kind.as_deref(),Some("context_allowance"));
+        assert_eq!(info.reserved_tokens,0);
+        let saved:Info=serde_json::from_slice(&fs::read(dir.join(format!("{id}.json"))).unwrap()).unwrap();
+        assert_eq!(saved.last_request_input_estimate,info.last_request_input_estimate);
+        assert!(info.receipt()["recovery"].as_str().unwrap().contains("resume"));
+        assert_eq!(requests.lock().unwrap().len(),1,"denied request never reaches provider");
+        let reasoning_request=provider::Request{model:"fake",system:"",messages:&[],tools:&[],max_tokens:24000,reasoning:Some(1024)};
+        let err=match meter.stream(&reasoning_request){Err(e)=>e,Ok(_)=>panic!("reasoning cannot consume the whole bounded output")};
+        assert!(err.to_string().contains("configured reasoning"));
+        assert_eq!(requests.lock().unwrap().len(),1);
         drop(meter);drop(g);fs::remove_dir_all(dir).unwrap();
     }
     #[test]

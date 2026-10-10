@@ -51,6 +51,7 @@ jobs:
           python3 scripts/smoke-job-unicode.py
           python3 scripts/smoke-tool-repair.py
           python3 scripts/smoke-agents.py
+          python3 scripts/smoke-agent-limits.py
           python3 scripts/smoke-empty-response.py
           python3 scripts/smoke-presentation.py
           python3 scripts/smoke-help.py

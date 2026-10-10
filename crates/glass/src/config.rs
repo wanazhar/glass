@@ -135,8 +135,8 @@ range/exact edits, atomic writes, and syntax diagnostics. Prefer them for edits.
 Tasks, evidence, artifacts, handoffs and budgets: `\"$GC_BIN\" workspace --help`. Claim before edits; report checks.
 
 Persistent teammates: `\"$GC_BIN\" agent --help` provides create/list/send/wait,
-transcripts and interrupt/resume. Prefer doing the work yourself with one
-read-only reviewer when useful. Reuse named agents with focused follow-ups;
+transcripts, budgets, limits and recovery receipts. Inspect limits before delegation;
+adjust output/reasoning/rounds or cumulative budget explicitly. Reuse named agents;
 send goals, relevant paths and changes, never the entire conversation. Delegate
 only independent work. Check reports and preserve the original task.
 

@@ -20,6 +20,7 @@ pub struct Metered {
 }
 impl Provider for Metered {
     fn rate_card(&self) -> Option<RateCard> { self.card }
+    fn model(&self)->&str{self.inner.model()}
     fn id(&self) -> &str {
         self.inner.id()
     }

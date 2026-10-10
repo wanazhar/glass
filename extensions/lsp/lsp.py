@@ -113,7 +113,7 @@ class LanguageServer:
             cwd=self.root,
         )
         try:
-            self.request(
+            initialization = self.request(
                 'initialize',
                 {
                     'processId': os.getpid(),
@@ -122,6 +122,7 @@ class LanguageServer:
                 },
                 self.timeout_s,
             )
+            self.capabilities = initialization.get('capabilities', {})
             self.notify('initialized', {})
         except BaseException:
             self._stop(wait_timeout=0.1)
@@ -147,14 +148,18 @@ class LanguageServer:
             return chunk
 
         while b'\r\n\r\n' not in self.buffer:
+            if len(self.buffer) > 8192:
+                raise RuntimeError('LSP header exceeds 8 KiB')
             self.buffer += read_chunk()
         header, _, rest = self.buffer.partition(b'\r\n\r\n')
+        if len(header) > 8192:
+            raise RuntimeError('LSP header exceeds 8 KiB')
         length = None
         for line in header.decode('ascii', 'replace').split('\r\n'):
             if line.lower().startswith('content-length:'):
                 length = int(line.split(':', 1)[1].strip())
-        if length is None:
-            raise RuntimeError('no Content-Length in frame')
+        if length is None or length < 0 or length > 4 * 1024 * 1024:
+            raise RuntimeError('invalid LSP frame length (maximum 4 MiB)')
         while len(rest) < length:
             rest += read_chunk()
             # Retain an incomplete frame if the deadline expires. A later
@@ -184,15 +189,22 @@ class LanguageServer:
 
     def store_diagnostics(self, params):
         uri = params.get('uri')
-        if uri:
-            self.diagnostics[uri] = params.get('diagnostics') or []
+        if isinstance(uri, str) and uri in self.versions:
+            diagnostics = params.get('diagnostics') or []
+            if not isinstance(diagnostics, list):
+                return
+            self.diagnostics[uri] = [row for row in diagnostics[:DIAG_CAP] if isinstance(row, dict) and len(json.dumps(row)) <= 8192]
+            while len(self.diagnostics) > 128:
+                del self.diagnostics[next(iter(self.diagnostics))]
 
     def open_file(self, path):
         uri = uri_for(path)
         try:
-            with open(path, encoding='utf-8', errors='replace') as fh:
-                text = fh.read()
-        except OSError:
+            with open(path, encoding='utf-8', errors='strict') as fh:
+                text = fh.read(1024 * 1024 + 1)
+            if len(text.encode('utf-8')) > 1024 * 1024:
+                raise ValueError('file exceeds 1 MiB LSP limit')
+        except (OSError, ValueError):
             return None
         version = self.versions.get(uri)
         if version is None:
@@ -331,6 +343,60 @@ class Manager:
             format_diagnostics(path, diagnostics, self.workspace).splitlines()
         )
 
+    def query(self, args):
+        if not isinstance(args, dict):
+            raise ValueError('arguments must be an object')
+        operation = args.get('operation', 'diagnostics')
+        path = args.get('path', '')
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError('give a workspace-relative file path')
+        full = os.path.realpath(os.path.join(self.workspace, path))
+        root = os.path.realpath(self.workspace)
+        if os.path.commonpath([root, full]) != root or not os.path.isfile(full):
+            raise ValueError('path escapes the workspace or is not a regular file')
+        if operation == 'diagnostics':
+            return self.check(full, f'checking {path}') or 'lsp: no server configured for this file type'
+        methods = {'definition': 'textDocument/definition', 'references': 'textDocument/references',
+                   'hover': 'textDocument/hover', 'symbols': 'textDocument/documentSymbol',
+                   'rename': 'textDocument/rename', 'code_actions': 'textDocument/codeAction'}
+        if operation not in methods:
+            raise ValueError('unknown LSP operation')
+        server, problem = self.server_for(full)
+        if problem or server is None:
+            return problem or 'lsp: no server configured for this file type'
+        uri = server.open_file(full)
+        if uri is None:
+            raise ValueError('could not open file')
+        params = {'textDocument': {'uri': uri}}
+        if operation != 'symbols':
+            line, column = args.get('line'), args.get('column')
+            if isinstance(line, bool) or isinstance(column, bool) or not isinstance(line, int) or not isinstance(column, int) or min(line, column) < 1:
+                raise ValueError('line and column must be positive integers (1-based Unicode characters)')
+            with open(full, encoding='utf-8') as stream:
+                text = stream.read(1024 * 1024 + 1)
+            lines = text.split('\n')
+            if line > len(lines) or column > len(lines[line - 1]) + 1:
+                raise ValueError('position is outside the file')
+            position = {'line': line - 1, 'character': len(lines[line - 1][:column - 1].encode('utf-16-le')) // 2}
+            params['position'] = position
+            if operation == 'references':
+                params['context'] = {'includeDeclaration': True}
+            elif operation == 'rename':
+                name = args.get('new_name')
+                if not isinstance(name, str) or not name.strip() or len(name) > 256 or any(ord(c) < 32 for c in name):
+                    raise ValueError('rename needs new_name (1–256 characters)')
+                params['newName'] = name
+            elif operation == 'code_actions':
+                params.pop('position')
+                params['range'] = {'start': position, 'end': position}
+                params['context'] = {'diagnostics': server.diagnostics.get(uri, [])[:DIAG_CAP]}
+        result = server.request(methods[operation], params, server.timeout_s)
+        note = 'PREVIEW ONLY: no edits or server commands executed. Review every affected URI and use revision-checked file edits.' if operation in ('rename', 'code_actions') else 'LSP result (positions returned by server are zero-based UTF-16).'
+        body = json.dumps(result, ensure_ascii=False, indent=2)
+        if len(body) > OUTPUT_CAP:
+            body = body[:OUTPUT_CAP] + '\n[preview truncated; narrow the query before applying edits]'
+        return f'{note}\n{body}'
+
     def written_paths(self, body):
         """Paths from the host's `[wrote <path>]` note, newest last."""
         found = []
@@ -367,7 +433,7 @@ class Manager:
 
 MANIFEST = {
     'name': 'lsp',
-    'version': '1.0.0',
+    'version': '1.1.0',
     'system_prompt': (
         'After file writes, configured language servers may report diagnostics '
         'as `[lsp] path:line:col severity: message` appended to the tool '
@@ -377,11 +443,15 @@ MANIFEST = {
     'tools': [
         {
             'name': 'lsp',
-            'description': 'Language-server diagnostics for one file (or a running-server status). Use after writing code when no diagnostics were appended.',
+            'description': 'Code intelligence: diagnostics, definition, references, hover, symbols, rename or code_actions. Rename/actions return previews only. Positions are 1-based Unicode characters.',
             'schema': {
                 'type': 'object',
                 'properties': {
-                    'path': {'type': 'string', 'description': 'File to check, relative to the workspace.'},
+                    'path': {'type': 'string', 'description': 'File relative to the workspace.'},
+                    'operation': {'type': 'string', 'enum': ['diagnostics', 'definition', 'references', 'hover', 'symbols', 'rename', 'code_actions']},
+                    'line': {'type': 'integer', 'minimum': 1},
+                    'column': {'type': 'integer', 'minimum': 1},
+                    'new_name': {'type': 'string'},
                 },
             },
             'concurrency': 'serial',
@@ -430,15 +500,10 @@ def main():
             except ValueError:
                 output = 'lsp: arguments are not valid JSON'
             else:
-                path = (args.get('path') or '').strip() if isinstance(args, dict) else ''
-                if not path:
-                    output = 'lsp: give a path to check'
-                else:
-                    full = os.path.realpath(os.path.join(manager.workspace, path))
-                    if not full.startswith(os.path.realpath(manager.workspace) + os.sep):
-                        output = 'lsp: path escapes the workspace'
-                    else:
-                        output = manager.check(full, f'checking {path}') or 'lsp: no server configured for this file type'
+                try:
+                    output = manager.query(args)
+                except (OSError, ValueError, RuntimeError, TimeoutError, EOFError) as error:
+                    output = f'lsp: {error}'
             send({'id': req.get('id'), 'output': output})
         elif kind == 'command':
             if req.get('name') == 'lsp':
@@ -548,7 +613,7 @@ def selftest():
         try:
             server.request('initialize', {}, 0.15)
             raise AssertionError('notification flood should time out')
-        except TimeoutError:
+        except (TimeoutError, RuntimeError):
             assert time.monotonic() - started < 0.6, 'notification flood exceeded request deadline'
     finally:
         server._stop(wait_timeout=0.05)
@@ -559,6 +624,7 @@ def selftest():
     server.timeout_s = 0.2
     server.debounce_s = 0.01
     server.diagnostics = {}
+    server.versions = {'file:///buffered.py': 1}
     server.buffer = frame({
         'jsonrpc': '2.0', 'method': 'textDocument/publishDiagnostics',
         'params': {'uri': 'file:///buffered.py', 'diagnostics': [{'message': 'buffered'}]},

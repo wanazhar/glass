@@ -253,6 +253,7 @@ impl Anthropic {
 }
 
 impl Provider for Anthropic {
+    fn model(&self)->&str{&self.model}
     fn id(&self) -> &str {
         "anthropic"
     }

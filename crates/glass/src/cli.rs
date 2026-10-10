@@ -425,9 +425,38 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
         return Ok(false);
     }
     let (usage, description, examples) = match command {
+        "skill" => (
+            "gc skill capture SESSION NAME FROM THROUGH\ngc skill save NAME REVIEWED_DRAFT.md",
+            "Capture selected successful steps as a draft. Review it before explicitly saving; capturing never executes commands or installs anything.",
+            "gc skill capture SESSION_ID local-check 1 2 > draft.md\ngc skill save local-check draft.md",
+        ),
+        "inspect" => (
+            "gc inspect FILE [--json]",
+            "Render bounded JSON, diagnostic and text outputs using native terminal presentation. Raw JSON is available for scripts.",
+            "gc inspect report.json",
+        ),
+        "policy" => (
+            "gc policy [shell COMMAND | provider KIND ENDPOINT] [--json]",
+            "Inspect global hard denials and explain a decision. Shell patterns match text; they are not a replacement for kernel confinement.",
+            "gc policy\ngc policy shell 'git push'",
+        ),
+        "workspace" => {
+            crate::workspace::command(&["--help".into()])?;
+            return Ok(true);
+        }
+        "completions" => (
+            "gc completions bash|zsh|fish",
+            "Generate offline shell completions. Commands are read from shared metadata; model and session candidates are loaded only when requested.",
+            "gc completions bash > ~/.local/share/bash-completion/completions/gc",
+        ),
+        "requests" => (
+            "gc requests SESSION_ID [--json]",
+            "Inspect recent request timings, context changes and cache usage without copying prompts or credentials.",
+            "gc requests SESSION_ID --json",
+        ),
         "resume" => (
-            "gc resume [ID]",
-            "Choose a saved conversation in the current project. Type to search, use arrows to select, Enter to resume, or Esc to cancel. Supplying an ID resumes it directly. Requires an interactive terminal; scripts should use gc run --resume ID.",
+            "gc resume [ID | --all | --browse]",
+            "Choose a saved conversation in the current project. Type to search, use arrows to select, Enter to resume, or Esc to cancel. Use --all for cross-project search or --browse for preview and fork actions. Supplying an ID resumes it directly. Requires an interactive terminal; scripts should use gc run --resume ID.",
             "gc resume\ngc resume SESSION_ID",
         ),
         "status" => (
@@ -491,7 +520,7 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
             "gc export --latest --out conversation.md",
         ),
         "plugin" => (
-            "gc plugin list [--json]\ngc plugin add <path|git-url>\ngc plugin remove NAME\ngc plugin verify\ngc plugin update NAME [--accept-permissions]",
+            "gc plugin list [--json]\ngc plugin add <path|git-url>\ngc plugin remove NAME\ngc plugin verify\ngc plugin update NAME [--accept-permissions]\ngc plugin scaffold NAME DIRECTORY\ngc plugin validate DIRECTORY [--json]\ngc plugin trace [--json]",
             "Manage installed plugins and verify their receipts. Review source and permissions before activating extensions.",
             "gc plugin list\ngc plugin verify",
         ),

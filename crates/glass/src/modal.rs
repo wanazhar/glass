@@ -99,11 +99,17 @@ impl Screen {
                 glass_tui::theme::ansi(diff_line_tone(line))
             } else if selected {
                 glass_tui::theme::selected()
-            } else if team_rows && (line.starts_with("human →") || line.starts_with("main →") || line.starts_with("›")) {
+            } else if team_rows
+                && (line.starts_with("human →")
+                    || line.starts_with("main →")
+                    || line.starts_with("›"))
+            {
                 glass_tui::theme::ansi(glass_tui::theme::Tone::Accent)
             } else if team_rows && line.contains("→ main") {
                 glass_tui::theme::ansi(glass_tui::theme::Tone::Success)
-            } else if team_rows && (line.starts_with('$') || line.starts_with('◌') || line.starts_with('◆')) {
+            } else if team_rows
+                && (line.starts_with('$') || line.starts_with('◌') || line.starts_with('◆'))
+            {
                 glass_tui::theme::ansi(glass_tui::theme::Tone::Secondary)
             } else if team_rows && line.starts_with('!') {
                 glass_tui::theme::ansi(glass_tui::theme::Tone::Error)
@@ -345,7 +351,11 @@ pub fn choose_search(
     items: &[String],
     searchable: &[String],
 ) -> Option<usize> {
-    let normalized=items.iter().enumerate().map(|(i,item)|searchable.get(i).unwrap_or(item).to_lowercase()).collect::<Vec<_>>();
+    let normalized = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| searchable.get(i).unwrap_or(item).to_lowercase())
+        .collect::<Vec<_>>();
     let mut screen = Screen::new();
     let mut query = Editor::new();
     let mut selected = 0usize;
@@ -555,7 +565,7 @@ pub fn info(keys: &KeyReader, title: &str, text: &str) {
                 KeyCode::Down => offset = (offset + 1).min(lines.len().saturating_sub(1)),
                 KeyCode::Up => offset = offset.saturating_sub(1),
                 KeyCode::PageDown => offset = (offset + page).min(lines.len().saturating_sub(1)),
-                KeyCode::PageUp => offset = offset.saturating_sub(page),
+                KeyCode::PageUp => offset = offset.saturating_sub(page.max(1)),
                 KeyCode::Home => offset = 0,
                 KeyCode::End => offset = lines.len().saturating_sub(page),
                 _ => {}
@@ -733,6 +743,80 @@ pub fn markdown(keys: &KeyReader, title: &str, text: &str) {
                 KeyCode::PageDown => offset = (offset + height).min(count.saturating_sub(height)),
                 KeyCode::Home => offset = 0,
                 KeyCode::End => offset = count.saturating_sub(height),
+                _ => {}
+            },
+            None => return,
+            _ => {}
+        }
+    }
+}
+
+/// Native Markdown information panel. Layout is rebuilt only after a resize;
+/// scrolling paints the visible cached rows with the same renderer as chat.
+pub fn rich_info(keys: &KeyReader, title: &str, text: &str) {
+    let title=glass_tui::markdown::sanitize(title).replace(['\n','\r']," ");
+    let _screen = Screen::new();
+    let mut offset = 0usize;
+    let mut cached_width = 0usize;
+    let mut lines = Vec::new();
+    loop {
+        let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+        let width = usize::from(w.saturating_sub(2).max(1));
+        let page = usize::from(h.saturating_sub(3));
+        if width != cached_width {
+            lines = glass_tui::markdown::lines(text, width);
+            cached_width = width;
+        }
+        offset = offset.min(lines.len().saturating_sub(page));
+        let mut out = glass_tui::theme::TerminalWriter(std::io::stdout().lock());
+        let _ = write!(
+            out,
+            "\x1b[?2026h\x1b[2J\x1b[H\x1b[?25l{}{}\x1b[0m",
+            glass_tui::theme::accent(),
+            glass_tui::text::clip(&title, usize::from(w.saturating_sub(1).max(1)))
+        );
+        for (i, line) in lines.iter().skip(offset).take(page).enumerate() {
+            let _ = write!(out, "\x1b[{};1H", i + 2);
+            glass_tui::markdown::write_ansi(&mut out, line);
+        }
+        if h > 2 {
+            let footer = format!(
+                "{}–{}/{} · ↑↓ PgUp/PgDn · Esc back",
+                offset + 1,
+                (offset + page).min(lines.len()),
+                lines.len()
+            );
+            let _ = write!(
+                out,
+                "\x1b[{};1H{}{}\x1b[0m",
+                h,
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Muted),
+                glass_tui::text::clip(&footer, usize::from(w.saturating_sub(1).max(1)))
+            );
+        }
+        let _ = write!(out, "\x1b[?2026l");
+        let _ = out.flush();
+        drop(out);
+        match keys.next_blocking() {
+            Some(Event::Key(k)) if cancelled(k.code, k.modifiers) || k.code == KeyCode::Enter => {
+                return;
+            }
+            Some(Event::Key(k)) => match k.code {
+                KeyCode::Up => offset = offset.saturating_sub(1),
+                KeyCode::Down => offset = offset.saturating_add(1),
+                KeyCode::PageUp => offset = offset.saturating_sub(page.max(1)),
+                KeyCode::PageDown => offset = offset.saturating_add(page.max(1)),
+                KeyCode::Home => offset = 0,
+                KeyCode::End => offset = lines.len().saturating_sub(page),
+                _ => {}
+            },
+            Some(Event::Mouse(m)) => match m.kind {
+                glass_tui::crossterm::event::MouseEventKind::ScrollUp => {
+                    offset = offset.saturating_sub(3)
+                }
+                glass_tui::crossterm::event::MouseEventKind::ScrollDown => {
+                    offset = offset.saturating_add(3)
+                }
                 _ => {}
             },
             None => return,

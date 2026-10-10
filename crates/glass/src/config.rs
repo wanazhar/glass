@@ -132,6 +132,8 @@ several that each do a piece of it.
 Native file helpers: run `\"$GC_BIN\" file --help` for bounded reads, revision-checked
 range/exact edits, atomic writes, and syntax diagnostics. Prefer them for edits.
 
+Tasks, evidence, artifacts, handoffs and budgets: `\"$GC_BIN\" workspace --help`. Claim before edits; report checks.
+
 Persistent teammates: `\"$GC_BIN\" agent --help` provides create/list/send/wait,
 transcripts and interrupt/resume. Prefer doing the work yourself with one
 read-only reviewer when useful. Reuse named agents with focused follow-ups;
@@ -397,8 +399,9 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
             .collect();
     }
     if let Some(v) = raw.trust {
-        cfg.trust = Trust::parse(&v)
-            .ok_or_else(|| LoadError::Invalid(format!("trust must be ask or always (got `{v}`)")))?;
+        cfg.trust = Trust::parse(&v).ok_or_else(|| {
+            LoadError::Invalid(format!("trust must be ask or always (got `{v}`)"))
+        })?;
     }
     if let Some(v) = raw.sandbox {
         cfg.sandbox = sandbox::Policy::parse(&v).ok_or_else(|| {
@@ -591,7 +594,11 @@ mod tests {
     fn fallback_defaults_empty_and_drops_blank_entries() {
         let d = scratch("fallback");
         assert!(load(&d.join("none.toml")).unwrap().fallback.is_empty());
-        let p = write(&d, "c.toml", "fallback = [\" model-b \", \"\", \"model-c\"]\n");
+        let p = write(
+            &d,
+            "c.toml",
+            "fallback = [\" model-b \", \"\", \"model-c\"]\n",
+        );
         assert_eq!(load(&p).unwrap().fallback, vec!["model-b", "model-c"]);
         std::fs::remove_dir_all(&d).ok();
     }
@@ -610,7 +617,10 @@ mod tests {
     #[test]
     fn sandbox_defaults_to_off_and_parses_values() {
         let d = scratch("sandbox");
-        assert_eq!(load(&d.join("none.toml")).unwrap().sandbox, sandbox::Policy::Off);
+        assert_eq!(
+            load(&d.join("none.toml")).unwrap().sandbox,
+            sandbox::Policy::Off
+        );
         let p = write(&d, "c.toml", "sandbox = \"workspace\"\n");
         assert_eq!(load(&p).unwrap().sandbox, sandbox::Policy::Workspace);
         let p = write(&d, "strict.toml", "sandbox = \"strict\"\n");

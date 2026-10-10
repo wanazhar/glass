@@ -206,6 +206,37 @@ impl Extension {
         &mut self,
         req: &Request,
         timeout_ms: u64,
+        host_tools: Option<&mut HostToolBridge<'_>>,
+        host_input: Option<&mut HostInputFn<'_>>,
+    ) -> Option<serde_json::Value> {
+        if !crate::plugin_dev::enabled() {
+            return self.request_with_input_inner(req, timeout_ms, host_tools, host_input);
+        }
+        let started = std::time::Instant::now();
+        let result = self.request_with_input_inner(req, timeout_ms, host_tools, host_input);
+        let kind = match req {
+            Request::Hello { .. } => "hello",
+            Request::SystemPrompt => "system_prompt",
+            Request::ToolResult { .. } => "tool_result",
+            Request::Authorize { .. } => "authorize",
+            Request::TurnEnd { .. } => "turn_end",
+            Request::Command { .. } => "command",
+            Request::RunTool { .. } | Request::RunToolInput { .. } => "run_tool",
+            Request::Goodbye => "goodbye",
+            Request::SeedCustom { .. } => "seed_custom",
+        };
+        crate::plugin_dev::record(
+            &self.manifest.name,
+            kind,
+            started.elapsed().as_millis(),
+            result.is_some(),
+        );
+        result
+    }
+    fn request_with_input_inner(
+        &mut self,
+        req: &Request,
+        timeout_ms: u64,
         mut host_tools: Option<&mut HostToolBridge<'_>>,
         mut host_input: Option<&mut HostInputFn<'_>>,
     ) -> Option<serde_json::Value> {

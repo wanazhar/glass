@@ -172,6 +172,7 @@ fn build_tools(tools: &[(String, String, String)]) -> Value {
 }
 
 impl Provider for OpenAiCompat {
+    fn model(&self)->&str{&self.model}
     fn id(&self) -> &str {
         "openai"
     }

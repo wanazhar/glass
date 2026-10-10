@@ -13,6 +13,14 @@ pub struct Bundle {
 }
 pub const BUNDLES: &[Bundle] = &[
     Bundle {
+        name: "browser",
+        description: "Browser screenshots and console verification",
+        interpreter: "python3",
+        file: "browser.py",
+        source: include_str!("../../../extensions/browser/browser.py"),
+        access: "Requires optional Python playwright and an explicitly exposed local CDP browser. Creates an isolated browser context and writes screenshots/reports to workspace .gc-artifacts. Does not launch or close your browser.",
+    },
+    Bundle {
         name: "todo",
         description: "Task checklist",
         interpreter: "python3",

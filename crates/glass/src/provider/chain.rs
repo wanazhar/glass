@@ -45,7 +45,7 @@ impl Provider for Chain {
     fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
         let mut first_error: Option<Error> = None;
         for (index, provider) in self.levels.iter().enumerate() {
-            let model = provider.id();
+            let model = provider.model();
             // The request is rebuilt per level: the model id travels in the
             // request, and sending the primary's id to a fallback adapter
             // would ask the wrong model to answer.

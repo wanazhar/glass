@@ -13,7 +13,7 @@
 //! config dir); a repository cannot add one, so this stays outside the
 //! trust-gate surface.
 
-use ring::digest::{digest, SHA256};
+use ring::digest::{SHA256, digest};
 use std::path::{Path, PathBuf};
 
 use crate::auth;
@@ -377,6 +377,7 @@ fn capabilities(dir: &Path) -> Result<serde_json::Value, String> {
 /// `gc plugin …` entry point.
 pub fn command(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
+        Some("scaffold" | "validate" | "trace") => crate::plugin_dev::command(args),
         Some("list") => {
             let json = args.iter().any(|a| a == "--json");
             let mut report = Vec::new();
@@ -592,7 +593,8 @@ fn update(name: &str, accept_permissions: bool) -> Result<(), String> {
     if old_caps != new_caps {
         crate::cli_println!(
             "capabilities changed for {name}:\n  old: {}\n  new: {}",
-            old_caps, new_caps
+            old_caps,
+            new_caps
         );
         if !accept_permissions {
             let _ = std::fs::remove_dir_all(&stage);

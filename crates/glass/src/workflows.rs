@@ -59,11 +59,7 @@ pub fn plan(
         let workspace = cfg.workspace.clone();
         let tokens = cfg.max_tokens;
         let reasoning = cfg.reasoning_budget;
-        let instructions = crate::trust::gated(
-            cfg,
-            &crate::agents_md::load(&cfg.workspace),
-            false,
-        );
+        let instructions = crate::trust::gated(cfg, &crate::agents_md::load(&cfg.workspace), false);
         let planning_prompt = cfg.system_prompt.clone();
         let request = task.clone();
         let factory_for_worker = factory.clone();
@@ -71,7 +67,9 @@ pub fn plan(
             let p = factory_for_worker()?;
             let mut session =
                 Session::create(&config::data_dir().join("plans")).map_err(|e| e.to_string())?;
-            session.append_checked(&[Record::User(request)]).map_err(|e| format!("cannot record planning prompt: {e}"))?;
+            session
+                .append_checked(&[Record::User(request)])
+                .map_err(|e| format!("cannot record planning prompt: {e}"))?;
             let mut state = tools::State::new();
             let mods = Vec::new();
             let mut extensions = ext::Registry::empty();
@@ -200,8 +198,13 @@ fn strip_fence(text: &str) -> String {
 fn ephemeral_factory(cfg: &config::Config) -> Result<crate::warmer::ProviderFactory, String> {
     let cfg = cfg.clone();
     Ok(Arc::new(move || {
-        let inner = provider::build(&cfg.provider, &cfg.base_url, auth::resolve(&cfg)?, &cfg.model)
-            .map_err(|e| e.to_string())?;
+        let inner = provider::build(
+            &cfg.provider,
+            &cfg.base_url,
+            auth::resolve(&cfg)?,
+            &cfg.model,
+        )
+        .map_err(|e| e.to_string())?;
         let audit = Session::create(&config::data_dir().join("init")).map_err(|e| e.to_string())?;
         let path = audit.path.with_extension("cost.json");
         Ok(Box::new(crate::budget::Metered {
@@ -225,13 +228,14 @@ pub fn init_draft(
     let workspace = cfg.workspace.clone();
     let tokens = cfg.max_tokens;
     let reasoning = cfg.reasoning_budget;
-    let instructions =
-        crate::trust::gated(cfg, &crate::agents_md::load(&cfg.workspace), false);
+    let instructions = crate::trust::gated(cfg, &crate::agents_md::load(&cfg.workspace), false);
     let base = cfg.system_prompt.clone();
     let request = init_request(notes);
     let mut session =
         Session::create(&config::data_dir().join("init")).map_err(|e| e.to_string())?;
-    session.append_checked(&[Record::User(request)]).map_err(|e| format!("cannot record setup prompt: {e}"))?;
+    session
+        .append_checked(&[Record::User(request)])
+        .map_err(|e| format!("cannot record setup prompt: {e}"))?;
     let mut state = tools::State::new();
     let mods = Vec::new();
     let mut extensions = ext::Registry::empty();
@@ -341,8 +345,7 @@ pub fn init(
             }
             Some(1) => modal::info(keys, "Proposed AGENTS.md", &draft),
             Some(2) => {
-                if let Some(result) =
-                    init_modal(keys, cfg.clone(), factory.clone(), notes.clone())
+                if let Some(result) = init_modal(keys, cfg.clone(), factory.clone(), notes.clone())
                 {
                     draft = result?;
                 }
@@ -452,11 +455,7 @@ pub fn doctor(keys: &KeyReader, cfg: &config::Config, factory: crate::warmer::Pr
     ) {
         if i == 0 {
             let report = crate::doctor::inspect(cfg, &config::default_path(), &config::data_dir());
-            modal::info(
-                keys,
-                "Local diagnostics",
-                &report.text(),
-            );
+            modal::info(keys, "Local diagnostics", &report.text());
         } else {
             let cfg = cfg.clone();
             if let Some(result) = modal::task(keys, "Checking provider", move |cancel, _| {
@@ -603,7 +602,7 @@ fn changes(root: &Path) -> Result<Vec<Change>, String> {
     }
     Ok(changes)
 }
-fn diff(root: &Path, path: Option<&str>, staged: bool) -> Result<String, String> {
+pub(crate) fn diff(root: &Path, path: Option<&str>, staged: bool) -> Result<String, String> {
     let mut args = vec!["diff", "--no-ext-diff", "--no-textconv", "--unified=3"];
     if staged {
         args.push("--cached");
@@ -628,7 +627,7 @@ fn hunks(patch: &str) -> (String, Vec<String>) {
     }
     (header, hunks)
 }
-fn stage_hunks(keys: &KeyReader, root: &Path, path: &str) -> Result<(), String> {
+fn stage_hunks(keys: &KeyReader, root: &Path, path: &str) -> Result<Option<String>, String> {
     loop {
         let patch = diff(root, Some(path), false)?;
         let (header, parts) = hunks(&patch);
@@ -641,7 +640,7 @@ fn stage_hunks(keys: &KeyReader, root: &Path, path: &str) -> Result<(), String> 
                 "Hunk staging",
                 "This change includes file metadata or a rename. Stage it as a whole file.",
             );
-            return Ok(());
+            return Ok(None);
         }
         if parts.is_empty() {
             modal::info(
@@ -649,16 +648,24 @@ fn stage_hunks(keys: &KeyReader, root: &Path, path: &str) -> Result<(), String> 
                 "Hunk staging",
                 "No textual unstaged hunks. Binary files, untracked files, renames, and mode changes can be staged as whole files.",
             );
-            return Ok(());
+            return Ok(None);
         }
-        let rows = parts
-            .iter()
-            .map(|h| h.lines().next().unwrap_or("Hunk").to_string())
-            .collect::<Vec<_>>();
-        let Some(i) = modal::choose(keys, "Stage a hunk", path, &rows) else {
-            return Ok(());
+        let board=crate::workspace::load(root)?;
+        let rows = parts.iter().map(|h|{
+            let fingerprint=crate::workspace::hash(format!("{header}{h}").as_bytes());
+            let review=board.reviews.get(&fingerprint);
+            format!("{} {}{}",if review.is_some_and(|r|r.reviewed){"✓"}else{"·"},h.lines().next().unwrap_or("Hunk"),review.filter(|r|!r.comments.is_empty()).map(|r|format!(" · {} comments",r.comments.len())).unwrap_or_default())
+        }).collect::<Vec<_>>();
+        let Some(i) = modal::choose(keys, "Review a hunk", path, &rows) else {
+            return Ok(None);
         };
-        let actions = ["Read hunk".into(), "Stage this hunk".into()];
+        let actions = [
+            "Read hunk".into(),
+            "Stage this hunk".into(),
+            "Comment and ask agent to revise…".into(),
+            "Mark reviewed".into(),
+            "Revert this unstaged hunk…".into(),
+        ];
         match modal::choose(keys, "Selected hunk", &rows[i], &actions) {
             Some(0) => modal::info(keys, "Hunk patch", &parts[i]),
             Some(1) => {
@@ -676,11 +683,74 @@ fn stage_hunks(keys: &KeyReader, root: &Path, path: &str) -> Result<(), String> 
                     Some(format!("{header}{}", parts[i]).as_bytes()),
                 )?;
             }
+            Some(2) => {
+                if let Some(comment) = modal::field(
+                    keys,
+                    "Revise selected hunk",
+                    "Describe the requested change",
+                    "",
+                    false,
+                ) {
+                    if comment.trim().is_empty() {
+                        continue;
+                    }
+                    if diff(root, Some(path), false)? != patch {
+                        return Err("File changed during review; select the hunk again".into());
+                    }
+                    crate::workspace::annotate(
+                        root,
+                        &format!("{header}{}", parts[i]),
+                        Some(&comment),
+                        false,
+                    )?;
+                    let excerpt = glass_tui::text::clip(&parts[i], 8000);
+                    return Ok(Some(format!(
+                        "Revise this reviewed hunk in {path}:\n{comment}\n\nPatch fingerprint: {}. Read the current file and use revision-checked edits; this preview may be stale.\n```diff\n{excerpt}\n```",
+                        crate::workspace::hash(patch.as_bytes())
+                    )));
+                }
+            }
+            Some(3) => {
+                if diff(root, Some(path), false)? != patch {
+                    return Err("File changed during review; select the hunk again".into());
+                }
+                crate::workspace::annotate(root, &format!("{header}{}", parts[i]), None, true)?;
+                modal::info(
+                    keys,
+                    "Hunk reviewed",
+                    "Review saved against this exact patch. Later edits require a new review.",
+                );
+            }
+            Some(4) => {
+                modal::info(keys, "Revert preview", &parts[i]);
+                if modal::choose(
+                    keys,
+                    "Revert selected hunk?",
+                    "This removes only the selected unstaged change.",
+                    &["Cancel".into(), "Revert this hunk".into()],
+                ) == Some(1)
+                {
+                    if diff(root, Some(path), false)? != patch {
+                        return Err("File changed during review; nothing reverted".into());
+                    }
+                    let selected = format!("{header}{}", parts[i]);
+                    git(
+                        root,
+                        &["apply", "--reverse", "--check", "-"],
+                        Some(selected.as_bytes()),
+                    )?;
+                    git(
+                        root,
+                        &["apply", "--reverse", "-"],
+                        Some(selected.as_bytes()),
+                    )?;
+                }
+            }
             _ => {}
         }
     }
 }
-pub fn git_review(keys: &KeyReader, workspace: &Path) -> Result<(), String> {
+pub fn git_review(keys: &KeyReader, workspace: &Path) -> Result<Option<String>, String> {
     let root_bytes = git(workspace, &["rev-parse", "--show-toplevel"], None)?;
     let root = PathBuf::from(
         String::from_utf8(root_bytes)
@@ -700,7 +770,7 @@ pub fn git_review(keys: &KeyReader, workspace: &Path) -> Result<(), String> {
             "Choose a file or hunk. Staging is explicit; commit requires review and confirmation.",
             &rows,
         ) else {
-            return Ok(());
+            return Ok(None);
         };
         if i == 0 {
             modal::info(keys, "Staged changes", &diff(&root, None, true)?);
@@ -788,7 +858,7 @@ pub fn git_review(keys: &KeyReader, workspace: &Path) -> Result<(), String> {
                 "Read unstaged changes".into(),
                 "Read staged changes".into(),
                 "Stage whole file".into(),
-                "Stage individual hunks".into(),
+                "Review individual hunks".into(),
                 "Unstage file".into(),
             ];
             match modal::choose(keys, &change.path, &change.status, &actions) {
@@ -829,7 +899,11 @@ pub fn git_review(keys: &KeyReader, workspace: &Path) -> Result<(), String> {
                     }
                     git(&root, &args, None)?;
                 }
-                Some(3) => stage_hunks(keys, &root, &change.path)?,
+                Some(3) => {
+                    if let Some(prompt) = stage_hunks(keys, &root, &change.path)? {
+                        return Ok(Some(prompt));
+                    }
+                }
                 Some(4) => {
                     let mut args = if git(&root, &["rev-parse", "--verify", "HEAD"], None).is_ok() {
                         vec!["reset", "-q", "HEAD", "--", &change.path]
@@ -971,13 +1045,7 @@ pub fn headless_info(args: &[String], cfg: &config::Config) -> Result<bool, Stri
         "init" => {
             let write = args.iter().any(|a| a == "--write");
             let factory = ephemeral_factory(cfg)?;
-            let text = init_draft(
-                cfg,
-                factory,
-                None,
-                Arc::new(AtomicBool::new(false)),
-                |_| {},
-            )?;
+            let text = init_draft(cfg, factory, None, Arc::new(AtomicBool::new(false)), |_| {})?;
             let path = cfg.workspace.join("AGENTS.md");
             if write {
                 std::fs::write(&path, format!("{text}\n")).map_err(|e| e.to_string())?;
@@ -988,12 +1056,7 @@ pub fn headless_info(args: &[String], cfg: &config::Config) -> Result<bool, Stri
             })
         }
         "doctor" if args.iter().any(|a| a == "--probe") => {
-            let report = diagnostics(
-                cfg,
-                true,
-                &AtomicBool::new(false),
-                None,
-            );
+            let report = diagnostics(cfg, true, &AtomicBool::new(false), None);
             match report {
                 Ok(text) => serde_json::json!({"status":"ok","text":text}),
                 Err(error) => {
@@ -1014,7 +1077,9 @@ pub fn headless_info(args: &[String], cfg: &config::Config) -> Result<bool, Stri
         crate::emit_json(value);
     } else {
         crate::cli::report(command, &value);
-        if command == "init" {crate::cli::written(&value);}
+        if command == "init" {
+            crate::cli::written(&value);
+        }
     }
     Ok(true)
 }

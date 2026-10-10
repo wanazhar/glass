@@ -56,12 +56,17 @@ pub(crate) struct Thread {
     pub id: String,
     pub title: String,
     pub modified: String,
+    pub workspace: PathBuf,
     stamp: Option<std::time::SystemTime>,
 }
 pub(crate) fn index(dir: &Path, workspace: &Path) -> Vec<Thread> {
+    index_scoped(dir, Some(workspace))
+}
+fn index_scoped(dir: &Path, workspace: Option<&Path>) -> Vec<Thread> {
     let root = workspace
+        .unwrap_or(Path::new("/"))
         .canonicalize()
-        .unwrap_or_else(|_| workspace.into());
+        .unwrap_or_else(|_| workspace.unwrap_or(Path::new("/")).into());
     let mut threads = Vec::new();
     for entry in std::fs::read_dir(dir)
         .ok()
@@ -81,7 +86,7 @@ pub(crate) fn index(dir: &Path, workspace: &Path) -> Vec<Thread> {
         let meta = std::fs::File::open(path.with_extension("meta.json"))
             .ok()
             .and_then(read_meta);
-        let Some(meta) = meta.filter(|m| m.workspace == root) else {
+        let Some(meta) = meta.filter(|m| workspace.is_none() || m.workspace == root) else {
             continue;
         };
         let title = if meta.title.trim().is_empty() {
@@ -110,6 +115,7 @@ pub(crate) fn index(dir: &Path, workspace: &Path) -> Vec<Thread> {
                 .map(crate::format_time)
                 .unwrap_or_else(|| "Unknown time".into()),
             stamp,
+            workspace: meta.workspace,
         });
     }
     threads.sort_by_key(|s| std::cmp::Reverse(s.stamp));
@@ -121,15 +127,23 @@ impl Drop for Terminal {
         let _ = glass_tui::term::leave();
     }
 }
-pub fn choose(workspace: &Path) -> Result<Option<String>, String> {
+pub struct Pick {
+    pub id: String,
+    pub workspace: PathBuf,
+}
+pub fn choose(workspace: &Path, all: bool, browse: bool) -> Result<Option<Pick>, String> {
     if !glass_tui::term::stdin_is_tty() || !glass_tui::term::stdout_is_tty() {
         return Err("gc resume needs a terminal to choose a conversation. Use gc sessions --json, then gc run --resume ID <prompt> for headless use.".into());
     }
-    let threads = index(&crate::config::data_dir(), workspace);
+    let threads = if all {
+        index_scoped(&crate::config::data_dir(), None)
+    } else {
+        index(&crate::config::data_dir(), workspace)
+    };
     if threads.is_empty() {
         crate::cli::text(
             "Resume",
-            "No conversations in this project yet.\nRun gc to start one, or change to the project containing your conversation.\n",
+            "No conversations in this project yet. Run gc, or use gc resume --all to browse other projects.",
         );
         return Ok(None);
     }
@@ -149,17 +163,125 @@ pub fn choose(workspace: &Path) -> Result<Option<String>, String> {
         .collect::<Vec<_>>();
     let search = threads
         .iter()
-        .map(|s| format!("{} {} {}", s.title, s.modified, s.id))
+        .map(|s| {
+            format!(
+                "{} {} {} {}",
+                s.title,
+                s.modified,
+                s.id,
+                s.workspace.display()
+            )
+        })
         .collect::<Vec<_>>();
-    let picked = crate::modal::choose_search(
+    while let Some(index) = crate::modal::choose_search(
         &keys,
         "Resume conversation",
-        "Current project · newest first · type to search",
+        if all {
+            "All projects · newest first · choose to preview/resume"
+        } else {
+            "Current project · newest first · type to search"
+        },
         &labels,
         &search,
-    );
-    Ok(picked.map(|i| threads[i].id.clone()))
+    ) {
+        let thread = &threads[index];
+        if !all && !browse {
+            return Ok(Some(Pick {
+                id: thread.id.clone(),
+                workspace: thread.workspace.clone(),
+            }));
+        }
+        loop {
+            let options = [
+                "Resume conversation".into(),
+                "Preview conversation".into(),
+                "Fork through a selected turn…".into(),
+                "Back".into(),
+            ];
+            match crate::modal::choose(
+                &keys,
+                &thread.title,
+                &format!("{}\n{}", thread.workspace.display(), thread.modified),
+                &options,
+            ) {
+                Some(0) => {
+                    return Ok(Some(Pick {
+                        id: thread.id.clone(),
+                        workspace: thread.workspace.clone(),
+                    }));
+                }
+                Some(1) => {
+                    let path = crate::config::data_dir().join(format!("{}.jsonl", thread.id));
+                    // A bounded tail preview never opens the session for writing or recovers it.
+                    let rows = crate::requests::tail(&path)?;
+                    let text = rows
+                        .iter()
+                        .filter_map(|v| match v["k"].as_str() {
+                            Some("user") => {
+                                Some(format!("**You**\n\n{}", v["t"].as_str().unwrap_or("")))
+                            }
+                            Some("assistant") => Some(v["t"].as_str().unwrap_or("").to_string()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n---\n\n");
+                    crate::modal::rich_info(
+                        &keys,
+                        "Conversation preview",
+                        if text.is_empty() {
+                            "No user or response text in this bounded tail preview."
+                        } else {
+                            &text
+                        },
+                    );
+                }
+                Some(2) => {
+                    let Some(through) = crate::modal::validated_field(
+                        &keys,
+                        "Fork conversation",
+                        "Through turn number (positive)",
+                        "1",
+                        false,
+                        |s| {
+                            if s.parse::<usize>().is_ok_and(|n| n > 0) {
+                                Ok(())
+                            } else {
+                                Err("Enter a positive turn number".into())
+                            }
+                        },
+                    ) else {
+                        continue;
+                    };
+                    let session = crate::session::Session::open_readonly(
+                        &crate::config::data_dir(),
+                        &thread.id,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    let meta: crate::polish::Metadata =
+                        serde_json::from_slice(&crate::requests::bounded(
+                            &session.path.with_extension("meta.json"),
+                            16 * 1024 * 1024,
+                        )?)
+                        .map_err(|_| "Invalid session metadata; nothing forked")?;
+                    if meta.workspace != thread.workspace {
+                        return Err("Session metadata changed; reopen the picker".into());
+                    }
+                    let fork = session
+                        .branch(&crate::config::data_dir(), through.parse().unwrap())
+                        .map_err(|e| e.to_string())?;
+                    crate::polish::save(&fork, &meta)?;
+                    return Ok(Some(Pick {
+                        id: fork.id.clone(),
+                        workspace: thread.workspace.clone(),
+                    }));
+                }
+                _ => break,
+            }
+        }
+    }
+    Ok(None)
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

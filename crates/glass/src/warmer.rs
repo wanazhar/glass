@@ -36,6 +36,7 @@ pub type ProviderForModel = Arc<dyn Fn(&str) -> ProviderFactory + Send + Sync>;
 /// The cacheable prefix of one turn, owned so a background
 /// thread can use it after the turn is gone.
 pub struct CacheSnapshot {
+    pub session_path: Option<std::path::PathBuf>,
     pub system: String,
     pub messages: Vec<Message>,
     pub tools: Vec<(String, String, String)>,
@@ -115,7 +116,7 @@ impl Warmer {
 /// point is the cache write, not the answer.
 fn warm(factory: &ProviderFactory, snapshot: &CacheSnapshot) {
     let Ok(provider) = factory() else { return };
-    let model = String::new();
+    let model = provider.model().to_owned();
     let req = Request {
         model: &model,
         system: &snapshot.system,
@@ -126,8 +127,26 @@ fn warm(factory: &ProviderFactory, snapshot: &CacheSnapshot) {
     };
     // A failure here is silent by design: a missed refresh only
     // costs latency on the next turn, never correctness.
-    if let Ok(stream) = provider.stream(&req) {
-        for _ in stream {}
+    let mut trace = snapshot
+        .session_path
+        .as_ref()
+        .map(|path| crate::requests::Trace::background(path, &req));
+    if let Some(trace) = trace.as_mut() {
+        trace.pricing(provider.rate_card());
+    }
+    match provider.stream(&req) {
+        Ok(stream) => {
+            for event in stream {
+                if let Some(trace) = trace.as_mut() {
+                    trace.event(&event);
+                }
+            }
+        }
+        Err(error) => {
+            if let Some(trace) = trace.as_mut() {
+                trace.outcome(&crate::live::sanitize_provider_detail(&error.to_string()));
+            }
+        }
     }
 }
 
@@ -171,6 +190,7 @@ mod tests {
 
     fn snapshot() -> CacheSnapshot {
         CacheSnapshot {
+            session_path: None,
             system: "you are glass".into(),
             messages: vec![Message::User("do a thing".into())],
             tools: vec![],

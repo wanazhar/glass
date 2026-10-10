@@ -35,6 +35,30 @@ const SESSIONS: &[Item] = &[
 ];
 const TOOLS: &[Item] = &[
     (
+        "gc workspace --help",
+        "Tasks, debug evidence, artifacts, handoffs and role budgets.",
+    ),
+    (
+        "gc requests ID",
+        "Inspect request timing, context changes and cache diagnostics.",
+    ),
+    (
+        "gc inspect FILE",
+        "Present structured local output with native formatting.",
+    ),
+    (
+        "gc policy [--json]",
+        "Explain global provider and shell denials.",
+    ),
+    (
+        "gc completions bash|zsh|fish",
+        "Generate shell completions.",
+    ),
+    (
+        "gc skill capture|save",
+        "Capture selected workflow steps into a reviewed skill.",
+    ),
+    (
         "gc agent --help",
         "Create and message persistent teammates.",
     ),
@@ -162,8 +186,14 @@ fn render(topic: &str, width: usize, color: bool) -> Result<String, String> {
                     &[
                         ("gc list", "List all saved sessions."),
                         ("gc --version", "Print the installed version."),
-                        ("gc init [--write]", "Draft project instructions; optionally save AGENTS.md."),
-                        ("gc stop|respawn [ID]", "Stop or restart a hosted conversation."),
+                        (
+                            "gc init [--write]",
+                            "Draft project instructions; optionally save AGENTS.md.",
+                        ),
+                        (
+                            "gc stop|respawn [ID]",
+                            "Stop or restart a hosted conversation.",
+                        ),
                         ("gc logs [ID]", "Inspect recent conversation activity."),
                         ("gc COMMAND --help", "Read a focused guide for any command."),
                     ],

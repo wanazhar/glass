@@ -10,18 +10,19 @@ mod agents_md;
 mod auth;
 mod btw;
 mod budget;
+mod capture;
 mod checkpoint;
 mod cli;
-mod resume_picker;
 mod compact;
+mod completions;
 mod concurrency;
 mod config;
 mod context_audit;
-mod doctor;
 mod diagnostics;
-mod files;
+mod doctor;
 mod export;
 mod ext;
+mod files;
 mod help;
 mod history;
 mod inbox;
@@ -36,7 +37,9 @@ mod notify;
 mod onboarding;
 mod partial;
 mod permissions;
+mod plugin_dev;
 mod plugins;
+mod policy;
 mod polish;
 mod pricing;
 mod profiles;
@@ -44,6 +47,8 @@ mod provider;
 mod queue;
 mod reader;
 mod readguard;
+mod requests;
+mod resume_picker;
 mod sandbox;
 mod serve;
 mod session;
@@ -51,15 +56,17 @@ mod signals;
 mod skills;
 mod sse;
 mod status;
+mod structured;
 mod subagent;
-mod team;
 mod surface;
-mod tools;
+mod team;
 mod tool_repair;
+mod tools;
 mod trust;
 mod verify;
 mod warmer;
 mod workflows;
+mod workspace;
 mod worktree;
 
 use std::io::Write;
@@ -79,7 +86,6 @@ macro_rules! ui_print {
     ($($argument:tt)*) => {{ let _ = surface::emit(&glass_tui::theme::neutralize(&format!($($argument)*))); }};
 }
 
-
 static JSON_EMITTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 fn emit_json(value: serde_json::Value) {
     JSON_EMITTED.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -92,16 +98,23 @@ fn main() {
 
     match cli::command_help(&args) {
         Ok(true) => return,
-        Ok(false) => {},
-        Err(error) => {cli::error("gc help", &error);std::process::exit(2);}
+        Ok(false) => {}
+        Err(error) => {
+            cli::error("gc help", &error);
+            std::process::exit(2);
+        }
     }
 
     // Config parser errors can include source excerpts. Keep doctor JSON and
     // stderr useful without echoing potentially credential-bearing TOML.
-    if args.first().is_some_and(|a| a == "doctor") && config::load(&config::default_path()).is_err() {
+    if args.first().is_some_and(|a| a == "doctor") && config::load(&config::default_path()).is_err()
+    {
         let message = "Configuration could not be read or parsed; details are omitted to avoid exposing configured values.";
         if args.iter().any(|a| a == "--json") {
-            println!("{}", serde_json::json!({"status":"error","error":message,"text":""}));
+            println!(
+                "{}",
+                serde_json::json!({"status":"error","error":message,"text":""})
+            );
         } else {
             cli::error("glass-core doctor", message);
         }
@@ -118,6 +131,67 @@ fn main() {
         }
         Some("--version") | Some("-V") => {
             println!("glass-core {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        Some("skill") => {
+            if let Err(e) = capture::command(&args[1..]) {
+                cli::error("Skill", &e);
+                std::process::exit(2);
+            }
+            return;
+        }
+        Some("inspect") => {
+            if let Err(e) = structured::command(&args[1..]) {
+                cli::error("Inspect", &e);
+                std::process::exit(2);
+            }
+            return;
+        }
+        Some("policy") => {
+            if let Err(e) = policy::command(&args[1..]) {
+                cli::error("Policy", &e);
+                std::process::exit(2);
+            }
+            return;
+        }
+        Some("workspace") => {
+            if let Err(e) = workspace::command(&args[1..]) {
+                cli::error("Workspace", &e);
+                std::process::exit(2);
+            }
+            return;
+        }
+        Some("requests") => {
+            let result = (|| -> Result<(), String> {
+                let id = args
+                    .get(1)
+                    .ok_or("Usage: gc requests SESSION_ID [--json]")?;
+                if id.is_empty()
+                    || !id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    return Err("Invalid session ID".into());
+                }
+                let value = serde_json::json!({"requests":requests::reports(&config::data_dir().join(format!("{id}.jsonl")))?});
+                if args.iter().any(|a| a == "--json") {
+                    emit_json(value);
+                } else {
+                    cli::report("Requests", &value);
+                }
+                Ok(())
+            })();
+            if let Err(e) = result {
+                cli::error("Requests", &e);
+                std::process::exit(2);
+            }
+            return;
+        }
+        Some("completions") => {
+            if let Err(e) = completions::command(&args[1..]) {
+                cli::error("Completions", &e);
+                std::process::exit(2);
+            }
             return;
         }
         Some("agent") => {
@@ -199,12 +273,17 @@ fn list_sessions() {
     }
     if cli::styled() {
         let items=rows.iter().map(|(id,bytes,modified,title)|serde_json::json!({"thread":id,"title":title.as_deref().unwrap_or("Untitled conversation"),"modified":modified.map(format_time),"bytes":bytes})).collect::<Vec<_>>();
-        cli::report("Saved conversations",&serde_json::json!({"conversations":items}));
+        cli::report(
+            "Saved conversations",
+            &serde_json::json!({"conversations":items}),
+        );
         return;
     }
     crate::cli_println!(
         "{:<28} {:<16} {:>10}  title / first message",
-        "session", "modified (UTC)", "bytes"
+        "session",
+        "modified (UTC)",
+        "bytes"
     );
     for (id, bytes, modified, title) in rows {
         let when = modified.map(format_time).unwrap_or_else(|| "?".into());
@@ -486,14 +565,27 @@ fn run_plan(args: &[String]) -> bool {
 fn run(args: &[String]) -> Result<(), String> {
     let cfg_path = config::default_path();
     let mut cfg = config::load(&cfg_path).map_err(|e| e.to_string())?;
-    if args.first().is_some_and(|a|a == "resume") && (args.len()>2 || args.get(1).is_some_and(|a|a.starts_with('-'))) {
-        return Err("usage: gc resume [ID]; omit ID to choose a conversation".into());
-    }
-    if args.first().is_some_and(|a|a == "resume") && args.len() == 1 {
-        return match resume_picker::choose(&cfg.workspace)? {
-            Some(id) => run(&["resume".into(),id]),
-            None => Ok(()),
-        };
+    if args.first().is_some_and(|a| a == "resume") {
+        let all = args.iter().any(|a| a == "--all");
+        let browse = args.iter().any(|a| a == "--browse");
+        if all || browse || args.len() == 1 {
+            if args[1..]
+                .iter()
+                .any(|a| !matches!(a.as_str(), "--all" | "--browse"))
+            {
+                return Err("usage: gc resume [ID | --all | --browse]".into());
+            }
+            return match resume_picker::choose(&cfg.workspace, all, browse)? {
+                Some(pick) => {
+                    std::env::set_current_dir(&pick.workspace).map_err(|e| e.to_string())?;
+                    run(&["resume".into(), pick.id])
+                }
+                None => Ok(()),
+            };
+        }
+        if args.len() != 2 || args[1].starts_with('-') {
+            return Err("usage: gc resume [ID | --all | --browse]".into());
+        }
     }
     if args.first().is_some_and(|a| a == "doctor") && !args.iter().any(|a| a == "--probe") {
         // Local checks use best-effort saved references only. Keep this path
@@ -962,7 +1054,13 @@ fn headless(
             f
         })
     };
-    let _team = team::start(&session.id, &cfg.workspace, Arc::clone(&factory), Arc::clone(&factory_for_model), &cfg.model)?;
+    let _team = team::start(
+        &session.id,
+        &cfg.workspace,
+        Arc::clone(&factory),
+        Arc::clone(&factory_for_model),
+        &cfg.model,
+    )?;
     let workspace = cfg.workspace.clone();
     // Nested sessions and worktrees live under the data dir so `gc worktree`
     // can find them after the process that created them is long gone.
@@ -994,7 +1092,11 @@ fn headless(
         extensions.seed_custom(&records);
     }
     if !recovering {
-        session.append_checked(&[Record::User(prompt)]).map_err(|e| format!("cannot durably record prompt; no provider request was made: {e}"))?;
+        session
+            .append_checked(&[Record::User(prompt)])
+            .map_err(|e| {
+                format!("cannot durably record prompt; no provider request was made: {e}")
+            })?;
     }
     let p = match factory() {
         Ok(p) => p,
@@ -1108,6 +1210,30 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
     let builtin = [
         ("help", "", "Show help", false),
         (
+            "workspace",
+            "",
+            "Tasks, debug evidence, artifacts and role presets",
+            false,
+        ),
+        (
+            "capture",
+            "",
+            "Capture selected turns as a reviewed reusable skill",
+            false,
+        ),
+        (
+            "outputs",
+            "",
+            "Native structured response and tool output viewer",
+            false,
+        ),
+        (
+            "requests",
+            "",
+            "Request timing, context changes and cache diagnostics",
+            false,
+        ),
+        (
             "keys",
             "",
             "Discover draft, active-turn and viewer shortcuts",
@@ -1130,8 +1256,18 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
         ),
         ("retry", "", "Recover a failed response", false),
         ("details", "", "Expand tool activity and output", false),
-        ("agents", "", "Persistent teammates, interactions and transcripts", false),
-        ("activity", "", "Inspect tools, subagents, jobs and loops", false),
+        (
+            "agents",
+            "",
+            "Persistent teammates, interactions and transcripts",
+            false,
+        ),
+        (
+            "activity",
+            "",
+            "Inspect tools, subagents, jobs and loops",
+            false,
+        ),
         (
             "thinking",
             "",
@@ -1547,7 +1683,13 @@ fn repl(
     }
 
     let mut team_owner = session.id.clone();
-    let mut team_guard = Some(team::start(&session.id, &cfg.workspace, Arc::clone(&factory), Arc::clone(&factory_for_model), &cfg.model)?);
+    let mut team_guard = Some(team::start(
+        &session.id,
+        &cfg.workspace,
+        Arc::clone(&factory),
+        Arc::clone(&factory_for_model),
+        &cfg.model,
+    )?);
     let mut team_dock = String::new();
     let mut totals = Totals::new();
     let painter = Painter::new();
@@ -1563,7 +1705,13 @@ fn repl(
     loop {
         if team_owner != session.id {
             team_guard.take();
-            team_guard = Some(team::start(&session.id, &cfg.workspace, Arc::clone(&factory), Arc::clone(&factory_for_model), &cfg.model)?);
+            team_guard = Some(team::start(
+                &session.id,
+                &cfg.workspace,
+                Arc::clone(&factory),
+                Arc::clone(&factory_for_model),
+                &cfg.model,
+            )?);
             team_owner.clone_from(&session.id);
         }
         painter.team_owner.replace(session.id.clone());
@@ -1678,7 +1826,11 @@ fn repl(
             _ => continue,
         };
 
-        if key.code == glass_tui::crossterm::event::KeyCode::Char('a') && key.modifiers.contains(glass_tui::crossterm::event::KeyModifiers::ALT) {
+        if key.code == glass_tui::crossterm::event::KeyCode::Char('a')
+            && key
+                .modifiers
+                .contains(glass_tui::crossterm::event::KeyModifiers::ALT)
+        {
             palette.cancel(&mut editor);
             team::view(&keys, &session.id);
             continue;
@@ -1898,10 +2050,14 @@ fn repl(
             continue;
         }
         if text == "/git" {
-            if let Err(e) = workflows::git_review(&keys, &cfg.workspace) {
-                modal::info(&keys, "Git review error", &e);
+            match workflows::git_review(&keys, &cfg.workspace) {
+                Ok(Some(prompt)) => text = prompt,
+                Ok(None) => continue,
+                Err(e) => {
+                    modal::info(&keys, "Git review error", &e);
+                    continue;
+                }
             }
-            continue;
         }
         if text == "/responses" {
             if let Err(e) = workflows::responses(&keys, &session) {
@@ -1998,6 +2154,22 @@ fn repl(
             }
             continue;
         }
+        if text == "/capture" {
+            capture::view(&keys, &session, &cfg);
+            continue;
+        }
+        if text == "/outputs" {
+            structured::outputs(&keys, &session);
+            continue;
+        }
+        if text == "/workspace" {
+            workspace::view(&keys, &cfg.workspace);
+            continue;
+        }
+        if text == "/requests" {
+            requests::view(&keys, &session);
+            continue;
+        }
         if text == "/context" {
             if let Err(e) =
                 polish::context(&keys, &mut session, &cfg, &project_instructions, &catalogue)
@@ -2038,39 +2210,90 @@ fn repl(
             loop {
                 let items = polish::activity_items(&session, &jobs.list());
                 if items.is_empty() {
-                    modal::info(&keys, "Activity", "No tools, subagents, jobs or loops in this session yet.");
+                    modal::info(
+                        &keys,
+                        "Activity",
+                        "No tools, subagents, jobs or loops in this session yet.",
+                    );
                     break;
                 }
-                let labels = items.iter().map(|item| format!("{} · {}", item.status, item.label)).collect::<Vec<_>>();
-                let searchable = items.iter().map(|item| format!("{}\n{}\n{}", item.label, item.status, item.detail)).collect::<Vec<_>>();
-                let Some(index) = modal::choose_search(&keys, "Activity", "Tools, subagents, jobs and loops · choose a row", &labels, &searchable) else { break };
+                let labels = items
+                    .iter()
+                    .map(|item| format!("{} · {}", item.status, item.label))
+                    .collect::<Vec<_>>();
+                let searchable = items
+                    .iter()
+                    .map(|item| format!("{}\n{}\n{}", item.label, item.status, item.detail))
+                    .collect::<Vec<_>>();
+                let Some(index) = modal::choose_search(
+                    &keys,
+                    "Activity",
+                    "Tools, subagents, jobs and loops · choose a row",
+                    &labels,
+                    &searchable,
+                ) else {
+                    break;
+                };
                 let item = &items[index];
                 match item.action {
                     polish::ActivityAction::Tool => {
                         modal::info(&keys, "Tool activity", &item.detail);
                         polish::details(&keys, &session);
                     }
-                    polish::ActivityAction::Subagent => modal::info(&keys, "Subagent activity", &item.detail),
+                    polish::ActivityAction::Subagent => {
+                        modal::info(&keys, "Subagent activity", &item.detail)
+                    }
                     polish::ActivityAction::Job(id) => {
-                        match modal::choose(&keys, "Background job", &item.label, &["Read output".into(), "Stop job…".into()]) {
+                        match modal::choose(
+                            &keys,
+                            "Background job",
+                            &item.label,
+                            &["Read output".into(), "Stop job…".into()],
+                        ) {
                             Some(0) => match jobs.output(id) {
-                                Ok(output) => modal::info(&keys, &format!("Job {id} output"), &output),
+                                Ok(output) => {
+                                    modal::info(&keys, &format!("Job {id} output"), &output)
+                                }
                                 Err(error) => modal::info(&keys, "Job output", &error),
                             },
-                            Some(1) if modal::choose(&keys, "Stop background job?", &item.detail, &["Cancel".into(), "Stop owned job".into()]) == Some(1) => match jobs.stop(id) {
-                                Ok(message) => modal::info(&keys, "Background job", &message),
-                                Err(error) => modal::info(&keys, "Background job", &error),
-                            },
+                            Some(1)
+                                if modal::choose(
+                                    &keys,
+                                    "Stop background job?",
+                                    &item.detail,
+                                    &["Cancel".into(), "Stop owned job".into()],
+                                ) == Some(1) =>
+                            {
+                                match jobs.stop(id) {
+                                    Ok(message) => modal::info(&keys, "Background job", &message),
+                                    Err(error) => modal::info(&keys, "Background job", &error),
+                                }
+                            }
                             _ => {}
                         }
                     }
                     polish::ActivityAction::Loop(index) => {
                         modal::info(&keys, "Scheduled loop", &item.detail);
-                        if modal::choose(&keys, "Loop action", &item.label, &["Keep scheduled".into(), "Remove loop…".into()]) == Some(1)
-                            && modal::choose(&keys, "Remove loop?", &item.label, &["Cancel".into(), "Remove loop".into()]) == Some(1)
+                        if modal::choose(
+                            &keys,
+                            "Loop action",
+                            &item.label,
+                            &["Keep scheduled".into(), "Remove loop…".into()],
+                        ) == Some(1)
+                            && modal::choose(
+                                &keys,
+                                "Remove loop?",
+                                &item.label,
+                                &["Cancel".into(), "Remove loop".into()],
+                            ) == Some(1)
                         {
-                            let result = crate::loops::command(&session, &format!("rm {}", index + 1));
-                            modal::info(&keys, "Scheduled loop", &result.unwrap_or_else(|error| error));
+                            let result =
+                                crate::loops::command(&session, &format!("rm {}", index + 1));
+                            modal::info(
+                                &keys,
+                                "Scheduled loop",
+                                &result.unwrap_or_else(|error| error),
+                            );
                         }
                     }
                 }
@@ -3028,10 +3251,12 @@ fn repl(
                 continue;
             }
         };
-        if !recovering
-            && let Err(error) = session.append_checked(&[Record::User(text.clone())])
-        {
-            modal::info(&keys, "Session log write failed", &format!("Prompt was not sent: {error}"));
+        if !recovering && let Err(error) = session.append_checked(&[Record::User(text.clone())]) {
+            modal::info(
+                &keys,
+                "Session log write failed",
+                &format!("Prompt was not sent: {error}"),
+            );
             editor.set_text(&text);
             continue;
         }
@@ -3096,9 +3321,15 @@ fn repl(
                         surface::composer(&draft, true, true);
                     }
                     painter.tick();
-                    if let Some(s) =
-                        drain_input(&keys, &mut draft, &mut pending, draft_row, w, &painter, &team_owner)
-                    {
+                    if let Some(s) = drain_input(
+                        &keys,
+                        &mut draft,
+                        &mut pending,
+                        draft_row,
+                        w,
+                        &painter,
+                        &team_owner,
+                    ) {
                         pending.push(queue::Intent::Steer(s.clone()));
                         *steer_slot = Some(s);
                     }
@@ -3163,7 +3394,10 @@ fn repl(
                     for w in &out.warnings {
                         ui_println!("\x1b[33m⚠ {w}\x1b[0m");
                     }
-                    let context_line = format!("Context: request {} · /context", context_audit::reports(&session).len());
+                    let context_line = format!(
+                        "Context: request {} · /context",
+                        context_audit::reports(&session).len()
+                    );
                     ui_println!("\x1b[90m{context_line}\x1b[0m");
                     turn_summary.push(context_line);
                     if let Some(u) = out.usage {
@@ -3184,9 +3418,15 @@ fn repl(
                                 compact(u.output as u64)
                             )];
                             let window = provider.context_window();
-                            rows.push(format!("{} session total tokens", compact(totals.prompt_total() + totals.output)));
+                            rows.push(format!(
+                                "{} session total tokens",
+                                compact(totals.prompt_total() + totals.output)
+                            ));
                             if let Some(input) = totals.last_input.filter(|_| window > 0) {
-                                rows.push(format!("{}% context", (input * 100 / window as u64).min(999)));
+                                rows.push(format!(
+                                    "{}% context",
+                                    (input * 100 / window as u64).min(999)
+                                ));
                             }
                             rows.push(cost);
                             turn_summary.extend(rows.iter().cloned());
@@ -3198,19 +3438,19 @@ fn repl(
                                 }
                             }
                         } else {
-                            let report = format!("{}{} · {}", usage_line(&u, card.as_ref(), false),
-                                totals.suffix(provider.context_window(), None, false), cost);
+                            let report = format!(
+                                "{}{} · {}",
+                                usage_line(&u, card.as_ref(), false),
+                                totals.suffix(provider.context_window(), None, false),
+                                cost
+                            );
                             ui_println!("{report}");
                             turn_summary.push(glass_tui::markdown::sanitize(&report));
                         }
                     }
                 }
                 Err(e) => {
-                    painter.notice(
-                        &mut surface::BodyWriter,
-                        "\x1b[31m",
-                        &format!("error: {e}"),
-                    );
+                    painter.notice(&mut surface::BodyWriter, "\x1b[31m", &format!("error: {e}"));
                     last_error = Some(e.to_string());
                 }
             }
@@ -3274,9 +3514,14 @@ fn repl(
                 crate::notify::emit(cfg.notify, &message);
             }
         }
-        let completion = polish::completion(&session, latest_checkpoint.as_ref(), term_size().0 as usize);
+        let completion =
+            polish::completion(&session, latest_checkpoint.as_ref(), term_size().0 as usize);
         ui_println!("\x1b[90m{completion}\x1b[0m");
-        if !session.records.last().is_some_and(|r| matches!(r, Record::Meta(t) if t.starts_with("error:"))) {
+        if !session
+            .records
+            .last()
+            .is_some_and(|r| matches!(r, Record::Meta(t) if t.starts_with("error:")))
+        {
             session.append(Record::Meta(completion.clone()));
             painter.append_live_entry(glass_tui::Role::Meta, completion);
         }
@@ -3569,7 +3814,9 @@ impl Totals {
     /// wraps mid-number.
     fn suffix(&self, window: u32, card: Option<&pricing::RateCard>, narrow: bool) -> String {
         let tok = self.prompt_total() + self.output;
-        let fill = self.last_input.filter(|_| window > 0)
+        let fill = self
+            .last_input
+            .filter(|_| window > 0)
             .map(|input| ((input as f64 / window as f64 * 100.0).round() as u32).min(999));
         let cost = card
             .map(|c| format!(" · {}", pricing::money(self.total_cost(c))))
@@ -3590,7 +3837,10 @@ impl Totals {
                 "\x1b[90m{lead}{tok} total tokens · {f}% ctx{cost}\x1b[0m",
                 tok = compact(tok),
             ),
-            None => format!("\x1b[90m{lead}{tok} total tokens{cost}\x1b[0m", tok = compact(tok),),
+            None => format!(
+                "\x1b[90m{lead}{tok} total tokens{cost}\x1b[0m",
+                tok = compact(tok),
+            ),
         }
     }
 
@@ -3649,7 +3899,8 @@ struct Painter {
     waiting: std::cell::Cell<bool>,
     tool_started: std::cell::Cell<Option<std::time::Instant>>,
     tool_name: std::cell::RefCell<String>,
-    tool_runs: std::cell::RefCell<std::collections::HashMap<String, (String, String, std::time::Instant)>>,
+    tool_runs:
+        std::cell::RefCell<std::collections::HashMap<String, (String, String, std::time::Instant)>>,
     response_started: std::cell::Cell<bool>,
     response_prefix: std::cell::RefCell<String>,
     waiting_started: std::cell::Cell<Option<std::time::Instant>>,
@@ -3768,35 +4019,79 @@ impl Painter {
                 self.waiting.set(true);
                 self.draw_activity(&mut io);
             }
-            Progress::ToolStart { call_id, name, command } => {
-                self.tool_runs.borrow_mut().insert(call_id.to_string(), (name.to_string(), command.unwrap_or("").to_string(), std::time::Instant::now()));
+            Progress::ToolStart {
+                call_id,
+                name,
+                command,
+            } => {
+                self.tool_runs.borrow_mut().insert(
+                    call_id.to_string(),
+                    (
+                        name.to_string(),
+                        command.unwrap_or("").to_string(),
+                        std::time::Instant::now(),
+                    ),
+                );
                 self.tool_started.set(Some(std::time::Instant::now()));
-                *self.tool_name.borrow_mut() = format!("{} running{}",name,command.map(|c|format!(" · {}",glass_tui::markdown::sanitize(c))).unwrap_or_default());
+                *self.tool_name.borrow_mut() = format!(
+                    "{} running{}",
+                    name,
+                    command
+                        .map(|c| format!(" · {}", glass_tui::markdown::sanitize(c)))
+                        .unwrap_or_default()
+                );
                 self.waiting_started.set(Some(std::time::Instant::now()));
                 self.activity_frame.set(0);
                 self.last_tick.set(Some(std::time::Instant::now()));
                 self.waiting.set(true);
                 self.draw_activity(&mut io);
             }
-            Progress::ToolEnd { call_id, summary, output } => {
-                let (name,command,started)=self.tool_runs.borrow_mut().remove(call_id)
-                    .unwrap_or_else(||("tool".into(),String::new(),std::time::Instant::now()));
-                let remaining=self.tool_runs.borrow().values().next().cloned();
-                self.tool_started.set(remaining.as_ref().map(|(_,_,start)|*start));
-                if let Some((name,command,start))=remaining {
-                    *self.tool_name.borrow_mut()=format!("{name} running · {command}");
+            Progress::ToolEnd {
+                call_id,
+                summary,
+                output,
+            } => {
+                let (name, command, started) = self
+                    .tool_runs
+                    .borrow_mut()
+                    .remove(call_id)
+                    .unwrap_or_else(|| ("tool".into(), String::new(), std::time::Instant::now()));
+                let remaining = self.tool_runs.borrow().values().next().cloned();
+                self.tool_started
+                    .set(remaining.as_ref().map(|(_, _, start)| *start));
+                if let Some((name, command, start)) = remaining {
+                    *self.tool_name.borrow_mut() = format!("{name} running · {command}");
                     self.waiting_started.set(Some(start));
                 }
-                let elapsed=started.elapsed().as_secs_f32();
-                let failed = summary.strip_prefix("[exit ").and_then(|s|s.split_once(']'))
-                    .map(|(code,_)|code!="0").unwrap_or_else(||summary.starts_with("error:")
-                        || summary.starts_with("killed") || summary.starts_with("refused:") || summary.starts_with("blocked"));
-                let margin=if self.width.get()>=24 {2} else {1};
-                let width=self.width.get().saturating_sub(margin+1).max(1) as usize;
-                for row in glass_tui::tool_output::lines(&name,&command,failed,elapsed,if failed && output.is_empty() {&summary} else {output},width,self.compact_tools.get()) {
-                    let _=write!(io,"{}"," ".repeat(margin as usize));
-                    glass_tui::markdown::write_ansi(&mut io,&row);
-                    let _=write!(io,"\r\n");
+                let elapsed = started.elapsed().as_secs_f32();
+                let failed = summary
+                    .strip_prefix("[exit ")
+                    .and_then(|s| s.split_once(']'))
+                    .map(|(code, _)| code != "0")
+                    .unwrap_or_else(|| {
+                        summary.starts_with("error:")
+                            || summary.starts_with("killed")
+                            || summary.starts_with("refused:")
+                            || summary.starts_with("blocked")
+                    });
+                let margin = if self.width.get() >= 24 { 2 } else { 1 };
+                let width = self.width.get().saturating_sub(margin + 1).max(1) as usize;
+                for row in glass_tui::tool_output::lines(
+                    &name,
+                    &command,
+                    failed,
+                    elapsed,
+                    if failed && output.is_empty() {
+                        &summary
+                    } else {
+                        output
+                    },
+                    width,
+                    self.compact_tools.get(),
+                ) {
+                    let _ = write!(io, "{}", " ".repeat(margin as usize));
+                    glass_tui::markdown::write_ansi(&mut io, &row);
+                    let _ = write!(io, "\r\n");
                 }
                 self.mid_line.set(false);
                 if self.tool_started.get().is_some() {
@@ -3829,7 +4124,10 @@ impl Painter {
                 self.notice(
                     &mut io,
                     &glass_tui::theme::ansi(glass_tui::theme::Tone::Warning),
-                    &format!("⟳ retry {attempt} in {delay_s}s — {} · /status /retry", live::sanitize_provider_detail(&reason)),
+                    &format!(
+                        "⟳ retry {attempt} in {delay_s}s — {} · /status /retry",
+                        live::sanitize_provider_detail(&reason)
+                    ),
                 );
             }
             Progress::ProviderNotice(text) => {
@@ -3843,7 +4141,11 @@ impl Painter {
                 } else {
                     format!("Provider fallback — {detail} · /status /model")
                 };
-                self.notice(&mut io, &glass_tui::theme::ansi(glass_tui::theme::Tone::Warning), &notice);
+                self.notice(
+                    &mut io,
+                    &glass_tui::theme::ansi(glass_tui::theme::Tone::Warning),
+                    &notice,
+                );
             }
             Progress::ProviderFailure(_) => {
                 // The turn result prints and persists one canonical error.
@@ -4018,14 +4320,21 @@ impl Painter {
             .map(|start| start.elapsed().as_secs_f32())
             .unwrap_or(0.0);
         let provider_detail = self.live.borrow().provider_detail().map(str::to_string);
-        let detail = if let Some(detail) = provider_detail { format!("{label} · {detail}") } else { format!("{label} · {elapsed:.1}s") };
+        let detail = if let Some(detail) = provider_detail {
+            format!("{label} · {detail}")
+        } else {
+            format!("{label} · {elapsed:.1}s")
+        };
         let content = first_line(
             &format!("{} {detail}", glass_tui::theme::frame(frame)),
             self.width.get().saturating_sub(3) as usize,
         );
         let _ = io;
         let _ = surface::status_colored(
-            &format!("  {content}{}", team::activity_suffix(&self.team_owner.borrow())),
+            &format!(
+                "  {content}{}",
+                team::activity_suffix(&self.team_owner.borrow())
+            ),
             &glass_tui::theme::activity_color(frame),
         );
     }
@@ -4164,7 +4473,10 @@ fn view_transcript(
         loop {
             // Viewport height is needed to clamp paging against the real
             // window, which can change between frames.
-            let height = tui.size().map(|r| glass_tui::Transcript::content_rect(r.into()).height).unwrap_or(22);
+            let height = tui
+                .size()
+                .map(|r| glass_tui::Transcript::content_rect(r.into()).height)
+                .unwrap_or(22);
             tui.draw(|f| transcript.draw(f, loaded, &session.id))
                 .map_err(|e| e.to_string())?;
 

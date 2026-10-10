@@ -111,10 +111,15 @@ pub struct Request<'a> {
 
 pub trait Provider {
     /// Exact billing card supplied by the provider wrapper, when available.
-    fn rate_card(&self) -> Option<crate::pricing::RateCard> { None }
+    fn rate_card(&self) -> Option<crate::pricing::RateCard> {
+        None
+    }
 
     /// Stable identifier used in config and the status bar.
     fn id(&self) -> &str;
+
+    /// Configured request model, distinct from the transport/provider identifier.
+    fn model(&self)->&str{self.id()}
 
     /// Stream one turn. Implementations must emit `Done` before returning.
     fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error>;
@@ -279,6 +284,7 @@ pub fn build(
     api_key: Option<String>,
     model: &str,
 ) -> Result<Box<dyn Provider>, Error> {
+    crate::policy::provider(kind, base_url).map_err(Error::Config)?;
     validate_endpoint(base_url)?;
     match kind {
         "anthropic" => Ok(Box::new(Anthropic::new(
@@ -409,10 +415,10 @@ mod tests {
         let tools = builtin_tools();
         let bash: Value = serde_json::from_str(&tools[0].2).unwrap();
         let state: Value = serde_json::from_str(&tools[1].2).unwrap();
-        assert_eq!(tools.len(),2);
-        assert_eq!(bash["anyOf"][0]["required"][0],"command");
-        assert_eq!(bash["anyOf"][1]["required"][0],"job");
-        assert_eq!(bash["properties"]["job"]["required"][0],"action");
+        assert_eq!(tools.len(), 2);
+        assert_eq!(bash["anyOf"][0]["required"][0], "command");
+        assert_eq!(bash["anyOf"][1]["required"][0], "job");
+        assert_eq!(bash["properties"]["job"]["required"][0], "action");
         // `state` must be callable with zero arguments, or the read-back path
         // the compaction flow depends on becomes awkward to express.
         assert!(state.get("required").is_none());

@@ -116,6 +116,7 @@ pub fn harden_command(
     exception_requested: bool,
     headless: bool,
 ) -> Result<(), String> {
+    crate::policy::shell(command)?;
     if !exception_requested {
         harden(cmd);
         return Ok(());

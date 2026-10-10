@@ -114,6 +114,8 @@ pub struct Info {
     pub output: u64,
     #[serde(default)]
     pub reserved_tokens: u64,
+    #[serde(default)]
+    pub estimated_tokens: u64,
     pub usage_known: bool,
     pub turns: u64,
     pub updated: u64,
@@ -229,7 +231,28 @@ impl Hub {
             "human"
         };
         match action {
-            "list" => return Ok(json!(self.snapshot().iter().map(|i|json!({"id":i.id,"name":i.name,"status":i.status,"activity":i.activity,"model":i.model,"input":i.input,"output":i.output,"cost_usd":i.cost_usd,"usage_known":i.usage_known,"pending_messages":i.pending_messages.len(),"transport_pending":i.transport_pending})).collect::<Vec<_>>())) ,
+            "handoff" => {
+                let summary=crate::workspace::receive_handoff(&self.workspace,req["handoff"].clone())?;
+                Self::notice(&mut self.state.lock().unwrap(),summary.clone());
+                return Ok(json!({"handoff":"saved","summary":summary}));
+            }
+            "checkpoint" => {
+                let trigger=req["trigger"].as_str().unwrap_or("");
+                if !matches!(trigger,"changes"|"completion"){return Err("Checkpoint trigger: changes or completion".into());}
+                let role=crate::workspace::role(&self.workspace,"reviewer").ok_or("Configure a bounded reviewer first: gc workspace role set reviewer MODEL TOKENS")?;
+                let unstaged=crate::workflows::diff(&self.workspace,None,false)?;
+                let staged=crate::workflows::diff(&self.workspace,None,true)?;
+                let fingerprint=crate::workspace::hash(format!("{trigger}\0{staged}\0{unstaged}").as_bytes());
+                let name=format!("review-{}",&fingerprint[..16]);
+                if let Some(info)=self.snapshot().into_iter().find(|info|info.name==name&&info.status!="archived"){
+                    return Ok(json!({"checkpoint":"already requested for this patch","agent":info}));
+                }
+                let mut excerpt=format!("Staged:\n{staged}\nUnstaged:\n{unstaged}");
+                if excerpt.len()>6000{let mut end=6000;while !excerpt.is_char_boundary(end){end-=1;}excerpt.truncate(end);excerpt.push_str("\n[Preview capped at 6000 bytes; inspect remaining files directly.]");}
+                let task=format!("Explicit {trigger} review checkpoint. Review current workspace changes read-only. Patch fingerprint {fingerprint}. Inspect current files; previews may be truncated or stale. Report concrete findings with paths and line numbers, checks actually performed, and unresolved questions. Do not modify files or run external side effects.\n\nPatch excerpt:\n{excerpt}");
+                return self.request(&json!({"action":"create","from":from,"name":name,"text":task,"role":"reviewer","tokens":role.tokens}));
+            }
+            "list" => return Ok(json!(self.snapshot().iter().map(|i|json!({"id":i.id,"name":i.name,"status":i.status,"activity":i.activity,"model":i.model,"input":i.input,"output":i.output,"cost_usd":i.cost_usd,"usage_known":i.usage_known,"estimated_tokens":i.estimated_tokens,"reserved_tokens":i.reserved_tokens,"pending_messages":i.pending_messages.len(),"transport_pending":i.transport_pending})).collect::<Vec<_>>())) ,
             "interactions" => {return window(&self.dir.join("interactions.jsonl"),req["before"].as_u64());}
             "create" => {
                 let name = req["name"].as_str().unwrap_or("review");
@@ -241,7 +264,12 @@ impl Hub {
                 }
                 let task = message(req)?;
                 if let Some(model)=req["model"].as_str() && (model.is_empty()||model.len()>256||model.chars().any(char::is_control)){return Err("model ID must be 1–256 characters without control bytes".into());}
-                let limit = req["tokens"].as_u64().unwrap_or(100_000);
+                let role = if let Some(name)=req["role"].as_str() {
+                    if !matches!(name,"executor"|"reviewer"|"research"){return Err("Unknown agent role".into());}
+                    Some(crate::workspace::role(&self.workspace,name).ok_or("Role is not configured; use gc workspace role set")?)
+                }else{None};
+                let limit = req["tokens"].as_u64().unwrap_or_else(||role.as_ref().map_or(100_000,|r|r.tokens));
+                if role.as_ref().is_some_and(|role|limit>role.tokens){return Err("Requested tokens exceed the configured role budget".into());}
                 if !(1024..=10_000_000).contains(&limit) {
                     return Err("token budget must be 1024–10000000".into());
                 }
@@ -278,7 +306,7 @@ impl Hub {
                 let info = Info {
                     id: id.clone(),
                     name: name.into(),
-                    model: req["model"].as_str().unwrap_or(&self.model).into(),
+                    model: req["model"].as_str().unwrap_or_else(||role.as_ref().map_or(self.model.as_str(),|r|r.model.as_str())).into(),
                     session: session.id.clone(),
                     status: "working".into(),
                     activity: "starting".into(),
@@ -289,6 +317,7 @@ impl Hub {
                     output: 0,
                     usage_known: true,
                     reserved_tokens: 0,
+                    estimated_tokens: 0,
                     turns: 0,
                     updated: crate::loops::now(),
                     result: String::new(),
@@ -678,6 +707,7 @@ struct Meter {
     id: String,
 }
 impl Provider for Meter {
+    fn model(&self)->&str{self.inner.model()}
     fn id(&self) -> &str {
         self.inner.id()
     }
@@ -692,10 +722,10 @@ impl Provider for Meter {
             return Err(provider::Error::Config("owning session is closing".into()));
         }
         let transport = TransportLease::acquire()?;
-        let reservation = u64::from(self.inner.estimate_tokens(req.messages))
-            .saturating_add(u64::from(req.max_tokens))
-            .saturating_add((req.system.len() / 3) as u64);
-        {
+        let estimated_input=u64::from(self.inner.estimate_tokens(req.messages))
+            .saturating_add((req.system.len()/3) as u64)
+            .saturating_add(req.tools.iter().map(|(n,d,s)|((n.len()+d.len()+s.len()).div_ceil(3)) as u64).sum::<u64>());
+        let (reservation,max_tokens)={
             let mut state = self.hub.state.lock().unwrap();
             // This reservation is the request's linearization point. Shutdown
             // takes the same lock; accepted earlier requests may drain only.
@@ -713,20 +743,26 @@ impl Provider for Meter {
             let i = &mut prospective;
             if i.input
                 .saturating_add(i.output)
-                .saturating_add(i.reserved_tokens)
+                .saturating_add(i.reserved_tokens).saturating_add(i.estimated_tokens)
                 >= i.token_limit
             {
                 return Err(provider::Error::Config(
                     "teammate token budget reached; inspect before continuing".into(),
                 ));
             }
+            let remaining=i.token_limit.saturating_sub(i.input.saturating_add(i.output).saturating_add(i.reserved_tokens).saturating_add(i.estimated_tokens));
+            if estimated_input>=remaining{return Err(provider::Error::Config("teammate request context exceeds remaining token budget; use a focused task or explicitly raise the budget".into()));}
+            let max_tokens=u64::from(req.max_tokens).min(remaining-estimated_input) as u32;
+            let reservation=estimated_input.saturating_add(u64::from(max_tokens));
             i.transport_pending = true;
             i.reserved_tokens = i.reserved_tokens.saturating_add(reservation);
             self.hub.persist(i).map_err(provider::Error::Config)?;
             worker.inflight += 1;
             worker.info = prospective;
-        }
-        let iter = match self.inner.stream(req) {
+            (reservation,max_tokens)
+        };
+        let bounded=provider::Request{model:req.model,system:req.system,messages:req.messages,tools:req.tools,max_tokens,reasoning:req.reasoning};
+        let iter = match self.inner.stream(&bounded) {
             Ok(i) => i,
             Err(e) => {
                 let mut state = self.hub.state.lock().unwrap();
@@ -776,8 +812,8 @@ impl Drop for MeterStream<'_> {
         let w = state.agents.get_mut(&self.id).unwrap();
         w.inflight = w.inflight.saturating_sub(1);
         w.info.transport_pending = w.inflight > 0;
+        w.info.reserved_tokens = w.info.reserved_tokens.saturating_sub(self.reservation);
         if let Some(u) = self.usage {
-            w.info.reserved_tokens = w.info.reserved_tokens.saturating_sub(self.reservation);
             w.info.input = w.info.input.saturating_add(u.prompt_total() as u64);
             w.info.output = w.info.output.saturating_add(u.output as u64);
             w.info.cost_usd = if w.info.usage_known && w.info.cost_complete {
@@ -790,6 +826,7 @@ impl Drop for MeterStream<'_> {
                 w.info.cost_complete = false;
             }
         } else {
+            w.info.estimated_tokens=w.info.estimated_tokens.saturating_add(self.reservation);
             w.info.usage_known = false;
             w.info.cost_usd = None;
             w.info.cost_complete = false;
@@ -963,7 +1000,7 @@ pub fn enabled(owner: &str) -> bool {
     get(owner).is_some()
 }
 
-const HELP: &str = "gc agent [--session MAIN_ID] ACTION\n  create NAME TASK [--model ID] [--tokens N] [--write] [--worktree]\n  list | inspect ID | transcript ID [--before BYTE] | interactions [--before BYTE]\n  send ID MESSAGE | resume ID MESSAGE | wait ID [SECONDS]\n  interrupt ID | archive ID | discard ID | budget ID TOKENS\nDefault: read-only, two active workers, 100000 cumulative tokens, 4096 output/response.\nFollow-ups retain context. Complete transcripts are fetched only on demand.\nThe default model is pinned when the main session opens; --model overrides it.\nIdle workers consume no model requests. --session selects a running owner from another shell.\n";
+const HELP: &str = "gc agent [--session MAIN_ID] ACTION\n  create NAME TASK [--model ID] [--tokens N] [--role executor|reviewer|research] [--write] [--worktree]\n  handoff FILE.json (validate and notify parent)\n  checkpoint changes|completion (explicit, read-only, configured reviewer budget)\n  list | inspect ID | transcript ID [--before BYTE] | interactions [--before BYTE]\n  send ID MESSAGE | resume ID MESSAGE | wait ID [SECONDS]\n  interrupt ID | archive ID | discard ID | budget ID TOKENS\nDefault: read-only, two active workers, 100000 cumulative tokens, 4096 output/response.\nFollow-ups retain context. Complete transcripts are fetched only on demand.\nThe default model is pinned when the main session opens; --model overrides it.\nIdle workers consume no model requests. --session selects a running owner from another shell.\n";
 pub fn command(args: &[String]) -> Result<(), String> {
     if args.is_empty() || args.iter().any(|s| s == "--help" || s == "-h") {
         crate::cli::text("Teammates", HELP);
@@ -986,7 +1023,21 @@ pub fn command(args: &[String]) -> Result<(), String> {
     }
     let action = args[0].as_str();
     let mut req = json!({"action":action,"from":if explicit{"human"}else{"main"}});
-    if action == "create" {
+    if action == "handoff" {
+        if args.len() != 2 {
+            return Err("gc agent handoff FILE.json".into());
+        }
+        let bytes = crate::requests::bounded(std::path::Path::new(&args[1]), 64 * 1024)?;
+        req["handoff"] = serde_json::from_slice(&bytes).map_err(|_| "Invalid handoff JSON")?;
+    } else if action == "checkpoint" {
+        req["trigger"] = json!(
+            args.get(1)
+                .ok_or("checkpoint requires changes or completion")?
+        );
+        if args.len() != 2 {
+            return Err("gc agent checkpoint changes|completion".into());
+        }
+    } else if action == "create" {
         req["name"] = json!(args.get(1).ok_or(HELP)?);
         let mut text = Vec::new();
         let mut i = 2;
@@ -994,7 +1045,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
             match args[i].as_str() {
                 "--write" => req["write"] = json!(true),
                 "--worktree" => req["worktree"] = json!(true),
-                "--model" | "--tokens" => {
+                "--model" | "--tokens" | "--role" => {
                     let key = args[i].trim_start_matches("--");
                     i += 1;
                     let v = args.get(i).ok_or("option requires value")?;
@@ -1445,10 +1496,11 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
             } else if let Some(info) = infos.get(selected) {
                 rows.push(format!("{} · {}", info.name, info.status));
                 rows.push(format!(
-                    "{} / {} tokens · {} reserved · cost in session ledger",
+                    "{} / {} tokens · {} reserved · {} estimated (usage unavailable)",
                     info.input.saturating_add(info.output),
                     info.token_limit,
-                    info.reserved_tokens
+                    info.reserved_tokens,
+                    info.estimated_tokens
                 ));
                 rows.extend(
                     cache.rows(
@@ -1887,6 +1939,24 @@ mod tests {
         ) -> Result<Box<dyn Iterator<Item = provider::Event> + '_>, provider::Error> {
             Err(provider::Error::Config("connection refused".into()))
         }
+    }
+    struct MissingUsage;
+    impl Provider for MissingUsage{
+        fn id(&self)->&str{"fake"}
+        fn context_window(&self)->u32{100000}
+        fn stream(&self,_:&provider::Request<'_>)->Result<Box<dyn Iterator<Item=provider::Event>+'_>,provider::Error>{Ok(Box::new(vec![provider::Event::Done].into_iter()))}
+    }
+    #[test]
+    fn missing_usage_releases_transport_reservation_and_labels_estimate(){
+        let(g,dir,_)=fixture();
+        g.hub.request(&json!({"action":"create","name":"review","text":"check"})).unwrap();settled(&g.hub);
+        let id=g.hub.snapshot()[0].id.clone();
+        let meter=Meter{inner:Box::new(MissingUsage),hub:Arc::clone(&g.hub),id};
+        let req=provider::Request{model:"fake",system:"",messages:&[],tools:&[],max_tokens:100,reasoning:None};
+        meter.stream(&req).unwrap().for_each(drop);
+        let info=g.hub.snapshot().remove(0);
+        assert_eq!(info.reserved_tokens,0);assert!(!info.transport_pending);assert_eq!(info.estimated_tokens,100);assert!(!info.usage_known);
+        drop(meter);drop(g);fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn immediate_provider_errors_release_reservations() {

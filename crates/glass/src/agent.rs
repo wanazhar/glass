@@ -253,9 +253,11 @@ impl<'a> Agent<'a> {
         if let Some(live) = self.live.as_mut() {
             live.tool(&call.id, &call.name);
         }
-        let command = call
-            .arg_str("command")
-            .or_else(||call.arg_raw("job").and_then(|raw|serde_json::from_str(&raw).ok()).map(|v|crate::jobs::label(&v)));
+        let command = call.arg_str("command").or_else(|| {
+            call.arg_raw("job")
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .map(|v| crate::jobs::label(&v))
+        });
         self.emit(Progress::ToolStart {
             call_id: &call.id,
             name: &call.name,
@@ -372,6 +374,7 @@ impl<'a> Agent<'a> {
             }
         }
         let snapshot = CacheSnapshot {
+            session_path: Some(self.session.path.clone()),
             system: self.effective_system(),
             messages: self.session.messages(),
             tools,
@@ -488,7 +491,7 @@ impl<'a> Agent<'a> {
         if self.empty_correction {
             system.push_str("\nYour preceding response contained reasoning but no answer or tool call. Continue the current task from the existing tool results. Return a user-facing answer or a valid tool call; do not repeat completed actions.\n");
         }
-        let model = self.provider.id().to_string();
+        let model = self.provider.model().to_string();
 
         // Size of the prefix a provider would cache: system prompt plus tool
         // schemas. Reported to extensions so a cache warmer knows whether a
@@ -520,6 +523,8 @@ impl<'a> Agent<'a> {
             ))
         })?;
 
+        let mut trace = crate::requests::Trace::begin(self.session, &req);
+        trace.pricing(self.provider.rate_card());
         self.emit(Progress::Waiting);
         let receiver = if let Some(factory) = self.stream_factory.clone() {
             let (tx, rx) = std::sync::mpsc::sync_channel(64);
@@ -616,6 +621,7 @@ impl<'a> Agent<'a> {
                 provider::RETRY_ATTEMPTS,
                 &provider::RETRY_DELAYS,
                 |attempt, delay, why| {
+                    trace.retry();
                     if let Some(live) = self.live.as_mut() {
                         live.retry(attempt as u32, delay);
                     }
@@ -649,6 +655,7 @@ impl<'a> Agent<'a> {
                         delay_s,
                         reason,
                     }) => {
+                        trace.retry();
                         if let Some(live) = self.live.as_mut() {
                             live.retry(attempt as u32, delay_s);
                         }
@@ -687,6 +694,7 @@ impl<'a> Agent<'a> {
                 return Ok(out);
             }
             let Some(ev) = ev else { continue };
+            trace.event(&ev);
             match ev {
                 Event::Text(t) => {
                     // Emit before accumulating so the UI can paint the delta
@@ -712,7 +720,10 @@ impl<'a> Agent<'a> {
                     name,
                     arguments,
                 }),
-                Event::Usage(u) => { out.last_input = Some(u.prompt_total()); out.usage = Some(u); },
+                Event::Usage(u) => {
+                    out.last_input = Some(u.prompt_total());
+                    out.usage = Some(u);
+                }
                 Event::Warning(w) => {
                     let w = crate::live::sanitize_provider_detail(&w);
                     self.emit(Progress::ProviderNotice(&w));
@@ -739,11 +750,16 @@ impl<'a> Agent<'a> {
             }
         }
         let mut identities = std::collections::HashSet::new();
-        if out.tool_calls.iter().any(|call| call.id.is_empty() || call.name.is_empty()
-            || !identities.insert(call.id.as_str())) {
-            return Err(provider::Error::Transport("provider returned missing or duplicate tool call identity; no tools executed".into()));
+        if out.tool_calls.iter().any(|call| {
+            call.id.is_empty() || call.name.is_empty() || !identities.insert(call.id.as_str())
+        }) {
+            return Err(provider::Error::Transport(
+                "provider returned missing or duplicate tool call identity; no tools executed"
+                    .into(),
+            ));
         }
         if out.text.trim().is_empty() && out.tool_calls.is_empty() {
+            trace.outcome("empty response: no text or tool calls");
             self.emit(Progress::ProviderFailure(
                 "provider returned no text or tool calls",
             ));
@@ -812,9 +828,15 @@ impl<'a> Agent<'a> {
                     }
                     self.turn(&mut pump)?
                 }
-                Err(e) if !self.empty_recovered && e.to_string().contains("reasoning arrived without an answer") => {
+                Err(e)
+                    if !self.empty_recovered
+                        && e.to_string()
+                            .contains("reasoning arrived without an answer") =>
+                {
                     self.empty_recovered = true;
-                    let detail = format!("Reasoning-only response; recovering once without replaying completed tools. {e}");
+                    let detail = format!(
+                        "Reasoning-only response; recovering once without replaying completed tools. {e}"
+                    );
                     self.session.append(Record::Meta(detail.clone()));
                     self.emit(Progress::ProviderNotice(&detail));
                     self.empty_correction = true;
@@ -850,7 +872,7 @@ impl<'a> Agent<'a> {
             }
 
             // Give mods a look at the finished turn.
-            let model = self.provider.id().to_string();
+            let model = self.provider.model().to_string();
             let current = self.session.messages();
             let ctx = TurnContext {
                 messages: &current,
@@ -896,28 +918,54 @@ impl<'a> Agent<'a> {
                         tools.push((name, description, schema));
                     }
                 }
-                tools.into_iter().map(|(n, _, schema)| {
-                    (n, serde_json::from_str(&schema).unwrap_or(serde_json::Value::Bool(false)))
-                }).collect::<Vec<_>>()
+                tools
+                    .into_iter()
+                    .map(|(n, _, schema)| {
+                        (
+                            n,
+                            serde_json::from_str(&schema).unwrap_or(serde_json::Value::Bool(false)),
+                        )
+                    })
+                    .collect::<Vec<_>>()
             });
-            let errors: Vec<_> = out.tool_calls.iter()
-                .map(|call| crate::tool_repair::validate(call, schemas).err()).collect();
+            let errors: Vec<_> = out
+                .tool_calls
+                .iter()
+                .map(|call| crate::tool_repair::validate(call, schemas).err())
+                .collect();
             if errors.iter().any(Option::is_some) {
                 repairs += 1;
                 let exhausted = repairs > crate::tool_repair::MAX_REPAIRS;
                 let notice = if exhausted {
                     "Tool repair exhausted; rejected batch did not execute".to_string()
                 } else {
-                    format!("Tool repair {repairs}/{} · rejected batch did not execute", crate::tool_repair::MAX_REPAIRS)
+                    format!(
+                        "Tool repair {repairs}/{} · rejected batch did not execute",
+                        crate::tool_repair::MAX_REPAIRS
+                    )
                 };
                 self.emit(Progress::ProviderNotice(&notice));
                 for (call, error) in out.tool_calls.iter().zip(errors) {
-                    self.session.append_checked(&[Record::ToolCall {
-                        id: call.id.clone(), name: call.name.clone(), arguments: call.arguments.clone(),
-                    }]).map_err(|e|provider::Error::Config(format!("cannot record rejected tool call: {e}")))?;
+                    self.session
+                        .append_checked(&[Record::ToolCall {
+                            id: call.id.clone(),
+                            name: call.name.clone(),
+                            arguments: call.arguments.clone(),
+                        }])
+                        .map_err(|e| {
+                            provider::Error::Config(format!(
+                                "cannot record rejected tool call: {e}"
+                            ))
+                        })?;
                     self.emit_tool_start(call);
                     let error = error.unwrap_or_else(|| "another call in this batch was invalid; resubmit this call with the corrected batch".into());
-                    self.finish_tool(call, tools::Outcome::err(crate::tool_repair::feedback(&error, repairs.min(crate::tool_repair::MAX_REPAIRS))));
+                    self.finish_tool(
+                        call,
+                        tools::Outcome::err(crate::tool_repair::feedback(
+                            &error,
+                            repairs.min(crate::tool_repair::MAX_REPAIRS),
+                        )),
+                    );
                 }
                 self.session.append(Record::Meta(notice));
                 if exhausted {
@@ -1307,7 +1355,14 @@ impl<'a> Agent<'a> {
 
     /// Record a bash result produced on a worker thread.
     fn apply_bash_result(&mut self, call: &ToolCall, outcome: tools::Outcome) {
-        let command = call.arg_str("command").or_else(||call.arg_raw("job").and_then(|raw|serde_json::from_str(&raw).ok()).map(|v|crate::jobs::label(&v))).unwrap_or_default();
+        let command = call
+            .arg_str("command")
+            .or_else(|| {
+                call.arg_raw("job")
+                    .and_then(|raw| serde_json::from_str(&raw).ok())
+                    .map(|v| crate::jobs::label(&v))
+            })
+            .unwrap_or_default();
         let mut body = outcome.body.clone();
 
         // Verification belongs here, not at the call site: this is the single
@@ -1576,7 +1631,7 @@ impl<'a> Agent<'a> {
             );
         }
         let mut p = self.base_prompt.clone();
-        let model = self.provider.id().to_string();
+        let model = self.provider.model().to_string();
         let ctx = TurnContext {
             messages: &[],
             model: &model,
@@ -1716,7 +1771,7 @@ impl<'a> Agent<'a> {
         // Ask for a summary using a bare request with no tools, so the model
         // cannot start calling tools during what should be a read-only turn.
         let tools: Vec<(String, String, String)> = Vec::new();
-        let model = self.provider.id().to_string();
+        let model = self.provider.model().to_string();
         let req = Request {
             model: &model,
             system: "You write precise technical summaries. Follow the instructions exactly.",
@@ -1726,7 +1781,10 @@ impl<'a> Agent<'a> {
             reasoning: None,
         };
 
-        let manifest = format!("Compaction summary request\n{}", crate::context_audit::capture(&req, None, "", false));
+        let manifest = format!(
+            "Compaction summary request\n{}",
+            crate::context_audit::capture(&req, None, "", false)
+        );
         crate::context_audit::save(self.session, &manifest)
             .map_err(|e| provider::Error::Config(format!("cannot record summary context: {e}")))?;
 
@@ -1860,29 +1918,58 @@ mod warm_integration {
     fn latest_request_input_is_separate_from_aggregated_tool_turn_usage() {
         struct Rounds(AtomicU64);
         impl Provider for Rounds {
-            fn id(&self) -> &str { "rounds" }
-            fn context_window(&self) -> u32 { 200_000 }
-            fn stream(&self, _: &Request<'_>) -> Result<Box<dyn Iterator<Item=Event> + '_>, Error> {
+            fn id(&self) -> &str {
+                "rounds"
+            }
+            fn context_window(&self) -> u32 {
+                200_000
+            }
+            fn stream(
+                &self,
+                _: &Request<'_>,
+            ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
                 let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
-                let mut events = if first { vec![Event::ToolCall { id:"call".into(), name:"state".into(), arguments:"{}".into() }] }
-                    else { vec![Event::Text("done".into())] };
-                events.push(Event::Usage(crate::provider::Usage { input:if first { 90_000 } else { 1000 }, output:10, ..Default::default() }));
+                let mut events = if first {
+                    vec![Event::ToolCall {
+                        id: "call".into(),
+                        name: "state".into(),
+                        arguments: "{}".into(),
+                    }]
+                } else {
+                    vec![Event::Text("done".into())]
+                };
+                events.push(Event::Usage(crate::provider::Usage {
+                    input: if first { 90_000 } else { 1000 },
+                    output: 10,
+                    ..Default::default()
+                }));
                 events.push(Event::Done);
                 Ok(Box::new(events.into_iter()))
             }
         }
-        let dir = std::env::temp_dir().join(format!("gc-usage-rounds-{}",std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gc-usage-rounds-{}", std::process::id()));
         let mut session = Session::create(&dir).unwrap();
         session.append(Record::User("task".into()));
-        let mut state = State::new(); let mods = Vec::new();
+        let mut state = State::new();
+        let mods = Vec::new();
         let mut extensions = Registry::load(&[], &dir, "rounds");
         let provider = Rounds(AtomicU64::new(0));
-        let (out, stop) = Agent::new(&provider,&mut session,&mut state,&mods,&mut extensions,&dir).run_turn(no_pump).unwrap();
-        assert_eq!(stop,Stop::Finished);
-        assert_eq!(out.usage.unwrap().prompt_total(),91_000);
-        assert_eq!(out.last_input,Some(1000));
-        assert_eq!(crate::context_audit::reports(&session).len(),2);
-        drop(session); std::fs::remove_dir_all(dir).unwrap();
+        let (out, stop) = Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &dir,
+        )
+        .run_turn(no_pump)
+        .unwrap();
+        assert_eq!(stop, Stop::Finished);
+        assert_eq!(out.usage.unwrap().prompt_total(), 91_000);
+        assert_eq!(out.last_input, Some(1000));
+        assert_eq!(crate::context_audit::reports(&session).len(), 2);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn counting_factory(calls: Arc<AtomicU64>) -> ProviderFactory {

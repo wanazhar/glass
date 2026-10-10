@@ -72,6 +72,16 @@ pub struct Config {
     /// Credential env scrubbing for shell children: "", "scrub", or "inherit".
     /// Empty means "scrub whenever the sandbox is on".
     pub sandbox_env: String,
+    /// Outbound host policy for sandboxed shells, via a loopback CONNECT
+    /// proxy: "off" (default; children reach the network directly within
+    /// the port policy) or "policy" (children get proxy env vars and
+    /// CONNECT is checked against `egress_allow`). No TLS interception:
+    /// a granted CONNECT is relayed blind.
+    pub sandbox_egress: String,
+    /// Hosts the egress proxy may connect to. Wildcard `*.suffix` patterns
+    /// match at a dot boundary. Only consulted when `sandbox_egress =
+    /// "policy"`.
+    pub egress_allow: Vec<String>,
     /// Per-record fsync policy for session logs: "off" (default) or "always".
     pub log_fsync: String,
     /// How often streamed partial output is committed to the sidecar, in ms.
@@ -107,6 +117,8 @@ impl Default for Config {
             extension_isolation: "off".into(),
             sandbox_ports: vec![443, 80],
             sandbox_env: String::new(),
+            sandbox_egress: "off".into(),
+            egress_allow: Vec::new(),
             log_fsync: "off".into(),
             live_flush_ms: 250,
             program_status: "on".into(),
@@ -235,6 +247,8 @@ struct Raw {
     sandbox_env: Option<String>,
     log_fsync: Option<String>,
     live_flush_ms: Option<u32>,
+    sandbox_egress: Option<String>,
+    egress_allow: Option<Vec<String>>,
     program_status: Option<String>,
 
     skills_dir: Option<String>,
@@ -408,6 +422,29 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
             )));
         }
         cfg.sandbox_env = v;
+    }
+    if let Some(v) = raw.sandbox_egress {
+        let v = v.trim().to_ascii_lowercase();
+        if !matches!(v.as_str(), "off" | "policy") {
+            return Err(LoadError::Invalid(format!(
+                "sandbox_egress must be off or policy (got `{v}`)"
+            )));
+        }
+        cfg.sandbox_egress = v;
+    }
+    if let Some(v) = raw.egress_allow {
+        // Hosts and patterns only: an entry with a scheme or port is a
+        // likely mistake the config was asked about, so refuse rather than
+        // silently matching a host that can never appear.
+        for host in &v {
+            let trimmed = host.trim();
+            if trimmed.is_empty() || trimmed.contains("//") || trimmed.contains(':') {
+                return Err(LoadError::Invalid(format!(
+                    "egress_allow entries are bare hosts or `*.suffix` patterns (got `{host}`)"
+                )));
+            }
+        }
+        cfg.egress_allow = v.iter().map(|h| h.trim().to_string()).collect();
     }
     if let Some(v) = raw.log_fsync {
         let v = v.trim().to_ascii_lowercase();

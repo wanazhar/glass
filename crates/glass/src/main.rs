@@ -11,6 +11,8 @@ mod auth;
 mod btw;
 mod budget;
 mod checkpoint;
+mod cli;
+mod resume_picker;
 mod compact;
 mod concurrency;
 mod config;
@@ -88,6 +90,12 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let _job_cleanup = jobs::Cleanup;
 
+    match cli::command_help(&args) {
+        Ok(true) => return,
+        Ok(false) => {},
+        Err(error) => {cli::error("gc help", &error);std::process::exit(2);}
+    }
+
     // Config parser errors can include source excerpts. Keep doctor JSON and
     // stderr useful without echoing potentially credential-bearing TOML.
     if args.first().is_some_and(|a| a == "doctor") && config::load(&config::default_path()).is_err() {
@@ -95,7 +103,7 @@ fn main() {
         if args.iter().any(|a| a == "--json") {
             println!("{}", serde_json::json!({"status":"error","error":message,"text":""}));
         } else {
-            eprintln!("glass-core doctor: {message}");
+            cli::error("glass-core doctor", message);
         }
         std::process::exit(2);
     }
@@ -103,7 +111,7 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("--help") | Some("-h") | Some("help") => {
             if let Err(error) = help::show(&args[1..]) {
-                eprintln!("gc help: {error}");
+                cli::error("gc help", &error);
                 std::process::exit(2);
             }
             return;
@@ -114,7 +122,7 @@ fn main() {
         }
         Some("agent") => {
             if let Err(e) = team::command(&args[1..]) {
-                eprintln!("agent: {}", glass_tui::markdown::sanitize(&e));
+                cli::error("agent", &glass_tui::markdown::sanitize(&e));
                 std::process::exit(1);
             }
             return;
@@ -126,7 +134,7 @@ fn main() {
                 {
                     emit_json(serde_json::json!({"status":"error","error":e}));
                 }
-                eprintln!("file: {}", glass_tui::markdown::sanitize(&e));
+                cli::error("file", &glass_tui::markdown::sanitize(&e));
                 std::process::exit(1);
             }
             return;
@@ -138,7 +146,7 @@ fn main() {
         Some("search") => {
             match args.get(1).map(String::as_str) {
                 Some(pattern) => search_sessions(pattern),
-                None => println!("usage: glass-core search <pattern>"),
+                None => cli::line("usage: gc search <pattern>"),
             }
             return;
         }
@@ -151,10 +159,7 @@ fn main() {
         {
             emit_json(serde_json::json!({"status":"error","error":e,"text":""}));
         }
-        eprintln!(
-            "glass-core: {}",
-            glass_tui::markdown::sanitize(&e.to_string())
-        );
+        cli::error("glass-core", &glass_tui::markdown::sanitize(&e));
         jobs::finish_all();
         std::process::exit(if let Some(code) = signals::exit_code() {
             code
@@ -171,7 +176,7 @@ fn main() {
 fn list_sessions() {
     let dir = config::data_dir();
     let Ok(entries) = std::fs::read_dir(&dir) else {
-        println!("no sessions in {}", dir.display());
+        crate::cli_println!("no sessions in {}", dir.display());
         return;
     };
     let mut rows: Vec<(String, u64, Option<std::time::SystemTime>, Option<String>)> = entries
@@ -189,10 +194,15 @@ fn list_sessions() {
     rows.sort_by_key(|r| std::cmp::Reverse(r.2));
 
     if rows.is_empty() {
-        println!("no sessions in {}", dir.display());
+        crate::cli_println!("no sessions in {}", dir.display());
         return;
     }
-    println!(
+    if cli::styled() {
+        let items=rows.iter().map(|(id,bytes,modified,title)|serde_json::json!({"thread":id,"title":title.as_deref().unwrap_or("Untitled conversation"),"modified":modified.map(format_time),"bytes":bytes})).collect::<Vec<_>>();
+        cli::report("Saved conversations",&serde_json::json!({"conversations":items}));
+        return;
+    }
+    crate::cli_println!(
         "{:<28} {:<16} {:>10}  title / first message",
         "session", "modified (UTC)", "bytes"
     );
@@ -201,7 +211,7 @@ fn list_sessions() {
         let preview = title
             .map(|f| first_line(&f, 56))
             .unwrap_or_else(|| "(empty)".into());
-        println!("{id:<28} {when:<16} {bytes:>10}  {preview}");
+        crate::cli_println!("{id:<28} {when:<16} {bytes:>10}  {preview}");
     }
 }
 
@@ -381,7 +391,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 fn search_sessions(pattern: &str) {
     let dir = config::data_dir();
     let Ok(entries) = std::fs::read_dir(&dir) else {
-        println!("no sessions in {}", dir.display());
+        crate::cli_println!("no sessions in {}", dir.display());
         return;
     };
     let needle = pattern.to_ascii_lowercase();
@@ -429,16 +439,16 @@ fn search_sessions(pattern: &str) {
             if !text.to_ascii_lowercase().contains(&needle) {
                 continue;
             }
-            println!("{id} t{turn:<4} {}", first_line(text, 100));
+            crate::cli_println!("{id} t{turn:<4} {}", first_line(text, 100));
             hits += 1;
             if hits >= MAX_HITS {
-                println!("… stopping at {MAX_HITS} matches; narrow the pattern");
+                crate::cli_println!("… stopping at {MAX_HITS} matches; narrow the pattern");
                 return;
             }
         }
     }
     if hits == 0 {
-        println!("no sessions match {pattern:?}");
+        crate::cli_println!("no sessions match {pattern:?}");
     }
 }
 
@@ -476,6 +486,15 @@ fn run_plan(args: &[String]) -> bool {
 fn run(args: &[String]) -> Result<(), String> {
     let cfg_path = config::default_path();
     let mut cfg = config::load(&cfg_path).map_err(|e| e.to_string())?;
+    if args.first().is_some_and(|a|a == "resume") && (args.len()>2 || args.get(1).is_some_and(|a|a.starts_with('-'))) {
+        return Err("usage: gc resume [ID]; omit ID to choose a conversation".into());
+    }
+    if args.first().is_some_and(|a|a == "resume") && args.len() == 1 {
+        return match resume_picker::choose(&cfg.workspace)? {
+            Some(id) => run(&["resume".into(),id]),
+            None => Ok(()),
+        };
+    }
     if args.first().is_some_and(|a| a == "doctor") && !args.iter().any(|a| a == "--probe") {
         // Local checks use best-effort saved references only. Keep this path
         // before sandbox/status initialization and never let corrupt local
@@ -618,10 +637,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let session = match args.first().map(String::as_str) {
         Some("resume") => match resume {
             Some(id) => Session::open(&dir, id).map_err(|e| format!("cannot resume {id}: {e}"))?,
-            None => match polish::sessions(&cfg.workspace).into_iter().next() {
-                Some(s) => Session::open(&dir, &s.id).map_err(|e| e.to_string())?,
-                None => Session::create(&dir).map_err(|e| e.to_string())?,
-            },
+            None => return Err("choose a conversation with gc resume, or supply an ID".into()),
         },
         Some("run") => match run_resume(&args[1..])? {
             Some(id) => Session::open(&dir, id).map_err(|e| e.to_string())?,
@@ -750,13 +766,8 @@ fn headless_info(args: &[String], cfg: &config::Config) -> Result<bool, String> 
     };
     if json {
         emit_json(value)
-    } else if let Some(t) = value["text"].as_str() {
-        println!("{t}")
     } else {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?
-        )
+        cli::report(command, &value);
     }
     Ok(true)
 }
@@ -813,7 +824,7 @@ fn headless_export(cfg: &config::Config, args: &[String]) -> Result<(), String> 
             "written": written
         }));
     } else if let Some(path) = &out {
-        println!("wrote {}", path.display());
+        cli::line(&format!("wrote {}", path.display()));
     } else {
         print!("{md}");
     }
@@ -1081,7 +1092,7 @@ fn headless(
             serde_json::json!({"session": session.id, "status": status, "text": text, "error": error, "cost_usd": if l.unknown { None } else { Some(l.spent) }, "checkpoint_error": checkpoint_error}),
         );
     } else {
-        println!("{text}");
+        cli::markdown("Task result", &format!("{text}\n"));
         if let Some(e) = &checkpoint_error {
             eprintln!("checkpoint: {e}");
         }

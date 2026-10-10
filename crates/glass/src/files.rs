@@ -478,8 +478,8 @@ pub fn command(args: &[String]) -> Result<(), String> {
         .collect::<Vec<_>>();
     let args = &filtered;
     if args.is_empty() || args[0] == "--help" {
-        println!(
-            "file [--json] read PATH [OFFSET LIMIT] | check PATH | edit|write < JSON\nEdit JSON: {{\"path\":\"a.rs\",\"expected\":\"SHA256 from read\",\"edits\":[{{\"start\":2,\"end\":3,\"text\":\"replacement\"}}]}}\nExact edit: {{\"old\":\"unique text\",\"new\":\"replacement\"}}; insertion: end=start-1.\nWrite JSON: {{\"path\":\"a.rs\",\"expected\":null,\"text\":\"new file\"}} (null=create-only). Optional validate:true requires a passing supported syntax check.\nUTF-8 regular files only, 8 MiB maximum; workspace-relative paths; no symlinks. JSON results are bounded; revisions cover the entire file."
+        crate::cli::text("Files",
+            "Usage:\n  gc file [--json] read PATH [OFFSET LIMIT] | check PATH | edit|write < JSON\n\nEdit request:\n {\"path\":\"a.rs\",\"expected\":\"SHA256 from read\",\"edits\":[{\"start\":2,\"end\":3,\"text\":\"replacement\"}]}\nExact edit: {\"old\":\"unique text\",\"new\":\"replacement\"}; insertion: end=start-1.\n\nWrite request:\n {\"path\":\"a.rs\",\"expected\":null,\"text\":\"new file\"} (null=create-only). Optional validate:true requires a passing supported syntax check.\n\nSafety:\nUTF-8 regular files only, 8 MiB maximum; workspace-relative paths; no symlinks. JSON results are bounded; revisions cover the entire file."
         );
         return Ok(());
     }
@@ -543,7 +543,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
             ),
             _ => crate::diagnostics::summary(&out),
         };
-        print!("{}", glass_tui::markdown::sanitize(&display));
+        crate::cli::literal("Files", &glass_tui::markdown::sanitize(&display));
     }
     if action == "check" && out["status"] != "ok" {
         return Err(format!(

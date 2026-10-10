@@ -400,7 +400,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
                     .collect();
                 crate::emit_json(serde_json::json!({"plugins": plugins}));
             } else if installed.is_empty() {
-                println!("no plugins installed in {}", plugins_dir().display());
+                crate::cli_println!("no plugins installed in {}", plugins_dir().display());
             } else {
                 for p in &installed {
                     let drift = lock
@@ -414,7 +414,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
                             }
                         })
                         .unwrap_or("");
-                    println!(
+                    crate::cli_println!(
                         "{} v{} · {} skills · mcp: {}{drift}\n  {}",
                         p.name,
                         p.version,
@@ -506,7 +506,7 @@ fn add(source: &str) -> Result<(), String> {
         },
     );
     save_lock(&lock)?;
-    println!(
+    crate::cli_println!(
         "installed plugin `{}` ({} skills, mcp: {})",
         installed.name,
         installed.skills.len(),
@@ -520,7 +520,7 @@ fn verify() -> Result<(), String> {
     let mut names: Vec<_> = lock.plugins.keys().cloned().collect();
     names.sort();
     if names.is_empty() {
-        println!("no managed plugins to verify");
+        crate::cli_println!("no managed plugins to verify");
         return Ok(());
     }
     let mut failed = false;
@@ -529,17 +529,17 @@ fn verify() -> Result<(), String> {
         let actual = content_hash(&dir);
         let entry = lock.plugins.get_mut(&name).unwrap();
         match actual {
-            Ok(hash) if hash == entry.hash => println!(
+            Ok(hash) if hash == entry.hash => crate::cli_println!(
                 "{name}: verified v{} ({})",
                 entry.version,
                 entry.revision.as_deref().unwrap_or("no git revision")
             ),
             Ok(_) => {
-                println!("{name}: FAILED content differs from receipt");
+                crate::cli_println!("{name}: FAILED content differs from receipt");
                 failed = true;
             }
             Err(e) => {
-                println!("{name}: FAILED {e}");
+                crate::cli_println!("{name}: FAILED {e}");
                 failed = true;
             }
         }
@@ -590,7 +590,7 @@ fn update(name: &str, accept_permissions: bool) -> Result<(), String> {
     let old_caps = old.capabilities.clone();
     let new_caps = capabilities(&stage)?;
     if old_caps != new_caps {
-        println!(
+        crate::cli_println!(
             "capabilities changed for {name}:\n  old: {}\n  new: {}",
             old_caps, new_caps
         );
@@ -619,7 +619,7 @@ fn update(name: &str, accept_permissions: bool) -> Result<(), String> {
         ));
     }
     std::fs::remove_dir_all(&backup).map_err(|e| e.to_string())?;
-    println!("updated plugin `{name}`");
+    crate::cli_println!("updated plugin `{name}`");
     Ok(())
 }
 
@@ -651,9 +651,9 @@ fn remove(name: &str) -> Result<(), String> {
     lock.plugins.remove(name);
     save_lock(&lock)?;
     let data = plugin_data_dir(name);
-    println!("removed plugin `{name}`");
+    crate::cli_println!("removed plugin `{name}`");
     if data.is_dir() {
-        println!(
+        crate::cli_println!(
             "note: its data directory is kept at {} (delete it when truly done)",
             data.display()
         );

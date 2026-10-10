@@ -194,11 +194,11 @@ pub fn command(args: &[String]) -> Result<(), String> {
                     .collect();
                 crate::emit_json(serde_json::json!({"worktrees": rows}));
             } else if rows.is_empty() {
-                println!("no worktrees under {}", root.display());
+                crate::cli_println!("no worktrees under {}", root.display());
             } else {
                 rows.sort_by(|a, b| a.1.cmp(&b.1));
                 for (path, modified, dirty) in rows {
-                    println!(
+                    crate::cli_println!(
                         "{} · {dirty} changed file(s) · {modified}\n  {}",
                         path.file_name()
                             .map(|n| n.to_string_lossy().into_owned())
@@ -218,7 +218,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
                 .map(String::as_str);
             let checkout = resolve(target)?;
             let summary = apply_patch(&workspace, &checkout, remove)?;
-            println!("{summary}");
+            crate::cli_println!("{summary}");
             Ok(())
         }
         _ => Err("usage: glass-core worktree list [--json] | worktree apply [<name>] [--remove]".into()),

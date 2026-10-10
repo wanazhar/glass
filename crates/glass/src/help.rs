@@ -6,7 +6,7 @@ const START: &[Item] = &[
     ("gc", "Start a conversation in the current directory."),
     (
         "gc resume [ID]",
-        "Continue the latest session, or choose one by ID.",
+        "Choose a conversation to resume, or supply its ID.",
     ),
     (
         "gc run <prompt>",
@@ -97,6 +97,7 @@ const KEYS: &[Item] = &[
     ("Ctrl+D", "Quit."),
 ];
 const RUN: &[Item] = &[
+    ("--trust", "Allow this workspace’s AGENTS.md for the run."),
     ("--json", "Return structured JSON for scripts."),
     ("--plan", "Inspect and plan with read-only tools."),
     ("--resume ID", "Continue a saved conversation."),
@@ -109,65 +110,7 @@ const RUN: &[Item] = &[
     ("--connection ID", "Use a saved provider connection."),
     ("--budget USD", "Set the session spending limit."),
 ];
-struct Page {
-    width: usize,
-    color: bool,
-    text: String,
-}
-impl Page {
-    fn row(&mut self, text: &str, tone: glass_tui::theme::Tone, bold: bool, indent: usize) {
-        let indent = indent.min(self.width.saturating_sub(1));
-        for row in glass_tui::text::wrap_words(text, self.width.saturating_sub(indent).max(1)) {
-            self.text.push_str(&" ".repeat(indent));
-            if self.color {
-                self.text.push_str(&glass_tui::theme::ansi(tone));
-                if bold {
-                    self.text.push_str("\x1b[1m");
-                }
-            }
-            self.text.push_str(&row);
-            if self.color {
-                self.text.push_str("\x1b[0m");
-            }
-            self.text.push('\n');
-        }
-    }
-    fn section(&mut self, title: &str, items: &[Item]) {
-        use glass_tui::theme::Tone;
-        self.text.push('\n');
-        self.row(title, Tone::Accent, true, 0);
-        let column = items
-            .iter()
-            .map(|(a, _)| glass_tui::text::width(a))
-            .max()
-            .unwrap_or(0)
-            + 3;
-        for (command, description) in items {
-            if self.width >= 72 && column < self.width / 2 {
-                let rows = glass_tui::text::wrap_words(description, self.width - column - 2);
-                self.text.push_str("  ");
-                if self.color {
-                    self.text.push_str(&glass_tui::theme::ansi(Tone::Secondary));
-                }
-                self.text.push_str(command);
-                if self.color {
-                    self.text.push_str("\x1b[0m");
-                }
-                self.text
-                    .push_str(&" ".repeat(column - glass_tui::text::width(command)));
-                self.text
-                    .push_str(rows.first().map(String::as_str).unwrap_or(""));
-                self.text.push('\n');
-                for row in rows.iter().skip(1) {
-                    self.row(row, Tone::Body, false, column + 2);
-                }
-            } else {
-                self.row(command, Tone::Secondary, true, 2);
-                self.row(description, Tone::Body, false, 4);
-            }
-        }
-    }
-}
+use crate::cli::Page;
 fn render(topic: &str, width: usize, color: bool) -> Result<String, String> {
     use glass_tui::theme::Tone;
     let mut p = Page {
@@ -219,6 +162,10 @@ fn render(topic: &str, width: usize, color: bool) -> Result<String, String> {
                     &[
                         ("gc list", "List all saved sessions."),
                         ("gc --version", "Print the installed version."),
+                        ("gc init [--write]", "Draft project instructions; optionally save AGENTS.md."),
+                        ("gc stop|respawn [ID]", "Stop or restart a hosted conversation."),
+                        ("gc logs [ID]", "Inspect recent conversation activity."),
+                        ("gc COMMAND --help", "Read a focused guide for any command."),
                     ],
                 );
             }
@@ -299,13 +246,18 @@ fn render(topic: &str, width: usize, color: bool) -> Result<String, String> {
 pub fn show(args: &[String]) -> Result<(), String> {
     let topic = args.first().map(String::as_str).unwrap_or("");
     if args.len() > 1 {
-        return Err("use gc help [commands|run|keys|all|agent|file]".into());
+        return Err("use gc help [commands|run|keys|all|COMMAND]".into());
     }
     if topic == "agent" {
         return crate::team::command(&["--help".into()]);
     }
     if topic == "file" {
         return crate::files::command(&["--help".into()]);
+    }
+    if !matches!(topic, "" | "commands" | "run" | "keys" | "all")
+        && crate::cli::command_help(&[topic.into(), "--help".into()])?
+    {
+        return Ok(());
     }
     let tty = io::stdout().is_terminal();
     let width = if tty {

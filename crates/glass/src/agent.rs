@@ -216,6 +216,10 @@ pub struct Agent<'a> {
     empty_correction: bool,
     /// Throttled partial-output sidecar, when the session wants one.
     live: Option<crate::partial::Writer>,
+    /// Repeated-tool-call detection across the current turn.
+    loop_window: crate::loop_detect::LoopWindow,
+    /// Count of tool calls run in this turn, for the read-staleness hint.
+    tool_call_index: u64,
 }
 
 /// Lines of a written file echoed back to the model.
@@ -302,6 +306,8 @@ impl<'a> Agent<'a> {
             empty_recovered: false,
             empty_correction: false,
             live: None,
+            loop_window: crate::loop_detect::LoopWindow::new(),
+            tool_call_index: 0,
         }
     }
 
@@ -843,6 +849,7 @@ impl<'a> Agent<'a> {
         }
         self.overflow_recovered = false;
         self.empty_recovered = false;
+        self.loop_window.clear();
         let mut repairs = 0;
         let mut repair_tools = None;
         for round in 0..self.max_tool_rounds {
@@ -1118,6 +1125,21 @@ impl<'a> Agent<'a> {
         Ok((last, Stop::ToolBudget))
     }
 
+    /// Record one call in the loop window and emit the single reminder when
+    /// the repeat threshold is crossed. Called at every execution site so
+    /// the count matches what actually runs, independent of batching mode.
+    fn loop_guard(&mut self, call: &ToolCall) {
+        self.tool_call_index = self.tool_call_index.saturating_add(1);
+        if call.name != "bash" && call.name != "state" {
+            return;
+        }
+        if self.loop_window.record(&call.name, &call.arguments) {
+            let reminder = crate::loop_detect::reminder(&call.name);
+            self.emit(Progress::ProviderNotice(&reminder));
+            self.session.append(Record::Meta(reminder));
+        }
+    }
+
     /// Execute a batch of tool calls, fanning out where it is safe.
     ///
     /// Results are re-inserted in call order, so the model sees the same
@@ -1155,6 +1177,7 @@ impl<'a> Agent<'a> {
                 if self.steer.is_some() {
                     break;
                 }
+                self.loop_guard(call);
                 self.run_tool_pumped_or_inline(call, pump);
             }
             return;
@@ -1173,6 +1196,7 @@ impl<'a> Agent<'a> {
                 if self.steer.is_some() {
                     break;
                 }
+                self.loop_guard(call);
                 self.run_tool_pumped_or_inline(call, pump);
             }
             return;
@@ -1213,6 +1237,7 @@ impl<'a> Agent<'a> {
                 if self.steer.is_some() {
                     break;
                 }
+                self.loop_guard(call);
                 self.run_tool_pumped_or_inline(call, pump);
             }
             return;
@@ -1270,6 +1295,7 @@ impl<'a> Agent<'a> {
             if let Some(out) = by_batch.remove(&i) {
                 self.apply_bash_result(call, out);
             } else if self.steer.is_none() {
+                self.loop_guard(call);
                 self.run_tool_pumped_or_inline(call, pump);
             }
         }
@@ -1417,7 +1443,8 @@ impl<'a> Agent<'a> {
             }
         }
         // Record what the command read, so a later write can be allowed.
-        self.reads.observe(&command, &outcome.body, self.workspace);
+        self.reads
+            .observe_at(&command, &outcome.body, self.workspace, self.tool_call_index);
 
         let rewritten = with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
             self.extensions
@@ -1554,7 +1581,28 @@ impl<'a> Agent<'a> {
                 outcome=match serde_json::from_str(&capabilities).map_err(|e|e.to_string()).and_then(|value|self.extensions.capabilities(&value)) {
                     Ok(value)=>tools::Outcome::ok(value.to_string()),Err(error)=>tools::Outcome::err(error),
                 };
-            } else { outcome = self.state.apply(call); }
+            } else {
+                outcome = self.state.apply(call);
+                // Staleness hint for editing results: an edit against a file
+                // last read many tool calls ago gains one line, so the model
+                // rereads before stacking further edits. The revision guard
+                // already rejects genuinely stale writes; this covers the
+                // model's memory, which the guard cannot see.
+                let target = call
+                    .arg_str("path")
+                    .or_else(|| call.arg_str("file"));
+                if let (true, Some(hint), Some(path)) = (
+                    call.name == "state" && !outcome.body.is_empty(),
+                    target
+                        .as_ref()
+                        .and_then(|p| self.reads.staleness_hint(Path::new(p), self.tool_call_index)),
+                    target,
+                ) {
+                    let _ = path;
+                    outcome.body.push('\n');
+                    outcome.body.push_str(&hint);
+                }
+            }
         } else if self.extensions.has_tool(&call.name) {
             // The bridge lets an extension call tools on the host while it
             // runs — only `bash` and `state`, the model's own tools.

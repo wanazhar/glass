@@ -40,6 +40,7 @@ mod input;
 mod inspect;
 mod jobs;
 mod live;
+mod loop_detect;
 mod loops;
 mod modal;
 mod mods;
@@ -443,6 +444,7 @@ fn code_review(
     scratch: &Path,
     factory: &crate::warmer::ProviderFactory,
     max_findings: usize,
+    parent_prompt: Option<String>,
 ) -> Result<String, String> {
     let diff = std::process::Command::new("git")
         .current_dir(workspace)
@@ -480,7 +482,7 @@ fn code_review(
     };
     let make = |_: Option<&str>| -> Result<Box<dyn provider::Provider>, String> { factory() };
     let reports = crate::subagent::run_batch(&[task], 1, |t| {
-        crate::subagent::run_task(t, workspace, scratch, &make)
+        crate::subagent::run_task(t, workspace, scratch, &make, parent_prompt.as_deref())
     });
     reports
         .first()
@@ -1150,11 +1152,13 @@ fn headless(
     let scratch = config::data_dir().join("subagents");
     let sub_factory = Arc::clone(&factory);
     let sub_factory_for = Arc::clone(&factory_for_model);
+    let headless_parent_prompt = cfg.system_prompt.clone();
     extensions.set_subagent(move || {
         let factory = Arc::clone(&sub_factory);
         let factory_for = Arc::clone(&sub_factory_for);
         let workspace = workspace.clone();
         let scratch = scratch.clone();
+        let parent_prompt = headless_parent_prompt.clone();
         Box::new(
             move |tasks: &[ext::protocol::SubagentTask]| -> Vec<String> {
                 let make = |model: Option<&str>| -> Result<Box<dyn provider::Provider>, String> {
@@ -1164,7 +1168,7 @@ fn headless(
                     }
                 };
                 crate::subagent::run_batch(tasks, crate::subagent::MAX_CONCURRENT, |t| {
-                    crate::subagent::run_task(t, &workspace, &scratch, &make)
+                    crate::subagent::run_task(t, &workspace, &scratch, &make, Some(&parent_prompt))
                 })
             },
         )
@@ -1775,11 +1779,13 @@ fn repl(
     // Same scratch rule as the headless path: discoverable under the data dir.
     let subagent_scratch = config::data_dir().join("subagents");
     let review_scratch = subagent_scratch.clone();
+    let subagent_parent_prompt = cfg.system_prompt.clone();
     let make_subagent = move || -> ext::host::SubagentFn {
         let factory = Arc::clone(&subagent_factory);
         let factory_for = Arc::clone(&subagent_factory_for);
         let workspace = subagent_workspace.clone();
         let scratch = subagent_scratch.clone();
+        let parent_prompt = subagent_parent_prompt.clone();
         Box::new(
             move |tasks: &[ext::protocol::SubagentTask]| -> Vec<String> {
                 let make = |model: Option<&str>| -> Result<Box<dyn provider::Provider>, String> {
@@ -1789,7 +1795,7 @@ fn repl(
                     }
                 };
                 crate::subagent::run_batch(tasks, crate::subagent::MAX_CONCURRENT, |t| {
-                    crate::subagent::run_task(t, &workspace, &scratch, &make)
+                    crate::subagent::run_task(t, &workspace, &scratch, &make, Some(&parent_prompt))
                 })
             },
         )
@@ -2514,6 +2520,7 @@ fn repl(
                 &review_scratch,
                 &review_factory,
                 max_findings,
+                Some(cfg.system_prompt.clone()),
             ) {
                 Ok(report) => {
                     // Posted as a system record so the findings

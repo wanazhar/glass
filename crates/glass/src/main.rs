@@ -1377,7 +1377,7 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
             "Review task summary, commands and changes",
             false,
         ),
-        ("history", "", "Search prompt history", false),
+        ("prompts", "", "Search prompt history", false),
         ("editor", "", "Edit your draft in VISUAL or EDITOR", false),
         ("redraw", "", "Repaint after terminal drift", false),
         ("clear", "", "Start a fresh session", false),
@@ -2498,11 +2498,11 @@ fn repl(
             }
             continue;
         }
-        if text == "/history" {
+        if text == "/prompts" {
             let prompts = crate::history::load(&config::data_dir())
                 .into_iter()
                 .rev()
-                .filter(|p| p != "/history")
+                .filter(|p| p != "/prompts")
                 .collect::<Vec<_>>();
             if let Some(i) =
                 modal::choose(&keys, "Prompt history", "Choose a prompt to edit", &prompts)

@@ -1,0 +1,82 @@
+---
+id: six-wave-e-001
+scope: wave E — pre-tool-use hook, in-message citations, typed notify events, codemode parity audit
+status: ready
+source: research/six-codebases-2026-10-10.md candidates #4, #25, #8, #16(parity audit)
+---
+
+# Wave E: extensibility + review
+
+## Objective
+
+1. **Pre-tool-use hook** (crush `PreToolUse`): one user-registered shell hook,
+   config `[hooks.pre_tool_use] command = "…"`, matcher regex on tool name.
+   Fires before any tool execution (built-ins and extension tools alike),
+   on a dedicated thread with tool-call JSON on stdin. Exit codes: `0`
+   allow, `2` block the call (stdout becomes the refusal body), `49` block
+   and cancel the rest of the turn, other nonzero = warn-and-allow with
+   stderr surfaced once. Hooks run sequentially (determinism before
+   parallelism; document deviation from crush). Never runs in read-only
+   mode. The hook's stdout cannot inject tool output — only block or pass.
+2. **In-message citations** (t3 `assistant-citations.md`, adapted): the
+   quote/range composer's source reference is embedded in the user
+   message text as a stable marker line (`@file:L10-L24#hash8`) so a quote
+   survives its source changing or disappearing, and paste/copy keeps the
+   reference. The composer's removable preview stays UI-only. The
+   receiving turn dedupes repeated markers for the same file in one
+   message.
+3. **Typed notify events** (crush `notify` package): turn lifecycle
+   (`Finished`, `Failed`, `Waiting`, `Steered`) published through one
+   domain event enum from the agent loop; `notify.rs` and the TUI status
+   subscribe. Foundation for future external subscribers; behavior
+   unchanged, structure only — with the notify throttle preserved.
+4. **Codemode parity audit** (research candidate #16): verify GC's existing
+   codemode surface against pi's contract — output item protocol
+   (`==> text N/M <==`), `@options` line, overflow spill to a temp file
+   with the path named, timeout enforcing. Report the deltas honestly in
+   the task file; implement the deltas that fit the existing design (the
+   referenced file is the existing GC codemode implementation; if
+   gaps require a JS engine change, stop and record — no engine swap
+   inside this wave).
+
+## Path
+
+Own these paths only.
+
+- new `crates/glass/src/hooks_shell.rs`
+- `crates/glass/src/agent.rs` — only the pre-execution hook call site and
+  the notify event publish points
+- `crates/glass/src/notify.rs` — domain enum + subscribe
+- `crates/glass/src/input.rs` (or composer module) — citation marker
+- `crates/glass/src/session.rs` — marker dedupe at projection time
+- codemode files owned by the audit report (record actual paths in the
+  task file's implementation notes)
+- new `scripts/smoke-hooks-shell.py`
+- `docs/plan/tasks/six-wave-e-001.md`
+
+Do not edit `tools.rs` dispatch, `ext/**`, `provider/**`, `sandbox.rs`,
+`config.rs` (hook entry uses the settings struct fields owned here).
+
+## Constraints
+
+- Hook subprocess bounded: 3s timeout, output cap 8 KiB; over-cap or
+  timeout = warn-and-allow and continue deterministically.
+- Hook config is project-level; the trust gate applies before project
+  hooks load (same rule as AGENTS.md).
+- Citation markers are plain-text lines, not side-channel records: no new
+  Record variant, so old logs, exports, and resumptions are untouched.
+- Notify refactor changes no visible behavior; PTY history must be
+  byte-identical.
+- Codemode audit makes no speculative claims: each delta is demonstrated
+  with a failing example before the fix.
+
+## Verification
+
+- Unit tests: matcher semantics; exit 2 body becomes refusal; 49 halts
+  the turn; timeout path; JSON stdin shape; citation marker dedupe;
+  marker survives copy; notify event ordering.
+- `scripts/smoke-hooks-shell.py`: block, halt, pass, timeout — all four
+  paths against a mock provider turn.
+- clippy + full tests green.
+- PTY: history identity check (existing transcript rendering unchanged),
+  citation preview in composer at 40×24 and 20×8.

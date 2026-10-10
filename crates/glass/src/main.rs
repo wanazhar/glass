@@ -3278,12 +3278,10 @@ fn repl(
                     }
                 }
                 Err(e) => {
-                    painter
-                        .append_live_entry(glass_tui::Role::System, format!("Provider error: {e}"));
                     painter.notice(
                         &mut surface::BodyWriter,
                         "\x1b[31m",
-                        &format!("provider error: {e}"),
+                        &format!("error: {e}"),
                     );
                     last_error = Some(e.to_string());
                 }
@@ -3903,16 +3901,17 @@ impl Painter {
                 let detail = live::sanitize_provider_detail(text);
                 let notice = if text.starts_with("Tool repair") {
                     format!("⟳ {detail}")
+                } else if text.starts_with("Reasoning-only") {
+                    detail
                 } else {
                     format!("Provider fallback — {detail} · /status /model")
                 };
                 self.notice(&mut io, &glass_tui::theme::ansi(glass_tui::theme::Tone::Warning), &notice);
             }
-            Progress::ProviderFailure(text) => {
+            Progress::ProviderFailure(_) => {
+                // The turn result prints and persists one canonical error.
                 self.flush(&mut io);
                 self.waiting.set(false);
-                self.notice(&mut io, &glass_tui::theme::ansi(glass_tui::theme::Tone::Error),
-                    &format!("Provider error — {} · recover with /retry, /status or /login", live::sanitize_provider_detail(text)));
             }
             Progress::Compacted { kept, dropped } => {
                 self.flush(&mut io);

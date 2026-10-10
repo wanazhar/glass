@@ -425,10 +425,14 @@ pub fn context_report(
                 .join("\n")
         }
     };
+    let failure = s.records.iter().rev().find_map(|r| match r {
+        Record::Meta(t) if t.starts_with("error:") => Some(t.as_str()),
+        _ => None,
+    }).unwrap_or("None recorded");
     let historical = crate::context_audit::reports(s);
     let latest = historical.last().map(String::as_str).unwrap_or("No request context recorded yet (older sessions may lack manifests).");
     format!(
-        "Last request context:\n{latest}\n\nModel: {}\nCurrent configuration (not a historical request):\nEstimated context: {estimate} tokens (includes prompt text; excludes tool schemas)\nMessages: {}\nSystem prompt: {} bytes\nSkill catalogue: {} bytes\n\nLoaded instructions:\n{}\n\nAttached files:\n{}\n\nContext edits:\n{edits}\n\nCompaction:\n{}",
+        "Latest provider failure:\n{failure}\n\nLast request context:\n{latest}\n\nModel: {}\nCurrent configuration (not a historical request):\nEstimated context: {estimate} tokens (includes prompt text; excludes tool schemas)\nMessages: {}\nSystem prompt: {} bytes\nSkill catalogue: {} bytes\n\nLoaded instructions:\n{}\n\nAttached files:\n{}\n\nContext edits:\n{edits}\n\nCompaction:\n{}",
         cfg.model,
         messages.len(),
         cfg.system_prompt.len(),

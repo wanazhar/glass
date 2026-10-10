@@ -53,6 +53,7 @@ jobs:
           python3 scripts/smoke-agents.py
           python3 scripts/smoke-empty-response.py
           python3 scripts/smoke-presentation.py
+          python3 scripts/smoke-help.py
           python3 scripts/smoke-reader.py
           python3 scripts/smoke-doctor.py
           python3 scripts/smoke-trust.py

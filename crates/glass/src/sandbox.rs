@@ -105,6 +105,76 @@ impl SessionApprovals {
     }
 }
 
+/// Outbound host allow/deny policy for the egress CONNECT proxy.
+///
+/// Match semantics: an exact host always matches; a `*.suffix` pattern
+/// matches the suffix at a dot boundary (`*.github.com` matches
+/// `api.github.com` and `github.com`'s subdomains but not
+/// `evil-github.com`). Deny entries are checked first, so a deny always
+/// wins over an allow; when the allowlist is non-empty, every host not on
+/// it is denied (default-deny), and an empty allowlist with a deny-only
+/// list denies exactly the listed hosts.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HostPolicy {
+    allow: Vec<String>,
+    deny: Vec<String>,
+}
+
+impl HostPolicy {
+    pub fn new(allow: Vec<String>, deny: Vec<String>) -> Self {
+        let norm = |mut v: Vec<String>| {
+            v.retain(|h| !h.trim().is_empty());
+            v.sort();
+            v
+        };
+        Self {
+            allow: norm(allow),
+            deny: norm(deny),
+        }
+    }
+
+    pub fn allow_len(&self) -> usize {
+        self.allow.len()
+    }
+
+    pub fn deny_len(&self) -> usize {
+        self.deny.len()
+    }
+
+    /// `Ok(())` when the connect is allowed, `Err(reason)` naming the host
+    /// when refused. The reason is the refusal body the client sees.
+    pub fn check(&self, host: &str) -> Result<(), String> {
+        let host = host.trim().to_ascii_lowercase();
+        if Self::matches(&host, &self.deny) {
+            return Err(format!("egress denied by policy: {host}"));
+        }
+        if self.allow.is_empty() {
+            // Empty allowlist with denials = deny-list mode; without them
+            // it denies everything (a pure policy proxy).
+            if self.deny.is_empty() {
+                return Err(format!("egress denied by policy (no hosts allowed): {host}"));
+            }
+            return Ok(());
+        }
+        if Self::matches(&host, &self.allow) {
+            return Ok(());
+        }
+        Err(format!(
+            "egress denied by policy: {host} is not in sandbox.egress_allow; ask for the exact command exception to reach it"
+        ))
+    }
+
+    fn matches(host: &str, list: &[String]) -> bool {
+        list.iter().any(|entry| {
+            if let Some(suffix) = entry.strip_prefix("*.") {
+                host == suffix || host.ends_with(&format!(".{suffix}"))
+            } else {
+                host == entry.as_str()
+            }
+        })
+    }
+}
+
 /// Apply the configured jail or a previously approved exact-command
 /// exception to this one child. Approval bypasses only this child's jail; it
 /// never mutates the process-wide profile or approves another command.
@@ -158,6 +228,11 @@ struct State {
 }
 
 static STATE: OnceLock<State> = OnceLock::new();
+
+/// The egress CONNECT proxy, spawned only when `sandbox_egress = "policy"`
+/// *and* the sandbox is on. Holding the box keeps the listener thread alive;
+/// dropping it (process exit) closes the port.
+static EGRESS: OnceLock<Option<crate::egress::Proxy>> = OnceLock::new();
 
 impl State {
     fn off() -> Self {
@@ -238,6 +313,45 @@ pub fn init(cfg: &config::Config) -> Vec<String> {
         PermissionProfile::WorkspaceEdit if cfg.sandbox == Policy::Off => Policy::Workspace,
         _ => cfg.sandbox,
     };
+    // Egress policy proxy only exists under a sandbox; without one the
+    // child can reach the network anyway and a policy proxy would be
+    // decoration, not enforcement.
+    if cfg.sandbox_egress == "policy" {
+        if effective == Policy::Off {
+            warnings.push(
+                "sandbox_egress = policy needs sandbox = workspace or strict to enforce anything; direct egress remains".into(),
+            );
+            let _ = EGRESS.set(None);
+        } else {
+            let policy = HostPolicy::new(
+                cfg.egress_allow.clone(),
+                // The deny list is empty for now: the allowlist is the
+                // policy. A `egress_deny` key arrives when a workspace needs
+                // both lists.
+                Vec::new(),
+            );
+            match crate::egress::Proxy::spawn(policy) {
+                Ok(proxy) => {
+                    warnings.push(format!(
+                        "egress policy proxy on {} (allow {} hosts) · denied CONNECT names the host",
+                        proxy.url(),
+                        proxy.policy_shape().0
+                    ));
+                    let _ = EGRESS.set(Some(proxy));
+                }
+                Err(e) => {
+                    // Fail closed: no proxy means no policy enforcement, so
+                    // refusing commands is safer than pretending.
+                    warnings.push(format!(
+                        "egress proxy failed to start ({e}); commands run without egress policy"
+                    ));
+                    let _ = EGRESS.set(None);
+                }
+            }
+        }
+    } else {
+        let _ = EGRESS.set(None);
+    }
     let scrub = match cfg.sandbox_env.as_str() {
         "inherit" => false,
         "scrub" => true,
@@ -384,6 +498,27 @@ fn build_state(_cfg: &config::Config, policy: Policy, warnings: &mut Vec<String>
 
 /// Build the shell command for one line, wrapped if the platform demands it.
 pub fn shell(command: &str) -> Command {
+    let mut cmd = shell_inner(command);
+    // Egress policy: point the child at the CONNECT proxy when it exists.
+    // curl, npm, cargo, and pip all honor these variables; a tool that
+    // ignores them is exactly what the CONNECT refusal diagnostic is for.
+    if let Some(Some(proxy)) = EGRESS.get() {
+        let url = proxy.url();
+        cmd.env("http_proxy", &url)
+            .env("https_proxy", &url)
+            .env("HTTP_PROXY", &url)
+            .env("HTTPS_PROXY", &url)
+            // ALL_PROXY covers tools like git+ssh wrappers that look only
+            // at the generic variable.
+            .env("ALL_PROXY", &url)
+            // 127.0.0.1 is the proxy itself; a local service the command
+            // probes should not be sent through it.
+            .env("NO_PROXY", "127.0.0.1,localhost");
+    }
+    cmd
+}
+
+fn shell_inner(command: &str) -> Command {
     #[cfg(target_os = "macos")]
     if let Some(state) = STATE.get()
         && state.policy != Policy::Off

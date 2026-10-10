@@ -99,3 +99,11 @@ These are implementation checkpoints, not acceptance or full-roadmap completion.
   Corrupt sidecars refuse delivery rather than silently running without requested constraints.
 - Memory attribution now says explicitly saved facts rather than asserting a human
   reviewed data written through a CLI the model can also invoke.
+
+- Pinned plugin updates: `gc plugin update NAME --preview` stages and reports hashes,
+  versions and permission changes without installation; `--expect-hash HASH` enforces
+  the reviewed candidate. Updates retain a previous integrity-pinned snapshot;
+  `gc plugin rollback NAME` restores it after checking installed/snapshot hashes.
+  Concurrent CLI mutations use a private lock, corrupt lock files fail closed, and
+  hidden staging/rollback trees are excluded from normal plugin discovery.
+  No running extension is restarted; the next session uses the installed version.

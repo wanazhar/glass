@@ -7,6 +7,7 @@ mod acp;
 mod addons;
 mod agent;
 mod agents_md;
+mod attempt_log;
 mod auth;
 mod btw;
 mod budget;
@@ -57,6 +58,7 @@ mod provider;
 mod queue;
 mod reader;
 mod readguard;
+mod recovery;
 mod requests;
 mod resume_picker;
 mod sandbox;
@@ -72,6 +74,7 @@ mod surface;
 mod team;
 mod tool_repair;
 mod tools;
+mod transport;
 mod trust;
 mod verify;
 mod warmer;
@@ -2257,9 +2260,15 @@ fn repl(
             structured::view(&keys, "History and handoff", &value.to_string());
             continue;
         }
-        if text == "/diagnostics" || text == "/recovery" {
+        // `/recovery` is the navigable failure inspector; `/diagnostics` stays
+        // the shareable redacted bundle, and the inspector reaches it too.
+        if text == "/recovery" {
+            recovery::view(&keys, &mut session, &factory);
+            continue;
+        }
+        if text == "/diagnostics" {
             match diagnostic_bundle::snapshot(&session) {
-                Ok(value) => structured::view(&keys, "Recovery and diagnostics", &value.to_string()),
+                Ok(value) => structured::view(&keys, "Diagnostic bundle", &value.to_string()),
                 Err(error) => modal::info(&keys, "Diagnostics unavailable", &error),
             }
             continue;

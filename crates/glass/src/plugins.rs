@@ -655,21 +655,22 @@ fn update(name: &str, accept_permissions: bool, preview: bool, expected: Option<
         if content_hash(&backup)? != old.hash { return Err("Existing rollback snapshot differs from its pin; preserve it before updating".into()); }
         std::fs::remove_dir_all(&backup).map_err(|e|e.to_string())?;
     }
-    replace_staged(&stage, &dest, &backup)?;
+    let candidate_revision = git_revision(&stage);
     let receipt = LockEntry {
         source,
-        hash: content_hash(&dest)?,
+        hash: candidate_hash,
         version: candidate.version,
-        revision: git_revision(&dest),
+        revision: candidate_revision,
         capabilities: new_caps,
         previous: Some(Box::new(previous)),
     };
+    replace_staged(&stage, &dest, &backup)?;
     lock.plugins.insert(name.to_string(), receipt);
     if let Err(e) = save_lock(&lock) {
-        let _ = std::fs::remove_dir_all(&dest);
-        let _ = std::fs::rename(&backup, &dest);
+        let remove = std::fs::remove_dir_all(&dest);
+        let restore = if remove.is_ok() { std::fs::rename(&backup, &dest) } else { Err(std::io::Error::other("replacement removal failed")) };
         return Err(format!(
-            "could not save plugin receipt; previous plugin restored: {e}"
+            "Could not save plugin receipt: {e}; replacement removal: {remove:?}; previous content restoration: {restore:?}; retained backup: {}", backup.display()
         ));
     }
     crate::cli_println!("updated plugin `{name}`; previous pinned content retained for gc plugin rollback {name}");

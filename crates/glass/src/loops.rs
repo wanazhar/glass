@@ -69,10 +69,9 @@ pub fn load(s: &Session) -> Loops {
 }
 
 fn save(s: &Session, loops: &Loops) -> Result<(), String> {
-    auth::secure_write(
-        &path(s),
-        &serde_json::to_vec_pretty(loops).map_err(|e| e.to_string())?,
-    )
+    let bytes = serde_json::to_vec_pretty(loops).map_err(|e| e.to_string())?;
+    if bytes.len() > 1024 * 1024 { return Err("Loop storage exceeds 1 MiB; shorten prompts or clear history".into()); }
+    auth::secure_write(&path(s), &bytes)
 }
 
 pub fn now() -> u64 {

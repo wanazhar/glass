@@ -46,20 +46,31 @@ can act on, without inventing data the runtime does not have.
 
 ## Path
 
-Own these paths only.
+Own these paths only. They are disjoint from the other tasks in this wave.
 
+- `crates/glass/src/agent.rs` — the retry closure at `agent.rs:629` is where
+  each attempt is recorded durably; it already receives attempt, delay and cause.
+- `crates/glass/src/main.rs` — only to upgrade the existing `/recovery` entry
+  point from a raw JSON modal to the navigable inspector, and to register any
+  new command. Keep every unrelated command untouched.
 - `crates/glass/src/diagnostic_bundle.rs`
 - `crates/glass/src/attention.rs`
-- new `crates/glass/src/recovery.rs`
-- new `crates/glass/src/provider/recovery.rs` if the attempt record belongs there
-- `crates/glass/src/provider/mod.rs`
 - `crates/glass/src/transport/`
+- new `crates/glass/src/recovery.rs` — inspector and safe-action classification
+- new `crates/glass/src/attempt_log.rs` — durable attempt records
+- new `scripts/smoke-recovery.py`
 - `docs/plan/tasks/recovery-inspector-001.md`
 
-Do not edit `crates/glass/src/main.rs`, `crates/glass/src/tools.rs`,
-`crates/glass/src/session.rs` or `crates/glass/src/ext/**`; other tasks own
-those in this wave. `/recovery` is already wired to
-`diagnostic_bundle::snapshot`, so keep that entry point working.
+Do not edit `crates/glass/src/provider/mod.rs`,
+`crates/glass/src/tools.rs`, `crates/glass/src/session.rs`,
+`crates/glass/src/ext/**`, `crates/glass/src/addons.rs` or
+`crates/glass/src/workspace.rs`; other tasks own those in this wave.
+`/recovery` is already wired to `diagnostic_bundle::snapshot`, so keep that
+entry point working.
+
+Note: the `state` tool schema in `provider/mod.rs` belongs to another task.
+Record attempts through the existing `Progress::Retrying` emission instead of
+adding a new provider-facing tool schema.
 
 ## Constraints
 

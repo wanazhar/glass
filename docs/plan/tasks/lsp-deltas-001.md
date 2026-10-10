@@ -45,7 +45,9 @@ Own these paths only. Do not edit any Rust file; another task owns the Rust tree
 in this wave.
 
 - `extensions/lsp/lsp.py`
-- `scripts/smoke-lsp*.py` (new or existing LSP smoke checks)
+- `scripts/smoke-lsp.py` (the existing LSP smoke check)
+- `scripts/lsp_fixture_server.py` (the existing fixture server, if the new
+  cases need more diagnostics to be published)
 - `docs/plan/tasks/lsp-deltas-001.md`
 
 ## Constraints

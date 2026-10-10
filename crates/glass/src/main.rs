@@ -21,6 +21,7 @@ mod context_audit;
 mod contracts;
 mod diagnostics;
 mod diagnostic_bundle;
+mod history_inspector;
 mod doctor;
 mod export;
 mod ext;
@@ -174,6 +175,13 @@ fn main() {
         Some("memory") => {
             if let Err(error) = project_memory::command(&args[1..]) {
                 cli::error("Project memory", &error);
+                std::process::exit(2);
+            }
+            return;
+        }
+        Some("history" | "handoff") => {
+            if let Err(error) = history_inspector::command(&args[1..], args[0] == "handoff") {
+                cli::error("History", &error);
                 std::process::exit(2);
             }
             return;
@@ -1250,6 +1258,8 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
     use glass_tui::palette::Command;
     let builtin = [
         ("help", "", "Show help", false),
+        ("history", "", "Inspect compaction receipts and branch lineage", false),
+        ("handoff", "", "Preview a bounded portable handoff", false),
         (
             "workspace",
             "",
@@ -2148,6 +2158,12 @@ fn repl(
             }
             continue;
         }
+        if text == "/history" || text == "/handoff" {
+            let value = if text == "/handoff" { history_inspector::handoff(&session) }
+                else { history_inspector::receipts(&session) };
+            structured::view(&keys, "History and handoff", &value.to_string());
+            continue;
+        }
         if text == "/diagnostics" || text == "/recovery" {
             match diagnostic_bundle::snapshot(&session) {
                 Ok(value) => structured::view(&keys, "Recovery and diagnostics", &value.to_string()),
@@ -2255,7 +2271,8 @@ fn repl(
             };
             if let Some(p) = path {
                 match polish::attach_picker(&keys, &mut session, &cfg.workspace, &p) {
-                    Ok(()) => ui_println!("Attached {p} · /context to inspect or remove"),
+                    Ok(true) => ui_println!("Attached {p} · /context to inspect or remove"),
+                    Ok(false) => {},
                     Err(e) => modal::info(&keys, "Attachment error", &e),
                 }
             }

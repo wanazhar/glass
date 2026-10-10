@@ -84,3 +84,5 @@
 - [Workflow verification](plan/reviews/workflow-next-20-001.md): release PTYs, unit tests, review fixes, performance measurements and v1 limitations.
 
 - [Model-managed teammate limits](plan/reviews/agent-core-limits-001.md): visible allowances, configurable worker limits, compact receipts and preserved tool/context recovery.
+
+- [History and handoff contracts](plan/tasks/history-contracts-001.md): bounded compaction receipts, branch lineage and portable context previews.

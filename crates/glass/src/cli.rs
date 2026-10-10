@@ -425,6 +425,16 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
         return Ok(false);
     }
     let (usage, description, examples) = match command {
+        "history" => (
+            "gc history SESSION [--json]",
+            "Inspect retained history boundaries, compaction summary previews and branch lineage without opening a session for writing.",
+            "gc history SESSION_ID",
+        ),
+        "handoff" => (
+            "gc handoff SESSION [--json]",
+            "Preview a portable bounded handoff with durable notes and references to omitted history. Review project data before sharing; credentials and running processes are not transferred.",
+            "gc handoff SESSION_ID --json > handoff.json",
+        ),
         "contract" => (
             "gc contract SCHEMA.json RESULT.json",
             "Validate a bounded local JSON result contract. Unsupported schema keywords fail explicitly; no provider request is made.",

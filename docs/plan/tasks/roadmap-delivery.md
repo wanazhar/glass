@@ -72,3 +72,5 @@ Finish the durable queue, then transcript/context/review contracts. Build artifa
 - CLI discovery: contract, diagnostics and memory help plus completion candidates.
 
 These are implementation checkpoints, not acceptance or full-roadmap completion.
+
+- History inspection and handoffs: bounded summary and state previews, raw history retrieval references, typed branch lineage; branch explorer and receiving-host import remain open.

@@ -97,6 +97,22 @@ def main():
             out = ext.command('lsp')
             assert 'configured .py' in out and 'running .py' in out, out
 
+            (ws / 'a.py').write_text('a😀b = 1\n')
+            for operation in ('definition', 'references', 'hover', 'symbols', 'rename', 'code_actions'):
+                result = ext.tool(path='a.py', operation=operation, line=1, column=3, new_name='renamed')
+                data = json.loads(result.split('\n', 1)[1])
+                assert data['method'].startswith('textDocument/'), result
+                if operation != 'symbols':
+                    position = data['params'].get('position', data['params'].get('range', {}).get('start'))
+                    assert position == {'line': 0, 'character': 3}, result
+                if operation in ('rename', 'code_actions'):
+                    assert result.startswith('PREVIEW ONLY'), result
+                assert (ws / 'a.py').read_text() == 'a😀b = 1\n'
+            assert 'positive integers' in ext.tool(path='a.py', operation='hover', line=True, column=1)
+            assert 'outside the file' in ext.tool(path='a.py', operation='hover', line=1, column=99)
+            (ws / 'large.py').write_bytes(b'x' * (1024 * 1024 + 1))
+            assert 'could not open file' in ext.tool(path='large.py', operation='hover', line=1, column=1)
+
             # A path that escapes the workspace is refused.
             out = ext.tool(path='../a.py')
             assert 'escapes the workspace' in out, out

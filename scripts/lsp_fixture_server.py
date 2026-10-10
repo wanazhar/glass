@@ -35,6 +35,8 @@ def main():
         method = message.get('method')
         if method == 'initialize':
             send({'jsonrpc': '2.0', 'id': message['id'], 'result': {'capabilities': {}}})
+        elif method.startswith('textDocument/') and 'id' in message:
+            send({'jsonrpc': '2.0', 'id': message['id'], 'result': {'method': method, 'params': message['params']}})
         elif method == 'shutdown':
             send({'jsonrpc': '2.0', 'id': message['id'], 'result': None})
         elif method == 'exit':

@@ -73,3 +73,8 @@
 - [CLI help](plan/reviews/cli-help-001-01.md): terminal-aware command guides, examples, color and pipe behavior.
 
 - [CLI design and resume](plan/reviews/cli-design-resume-001-01.md): shared command presentation and a searchable startup session picker.
+
+- [Coding workflows](workflows.md): native task/debug/review/output views, request and cache diagnostics, bounded teammate roles, optional browser/LSP integration, policies and workflow regression gates.
+- [Workflow delivery matrix](plan/workflow-next-20.md): twenty-feature scope and verification evidence.
+
+- [Workflow verification](plan/reviews/workflow-next-20-001.md): release PTYs, unit tests, review fixes, performance measurements and v1 limitations.

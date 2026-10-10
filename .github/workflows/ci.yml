@@ -78,6 +78,8 @@ jobs:
           python3 scripts/smoke-inbox.py
           python3 scripts/smoke-index.py
           python3 scripts/smoke-lsp.py
+          python3 scripts/smoke-workflow-next.py
+          python3 scripts/smoke-browser.py
           python3 scripts/smoke-recovery.py
           python3 scripts/smoke-reliability.py
           python3 scripts/smoke-editcontext.py

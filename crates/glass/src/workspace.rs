@@ -23,6 +23,8 @@ pub struct Board {
     pub handoffs: Vec<Handoff>,
     #[serde(default)]
     pub reviews: BTreeMap<String, Review>,
+    #[serde(default)]
+    pub findings: Vec<Finding>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,6 +79,31 @@ pub struct Review {
     pub reviewed: bool,
     pub comments: Vec<String>,
 }
+/// A review finding remains attributed and actionable after the prose turn ends.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Finding {
+    #[serde(default)]
+    pub id: u32,
+    pub severity: String,
+    pub path: String,
+    pub line: u32,
+    pub title: String,
+    pub evidence: String,
+    #[serde(default = "open_disposition")]
+    pub disposition: String,
+}
+fn open_disposition() -> String { "open".into() }
+fn validate_finding(finding: &Finding) -> Result<(), String> {
+    valid_path(&finding.path)?;
+    short(&finding.title)?;
+    if finding.line == 0 || finding.evidence.trim().is_empty() || finding.evidence.len() > 16 * 1024
+        || !matches!(finding.severity.as_str(), "critical" | "high" | "medium" | "low" | "info")
+        || !matches!(finding.disposition.as_str(), "open" | "accepted" | "fixed" | "dismissed")
+    { return Err("Invalid finding severity, location, evidence or disposition".into()); }
+    Ok(())
+}
+
 pub fn hash(bytes: &[u8]) -> String {
     ring::digest::digest(&ring::digest::SHA256, bytes)
         .as_ref()
@@ -172,12 +199,18 @@ fn valid_path(s: &str) -> Result<(), String> {
 }
 fn validate(board: &Board) -> Result<(), String> {
     use std::collections::HashSet;
+    let mut finding_ids = HashSet::new();
+    for finding in &board.findings {
+        validate_finding(finding)?;
+        if finding.id == 0 || !finding_ids.insert(finding.id) { return Err("Duplicate finding ID".into()); }
+    }
     if [
         board.tasks.len(),
         board.hypotheses.len(),
         board.artifacts.len(),
         board.handoffs.len(),
         board.reviews.len(),
+        board.findings.len(),
     ]
     .iter()
     .any(|n| *n > 256)
@@ -442,6 +475,21 @@ pub fn preview(root: &Path, id: u32) -> Result<String, String> {
         ))
     }
 }
+pub fn artifact_range(root: &Path, id: u32, offset: usize, limit: usize) -> Result<serde_json::Value, String> {
+    if limit == 0 || limit > 32 * 1024 { return Err("Read limit must be 1..32768 bytes".into()); }
+    let board = load(root)?;
+    let item = board.artifacts.iter().find(|a| a.id == id).ok_or("Unknown artifact")?;
+    let path = scoped(root, item.path.to_str().ok_or("Non UTF-8 path")?)?;
+    let bytes = crate::requests::bounded(&path, 8 * 1024 * 1024)?;
+    if hash(&bytes) != item.fingerprint { return Err("Artifact changed since registration".into()); }
+    let text = std::str::from_utf8(&bytes).map_err(|_| "Artifact is binary; textual range unavailable")?;
+    if offset > text.len() || !text.is_char_boundary(offset) { return Err("Byte offset must be an in-range UTF-8 boundary".into()); }
+    let mut end = offset.saturating_add(limit).min(text.len());
+    while !text.is_char_boundary(end) { end -= 1; }
+    if end == offset && offset < text.len() { return Err("Limit cannot contain the next Unicode character".into()); }
+    Ok(json!({"artifact":id,"revision":item.fingerprint,"byte_offset":offset,"end_byte_offset":end,"total_bytes":bytes.len(),"text":&text[offset..end],"next_byte_offset":(end < bytes.len()).then_some(end),"preview_truncated":end < bytes.len(),"source_truncated":false}))
+}
+
 pub fn role(root: &Path, name: &str) -> Option<Role> {
     load(root).ok()?.roles.get(name).cloned()
 }
@@ -477,7 +525,7 @@ pub fn receive_handoff(root: &Path, value: serde_json::Value) -> Result<String, 
     })?;
     Ok(summary)
 }
-const HELP: &str = "gc workspace [--json]\n  task add TITLE --accept CRITERIA [--depends 1,2] [--paths src/a,src/b]\n  task claim ID OWNER | finish ID OWNER CHECK | release ID OWNER\n  debug add HYPOTHESIS | evidence ID TEXT | instrument ID PATH | resolve ID\n  artifact add LABEL PATH | preview ID\n  role set executor|reviewer|research MODEL TOKENS\n  handoff FILE.json\nState is local to this directory, works outside Git, and is never automatically added to context.\nClaims are atomic. Existing-task dependencies are acyclic by construction. Finish requires an attributed check.\nHandoff JSON: agent, task, changed_files, checks, findings, questions, artifacts.\n";
+const HELP: &str = "gc workspace [--json]\n  task add TITLE --accept CRITERIA [--depends 1,2] [--paths src/a,src/b]\n  task claim ID OWNER | finish ID OWNER CHECK | release ID OWNER\n  debug add HYPOTHESIS | evidence ID TEXT | instrument ID PATH | resolve ID\n  artifact add LABEL PATH | preview ID | read ID BYTE_OFFSET LIMIT\n  findings import FILE.json | disposition ID open|accepted|fixed|dismissed\n  role set executor|reviewer|research MODEL TOKENS\n  handoff FILE.json\nState is local to this directory, works outside Git, and is never automatically added to context.\nClaims are atomic. Existing-task dependencies are acyclic by construction. Finish requires an attributed check.\nHandoff JSON: agent, task, changed_files, checks, findings, questions, artifacts.\n";
 fn number(s: Option<&String>) -> Result<u32, String> {
     s.ok_or(HELP)?
         .parse()
@@ -527,6 +575,9 @@ pub fn command(args: &[String]) -> Result<(), String> {
         (Some("debug"), Some("evidence" | "instrument")) => 4,
         (Some("artifact"), Some("add")) => 4,
         (Some("artifact"), Some("preview")) => 3,
+        (Some("artifact"), Some("read")) => 5,
+        (Some("findings"), Some("import")) => 3,
+        (Some("findings"), Some("disposition")) => 4,
         (Some("role"), Some("set")) => 5,
         (Some("handoff"), _) => 2,
         _ => return Err(HELP.into()),
@@ -645,6 +696,35 @@ pub fn command(args: &[String]) -> Result<(), String> {
             })?;
             json!({"hypothesis":id,"action":action})
         }
+        Some("findings") => match arg(1)? {
+            "import" => {
+                let bytes = crate::requests::bounded(Path::new(arg(2)?), 256 * 1024)?;
+                let mut findings: Vec<Finding> = serde_json::from_slice(&bytes).map_err(|e| format!("Invalid findings: {e}"))?;
+                if findings.len() > 128 { return Err("Import at most 128 findings".into()); }
+                for finding in &findings { validate_finding(finding)?; }
+                let ids = edit(&root, |board| {
+                    let mut ids = Vec::new();
+                    for finding in &mut findings {
+                        finding.id = next(board.findings.iter().map(|f| f.id))?;
+                        ids.push(finding.id);
+                        board.findings.push(finding.clone());
+                    }
+                    Ok(ids)
+                })?;
+                json!({"findings":ids})
+            }
+            "disposition" => {
+                let id = number(args.get(2))?;
+                let disposition = arg(3)?;
+                edit(&root, |board| {
+                    let finding = board.findings.iter_mut().find(|f| f.id == id).ok_or("Unknown finding")?;
+                    finding.disposition = disposition.into();
+                    validate_finding(finding)
+                })?;
+                json!({"finding":id,"disposition":disposition})
+            }
+            _ => return Err(HELP.into()),
+        },
         Some("artifact") => match arg(1)? {
             "add" => {
                 let mut item = artifact(&root, arg(2)?, arg(3)?)?;
@@ -657,6 +737,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
                 json!({"artifact":id})
             }
             "preview" => json!({"text":preview(&root,number(args.get(2))?)?}),
+            "read" => artifact_range(&root, number(args.get(2))?, arg(3)?.parse().map_err(|_| "Invalid byte offset")?, arg(4)?.parse().map_err(|_| "Invalid limit")?)?,
             _ => return Err(HELP.into()),
         },
         Some("role") if arg(1)? == "set" => {
@@ -943,6 +1024,7 @@ pub fn view(keys: &KeyReader, root: &Path) {
             "Roles · model and budget presets",
             "Handoffs · checks and open questions",
             "Review · hunk comments",
+            "Findings · severity, evidence and disposition",
         ]
         .map(String::from);
         let Some(index) = modal::choose(
@@ -968,6 +1050,21 @@ pub fn view(keys: &KeyReader, root: &Path) {
             };
             if let Err(e) = result {
                 modal::info(keys, "Workspace action", &e);
+            }
+            continue;
+        }
+        if index == 6 {
+            let rows = board.findings.iter().map(|f| format!("{} · {}:{} · {} · {}", f.severity, f.path, f.line, f.title, f.disposition)).collect::<Vec<_>>();
+            let Some(selected) = modal::choose_search(keys, "Review findings", "Select to inspect evidence and disposition", &rows, &rows) else { continue };
+            let finding = &board.findings[selected];
+            modal::markdown(keys, &finding.title, &format!("**{}** · {}:{}\n\n{}\n\nDisposition: {}", finding.severity, finding.path, finding.line, finding.evidence, finding.disposition));
+            let choices = ["open", "accepted", "fixed", "dismissed"].map(String::from);
+            if let Some(choice) = modal::choose(keys, "Finding disposition", &finding.title, &choices) {
+                if let Err(error) = edit(root, |b| {
+                    let item = b.findings.iter_mut().find(|f| f.id == finding.id).ok_or("Finding no longer exists")?;
+                    item.disposition = choices[choice].clone();
+                    Ok(())
+                }) { modal::info(keys, "Finding was not changed", &error); }
             }
             continue;
         }
@@ -1108,6 +1205,15 @@ pub fn view(keys: &KeyReader, root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn review_findings_require_evidence_location_and_known_disposition() {
+        let mut finding = Finding { id:1, severity:"high".into(),path:"src/main.rs".into(),line:5,title:"Incorrect result".into(),evidence:"The branch returns before saving".into(),disposition:"open".into() };
+        assert!(validate_finding(&finding).is_ok());
+        finding.line = 0; assert!(validate_finding(&finding).is_err());
+        finding.line = 5; finding.path = "../outside".into(); assert!(validate_finding(&finding).is_err());
+        finding.path = "src/main.rs".into(); finding.disposition = "pretend-fixed".into(); assert!(validate_finding(&finding).is_err());
+    }
+
     #[test]
     fn dependencies_claims_and_ownership() {
         let mut b = Board::default();

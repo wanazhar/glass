@@ -1,9 +1,59 @@
 ---
 id: recovery-inspector-001
 scope: roadmap item 24 — failure recovery inspector with failure class, attempts and safe actions
-status: ready
+status: done
 depends-on: []
 ---
+
+## Delivered
+
+1. **Attempt lineage.** `crates/glass/src/attempt_log.rs` appends one
+   `<session>.attempts.jsonl` line per retry from the existing
+   `Progress::Retrying` emission point in `agent.rs` — attempt number, the
+   backoff actually applied, the caller-safe cause, the session record index
+   the retry belongs to, a write-time clock reading, and the provider request
+   id when the provider returned one. The aggregate retry count is no longer
+   the only trace.
+2. **Safe next action.** `crates/glass/src/recovery.rs` classifies each
+   recorded failure and attaches exactly one bounded action: retry, fix the
+   input, check authentication, raise the context window, or wait.
+   `Recommendation::replays_completed_mutation()` is a method rather than a
+   field, so no recommendation can claim a replay; when the log shows a
+   completed tool result in the failed turn the detail says so explicitly.
+   Unrecognised causes map to *wait* — nothing is asserted about a cause the
+   classifier did not match.
+3. **Transport reset.** `crates/glass/src/transport/` owns
+   `reset_safety`/`reset`: the provider is rebuilt from the current
+   configuration and exactly one `recovery/transport-reset` marker is appended
+   to the session log. The inspector offers it only for a transport-class
+   failure and only when no turn is streaming.
+4. **Navigable inspector.** `/recovery` now opens a selectable list
+   (severity · class · attempts · timestamp · action) whose detail view keeps
+   the formatted and raw JSON renderings, and whose list carries the
+   shareable diagnostic bundle and the local JSON export. `/diagnostics`
+   remains the shareable bundle; `gc diagnostics SESSION --inspector --json` is
+   the headless local view.
+5. **Provider request identifiers.** `transport::request_id` reads the id the
+   provider actually returned in its own text, and returns nothing when there
+   is none — never a synthesised one, never an endpoint. The inspector shows
+   it; `diagnostic_bundle` still omits it, and `--inspector` refuses `--save`.
+
+### Notes and limitations
+
+- Provider adapters were not in this task's path set, so a provider identity is
+  captured from the diagnostic text an adapter already returns
+  (`response=<id>` and `request-id`) rather than from a new event field. The
+  placeholders adapters substitute when a stream carries no id (`not
+  reported`) are rejected, so an absent id stays absent.
+- The runtime already rebuilds its provider per turn, so a transport reset has
+  no pooled connection to drop. What it guarantees is credential
+  re-resolution and endpoint re-validation at the moment the user asks, plus a
+  durable marker; `transport::reset` documents this rather than claiming a
+  teardown that does not happen.
+- `diagnostic_bundle`'s classifier gained HTTP status rules. A 403 or a 503
+  previously matched none of the text rules and were reported as
+  `none_or_unspecified`, which would have recommended a retry for a credential
+  failure.
 
 # Failure recovery inspector
 
@@ -98,3 +148,25 @@ adding a new provider-facing tool schema.
 - `cargo test --locked --workspace` green.
 - A headless JSON check that the inspector output contains no prompt text,
   credentials or endpoint URLs.
+
+## Verification
+
+- Unit tests: every retry writes a record carrying its attempt number, delay
+  and cause; a known class maps to exactly one action and the classifier's
+  range is covered; a retry is bound to the failure that followed it; an
+  unrecorded clock and an absent provider id both stay unknown; a completed
+  mutation is measured from the log and never marked safe to replay; a
+  transport reset preserves every prior record and appends one marker; the
+  bundle omits prompt text, paths, output, credentials, endpoints and the
+  provider id while the local inspector keeps the id; the failure list is
+  bounded and holds no transcript body.
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo test --locked --workspace` — 585 + 13 + 91 pass, 0 fail.
+- `scripts/smoke-recovery.py` — both phases pass. The new phase drives a mock
+  endpoint through a retried 429, a persistent 503 and a 403, and asserts the
+  headless inspector JSON carries no prompt text, credential or endpoint URL,
+  that the shareable bundle omits the provider id, and that `--inspector`
+  refuses `--save`.
+- PTY check: `/recovery` lists the failure rows, opens the detail with the
+  lineage and the recommendation, and the reset entry reports the record count
+  going 3 → 4 with the log prefix untouched.

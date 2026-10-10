@@ -15,6 +15,14 @@ use std::path::{Path, PathBuf};
 use glass_mod_api::Message;
 use glass_tui::Role;
 
+/// Duplicate-request detection and durable receipts for `state`.
+///
+/// Declared here rather than in the crate root because the module list in
+/// `main.rs` belongs to another change set in this wave; `#[path]` keeps the
+/// receipts code in its own file without touching a file this task does not own.
+#[path = "state_receipts.rs"]
+pub(crate) mod state_receipts;
+
 type FileStamp = (u64, std::time::SystemTime, i64, i64, u64, u64);
 
 /// One recorded event. Kept flat and stringly-typed on purpose: a log format
@@ -313,6 +321,19 @@ impl Record {
                 Role::Meta,
                 format!("context compacted: dropped {dropped}, kept {kept}"),
             ),
+            // A state receipt rides as a namespaced custom entry so it stays
+            // display-only, but it is the harness's own record of an applied
+            // mutation, not an extension's.
+            Record::Custom { kind, data: Some(data) } if kind == state_receipts::RECEIPT_KIND => {
+                match serde_json::from_str::<serde_json::Value>(data)
+                    .ok()
+                    .as_ref()
+                    .and_then(state_receipts::Receipt::from_json)
+                {
+                    Some(receipt) => (Role::Meta, receipt.render()),
+                    None => (Role::Meta, format!("[state receipt: unparseable {data}]")),
+                }
+            }
             Record::Custom { kind, .. } => (Role::Meta, format!("[extension entry: {kind}]")),
             Record::ServeRequest { id, status } => {
                 (Role::Meta, format!("[serve request {id}: {status}]"))
@@ -463,6 +484,21 @@ fn repair_log(path: &Path) -> std::io::Result<Repair> {
     })
 }
 
+/// Revision of the last state a log durably accepted.
+///
+/// A log with no state record yet is at the empty-state revision, which is the
+/// same revision a freshly built `State` reports.
+fn last_state_revision(records: &[Record]) -> String {
+    records
+        .iter()
+        .rev()
+        .find_map(|record| match record {
+            Record::State(items) => Some(state_receipts::revision_of(items)),
+            _ => None,
+        })
+        .unwrap_or_else(|| state_receipts::revision_of(&[]))
+}
+
 /// Recovery policy for a tool call, mirroring pi's `replay` declaration.
 ///
 /// `state` is pure bookkeeping and idempotent; every other tool — `bash`
@@ -470,6 +506,12 @@ fn repair_log(path: &Path) -> std::io::Result<Repair> {
 /// automatically: the policy only decides what the model is told after an
 /// interruption, because unattended re-execution is a destructive-action
 /// risk worth more than the convenience.
+///
+/// "Idempotent" here is about the effect, not about being safe to send twice:
+/// a retried `state` write is collapsed by its request id against the receipts
+/// in this log (`state_receipts`), so a repeat returns the recorded receipt
+/// rather than writing again. A write that named no request id is still only a
+/// replacement, and the interruption text does not promise more than that.
 pub(crate) fn replay_policy(name: &str) -> &'static str {
     match name {
         "state" => "safe",
@@ -553,6 +595,13 @@ pub struct Session {
     /// compaction and a projection-relative index would point at the
     /// wrong slice of the log.
     log_len: usize,
+    /// Revision of the state this log last durably accepted.
+    ///
+    /// A state receipt is written in the same append as the `Record::State`
+    /// it belongs to, and only if it is still the write that produced that
+    /// record: a receipt prepared against a base revision the log has already
+    /// moved past is dropped rather than paired with an unrelated write.
+    state_revision: RefCell<String>,
     write_error: Option<String>,
     /// Number of user turns replayed or started, used by jump-to-turn.
     #[allow(dead_code)]
@@ -652,7 +701,10 @@ impl Session {
         let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| target.to_string());
         let log_len = raw.len();
         let raw_index = raw.clone();
+        let revision = last_state_revision(&raw);
+        let receipts = state_receipts::receipts_in(&raw);
         let (records, turn) = apply_projection(raw);
+        Self::publish_context(&id, false, &revision, receipts);
         Ok(Self {
             id,
             path,
@@ -663,6 +715,7 @@ impl Session {
             records,
             turn,
             log_len,
+            state_revision: RefCell::new(revision),
             write_error: None,
         })
     }
@@ -680,6 +733,8 @@ impl Session {
             options.mode(0o600);
         }
         let file = options.open(&path)?;
+        let revision = state_receipts::revision_of(&[]);
+        Self::publish_context(&id, true, &revision, Vec::new());
         Ok(Self {
             id,
             path,
@@ -690,8 +745,26 @@ impl Session {
             records: Vec::new(),
             turn: 0,
             log_len: 0,
+            state_revision: RefCell::new(revision),
             write_error: None,
         })
+    }
+
+    /// Tell this thread which session a `State` built now belongs to, and what
+    /// that log already durably accepted.
+    ///
+    /// The restore sites rebuild `State` by replaying records, so this is the
+    /// only place a restored state learns its session identity. Published from
+    /// the constructors rather than from `main.rs`, which this change set does
+    /// not own, and it is ambient on purpose: a `State` never gets a session
+    /// handle, and inventing one would be a wider change than the receipts.
+    fn publish_context(id: &str, durable_writer: bool, revision: &str, receipts: Vec<state_receipts::Receipt>) {
+        state_receipts::publish(state_receipts::SessionContext {
+            session: id.to_string(),
+            durable_writer,
+            revision: revision.to_string(),
+            receipts,
+        });
     }
 
     /// Reopen a session by id or path, replaying it into memory.
@@ -775,10 +848,13 @@ impl Session {
         let live = crate::partial::load(&path);
         let live_file = crate::partial::path(&path);
         let log_len = records.len();
+        let revision = last_state_revision(&raw_index);
+        let receipts = state_receipts::receipts_in(&raw_index);
         let (records, turn) = apply_projection(records);
         let metadata = fs::metadata(&path)?;
         let raw_stamp = file_stamp(&metadata);
 
+        Self::publish_context(&id, true, &revision, receipts);
         let mut session = Self {
             id,
             path,
@@ -789,6 +865,7 @@ impl Session {
             records,
             turn,
             log_len,
+            state_revision: RefCell::new(revision),
             write_error: None,
         };
         for repair in repairs {
@@ -906,8 +983,19 @@ impl Session {
             self.write_error = Some("cannot inspect session log before append; writes and effects are disabled".into());
             return;
         };
-        let result = if let Some(f) = self.file.as_mut() {
-            serde_json::to_string(&record.to_json()).map_err(std::io::Error::other).and_then(|line| writeln!(f, "{line}").map_err(std::io::Error::other))
+        let records = self.with_state_receipts(std::slice::from_ref(&record));
+        let mut bytes = Vec::new();
+        let encoded = records
+            .iter()
+            .try_for_each(|record| -> std::io::Result<()> {
+                serde_json::to_writer(&mut bytes, &record.to_json()).map_err(std::io::Error::other)?;
+                bytes.push(b'\n');
+                Ok(())
+            });
+        let result = match (encoded, self.file.as_mut()) {
+            (Ok(()), Some(f)) => f
+                .write_all(&bytes)
+                .map_err(std::io::Error::other)
                 .and_then(|()| f.flush())
                 .and_then(|()| {
                     if LOG_FSYNC.load(std::sync::atomic::Ordering::Relaxed) {
@@ -915,18 +1003,53 @@ impl Session {
                     } else {
                         Ok(())
                     }
-                })
-        } else {
-            Err(std::io::Error::other("session file closed"))
+                }),
+            (Err(error), _) => Err(error),
+            (_, None) => Err(std::io::Error::other("session file closed")),
         };
         if let Err(error) = result {
             self.rollback_failed_write(start, &error);
             return;
         }
-        self.records.push(record);
-        self.log_len += 1;
-        if let Some(record) = self.records.last() { self.raw_index.borrow_mut().push(record.clone()); }
+        self.records.extend_from_slice(&records);
+        self.log_len += records.len();
+        self.raw_index.borrow_mut().extend_from_slice(&records);
+        self.note_state_revision(&records);
         self.refresh_stamp();
+    }
+
+    /// Attach the state receipt that belongs to each state record in this
+    /// write.
+    ///
+    /// One write, so the log can never hold a receipt for a state it did not
+    /// accept, or a state whose receipt was lost. A prepared receipt whose
+    /// base revision or resulting items do not match the record being appended
+    /// is dropped rather than paired: it belongs to a change this log is not
+    /// accepting right now. The actor is taken from the writer rather than
+    /// from the caller, so the log always says who accepted the write.
+    fn with_state_receipts(&self, records: &[Record]) -> Vec<Record> {
+        let mut out = Vec::with_capacity(records.len() + 1);
+        let mut revision = self.state_revision.borrow().clone();
+        for record in records {
+            out.push(record.clone());
+            if let Record::State(items) = record {
+                if let Some(mut receipt) = state_receipts::take_receipt(&revision, items) {
+                    receipt.actor = self.id.clone();
+                    out.push(receipt.record());
+                }
+                revision = state_receipts::revision_of(items);
+            }
+        }
+        out
+    }
+
+    fn note_state_revision(&self, records: &[Record]) {
+        if let Some(items) = records.iter().rev().find_map(|record| match record {
+            Record::State(items) => Some(items),
+            _ => None,
+        }) {
+            *self.state_revision.borrow_mut() = state_receipts::revision_of(items);
+        }
     }
 
     /// Append a recovery group and report write failures so its sidecar can
@@ -935,8 +1058,9 @@ impl Session {
         if let Some(error) = &self.write_error { return Err(std::io::Error::other(error.clone())); }
         self.sync_external_index();
         if let Some(error) = &self.write_error { return Err(std::io::Error::other(error.clone())); }
+        let records = self.with_state_receipts(records);
         let mut bytes = Vec::new();
-        for record in records {
+        for record in &records {
             serde_json::to_writer(&mut bytes, &record.to_json()).map_err(std::io::Error::other)?;
             bytes.push(b'\n');
         }
@@ -958,9 +1082,10 @@ impl Session {
             self.rollback_failed_write(start, &error);
             return Err(error);
         }
-        self.records.extend_from_slice(records);
+        self.records.extend_from_slice(&records);
         self.log_len += records.len();
-        self.raw_index.borrow_mut().extend_from_slice(records);
+        self.raw_index.borrow_mut().extend_from_slice(&records);
+        self.note_state_revision(&records);
         self.refresh_stamp();
         Ok(())
     }
@@ -1248,10 +1373,13 @@ fn bounded_edited_context(
             turn += 1;
             groups.push((turn, Vec::new()));
         }
+        // State and its receipts are derived from the turns being rewritten,
+        // so neither survives an edit to the history they were derived from.
         if matches!(
             record,
             Record::ContextEdit { .. } | Record::Compacted { .. } | Record::State(_)
-        ) {
+        ) || matches!(record, Record::Custom { kind, .. } if kind == state_receipts::RECEIPT_KIND)
+        {
             continue;
         }
         let Some((_, group)) = groups.last_mut() else {
@@ -1955,6 +2083,7 @@ mod tests {
             records: vec![],
             turn: 0,
             log_len: 0,
+            state_revision: RefCell::new(state_receipts::revision_of(&[])),
             write_error: None,
         };
         s.records = vec![
@@ -2891,6 +3020,7 @@ mod tests {
             records: vec![],
             turn: 0,
             log_len: 0,
+            state_revision: RefCell::new(state_receipts::revision_of(&[])),
             write_error: None,
         };
         s.records = vec![
@@ -2974,5 +3104,218 @@ mod tests {
         assert_eq!(ids, original, "ids must be monotonic");
         ids.dedup();
         assert_eq!(ids.len(), 50);
+    }
+
+    /// Apply a `state` write the way the agent loop does: `State::apply`
+    /// prepares it, then the session durably appends whatever the apply
+    /// changed. A retry that changes nothing must not reach the log at all.
+    fn apply_state(session: &mut Session, state: &mut crate::tools::State, args: &str) -> String {
+        let before = state.clone();
+        let outcome = state.apply(&glass_mod_api::ToolCall {
+            id: "call".into(),
+            name: "state".into(),
+            arguments: args.into(),
+        });
+        if before.items() == state.items() {
+            return outcome.body;
+        }
+        if let Err(error) = session.append_checked(&[Record::State(state.items().to_vec())]) {
+            *state = before;
+            return format!("error: state update was not persisted and was rolled back: {error}");
+        }
+        outcome.body
+    }
+
+    #[test]
+    fn a_state_write_is_logged_with_the_receipt_it_was_given() {
+        let dir = tmpdir("receipt-write");
+        let mut session = Session::create(&dir).unwrap();
+        let id = session.id.clone();
+        let mut state = crate::tools::State::new();
+
+        apply_state(
+            &mut session,
+            &mut state,
+            r#"{"request_id":"req-1","items":["keep the parser"]}"#,
+        );
+        drop(session);
+
+        let log = fs::read_to_string(dir.join(format!("{id}.jsonl"))).unwrap();
+        let records: Vec<serde_json::Value> = log
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        assert_eq!(records.len(), 2, "the state record and its receipt land together");
+        assert_eq!(records[0]["k"], "state");
+        assert_eq!(records[1]["k"], "custom");
+        assert_eq!(records[1]["c"], state_receipts::RECEIPT_KIND);
+        let receipt: serde_json::Value = serde_json::from_str(records[1]["d"].as_str().unwrap()).unwrap();
+        assert_eq!(receipt["request"], "req-1");
+        // The log says who accepted the write, from the writer rather than
+        // from whatever the caller claimed.
+        assert_eq!(receipt["actor"], id.as_str());
+        assert_eq!(receipt["items"], 1);
+    }
+
+    #[test]
+    fn a_receipt_is_written_only_next_to_the_state_record_it_describes() {
+        let dir = tmpdir("receipt-mismatch");
+        let mut session = Session::create(&dir).unwrap();
+        // Prepared against a base revision this log never held.
+        state_receipts::stage(state_receipts::Staged {
+            base_revision: "not-a-real-revision".into(),
+            items: vec!["stale".into()],
+            receipt: state_receipts::Receipt {
+                request_id: "req-stale".into(),
+                revision: "x".into(),
+                base_revision: "not-a-real-revision".into(),
+                items: 1,
+                bytes: 5,
+                actor: String::new(),
+                applied_at: 0,
+            },
+        });
+        session.append_checked(&[Record::State(vec!["stale".into()])]).unwrap();
+        let receipts = state_receipts::receipts_in(&session.history_records());
+        assert!(receipts.is_empty(), "a receipt for another change must not be paired");
+    }
+
+    #[test]
+    fn a_failed_append_writes_neither_the_state_nor_its_receipt() {
+        let dir = tmpdir("receipt-rollback");
+        let writable = Session::create(&dir).unwrap();
+        let id = writable.id.clone();
+        let mut state = crate::tools::State::new();
+        let before = state.clone();
+        state.apply(&glass_mod_api::ToolCall {
+            id: "call".into(),
+            name: "state".into(),
+            arguments: r#"{"request_id":"req-rollback","items":["never durable"]}"#.into(),
+        });
+        // A read-only snapshot refuses appends: the effect sandwich's failure.
+        let mut readonly = Session::open_readonly(&dir, &id).unwrap();
+        assert!(readonly.append_checked(&[Record::State(state.items().to_vec())]).is_err());
+        // What the agent loop does with that failure.
+        state = before;
+        drop(readonly);
+        drop(writable);
+
+        let path = dir.join(format!("{id}.jsonl"));
+        let log = fs::read_to_string(&path).unwrap();
+        assert!(log.is_empty(), "a rolled back write leaves no record: {log:?}");
+        assert!(state_receipts::receipts_in(&Session::raw_records(&path).unwrap()).is_empty());
+        // And the rolled back state claims no receipt either: the same request
+        // is applied afresh instead of being answered with a receipt for work
+        // the log never accepted.
+        let replay = state.apply(&glass_mod_api::ToolCall {
+            id: "call".into(),
+            name: "state".into(),
+            arguments: r#"{"request_id":"req-rollback","items":["never durable"]}"#.into(),
+        });
+        assert!(replay.body.starts_with("state recorded"), "{}", replay.body);
+    }
+
+    #[test]
+    fn an_old_log_without_receipts_restores_unchanged() {
+        let dir = tmpdir("receipt-legacy");
+        let legacy = [
+            r#"{"k":"user","t":"do the thing"}"#,
+            r#"{"k":"state","items":["step one","step two"]}"#,
+            r#"{"k":"assistant","t":"on it"}"#,
+        ]
+        .join("\n");
+        let path = dir.join("legacy.jsonl");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&path, format!("{legacy}\n")).unwrap();
+
+        let session = Session::open(&dir, "legacy").unwrap();
+        let records = session.history_records();
+        assert_eq!(records.len(), 3);
+        assert!(matches!(&records[1], Record::State(items) if items.len() == 2));
+        assert!(state_receipts::receipts_in(&records).is_empty());
+        assert_eq!(last_state_revision(&records), crate::session::state_receipts::revision_of(&[
+            "step one".to_string(),
+            "step two".to_string(),
+        ]));
+        // A state built from that log is unbound rather than claiming a
+        // writer it cannot verify, and starts with an empty ledger.
+        let mut state = crate::tools::State::new();
+        for record in &records {
+            if let Record::State(items) = record {
+                state.apply(&glass_mod_api::ToolCall {
+                    id: "restore".into(),
+                    name: "state".into(),
+                    arguments: serde_json::json!({ "items": items }).to_string(),
+                });
+            }
+        }
+        assert_eq!(state.items().len(), 2);
+    }
+
+    #[test]
+    fn a_retry_after_restart_returns_its_receipt_instead_of_writing_again() {
+        let dir = tmpdir("receipt-restart");
+        let id = {
+            let mut session = Session::create(&dir).unwrap();
+            let mut state = crate::tools::State::new();
+            apply_state(
+                &mut session,
+                &mut state,
+                r#"{"request_id":"req-restart","items":["only once"]}"#,
+            );
+            session.id.clone()
+        };
+
+        // What a resumed process does: reopen the log, rebuild the state from
+        // it, then retry the write the model never saw acknowledged.
+        let mut session = Session::open(&dir, &id).unwrap();
+        let mut state = crate::tools::State::new();
+        for record in &session.records {
+            if let Record::State(items) = record {
+                state.apply(&glass_mod_api::ToolCall {
+                    id: "restore".into(),
+                    name: "state".into(),
+                    arguments: serde_json::json!({ "items": items }).to_string(),
+                });
+            }
+        }
+        assert_eq!(state.items(), &["only once".to_string()]);
+
+        let body = apply_state(
+            &mut session,
+            &mut state,
+            r#"{"request_id":"req-restart","items":["only once"]}"#,
+        );
+        assert!(body.contains("already applied"), "{body}");
+        assert_eq!(state.items(), &["only once".to_string()]);
+        let states = session
+            .history_records()
+            .iter()
+            .filter(|record| matches!(record, Record::State(_)))
+            .count();
+        assert_eq!(states, 1, "a retry must not double-apply the write");
+        assert_eq!(state_receipts::receipts_in(&session.history_records()).len(), 1);
+    }
+
+    #[test]
+    fn a_receipt_read_back_shows_what_applied_it_under_which_id() {
+        let dir = tmpdir("receipt-entry");
+        let mut session = Session::create(&dir).unwrap();
+        apply_state(&mut session, &mut crate::tools::State::new(), r#"{"request_id":"req-9","items":["note"]}"#);
+        let receipts = state_receipts::receipts_in(&session.history_records());
+        assert_eq!(receipts.len(), 1);
+        let (role, line) = session
+            .records
+            .iter()
+            .find_map(|record| match record {
+                Record::Custom { kind, .. } if kind == state_receipts::RECEIPT_KIND => {
+                    Some(record.to_entry())
+                }
+                _ => None,
+            })
+            .expect("the receipt is a replay-visible record");
+        assert_eq!(role, Role::Meta);
+        assert!(line.contains("req-9"), "{line:?}");
+        assert!(line.contains(&session.id), "{line:?}");
     }
 }

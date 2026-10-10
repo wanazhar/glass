@@ -334,7 +334,10 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
             "Record durable working state so it survives context compaction. Call this \
              BEFORE context fills up, and after any milestone on a long task: list the \
              specific facts, file paths, and next steps you would need to resume cold. \
-             Call `state` with no arguments to read back what is currently recorded."
+             Call `state` with no arguments to read back what is currently recorded. \
+             When a write might be retried, send `request_id`: a repeat of an id \
+             already applied returns that receipt instead of writing again, and \
+             reusing an id for different notes is rejected."
                 .to_string(),
             serde_json::json!({
                 "type": "object",
@@ -345,6 +348,7 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
                         "items": { "type": "string" }
                     },
                     "expected":{"type":"string","description":"Optional state revision from revision:true read"},
+                    "request_id":{"type":"string","description":"Optional idempotency key naming this write. A repeat of a known id returns its recorded receipt and does not write again; the same id with different notes fails."},
                     "revision":{"type":"boolean"},
                     "capabilities":{"type":"object","properties":{"search":{"type":"string"},"activate":{"type":"array","items":{"type":"string"}}}}
                 }

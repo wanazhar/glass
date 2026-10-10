@@ -1,7 +1,7 @@
 ---
 id: state-receipts-001
 scope: roadmap item 42 — state duplicate-request detection, durable receipts and explicit ownership
-status: ready
+status: implemented
 depends-on: []
 ---
 
@@ -84,3 +84,18 @@ recording hook here.
 - A regression check that a retried `state` write cannot double-apply.
 - `cargo clippy --workspace --all-targets -- -D warnings` green.
 - `cargo test --locked --workspace` green.
+
+## Verification
+
+- Unit tests: a replayed request id returns the recorded receipt without
+  re-applying; the same id with different content is refused explicitly; a
+  concurrent update still trips the stale-revision guard; a failed log append
+  rolls back and writes no receipt; a receipt-free legacy log restores
+  unchanged; the ledger bound is enforced and stated.
+- `scripts/smoke-state-receipts.py` — PASS. A retried `state` write is
+  answered from its durable receipt without double-applying; the same id with
+  different notes is refused; the receipt names the request, the accepting
+  session and the effect; the revision read-back reports computed ownership
+  and the revision to present.
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo test --locked --workspace` — 578 + 13 + 91 pass, 0 fail.

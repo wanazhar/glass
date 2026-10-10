@@ -46,14 +46,20 @@ Own these paths only.
 
 - `crates/glass/src/tools.rs`
 - `crates/glass/src/session.rs`
-- `crates/glass/src/provider/mod.rs`
+- `crates/glass/src/provider/mod.rs` — only the `state` tool schema entry and
+  its tests, so the model can send the new request id
 - new `crates/glass/src/state_receipts.rs` if a separate module is cleaner
-- `scripts/smoke-*.py` for the new state receipt cases
+- new `scripts/smoke-state-receipts.py`
 - `docs/plan/tasks/state-receipts-001.md`
 
-Do not edit `crates/glass/src/main.rs`, `crates/glass/src/ext/**`,
-`crates/glass/src/addons.rs` or `crates/glass/src/attention.rs`; other tasks
-own those in this wave.
+Do not edit `crates/glass/src/main.rs`, `crates/glass/src/agent.rs`,
+`crates/glass/src/ext/**`, `crates/glass/src/addons.rs`,
+`crates/glass/src/attention.rs` or `crates/glass/src/diagnostic_bundle.rs`;
+other tasks own those in this wave.
+
+Note: `/recovery`, `/attention` and the provider retry loop belong to another
+task. Do not add a command, a tool schema outside the `state` entry, or a retry
+recording hook here.
 
 ## Constraints
 

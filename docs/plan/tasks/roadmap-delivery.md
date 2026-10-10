@@ -126,3 +126,8 @@ These are implementation checkpoints, not acceptance or full-roadmap completion.
   this coordination guard; receipts do not claim exclusive agent authorship.
   Checkpoint labels are validated, reads bounded and writes private.
   Regression fixtures added; build and PTY execution remain deferred.
+
+- Follow-up robustness: plugin receipts are prepared before replacing installed
+  content and restoration failures report their actual outcome and backup path.
+  Automation saves enforce the same 1 MiB limit as reads, including JSON escaping.
+  Handoff previews no longer associate an older answer with a newer failed turn.

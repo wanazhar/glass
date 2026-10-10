@@ -49,7 +49,7 @@ pub fn handoff(session: &Session) -> Value {
     let mut artifacts = Vec::new();
     for record in &records {
         match record {
-            Record::User(text) => intent = Some(excerpt(text,4096)),
+            Record::User(text) => { intent = Some(excerpt(text,4096)); answer = None; },
             Record::Assistant(text) => answer = Some(excerpt(text,8192)),
             Record::State(items) => notes = items.iter().take(32).map(|s|excerpt(s,512)).collect(),
             Record::Bash { spill: Some(path), .. } => artifacts.push(path.clone()),
@@ -58,7 +58,7 @@ pub fn handoff(session: &Session) -> Value {
     }
     artifacts.sort(); artifacts.dedup();
     json!({"schema_version":1,"source_session":session.id,"intent":intent,
-        "latest_answer_preview":answer,"durable_notes":notes,
+        "latest_answer_preview":answer,"answer_scope":"Latest user turn only; null when no answer was recorded for it.","durable_notes":notes,
         "artifact_references":artifacts.into_iter().take(32).collect::<Vec<_>>(),
         "omitted_history":{"raw_records":records.len(),"retrieve":format!("gc export {}",session.id)},
         "capabilities":{"core_tools":["bash","state"],"extensions":"Discover on the receiving host; not bundled or activated."},

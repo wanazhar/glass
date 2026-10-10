@@ -1,5 +1,9 @@
 # Glass Core design and delivery
 
+- [Expanded roadmap](../research/t3code-parity-2026-10-10.md): T3 Code, Codex, Pi and OMP research, 43 candidates and tooling-first delivery order.
+- [Turn recovery](plan/tasks/turn-recovery-001.md): stable prompt recovery, local compaction fallback and consistent tool cards.
+- [Tooling foundation](plan/tasks/tooling-foundation-001.md): revision-checked read continuation, mutation previews, explicit shell inputs and durable state recovery.
+
 - [Auto-verify](plan/tasks/auto-verify-001.md): the project verifier runs after writes, through the host bridge.
 - [Cross-session memory](plan/tasks/memory-001.md): MEMORY.md index injected per project, user-level only.
 - [Image input](plan/tasks/image-input-001.md): PNG/JPEG/GIF/WebP attachments ride as image blocks, no codec.

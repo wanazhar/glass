@@ -317,7 +317,72 @@ impl Breaker {
 /// recorded here: the assembled prompt lives with the Agent, so a manual
 /// epoch falls back to the current prompt on replay — the automatic path in
 /// `agent.rs` is the one that captures it.
-pub fn run_manual(
+/// Keep summary requests comfortably below the window, retaining both the goal
+/// and the latest work. This also bounds sessions with thousands of records.
+pub fn summary_output_limit(provider: &dyn Provider) -> u32 {
+    (provider.context_window() / 4).clamp(1, 4096)
+}
+
+pub fn fit_summary_prompt(provider: &dyn Provider, prompt: &str) -> String {
+    let budget = provider.context_window().saturating_sub(summary_output_limit(provider)).saturating_sub(provider.context_window() / 16).max(1);
+    let mut cap = prompt.len().min(96_000);
+    loop {
+        let fitted = excerpt(prompt, cap);
+        if provider.estimate_tokens(&[Message::User(fitted.clone())]) <= budget || cap == 0 { return fitted; }
+        cap /= 2;
+    }
+}
+
+fn excerpt(text: &str, cap: usize) -> String {
+    if text.len() <= cap { return text.to_string(); }
+    let marker = "\n[Middle omitted; full transcript remains in the session log.]\n";
+    let available = cap.saturating_sub(marker.len());
+    let mut head = available / 3;
+    while !text.is_char_boundary(head) { head -= 1; }
+    let mut tail = text.len().saturating_sub(available - head);
+    while !text.is_char_boundary(tail) { tail += 1; }
+    if cap < marker.len() {
+        let mut end = cap.min(text.len());
+        while !text.is_char_boundary(end) { end -= 1; }
+        return text[..end].to_string();
+    }
+    format!("{}{marker}{}", &text[..head], &text[tail..])
+}
+
+/// Extractive recovery: no invented model summary and no provider request.
+/// Original records remain in the append-only session log.
+pub fn fallback(session: &mut Session, state: &State, reason: &str) -> Result<(), String> {
+    let summary = format!("Extractive checkpoint (model summary unavailable).\n{}", excerpt(&summary_prompt_bounded(&session.records, state, 400), 24_000));
+    let system = session.history_records().iter().rev().find_map(|r| match r { Record::Compacted { system, .. } => Some(system.clone()), _ => None }).flatten();
+    let before = session.records.len();
+    let tail_start = session.log_len();
+    let mut projected = Vec::new();
+    if let Some(first) = session.records.iter().find(|r| matches!(r, Record::User(_))) { projected.push(first.clone()); }
+    projected.push(Record::System(format!("Summary of earlier work in this session:\n{summary}")));
+    projected.push(Record::State(state.items().to_vec()));
+    let kept = projected.len();
+    session.append_checked(&[Record::State(state.items().to_vec()), Record::Compacted {
+        kept, dropped: before.saturating_sub(kept), summary: Some(summary),
+        tail_start: tail_start + 1, system,
+    }]).map_err(|e| e.to_string())?;
+    session.records = projected;
+    let _ = reason;
+    session.append(Record::Meta("Compacted locally; model summary unavailable. Full transcript retained in the session log.".into()));
+    Ok(())
+}
+
+pub fn run_manual(provider: &dyn Provider, session: &mut Session, state: &State, focus: Option<&str>) -> Result<(usize, usize), String> {
+    let before = provider.estimate_tokens(&project(&session.records)) as usize;
+    match run_manual_summary(provider, session, state, focus) {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            fallback(session, state, &error)?;
+            Ok((before, provider.estimate_tokens(&project(&session.records)) as usize))
+        }
+    }
+}
+
+fn run_manual_summary(
     provider: &dyn Provider,
     session: &mut Session,
     state: &State,
@@ -326,14 +391,14 @@ pub fn run_manual(
     let before = provider.estimate_tokens(&project(&session.records)) as usize;
     let prompt = manual_prompt(&session.records, state, focus);
     let tools: Vec<(String, String, String)> = Vec::new();
-    let model = provider.id().to_string();
+    let model = provider.model().to_string();
     let req = Request {
         model: &model,
         system: "You write precise technical summaries. Follow the instructions exactly.",
-        messages: &[Message::User(prompt)],
+        messages: &[Message::User(fit_summary_prompt(provider, &prompt))],
         tools: &tools,
-        max_tokens: 4096,
-        reasoning: None,
+        max_tokens: summary_output_limit(provider),
+        reasoning: Some(0),
     };
     let stream = provider::stream_with_retry(
         provider,
@@ -394,7 +459,7 @@ pub fn apply_summary(records: &[Record], summary: &str) -> Vec<Record> {
         "Summary of earlier work in this session:\n{summary}"
     )));
     // Keep a short tail so the model retains immediate momentum.
-    let tail_start = records.len().saturating_sub(4);
+    let tail_start = records.len().saturating_sub(KEEP_RECENT);
     let mut tail: Vec<Record> = records[tail_start..].to_vec();
     while matches!(tail.first(), Some(Record::ToolResult { .. })) {
         tail.remove(0);
@@ -455,6 +520,45 @@ pub fn project(records: &[Record]) -> Vec<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FailedSummary;
+    impl Provider for FailedSummary {
+        fn id(&self) -> &str { "transport" }
+        fn model(&self) -> &str { "actual-model" }
+        fn context_window(&self) -> u32 { 128_000 }
+        fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item=Event> + '_>, provider::Error> {
+            assert_eq!(req.model, "actual-model");
+            assert_eq!(req.reasoning, Some(0));
+            Ok(Box::new(vec![Event::Error("reasoning arrived without an answer".into())].into_iter()))
+        }
+    }
+    #[test]
+    fn failed_manual_summary_uses_durable_extractive_checkpoint() {
+        let dir = std::env::temp_dir().join(format!("gc-summary-fallback-{}", std::process::id()));
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("preserve original goal".into()));
+        session.append(Record::ToolResult { name:"bash".into(), call_id:"large".into(), body:"x".repeat(100_000) });
+        session.append(Record::User("latest task instruction".into()));
+        let (before, after) = run_manual(&FailedSummary, &mut session, &State::new(), None).unwrap();
+        assert!(after < before);
+        let text = format!("{:?}", session.messages());
+        assert!(text.contains("latest task instruction"));
+        assert!(text.contains("Extractive checkpoint"));
+        let id = session.id.clone();
+        drop(session);
+        let resumed = Session::open(&dir, &id).unwrap();
+        assert!(format!("{:?}", resumed.messages()).contains("latest task instruction"));
+        assert!(resumed.records.iter().all(|r| !matches!(r, Record::ToolResult { body, .. } if body.len() > 2000)));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn summary_prompt_bounds_total_bytes_and_preserves_latest_work() {
+        let text = format!("original goal{}latest work", "🦀".repeat(100_000));
+        let fitted = fit_summary_prompt(&FailedSummary, &text);
+        assert!(fitted.len() < 96_100);
+        assert!(fitted.starts_with("original goal"));
+        assert!(fitted.ends_with("latest work"));
+    }
 
     fn user(n: usize) -> Vec<Record> {
         (0..n).map(|i| Record::User(format!("msg {i}"))).collect()

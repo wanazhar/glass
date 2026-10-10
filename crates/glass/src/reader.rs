@@ -372,6 +372,7 @@ fn render_entries(
                 let key = (entry.turn, card.call_id.clone());
                 let is_expanded = expanded.contains(&key);
                 let mut rendered = card.clone();
+                rendered.expanded = is_expanded;
                 match loaded_spills.get(&key) {
                     Some(Ok((text, truncated))) => {
                         rendered.output.push_str("\n[loaded spill continuation]\n");
@@ -392,6 +393,7 @@ fn render_entries(
                     None => {}
                 }
                 entry.text = crate::session::tool_card_text(&rendered, is_expanded);
+                entry.tool_card = Some(rendered);
             }
             entry
         })
@@ -430,6 +432,7 @@ mod tests {
             text: String::new(),
             turn: 7,
             tool_card: Some(glass_tui::ToolCard {
+                    expanded: false,
                 call_id: "exact-call".into(),
                 command: "echo output".into(),
                 output: "inline preview".into(),
@@ -460,6 +463,7 @@ mod tests {
             text: String::new(),
             turn: 2,
             tool_card: Some(glass_tui::ToolCard {
+                    expanded: false,
                 call_id: "call-2".into(),
                 command: "echo inline".into(),
                 output: "inline output".into(),

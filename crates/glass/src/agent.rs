@@ -283,7 +283,7 @@ impl<'a> Agent<'a> {
             workspace,
             max_tokens: 16_000,
             reasoning: None,
-            max_tool_rounds: 24,
+            max_tool_rounds: usize::MAX,
             base_prompt: String::new(),
             catalogue: None,
             project_instructions: None,
@@ -493,9 +493,9 @@ impl<'a> Agent<'a> {
             self.session.append(Record::Meta(note));
         }
 
-        let mut system = self.effective_system();
+        let system = self.effective_system();
         if self.empty_correction {
-            system.push_str("\nYour preceding response contained reasoning but no answer or tool call. Continue the current task from the existing tool results. Return a user-facing answer or a valid tool call; do not repeat completed actions.\n");
+            messages.push(Message::User("Continue the current task from the existing tool results. Your last response contained reasoning but no answer. Produce an answer or valid tool call now; do not repeat completed actions. Keep reasoning brief.".into()));
         }
         let model = self.provider.model().to_string();
 
@@ -514,7 +514,7 @@ impl<'a> Agent<'a> {
             messages: &messages,
             tools: &tools,
             max_tokens: self.max_tokens,
-            reasoning: self.reasoning,
+            reasoning: if self.empty_correction { Some(0) } else { self.reasoning },
         };
 
         let manifest = crate::context_audit::capture(
@@ -837,12 +837,11 @@ impl<'a> Agent<'a> {
                 Err(e)
                     if !self.empty_recovered
                         && e.to_string()
-                            .contains("reasoning arrived without an answer") =>
+                            .contains("reasoning arrived without an answer")
+                        || !self.empty_recovered && e.to_string().contains("output limit reached before an answer") =>
                 {
                     self.empty_recovered = true;
-                    let detail = format!(
-                        "Reasoning-only response; recovering once without replaying completed tools. {e}"
-                    );
+                    let detail = "No answer received; requesting an answer with reduced reasoning. Completed tools are preserved.".to_string();
                     self.session.append(Record::Meta(detail.clone()));
                     self.emit(Progress::ProviderNotice(&detail));
                     self.empty_correction = true;
@@ -852,6 +851,10 @@ impl<'a> Agent<'a> {
                 }
                 Err(e) => return Err(e),
             };
+            // A successful response advances the task. Recovery allowance is
+            // per response chain, so a later tool round can recover as well.
+            self.empty_recovered = false;
+            self.overflow_recovered = false;
             if self.steer.as_deref() == Some("") {
                 return Ok((out, Stop::Cancelled));
             }
@@ -1361,6 +1364,8 @@ impl<'a> Agent<'a> {
 
     /// Record a bash result produced on a worker thread.
     fn apply_bash_result(&mut self, call: &ToolCall, outcome: tools::Outcome) {
+        let state_before = self.state.clone();
+        let mut outcome = outcome;
         let command = call
             .arg_str("command")
             .or_else(|| {
@@ -1388,6 +1393,10 @@ impl<'a> Agent<'a> {
             self.extensions
                 .rewrite_tool_result(&call.id, &call.name, &mut body, bridge)
         });
+        if let Err(error) = self.persist_state_change(state_before) {
+            body.push_str(&format!("\n{error}"));
+            outcome.exit_code = None;
+        }
         let mut output = ToolOutput::new(body);
         if rewritten {
             output.rewritten = true;
@@ -1419,6 +1428,17 @@ impl<'a> Agent<'a> {
         });
     }
 
+    fn persist_state_change(&mut self, before: State) -> Result<(), String> {
+        if before.items() == self.state.items() {
+            return Ok(());
+        }
+        if let Err(error) = self.session.append_checked(&[Record::State(self.state.items().to_vec())]) {
+            *self.state = before;
+            return Err(format!("error: state update was not persisted and was rolled back: {error}"));
+        }
+        Ok(())
+    }
+
     /// Refuse a write to a file the model has not read.
     ///
     /// A `sed -i` against an unseen file succeeds silently, and the damage only
@@ -1443,6 +1463,7 @@ impl<'a> Agent<'a> {
     /// Execute one tool call, letting mods veto or rewrite the result.
     fn run_tool(&mut self, call: &ToolCall) {
         self.emit_tool_start(call);
+        let state_before = self.state.clone();
 
         // Mods may add tools and may block them; the two built-ins are always
         // present but a mod can still refuse to run one.
@@ -1533,6 +1554,12 @@ impl<'a> Agent<'a> {
             self.extensions
                 .rewrite_tool_result(&call.id, &call.name, &mut body, bridge)
         });
+        // A clear is a mutation too. Persist before acknowledging it, and
+        // roll back the in-memory notes if the durable append fails.
+        if let Err(error) = self.persist_state_change(state_before) {
+            body = error;
+            outcome.exit_code = None;
+        }
         self.finish_tool(
             call,
             tools::Outcome {
@@ -1590,11 +1617,6 @@ impl<'a> Agent<'a> {
                 spill: outcome.spill.as_ref().map(|p| p.display().to_string()),
             });
         }
-        if call.name == "state" && !self.state.items().is_empty() {
-            self.session
-                .append(Record::State(self.state.items().to_vec()));
-        }
-
         self.session.append(Record::ToolResult {
             name: call.name.clone(),
             call_id: call.id.clone(),
@@ -1689,7 +1711,13 @@ impl<'a> Agent<'a> {
                 });
                 Ok(())
             }
-            compact::Action::NeedsSummary { prompt } => self.summarize(&prompt),
+            compact::Action::NeedsSummary { prompt } => {
+                if let Err(error) = self.summarize(&prompt) {
+                    compact::fallback(self.session, self.state, &error.to_string())
+                        .map_err(provider::Error::Config)?;
+                }
+                Ok(())
+            },
         }
     }
 
@@ -1728,6 +1756,9 @@ impl<'a> Agent<'a> {
                 kept: self.session.records.len(),
                 dropped: evicted,
             });
+        }
+        if provider::pressure(self.provider, &self.session.messages()) >= compact::COMPACT_AT {
+            changed |= compact::fallback(self.session, self.state, "context overflow").is_ok();
         }
         changed
     }
@@ -1771,7 +1802,7 @@ impl<'a> Agent<'a> {
         // Paid summarization is off for this session after repeated failures;
         // the deterministic passes above still ran, and they are free.
         if self.breaker.is_open() {
-            return Ok(());
+            return Err(provider::Error::Transport("model compaction is paused after repeated failures".into()));
         }
 
         // Ask for a summary using a bare request with no tools, so the model
@@ -1781,10 +1812,10 @@ impl<'a> Agent<'a> {
         let req = Request {
             model: &model,
             system: "You write precise technical summaries. Follow the instructions exactly.",
-            messages: &[Message::User(prompt.to_string())],
+            messages: &[Message::User(compact::fit_summary_prompt(self.provider, prompt))],
             tools: &tools,
-            max_tokens: 4096,
-            reasoning: None,
+            max_tokens: compact::summary_output_limit(self.provider),
+            reasoning: Some(0),
         };
 
         let manifest = format!(
@@ -1824,7 +1855,7 @@ impl<'a> Agent<'a> {
             // Leave the conversation alone rather than destroying context on a
             // failed summarization.
             self.note_summary_failure();
-            return Ok(());
+            return Err(provider::Error::Transport("provider returned an empty compaction summary".into()));
         }
         self.breaker.record_success();
 
@@ -1902,6 +1933,72 @@ mod warm_integration {
     /// A provider that answers immediately and asks for no
     /// tools, so a turn finishes in one round.
     struct MockTurnProvider;
+
+    #[test]
+    fn bash_rewrite_nested_state_is_persisted() {
+        let Some(py) = python() else { return };
+        let dir = std::env::temp_dir().join(format!("gc-nested-state-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("nested.py");
+        std::fs::write(&script, r#"
+import json,sys
+def send(value):
+ print(json.dumps(value),flush=True)
+for line in sys.stdin:
+ r=json.loads(line); kind=r.get('type'); ident=r.get('id')
+ if kind=='hello': send({'id':ident,'protocol':1,'name':'nested-state','version':'1','tools':[]})
+ elif kind=='tool_result':
+  send({'type':'call_tool','call_id':'nested-state','name':'state','arguments':json.dumps({'items':['from rewrite']})})
+  reply=json.loads(sys.stdin.readline())
+  assert reply['type']=='call_tool_result'
+  send({'id':ident,'body':r.get('body','')})
+ elif kind=='goodbye': break
+ else: send({'id':ident})
+"#).unwrap();
+        let mut session = Session::create(&dir).unwrap();
+        let mut state = State::new();
+        let mods = Vec::new();
+        let mut extensions = Registry::load(&[format!("{py} {}", script.display())], &dir, "mock");
+        assert_eq!(extensions.len(), 1);
+        {
+            let mut agent = Agent::new(&MockTurnProvider, &mut session, &mut state, &mods, &mut extensions, &dir);
+            agent.apply_bash_result(&ToolCall { id: "bash".into(), name: "bash".into(), arguments: r#"{"command":"true"}"#.into() }, tools::Outcome { body: "[exit 0]\n(no output)".into(), truncated:false, exit_code:Some(0), spill:None });
+        }
+        assert_eq!(state.items(), &["from rewrite".to_string()]);
+        assert!(session.history_records().iter().any(|r| matches!(r, Record::State(items) if items == &["from rewrite".to_string()])));
+        drop(extensions);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn state_clear_is_durable_and_failed_persistence_rolls_back() {
+        let dir = std::env::temp_dir().join(format!("gc-state-receipt-{}", std::process::id()));
+        let mut session = Session::create(&dir).unwrap();
+        let id = session.id.clone();
+        let mut state = State::new();
+        let mods = Vec::new();
+        let mut extensions = Registry::load(&[], &dir, "mock");
+        let set = ToolCall { id: "set".into(), name: "state".into(), arguments: r#"{"items":["remember"]}"#.into() };
+        let clear = ToolCall { id: "clear".into(), name: "state".into(), arguments: r#"{"items":[]}"#.into() };
+        {
+            let mut agent = Agent::new(&MockTurnProvider, &mut session, &mut state, &mods, &mut extensions, &dir);
+            agent.run_tool(&set);
+            agent.run_tool(&clear);
+        }
+        assert!(state.items().is_empty());
+        let states = session.history_records().into_iter().filter_map(|r| match r { Record::State(items) => Some(items), _ => None }).collect::<Vec<_>>();
+        assert_eq!(states, vec![vec!["remember".to_string()], vec![]]);
+        drop(session);
+        let mut readonly = Session::open_readonly(&dir, &id).unwrap();
+        {
+            let mut agent = Agent::new(&MockTurnProvider, &mut readonly, &mut state, &mods, &mut extensions, &dir);
+            agent.run_tool(&set);
+        }
+        assert!(state.items().is_empty(), "failed persistence must not change notes");
+        drop(readonly);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     impl Provider for MockTurnProvider {
         fn id(&self) -> &str {
@@ -2143,6 +2240,45 @@ mod warm_integration {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    struct RecoveryProvider { requests: std::sync::Mutex<Vec<(String, Option<u32>)>> }
+    impl Provider for RecoveryProvider {
+        fn id(&self) -> &str { "recovery" }
+        fn context_window(&self) -> u32 { 200_000 }
+        fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item=Event> + '_>, Error> {
+            let mut requests = self.requests.lock().unwrap();
+            let index = requests.len();
+            requests.push((req.system.to_string(), req.reasoning));
+            let events = if index == 0 || index == 20 {
+                vec![Event::Reasoning("partial thought".into()), Event::Error("reasoning arrived without an answer".into())]
+            } else if index <= 30 {
+                if index == 1 { assert!(format!("{:?}", req.messages).contains("Keep reasoning brief")); }
+                vec![Event::ToolCall { id:format!("state-{index}"), name:"state".into(), arguments:"{}".into() }, Event::Done]
+            } else { vec![Event::Text("finished task".into()), Event::Done] };
+            Ok(Box::new(events.into_iter()))
+        }
+    }
+    #[test]
+    fn recovery_preserves_cached_system_prefix_and_main_exceeds_24_rounds() {
+        let dir = std::env::temp_dir().join(format!("gc-recovery-prefix-{}", std::process::id()));
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("complete the task".into()));
+        let mut state = State::new();
+        let mut extensions = Registry::empty();
+        let provider = RecoveryProvider { requests: std::sync::Mutex::new(Vec::new()) };
+        let mods = Vec::new();
+        let mut agent = Agent::new(&provider, &mut session, &mut state, &mods, &mut extensions, &dir);
+        let (output, stop) = agent.run_turn(no_pump).unwrap();
+        assert_eq!(output.text, "finished task");
+        assert_eq!(stop, Stop::Finished);
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 32);
+        assert!(requests.iter().all(|(system, _)| system == &requests[0].0));
+        assert_eq!(requests[1].1, Some(0));
+        assert_eq!(requests[21].1, Some(0));
+        drop(agent); drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// A provider that records the tool names each request carried,

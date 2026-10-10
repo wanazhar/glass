@@ -33,6 +33,7 @@ struct Laid {
 /// Cumulative line index: `starts[i]` is the first line of entry `i`.
 #[derive(Default)]
 pub struct Layout {
+    cards: HashMap<usize, crate::ToolCard>,
     entries: Vec<(String, Role, usize)>,
     cache: HashMap<usize, Laid>,
     /// Insertion order of `cache` keys, for eviction.
@@ -67,6 +68,14 @@ impl Layout {
 
     fn same_shape(&self, other: &[(String, Role, usize)]) -> bool {
         self.entries.iter().zip(other).all(|(a, b)| a == b)
+    }
+
+    pub fn cards(&self) -> HashMap<usize, crate::ToolCard> { self.cards.clone() }
+
+    pub fn set_cards(&mut self, cards: HashMap<usize, crate::ToolCard>) -> bool {
+        if self.cards == cards { return false; }
+        self.cards = cards; self.dirty = true;
+        true
     }
 
     pub fn len(&self) -> usize {
@@ -127,7 +136,7 @@ impl Layout {
             // entries we are still counting, so every line past the cap would
             // measure as one line and the index would be wrong.
             let (text, role, _) = &self.entries[i];
-            let n = entry_lines(text, *role, width, i > 0).len().max(1);
+            let n = self.lines(i, text, *role, width).len().max(1);
             self.total += n;
         }
         self.starts.push(self.total);
@@ -141,7 +150,7 @@ impl Layout {
         }
         let (text, role, _) = self.entries[idx].clone();
         let laid = Laid {
-            lines: entry_lines(&text, role, width, idx > 0),
+            lines: self.lines(idx, &text, role, width),
         };
         self.cache.insert(idx, laid.clone());
         self.order.push(idx);
@@ -150,6 +159,27 @@ impl Layout {
             self.cache.remove(&victim);
         }
         laid
+    }
+
+    fn lines(&self, idx: usize, text: &str, role: Role, width: u16) -> Vec<Line<'static>> {
+        let Some(card) = self.cards.get(&idx).filter(|_| role != Role::Meta) else { return entry_lines(text, role, width, idx > 0); };
+        let status = card.status.split(" · ").next().unwrap_or(&card.status);
+        let failed = !matches!(status, "exit 0" | "completed" | "running");
+        let name = if role == Role::Bash { "bash" } else { card.command.split_whitespace().next().unwrap_or("tool") };
+        let mut rows = crate::tool_output::lines(name, &card.command, failed,
+            card.elapsed_ms.unwrap_or(0) as f32 / 1000.0, if card.expanded { "" } else { &card.output }, width as usize, false);
+        if card.status == "running" {
+            rows[0] = Line::from(Span::styled(format!("◐ {name} running · {:.1}s", card.elapsed_ms.unwrap_or(0) as f32 / 1000.0), role_style(Role::User)));
+        }
+        if card.expanded {
+            rows.pop(); // trailing card spacer
+            rows.pop(); // empty preview placeholder
+            rows.extend(wrap_width(&crate::markdown::sanitize(&card.output), width as usize).into_iter().map(Line::from));
+        }
+        if card.truncated { rows.push(Line::from(Span::styled("Inline output truncated", role_style(Role::Meta)))); }
+        if card.spill.is_some() { rows.push(Line::from(Span::styled("Full output available · /details", role_style(Role::Tool)))); }
+        if idx > 0 { rows.insert(0, Line::default()); }
+        rows
     }
 
     fn touch(&mut self, idx: usize) {
@@ -317,6 +347,28 @@ fn role_style(role: Role) -> ratatui::style::Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_cards_use_bounded_colored_renderer_until_explicit_expansion() {
+        let mut layout = Layout::new(vec![("legacy plain text".into(), Role::Bash, 1)]);
+        let card = crate::ToolCard { expanded:false, call_id:"id".into(), command:format!("cat {}", "large-command ".repeat(1000)), output:(0..30).map(|i| format!("output {i}\n")).collect(), status:"exit 0".into(), elapsed_ms:Some(200), spill:None, truncated:false };
+        layout.set_cards(HashMap::from([(0, card.clone())]));
+        layout.set_width(40);
+        let lines = layout.lines(0, "legacy plain text", Role::Bash, 40);
+        assert!(lines.len() < 15);
+        assert!(lines[0].to_string().contains("✓ bash"));
+        assert!(!lines.iter().any(|l| l.to_string().contains("output 29")));
+        let mut truncated = card.clone();
+        truncated.status = "exit 0 · truncated".into();
+        truncated.truncated = true;
+        layout.set_cards(HashMap::from([(0, truncated)]));
+        assert!(layout.lines(0, "", Role::Bash, 40)[0].to_string().contains("✓ bash"));
+        let mut expanded = card;
+        expanded.expanded = true;
+        layout.set_cards(HashMap::from([(0, expanded)]));
+        layout.set_width(40);
+        assert!(layout.lines(0, "", Role::Bash, 40).iter().any(|l| l.to_string().contains("output 29")));
+    }
 
     #[test]
     fn turn_summary_replays_every_line() {

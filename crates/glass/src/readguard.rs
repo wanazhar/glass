@@ -19,13 +19,22 @@
 //!    the file, a `git diff` that showed it, a build that compiled it. The
 //!    model has seen the contents; the mechanism does not matter.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+/// Tool-call-age past which an edit tool result reminds the model to reread.
+/// A read 25 tool calls ago is stale for editing purposes even when the
+/// revision guard would still accept the write: the model's memory of the
+/// file is old even when the file is not.
+pub const STALE_READ_CALLS: u64 = 25;
 
 /// Files the model has demonstrably seen the contents of.
 #[derive(Default)]
 pub struct ReadSet {
     seen: HashSet<String>,
+    /// Tool-call index of the most recent read per canonical path, for the
+    /// staleness hint. Absent means never read (but `seen` is the authority).
+    last_read: HashMap<String, u64>,
 }
 
 impl ReadSet {
@@ -33,9 +42,36 @@ impl ReadSet {
         Self::default()
     }
 
-    /// Record a file the model has read.
+    /// Record a file the model has read, without an index (fresh by definition).
+    /// Retained for tests and callers that have no call counter.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn mark(&mut self, path: &Path) {
-        self.seen.insert(super::concurrency::canonical_key(path));
+        self.mark_at(path, 0);
+    }
+    /// Record a read that happened at the given tool-call index.
+    pub fn mark_at(&mut self, path: &Path, call_index: u64) {
+        let key = super::concurrency::canonical_key(path);
+        self.seen.insert(key.clone());
+        let entry = self.last_read.entry(key).or_insert(call_index);
+        if call_index > *entry {
+            *entry = call_index;
+        }
+    }
+
+    /// Tool-call index of the most recent read, or `None` when never read.
+    pub fn last_read_at(&self, path: &Path) -> Option<u64> {
+        self.last_read.get(&super::concurrency::canonical_key(path)).copied()
+    }
+
+    /// The staleness hint for an edit result, or `None` when the read is
+    /// fresh enough or the file was never read (the revision guard already
+    /// covers that case with its own error).
+    pub fn staleness_hint(&self, path: &Path, current_call: u64) -> Option<String> {
+        let last = self.last_read_at(path)?;
+        let age = current_call.saturating_sub(last);
+        (age >= STALE_READ_CALLS).then(|| {
+            format!("note: `{}` was last read {age} tool calls ago; reread it before further edits.", path.display())
+        })
     }
 
     /// Whether the model has read this file.
@@ -54,7 +90,23 @@ impl ReadSet {
     /// Deliberately generous about what counts as a read. A false positive
     /// costs nothing; a false negative lets the overwrite through, which is the
     /// whole thing this guards against.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn observe(&mut self, command: &str, output: &str, workspace: &Path) {
+        self.observe_at(command, output, workspace, 0)
+    }
+
+    /// Same scan, recording reads at the given tool-call index so the
+    /// staleness hint can age reads later. Callers without an index (tests,
+    /// recovery replay) use 0, which is "oldest possible" — a hint on age 0
+    /// would fire immediately, so 0 means fresh-enough by construction: the
+    /// age check only fires when `current_call - last >= STALE_READ_CALLS`.
+    pub fn observe_at(
+        &mut self,
+        command: &str,
+        output: &str,
+        workspace: &Path,
+        call_index: u64,
+    ) {
         let cmd = command.trim();
         if cmd.is_empty() {
             return;
@@ -80,7 +132,7 @@ impl ReadSet {
             .contains(&prev.trim_matches(|c: char| !c.is_alphanumeric()));
             let _ = next;
             if reader {
-                self.mark(&abs(t, workspace));
+                self.mark_at(&abs(t, workspace), call_index);
             }
         }
 
@@ -102,7 +154,7 @@ impl ReadSet {
                         continue;
                     }
                     if looks_like_path(t) {
-                        self.mark(&abs(t, workspace));
+                        self.mark_at(&abs(t, workspace), call_index);
                     }
                 }
             }
@@ -121,7 +173,7 @@ impl ReadSet {
                         !c.is_alphanumeric() && c != '.' && c != '/' && c != '_' && c != '-'
                     });
                     if looks_like_path(t) {
-                        self.mark(&abs(t, workspace));
+                        self.mark_at(&abs(t, workspace), call_index);
                     }
                 }
             }

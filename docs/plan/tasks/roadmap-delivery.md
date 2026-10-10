@@ -107,3 +107,8 @@ These are implementation checkpoints, not acceptance or full-roadmap completion.
   Concurrent CLI mutations use a private lock, corrupt lock files fail closed, and
   hidden staging/rollback trees are excluded from normal plugin discovery.
   No running extension is restarted; the next session uses the installed version.
+
+- Policy dry-run: `gc policy explain COMMAND` reports matched global rules,
+  configured/runtime confinement and exact exceptions without shell execution;
+  compound-command limits are illustrated explicitly. `gc policy extension SPEC`
+  validates capability declarations without launching or activating the extension.

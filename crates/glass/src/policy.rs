@@ -94,9 +94,9 @@ pub fn command(args: &[String]) -> Result<(), String> {
         .collect();
     let expected = match args.first().map(String::as_str) {
         None => 0,
-        Some("shell") => 2,
+        Some("shell" | "explain" | "extension") => 2,
         Some("provider") => 3,
-        _ => return Err("gc policy [shell COMMAND | provider KIND ENDPOINT] [--json]".into()),
+        _ => return Err("gc policy [shell COMMAND | explain COMMAND | extension SPEC | provider KIND ENDPOINT] [--json]".into()),
     };
     if args.len() != expected {
         return Err("Incorrect policy arguments; use gc policy --help".into());
@@ -105,6 +105,27 @@ pub fn command(args: &[String]) -> Result<(), String> {
     let value = match args.first().map(String::as_str) {
         None => {
             serde_json::json!({"path":path(),"deny_providers":p.deny_providers,"deny_endpoint_hosts":p.deny_endpoint_hosts,"deny_shell":p.deny_shell,"scope":"Global only. Shell patterns match command text, not shell semantics. Use the kernel sandbox for actual filesystem/network confinement. Existing external processes and third-party sidecars are outside this policy guard."})
+        }
+        Some("explain") => {
+            let command = &args[1];
+            if command.len()>32768 || command.contains('\0') {return Err("Command exceeds dry-run bounds".into());}
+            let cfg=crate::config::load(&crate::config::default_path()).map_err(|e|e.to_string())?;
+            let matched=p.deny_shell.iter().filter(|pattern|matches(pattern,command)).cloned().collect::<Vec<_>>();
+            let approvals=crate::permissions::approvals_for_command(command)?;
+            serde_json::json!({"execution":"none","decision":if matched.is_empty(){"no global text denial; confinement and runtime approvals still apply"}else{"deny"},
+                "matched_global_rules":matched,"configured_permission_profile":format!("{:?}",cfg.permission_profile),
+                "configured_sandbox":format!("{:?}",cfg.sandbox),"runtime_sandbox":crate::sandbox::security_summary(),
+                "exact_exception_in_this_process":approvals.permits_exact(command),
+                "headless_exception_policy":"No new exception may be approved in headless mode.",
+                "compound_commands":"Global globs match the entire command text, not individual shell syntax nodes. For example git push* does not match echo ok && git push. Kernel confinement still applies to every child.",
+                "scope":"This command never launches the shell and cannot predict filesystem, network or dynamic shell expansion outcomes."})
+        }
+        Some("extension") => {
+            let workspace=std::env::current_dir().map_err(|e|e.to_string())?;
+            match crate::sandbox::inspect_extension_capabilities(&args[1],&workspace) {
+                Ok(caps)=>serde_json::json!({"execution":"none","declaration":"validated before launch","filesystem":{"read":caps.filesystem.read,"write":caps.filesystem.write},"network_ports":caps.network,"subprocess":caps.subprocess,"scope":"Inspection only; does not activate or grant capabilities."}),
+                Err(error)=>serde_json::json!({"execution":"none","declaration":"rejected or unavailable","reason":error}),
+            }
         }
         Some("shell") => {
             let command = args.get(1).ok_or("gc policy shell COMMAND")?;
@@ -119,7 +140,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
         }
         _ => {
             return Err(
-                "Usage: gc policy [shell COMMAND | provider KIND ENDPOINT] [--json]".into(),
+                "Usage: gc policy [shell COMMAND | explain COMMAND | extension SPEC | provider KIND ENDPOINT] [--json]".into(),
             );
         }
     };

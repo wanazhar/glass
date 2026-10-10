@@ -54,3 +54,21 @@ Status: in progress. All items are authorized. Existing primitives do not count 
 ## Delivery order
 
 Finish the durable queue, then transcript/context/review contracts. Build artifact, usage and recovery primitives before the hub and attention inbox. Keep optional adapters, language services, debugger and companion UI lazy so they do not add terminal startup work. Checkpoint each verified slice without marking the whole roadmap complete.
+
+## Implemented after the verified foundation (final verification pending)
+
+- `471a0e8`: durable queue and delivery reconciliation; final PTY pending.
+- `5f20cc2`: typed findings and revision-checked artifact byte ranges.
+- `bdd5da8`: active-turn command access, bounded result contracts, diagnostic previews,
+  opt-in attributed memory, range attachments and teammate result schemas.
+- `3b3a102`: default framework prompt reduced to 1,093 bytes, tool exclusivity corrected.
+- Automation safety: bounded strict sidecar reads, overflow rejection, persistence before
+  dispatch, last 64 dispatch receipts via `/loop history`. Corrupt schedules remain intact.
+  Receipts describe dispatch, not completed execution. Host/model binding remains open.
+- Remote replay: version negotiation (legacy clients accepted), 256 KiB wire budget,
+  32 KiB UTF-8 entry previews with explicit source bytes/truncation; ownership remains open.
+- Worktrees: detached task creation from a verified commit, inspect/reuse path and
+  cleanup preview without deletion; repository identity uses each checkout's own root.
+- CLI discovery: contract, diagnostics and memory help plus completion candidates.
+
+These are implementation checkpoints, not acceptance or full-roadmap completion.

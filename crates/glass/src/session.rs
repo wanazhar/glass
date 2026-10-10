@@ -1442,7 +1442,7 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
                 let body = results.get(&call_key).map(|(_, body)| *body);
                 let heading = readable_tool_call(name, arguments);
                 let output = body.unwrap_or("").to_string();
-                let status = if body.is_some() { "completed" } else { "interrupted" };
+                let status = body.map(glass_tui::tool_output::status).unwrap_or_else(|| "interrupted".into());
                 let card = glass_tui::ToolCard {
                     expanded: false,
                     call_id: id.clone(),

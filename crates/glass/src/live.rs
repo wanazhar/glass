@@ -166,7 +166,7 @@ impl Live {
                 })
             }
             Progress::ToolEnd {
-                call_id, output, ..
+                call_id, output, summary,
             } => {
                 if let Some(entry) = self.entries.iter_mut().rev().find(|entry| {
                     entry
@@ -176,7 +176,7 @@ impl Live {
                 }) {
                     if let Some(card) = entry.tool_card.as_mut() {
                         card.output = (*output).to_string();
-                        card.status = "completed".into();
+                        card.status = glass_tui::tool_output::status(summary);
                         card.elapsed_ms = self.tool_started.remove(*call_id).map(|started| {
                             started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
                         });

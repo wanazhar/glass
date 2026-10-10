@@ -180,6 +180,17 @@ fn main() {
             }
             return;
         }
+        Some("usage") => {
+            let result = (|| -> Result<(), String> {
+                if args.len() < 2 || args.len() > 3 || args.get(2).is_some_and(|s|s != "--json") { return Err("gc usage SESSION [--json]".into()); }
+                let session = Session::open_readonly(&config::data_dir(), &args[1]).map_err(|e|e.to_string())?;
+                let value = requests::usage_summary(&session)?;
+                if args.iter().any(|s|s == "--json") { emit_json(value); } else { cli::report("Usage and cache", &value); }
+                Ok(())
+            })();
+            if let Err(error) = result { cli::error("Usage", &error); std::process::exit(2); }
+            return;
+        }
         Some("attention") => {
             if let Err(error) = attention::command(&args[1..]) {
                 cli::error("Attention", &error); std::process::exit(2);
@@ -1266,6 +1277,7 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
     let builtin = [
         ("help", "", "Show help", false),
         ("history", "", "Inspect compaction receipts and branch lineage", false),
+        ("usage", "", "Reported usage, cost completeness and cache changes", false),
         ("attention", "", "Review failures and teammate event targets", false),
         ("hub", "", "Conversations, teammates, attention and tasks", false),
         ("handoff", "", "Preview a bounded portable handoff", false),
@@ -2167,6 +2179,13 @@ fn repl(
             }
             continue;
         }
+        if text == "/usage" {
+            match requests::usage_summary(&session) {
+                Ok(value) => structured::view(&keys,"Usage and cache",&value.to_string()),
+                Err(error) => modal::info(&keys,"Usage unavailable",&error),
+            }
+            continue;
+        }
         if text == "/attention" { attention::view(&keys, &session); continue; }
         if text == "/hub" {
             let choices = ["Conversations", "Persistent teammates", "Attention", "Tasks and findings", "Usage and cache", "History boundaries"].map(String::from);
@@ -2175,7 +2194,13 @@ fn repl(
                 Some(1) => { team::view(&keys,&session.id); continue; },
                 Some(2) => { attention::view(&keys,&session); continue; },
                 Some(3) => { workspace::view(&keys,&cfg.workspace); continue; },
-                Some(4) => text = "/requests".into(),
+                Some(4) => {
+                    match requests::usage_summary(&session) {
+                        Ok(value) => structured::view(&keys,"Usage and cache",&value.to_string()),
+                        Err(error) => modal::info(&keys,"Usage unavailable",&error),
+                    }
+                    continue;
+                },
                 Some(5) => { structured::view(&keys,"History boundaries",&history_inspector::receipts(&session).to_string()); continue; },
                 _ => continue,
             }
@@ -4265,16 +4290,8 @@ impl Painter {
                     self.waiting_started.set(Some(start));
                 }
                 let elapsed = started.elapsed().as_secs_f32();
-                let failed = summary
-                    .strip_prefix("[exit ")
-                    .and_then(|s| s.split_once(']'))
-                    .map(|(code, _)| code != "0")
-                    .unwrap_or_else(|| {
-                        summary.starts_with("error:")
-                            || summary.starts_with("killed")
-                            || summary.starts_with("refused:")
-                            || summary.starts_with("blocked")
-                    });
+                let status = glass_tui::tool_output::status(&summary);
+                let failed = !matches!(status.as_str(), "exit 0" | "completed");
                 let margin = if self.width.get() >= 24 { 2 } else { 1 };
                 let width = self.width.get().saturating_sub(margin + 1).max(1) as usize;
                 for row in glass_tui::tool_output::lines(

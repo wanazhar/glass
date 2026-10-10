@@ -37,6 +37,7 @@ const SESSIONS: &[Item] = &[
     ("gc export ID", "Export a conversation to Markdown."),
 ];
 const TOOLS: &[Item] = &[
+    ("gc usage ID", "Inspect reported usage, cache ratios and cost completeness."),
     ("gc contract SCHEMA RESULT", "Validate a local JSON result contract."),
     ("gc diagnostics ID", "Preview redacted local diagnostic metadata."),
     ("gc memory --help", "Review opt-in attributed project memory."),

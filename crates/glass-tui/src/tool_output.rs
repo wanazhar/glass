@@ -8,6 +8,17 @@ use ratatui::{
     text::{Line, Span},
 };
 
+/// Shared status classification for live, replayed and completed tool cards.
+pub fn status(summary: &str) -> String {
+    if let Some(rest) = summary.strip_prefix("[exit ")
+        && let Some((code, _)) = rest.split_once(']') {
+        return format!("exit {code}");
+    }
+    if ["error:", "killed", "refused:", "blocked"].iter().any(|prefix|summary.starts_with(prefix)) {
+        "failed".into()
+    } else { "completed".into() }
+}
+
 pub fn lines(
     name: &str,
     command: &str,
@@ -143,6 +154,15 @@ fn line(prefix: &str, body: &str, tone: Tone, width: usize) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn status_preserves_failures_across_render_paths() {
+        assert_eq!(status("[exit 2] failed"), "exit 2");
+        assert_eq!(status("[exit 0] done"), "exit 0");
+        assert_eq!(status("error: invalid args"), "failed");
+        assert_eq!(status("refused: protected"), "failed");
+        assert_eq!(status("done"), "completed");
+    }
+
     #[test]
     fn preview_has_one_outcome_bounded_output_and_exact_remaining_count() {
         let output = "[exit 0]\none\ntwo\nthree\nfour\nfive";

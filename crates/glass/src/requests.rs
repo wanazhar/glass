@@ -361,3 +361,35 @@ mod tests {
         assert_eq!(b.delta(Some(&a))["model_changed"], true);
     }
 }
+
+/// Aggregate only the bounded recent request window; absent usage is unknown.
+pub fn usage_summary(session: &Session) -> Result<serde_json::Value, String> {
+    let rows = reports(&session.path)?;
+    let (mut input, mut output, mut read, mut write) = (0u64,0u64,0u64,0u64);
+    let (mut known, mut unknown, mut priced) = (0usize,0usize,0usize);
+    let mut cost = 0.0;
+    let mut failures = 0;
+    let mut invalidations = 0;
+    for row in &rows {
+        if let Some(usage) = row["usage"].as_object() {
+            known += 1;
+            input = input.saturating_add(usage.get("input").and_then(serde_json::Value::as_u64).unwrap_or(0));
+            output = output.saturating_add(usage.get("output").and_then(serde_json::Value::as_u64).unwrap_or(0));
+            read = read.saturating_add(usage.get("cache_read").and_then(serde_json::Value::as_u64).unwrap_or(0));
+            write = write.saturating_add(usage.get("cache_write").and_then(serde_json::Value::as_u64).unwrap_or(0));
+        } else { unknown += 1; }
+        if let Some(value) = row["cost_usd"].as_f64() { cost += value; priced += 1; }
+        if row["outcome"].as_str().is_some_and(|s| s != "completed") { failures += 1; }
+        if row["context_delta"]["prefix_changed"] == true { invalidations += 1; }
+    }
+    let prompt = input.saturating_add(read).saturating_add(write);
+    let teammates = crate::team::get(&session.id).map(|hub| hub.snapshot().iter().map(|info|serde_json::json!({"name":info.name,"status":info.status,"input":info.input,"output":info.output,"usage_known":info.usage_known,"estimated_tokens":info.estimated_tokens,"cost_usd":info.cost_usd,"cost_complete":info.cost_complete})).collect::<Vec<_>>()).unwrap_or_default();
+    Ok(serde_json::json!({"session":session.id,"scope":"Recent request diagnostics only; includes cache warmer and correction requests when present. Not a lifetime session total.","requests":rows.len(),"requests_with_usage":known,"requests_without_usage":unknown,
+        "reported_uncached_input":input,"reported_cache_read":read,"reported_cache_write":write,
+        "reported_prompt_total":prompt,"reported_output":output,
+        "reported_cache_hit_ratio":if prompt>0 {Some(read as f64/prompt as f64)} else {None},
+        "known_cost_subtotal_usd":if priced>0 {Some(cost)} else {None},"cost_complete":priced==rows.len() && !rows.is_empty(),
+        "non_completed_requests":failures,"observed_prefix_changes":invalidations,
+        "quota":null,"quota_note":"No authoritative provider quota is available from request usage.","teammates":teammates,
+        "cache_note":"Prefix changes explain local invalidation boundaries, not a provider cache-miss cause. Missing usage is never assumed to be zero."}))
+}

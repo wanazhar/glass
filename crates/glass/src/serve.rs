@@ -166,6 +166,7 @@ enum Incoming {
 }
 
 struct Client {
+    id: u64,
     stream: UnixStream,
     buf: Vec<u8>,
 }
@@ -176,7 +177,11 @@ impl Client {
         loop {
             match self.stream.read(&mut chunk) {
                 Ok(0) => return Incoming::Closed,
-                Ok(n) => self.buf.extend_from_slice(&chunk[..n]),
+                Ok(n) => {
+                    if self.buf.len()+n > 128*1024 { return Incoming::Closed; }
+                    self.buf.extend_from_slice(&chunk[..n]);
+                    if self.buf.contains(&b'\n') { break; }
+                },
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(_) => return Incoming::Closed,
             }
@@ -291,7 +296,12 @@ pub fn serve(
         Some(path) => PathBuf::from(path),
         None => dir.join(format!("serve-{}.sock", session.id)),
     };
-    let _ = std::fs::remove_file(&socket_path);
+    if std::fs::symlink_metadata(&socket_path).is_ok() {
+        if UnixStream::connect(&socket_path).is_ok() { return Err("Socket already serves a live session; choose another socket".into()); }
+        use std::os::unix::fs::FileTypeExt;
+        if !std::fs::symlink_metadata(&socket_path).map_err(|e|e.to_string())?.file_type().is_socket() { return Err("Refusing to replace a non-socket path".into()); }
+        std::fs::remove_file(&socket_path).map_err(|e|e.to_string())?;
+    }
     let listener = UnixListener::bind(&socket_path)
         .map_err(|e| format!("cannot bind {}: {e}", socket_path.display()))?;
     {
@@ -339,6 +349,8 @@ pub fn serve(
     let instructions = crate::trust::gated(&cfg, &crate::agents_md::load(&cfg.workspace), false);
 
     let clients = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Client>::new()));
+    let mut client_sequence = 0u64;
+    let owner = std::rc::Rc::new(std::cell::Cell::new(None::<u64>));
     let mut mailbox = crate::inbox::Mailbox::open(&session.id);
     let mut pending: VecDeque<Value> = VecDeque::new();
     // The accepted marker is committed before any prompt work starts. On a
@@ -371,7 +383,9 @@ pub fn serve(
                 if slots.len() >= MAX_CLIENTS {
                     slots.remove(0);
                 }
+                client_sequence = client_sequence.checked_add(1).ok_or("Client sequence exhausted")?;
                 slots.push(Client {
+                    id: client_sequence,
                     stream,
                     buf: Vec::new(),
                 });
@@ -460,12 +474,25 @@ pub fn serve(
             }
         };
 
+        if owner.get().is_some_and(|id| !clients.borrow().iter().any(|c|c.id==id)) { owner.set(None); }
+        let sender_id=origin.and_then(|i|clients.borrow().get(i).map(|c|c.id));
+        if origin.is_some() && matches!(message["t"].as_str(),Some("prompt"|"cancel")) && sender_id!=owner.get() {
+            to_origin(json!({"t":"error","request_id":message.get("request_id"),"message":"Read-only observer: claim control before sending input","owner":owner.get()}));
+            continue;
+        }
         match message.get("t").and_then(Value::as_str) {
+            Some("control") => {
+                let release=message["action"].as_str()==Some("release");
+                if release && sender_id==owner.get() { owner.set(None); }
+                else if !release && owner.get().is_none() { owner.set(sender_id); }
+                to_origin(json!({"t":"control","owner":owner.get(),"client":sender_id,"can_write":sender_id.is_some()&&sender_id==owner.get()}));
+            }
             Some("attach") => {
                 if message.get("protocol_version").is_some_and(|v| v.as_u64() != Some(PROTOCOL_VERSION)) {
                     to_origin(json!({"t":"error","message":"Unsupported attach protocol version","protocol_version":PROTOCOL_VERSION}));
                     continue;
                 }
+                if owner.get().is_none() && message["observe"]!=Value::Bool(true) { owner.set(sender_id); }
                 let claimed_session = message.get("session").and_then(Value::as_str);
                 let wrong_session = claimed_session.is_some_and(|id| id != session.id);
                 let since = message
@@ -477,6 +504,7 @@ pub fn serve(
                     "t": "replay",
                     "protocol_version": PROTOCOL_VERSION,
                     "replay_byte_limit": REPLAY_BYTES,
+                    "client":sender_id,"owner":owner.get(),"can_write":sender_id.is_some()&&sender_id==owner.get(),
                     "session": session.id,
                     "entries": entries,
                     "cursor": cursor,
@@ -543,6 +571,7 @@ pub fn serve(
                     }
                 };
                 let outer = std::rc::Rc::clone(&clients);
+                let input_owner=std::rc::Rc::clone(&owner);
                 let mut queued: Vec<Value> = Vec::new();
                 let outcome = {
                     let mut agent = Agent::new(
@@ -563,8 +592,8 @@ pub fn serve(
                             &outer,
                             json!({"t": "tool", "call_id": call_id, "name": name, "command": command}),
                         ),
-                        Progress::ToolEnd { summary, .. } => {
-                            broadcast(&outer, json!({"t": "tool_end", "summary": summary}))
+                        Progress::ToolEnd { call_id, summary, .. } => {
+                            broadcast(&outer, json!({"t": "tool_end", "call_id":call_id,"summary": summary}))
                         }
                         Progress::Retrying { attempt, delay_s, reason } => broadcast(&outer, json!({"t":"retrying", "attempt":attempt, "delay_s":delay_s, "reason":crate::live::sanitize_provider_detail(&reason)})),
                         Progress::ProviderNotice(text) => broadcast(&outer, json!({"t":"provider_notice", "message":crate::live::sanitize_provider_detail(text)})),
@@ -582,9 +611,14 @@ pub fn serve(
                             loop {
                                 match c.try_incoming() {
                                     Incoming::Message(message) => {
-                                        match message.get("t").and_then(Value::as_str) {
-                                            Some("cancel") => *steer = Some(String::new()),
-                                            _ => queued.push(message),
+                                        if Some(c.id)!=input_owner.get() && matches!(message["t"].as_str(),Some("prompt"|"cancel")) {
+                                            send(&mut c.stream,json!({"t":"error","request_id":message.get("request_id"),"message":"Read-only observer cannot change an active turn"}));
+                                        } else {
+                                            match message.get("t").and_then(Value::as_str) {
+                                                Some("cancel") => *steer = Some(String::new()),
+                                                Some("prompt") if queued.len()<32 => queued.push(message),
+                                                _ => send(&mut c.stream,json!({"t":"error","message":"Control and replay requests are available after this turn; queued input is limited to 32 prompts"})),
+                                            }
                                         }
                                     }
                                     Incoming::Malformed | Incoming::Idle => break,

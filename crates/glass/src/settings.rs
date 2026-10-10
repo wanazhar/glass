@@ -63,10 +63,7 @@ mod tests {
     use super::*;
     #[test]
     fn settings_projection_omits_secrets_and_executable_arguments() {
-        let mut cfg=config::Config::default();
-        cfg.base_url="https://host/?token=endpoint-secret".into();
-        cfg.extensions=vec!["helper --key executable-secret".into()];
-        cfg.system_prompt="private-prompt-secret".into();
+        let cfg=config::Config{base_url:"https://host/?token=endpoint-secret".into(),extensions:vec!["helper --key executable-secret".into()],system_prompt:"private-prompt-secret".into(),..Default::default()};
         let rendered=serde_json::to_string(&values(&cfg)).unwrap();
         for secret in ["endpoint-secret","executable-secret","private-prompt-secret"] {
             assert!(!rendered.contains(secret));

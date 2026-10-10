@@ -341,9 +341,12 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
                 "properties": {
                     "items": {
                         "type": "array",
-                        "description": "State items to record. Omit to read current state.",
+                        "description": "Replace notes. Omit to read; optional expected revision guards stale updates.",
                         "items": { "type": "string" }
-                    }
+                    },
+                    "expected":{"type":"string","description":"Optional state revision from revision:true read"},
+                    "revision":{"type":"boolean"},
+                    "capabilities":{"type":"object","properties":{"search":{"type":"string"},"activate":{"type":"array","items":{"type":"string"}}}}
                 }
             })
             .to_string(),

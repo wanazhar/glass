@@ -13,6 +13,11 @@ pub struct Bundle {
 }
 pub const BUNDLES: &[Bundle] = &[
     Bundle {
+        name: "adapters", description: "Lazy external ACP agents and DAP debuggers", interpreter: "python3", file: "adapters.py",
+        source: include_str!("../../../extensions/adapters/adapters.py"),
+        access: "Starts only explicitly configured argv in adapters.json, at tool invocation. External agents and debugger execution require separate opt-in flags. Reverse execution requests are refused; processes are stopped when disabled.",
+    },
+    Bundle {
         name: "browser",
         description: "Browser screenshots and console verification",
         interpreter: "python3",

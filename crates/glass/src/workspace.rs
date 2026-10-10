@@ -1059,13 +1059,13 @@ pub fn view(keys: &KeyReader, root: &Path) {
             let finding = &board.findings[selected];
             modal::markdown(keys, &finding.title, &format!("**{}** · {}:{}\n\n{}\n\nDisposition: {}", finding.severity, finding.path, finding.line, finding.evidence, finding.disposition));
             let choices = ["open", "accepted", "fixed", "dismissed"].map(String::from);
-            if let Some(choice) = modal::choose(keys, "Finding disposition", &finding.title, &choices) {
-                if let Err(error) = edit(root, |b| {
+            if let Some(choice) = modal::choose(keys, "Finding disposition", &finding.title, &choices)
+                && let Err(error) = edit(root, |b| {
                     let item = b.findings.iter_mut().find(|f| f.id == finding.id).ok_or("Finding no longer exists")?;
                     item.disposition = choices[choice].clone();
                     Ok(())
-                }) { modal::info(keys, "Finding was not changed", &error); }
-            }
+                })
+            { modal::info(keys, "Finding was not changed", &error); }
             continue;
         }
         if index == 3 {

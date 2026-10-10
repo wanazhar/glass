@@ -166,18 +166,21 @@ impl Layout {
         let status = card.status.split(" · ").next().unwrap_or(&card.status);
         let failed = !matches!(status, "exit 0" | "completed" | "running");
         let name = if role == Role::Bash { "bash" } else { card.command.split_whitespace().next().unwrap_or("tool") };
+        let margin=if width>=24 {2} else if width>=10 {1} else {0};
+        let card_width=width.saturating_sub(margin+1).max(1) as usize;
         let mut rows = crate::tool_output::lines(name, &card.command, failed,
-            card.elapsed_ms.unwrap_or(0) as f32 / 1000.0, if card.expanded { "" } else { &card.output }, width as usize, false);
+            card.elapsed_ms.unwrap_or(0) as f32 / 1000.0, if card.expanded { "" } else { &card.output }, card_width, false);
         if card.status == "running" {
             rows[0] = Line::from(Span::styled(format!("◐ {name} running · {:.1}s", card.elapsed_ms.unwrap_or(0) as f32 / 1000.0), role_style(Role::User)));
         }
         if card.expanded {
             rows.pop(); // trailing card spacer
             rows.pop(); // empty preview placeholder
-            rows.extend(wrap_width(&crate::markdown::sanitize(&card.output), width as usize).into_iter().map(Line::from));
+            rows.extend(wrap_width(&crate::markdown::sanitize(&card.output), card_width).into_iter().map(Line::from));
         }
         if card.truncated { rows.push(Line::from(Span::styled("Inline output truncated", role_style(Role::Meta)))); }
         if card.spill.is_some() { rows.push(Line::from(Span::styled("Full output available · /details", role_style(Role::Tool)))); }
+        for row in &mut rows { row.spans.insert(0,Span::raw(" ".repeat(margin as usize))); }
         if idx > 0 { rows.insert(0, Line::default()); }
         rows
     }
@@ -266,7 +269,7 @@ fn entry_lines(text: &str, role: Role, width: u16, boundary: bool) -> Vec<Line<'
 fn build_lines(text: &str, role: Role, width: u16) -> Vec<Line<'static>> {
     if role == Role::Meta && text.starts_with("error:") {
         return crate::text::wrap_words(&crate::markdown::sanitize(text), width.max(1) as usize)
-            .into_iter().map(|row| Line::from(Span::styled(row, ratatui::style::Style::new().fg(ratatui::style::Color::Red)))).collect();
+            .into_iter().map(|row| Line::from(Span::styled(row, ratatui::style::Style::new().fg(crate::theme::color(crate::theme::Tone::Error))))).collect();
     }
     if role == Role::Meta && text.starts_with("Context: request ") {
         return text.lines().flat_map(|line| crate::text::wrap_words(line, width.max(1) as usize))
@@ -290,8 +293,18 @@ fn build_lines(text: &str, role: Role, width: u16) -> Vec<Line<'static>> {
     let content_width = usize::from(width)
         .saturating_sub(crate::text::width(&prefix))
         .max(1);
-    let wrapped = if role == Role::Assistant {
-        crate::markdown::lines(trim_leading_blank_lines(text), content_width)
+    let wrapped: Vec<Line<'static>> = if role == Role::Assistant {
+        // Assistant prose reads as a narrow indented column; tool cards keep
+        // the full width. The margin collapses to zero on tiny terminals.
+        let margin = if width >= 24 { 2 } else if width >= 10 { 1 } else { 0 };
+        let column = (width as usize).saturating_sub(margin * 2).clamp(1, 88);
+        crate::markdown::lines(trim_leading_blank_lines(text), column)
+            .into_iter()
+            .map(|mut row| {
+                row.spans.insert(0, Span::raw(" ".repeat(margin)));
+                row
+            })
+            .collect()
     } else {
         wrap_width(text, content_width)
             .into_iter()
@@ -333,14 +346,15 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 fn role_style(role: Role) -> ratatui::style::Style {
-    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::style::{Modifier, Style};
+    use crate::theme::{color,Tone};
     match role {
-        Role::User => Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        Role::Assistant => Style::new().fg(Color::Green),
-        Role::Bash => Style::new().fg(Color::Yellow),
-        Role::Tool => Style::new().fg(Color::Magenta),
-        Role::System => Style::new().fg(Color::Red),
-        Role::Meta => Style::new().fg(Color::DarkGray),
+        Role::User => Style::new().fg(color(Tone::Accent)).add_modifier(Modifier::BOLD),
+        Role::Assistant => Style::new().fg(color(Tone::Body)),
+        Role::Bash => Style::new().fg(color(Tone::Warning)),
+        Role::Tool => Style::new().fg(color(Tone::Secondary)),
+        Role::System => Style::new().fg(color(Tone::Error)),
+        Role::Meta => Style::new().fg(color(Tone::Muted)),
     }
 }
 
@@ -384,7 +398,7 @@ mod tests {
         let text="error: provider returned no text or tool calls; finish=stop";
         let rows=build_lines(text,Role::Meta,20);
         assert!(rows.len()>1);
-        assert!(rows.iter().flat_map(|r| &r.spans).all(|s| s.style.fg==Some(ratatui::style::Color::Red)));
+        assert!(rows.iter().flat_map(|r| &r.spans).all(|s| s.style.fg==Some(crate::theme::color(crate::theme::Tone::Error))));
         assert!(rows.iter().flat_map(|r| &r.spans).any(|s| s.content.contains("finish=stop")));
     }
 
@@ -396,20 +410,28 @@ mod tests {
     }
 
     #[test]
-    fn user_has_cyan_prompt_marker_and_assistant_has_no_role_heading() {
+    fn user_prompt_marker_uses_theme_accent_and_assistant_has_no_role_heading() {
+        // The doc requires main chat to share theme semantics, so the marker is
+        // the active palette accent rather than a hardcoded color.
         let user = build_lines("do the task", Role::User, 40);
         assert_eq!(user[0].to_string(), "❯ do the task");
         assert_eq!(
             user[0].spans[0].style.fg,
-            Some(ratatui::style::Color::Cyan)
+            Some(crate::theme::color(crate::theme::Tone::Accent))
         );
         assert!(user[0].spans[0]
             .style
             .add_modifier
             .contains(ratatui::style::Modifier::BOLD));
 
+        // Aurora accent is the cyan-equivalent index the reader contract names.
+        assert_eq!(crate::theme::current(), 0);
+        assert_eq!(
+            crate::theme::color(crate::theme::Tone::Accent),
+            ratatui::style::Color::Indexed(81)
+        );
+
         let assistant = build_lines("A plain answer", Role::Assistant, 40);
-        assert_eq!(assistant[0].to_string(), "A plain answer");
         assert!(!assistant[0].to_string().contains("glass"));
         assert!(!assistant[0].to_string().contains("Assistant"));
     }
@@ -419,7 +441,10 @@ mod tests {
         let lines = entry_lines("reply", Role::Assistant, 40, true);
         assert_eq!(lines.len(), 2);
         assert!(lines[0].to_string().is_empty());
-        assert_eq!(lines[1].to_string(), "reply");
+        // Assistant prose sits in an indented reading column; only the margin
+        // differs from the source text, which stays exact elsewhere.
+        assert_eq!(lines[1].to_string(), "  reply");
+        assert_eq!(lines[1].to_string().trim_start(), "reply");
     }
 
     #[test]
@@ -427,7 +452,7 @@ mod tests {
         assert_eq!(trim_leading_blank_lines("\n \t\n  indented prose"), "  indented prose");
         let assistant = build_lines("\n\nanswer", Role::Assistant, 40);
         assert_eq!(assistant.len(), 1);
-        assert_eq!(assistant[0].to_string(), "answer");
+        assert_eq!(assistant[0].to_string().trim_start(), "answer");
     }
 
     fn entries(n: usize) -> Vec<(String, Role, usize)> {

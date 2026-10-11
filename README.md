@@ -1556,3 +1556,10 @@ newest first. Type a title or thread ID, use arrows and Enter to resume, or Esc
 or Ctrl+C to cancel. F1 shows the full selected label. `gc resume ID` opens a
 specific conversation directly. Over SSH without a terminal, use
 `gc sessions --json` and `gc run --resume ID <prompt>`.
+
+### Workbench workflow guide
+
+See [Workbench workflows](docs/workbench.md) for the hub, quoted context, portable
+handoffs, live job inspector, PR/CI cockpit, advisor cadence, bound automations
+and optional companion/ACP/DAP clients. All use the existing local runtime;
+optional services start only when explicitly requested.

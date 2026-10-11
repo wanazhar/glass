@@ -172,7 +172,7 @@ The roadmap now contains **43 candidates**, including six tooling foundation ite
 
 The tooling-first implementation is tracked in [Tooling foundation](../docs/plan/tasks/tooling-foundation-001.md). The first slice adds bounded revision-checked read continuation, mutation previews, strict edit/shell validation, durable state recovery and process-group timeout cleanup. The screenshot-driven reliability work is tracked in [Turn recovery](../docs/plan/tasks/turn-recovery-001.md). These are partial foundations; the remaining candidates are not marked complete.
 
-### Current delivery status
+### First-slice delivery status (historical)
 
 | Item | Completed in first slice | Remaining |
 | --- | --- | --- |
@@ -184,3 +184,7 @@ The tooling-first implementation is tracked in [Tooling foundation](../docs/plan
 | 43 Shared contracts | Typed colored cards across scroll/live, bounded explicit expansion | Unified structured errors/artifacts, lineage and headless parity |
 
 Items 1–37 require an implementation coverage audit; this delivery does not mark them complete.
+
+
+Latest delivery and acceptance: [43-item completion map](../docs/plan/reviews/roadmap-completion-2026-10-11.md).
+The first-slice table above is preserved as historical research context.

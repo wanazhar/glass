@@ -29,12 +29,14 @@ pub struct Skill {
 /// Unparseable files are skipped rather than fatal: a typo in someone's skill
 /// should not stop the harness from starting.
 pub fn load_dir(dir: &Path) -> Vec<Skill> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    // Cached walk (fs_scan): the same directory is listed several times
+    // per session, and any failed match invalidates and re-walks.
+    let Some(entries) = crate::fs_scan::read_dir(dir) else {
         return Vec::new();
     };
 
     let mut out: Vec<Skill> = entries
-        .filter_map(|e| e.ok())
+        .into_iter()
         .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
         .filter_map(|e| {
             let path = e.path();

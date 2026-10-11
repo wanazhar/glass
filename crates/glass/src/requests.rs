@@ -364,6 +364,7 @@ pub fn usage_summary(session: &Session) -> Result<serde_json::Value, String> {
         "reported_cache_hit_ratio":if prompt>0 {Some(read as f64/prompt as f64)} else {None},
         "known_cost_subtotal_usd":if priced>0 {Some(cost)} else {None},"cost_complete":priced==rows.len() && !rows.is_empty(),
         "non_completed_requests":failures,"observed_prefix_changes":invalidations,
+        "fs_scan":crate::fs_scan::diagnostics(),
         "quota":null,"quota_note":"No authoritative provider quota is available from request usage.","teammates":teammates,
         "cache_note":"Prefix changes explain local invalidation boundaries, not a provider cache-miss cause. Missing usage is never assumed to be zero."}))
 }

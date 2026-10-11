@@ -9,6 +9,7 @@ mod agent;
 mod agents_md;
 mod attempt_log;
 mod auth;
+mod blobs;
 mod btw;
 mod budget;
 mod capture;
@@ -35,6 +36,7 @@ mod doctor;
 mod export;
 mod ext;
 mod files;
+mod fs_scan;
 mod hardening;
 mod help;
 mod history;
@@ -46,9 +48,11 @@ mod live;
 mod loop_detect;
 mod loops;
 mod modal;
+mod mermaid;
 mod mods;
 mod notify;
 mod onboarding;
+mod osc8;
 mod partial;
 mod permissions;
 mod plugin_dev;
@@ -749,6 +753,17 @@ fn run(args: &[String]) -> Result<(), String> {
         eprintln!("glass-core: {warning}");
     }
     session::configure_fsync(cfg.log_fsync == "always");
+    // OSC 8 hyperlinks (wave D): conservative capability gate, off by
+    // default — unsupported terminals keep byte-identical output.
+    crate::osc8::configure(&cfg.hyperlinks);
+    // Mermaid diagrams (task six-wave-d-001): extension config flag, off by
+    // default — until set here, fenced blocks render exactly as before.
+    glass_tui::markdown::enable_mermaid(cfg.mermaid);
+    let mermaid_renderer: glass_tui::markdown::MermaidRendererFn =
+        Box::new(move |body: &str, width: usize| {
+            crate::mermaid::parse(body).and_then(|chart| crate::mermaid::render(&chart, width))
+        });
+    glass_tui::markdown::set_mermaid_renderer(mermaid_renderer);
     status::configure(&cfg.program_status);
     if workflows::headless_info(args, &cfg)? {
         return Ok(());

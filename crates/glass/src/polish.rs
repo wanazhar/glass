@@ -644,6 +644,16 @@ struct ToolDetail {
 }
 
 pub(crate) fn load_spill(path: &str) -> Result<(String, bool), String> {
+    // Content-addressed spill (task six-wave-d-001): `blob:<sha256>` paths
+    // read through the blob store, ranged at the same 64 KiB cap. Plain
+    // paths keep the file read; a missing plain file is not a blob problem.
+    if crate::blobs::hex_of(path).is_some() {
+        let mut bytes = crate::blobs::get(path, 0, Some(64 * 1024 + 1))
+            .map_err(|error| format!("cannot read recorded blob: {error}"))?;
+        let truncated = bytes.len() > 64 * 1024;
+        bytes.truncate(64 * 1024);
+        return Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated));
+    }
     std::fs::File::open(path)
         .map_err(|error| format!("cannot open recorded spill: {error}"))
         .and_then(|file| {

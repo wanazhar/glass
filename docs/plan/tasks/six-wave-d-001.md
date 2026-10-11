@@ -83,3 +83,33 @@ Do not edit `agent.rs`, `tools.rs` dispatch, `ext/**`, `provider/**`.
 - clippy + full tests green.
 - Perf gate: reader redraw benchmark before/after within 2%; startup
   unchanged.
+
+## Shipped (2026-10-11)
+
+- **Mermaid** (glass/mermaid.rs + glass-tui gate): flowchart subset — node
+  statements, `-->`, `-- text -->`, `-->|text|`, `--|text|>` edges, plus the
+  `flowchart TD|TB|LR` header. Caps at 64 nodes / 128 edges / 16 ranks /
+  column width; anything over falls back to the fenced source, never a
+  halfway drawing. Host registers the renderer via
+  `glass_tui::markdown::set_mermaid_renderer`; until `mermaid = true` no
+  bytes change on any fenced block.
+- **Fs-scan cache** (glass/fs_scan.rs): bounded (64 dirs, named-byte bound)
+  directory walk cache for plugins/skills discovery, hit/miss/invalidation
+  counters surfaced in `gc usage`. Conservative invalidation: any failed
+  name match re-walks; every completed bash command invalidates all walks
+  (untracked writes reach unknown paths). Grep and bash output stay
+  uncached.
+- **Blob addressing** (glass/blobs.rs): content-addressed objects under
+  `data/blobs/<sha256>`, atomic tmp-rename writes, second write of identical
+  content is a no-op lookup. Spill writes bind their address and the
+  session record carries `blob:<sha256>`; `load_spill` reads back through
+  the reference (ranged, same 64 KiB display cap). Known limitation, stated
+  in the module doc: unreferenced blobs are not swept yet.
+- **OSC 8 hyperlinks** (glass/osc8.rs): conservative capability map (TERM
+  hints or explicit `hyperlinks = on|off|auto`); escapes wrap bare URLs in
+  the plain-text history/handoff report; unsupported terminals get
+  byte-identical output (asserted on the bytes).
+- Smoke: `scripts/smoke-mermaid.py` (gate on/off behavior), 
+  `scripts/smoke-blob-addressing.py` (spill carries `blob:<sha256>`, object
+  name equals its digest, no tmp leftovers). 643 unit + 13 doc + 93
+  integration tests green; clippy `-D warnings` clean.

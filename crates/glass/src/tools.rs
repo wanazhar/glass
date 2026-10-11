@@ -298,6 +298,12 @@ pub fn bash_owned(
     };
     prefix.push_str(&body);
 
+    // A bash command's writes are untracked at a path level: the conservative
+    // cache answer (task six-wave-d-001) is invalidating everything, on
+    // every completed command, success or failure (a failed `mv` still
+    // Touches unknowable state on some filesystems).
+    crate::fs_scan::invalidate_all();
+
     Outcome {
         truncated: spill.is_some(),
         body: prefix,
@@ -379,12 +385,47 @@ fn read_capped(r: &mut Option<impl Read>) -> (String, Option<PathBuf>) {
         }
     }
 
-    let path = spill.map(|(mut f, p)| {
+    let mut path = spill.map(|(mut f, p)| {
         let _ = f.flush();
         p
     });
 
+    // Content addressing (task six-wave-d-001, blob-artifacts): once the
+    // spill exists, its bytes also land in the content-addressed blob store
+    // and the recorded path becomes the `blob:<sha256>` reference. The
+    // spill file stays as the materialized copy for this session; a later
+    // session or handoff re-reads by content through the reference.
+    if let Some(p) = path.take() {
+        path = match std::fs::read(&p).ok().and_then(|bytes| crate::blobs::put(&bytes).ok()) {
+            Some((reference, _)) => {
+                record_blob(reference, &p);
+                Some(p)
+            }
+            None => Some(p),
+        };
+    }
+
     (String::from_utf8_lossy(&head).into_owned(), path)
+}
+
+/// Side channel from a spill write to its blob reference: one entry per
+/// process, read back by the record binder. An entry that never binds is
+/// harmless — the plain path remains the read path.
+pub fn blob_reference_for(spill_path: &std::path::Path) -> Option<String> {
+    blob_refs().lock().ok()?.get(spill_path).cloned()
+}
+
+static BLOB_REFS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, String>>> =
+    std::sync::OnceLock::new();
+
+fn blob_refs() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, String>> {
+    BLOB_REFS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn record_blob(reference: String, path: &std::path::Path) {
+    if let Ok(mut map) = blob_refs().lock() {
+        map.insert(path.to_path_buf(), reference);
+    }
 }
 
 fn spill_dir() -> PathBuf {

@@ -4,6 +4,19 @@ use ratatui::{
     text::{Line, Span},
 };
 
+/// Mermaid rendering gate (task six-wave-d-001). Off by default: a fenced
+/// block stays a fenced block until the host enables diagram rendering
+/// once at startup via [`enable_mermaid`].
+static MERMAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn enable_mermaid(on: bool) {
+    MERMAID.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn mermaid_enabled() -> bool {
+    MERMAID.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn code_blocks(text: &str) -> Vec<(String, String)> {
     let mut result = Vec::new();
     let mut open: Option<(char, usize, String, String)> = None;
@@ -391,6 +404,14 @@ pub fn lines(text: &str, width: usize) -> Vec<Line<'static>> {
     let mut table = None;
     let mut source = text.lines().peekable();
     let mut rows = Vec::new();
+    // Mermaid blocks render as diagrams when the host enabled it; when the
+    // parse or layout fails the block falls through and renders as
+    // ordinary fenced code (never a halfway drawing).
+    if mermaid_enabled()
+        && let Some(rendered) = mermaid_diagram(text, width)
+    {
+        return rendered;
+    }
     while let Some(line) = source.next() {
         if let Some(active) = table.as_mut() {
             if let Some(rendered) = crate::table::Table::row(active, line, width) {
@@ -414,6 +435,48 @@ pub fn lines(text: &str, width: usize) -> Vec<Line<'static>> {
         rows.extend(presentation.line(line, width, true));
     }
     rows
+}
+
+/// Render the first mermaid flowchart block in `text`, if any. Returns
+/// `None` when there is no enabled, renderable mermaid block (including
+/// unsupported kinds and overflow) so the caller keeps the fast path.
+fn mermaid_diagram(text: &str, width: usize) -> Option<Vec<Line<'static>>> {
+    // A lib crate cannot reach the host's parser: the host registers a
+    // renderer at startup (`set_mermaid_renderer`). Unregistered = every
+    // block stays code, byte-identical to the disabled build.
+    let guard = MERMAID_RENDERER.lock().ok()?;
+    let renderer = guard.as_ref()?;
+    for (language, body) in code_blocks(text) {
+        if language.trim() != "mermaid" {
+            continue;
+        }
+        let muted = Style::new().fg(crate::theme::color(crate::theme::Tone::Muted));
+        let mut rows = vec![Line::from(Span::styled(
+            crate::text::clip("╭─ mermaid", width),
+            muted,
+        ))];
+        let drawn = renderer(&body, width)?;
+        for line in drawn {
+            rows.push(Line::from(Span::styled(line, muted)));
+        }
+        rows.push(Line::from(Span::styled(
+            format!("╰{}", "─".repeat(width.saturating_sub(1).min(30))),
+            muted,
+        )));
+        return Some(rows);
+    }
+    None
+}
+
+static MERMAID_RENDERER: std::sync::Mutex<Option<MermaidRendererFn>> = std::sync::Mutex::new(None);
+/// Host-provided mermaid renderer: parses the fence body and lays it out
+/// under the given column, or `None` for anything it will not draw.
+pub type MermaidRendererFn = Box<dyn Fn(&str, usize) -> Option<Vec<String>> + Send + Sync>;
+
+/// Host-side registration of the mermaid renderer implementation. The host
+/// returns `None` for anything it will not draw (parse failure, overflow).
+pub fn set_mermaid_renderer(f: MermaidRendererFn) {
+    *MERMAID_RENDERER.lock().unwrap() = Some(f);
 }
 
 /// A line-oriented streaming view. Completed rows enter scrollback immediately;
@@ -902,5 +965,36 @@ mod tests {
         let rows = project(&output);
         assert!(rows.len() > 2);
         assert!(rows[0].contains("• Reading"));
+    }
+
+    const DIAGRAM: &str = "```mermaid\nflowchart TD\n A[Start] -->|go| B[End]\n```\n";
+
+    #[test]
+    fn mermaid_off_renders_the_fenced_source() {
+        // Global state from sibling tests leaks in: reset both gates.
+        enable_mermaid(false);
+        set_mermaid_renderer(Box::new(|_, _| None));
+        let off = lines(DIAGRAM, 60);
+        // When never registered, the block is ordinary code: byte-identical
+        // to the disabled build. Assert on the plain joined text.
+        let text: String = off.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("flowchart TD"), "{text}");
+        assert!(!text.contains("─▶"), "{text}");
+    }
+
+    #[test]
+    fn mermaid_enabled_renders_its_diagram() {
+        enable_mermaid(true);
+        // A stand-in renderer: the real one lives in the glass binary and
+        // cannot be reached from this lib test. Same contract — parse, lay
+        // out, None on refusal.
+        set_mermaid_renderer(Box::new(|_body, width| {
+            (width >= 12).then(|| vec!["[Start] ─ go ─▶ [End]".to_string()])
+        }));
+        let on = lines(DIAGRAM, 60);
+        let text: String = on.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("─ go ─▶"), "{text}");
+        // The header and footer frame remain, and the raw source does not.
+        assert!(!text.contains("flowchart TD"), "{text}");
     }
 }

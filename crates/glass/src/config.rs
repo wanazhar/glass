@@ -80,6 +80,11 @@ pub struct Config {
     /// OSC 7501 program status: "on" (default; interactive terminals only)
     /// or "off".
     pub program_status: String,
+    /// Render `mermaid` fenced blocks as diagrams (wave D). Off = blocks
+    /// stay code, byte-identical to previous builds.
+    pub mermaid: bool,
+    /// OSC 8 hyperlinks (wave D): "on" | "off" | "auto" (auto consults TERM).
+    pub hyperlinks: String,
     pub system_prompt: String,
 }
 
@@ -110,6 +115,8 @@ impl Default for Config {
             log_fsync: "off".into(),
             live_flush_ms: 250,
             program_status: "on".into(),
+            mermaid: false,
+            hyperlinks: "auto".into(),
             system_prompt: BASE_SYSTEM_PROMPT.to_string(),
         }
     }
@@ -236,6 +243,8 @@ struct Raw {
     log_fsync: Option<String>,
     live_flush_ms: Option<u32>,
     program_status: Option<String>,
+    mermaid: Option<bool>,
+    hyperlinks: Option<String>,
 
     skills_dir: Option<String>,
     skills: Option<Vec<String>>,
@@ -434,6 +443,18 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
             )));
         }
         cfg.program_status = v;
+    }
+    if let Some(v) = raw.mermaid {
+        cfg.mermaid = v;
+    }
+    if let Some(v) = raw.hyperlinks {
+        let v = v.trim().to_ascii_lowercase();
+        if !matches!(v.as_str(), "on" | "off" | "auto") {
+            return Err(LoadError::Invalid(format!(
+                "hyperlinks must be on, off, or auto (got `{v}`)"
+            )));
+        }
+        cfg.hyperlinks = v;
     }
 
     // `skills = [...]` in the default location narrows the set, so an empty

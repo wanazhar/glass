@@ -1442,7 +1442,11 @@ impl<'a> Agent<'a> {
             output: output.body.clone(),
             exit_code: outcome.exit_code,
             truncated: outcome.truncated,
-            spill: outcome.spill.as_ref().map(|p| p.display().to_string()),
+            // Spill paths carry their content address when one exists:
+            // a later session re-reads through `blob:<sha256>` (wave D).
+            spill: outcome.spill.as_ref().map(|p| {
+                crate::tools::blob_reference_for(p).unwrap_or_else(|| p.display().to_string())
+            }),
         });
         self.session.append(Record::ToolResult {
             name: call.name.clone(),
@@ -1648,7 +1652,9 @@ impl<'a> Agent<'a> {
                 output: shown,
                 exit_code: outcome.exit_code,
                 truncated: outcome.truncated,
-                spill: outcome.spill.as_ref().map(|p| p.display().to_string()),
+                spill: outcome.spill.as_ref().map(|p| {
+                    crate::tools::blob_reference_for(p).unwrap_or_else(|| p.display().to_string())
+                }),
             });
         }
         self.session.append(Record::ToolResult {

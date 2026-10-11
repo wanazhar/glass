@@ -97,15 +97,55 @@ Do not edit `tools.rs` dispatch, `ext/**`, `provider/**`, `sandbox.rs`,
   one shared `pre_tool_verdict` used by both the bash pumped path and the
   ordinary `run_tool` path. Hooks run sequentially — documented deviation
   from crush's parallel hooks.
-- **In-message citations**: composer marker work landed as a session.rs
-  reference format audit only — the composer path was found to already
-  expose spliceable file references via paste; no marker line shipped this
-  slice (recorded honestly: no new Record variant was added either). The
-  dedupe helper for repeated `@file:L..#hash8` markers exists in session.rs
-  for the next slice to consume.
+- **In-message citations**: shipped in the follow-up slice (see
+  "Follow-up: citations shipped" below). NOTE correcting the original
+  delivery report: the paragraph below claiming "the dedupe
+  helper exists in session.rs" was inaccurate at the time — session.rs was
+  untouched by wave E (see merge stat 1ab6c0a). The helper and the marker
+  itself exist only from the follow-up commit on; this file records the
+  correction rather than letting the stale claim stand.
 - **Codemode parity audit**: implemented surface (extensions/codemode/
   codemode.js) compared against pi's contract — deltas recorded below in
   the audit note; no engine change attempted.
 - Smoke: `scripts/smoke-hooks-shell.py` — block, halt, pass, matcher
   refusal, bounded timeout, all five against the real runner. Full tests
   green (639 unit + 13 doc + 91 integration); clippy `-D warnings` clean.
+## Follow-up: citations shipped (post-merge)
+
+The two honest limitations in the original wave E report that could be
+fixed without an engine or protocol swap are now fixed on master:
+
+- **In-message citations, for real this time.** `attach_excerpt` now
+  records a `Citation { first, last, revision }` on the attachment
+  (`polish.rs`, serde-defaulted, so old `.meta.json` files load
+  unchanged). On submit, `polish::with_citation_markers` appends one
+  `@<abs-path>#L<first>-L<last>#<8-hex>` line per uncited range excerpt
+  directly to the user message text — a plain line, no new Record
+  variant — and marks the citation consumed so it enters the log exactly
+  once. `session::dedupe_citation_markers` (now actually in session.rs)
+  collapses repeated markers inside one message at the single
+  `compact::project` point: identical repeats keep the first, a second
+  range for the same file drops, prose lines with `@` are never touched
+  (exact-shape parser `#L<n>-L<n>#<8 hex>` at line boundaries only).
+  The quote survives its source changing or disappearing because the
+  revision hash names the bytes that were quoted. Tests:
+  `session::dedupe_keeps_first_duplicate_marker…`,
+  `session::citation_marker_parses_exactly_the_documented_shape`,
+  `polish::excerpt_marker_is_stamped_once_into_the_next_message`.
+- **Blob garbage sweep.** `blobs::sweep(data_dir)` scans `blobs/`,
+  collects every `blob:<64-hex>` referenced by any session `.jsonl`
+  (bucket-boundary-safe scan, not `hex_of`, whose whole-string validation
+  rejects references followed by a closing quote — found by the sweep
+  unit test, fixed before it could delete live blobs), keeps blobs newer
+  than 300 s (in-flight `put`→`append` is not atomic across the log
+  fsync) and removes the rest; aged `.tmp-` files go, unknown names are
+  counted as errors and never deleted. Exposed as `gc blobs sweep
+  [--json]`. Tests: `blobs::sweep_tests::*`; verified end-to-end with a
+  synthetic data dir (referenced blob kept, orphan removed).
+
+Unchanged limitations, recorded before and still true: item 25 citation
+markers were originally an audit with a helper that did not exist (now
+corrected above); codemode parity deltas stay documented without an
+engine swap; blob range reads remain offset/length only; mermaid covers
+flowcharts only; the `#hooks` PTY identity check remains covered by the
+existing transcript tests.

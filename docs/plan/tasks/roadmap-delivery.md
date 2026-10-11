@@ -219,3 +219,23 @@ pass, 0 fail; strict Clippy (`-D warnings`) clean; all five new smoke
 scripts PASS against the merged binary. Citation markers (item 25) are a
 recorded audit with the dedupe helper in place, not a shipped user surface
 — the statement is in the task file, not a silent skip.
+
+### Post-merge follow-up: wave E limitations fixed (this commit)
+
+- **Citations (wave E item 2)**: `@path#L10-L24#hash8` markers now ship.
+  `polish::attach_excerpt` records `Citation{first,last,revision}`;
+  `polish::with_citation_markers` stamps uncited markers into the next
+  submitted user message (interactive loop, once per excerpt);
+  `session::dedupe_citation_markers` dedupes at the `compact::project`
+  boundary. Old `.meta.json` and old logs load unchanged (serde default;
+  no new Record variant). Also corrects the wave E delivery note, which
+  claimed a session.rs dedupe helper existed when it did not.
+- **Blob GC (wave D item 3 remainder)**: `gc blobs sweep [--json]`
+  removes unreferenced blobs older than 300 s, keeps referenced and
+  recent ones, counts unknown names as errors. Found and fixed a latent
+  reference-scan bug that would have deleted live blobs
+  (`hex_of` whole-string validation vs. quoted trailing characters).
+- Evidence: `blobs::sweep_tests` + `sweep-e2e` synthetic data-dir run;
+  `polish::tests::excerpt_marker…`, `session::tests::dedupe…`,
+  `citation_marker_parses…`; full suite 689+13+93 green, clippy
+  `-D warnings` clean.

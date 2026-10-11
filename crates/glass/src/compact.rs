@@ -573,6 +573,18 @@ pub fn project(records: &[Record]) -> Vec<Message> {
                     "An earlier {name} call was interrupted before a result was recorded."
                 )));
             }
+            Message::User(text) => {
+                // In-message citation markers dedupe at the single context
+                // projection point: paste/backspace round-trips and an
+                // auto-stamp meeting a hand-typed marker both collapse here,
+                // for every consumer of the projection (task six-wave-e-001).
+                let deduped = crate::session::dedupe_citation_markers(text);
+                if deduped.is_empty() {
+                    messages.push(m);
+                } else {
+                    messages.push(Message::User(deduped));
+                }
+            }
             _ => messages.push(m),
         }
     }

@@ -188,3 +188,28 @@ offset/length (the range protocol in the research doc needs consumer
 work first — no consumer exists yet); class/state/ER diagram families
 need their own bounded layouts (two families is the honest slice); the
 `#hooks` PTY identity check remains covered by the transcript tests.
+
+## Follow-up 3: state diagrams + the rank bug they exposed (this commit)
+
+- **Mermaid state diagrams → implemented.** `parse_state` handles both
+  `stateDiagram-v2` and `stateDiagram` headers: `[*]` initial/final
+  pseudostates (rendered `● initial` / `◎ final`), `-->` transitions with
+  `: label`, `state "Label" as Alias` (alias wins over a later bare
+  description), and `ID: desc` description lines — including when the
+  description arrives before the state itself is otherwise declared.
+  Caps and the fallback rule are the flowchart's own (score: node/edge
+  caps, 16 ranks, column width), because state machines reuse the
+  flowchart tree verbatim.
+- **The rank bug this exposed is fixed for both families.** The old
+  single-pass rank assignment left a node at a stale low rank when its
+  edges appeared tail-first in the edge list, collapsing a
+  three-rank chain into two — and then the drawn-edge honesty check
+  correctly refused to draw the stolen arrow, so any chain ordered
+  tail-first fell back to source for no layout reason. Rank assignment is
+  now a bounded propagation pass (source+1 → targets until no rank
+  moves, capped by node count), and same-rank nodes each render with
+  their own edges instead of the first node's edges plus dummy
+  `── edge` stubs for the rest. Flowchart tests unchanged and passing;
+  the state tests cover the chain both orderings.
+- Smoke: `smoke-mermaid` rerun green; suite 696 unit + 13 doc + 93
+  integration; clippy `-D warnings` clean.

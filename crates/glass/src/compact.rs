@@ -29,6 +29,69 @@ pub const COMPACT_AT: f32 = 0.78;
 /// How many recent messages survive a deterministic compaction.
 pub const KEEP_RECENT: usize = 6;
 
+/// A resumed projection hiding more than this many raw records between the
+/// last user message and the compaction boundary earns a branch summary
+/// line (pi branch summarization): the gap is where context went. Extractive
+/// only — it must never spend a model request just to explain a gap.
+pub const BRANCH_SUMMARY_GAP: usize = 60;
+
+/// Bounded branch summary over the dropped region: the last assistant action
+/// and the files the dropped commands named. Extractive, from raw records;
+/// never writes cache (one-off, prompt-cache hostile by construction).
+pub fn branch_summary(dropped: &[Record]) -> Option<String> {
+    let mut files: Vec<String> = Vec::new();
+    let mut last_action = None;
+    for r in dropped {
+        match r {
+            Record::Assistant(text) if !text.trim().is_empty() => {
+                last_action = Some(text.lines().next().unwrap_or(text).to_string());
+            }
+            // A plausible path literal from a shell command: same heuristic
+            // the inspector uses; false positives cost one bounded word.
+            Record::Bash { command, .. }
+                if last_action.is_none() || files.is_empty() =>
+            {
+                for token in command.split_whitespace() {
+                    if token.starts_with('-') || token.len() < 3 {
+                        continue;
+                    }
+                    if token.contains('/')
+                        || token.contains(".rs")
+                        || token.contains(".py")
+                        || token.contains(".toml")
+                        || token.contains(".md")
+                        || token.contains(".js")
+                        || token.contains(".ts")
+                    {
+                        let path: String = token
+                            .trim_matches(|c: char| "\"'`(),;".contains(c))
+                            .to_string();
+                        if !path.is_empty() && !files.contains(&path) && files.len() < 4 {
+                            files.push(path);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    last_action.map(|action| {
+        let action = if action.chars().count() > 200 {
+            format!("{}…", action.chars().take(200).collect::<String>())
+        } else {
+            action
+        };
+        if files.is_empty() {
+            format!("Branch summary of the skipped work: last action — {action}")
+        } else {
+            format!(
+                "Branch summary of the skipped work: last action — {action}; files touched: {}",
+                files.join(", ")
+            )
+        }
+    })
+}
+
 /// How many messages are protected when evicting oversized tool outputs.
 pub const KEEP_TOOL_HEAD: usize = 2;
 pub const KEEP_TOOL_TAIL: usize = 4;
@@ -551,6 +614,29 @@ mod tests {
         assert!(resumed.records.iter().all(|r| !matches!(r, Record::ToolResult { body, .. } if body.len() > 2000)));
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn branch_summary_names_files_and_bounds_the_action() {
+        let dropped = vec![
+            Record::Assistant("Refactored the cache module after profiling.".into()),
+            Record::Bash { call_id: None, command: "cargo build crates/glass/src/cache.rs".into(), output: "".into(), exit_code: Some(0), truncated: false, spill: None },
+            Record::Bash { call_id: None, command: "--verbose --flag".into(), output: "".into(), exit_code: Some(0), truncated: false, spill: None },
+        ];
+        let line = branch_summary(&dropped).unwrap();
+        assert!(line.contains("last action — Refactored"), "{line}");
+        assert!(line.contains("crates/glass/src/cache.rs"), "{line}");
+        // Flag-looking tokens are never "files".
+        assert!(!line.contains("--verbose"), "{line}");
+
+        // A long action is bounded.
+        let dropped = vec![Record::Assistant("x".repeat(5_000))];
+        let line = branch_summary(&dropped).unwrap();
+        assert!(line.chars().count() < 260, "bounded: {}", line.chars().count());
+
+        // No assistant content in the gap: no summary, no invention.
+        let dropped = vec![Record::Bash { call_id: None, command: "ls".into(), output: "".into(), exit_code: Some(0), truncated: false, spill: None }];
+        assert!(branch_summary(&dropped).is_none());
+    }
+
     #[test]
     fn summary_prompt_bounds_total_bytes_and_preserves_latest_work() {
         let text = format!("original goal{}latest work", "🦀".repeat(100_000));

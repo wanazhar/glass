@@ -114,6 +114,24 @@ pub enum Record {
         id: String,
         status: String,
     },
+    /// A model-invoked context checkpoint (OMP's `checkpoint`/`rewind` pair).
+    ///
+    /// `log_len` records where the checkpoint sits so the rewind tool can
+    /// name the boundary precisely. The log keeps every record after it —
+    /// rewind drops only the *projection*, not the transcript, and files on
+    /// disk are never touched by the model-facing pair (`/rewind`, the user
+    /// command, owns file restoration).
+    ///
+    /// A rewind of the checkpoint edits the marker in place, append-only:
+    /// a second `Checkpoint` record with a non-empty `rewind_summary` and
+    /// the same `label` closes the first one. Replay picks up the latest.
+    Checkpoint {
+        label: String,
+        log_len: usize,
+        /// Non-empty when this record is the rewind of an earlier
+        /// checkpoint: the model's retained report, ≤ 4 KiB.
+        rewind_summary: Option<String>,
+    },
 }
 
 impl Record {
@@ -170,6 +188,13 @@ impl Record {
             }
             Record::ServeRequest { id, status } => {
                 json!({"k":"serve_request", "id":id, "status":status})
+            }
+            Record::Checkpoint {
+                label,
+                log_len,
+                rewind_summary,
+            } => {
+                json!({"k":"checkpoint", "label":label, "log":log_len, "rew":rewind_summary})
             }
         }
     }
@@ -233,6 +258,11 @@ impl Record {
             "serve_request" => Record::ServeRequest {
                 id: s("id")?,
                 status: s("status")?,
+            },
+            "checkpoint" => Record::Checkpoint {
+                label: s("label")?,
+                log_len: v.get("log").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+                rewind_summary: s("rew"),
             },
             _ => return None,
         })
@@ -338,6 +368,19 @@ impl Record {
             Record::ServeRequest { id, status } => {
                 (Role::Meta, format!("[serve request {id}: {status}]"))
             }
+            Record::Checkpoint {
+                label,
+                rewind_summary,
+                ..
+            } => match rewind_summary {
+                Some(report) => (
+                    Role::Meta,
+                    format!(
+                        "[checkpoint `{label}` rewound · retained report]\n{report}"
+                    ),
+                ),
+                None => (Role::Meta, format!("[checkpoint `{label}` marked]")),
+            },
         }
     }
 }
@@ -1195,7 +1238,7 @@ impl Session {
                     crate::compact::project(&projected)
                 }
             }
-            None => crate::compact::project(&self.records),
+            None => crate::compact::project(&apply_checkpoint_projection(self.records.clone())),
         }
     }
 
@@ -1743,6 +1786,11 @@ fn readable_output(body: &str) -> String {
 /// it here makes compaction idempotent across a resume instead of something
 /// that only exists for the life of one process.
 fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
+    // A model-invoked checkpoint bounds the context first (OMP
+    // checkpoint/rewind): records after an open checkpoint are the
+    // exploratory work the checkpoint exists to forget. A rewind record
+    // re-enters them as nothing and injects the retained report instead.
+    let records = apply_checkpoint_projection(records);
     let Some(epoch) = records
         .iter()
         .rposition(|r| matches!(r, Record::Compacted { .. }))
@@ -1792,6 +1840,16 @@ fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
     // after it. The marker itself, and any earlier markers, are log
     // metadata — they are never content the model should see.
     let from = tail_start.min(epoch);
+    let dropped = &records[from..epoch];
+    // Branch summarization (pi): when a big dropped gap sits between the
+    // summary line the marker carries and the retained tail, add a bounded
+    // extractive branch line so a resuming model knows what the gap held.
+    // It only earns its bytes when the gap is real (> 60 records).
+    if dropped.len() > crate::compact::BRANCH_SUMMARY_GAP
+        && let Some(branch) = crate::compact::branch_summary(dropped)
+    {
+        out.push(Record::System(branch));
+    }
     out.extend(
         records[from..epoch]
             .iter()
@@ -1813,6 +1871,52 @@ fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
 
     let turn = out.iter().filter(|r| matches!(r, Record::User(_))).count();
     (out, turn)
+}
+
+/// Checkpoint projection: everything after the latest open checkpoint is
+/// dropped; the rewind's retained report is kept as a system note.
+///
+/// "Open" means: a `Checkpoint` marker with no later rewind of the same
+/// label. Rewinding multiple times is one open→rewound cycle per label;
+/// the latest rewind wins and the report reflects the final state.
+fn apply_checkpoint_projection(records: Vec<Record>) -> Vec<Record> {
+    // Find the latest checkpoint marker and whether any rewind closed it.
+    let latest = records
+        .iter()
+        .rposition(|r| matches!(r, Record::Checkpoint { .. }));
+    let Some(marker_index) = latest else {
+        return records;
+    };
+    let (label, log_len, summary) = match &records[marker_index] {
+        Record::Checkpoint {
+            label,
+            log_len,
+            rewind_summary,
+        } => (label.clone(), *log_len, rewind_summary.clone()),
+        _ => unreachable!("position matched a Checkpoint record"),
+    };
+    if summary.is_some() {
+        // The latest marker IS the rewind: nothing is hidden, but the
+        // retained report belongs in context as a system note.
+        let mut out = records;
+        if let Some(report) = summary {
+            out.push(Record::System(format!(
+                "Checkpoint `{label}` rewound; retained report:\n{report}"
+            )));
+        }
+        return out;
+    }
+    // Open checkpoint: keep records up to the marker, drop the exploratory
+    // region, and note the boundary honestly so the model knows there is a
+    // hidden region (it can ask the user to restore nothing — files are
+    // untouched; and a `/rewind` user command restores files separately).
+    let mut out: Vec<Record> = records[..marker_index + 1].to_vec();
+    let hidden = records.len().saturating_sub(marker_index + 1);
+    out.push(Record::System(format!(
+        "Context rewound to checkpoint `{label}`: {hidden} later records hidden \u{7c} files unchanged \u{7c} report what should be kept, or ask the user for /rewind to restore files"
+    )));
+    let _ = log_len;
+    out
 }
 
 /// Sortable session id: base-36 millis, process ID, and a per-process counter.

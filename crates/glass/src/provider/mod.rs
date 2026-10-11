@@ -358,6 +358,59 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
     ]
 }
 
+/// Schemas for the opt-in model-invoked context tools (wave C).
+/// Appended to the tool list only when `checkpoint_tools = true`, so the
+/// two-tool default costs nothing extra and the byte-stable frozen list
+/// absorbs them at session start.
+pub fn checkpoint_tool_schemas() -> Vec<(String, String, String)> {
+    vec![
+        (
+            "checkpoint".to_string(),
+            "Mark the current conversation state before exploring. Call this BEFORE an \
+             exploratory change whose full history you may want to discard from context \
+             later (a risky refactor attempt, a speculative search). Give it a short \
+             descriptive label.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "label": { "type": "string", "maxLength": 80, "description": "Short name for the state being preserved" }
+                },
+                "required": ["label"]
+            })
+            .to_string(),
+        ),
+        (
+            "rewind".to_string(),
+            "End the checkpoint: everything after it leaves your context and a short \
+             report of what should be kept replaces it. Files and history are NOT \
+             changed — report file changes rather than reverting; the user's /rewind \
+             restores files. Requires an open checkpoint.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "label": { "type": "string", "description": "The checkpoint to rewind (defaults to the only open one)" },
+                    "report": { "type": "string", "maxLength": 4100, "description": "Bounded summary of what the exploration concluded; this is what survives in context" }
+                }
+            })
+            .to_string(),
+        ),
+        (
+            "wait".to_string(),
+            "Block until a background result, teammate message, or scheduled event lands, \
+             instead of polling with no-op calls. Nothing arrives within the timeout → \
+             you get a plain no-event answer; do other work or wait again. Default 60s, \
+             cap 300s.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "seconds": { "type": "integer", "minimum": 1, "maximum": 300, "description": "How long to block (seconds)" }
+                }
+            })
+            .to_string(),
+        ),
+    ]
+}
+
 /// Merge mod-provided tools with the built-ins.
 ///
 /// Mods may add but never remove: a prompt written against the base surface

@@ -182,6 +182,11 @@ pub struct Agent<'a> {
     pub reasoning: Option<u32>,
     /// Cap on tool calls per turn, so a confused model cannot loop forever.
     pub max_tool_rounds: usize,
+    /// Model-invoked context tools (checkpoint/rewind/wait): off by default,
+    /// enabled by `checkpoint_tools = true` in config. Appending is done in
+    /// `tool_set` so a disabled feature costs zero schema bytes and an
+    /// enabled one joins the frozen declared list at session start.
+    pub checkpoint_tools: bool,
     /// Base system prompt, with mod contributions appended per request.
     base_prompt: String,
     /// Skill catalogue, appended after the prompt.
@@ -301,6 +306,7 @@ impl<'a> Agent<'a> {
             stream_factory: None,
             recovering: false,
             read_only: false,
+            checkpoint_tools: false,
             breaker: compact::Breaker::default(),
             overflow_recovered: false,
             empty_recovered: false,
@@ -329,7 +335,11 @@ impl<'a> Agent<'a> {
         if self.read_only {
             crate::inspect::schema()
         } else {
-            provider::collect_tools(self.mods)
+            let mut tools = provider::collect_tools(self.mods);
+            if self.checkpoint_tools {
+                tools.extend(crate::provider::checkpoint_tool_schemas());
+            }
+            tools
         }
     }
 
@@ -409,6 +419,12 @@ impl<'a> Agent<'a> {
     /// Bind MCP elicitation to the already-running UI key reader for this turn.
     pub fn with_input_keys(mut self, keys: &'a crate::input::KeyReader) -> Self {
         self.input_keys = Some(keys);
+        self
+    }
+
+    /// Enable the model-invoked checkpoint/rewind/wait tools.
+    pub fn with_checkpoint_tools(mut self, on: bool) -> Self {
+        self.checkpoint_tools = on;
         self
     }
 
@@ -1526,6 +1542,11 @@ impl<'a> Agent<'a> {
         // present but a mod can still refuse to run one.
         let known = call.name == "bash"
             || call.name == "state"
+            || (self.checkpoint_tools
+                && matches!(
+                    call.name.as_str(),
+                    "checkpoint" | "rewind" | "wait"
+                ))
             || self.extensions.has_tool(&call.name)
             || self
                 .mods
@@ -1576,6 +1597,28 @@ impl<'a> Agent<'a> {
             // Verification happens in apply_bash_result, which every bash
             // result passes through.
             outcome = r;
+        } else if self.checkpoint_tools
+            && matches!(call.name.as_str(), "checkpoint" | "rewind" | "wait")
+        {
+            // Model-invoked context tools run through their own module.
+            // Wait polls the attention summary rather than the model:
+            // the same bounded rows /attention shows, no second taxonomy.
+            if call.name == "wait" {
+                // Bounded one-shot summaries of the same rows /attention
+                // renders: at most a handful, no transcript bodies.
+                let rows = crate::attention::targets(self.session)
+                    .into_iter()
+                    .take(8)
+                    .map(|v| {
+                        v.get("kind").and_then(|k| k.as_str()).unwrap_or("event").to_string()
+                    })
+                    .collect::<Vec<_>>();
+                let mut poll = move || rows.first().cloned();
+                outcome = crate::checkpoint_tools::run(call, self.session, &mut poll);
+            } else {
+                let mut noop = || None;
+                outcome = crate::checkpoint_tools::run(call, self.session, &mut noop);
+            }
         } else if call.name == "state" {
             if let Some(capabilities)=call.arg_raw("capabilities") {
                 outcome=match serde_json::from_str(&capabilities).map_err(|e|e.to_string()).and_then(|value|self.extensions.capabilities(&value)) {

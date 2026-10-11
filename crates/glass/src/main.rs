@@ -21,6 +21,7 @@ mod config;
 mod context_audit;
 mod contracts;
 mod diagnostics;
+mod egress;
 mod diagnostic_bundle;
 mod history_inspector;
 mod attention;
@@ -33,6 +34,7 @@ mod doctor;
 mod export;
 mod ext;
 mod files;
+mod hardening;
 mod help;
 mod history;
 mod inbox;
@@ -60,6 +62,7 @@ mod queue;
 mod reader;
 mod readguard;
 mod recovery;
+mod requirements;
 mod requests;
 mod resume_picker;
 mod sandbox;
@@ -109,6 +112,16 @@ fn emit_json(value: serde_json::Value) {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let _job_cleanup = jobs::Cleanup;
+
+    // Depth before anything else runs: no core dumps, no injected libraries
+    // in child environments. Best-effort; a refused limit degrades to a
+    // startup line, never to a crash. Opt-in visibility via GLASS_HARDENING
+    // so the banner stays byte-identical in the common case.
+    let hardened = hardening::harden();
+    let hardening_line = hardening::line(&hardened);
+    if !hardening_line.is_empty() && std::env::var("GLASS_HARDENING").is_ok() {
+        eprintln!("glass-core: {hardening_line}");
+    }
 
     match cli::command_help(&args) {
         Ok(true) => return,
@@ -642,6 +655,15 @@ fn run_plan(args: &[String]) -> bool {
 fn run(args: &[String]) -> Result<(), String> {
     let cfg_path = config::default_path();
     let mut cfg = config::load(&cfg_path).map_err(|e| e.to_string())?;
+    // Admin requirements sit above every config layer: whatever the
+    // requirements file forces wins over user, project, and runtime choices.
+    // A corrupt file fails closed (it forces nothing) and is refused loudly
+    // rather than silently running without the operator's constraints.
+    let requirements = crate::requirements::load(&config::config_dir())?;
+    let forced = crate::requirements::apply(&requirements, &mut cfg);
+    if !forced.is_empty() {
+        eprintln!("glass-core: admin requirements: {}", forced.join("; "));
+    }
     if args.first().is_some_and(|a| a == "resume") {
         let all = args.iter().any(|a| a == "--all");
         let browse = args.iter().any(|a| a == "--browse");

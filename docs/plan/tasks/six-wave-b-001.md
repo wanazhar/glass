@@ -1,7 +1,7 @@
 ---
 id: six-wave-b-001
 scope: wave B — process self-hardening, admin requirements layer, egress policy proxy
-status: ready
+status: implemented
 source: research/six-codebases-2026-10-10.md candidates #10, #7, #9
 ---
 
@@ -76,3 +76,24 @@ Do not edit `agent.rs`, `session.rs`, `tools.rs`, `ext/**`.
   off.
 - clippy + full tests green; startup measured unchanged when sandbox off.
 - PTY: `/settings` shows admin provenance rows at 40×24.
+
+## Verification
+
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo test --locked --workspace` — 641 + 13 + 91 pass, 0 fail,
+  including new hardening (rlimit refused tolerated, keep-list spares
+  real library paths), requirements (missing file / force / no-change /
+  corrupt / invalid-value / recognized-but-unused keys), HostPolicy
+  (exact + wildcard + deny-wins + default-deny), and egress parser
+  (control chars, IPv6 brackets, non-numeric port).
+- `scripts/smoke-egress.py` — PASS: denied CONNECT → 403 naming the host
+  and the allowlist; allowlisted hosts leave the policy layer; non-CONNECT
+  → 405; proxy absent when the sandbox is off; `sandbox = off` user choice
+  forced to `strict` by requirements with the startup line naming the
+  force; corrupt and invalid-value requirements files fail closed with
+  named reasons.
+- Startup unchanged when the proxy is off: the proxy exists only under
+  `sandbox_egress = "policy"` with a nonzero sandbox; benefits: hardening
+  runs two setrlimit/env scans at startup (microseconds).
+- Honest limitations recorded in the task text: blind CONNECT relay (no
+  TLS interception), no SOCKS5 in this slice, no `egress_deny` key yet.

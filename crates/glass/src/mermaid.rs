@@ -107,28 +107,35 @@ pub fn parse_state(body: &str, width: usize) -> Option<Vec<String>> {
         return None;
     }
     let mut chart = Flowchart::default();
+    // Composite states: `state X { ... }` opens a nested block whose
+    // members belong to a parent state. Depth is bounded (one level):
+    // deeper nesting is unsupported here, not silently flattened — the
+    // tree renderer is a two-level shape, and pretending otherwise would
+    // draw the nesting away.
+    const MAX_COMPOSITE_DEPTH: usize = 1;
+    let mut stack: Vec<String> = Vec::new();
     for line in lines {
-        // `state "label" as ID` — alias declaration.
+        if line == "}" {
+            stack.pop()?;
+            continue;
+        }
         if let Some(rest) = line.strip_prefix("state ") {
-            if !rest.trim_start().starts_with('"') {
-                return None;
-            }
-            let rest = rest.trim_start();
-            let (label, rest) = rest[1..].split_once('"')?;
-            let rest = rest.trim_start().strip_prefix("as ")?.trim();
-            let (id, tail) = take_identifier(rest)?;
-            if !tail.trim().is_empty() || label.is_empty() {
-                return None;
-            }
-            if let Some(existing) = chart.nodes.iter_mut().find(|n| n.id == id) {
-                if existing.label == id {
-                    existing.label = label.to_string();
+            if let Some((open, after)) = rest.split_once('{') {
+                // `state X {` opens a composite block.
+                let id = open.trim();
+                if id.is_empty() || !after.trim().is_empty() || stack.len() >= MAX_COMPOSITE_DEPTH {
+                    return None;
                 }
-            } else if chart.nodes.len() >= MAX_NODES {
-                return None;
-            } else {
-                node_of(&format!("{id}[{label}]"), &mut chart)?;
+                if let Some(existing) = chart.nodes.iter().find(|n| n.id == id) {
+                    let label = existing.label.clone();
+                    stack.push(label);
+                } else {
+                    stack.push(id.to_string());
+                }
+                continue;
             }
+            // No `{`: fall through to the alias form below via `rest`.
+            parse_state_alias(rest, &mut chart)?;
             continue;
         }
         // Bare description: `ID: text`. A labeled transition also contains
@@ -191,10 +198,35 @@ pub fn parse_state(body: &str, width: usize) -> Option<Vec<String>> {
             label,
         });
     }
-    if chart.nodes.is_empty() {
+    if chart.nodes.is_empty() || !stack.is_empty() {
         return None;
     }
     render(&chart, width)
+}
+
+// Body of a `state "label" as ID` alias declaration, shared by the
+// composite and plain call sites above.
+fn parse_state_alias(rest: &str, chart: &mut Flowchart) -> Option<()> {
+    if !rest.trim_start().starts_with('"') {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let (label, rest) = rest[1..].split_once('"')?;
+    let rest = rest.trim_start().strip_prefix("as ")?.trim();
+    let (id, tail) = take_identifier(rest)?;
+    if !tail.trim().is_empty() || label.is_empty() {
+        return None;
+    }
+    if let Some(existing) = chart.nodes.iter_mut().find(|n| n.id == id) {
+        if existing.label == id {
+            existing.label = label.to_string();
+        }
+    } else if chart.nodes.len() >= MAX_NODES {
+        return None;
+    } else {
+        node_of(&format!("{id}[{label}]"), chart)?;
+    }
+    Some(())
 }
 
 /// Parse and render a sequence diagram at the given column width. Separate
@@ -921,6 +953,29 @@ mod tests {
         assert!(parse_state("stateDiagram-v2\n A --- B", 60).is_none(), "only --> transitions");
         assert!(parse_state("stateDiagram-v2\n A --> [*]\n B --> [*]", 60).is_some());
         assert!(parse_state("stateDiagram-v2\n state Broken as \n A --> B", 60).is_none(), "empty alias");
+    }
+
+    #[test]
+    fn state_composite_block_nests_transitions_under_the_parent() {
+        let rows = parse_state(
+            "stateDiagram-v2\n state Active {\n [*] --> Ticking\n Ticking --> Done: finish\n }\n [*] --> Active\n", 60,
+        ).unwrap();
+        // Composite members belong to the parent; the block contents parse
+        // without falling back.
+        assert!(rows.iter().any(|r| r.contains("[Active]")), "rows: {rows:?}");
+        assert!(rows.iter().any(|r| r.contains("● initial")), "rows: {rows:?}");
+    }
+
+    #[test]
+    fn state_double_nested_composite_falls_back() {
+        let body = "stateDiagram-v2\n state Outer {\n state Inner {\n A --> B\n }\n }\n";
+        assert!(parse_state(body, 60).is_none(), ">1 nesting level is unsupported");
+    }
+
+    #[test]
+    fn state_unclosed_composite_falls_back() {
+        let body = "stateDiagram-v2\n state Pending {\n A --> B\n";
+        assert!(parse_state(body, 60).is_none(), "unclosed block is unsupported");
     }
 
     #[test]

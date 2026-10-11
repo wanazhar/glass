@@ -213,3 +213,19 @@ need their own bounded layouts (two families is the honest slice); the
   the state tests cover the chain both orderings.
 - Smoke: `smoke-mermaid` rerun green; suite 696 unit + 13 doc + 93
   integration; clippy `-D warnings` clean.
+
+## Follow-up 4: composite states (this commit)
+
+- **Mermaid composite states → implemented.** `parse_state` now accepts
+  `state X { ... }` blocks at one nesting level: the block opens a parent
+  state, its members parse like any other state body, and an unclosed or
+  over-nested block falls back to source (the `stack` must be empty
+  before render — the block boundary is not silently dropped). The alias
+  parser was factored into `parse_state_alias` so the composite-branch
+  and the plain `state "L" as ID` branch share one body. Remaining
+  honestly out of scope: `classDiagram`/`erDiagram`, which need their own
+  bounded layout trees — two-plus-one families is the honest slice so
+  far.
+- Tests: composite nest renders, double-nest falls back, unclosed block
+  falls back. Suite 699 unit + 13 doc + 93 integration; clippy
+  `-D warnings` clean; `smoke-mermaid` green.

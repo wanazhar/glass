@@ -296,7 +296,7 @@ impl Hub {
             .map(|w| w.info.clone())
             .collect()
     }
-    fn request(self: &Arc<Self>, req: &Value) -> Result<Value, String> {
+    pub(crate) fn request(self: &Arc<Self>, req: &Value) -> Result<Value, String> {
         let action = req["action"].as_str().unwrap_or("list");
         let id = req["id"].as_str().unwrap_or("");
         let from = if req["from"] == "main" {
@@ -316,6 +316,7 @@ impl Hub {
                 let role=crate::workspace::role(&self.workspace,"reviewer").ok_or("Configure a bounded reviewer first: gc workspace role set reviewer MODEL TOKENS")?;
                 let unstaged=crate::workflows::diff(&self.workspace,None,false)?;
                 let staged=crate::workflows::diff(&self.workspace,None,true)?;
+                if staged.trim().is_empty() && unstaged.trim().is_empty() {return Ok(json!({"checkpoint":"no tracked changes","requested":false}));}
                 let fingerprint=crate::workspace::hash(format!("{trigger}\0{staged}\0{unstaged}").as_bytes());
                 let name=format!("review-{}",&fingerprint[..16]);
                 if let Some(info)=self.snapshot().into_iter().find(|info|info.name==name&&info.status!="archived"){
@@ -1300,7 +1301,7 @@ fn offline(owner: &str, req: &Value) -> Result<Value, String> {
         Ok(json!({"agent":info.receipt(),"offline":true,"partial":"","queued":info.pending_messages.len()}))
     }
 }
-fn client(owner: &str, req: &Value) -> Result<Value, String> {
+pub(crate) fn client(owner: &str, req: &Value) -> Result<Value, String> {
     #[cfg(unix)]
     {
         use std::os::unix::net::UnixStream;

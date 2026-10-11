@@ -426,11 +426,17 @@ pub fn execute(root: &Path, action: &str, v: &Value) -> Result<Value, String> {
                         "invalid original-file line range; insertion uses end=start-1".into(),
                     );
                 }
+                let from = offsets[start - 1];
+                let mut to = offsets[end];
+                // Choose the target's local line style, not another line's style.
+                let ending = source[from..].find('\n').map(|at| {
+                    if at > 0 && source.as_bytes()[from + at - 1] == b'\r' { "\r\n" } else { "\n" }
+                }).unwrap_or(ending);
+                let terminal_ending = if from < to && source[from..to].ends_with("\r\n") { "\r\n" }
+                    else if from < to && source[from..to].ends_with('\n') { "\n" } else { ending };
                 let mut replacement = required(op, "text")?
                     .replace("\r\n", "\n")
                     .replace('\n', ending);
-                let from = offsets[start - 1];
-                let mut to = offsets[end];
                 if from == 0 && to == 0 && source.starts_with('\u{feff}') {
                     to = 3;
                 }
@@ -448,7 +454,7 @@ pub fn execute(root: &Path, action: &str, v: &Value) -> Result<Value, String> {
                         || from == to && to == source.len() && source.ends_with('\n'))
                     && !replacement.ends_with('\n')
                 {
-                    replacement.push_str(ending)
+                    replacement.push_str(terminal_ending)
                 }
                 // Keep an existing BOM on a first-line range replacement.
                 if from == 0
@@ -768,6 +774,17 @@ mod tests {
             std::fs::read_to_string(d.0.join("a")).unwrap(),
             "\u{feff}prefix\r\nONE\r\nTWO"
         );
+    }
+    #[test]
+    fn mixed_line_endings_preserve_target_terminators() {
+        let d = dir();
+        write(&d, "a", "one\r\ntwo\nthree\r\nfour\n");
+        let r = read(&d, "a");
+        execute(&d.0,"edit",&json!({"path":"a","expected":r["revision"],"edits":[{"start":2,"end":2,"text":"TWO"}]})).unwrap();
+        assert_eq!(std::fs::read_to_string(d.0.join("a")).unwrap(), "one\r\nTWO\nthree\r\nfour\n");
+        let r = read(&d, "a");
+        execute(&d.0,"edit",&json!({"path":"a","expected":r["revision"],"edits":[{"start":3,"end":4,"text":"THREE\nFOUR"}]})).unwrap();
+        assert_eq!(std::fs::read_to_string(d.0.join("a")).unwrap(), "one\r\nTWO\nTHREE\r\nFOUR\n");
     }
     #[test]
     fn symlinks_hardlinks_and_binary_rejected() {

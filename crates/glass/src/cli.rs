@@ -282,7 +282,7 @@ pub fn literal(title: &str, body: &str) {
     }
     let mut p = heading(title);
     p.literal(body);
-    let _ = io::stdout().lock().write_all(p.text.as_bytes());
+    let _ = io::stdout().lock().write_all(crate::osc8::link_urls(&p.text).as_bytes());
 }
 pub fn line(body: &str) {
     let title = std::env::args()
@@ -358,7 +358,7 @@ pub fn report(title: &str, value: &Value) {
     } else {
         p.value(value, 2);
     }
-    let _ = io::stdout().lock().write_all(p.text.as_bytes());
+    let _ = io::stdout().lock().write_all(crate::osc8::link_urls(&p.text).as_bytes());
 }
 /// Agent CLI historically emits compact JSON to pipes without a --json flag.
 pub fn agent(value: &Value) {

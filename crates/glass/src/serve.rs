@@ -336,7 +336,7 @@ pub fn serve(
     let factory: crate::warmer::ProviderFactory = {
         let configured = cfg.clone();
         let ledger = std::sync::Arc::clone(&ledger);
-        let path = std::sync::Arc::new(std::sync::Mutex::new(ledger_path));
+        let path = std::sync::Arc::new(std::sync::Mutex::new(ledger_path.clone()));
         std::sync::Arc::new(move || {
             crate::make_provider(
                 &configured,
@@ -346,12 +346,28 @@ pub fn serve(
             )
         })
     };
+    let factory_for_model: crate::warmer::ProviderForModel = {
+        let configured = cfg.clone();
+        let ledger = std::sync::Arc::clone(&ledger);
+        let path = std::sync::Arc::new(std::sync::Mutex::new(ledger_path));
+        std::sync::Arc::new(move |model: &str| {
+            let configured = configured.clone();
+            let ledger = std::sync::Arc::clone(&ledger);
+            let path = std::sync::Arc::clone(&path);
+            let model = model.to_string();
+            let factory: crate::warmer::ProviderFactory = std::sync::Arc::new(move || {
+                crate::make_provider(&configured, std::sync::Arc::clone(&ledger), std::sync::Arc::clone(&path), Some(&model))
+            });
+            factory
+        })
+    };
+    let _team = crate::team::start(&session.id, &cfg.workspace, std::sync::Arc::clone(&factory), factory_for_model, &cfg.model)?;
     let instructions = crate::trust::gated(&cfg, &crate::agents_md::load(&cfg.workspace), false);
 
     let clients = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Client>::new()));
     let mut client_sequence = 0u64;
     let owner = std::rc::Rc::new(std::cell::Cell::new(None::<u64>));
-    let mut mailbox = crate::inbox::Mailbox::open(&session.id);
+    let mut mailbox = crate::inbox::Mailbox::open(&session);
     let mut pending: VecDeque<Value> = VecDeque::new();
     // The accepted marker is committed before any prompt work starts. On a
     // restart an accepted-but-uncompleted request is reported as interrupted,
@@ -440,21 +456,18 @@ pub fn serve(
                         // while a turn runs this branch is unreachable, so
                         // neither stacks behind live work. This runs even
                         // with no client attached: that is the autonomy story.
-                        if let Some((from, text)) = mailbox.next() {
+                        if let Some((from, text)) = mailbox.deliver(&mut session)? {
                             broadcast(
                                 &clients,
                                 json!({"t": "text", "delta": format!("\n\x1b[90m[inbox from {from}]\x1b[0m {text}\n")}),
                             );
-                            session.append(Record::System(format!(
-                                "[inbox] message from session {from}"
-                            )));
-                            Some((None, json!({"t": "prompt", "text": text})))
-                        } else if let Some(prompt) = crate::loops::due(&session) {
+                            Some((None, json!({"t": "prompt", "text": text, "inbox_recorded":true})))
+                        } else if let Some(prompt) = crate::loops::due_for(&mut session,&cfg)? {
                             broadcast(
                                 &clients,
                                 json!({"t": "text", "delta": format!("\n\x1b[90m[loop]\x1b[0m {prompt}\n")}),
                             );
-                            Some((None, json!({"t": "prompt", "text": prompt})))
+                            Some((None, json!({"t": "prompt", "text": prompt, "inbox_recorded":true})))
                         } else {
                             std::thread::sleep(std::time::Duration::from_millis(30));
                             continue;
@@ -519,6 +532,10 @@ pub fn serve(
                 }));
             }
             Some("prompt") => {
+                if origin.is_some() && message.get("inbox_recorded").is_some() {
+                    to_origin(json!({"t":"error","message":"Reserved delivery field"}));
+                    continue;
+                }
                 let text = message
                     .get("text")
                     .and_then(Value::as_str)
@@ -549,7 +566,8 @@ pub fn serve(
                     }
                     seen_requests.insert(id.to_string(), "accepted".into());
                 }
-                if let Err(error) = session.append_checked(&[Record::User(text)]) {
+                if message["inbox_recorded"] != true
+                    && let Err(error) = session.append_checked(&[Record::User(text)]) {
                     to_origin(
                         json!({"t":"error", "request_id":message.get("request_id"), "message": format!("cannot durably record prompt; it was not run: {error}")}),
                     );
@@ -558,6 +576,7 @@ pub fn serve(
                 let provider = match factory() {
                     Ok(p) => p,
                     Err(e) => {
+                        if let Err(error) = crate::navigation::record(&session, &cfg.workspace, &cfg.model, "blocked") { eprintln!("navigation receipt: {error}"); }
                         let mut detail = crate::live::sanitize_provider_detail(&e);
                         if let Some(id) = message.get("request_id").and_then(Value::as_str) {
                             match session.append_checked(&[Record::ServeRequest {
@@ -580,6 +599,8 @@ pub fn serve(
                 let outer = std::rc::Rc::clone(&clients);
                 let input_owner=std::rc::Rc::clone(&owner);
                 let mut queued: Vec<Value> = Vec::new();
+                if let Err(error) = crate::team::record_notices(&mut session) { eprintln!("team receipt: {error}"); }
+                if let Err(error) = crate::navigation::record(&session, &cfg.workspace, &cfg.model, "running") { eprintln!("navigation receipt: {error}"); }
                 let outcome = {
                     let mut agent = Agent::new(
                         provider.as_ref(),
@@ -642,6 +663,10 @@ pub fn serve(
                     })
                 };
                 pending.extend(queued);
+                let status = match &outcome { Err(_) => "blocked", Ok((_, Stop::Cancelled)) => "cancelled", Ok((_, Stop::Steered)) => "steered", Ok((_, Stop::ToolBudget)) => "incomplete", Ok((_, Stop::Finished)) => "completed" };
+                if let Err(error) = crate::navigation::record(&session, &cfg.workspace, &cfg.model, status) { eprintln!("navigation receipt: {error}"); }
+                if matches!(&outcome, Ok((_, Stop::Finished))) && let Err(error) = crate::advisor::milestone(&session) { eprintln!("advisor: {error}"); }
+
                 let (stop, text) = match outcome {
                     Ok((out, stop)) => (stop, out.text),
                     Err(e) => {

@@ -23,6 +23,38 @@ pub struct Entry {
     pub next_at: u64,
     #[serde(default)]
     pub runs: u64,
+    #[serde(default)]
+    pub binding: Option<Binding>,
+    #[serde(default)]
+    pub missed: Missed,
+}
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Missed {
+    #[default]
+    Once,
+    Skip,
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Binding {
+    pub host: String,
+    pub project: PathBuf,
+    pub model: String,
+}
+pub fn host() -> String {
+    std::fs::read_to_string("/etc/hostname")
+        .unwrap_or_else(|_| "unknown-host".into())
+        .trim()
+        .chars()
+        .take(128)
+        .collect()
+}
+fn binding(cfg: &crate::config::Config) -> Binding {
+    Binding {
+        host: host(),
+        project: cfg.workspace.clone(),
+        model: cfg.model.clone(),
+    }
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -50,13 +82,19 @@ fn load_checked(s: &Session) -> Result<Loops, String> {
     match std::fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Loops::default()),
         Err(error) => return Err(format!("automation schedule: {error}")),
-        Ok(_) => {},
+        Ok(_) => {}
     }
     let bytes = crate::requests::bounded(&path, 1024 * 1024)?;
-    let loops: Loops = serde_json::from_slice(&bytes).map_err(|e| format!("automation schedule: {e}"))?;
-    if loops.entries.len() > 16 || loops.history.len() > 64
-        || loops.entries.iter().any(|e| e.every_s == 0 || e.prompt.is_empty() || e.prompt.len() > 8000)
-        || loops.history.iter().any(|e| e.prompt.len() > 8000) {
+    let loops: Loops =
+        serde_json::from_slice(&bytes).map_err(|e| format!("automation schedule: {e}"))?;
+    if loops.entries.len() > 16
+        || loops.history.len() > 64
+        || loops
+            .entries
+            .iter()
+            .any(|e| e.every_s == 0 || e.prompt.is_empty() || e.prompt.len() > 8000)
+        || loops.history.iter().any(|e| e.prompt.len() > 8000)
+    {
         return Err("Automation schedule exceeds limits or contains invalid entries".into());
     }
     Ok(loops)
@@ -70,7 +108,9 @@ pub fn load(s: &Session) -> Loops {
 
 fn save(s: &Session, loops: &Loops) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(loops).map_err(|e| e.to_string())?;
-    if bytes.len() > 1024 * 1024 { return Err("Loop storage exceeds 1 MiB; shorten prompts or clear history".into()); }
+    if bytes.len() > 1024 * 1024 {
+        return Err("Loop storage exceeds 1 MiB; shorten prompts or clear history".into());
+    }
     auth::secure_write(&path(s), &bytes)
 }
 
@@ -95,13 +135,18 @@ pub fn parse_every(text: &str) -> Option<u64> {
         (t.as_str(), 1)
     };
     let n: u64 = digits.trim().parse().ok()?;
-    if n == 0 { None } else { n.checked_mul(multiplier) }
+    if n == 0 {
+        None
+    } else {
+        n.checked_mul(multiplier)
+    }
 }
 
 /// The first due prompt, advanced and persisted. `None` when nothing is due.
 ///
 /// Missed intervals skip: a session resumed after a day fires each loop once,
 /// not 2,880 times.
+#[cfg(test)]
 pub fn due(s: &Session) -> Option<String> {
     // Idle input pumps run frequently. Poll a session at most four times per
     // second, with no thread or timer service and a single bounded cache slot.
@@ -110,29 +155,204 @@ pub fn due(s: &Session) -> Option<String> {
     }
     let skip = LAST.with(|last| {
         let mut last = last.borrow_mut();
-        if last.as_ref().is_some_and(|(path, at)| path == &s.path && at.elapsed() < std::time::Duration::from_millis(250)) { return true; }
+        if last.as_ref().is_some_and(|(path, at)| {
+            path == &s.path && at.elapsed() < std::time::Duration::from_millis(250)
+        }) {
+            return true;
+        }
         *last = Some((s.path.clone(), std::time::Instant::now()));
         false
     });
-    if skip { return None; }
+    if skip {
+        return None;
+    }
     // A damaged or unwritable schedule must never execute an unacknowledged run.
     due_checked(s).ok().flatten()
 }
 
+#[cfg(test)]
 pub fn due_checked(s: &Session) -> Result<Option<String>, String> {
     let mut loops = load_checked(s)?;
     let at = now();
-    let Some(idx) = loops.entries.iter().position(|e| e.next_at <= at) else { return Ok(None); };
+    let Some(idx) = loops.entries.iter().position(|e| e.next_at <= at) else {
+        return Ok(None);
+    };
     let entry = &mut loops.entries[idx];
     let missed_intervals = at.saturating_sub(entry.next_at) / entry.every_s;
-    entry.runs = entry.runs.checked_add(1).ok_or("Automation run counter overflow")?;
-    entry.next_at = at.checked_add(entry.every_s).ok_or("Automation interval exceeds supported date range")?;
+    entry.runs = entry
+        .runs
+        .checked_add(1)
+        .ok_or("Automation run counter overflow")?;
+    entry.next_at = at
+        .checked_add(entry.every_s)
+        .ok_or("Automation interval exceeds supported date range")?;
+    let skip = matches!(entry.missed, Missed::Skip) && missed_intervals > 0;
     let prompt = entry.prompt.clone();
-    loops.history.push(Dispatch { at, prompt: prompt.clone(), missed_intervals,
-        status: "dispatched; completion is recorded in the conversation".into() });
-    if loops.history.len() > 64 { loops.history.remove(0); }
+    loops.history.push(Dispatch {
+        at,
+        prompt: prompt.clone(),
+        missed_intervals,
+        status: if skip {
+            "skipped missed interval"
+        } else {
+            "dispatched; completion is recorded in the conversation"
+        }
+        .into(),
+    });
+    if loops.history.len() > 64 {
+        loops.history.remove(0);
+    }
     save(s, &loops)?;
-    Ok(Some(prompt))
+    Ok((!skip).then_some(prompt))
+}
+
+/// Bound automation dispatch. A binding mismatch parks execution without consuming
+/// an interval. The prompt is recorded before the input loop can submit it.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Delivery {
+    before: String,
+    index: usize,
+    entry: Entry,
+    dispatch: Dispatch,
+}
+fn fingerprint(loops: &Loops) -> Result<String, String> {
+    Ok(crate::workspace::hash(
+        &serde_json::to_vec(loops).map_err(|e| e.to_string())?,
+    ))
+}
+fn apply_delivery(loops: &mut Loops, d: &Delivery) -> Result<bool, String> {
+    if d.index >= loops.entries.len() || fingerprint(loops)? != d.before {
+        return Ok(false);
+    }
+    loops.entries[d.index] = d.entry.clone();
+    loops.history.push(d.dispatch.clone());
+    if loops.history.len() > 64 {
+        loops.history.remove(0);
+    }
+    Ok(true)
+}
+pub fn due_for(s: &mut Session, cfg: &crate::config::Config) -> Result<Option<String>, String> {
+    thread_local! {
+        static LAST: std::cell::RefCell<Option<(PathBuf,std::time::Instant)>> = const {std::cell::RefCell::new(None)};
+    }
+    let (skip, recover) = LAST.with(|last| {
+        let mut last = last.borrow_mut();
+        let recover = last.as_ref().is_none_or(|(path, _)| path != &s.path);
+        if last.as_ref().is_some_and(|(path, at)| {
+            path == &s.path && at.elapsed() < std::time::Duration::from_millis(250)
+        }) {
+            return (true, false);
+        }
+        *last = Some((s.path.clone(), std::time::Instant::now()));
+        (false, recover)
+    });
+    if skip {
+        return Ok(None);
+    }
+    let mut loops = match load_checked(s) {Ok(loops)=>loops,Err(error)=>{LAST.with(|last|*last.borrow_mut()=None);return Err(error);}};
+    if recover {
+        let mut changed = false;
+        for record in s.history_records() {
+            if let crate::session::Record::Custom {
+                kind,
+                data: Some(data),
+            } = record
+                && kind == "automation/delivery"
+                && let Ok(delivery) = serde_json::from_str::<Delivery>(&data)
+            {
+                changed |= apply_delivery(&mut loops, &delivery)?;
+            }
+        }
+        if changed && let Err(error) = save(s, &loops) {
+            LAST.with(|last| *last.borrow_mut() = None);
+            return Err(error);
+        }
+    }
+    let at = now();
+    let host = host();
+    let Some(index) = loops.entries.iter().position(|e| {
+        e.next_at <= at
+            && e.binding.as_ref().is_some_and(|b| {
+                b.host == host && b.project == cfg.workspace && b.model == cfg.model
+            })
+    }) else {
+        return Ok(None);
+    };
+    let mut entry = loops.entries[index].clone();
+    let missed_intervals = at.saturating_sub(entry.next_at) / entry.every_s;
+    entry.runs = entry
+        .runs
+        .checked_add(1)
+        .ok_or("Automation run counter overflow")?;
+    entry.next_at = at
+        .checked_add(entry.every_s)
+        .ok_or("Automation date overflow")?;
+    let skip = matches!(entry.missed, Missed::Skip) && missed_intervals > 0;
+    let prompt = format!("[Scheduled task]\n{}", entry.prompt);
+    let delivery = Delivery {
+        before: fingerprint(&loops)?,
+        index,
+        dispatch: Dispatch {
+            at,
+            prompt: entry.prompt.clone(),
+            missed_intervals,
+            status: if skip {
+                "skipped missed interval"
+            } else {
+                "accepted in conversation; completion is separate"
+            }
+            .into(),
+        },
+        entry,
+    };
+    let mut records = vec![crate::session::Record::Custom {
+        kind: "automation/delivery".into(),
+        data: Some(serde_json::to_string(&delivery).map_err(|e| e.to_string())?),
+    }];
+    if !skip {
+        records.push(crate::session::Record::User(prompt.clone()));
+    }
+    s.append_checked(&records).map_err(|e| e.to_string())?;
+    apply_delivery(&mut loops, &delivery)?;
+    if let Err(error) = save(s, &loops) {
+        // Acceptance is already durable. Reconcile this receipt before the next
+        // dispatch, including after a restart; never submit the same interval twice.
+        LAST.with(|last| *last.borrow_mut() = None);
+        eprintln!("Automation accepted; schedule checkpoint pending: {error}");
+    }
+    Ok((!skip).then_some(prompt))
+}
+
+/// Scheduling always binds the current execution environment. Existing schedules
+/// can be rebound deliberately, and missed-run policy is explicit per entry.
+pub fn command_for(s: &Session, cfg: &crate::config::Config, args: &str) -> Result<String, String> {
+    let parts = args.split_whitespace().collect::<Vec<_>>();
+    if matches!(parts.first(), Some(&"bind" | &"missed")) {
+        if parts.len() != 3 && parts.first() == Some(&"missed")
+            || parts.len() != 2 && parts.first() == Some(&"bind")
+        {
+            return Err("/loop bind N | /loop missed N once|skip".into());
+        }
+        let i = parts[1]
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .ok_or("Choose a positive schedule number")?;
+        let mut loops = load_checked(s)?;
+        let entry = loops.entries.get_mut(i).ok_or("Schedule not found")?;
+        if parts[0] == "bind" {
+            entry.binding = Some(binding(cfg));
+        } else {
+            entry.missed = match parts[2] {
+                "once" => Missed::Once,
+                "skip" => Missed::Skip,
+                _ => return Err("Missed policy is once or skip".into()),
+            };
+        }
+        save(s, &loops)?;
+        return Ok("Schedule updated; inspect /loop list for binding and missed-run policy".into());
+    }
+    command_bound(s, args, Some(binding(cfg)))
 }
 
 fn human(seconds: u64) -> String {
@@ -145,6 +365,9 @@ fn human(seconds: u64) -> String {
 
 /// `/loop` command handling. `args` is everything after the command word.
 pub fn command(s: &Session, args: &str) -> Result<String, String> {
+    command_bound(s, args, None)
+}
+fn command_bound(s: &Session, args: &str, binding: Option<Binding>) -> Result<String, String> {
     let args = args.trim();
     if args == "history" {
         let loops = load_checked(s)?;
@@ -170,6 +393,16 @@ pub fn command(s: &Session, args: &str) -> Result<String, String> {
                 e.runs,
                 human(wait),
                 e.prompt
+            ));
+            out.push_str(&format!(
+                "     missed: {:?} · binding: {}\n",
+                e.missed,
+                e.binding
+                    .as_ref()
+                    .map(|b| format!("{} · {} · {}", b.host, b.project.display(), b.model))
+                    .unwrap_or_else(|| {
+                        "legacy unbound; /loop bind N to pin this host/project/model".into()
+                    })
             ));
         }
         return Ok(out.trim_end().to_string());
@@ -211,8 +444,12 @@ pub fn command(s: &Session, args: &str) -> Result<String, String> {
     loops.entries.push(Entry {
         prompt: prompt.to_string(),
         every_s: every,
-        next_at: now().checked_add(every).ok_or("Automation interval exceeds supported date range")?,
+        next_at: now()
+            .checked_add(every)
+            .ok_or("Automation interval exceeds supported date range")?,
         runs: 0,
+        binding,
+        missed: Missed::Once,
     });
     save(s, &loops)?;
     Ok(format!(
@@ -226,6 +463,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn delivery_reconciles_once_and_preserves_later_schedule_edits() {
+        let mut loops = Loops::default();
+        loops.entries.push(Entry {
+            prompt: "check".into(),
+            every_s: 60,
+            next_at: 1,
+            runs: 0,
+            binding: None,
+            missed: Missed::Once,
+        });
+        let before = fingerprint(&loops).unwrap();
+        let mut entry = loops.entries[0].clone();
+        entry.next_at = 61;
+        entry.runs = 1;
+        let delivery = Delivery {
+            before,
+            index: 0,
+            entry,
+            dispatch: Dispatch {
+                at: 1,
+                prompt: "check".into(),
+                missed_intervals: 0,
+                status: "accepted".into(),
+            },
+        };
+        assert!(apply_delivery(&mut loops, &delivery).unwrap());
+        assert!(!apply_delivery(&mut loops, &delivery).unwrap());
+        assert_eq!(loops.history.len(), 1);
+        loops.entries[0].prompt = "human revision".into();
+        assert!(!apply_delivery(&mut loops, &delivery).unwrap());
+        assert_eq!(loops.entries[0].prompt, "human revision");
+    }
+    #[test]
+    fn bound_dispatch_skips_mismatched_entries_and_records_user_once() {
+        let root = std::env::temp_dir().join(format!("gc-bound-loop-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut session = Session::create(&root).unwrap();
+        let cfg = crate::config::Config {
+            workspace: root.clone(),
+            ..Default::default()
+        };
+        command_for(&session, &cfg, "60s first").unwrap();
+        command_for(&session, &cfg, "60s second").unwrap();
+        let mut loops = load_checked(&session).unwrap();
+        for e in &mut loops.entries {
+            e.next_at = now().saturating_sub(1);
+        }
+        loops.entries[0].binding.as_mut().unwrap().model = "different-model".into();
+        save(&session, &loops).unwrap();
+        assert_eq!(
+            due_for(&mut session, &cfg).unwrap().as_deref(),
+            Some("[Scheduled task]\nsecond")
+        );
+        assert_eq!(load_checked(&session).unwrap().entries[0].runs, 0);
+        assert_eq!(
+            session
+                .history_records()
+                .iter()
+                .filter(|r| matches!(r, crate::session::Record::User(_)))
+                .count(),
+            1
+        );
+        assert!(due_for(&mut session, &cfg).unwrap().is_none());
+        drop(session);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn corrupt_schedule_is_preserved_and_never_dispatched() {
         let root = std::env::temp_dir().join(format!("gc-loops-corrupt-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -236,7 +541,6 @@ mod tests {
         assert_eq!(std::fs::read(path(&s)).unwrap(), b"{broken");
         let _ = std::fs::remove_dir_all(root);
     }
-
 
     #[test]
     fn intervals_parse_with_suffixes_and_bare_seconds() {
@@ -265,6 +569,8 @@ mod tests {
             every_s: 60,
             next_at: now().saturating_sub(600), // ten intervals overdue
             runs: 0,
+            binding: None,
+            missed: Missed::Once,
         });
         save(&s, &loops).unwrap();
 

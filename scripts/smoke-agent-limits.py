@@ -60,7 +60,8 @@ def run(size):
             ctl('create', 'reasoner', 'OUTPUT_REPAIR', '--output', '4096')
             blocked = ctl('wait', 'reasoner', '10')['agent']
             assert blocked['failure_kind'] == 'output_exhausted', blocked
-            assert blocked['output_limit'] == 4096 and blocked['remaining_tokens'] == 95804, blocked
+            assert blocked['output_limit'] == 4096 and blocked['remaining_tokens'] == blocked['token_limit']-blocked['input']-blocked['output'], blocked
+            assert blocked['input']==100*len(server.requests) and blocked['output']==4096*len(server.requests),blocked
             assert 'limits' in blocked['recovery'] and blocked['last_request_input_estimate'] > 0
             count = len(server.requests)
             ctl('limits', 'reasoner', '--output', '24000', '--reasoning', '1024', '--rounds', '30')

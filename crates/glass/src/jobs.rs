@@ -353,6 +353,15 @@ fn registry() -> &'static Mutex<BTreeMap<String, Jobs>> {
 fn owner_key(workspace: &Path, owner: &str) -> String {
     format!("{}\0{owner}", crate::concurrency::canonical_key(workspace))
 }
+pub fn attention(workspace:&Path,owner:&str)->Vec<Value> {
+    let Ok(mut registry)=registry().lock() else{return Vec::new();};
+    let Some(jobs)=registry.get_mut(&owner_key(workspace,owner)) else{return Vec::new();};
+    jobs.refresh();
+    jobs.jobs.iter().filter(|(_,job)|job.exit.is_some()).take(16).map(|(id,job)|json!({
+        "session":owner,"kind":"background completion","job":id,"raw_record":null,"turn":null,"exit_code":job.exit,
+        "preview":format!("$ {}\nExit {} · {:.1}s\nCaptured output: {}",job.command,job.exit.unwrap_or_default(),job.finished.unwrap_or_else(||job.started.elapsed()).as_secs_f32(),job.output.display()),
+        "target":"Session-owned job output; opening does not restart the command"})).collect()
+}
 pub struct Handle {
     key: String,
 }
@@ -389,6 +398,50 @@ impl Handle {
             .get(&self.key)
             .ok_or("unknown job")?
             .output(id)
+    }
+    pub fn inspect(&mut self, keys:&crate::input::KeyReader,id:u32)->Result<(),String> {
+        use glass_tui::crossterm::event::{Event,KeyCode,KeyModifiers};
+        let screen=crate::modal::Screen::new();
+        let poll=|offset|registry().lock().map_err(err)?.get_mut(&self.key).ok_or("unknown job")?.poll(id,offset,8192);
+        let first=poll(0)?;
+        let mut cursor=first["captured_bytes"].as_u64().unwrap_or(0).saturating_sub(24576);
+        let mut text=String::new();let mut follow=true;let mut offset=0usize;
+        let mut previous=(0,0);let mut lines=Vec::new();
+        loop {
+            let value=poll(cursor)?;
+            cursor=value["next_offset"].as_u64().ok_or("Invalid output cursor")?;
+            let delta=value["output"].as_str().unwrap_or("");
+            text.push_str(delta);
+            if text.len()>65536 {
+                let mut start=text.len()-65536;while !text.is_char_boundary(start){start+=1;}
+                text.drain(..start);
+            }
+            let dimensions=glass_tui::crossterm::terminal::size().unwrap_or((80,24));
+            if !delta.is_empty()||dimensions!=previous||lines.is_empty() {
+                let width=usize::from(dimensions.0).saturating_sub(if dimensions.0>=24&&dimensions.1>=12 {6}else{0}).clamp(1,100);
+                lines=text.lines().flat_map(|row|glass_tui::text::wrap_words(&glass_tui::markdown::sanitize(row),width)).collect();
+                previous=dimensions;
+            }
+            let page=usize::from(dimensions.1).saturating_sub(6).max(1);
+            if follow{offset=lines.len().saturating_sub(page);}else{offset=offset.min(lines.len().saturating_sub(page));}
+            let title=format!("Job {id} · {} · exit {} · {:.1}s",value["state"].as_str().unwrap_or("unknown"),value["exit_code"],value["elapsed_seconds"].as_f64().unwrap_or(0.0));
+            screen.draw(&title,&lines,&format!("↑↓ scroll · End follow · I stdin · Ctrl-D EOF · Esc close · {} dropped bytes",value["dropped_bytes"]),offset);
+            match keys.next_timeout(Duration::from_millis(100)) {
+                Some(Event::Key(k))=>match k.code {
+                    KeyCode::Esc|KeyCode::Char('q')=>return Ok(()),
+                    KeyCode::Up|KeyCode::PageUp=>{follow=false;offset=offset.saturating_sub(if k.code==KeyCode::Up{1}else{page});},
+                    KeyCode::Down|KeyCode::PageDown=>{offset=offset.saturating_add(if k.code==KeyCode::Down{1}else{page});},
+                    KeyCode::End=>follow=true,
+                    KeyCode::Char('i')=>if let Some(input)=crate::modal::field(keys,"Owned job stdin","Send a line (no shell interpretation by GC)","",false) {
+                        let receipt=registry().lock().map_err(err)?.get_mut(&self.key).ok_or("unknown job")?.input(id,&format!("{input}\n"),false)?;
+                        if receipt["remaining_bytes"].as_u64().unwrap_or(0)>0 {crate::modal::info(keys,"Partial input",&receipt.to_string());}
+                    },
+                    KeyCode::Char('d') if k.modifiers.contains(KeyModifiers::CONTROL)=>{
+                        registry().lock().map_err(err)?.get_mut(&self.key).ok_or("unknown job")?.input(id,"",true)?;
+                    },_=>{},
+                },Some(Event::Resize(_, _))=>{},_=>{},
+            }
+        }
     }
     pub fn stop(&mut self, id: u32) -> Result<String, String> {
         registry()

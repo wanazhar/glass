@@ -33,7 +33,7 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         text = json.dumps(body)
-        if 'ping-from-test' in text and '[inbox] message from session cli' in text:
+        if 'ping-from-test' in text and '[Background follow-up from cli]' in text:
             type(self).saw_inbox = True
         frames = [{'choices': [{'delta': {'content': 'INBOX-ACK'}}]}]
         data = (''.join('data: ' + json.dumps(x) + '\n\n' for x in frames) + 'data: [DONE]\n\n').encode()
@@ -85,7 +85,7 @@ def main():
                 # The idle session picks it up and runs a turn.
                 t.wait('INBOX-ACK', timeout=20)
                 assert Endpoint.saw_inbox, (
-                    'the turn must carry the message and the [inbox] provenance note'
+                    'the turn must carry the message and the attributed background follow-up'
                 )
             finally:
                 t.close()

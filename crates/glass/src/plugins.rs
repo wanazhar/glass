@@ -180,9 +180,11 @@ pub fn load_one(dir: &Path, report: &mut Vec<String>) -> Option<Plugin> {
     };
 
     // Skills: immediate child directories of skills/ holding SKILL.md.
+    // Cached walk (fs_scan): plugins discovery runs repeatedly in one
+    // session; invalidation is pulled through the ordinary tool-result path.
     let mut skills = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(root.join("skills")) {
-        for entry in entries.flatten() {
+    if let Some(entries) = crate::fs_scan::read_dir(&root.join("skills")) {
+        for entry in entries {
             let skill_md = entry.path().join("SKILL.md");
             if !skill_md.is_file() {
                 continue;

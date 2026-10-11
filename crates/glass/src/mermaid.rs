@@ -9,8 +9,16 @@
 //! - **Sequence diagrams** — `sequenceDiagram` with `participant`/`actor`,
 //!   messages (`->`, `->>`, `-->`, `-->>`, `-x`, `--x`), self-messages,
 //!   `note over`, and one nesting level of `loop`/`alt`/`opt`/`break`.
-//!   Class/state/ER keep the fenced-source fallback, exactly like
-//!   unsupported or overflowing input on either family.
+//! - **State diagrams** — `stateDiagram-v2` with `[*]` pseudostates,
+//!   `-->` transitions, aliases and one level of composite `state X { … }`.
+//! - **Class diagrams** — the relation grammar (`<|--`, `*--`, `o--`,
+//!   `-->`, `..>`) with glyphs naming the relation kind. Members,
+//!   generics and unsupported shapes fall back.
+//! - **ER diagrams** — entity relationships with a required cardinality
+//!   label. Attribute blocks fall back.
+//!
+//! Unsupported or overflowing input in any family goes to the
+//! fenced-source fallback — never a halfway drawing.
 //!
 //! Layout: flowchart nodes take one lane each per rank so crossings never
 //! join; sequence diagrams draw participant lifelines and one message band
@@ -536,6 +544,63 @@ fn class_ident(raw: &str) -> Option<String> {
         return None;
     }
     Some(raw.to_string())
+}// ---- ER diagrams (follow-up 6: the fifth family) ----
+
+/// Parse and render an `erDiagram`. Entities are nodes; relationships are
+/// edges whose label carries the cardinality both ways. Attributes
+/// (`ENTITY { ... }`) and attribute keys are unsupported — they fall
+/// back to source, stated in the module doc.
+pub fn parse_er(body: &str, width: usize) -> Option<Vec<String>> {
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    let header = lines.next()?;
+    if header != "erDiagram" {
+        return None;
+    }
+    let mut chart = Flowchart::default();
+    for line in lines {
+        // Relationship: `A ||--o{ B : label` and the other cardinality
+        // pairs; the trailing `: label` is required — an unlabeled edge
+        // between entities says nothing readable.
+        let (from, to, label) = parse_er_relation(line)?;
+        let source = state_node(&from, &mut chart)?;
+        let target = state_node(&to, &mut chart)?;
+        if chart.edges.len() >= MAX_EDGES {
+            return None;
+        }
+        chart.edges.push(Edge { from: source, to: target, label: Some(label) });
+    }
+    if chart.nodes.is_empty() {
+        return None;
+    }
+    render(&chart, width)
+}
+
+/// Split an ER relationship line into `(from_entity, to_entity, label)`.
+fn parse_er_relation(line: &str) -> Option<(String, String, String)> {
+    let (left, label) = line.split_once(':')?;
+    let label = label.trim();
+    if label.is_empty() {
+        return None;
+    }
+    // The cardinality token contains the only `--`/`..` run. Entity names
+    // sit at both ends: strip the leading card glyphs on the left side and
+    // the trailing ones on the right side.
+    let at = left.find("--")?;
+    let from = left[..at]
+        .trim_end_matches(['|', 'o', '{', '}'])
+        .trim();
+    let right = left[at..]
+        .trim_start_matches(['-', '.', '|', 'o', '{', '}']);
+    let at2 = right
+        .find(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        ?;
+    let to = right[at2..].trim();
+    if from.is_empty() || to.is_empty() {
+        return None;
+    }
+    let source = class_ident(from)?;
+    let target = class_ident(to)?;
+    Some((source, target, label.to_string()))
 }
 
 fn merge_rank(rank: &mut Vec<(String, usize)>, id: &str, new_rank: usize) {
@@ -1080,6 +1145,23 @@ mod tests {
         assert!(rows.iter().any(|r| r.contains("✦─ ──▶ [Bone]")), "composition, rows: {rows:?}");
         assert!(rows.iter().any(|r| r.contains("◇─ ──▶ [Tail]")), "aggregation, rows: {rows:?}");
         assert!(rows.iter().any(|r| r.contains("── eats ──▶")), "label, rows: {rows:?}");
+    }
+
+    #[test]
+    fn er_diagram_renders_cardinality_labels() {
+        let rows = parse_er(
+            "erDiagram\n CUSTOMER ||--o{ ORDER : places\n ORDER ||--|{ LINE_ITEM : contains\n", 88,
+        ).unwrap();
+        assert!(rows.iter().any(|r| r.contains("[CUSTOMER]")), "rows: {rows:?}");
+        assert!(rows.iter().any(|r| r.contains("── places ──▶ [ORDER]")), "rows: {rows:?}");
+        assert!(rows.iter().any(|r| r.contains("── contains ──▶ [LINE_ITEM]")), "rows: {rows:?}");
+    }
+
+    #[test]
+    fn er_diagram_attributes_and_unlabeled_fall_back() {
+        assert!(parse_er("stateDiagram\n A --> B", 60).is_none(), "wrong header");
+        assert!(parse_er("erDiagram\n A ||--o{ B", 60).is_none(), "label required");
+        assert!(parse_er("erDiagram\n A ||--o{ B : places\n CUSTOMER {\n string name\n }\n", 88).is_none(), "attribute block unsupported");
     }
 
     #[test]

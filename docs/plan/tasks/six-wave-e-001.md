@@ -244,3 +244,16 @@ need their own bounded layouts (two families is the honest slice); the
   honestly out of scope: `erDiagram` (own entity/attribute layout).
 - Tests: 4 new class tests. Suite 702 unit + 13 doc + 93 integration;
   clippy `-D warnings` clean; `smoke-mermaid` green.
+
+## Follow-up 6: ER diagrams (this commit)
+
+- **Mermaid ER diagrams → implemented.** `parse_er` handles the
+  `erDiagram` header and the relationship grammar (`A ||--o{ B : label`
+  and the other cardinality pairs) with the `: label` required — an
+  entity edge that names nothing is not readable, so unlabeled
+  relationships fall back. Rendered through the shared rank tree like
+  every other family. Attribute blocks (`ENTITY { … }`) still fall back,
+  stated in the module doc and in the test.
+- Tests: 2 new ER tests. Suite 704 unit + 13 doc + 93 integration;
+  clippy `-D warnings` clean; `smoke-mermaid` green. All five mermaid
+  families now render natively: flowchart, sequence, state, class, ER.

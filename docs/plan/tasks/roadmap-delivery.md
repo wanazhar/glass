@@ -181,3 +181,41 @@ tests pass, 0 fail; strict Clippy clean; smoke-lsp, smoke-recovery and
 smoke-state-receipts all PASS. Items 24 and 30 are complete; item 32 is
 delivered except the agent-loop call-scope wiring; item 42 receipts are
 delivered and the remaining state-ownership surface stays open.
+
+## Waves A–E delivered 2026-10-11 (six-codebase feature wave)
+
+Five parallel task branches merged to master, each behind its own task file
+with disjoint path ownership, each green on strict clippy and the full test
+suite before merge. Commit per wave:
+
+- `e06417d` (wave A, items 1–3, 15): loop detection module, read recency /
+  staleness hints, sticky routing, cache affinity.
+- `3e8fc78` (wave B, items 7, 9, 10): process hardening (ctor hardening
+  strip), admin `requirements.toml` layer, egress policy proxy with per-
+  permission-profile allow/deny. [Smoke](../../../scripts/smoke-egress.py) PASS.
+- `06ba3b2` (wave C, items 11–14): model-invoked checkpoint/rewind with the
+  durable `Record::Checkpoint` marker and projection drop; extension-tool
+  `wait` on the attention rows; prewalk cheap-model handoff with a headless
+  `gc prewalk --check` gate; branch summarization past the 60-record gap.
+  [checkpoint/rewind](../../../scripts/smoke-checkpoint-rewind.py) and
+  [wait](../../../scripts/smoke-wait.py) PASS.
+- `1b8ea54` (wave D, items 5, 6, 20, 21): bounded mermaid flowchart
+  renderer gated by `mermaid = true` (caps fall back to source); bounded
+  fs-scan walk cache for plugins/skills with counters in `gc usage`;
+  content-addressed spill blobs (`blob:<sha256>`, atomic rename, dedup);
+  OSC 8 hyperlinks behind a conservative TERM gate.
+  [mermaid](../../../scripts/smoke-mermaid.py) and
+  [blob addressing](../../../scripts/smoke-blob-addressing.py) PASS.
+- `74bb707` (wave E, items 4, 8, 16, 25): pre-tool-use shell hook (exit 2
+  block with stdout as the refusal body, 49 cancels the turn, others
+  warn-and-allow, 3 s bounded, process-group killed, sequential, never in
+  read-only mode); typed `TurnEvent` publish from the turn boundaries with
+  sequences unchanged; codemode parity audit recorded in the task file
+  (deltas listed; no engine swap).
+  [Smoke](../../../scripts/smoke-hooks-shell.py) PASS.
+
+Integrated verification on master: 684 unit + 13 doc + 93 integration tests
+pass, 0 fail; strict Clippy (`-D warnings`) clean; all five new smoke
+scripts PASS against the merged binary. Citation markers (item 25) are a
+recorded audit with the dedupe helper in place, not a shipped user surface
+— the statement is in the task file, not a silent skip.

@@ -87,3 +87,12 @@
 - [Model-managed teammate limits](plan/reviews/agent-core-limits-001.md): visible allowances, configurable worker limits, compact receipts and preserved tool/context recovery.
 
 - [History and handoff contracts](plan/tasks/history-contracts-001.md): bounded compaction receipts, branch lineage and portable context previews.
+
+- [Six-codebase feature wave](plan/tasks/six-codebases-wave.md): planned five-wave split with disjoint path ownership.
+- [Six-codebase research](../research/six-codebases-2026-10-10.md): deep-read of codex, pi, t3, OMP, opencode and crush — feature candidates that drove the wave.
+- [Wave A: agent-loop correctness](plan/tasks/six-wave-a-001.md): loop detection, read recency, sticky routing, cache affinity (`e06417d`).
+- [Wave B: security hardening](plan/tasks/six-wave-b-001.md): process hardening, admin requirements layer, egress policy proxy (`3e8fc78`).
+- [Wave C: context management](plan/tasks/six-wave-c-001.md): checkpoint/rewind tools, wait, prewalk handoff, branch summarization (`06ba3b2`).
+- [Wave D: representation + perf](plan/tasks/six-wave-d-001.md): mermaid renderer, fs-scan cache, blob addressing, OSC 8 hyperlinks (`1b8ea54`).
+- [Wave E: extensibility + review](plan/tasks/six-wave-e-001.md): pre-tool-use hook, typed notify events, codemode parity audit (`74bb707`).
+- [Delivery ledger](plan/tasks/roadmap-delivery.md): per-commit evidence and integrated verification for every shipped wave.

@@ -437,6 +437,32 @@ pub fn attach_picker(keys: &KeyReader, s: &mut Session, workspace: &Path, path: 
     }
 }
 
+/// Quote a durable conversation entry as removable, attributed context.
+/// The quote is a snapshot and never gains the authority of an instruction file.
+pub fn quote_picker(keys:&KeyReader,s:&Session)->Result<(),String> {
+    let records=s.history_records();
+    let candidates=records.iter().enumerate().filter_map(|(index,r)|match r {
+        Record::User(t)=>Some((index,"You",t)),
+        Record::Assistant(t)=>Some((index,"Response",t)),
+        Record::ToolResult{name,body,..} if name!="bash"=>Some((index,"Tool",body)),
+        Record::Bash{output,..}=>Some((index,"Command output",output)),
+        _=>None,
+    }).rev().take(256).collect::<Vec<_>>();
+    let labels=candidates.iter().map(|(i,role,t)|format!("{role} · record {i} · {}",glass_tui::text::clip(&t.replace('\n'," "),100))).collect::<Vec<_>>();
+    let Some(i)=modal::choose(keys,"Quote conversation context","Newest first · source record stays retained",&labels)else{return Ok(());};
+    let (record,role,text)=candidates[i];
+    let preview=glass_tui::text::clip(text,8000);
+    let Some(quote)=modal::validated_field(keys,"Review quote","Edit this excerpt (up to 32 KiB); source record remains attributed",&preview,false,
+        |s|if s.trim().is_empty()||s.len()>32768{Err("Choose nonempty text up to 32 KiB".into())}else{Ok(())})else{return Ok(());};
+    let mut meta=metadata(s);
+    if meta.attachments.len()>=128||meta.attachments.iter().map(|a|a.text.len()).sum::<usize>()+quote.len()>131072 {return Err("Attachment budget reached; remove context items first".into());}
+    let fingerprint=crate::workspace::hash(text.as_bytes());
+    let path=PathBuf::from(format!("quote:{}:{record}:{}",s.id,&fingerprint[..12]));
+    meta.attachments.retain(|a|a.path!=path);
+    meta.attachments.push(Attachment{path,source:Some(format!("Conversation {} · raw record {record} · {role} · source revision {fingerprint} · edited quote snapshot (data)",s.id)),text:quote,media_type:None,data:None,citation:None});
+    save(s,&meta)
+}
+
 pub fn prompt_context(s: &Session, instructions: &Option<String>) -> Option<String> {
     let mut text = instructions.clone().unwrap_or_default();
     let m = metadata(s);
@@ -603,6 +629,7 @@ pub fn context(
             "Read system prompt".into(),
             "Read skill catalogue".into(),
             "Inspect past model requests".into(),
+            "Quote a conversation entry…".into(),
         ];
         let m = metadata(s);
         rows.extend(
@@ -623,7 +650,7 @@ pub fn context(
             ),
             Some(1) => {
                 if let Some(path) = path_picker(keys, &cfg.workspace) {
-                    attach(s, &cfg.workspace, &path)?;
+                    attach_picker(keys,s,&cfg.workspace,&path)?;
                 }
             }
             Some(2) => modal::info(
@@ -649,9 +676,10 @@ pub fn context(
                     }
                 }
             }
+            Some(6) => quote_picker(keys,s)?,
             Some(i) => {
                 let mut m = metadata(s);
-                m.attachments.remove(i - 6);
+                m.attachments.remove(i - 7);
                 save(s, &m)?;
             }
             None => return Ok(()),

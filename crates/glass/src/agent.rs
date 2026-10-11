@@ -2201,6 +2201,7 @@ impl<'a> Agent<'a> {
         crate::context_audit::save(self.session, &manifest)
             .map_err(|e| provider::Error::Config(format!("cannot record summary context: {e}")))?;
 
+        let mut trace=crate::requests::Trace::compaction(self.session,&req);
         let stream = match provider::stream_with_retry(
             self.provider,
             &req,
@@ -2216,6 +2217,7 @@ impl<'a> Agent<'a> {
         };
         let mut summary = String::new();
         for ev in stream {
+            trace.event(&ev);
             match ev {
                 Event::Text(t) => summary.push_str(&t),
                 Event::Error(e) => {

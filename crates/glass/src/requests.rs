@@ -130,6 +130,8 @@ impl Snapshot {
 pub struct Trace {
     path: PathBuf,
     background: bool,
+    workflow: &'static str,
+    raw_record: Option<usize>,
     rate: Option<crate::pricing::RateCard>,
     started: Instant,
     first_event: Option<u128>,
@@ -146,6 +148,10 @@ impl Trace {
     pub fn begin(session: &Session, req: &Request<'_>) -> Self {
         Self::at(&session.path, req, false)
     }
+    pub fn compaction(session: &Session, req: &Request<'_>) -> Self {
+        let mut trace=Self::at(&session.path,req,false);
+        trace.workflow="compaction";trace.raw_record=Some(session.log_len());trace
+    }
     pub fn background(path: &Path, req: &Request<'_>) -> Self {
         Self::at(path, req, true)
     }
@@ -158,6 +164,8 @@ impl Trace {
         Self {
             path: path.to_owned(),
             background,
+            workflow: if background {"cache_warmer"} else {"agent"},
+            raw_record: None,
             rate: None,
             started: Instant::now(),
             first_event: None,
@@ -199,13 +207,13 @@ impl Trace {
 impl Drop for Trace {
     fn drop(&mut self) {
         let usage=self.usage.map(|u|serde_json::json!({"input":u.input,"cache_read":u.cache_read,"cache_write":u.cache_write,"output":u.output}));
-        let report = serde_json::json!({"kind":if self.background{"cache_warmer"}else{"agent"},"cost_usd":self.rate.zip(self.usage).map(|(rate,usage)|rate.cost(&usage)),"model_requested":self.snapshot.model,"elapsed_ms":self.started.elapsed().as_millis(),"first_event_ms":self.first_event,
+        let report = serde_json::json!({"kind":self.workflow,"raw_record_at_request":self.raw_record,"cost_usd":self.rate.zip(self.usage).map(|(rate,usage)|rate.cost(&usage)),"model_requested":self.snapshot.model,"elapsed_ms":self.started.elapsed().as_millis(),"first_event_ms":self.first_event,
             "text_bytes":self.text_bytes,"reasoning_bytes":self.reasoning_bytes,"tool_calls":self.calls,"transport_retries":self.retries,"outcome":self.outcome,
             "usage":usage,"context_delta":self.delta,"prefix_fingerprint":self.snapshot.prefix,
             "cache_note":"Fingerprint describes the requested model/system/tools, not the provider cache key. Zero/absent usage cannot establish why caching missed. Provider response identity and finish reason are in /context when exposed. Cache warmer requests have kind=cache_warmer and consume provider usage; unknown pricing is not zero cost."});
         let result = (|| -> Result<(), String> {
             append(&self.path.with_extension("requests.jsonl"), &report)?;
-            if self.background {
+            if self.background || self.workflow=="compaction" {
                 return Ok(());
             }
             crate::auth::secure_write(

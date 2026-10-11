@@ -14,6 +14,8 @@ const START: &[Item] = &[
     ),
 ];
 const SESSIONS: &[Item] = &[
+    ("gc hub [--json]", "Search projects, conversations, branch families and unread events."),
+    ("gc handoff import FILE [--apply]", "Preview portable context, then explicitly create a receiving conversation."),
     ("gc attention ID", "Find recorded failures and teammate event targets."),
     ("gc history ID", "Inspect compaction boundaries and branch lineage."),
     ("gc handoff ID [--json]", "Preview bounded context with omitted-history references."),
@@ -37,6 +39,10 @@ const SESSIONS: &[Item] = &[
     ("gc export ID", "Export a conversation to Markdown."),
 ];
 const TOOLS: &[Item] = &[
+    ("gc advisor SESSION", "Opt-in milestone reviews, separate usage and dispositions."),
+    ("gc pr --help", "Inspect PR checks and reviews; preview explicit draft publication."),
+    ("gc structure --help", "Lazy AST previews and stale-checked transactional edits."),
+    ("gc companion SOCKET [PORT]", "Optional authenticated loopback observer with explicit input control."),
     ("gc usage ID", "Inspect reported usage, cache ratios and cost completeness."),
     ("gc contract SCHEMA RESULT", "Validate a local JSON result contract."),
     ("gc diagnostics ID", "Preview redacted local diagnostic metadata."),

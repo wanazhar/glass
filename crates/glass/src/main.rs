@@ -32,6 +32,8 @@ mod reminders;
 mod rewind;
 mod transactions;
 mod navigation;
+mod advisor;
+mod source_control;
 mod doctor;
 mod export;
 mod ext;
@@ -247,6 +249,8 @@ fn main() {
             let status=std::process::Command::new("python3").arg("-c").arg(include_str!("../../../extensions/companion/companion.py")).args(&args[1..]).status();
             match status {Ok(status)=>std::process::exit(status.code().unwrap_or(1)),Err(error)=>{cli::error("Companion",&error.to_string());std::process::exit(2);}}
         }
+        Some("advisor") => {if let Err(error)=advisor::command(&args[1..]) {cli::error("Advisor",&error);std::process::exit(2);}return;}
+        Some("pr") => {if let Err(error)=source_control::command(&args[1..]) {cli::error("Pull request",&error);std::process::exit(2);}return;}
         Some("hub") => {if let Err(error)=navigation::command(&args[1..]) {cli::error("Workspace hub",&error);std::process::exit(2);}return;}
         Some("transaction") => {
             if let Err(error)=transactions::command(&args[1..]) {cli::error("File transaction",&error);std::process::exit(2);}
@@ -1433,6 +1437,7 @@ fn headless(
             Err(reason) => { status = "invalid_output"; error = Some(format!("Final answer contract failed after one correction: {reason}")); },
         }
     }
+    if let Err(error) = navigation::record(&session, &cfg.workspace, &cfg.model, status) { eprintln!("navigation receipt: {error}"); }
     let structured = output_schema.as_ref().and_then(|schema| contracts::parse(schema,&text).ok());
     let l = ledger.lock().unwrap();
     if let Some(e) = &error {
@@ -1467,6 +1472,9 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
         ("settings", "", "Effective settings and layer provenance", false),
         ("usage", "", "Reported usage, cost completeness and cache changes", false),
         ("attention", "", "Review failures and teammate event targets", false),
+        ("quote", "", "Attach attributed conversation excerpts", false),
+        ("advisor", "", "Review cadence, notes and separate usage", false),
+        ("pr", "", "Pull request, CI and review cockpit", false),
         ("hub", "", "Conversations, teammates, attention and tasks", false),
         ("handoff", "", "Preview a bounded portable handoff", false),
         (
@@ -1977,7 +1985,8 @@ fn repl(
         .last()
         .is_some_and(|r| matches!(r,Record::Meta(t) if t.starts_with("error:")));
     // Messages from other sessions arrive through this mailbox while idle.
-    let mut inbox_mailbox = crate::inbox::Mailbox::open(&session.id);
+    let mut inbox_mailbox = crate::inbox::Mailbox::open(&session);
+    let mut accepted_background: Option<(String,String)> = None;
     crate::status::set("idle", "");
     loop {
         if team_owner != session.id {
@@ -2014,6 +2023,7 @@ fn repl(
             surface::composer(&editor, true, false)
         };
 
+        let mut background_recorded = accepted_background.as_ref().is_some_and(|(id,text)|id==&session.id&&text==editor.text());
         let ev = loop {
             match keys.try_next() {
                 Some(event) => break Some(event),
@@ -2029,11 +2039,10 @@ fn repl(
                         // text must never be clobbered by a timer. Inbox
                         // messages take the same path, ahead of loops.
                         if editor.text().is_empty()
-                            && let Some((from, message)) = inbox_mailbox.next()
+                            && let Some((from, message)) = inbox_mailbox.deliver(&mut session)?
                         {
-                            session.append(Record::System(format!(
-                                "[inbox] message from session {from}"
-                            )));
+                            background_recorded = true;
+                            accepted_background = Some((session.id.clone(),message.clone()));
                             ui_println!("\x1b[90minbox ({from}):\x1b[0m {message}");
                             editor.insert_str(&message);
                             break Some(glass_tui::crossterm::event::Event::Key(
@@ -2044,8 +2053,10 @@ fn repl(
                             ));
                         }
                         if editor.text().is_empty()
-                            && let Some(prompt) = crate::loops::due(&session)
+                            && let Some(prompt) = crate::loops::due_for(&mut session,&cfg)?
                         {
+                            background_recorded = true;
+                            accepted_background = Some((session.id.clone(),prompt.clone()));
                             ui_println!("\x1b[90mloop:\x1b[0m {prompt}");
                             editor.insert_str(&prompt);
                             break Some(glass_tui::crossterm::event::Event::Key(
@@ -2391,8 +2402,16 @@ fn repl(
             }
             continue;
         }
+        if text == "/quote" {if let Err(e)=polish::quote_picker(&keys,&session){modal::info(&keys,"Quote unavailable",&e);}continue;}
+        if text == "/advisor" {advisor::view(&keys,&session);continue;}
+        if text == "/pr" {source_control::view(&keys,&cfg.workspace);continue;}
         if text == "/attention" { attention::view(&keys, &session); continue; }
         let mut hub_resume=None;
+        if text=="/handoff" {
+            hub_resume=history_inspector::view(&keys,&session,&cfg.workspace);
+            if hub_resume.is_none() {continue;}
+            text="/sessions".into();
+        }
         if text == "/branches" { hub_resume=navigation::view(&keys,&session,&cfg.workspace,true);if hub_resume.is_none(){continue;}text="/sessions".into(); }
         if text == "/hub" {
             let choices = ["Conversations", "Persistent teammates", "Attention", "Tasks and findings", "Usage and cache", "History boundaries"].map(String::from);
@@ -2412,10 +2431,8 @@ fn repl(
                 _ => continue,
             }
         }
-        if text == "/history" || text == "/handoff" {
-            let value = if text == "/handoff" { history_inspector::handoff(&session) }
-                else { history_inspector::receipts(&session) };
-            structured::view(&keys, "History and handoff", &value.to_string());
+        if text == "/history" {
+            structured::view(&keys, "History boundaries", &history_inspector::receipts(&session).to_string());
             continue;
         }
         // `/recovery` is the navigable failure inspector; `/diagnostics` stays
@@ -2442,6 +2459,8 @@ fn repl(
                 Ok(Some(s)) => {
                     permissions::clear_session_approvals()?;
                     session = s;
+                    navigation::viewed(&session)?;
+                    inbox_mailbox = crate::inbox::Mailbox::open(&session);
                     pending = queue::Queue::open(&session)?;
                     state = tools::State::new();
                     totals = Totals::new();
@@ -2594,14 +2613,9 @@ fn repl(
                             &keys,
                             "Background job",
                             &item.label,
-                            &["Read output".into(), "Stop job…".into()],
+                            &["Live output and stdin".into(), "Stop job…".into()],
                         ) {
-                            Some(0) => match jobs.output(id) {
-                                Ok(output) => {
-                                    modal::info(&keys, &format!("Job {id} output"), &output)
-                                }
-                                Err(error) => modal::info(&keys, "Job output", &error),
-                            },
+                            Some(0) => if let Err(error)=jobs.inspect(&keys,id) {modal::info(&keys,"Job inspector",&error);},
                             Some(1)
                                 if modal::choose(
                                     &keys,
@@ -2852,7 +2866,7 @@ fn repl(
         // Guided fields stay in a modal, including commands typed directly.
         if text == "/loop" || text.starts_with("/loop ") {
             let args = text.strip_prefix("/loop").unwrap_or("").trim();
-            match crate::loops::command(&session, args) {
+            match crate::loops::command_for(&session, &cfg, args) {
                 Ok(out) => ui_println!("{out}"),
                 Err(e) => ui_println!("\x1b[31m{e}\x1b[0m"),
             }
@@ -3221,6 +3235,8 @@ fn repl(
                     let parent_metadata = polish::metadata(&session);
                     polish::save(&s, &parent_metadata)?;
                     session = s;
+                    navigation::viewed(&session)?;
+                    inbox_mailbox = crate::inbox::Mailbox::open(&session);
                     pending = queue::Queue::open(&session)?;
                     polish::bind(&session, &cfg.workspace)?;
                     state = tools::State::new();
@@ -3584,6 +3600,8 @@ fn repl(
                     // conversation; a new session supersedes it.
                     warmer.begin_turn();
                     session = s;
+                    navigation::viewed(&session)?;
+                    inbox_mailbox = crate::inbox::Mailbox::open(&session);
                     pending = queue::Queue::open(&session)?;
                     polish::bind(&session, &cfg.workspace)?;
                     checkpoint_dir = config::data_dir().join("checkpoints").join(&session.id);
@@ -3663,7 +3681,8 @@ fn repl(
                 Err(error) => { modal::info(&keys,"Follow-up remains queued",&error); continue; },
             }
         }
-        if !recovering && !run_saved_queue {
+        accepted_background = None;
+        if !recovering && !run_saved_queue && !background_recorded {
             // In-message citations (task six-wave-e-001): every range
             // attachment cited since the last turn becomes a durable
             // `@path#L..#hash8` line of this very message, so the quote
@@ -3685,6 +3704,7 @@ fn repl(
         // rows and print the prompt once, whole: a prompt must be
         // recorded once, and a multi-line one must land intact.
         echo_prompt(&mut std::io::stdout(), &text, prompt_row, prompt_rows);
+        navigation::record(&session,&cfg.workspace,&cfg.model,"running")?;
         // Submission transfers ownership of the prompt to conversation
         // history. Remove its visible draft before provider work can begin.
         surface::clear_composer();
@@ -3791,7 +3811,9 @@ fn repl(
                     Err(e) => ui_println!("checkpoint: {e}"),
                 }
             }
-            if let Err(error)=navigation::record(&session,&cfg.workspace,&cfg.model,match &outcome {Err(_)=>"blocked",Ok((_,Stop::Cancelled))=>"cancelled",Ok(_)=>"completed"}) {ui_println!("navigation receipt: {error}");}
+            if matches!(&outcome,Ok((_,Stop::Finished)))
+                && let Err(error)=advisor::milestone(&session) {ui_println!("Advisor: {error}");}
+            if let Err(error)=navigation::record(&session,&cfg.workspace,&cfg.model,match &outcome {Err(_)=>"blocked",Ok((_,Stop::Cancelled))=>"cancelled",Ok((_,Stop::Steered))=>"steered",Ok((_,Stop::ToolBudget))=>"incomplete",Ok((_,Stop::Finished))=>"completed"}) {ui_println!("navigation receipt: {error}");}
             let mut turn_failed = outcome.is_err();
             // The tab status reflects the turn's verdict: finished, failed
             // (first line of the reason), or back to idle after a cancel.

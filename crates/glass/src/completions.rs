@@ -1,6 +1,12 @@
 //! Offline shell completion. Generated scripts never contact a provider.
 pub const COMMANDS: &[&str] = &[
     "help",
+    "hub",
+    "advisor",
+    "pr",
+    "structure",
+    "transaction",
+    "companion",
     "resume",
     "run",
     "sessions",

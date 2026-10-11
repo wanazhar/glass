@@ -8,7 +8,8 @@
 //! with the sender named in a `System` note so the model knows where it came
 //! from. No broker, no protocol, nothing to keep alive.
 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::PathBuf;
 
 use crate::config;
@@ -38,6 +39,9 @@ pub fn send(id: &str, text: &str, from: &str) -> Result<(), String> {
     if !valid_id(id) {
         return Err(format!("`{id}` is not a session id"));
     }
+    if from.is_empty() || from.len() > 128 || from.chars().any(char::is_control) {
+        return Err("Sender must be 1–128 bytes without control characters".into());
+    }
     let text = text.trim();
     if text.is_empty() {
         return Err("the message is empty".into());
@@ -50,75 +54,197 @@ pub fn send(id: &str, text: &str, from: &str) -> Result<(), String> {
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
+        .read(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(&path)
         .map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("Inbox must be a regular file".into());
+    }
+    fs2::FileExt::try_lock_exclusive(&file).map_err(|e| e.to_string())?;
+    if file.metadata().map_err(|e| e.to_string())?.len() > 16 * 1024 * 1024 {
+        return Err("Inbox reached 16 MiB; archive it after reviewing delivery receipts".into());
     }
     let line = serde_json::json!({
         "from": from,
         "text": text,
         "at": crate::loops::now(),
     });
-    writeln!(file, "{line}").map_err(|e| e.to_string())?;
+    let start = file.metadata().map_err(|e| e.to_string())?.len();
+    if let Err(error) = writeln!(file, "{line}").and_then(|()| file.sync_data()) {
+        file.set_len(start).map_err(|e| e.to_string())?;
+        return Err(error.to_string());
+    }
     Ok(())
 }
 
 /// The reader side: one new message per call, at most.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Cursor {
+    offset: usize,
+    device: u64,
+    inode: u64,
+    boundary: String,
+}
+struct Pending {
+    next: usize,
+    cursor: Cursor,
+    message: Option<(String, String)>,
+}
+fn boundary(file: &mut std::fs::File, offset: usize) -> Result<String, String> {
+    let start = offset.saturating_sub(256);
+    file.seek(SeekFrom::Start(start as u64))
+        .map_err(|e| e.to_string())?;
+    let mut bytes = vec![0; offset - start];
+    file.read_exact(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(crate::workspace::hash(&bytes))
+}
 pub struct Mailbox {
     path: PathBuf,
     seen: usize,
+    cursor: Option<Cursor>,
 }
 
 impl Mailbox {
-    pub fn open(id: &str) -> Self {
+    pub fn open(session: &Session) -> Self {
+        let data = session
+            .history_records()
+            .iter()
+            .rev()
+            .find_map(|r| match r {
+                crate::session::Record::Custom {
+                    kind,
+                    data: Some(data),
+                } if kind == "inbox/delivery" => Some(data.clone()),
+                _ => None,
+            });
+        let cursor = data
+            .as_ref()
+            .and_then(|s| serde_json::from_str::<Cursor>(s).ok());
+        let seen = cursor
+            .as_ref()
+            .map(|c| c.offset)
+            .or_else(|| data.as_ref().and_then(|s| s.parse().ok()))
+            .unwrap_or(0);
         Self {
-            path: path(id),
-            seen: 0,
+            path: path(&session.id),
+            seen,
+            cursor,
         }
     }
 
-    /// The next unread message as `(from, text)`.
-    ///
-    /// Only complete, parseable lines are consumed. A writer mid-append (no
-    /// trailing newline yet) is not delivered this tick and is not skipped:
-    /// advancing past a partial line would lose the message once the writer
-    /// finishes, which is exactly the race a mailbox must not have.
-    pub fn next(&mut self) -> Option<(String, String)> {
-        let data = std::fs::read_to_string(&self.path).ok()?;
-        let lines: Vec<&str> = data.lines().filter(|l| !l.trim().is_empty()).collect();
-        if self.seen >= lines.len() {
-            return None;
+    fn peek(&self) -> Result<Option<Pending>, String> {
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&self.path)
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        };
+        let meta = file.metadata().map_err(|e| e.to_string())?;
+        if !meta.is_file() {
+            return Err("Inbox must be a regular file".into());
         }
-        let parsed = serde_json::from_str::<serde_json::Value>(lines[self.seen])
+        if meta.len() < self.seen as u64 {
+            return Err(
+                "Inbox was truncated after delivery; restore it before receiving more messages"
+                    .into(),
+            );
+        }
+        let mut file = file;
+        if let Some(cursor) = &self.cursor
+            && (cursor.device != meta.dev()
+                || cursor.inode != meta.ino()
+                || cursor.boundary != boundary(&mut file, self.seen)?)
+        {
+            return Err("Inbox identity or delivered boundary changed; restore the original mailbox before continuing".into());
+        }
+        file.seek(SeekFrom::Start(self.seen as u64))
+            .map_err(|e| e.to_string())?;
+        let mut line = Vec::new();
+        BufReader::new((&mut file).take(262145))
+            .read_until(b'\n', &mut line)
+            .map_err(|e| e.to_string())?;
+        if line.len() > 262144 {
+            return Err("Inbox record exceeds 256 KiB; inspect it before continuing".into());
+        }
+        if line.last() != Some(&b'\n') {
+            return Ok(None);
+        }
+        let next = self
+            .seen
+            .checked_add(line.len())
+            .ok_or("Inbox cursor overflow")?;
+        let message = serde_json::from_slice::<serde_json::Value>(&line)
             .ok()
-            .and_then(|value| {
-                let from = value
-                    .get("from")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                value
-                    .get("text")
-                    .and_then(|v| v.as_str())
-                    .map(|t| (from, t.to_string()))
-            });
-        match parsed {
-            Some(message) => {
-                self.seen += 1;
-                Some(message)
-            }
-            None => {
-                if self.seen == lines.len() - 1 && !data.ends_with('\n') {
-                    None // possibly mid-append: wait
-                } else {
-                    self.seen += 1; // complete but malformed: skip it
-                    None
+            .and_then(|v| {
+                let text = v["text"].as_str()?.to_owned();
+                if text.trim().is_empty() || text.len() > 32768 {
+                    return None;
                 }
-            }
-        }
+                let from = v["from"].as_str().unwrap_or("unknown");
+                Some((
+                    glass_tui::markdown::sanitize(from)
+                        .chars()
+                        .take(128)
+                        .collect(),
+                    text,
+                ))
+            });
+        let cursor = Cursor {
+            offset: next,
+            device: meta.dev(),
+            inode: meta.ino(),
+            boundary: boundary(&mut file, next)?,
+        };
+        Ok(Some(Pending {
+            next,
+            cursor,
+            message,
+        }))
+    }
+
+    /// Acceptance and the user prompt are one durable transaction. Provider
+    /// execution may fail afterward, but a restart never repeats this prompt.
+    pub fn deliver(&mut self, session: &mut Session) -> Result<Option<(String, String)>, String> {
+        let Some(Pending {
+            next,
+            cursor,
+            message,
+        }) = self.peek()?
+        else {
+            return Ok(None);
+        };
+        let mut records = vec![crate::session::Record::Custom {
+            kind: "inbox/delivery".into(),
+            data: Some(serde_json::to_string(&cursor).map_err(|e| e.to_string())?),
+        }];
+        let message = message.map(|(from, text)| {
+            let prompt = format!("[Background follow-up from {from}]\n{text}");
+            records.push(crate::session::Record::User(prompt.clone()));
+            (from, prompt)
+        });
+        session
+            .append_checked(&records)
+            .map_err(|e| e.to_string())?;
+        self.seen = next;
+        self.cursor = Some(cursor);
+        Ok(message)
+    }
+
+    #[cfg(test)]
+    fn next(&mut self) -> Option<(String, String)> {
+        let Pending {
+            next,
+            cursor,
+            message,
+        } = self.peek().ok().flatten()?;
+        self.seen = next;
+        self.cursor = Some(cursor);
+        message
     }
 }
 
@@ -160,6 +286,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn delivered_message_and_cursor_survive_restart_without_replay() {
+        let root = std::env::temp_dir().join(format!("gc-inbox-restart-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut session = Session::create(&root).unwrap();
+        let id = session.id.clone();
+        let mailbox_path = root.join("mailbox.jsonl");
+        std::fs::write(&mailbox_path, "{\"from\":\"human\",\"text\":\"hello\"}\n").unwrap();
+        let mut mailbox = Mailbox {
+            path: mailbox_path.clone(),
+            seen: 0,
+            cursor: None,
+        };
+        assert!(mailbox.deliver(&mut session).unwrap().is_some());
+        drop(session);
+        let mut session = Session::open(&root, &id).unwrap();
+        let mut mailbox = Mailbox::open(&session);
+        mailbox.path = mailbox_path;
+        assert!(mailbox.deliver(&mut session).unwrap().is_none());
+        std::fs::write(&mailbox.path,"changed mailbox boundary".repeat(10)).unwrap();
+        assert!(mailbox.deliver(&mut session).is_err());
+        assert_eq!(
+            session
+                .history_records()
+                .iter()
+                .filter(|r| matches!(r, crate::session::Record::User(_)))
+                .count(),
+            1
+        );
+        drop(session);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn round_trip_and_one_at_a_time_reads() {
         let dir = std::env::temp_dir().join(format!(
             "gc-inbox-{}-{}",
@@ -174,6 +333,7 @@ mod tests {
         let mut mailbox = Mailbox {
             path: file.clone(),
             seen: 0,
+            cursor: None,
         };
         assert_eq!(mailbox.next(), None, "missing file is simply empty");
 
@@ -198,7 +358,10 @@ mod tests {
 
         // A writer mid-append is not delivered until its line is complete.
         use std::io::Write as _;
-        let mut f = std::fs::OpenOptions::new().append(true).open(&file).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
         write!(f, "{{\"from\":\"c\"").unwrap();
         assert_eq!(mailbox.next(), None, "partial line waits");
         writeln!(f, ",\"text\":\"fourth\",\"at\":0}}").unwrap();

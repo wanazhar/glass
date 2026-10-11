@@ -56,6 +56,8 @@ def main():
         "large": ("let value = 1;\n" * 75000).encode(),
         "unicode_repeated": ("const 界 = 'é';\n" * 4000).encode(),
         "crlf": b"same line\r\n" * 4000,
+        "mixed_endings": b"same line\r\nsecond line\n" * 2000,
+        "no_final_newline": b"same line\n" * 2000 + b"tail",
     }
     rows = []
     with tempfile.TemporaryDirectory(prefix="gc-edit-bench-") as directory:
@@ -97,10 +99,19 @@ def main():
                     edit_ms.append(elapsed); request_bytes.append(sent); response_bytes[-1] += size
                     result = path.read_bytes()
                     expected_lines = source.splitlines(keepends=True)
-                    ending = b"\r\n" if source.endswith(b"\r\n") else b"\n"
+                    original_line=expected_lines[line-1]
+                    ending = b"\r\n" if original_line.endswith(b"\r\n") else b"\n" if original_line.endswith(b"\n") else b""
                     expected_lines[line-1] = b"changed" + ending
                     correctness.append(result == b"".join(expected_lines))
-                rows.append({"fixture":label,"format":kind,"source_bytes":len(source),"read_median_ms":statistics.median(read_ms),"edit_median_ms":statistics.median(edit_ms),"edit_request_bytes":statistics.median(request_bytes),"read_and_edit_response_bytes":statistics.median(response_bytes),"exact_expected_bytes":all(correctness),"result_sha256":hashlib.sha256(result).hexdigest()})
+                    assert correctness[-1], f"{label}/{kind}: exact byte preservation failed"
+                # Reuse the last successful edit request after an external change
+                # at its exact target. Neither format may overwrite that newer text.
+                external=path.read_bytes().replace(b"changed",b"external change",1)
+                path.write_bytes(external)
+                stale=subprocess.run(command,input=json.dumps(request).encode(),capture_output=True,cwd=root,timeout=30)
+                stale_rejected=stale.returncode!=0 and path.read_bytes()==external
+                if not stale_rejected: raise AssertionError(f"{label}/{kind}: stale edit did not preserve newer bytes")
+                rows.append({"fixture":label,"format":kind,"source_bytes":len(source),"read_median_ms":statistics.median(read_ms),"edit_median_ms":statistics.median(edit_ms),"edit_request_bytes":statistics.median(request_bytes),"read_and_edit_response_bytes":statistics.median(response_bytes),"exact_expected_bytes":all(correctness),"stale_edit_rejected":stale_rejected,"result_sha256":hashlib.sha256(result).hexdigest()})
     print(json.dumps({"method":"Fresh process per read/edit for both paths; filesystem cache not flushed. Hashline worker uses bundled read_lines/apply_ops; no model success-rate inference.","repeats":args.repeats,"rows":rows}, indent=2))
 
 

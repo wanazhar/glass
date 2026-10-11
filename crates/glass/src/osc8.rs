@@ -89,9 +89,9 @@ pub fn link_urls(text: &str) -> String {
 fn push_link(out: &mut String, url: &str) {
     out.push_str("\x1b]8;;");
     out.push_str(url);
-    out.push_str("\x1b\\\\");
+    out.push_str("\x1b\\");
     out.push_str(url);
-    out.push_str("\x1b]8;;\x1b\\\\");
+    out.push_str("\x1b]8;;\x1b\\");
 }
 
 #[cfg(test)]
@@ -109,8 +109,8 @@ mod tests {
     fn supported_terminals_link_urls_with_escapes() {
         OSC8.store(2, Ordering::Relaxed);
         let out = link_urls("read https://example.com/next");
-        assert!(out.starts_with("read \x1b]8;;https://example.com/next\x1b\\\\"));
-        assert!(out.contains("https://example.com/next\x1b]8;;\x1b\\\\"));
+        assert!(out.starts_with("read \x1b]8;;https://example.com/next\x1b\\"));
+        assert!(out.contains("https://example.com/next\x1b]8;;\x1b\\"));
         assert_eq!(
             out.matches("https://example.com/next").count(),
             2,
@@ -119,7 +119,7 @@ mod tests {
         // Split characters stay outside the link.
         let out = link_urls("(https://a.b/c)");
         assert!(out.starts_with("("), "{out}");
-        assert!(out.contains(")\x1b]8;;\x1b\\\\") || out.ends_with(")"), "{out}");
+        assert!(out.contains(")\x1b]8;;\x1b\\") || out.ends_with(")"), "{out}");
         OSC8.store(1, Ordering::Relaxed);
     }
 

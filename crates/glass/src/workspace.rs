@@ -525,7 +525,7 @@ pub fn receive_handoff(root: &Path, value: serde_json::Value) -> Result<String, 
     })?;
     Ok(summary)
 }
-const HELP: &str = "gc workspace [--json]\n  task add TITLE --accept CRITERIA [--depends 1,2] [--paths src/a,src/b]\n  task claim ID OWNER | finish ID OWNER CHECK | release ID OWNER\n  debug add HYPOTHESIS | evidence ID TEXT | instrument ID PATH | resolve ID\n  artifact add LABEL PATH | preview ID | read ID BYTE_OFFSET LIMIT\n  findings import FILE.json | disposition ID open|accepted|fixed|dismissed\n  role set executor|reviewer|research MODEL TOKENS\n  handoff FILE.json\nState is local to this directory, works outside Git, and is never automatically added to context.\nClaims are atomic. Existing-task dependencies are acyclic by construction. Finish requires an attributed check.\nHandoff JSON: agent, task, changed_files, checks, findings, questions, artifacts.\n";
+const HELP: &str = "gc workspace [--json]\n  task add TITLE --accept CRITERIA [--depends 1,2] [--paths src/a,src/b]\n  task claim ID OWNER | finish ID OWNER CHECK | release ID OWNER\n  debug add HYPOTHESIS | evidence ID TEXT | instrument ID PATH | resolve ID\n  artifact add LABEL PATH | preview ID | read ID BYTE_OFFSET LIMIT\n  findings import FILE.json | show ID | disposition ID open|accepted|fixed|dismissed\n  role set executor|reviewer|research MODEL TOKENS\n  handoff FILE.json | show TASK\nState is local to this directory, works outside Git, and is never automatically added to context.\nClaims are atomic. Existing-task dependencies are acyclic by construction. Finish requires an attributed check.\nHandoff JSON: agent, task, changed_files, checks, findings, questions, artifacts.\n";
 fn number(s: Option<&String>) -> Result<u32, String> {
     s.ok_or(HELP)?
         .parse()
@@ -576,9 +576,10 @@ pub fn command(args: &[String]) -> Result<(), String> {
         (Some("artifact"), Some("add")) => 4,
         (Some("artifact"), Some("preview")) => 3,
         (Some("artifact"), Some("read")) => 5,
-        (Some("findings"), Some("import")) => 3,
+        (Some("findings"), Some("import" | "show")) => 3,
         (Some("findings"), Some("disposition")) => 4,
         (Some("role"), Some("set")) => 5,
+        (Some("handoff"), Some("show")) => 3,
         (Some("handoff"), _) => 2,
         _ => return Err(HELP.into()),
     };
@@ -697,6 +698,11 @@ pub fn command(args: &[String]) -> Result<(), String> {
             json!({"hypothesis":id,"action":action})
         }
         Some("findings") => match arg(1)? {
+            "show" => {
+                let id=number(args.get(2))?;
+                let board=load(&root)?;
+                json!(board.findings.iter().find(|f|f.id==id).ok_or("Unknown finding")?)
+            }
             "import" => {
                 let bytes = crate::requests::bounded(Path::new(arg(2)?), 256 * 1024)?;
                 let mut findings: Vec<Finding> = serde_json::from_slice(&bytes).map_err(|e| format!("Invalid findings: {e}"))?;
@@ -758,6 +764,11 @@ pub fn command(args: &[String]) -> Result<(), String> {
                 Ok(())
             })?;
             json!({"role":name,"model":model,"tokens":tokens})
+        }
+        Some("handoff") if args.get(1).is_some_and(|s|s=="show") => {
+            let task=number(args.get(2))?;
+            let board=load(&root)?;
+            json!(board.handoffs.iter().rev().find(|h|h.task==task).ok_or("Unknown task handoff")?)
         }
         Some("handoff") => {
             let bytes = crate::requests::bounded(&scoped(&root, arg(1)?)?, 64 * 1024)?;

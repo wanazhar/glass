@@ -156,22 +156,30 @@ pub fn command(args: &[String]) -> Result<(), String> {
     let workspace = std::env::current_dir().map_err(|e| e.to_string())?;
     match args.first().map(String::as_str) {
         Some("new") => {
-            let name = args.get(1).ok_or("gc worktree new NAME [BASE]")?;
-            if args.len() > 3 || name.is_empty() || name.len() > 80
-                || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            let name = args.get(1).ok_or("gc worktree new NAME [BASE] [--branch BRANCH]")?;
+            if name.is_empty() || name.len()>80 || !name.chars().all(|c|c.is_ascii_alphanumeric()||c=='-'||c=='_') {
                 return Err("Use a worktree name of 1–80 letters, digits, hyphens or underscores".into());
             }
-            let base = args.get(2).map(String::as_str).unwrap_or("HEAD");
+            let mut base="HEAD";let mut branch=None;let mut i=2;
+            while i<args.len() {
+                if args[i]=="--branch" && branch.is_none() {
+                    i+=1;let value=args.get(i).ok_or("--branch needs a name")?;
+                    git_ok(&workspace,&["check-ref-format","--branch",value])?;
+                    branch=Some(value.as_str());
+                } else if i==2 && !args[i].starts_with('-') {base=&args[i];}
+                else {return Err("gc worktree new NAME [BASE] [--branch BRANCH]".into());}
+                i+=1;
+            }
             let revision = git_ok(&workspace, &["rev-parse", "--verify", "--end-of-options", &format!("{base}^{{commit}}")])?;
             let root = worktrees_root();
             std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
             let checkout = root.join(name);
             if checkout.exists() { return Err("Worktree already exists; use gc worktree show NAME to inspect and reuse it".into()); }
-            let out = Command::new("git").arg("-C").arg(&workspace)
-                .args(["worktree", "add", "--detach"]).arg(&checkout).arg(revision.trim())
-                .output().map_err(|e| e.to_string())?;
+            let mut command=Command::new("git");command.arg("-C").arg(&workspace).args(["worktree","add"]);
+            if let Some(branch)=branch {command.args(["-b",branch]);}else{command.arg("--detach");}
+            let out=command.arg(&checkout).arg(revision.trim()).output().map_err(|e|e.to_string())?;
             if !out.status.success() { return Err(String::from_utf8_lossy(&out.stderr).trim().into()); }
-            crate::cli::report("Task worktree", &serde_json::json!({"path":checkout,"base":revision.trim(),"branch":"detached","next":"Run gc from this directory. The parent working tree is unchanged."}));
+            crate::cli::report("Task worktree", &serde_json::json!({"path":checkout,"base":revision.trim(),"branch":branch.unwrap_or("detached"),"next":"Run gc from this directory. The parent working tree is unchanged."}));
             Ok(())
         }
         Some("show" | "cleanup-preview") => {

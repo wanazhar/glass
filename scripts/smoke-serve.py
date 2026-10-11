@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Offline checks for `gc serve` / `gc attach`: socket protocol, replay,
-prompts, multi-client broadcast, cancellation from any client, and the
+prompts, multi-client broadcast, observer ownership and owner cancellation, and the
 terminal client in a PTY."""
 import http.server
 import importlib.util
@@ -125,6 +125,9 @@ def main():
             replay = one.next()
             assert replay['t'] == 'replay' and replay['entries'] == [], replay
             session_id = replay['session']
+            roster=subprocess.run([str(f.BINARY),'agent','--session',session_id,'list'],cwd=repo,env=env,text=True,capture_output=True,timeout=10)
+            assert roster.returncode==0,(roster.stdout,roster.stderr)
+
             one.send({'t': 'prompt', 'text': 'hello'})
             text, done = one.until_done()
             assert text == 'SERVER-HELLO' and done['stop'] == 'finished', (text, done)
@@ -145,7 +148,7 @@ def main():
             assert text_one == 'SERVER-HELLO' and done_one['stop'] == 'finished', (text_one, done_one)
             assert text_two == 'SERVER-HELLO' and done_two['stop'] == 'finished', (text_two, done_two)
 
-            # Cancellation works from any attached client.
+            # Observers cannot cancel an active turn; the input owner can.
             Endpoint.mode = 'hang'
             one.send({'t': 'prompt', 'text': 'cancel me'})
             while True:
@@ -153,6 +156,12 @@ def main():
                 if message['t'] == 'text':
                     break
             two.send({'t': 'cancel'})
+            while True:
+                observer_frame=two.next()
+                if observer_frame['t']=='error':
+                    assert 'Read-only observer' in observer_frame['message'],observer_frame
+                    break
+            one.send({'t':'cancel'})
             _, done = one.until_done(timeout=15)
             assert done['stop'] == 'cancelled', done
             _, done_two = two.until_done(timeout=15)
@@ -161,6 +170,15 @@ def main():
 
             # Idempotent submissions: the same request_id runs once; a
             # duplicate gets an explicit frame instead of a second turn.
+            one.send({'t':'control','action':'release'})
+            while True:
+                released=one.next()
+                if released['t']=='control':
+                    assert released['owner'] is None,released
+                    break
+            two.send({'t':'control','action':'claim'})
+            control=two.next()
+            assert control['t']=='control' and control['can_write'],control
             before = Endpoint.calls
             two.send({'t': 'prompt', 'text': 'dedupe me', 'request_id': 'req-1'})
             _, done = two.until_done()
@@ -420,7 +438,7 @@ def main():
             server.shutdown()
     print(
         'PASS serve/attach: replay, prompt streaming, multi-client broadcast, '
-        'cancel from any client, idempotent request_id, cursor-based reattach '
+        'observer refusal and owner cancellation, idempotent request_id, cursor-based reattach '
         'with reset, durable PTY reconnect after mock restart with one execution, '
         'stop/logs/respawn'
     )

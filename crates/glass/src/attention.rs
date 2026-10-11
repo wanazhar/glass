@@ -69,7 +69,29 @@ pub fn targets(session: &Session) -> Vec<Value> {
         }
         targets.push(entry);
     }
-    targets.into_iter().rev().take(128).collect()
+    let root=crate::polish::metadata(session).workspace;
+    if let Ok(board)=crate::workspace::load(&root) {
+        for finding in board.findings.iter().filter(|f|f.disposition=="open").take(32) {
+            targets.push(json!({"session":session.id,"kind":"review finding","turn":null,"raw_record":null,"finding_id":finding.id,"path":finding.path,"line":finding.line,
+                "severity":finding.severity,"preview":format!("{}:{} · {}\n{}",finding.path,finding.line,finding.title,finding.evidence),"target":format!("gc workspace findings show {}",finding.id)}));
+        }
+        for handoff in board.handoffs.iter().rev().filter(|h|!h.questions.is_empty()).take(16) {
+            targets.push(json!({"session":session.id,"kind":"handoff questions","turn":null,"raw_record":null,"task":handoff.task,"agent":handoff.agent,
+                "preview":handoff.questions.join("\n"),"target":format!("gc workspace handoff show {}",handoff.task)}));
+        }
+    }
+    if let Some(hub)=crate::team::get(&session.id) {
+        for agent in hub.snapshot().into_iter().filter(|a|a.name.starts_with("review-")&&a.status!="archived").take(16) {
+            targets.push(json!({"session":session.id,"kind":"review checkpoint","agent":agent.id,"raw_record":null,"turn":null,"status":agent.status,
+                "preview":format!("{} · {} · {}\n{}",agent.name,agent.model,agent.status,glass_tui::text::clip(&agent.result,4096)),
+                "target":format!("gc agent --session {} inspect {}",session.id,agent.id)}));
+        }
+    }
+    targets.extend(crate::jobs::attention(&root,&session.id));
+    targets.into_iter().rev().take(128).map(|mut target| {
+        if let Some(text)=target["preview"].as_str() {let mut end=text.len().min(32768);while !text.is_char_boundary(end){end-=1;}let preview=text[..end].to_owned();if text.len()>end {target["preview_truncated"]=json!(true);}target["preview"]=json!(preview);}
+        target
+    }).collect()
 }
 
 pub fn view(keys: &crate::input::KeyReader,session:&Session) {
@@ -77,12 +99,17 @@ pub fn view(keys: &crate::input::KeyReader,session:&Session) {
     let rows=targets.iter().map(|t|{
         let class=t["failure_class"].as_str().map(|c|format!("{c} · ")).unwrap_or_default();
         let attempts=match t["attempts"].as_u64(){Some(n)=>format!("{n} attempts · "),None=>String::new()};
-        format!("Turn {} · {}{attempts}{} · record {}",t["turn"],class,t["kind"].as_str().unwrap_or("attention"),t["raw_record"])
+        if t["raw_record"].is_null() {format!("{} · {}",t["kind"].as_str().unwrap_or("attention"),t["target"].as_str().unwrap_or(""))} else {format!("Turn {} · {}{attempts}{} · record {}",t["turn"],class,t["kind"].as_str().unwrap_or("attention"),t["raw_record"])}
     }).collect::<Vec<_>>();
     let searchable=targets.iter().zip(&rows).map(|(t,row)|format!("{row} {}",t["preview"].as_str().unwrap_or(""))).collect::<Vec<_>>();
-    if rows.is_empty() { crate::modal::info(keys,"Attention","No recorded failures or teammate events in this conversation."); return; }
+    if rows.is_empty() { crate::modal::info(keys,"Attention","No failures, teammate events, open findings or handoff questions."); return; }
     while let Some(index)=crate::modal::choose_search(keys,"Attention","Search recorded events · exact durable record targets",&rows,&searchable) {
         let target=&targets[index];
+        if let Some(job)=target["job"].as_u64().and_then(|j|u32::try_from(j).ok()) {
+            let mut handle=crate::jobs::Handle::new(&crate::polish::metadata(session).workspace,&session.id);
+            if let Err(error)=handle.inspect(keys,job) {crate::modal::info(keys,"Job output unavailable",&error);}
+            continue;
+        }
         crate::modal::markdown(keys,&rows[index],&format!("{}\n\n{}",target["preview"].as_str().unwrap_or(""),if target["preview_truncated"]==true {"Preview capped at 32 KiB; export the conversation for the retained full event."} else {""}));
     }
 }

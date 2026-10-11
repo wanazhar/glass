@@ -463,6 +463,7 @@ fn run_manual_summary(
         max_tokens: summary_output_limit(provider),
         reasoning: Some(0),
     };
+    let mut trace=crate::requests::Trace::compaction(session,&req);
     let stream = provider::stream_with_retry(
         provider,
         &req,
@@ -473,6 +474,7 @@ fn run_manual_summary(
     .map_err(|e| e.to_string())?;
     let mut summary = String::new();
     for ev in stream {
+        trace.event(&ev);
         match ev {
             Event::Text(t) => summary.push_str(&t),
             Event::Error(e) => return Err(format!("summary stream failed: {e}")),

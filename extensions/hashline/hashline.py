@@ -70,8 +70,8 @@ def annotate(text, start_line=1):
 
 
 def read_lines(path, offset=None, limit=None):
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        lines = f.read().split("\n")
+    with open(path, "r", encoding="utf-8", errors="strict", newline="") as f:
+        lines = f.read().replace("\r\n", "\n").split("\n")
     start = max(0, (offset or 1) - 1)
     end = start + limit if limit else len(lines)
     return lines[start:end], start + 1
@@ -79,9 +79,17 @@ def read_lines(path, offset=None, limit=None):
 
 def apply_ops(path, ops):
     """Apply anchored edits. All-or-nothing: a bad anchor writes nothing."""
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
+    with open(path, "r", encoding="utf-8", errors="strict", newline="") as f:
         original = f.read()
-    lines = original.split("\n")
+    # Keep each untouched line terminator exactly; anchors describe line content.
+    pieces = original.split("\n")
+    lines, endings = [], []
+    for i, piece in enumerate(pieces):
+        terminated = i < len(pieces) - 1
+        crlf = terminated and piece.endswith("\r")
+        lines.append(piece[:-1] if crlf else piece)
+        endings.append("\r\n" if crlf else "\n" if terminated else "")
+    default_ending = next((e for e in endings if e), "\n")
 
     # Validate every op against the pre-edit state first, so a batch cannot
     # half-apply because the third op had a stale anchor.
@@ -124,14 +132,23 @@ def apply_ops(path, ops):
     # Apply from the bottom up so earlier line numbers stay valid.
     for kind, lineno, text in sorted(resolved, key=lambda r: -r[1]):
         if kind == "replace":
-            lines[lineno - 1] = text
+            replacement = text.replace("\r\n", "\n").split("\n")
+            ending = endings[lineno - 1]
+            lines[lineno - 1:lineno] = replacement
+            endings[lineno - 1:lineno] = [default_ending] * (len(replacement) - 1) + [ending]
         elif kind == "delete":
-            del lines[lineno - 1]
+            del lines[lineno - 1]; del endings[lineno - 1]
         elif kind == "insert":
-            for offset, l in enumerate(text.split("\n")):
-                lines.insert(lineno + offset, l)
+            added = text.replace("\r\n", "\n").split("\n")
+            if lineno and not endings[lineno - 1]:
+                endings[lineno - 1] = default_ending
+                added_endings = [default_ending] * (len(added) - 1) + [""]
+            else:
+                added_endings = [default_ending] * len(added)
+            lines[lineno:lineno] = added
+            endings[lineno:lineno] = added_endings
 
-    return "\n".join(lines), original
+    return "".join(line + ending for line, ending in zip(lines, endings)), original
 
 
 def split_anchor(spec):
@@ -247,7 +264,7 @@ def main():
                     # os.replace is atomic, so a reader never sees a half-written
                     # file, and a crash mid-write leaves the original intact.
                     tmp = args["path"] + ".hl.tmp"
-                    with open(tmp, "w", encoding="utf-8") as f:
+                    with open(tmp, "w", encoding="utf-8", newline="") as f:
                         f.write(new)
                     os.replace(tmp, args["path"])
                     before = len(old.split("\n"))

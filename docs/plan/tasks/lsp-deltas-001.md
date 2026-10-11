@@ -1,7 +1,7 @@
 ---
 id: lsp-deltas-001
 scope: roadmap item 30 — debounced diagnostics deltas and stale-checked multi-file code actions
-status: ready
+status: implemented
 depends-on: []
 ---
 
@@ -72,3 +72,13 @@ in this wave.
 - Run the LSP smoke script(s) and report the exact command and result.
 - Confirm the extension still loads disabled-by-default and that enabling it
   spawns a server only on demand.
+
+## Status (2026-10-11)
+
+Verified implemented on master: `diagnostic_delta` + `delta_rows` render
+the changed/added/resolved delta ahead of the retained set (acceptance 1);
+`handle_tool_result` checks every path in the edit with a stated bound
+(acceptance 2); `PendingAction` captures SHA-256 revisions at request time
+and refuses to apply when any file moved (acceptance 3). `smoke-lsp`
+green. Status ledger corrected from `ready` — the worktree branch and
+master carry the same `lsp.py` (1358 lines).

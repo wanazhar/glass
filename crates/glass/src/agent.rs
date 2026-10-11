@@ -207,6 +207,8 @@ pub struct Agent<'a> {
     stream_factory: Option<crate::warmer::ProviderFactory>,
     recovering: bool,
     read_only: bool,
+    /// Pre-tool-use shell hook (wave E); None = no hook configured.
+    pre_tool_hook: Option<crate::hooks_shell::PreToolUse>,
     /// Circuit breaker for paid summaries: three consecutive failures stop
     /// the paid path for the session while deterministic compaction continues.
     breaker: compact::Breaker,
@@ -297,6 +299,7 @@ impl<'a> Agent<'a> {
             stream_factory: None,
             recovering: false,
             read_only: false,
+            pre_tool_hook: None,
             breaker: compact::Breaker::default(),
             overflow_recovered: false,
             empty_recovered: false,
@@ -317,6 +320,12 @@ impl<'a> Agent<'a> {
 
     pub fn with_plan_mode(mut self, enabled: bool) -> Self {
         self.read_only = enabled;
+        self
+    }
+
+    /// Register the pre-tool-use shell hook; fires before every tool call.
+    pub fn with_pre_tool_hook(mut self, hook: Option<crate::hooks_shell::PreToolUse>) -> Self {
+        self.pre_tool_hook = hook;
         self
     }
     fn tool_set(&self) -> Vec<(String, String, String)> {
@@ -1313,6 +1322,41 @@ impl<'a> Agent<'a> {
             return;
         }
 
+        // The hook gate runs here for bash (this path skips `run_tool`)
+        // and inside `run_tool` for everything else.
+        if let Some(verdict) = self.pre_tool_verdict(call) {
+            match verdict {
+                crate::hooks_shell::Verdict::Block(reason) => {
+                    self.session.append(Record::Meta(format!(
+                        "hook blocked {name}: {reason}", name = call.name
+                    )));
+                    return self.finish_tool(
+                        call,
+                        tools::Outcome::err(format!("blocked by pre-tool-use hook: {reason}")),
+                    );
+                }
+                crate::hooks_shell::Verdict::Halt(reason) => {
+                    self.session.append(Record::Meta(format!(
+                        "hook halting turn at {name}: {reason}", name = call.name
+                    )));
+                    self.session.append(Record::Meta(
+                        "error: pre-tool-use hook cancelled the rest of the turn".into(),
+                    ));
+                    return self.finish_tool(
+                        call,
+                        tools::Outcome::err(format!(
+                            "blocked by pre-tool-use hook (turn cancelled): {reason}"
+                        )),
+                    );
+                }
+                crate::hooks_shell::Verdict::Warn(warning) => {
+                    self.session
+                        .append(Record::Meta(format!("hook warning: {warning}")));
+                }
+                crate::hooks_shell::Verdict::Allow => {}
+            }
+        }
+
         if let Some(reason) = self.authorization_refusal(call) {
             self.finish_tool(call, tools::Outcome::err(format!("Blocked: {reason}")));
             return;
@@ -1491,9 +1535,63 @@ impl<'a> Agent<'a> {
     }
 
     /// Execute one tool call, letting mods veto or rewrite the result.
+    /// Shared hook gate: Some(verdict) when a hook is configured and
+    /// read-only mode is off, None otherwise. Used by both bash's pumped
+    /// path and the ordinary `run_tool` path so every tool call sees one
+    /// identical gate.
+    fn pre_tool_verdict(&self, call: &ToolCall) -> Option<crate::hooks_shell::Verdict> {
+        if self.read_only {
+            return None;
+        }
+        let hook = self.pre_tool_hook.as_ref()?;
+        let call_json = serde_json::json!({
+            "name": call.name,
+            "arguments": serde_json::from_str::<serde_json::Value>(&call.arguments)
+                .unwrap_or(serde_json::Value::Null),
+        })
+        .to_string();
+        Some(crate::hooks_shell::run(hook, &call_json))
+    }
+
     fn run_tool(&mut self, call: &ToolCall) {
         self.emit_tool_start(call);
         let state_before = self.state.clone();
+
+        // Pre-tool-use hook (wave E): fires before ANY tool execution —
+        // built-ins and extension tools alike — outside read-only mode.
+        // Its stdout can only block or pass; it never injects tool output.
+        if let Some(verdict) = self.pre_tool_verdict(call) {
+            match verdict {
+                crate::hooks_shell::Verdict::Block(reason) => {
+                    self.session.append(Record::Meta(format!(
+                        "hook blocked {name}: {reason}", name = call.name
+                    )));
+                    return self.finish_tool(
+                        call,
+                        tools::Outcome::err(format!("blocked by pre-tool-use hook: {reason}")),
+                    );
+                }
+                crate::hooks_shell::Verdict::Halt(reason) => {
+                    self.session.append(Record::Meta(format!(
+                        "hook halting turn at {name}: {reason}", name = call.name
+                    )));
+                    self.session.append(Record::Meta(
+                        "error: pre-tool-use hook cancelled the rest of the turn".into(),
+                    ));
+                    return self.finish_tool(
+                        call,
+                        tools::Outcome::err(format!(
+                            "blocked by pre-tool-use hook (turn cancelled): {reason}"
+                        )),
+                    );
+                }
+                crate::hooks_shell::Verdict::Warn(warning) => {
+                    self.session
+                        .append(Record::Meta(format!("hook warning: {warning}")));
+                }
+                crate::hooks_shell::Verdict::Allow => {}
+            }
+        }
 
         // Mods may add tools and may block them; the two built-ins are always
         // present but a mod can still refuse to run one.

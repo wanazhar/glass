@@ -40,6 +40,7 @@ mod fs_scan;
 mod hardening;
 mod help;
 mod history;
+mod hooks_shell;
 mod inbox;
 mod input;
 mod inspect;
@@ -51,6 +52,7 @@ mod modal;
 mod mermaid;
 mod mods;
 mod notify;
+#[allow(dead_code)]
 mod onboarding;
 mod osc8;
 mod partial;
@@ -1313,6 +1315,12 @@ fn headless(
     .with_limits(cfg.max_tokens, cfg.reasoning_budget, usize::MAX)
     .with_recovery(recovering)
     .with_checkpoint_tools(cfg.checkpoint_tools)
+    .with_pre_tool_hook(if planning {
+        // Never runs in read-only mode; skip the config parse entirely.
+        None
+    } else {
+        crate::hooks_shell::load_config()
+    })
     .with_live(cfg.live_flush_ms as u64)
     .with_stream_factory(Arc::clone(&factory))
     .run_turn(|slot| {
@@ -3826,12 +3834,11 @@ fn repl(
                 // A failed turn always deserves attention, however fast it
                 // failed: the connection is probably gone, and the user may
                 // already be away from the keyboard.
-                crate::notify::emit(
+                crate::notify::publish(
                     cfg.notify,
-                    &format!(
-                        "glass-core · turn failed · {}s",
-                        turn_started.elapsed().as_secs()
-                    ),
+                    &crate::notify::TurnEvent::Failed {
+                        seconds: turn_started.elapsed().as_secs(),
+                    },
                 );
             }
 
@@ -3848,6 +3855,8 @@ fn repl(
             }
 
             if cancelled {
+                // A steered turn never alerts: the user is at the keyboard.
+                crate::notify::publish(cfg.notify, &crate::notify::TurnEvent::Steered);
                 break;
             }
             next = match pending.deliver(&mut session) {
@@ -3859,25 +3868,25 @@ fn repl(
                 }
             };
             if let Some(q) = &next {
+                // Work continues: a subscriber sees Waiting, the bell stays
+                // silent (an alert mid-series would be premature).
+                crate::notify::publish(cfg.notify, &crate::notify::TurnEvent::Waiting);
                 ui_println!("\n\x1b[38;5;39m❯\x1b[0m {q}");
-            } else if crate::notify::wanted(
-                false,
-                turn_finished,
-                turn_started.elapsed(),
-                crate::notify::NOTIFY_AFTER_S,
-            ) {
+            } else if turn_finished {
                 // Only when the turn series is fully done: a queued follow-up
                 // means work continues and an alert would be premature.
-                let secs = turn_started.elapsed().as_secs();
                 let cost = {
                     let l = ledger.lock().unwrap();
                     (!l.unknown).then(|| pricing::money(l.spent))
                 };
-                let message = match cost {
-                    Some(c) => format!("glass-core · {secs}s · {c}"),
-                    None => format!("glass-core · {secs}s"),
-                };
-                crate::notify::emit(cfg.notify, &message);
+                crate::notify::publish(
+                    cfg.notify,
+                    &crate::notify::TurnEvent::Finished {
+                        seconds: turn_started.elapsed().as_secs(),
+                        elapsed: turn_started.elapsed(),
+                        cost,
+                    },
+                );
             }
         }
         let completion =

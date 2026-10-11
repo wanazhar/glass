@@ -80,3 +80,32 @@ Do not edit `tools.rs` dispatch, `ext/**`, `provider/**`, `sandbox.rs`,
 - clippy + full tests green.
 - PTY: history identity check (existing transcript rendering unchanged),
   citation preview in composer at 40×24 and 20×8.
+
+## Shipped (2026-10-11)
+
+- **Typed notify events** (notify.rs): single `TurnEvent` enum (`Finished`,
+  `Failed`, `Waiting`, `Steered`) published through `notify::publish` at the
+  four turn boundaries in the interactive loop; `notify.rs` and the bell
+  subscribe. Sequences and throttle unchanged — message bodies byte-match
+  the old scattered formats, covered by `event_ordering_matches_the_old_...`.
+- **Pre-tool-use hook** (hooks_shell.rs + agent.rs call sites): project
+  config `[hooks.pre_tool_use] command/matcher`, parsed inside hooks_shell
+  (config.rs untouched). Exit 0 allow, 2 block (stdout = refusal body,
+  8 KiB-capped), 49 block + cancel the turn, anything else warn-and-allow,
+  3 s bounded timeout with process-group kill. Never runs in read-only
+  mode (`planning` skips the config parse entirely). The hook gate lives in
+  one shared `pre_tool_verdict` used by both the bash pumped path and the
+  ordinary `run_tool` path. Hooks run sequentially — documented deviation
+  from crush's parallel hooks.
+- **In-message citations**: composer marker work landed as a session.rs
+  reference format audit only — the composer path was found to already
+  expose spliceable file references via paste; no marker line shipped this
+  slice (recorded honestly: no new Record variant was added either). The
+  dedupe helper for repeated `@file:L..#hash8` markers exists in session.rs
+  for the next slice to consume.
+- **Codemode parity audit**: implemented surface (extensions/codemode/
+  codemode.js) compared against pi's contract — deltas recorded below in
+  the audit note; no engine change attempted.
+- Smoke: `scripts/smoke-hooks-shell.py` — block, halt, pass, matcher
+  refusal, bounded timeout, all five against the real runner. Full tests
+  green (639 unit + 13 doc + 91 integration); clippy `-D warnings` clean.

@@ -73,7 +73,13 @@ pub fn command(args: &[String], portable: bool) -> Result<(),String> {
     let session=Session::open_readonly(&crate::config::data_dir(),&args[0]).map_err(|e|e.to_string())?;
     let value=if portable { handoff(&session) } else { receipts(&session) };
     if args.iter().any(|s|s=="--json") { crate::emit_json(value); }
-    else { crate::cli::report(if portable {"Portable handoff"} else {"History boundaries"},&value); }
+    else {
+        // Plain-text report: OSC 8 wraps bare URLs when the session allowed
+        // it, so pasted artifact references open on click. JSON stays clean,
+        // machine-shaped, escape-free.
+        let text=serde_json::to_string_pretty(&value).map_err(|e|e.to_string())?;
+        crate::cli::line(&crate::osc8::link_urls(&text));
+    }
     Ok(())
 }
 

@@ -254,3 +254,15 @@ recorded audit with the dedupe helper in place, not a shipped user surface
   outside them. 4 new unit tests; `smoke-mermaid` rerun green.
 - Full suite after both: 693 unit + 13 doc + 93 integration, clippy
   `-D warnings` clean.
+
+### Post-merge follow-up 3: state diagrams + rank propagation fix (this commit)
+
+- Mermaid grows its third family: bounded stateDiagram rendering
+  (`[*]` pseudostates, labeled `-->` transitions, `state "X" as Alias`,
+  `ID: desc` lines), reusing the flowchart tree and caps.
+- Fixed the flowchart rank bug the third family exposed: single-pass
+  rank assignment left tail-first chains at stale ranks and silently
+  fell back; ranks now propagate to a fixpoint (bounded by node count)
+  and same-rank nodes render with their own edges.
+- Evidence: 3 new state tests + existing mermaid tests green; full suite
+  696+13+93; clippy -D warnings; smoke-mermaid rerun green.

@@ -72,6 +72,131 @@ pub fn parse(body: &str) -> Option<Flowchart> {
     Some(chart)
 }
 
+// ---- State diagrams (follow-up 2: the third family) ----
+
+/// Register a state node with a display label. Pseudostates get
+/// identifier-legal ids (node_of rejects non-ASCII ids) with separate
+/// display labels; plain states use their id.
+fn state_node(id: &str, chart: &mut Flowchart) -> Option<String> {
+    if chart.nodes.iter().any(|n| n.id == id) {
+        return chart
+            .nodes
+            .iter()
+            .find(|n| n.id == id)
+            .map(|n| n.id.clone());
+    }
+    if chart.nodes.len() >= MAX_NODES {
+        return None;
+    }
+    let label = match id {
+        "__gc_initial" => "● initial",
+        "__gc_final" => "◎ final",
+        _ => id,
+    };
+    node_of(&format!("{id}[{label}]"), chart)
+}
+
+/// Parse and render a `stateDiagram(-v2)` at the given column width. State
+/// machines are a flowchart with distinct initial/final pseudostates, so
+/// the flowchart tree and rank layout are reused unchanged; only the
+/// syntax differs (`[*]`, `-->` transitions, `state "X" as id`, `ID: desc`).
+pub fn parse_state(body: &str, width: usize) -> Option<Vec<String>> {
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    let header = lines.next()?;
+    if header != "stateDiagram-v2" && header != "stateDiagram" {
+        return None;
+    }
+    let mut chart = Flowchart::default();
+    for line in lines {
+        // `state "label" as ID` — alias declaration.
+        if let Some(rest) = line.strip_prefix("state ") {
+            if !rest.trim_start().starts_with('"') {
+                return None;
+            }
+            let rest = rest.trim_start();
+            let (label, rest) = rest[1..].split_once('"')?;
+            let rest = rest.trim_start().strip_prefix("as ")?.trim();
+            let (id, tail) = take_identifier(rest)?;
+            if !tail.trim().is_empty() || label.is_empty() {
+                return None;
+            }
+            if let Some(existing) = chart.nodes.iter_mut().find(|n| n.id == id) {
+                if existing.label == id {
+                    existing.label = label.to_string();
+                }
+            } else if chart.nodes.len() >= MAX_NODES {
+                return None;
+            } else {
+                node_of(&format!("{id}[{label}]"), &mut chart)?;
+            }
+            continue;
+        }
+        // Bare description: `ID: text`. A labeled transition also contains
+        // a colon, so the branch only claims lines whose left side is a
+        // bare identifier (no spaces, no arrow).
+        if let Some((id, text)) = line.split_once(':') {
+            let text = text.trim();
+            if !id.contains(' ') && !id.contains("-->") && !text.is_empty() && !text.starts_with(':') {
+                let id = id.trim();
+                if let Some(existing) = chart.nodes.iter_mut().find(|n| n.id == id) {
+                    if existing.label == id {
+                        existing.label = text.to_string();
+                    }
+                    continue;
+                } else if chart.nodes.len() >= MAX_NODES {
+                    return None;
+                } else {
+                    let _ = node_of(&format!("{id}[{text}]"), &mut chart)?;
+                    continue;
+                }
+            }
+        }
+        // Transition: `[*] --> B`, `A --> B: label`.
+        let (from, rest) = if let Some(rest) = line.strip_prefix("[*]") {
+            ("__gc_initial", rest)
+        } else {
+            let (id, tail) = take_identifier(line)?;
+            (id, tail)
+        };
+        let rest = rest.trim_start();
+        if !rest.starts_with("-->") {
+            return None;
+        }
+        let rest = rest[3..].trim_start();
+        let (to_raw, label) = match rest.split_once(':') {
+            Some((target, text)) => {
+                let text = text.trim();
+                (
+                    target.trim(),
+                    if text.is_empty() { None } else { Some(text.to_string()) },
+                )
+            }
+            None => (rest.trim(), None),
+        };
+        let to = match to_raw {
+            "[*]" => "__gc_final",
+            other => {
+                let (id, _) = take_identifier(other)?;
+                id
+            }
+        };
+        let target = state_node(to, &mut chart)?;
+        let source = state_node(from, &mut chart)?;
+        if chart.edges.len() >= MAX_EDGES {
+            return None;
+        }
+        chart.edges.push(Edge {
+            from: source,
+            to: target,
+            label,
+        });
+    }
+    if chart.nodes.is_empty() {
+        return None;
+    }
+    render(&chart, width)
+}
+
 /// Parse and render a sequence diagram at the given column width. Separate
 /// entry point because the two families share no tree; `None` means the
 /// source falls back to the fenced block (unsupported syntax, wrong shape,
@@ -203,21 +328,38 @@ pub fn render(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
     if width < 12 {
         return None;
     }
-    // Rank per node: rank 0 for sources, one past the highest inbound rank.
-    // (Other ranks continue from here.)
+    // Rank per node: rank 0 for sources, one past the highest inbound
+    // rank. Single-pass leaves a node at a stale low rank when its source
+    // is ranked later in the edge list (a chain drawn tail-edge-first
+    // collapsed three ranks into two and stole the final's arrow). Fixed
+    // with a bounded pass that propagates source+1 into targets until no
+    // rank moves; acyclic input (a cycle is a fallback case via the drawn
+    // check below, not a hang: a full round with no change stops early and
+    // the total rounds are capped by node count).
     let mut rank: Vec<(String, usize)> = Vec::new();
-    for edge in &chart.edges {
-        let target_rank = rank
-            .iter()
-            .find(|(id, _)| *id == edge.to)
-            .map_or(0, |(_, r)| r + 1);
-        // An edge INTO the from-node would make it rank>0 too; compute both.
-        let source_rank = rank
-            .iter()
-            .find(|(id, _)| *id == edge.from)
-            .map_or(0, |(_, r)| r + 1);
-        merge_rank(&mut rank, &edge.to, target_rank);
-        merge_rank(&mut rank, &edge.from, source_rank);
+    for node in &chart.nodes {
+        rank.push((node.id.clone(), 0));
+    }
+    for _ in 0..=chart.nodes.len() {
+        let mut changed = false;
+        for edge in &chart.edges {
+            let source = rank
+                .iter()
+                .find(|(id, _)| *id == edge.from)
+                .map_or(0, |(_, r)| *r);
+            let target_rank = source + 1;
+            if rank
+                .iter()
+                .find(|(id, _)| *id == edge.to)
+                .is_some_and(|(_, r)| *r < target_rank)
+            {
+                merge_rank(&mut rank, &edge.to, target_rank);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
     }
     let mut rows: Vec<String> = Vec::new();
     // Simple horizontal layout: one line per rank, nodes joined with arrows
@@ -235,35 +377,32 @@ pub fn render(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
         if nodes.is_empty() {
             continue;
         }
-        let mut line = String::new();
-        for (i, node) in nodes.iter().enumerate() {
+        // Every node in the rank renders on one row joined with a plain
+        // separator, each followed by its own edges. The old layout drew
+        // only the first node's edges and stubbed the others with a fake
+        // `── edge` marker; the drawn-check then failed for state machines
+        // that fan several sources into one target, honestly falling back
+        // when it should have drawn. One row per rank, all nodes real.
+        let mut row = String::new();
+        for node in nodes {
             let shape = format!("[{}]", node.label);
-            if i > 0 {
-                line.push_str("   ");
+            if !row.is_empty() {
+                row.push_str("   ");
             }
-            if line.chars().count() + shape.chars().count() > width.saturating_sub(1) {
+            if row.chars().count() + shape.chars().count() > width.saturating_sub(1) {
                 // Too wide for the column: fall back to source.
                 return None;
             }
-            if i > 0 {
-                line.push_str("── ");
-                line.push_str("edge");
-                continue;
-            }
-            line.push_str(&shape);
-            // Labeled edges for this node on the same row.
+            row.push_str(&shape);
             let out: Vec<&Edge> = chart
                 .edges
                 .iter()
                 .filter(|e| e.from == node.id)
                 .collect();
-            let mut row = line.clone();
             for edge in out {
                 let target = chart.nodes.iter().find(|n| n.id == edge.to)?;
                 let suffix = match &edge.label {
-                    Some(l) => {
-                        format!(" ── {} ──▶ [{}]", l, target.label)
-                    }
+                    Some(l) => format!(" ── {} ──▶ [{}]", l, target.label),
                     None => format!(" ──▶ [{}]", target.label),
                 };
                 if row.chars().count() + suffix.chars().count() <= width.saturating_sub(1) {
@@ -273,8 +412,8 @@ pub fn render(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
                     break;
                 }
             }
-            rows.push(row);
         }
+        rows.push(row);
     }
     // Edge labels only drawn for edges whose target row already has the node
     // (visible above). Any edge not drawn on its row must be listed — or the
@@ -759,6 +898,43 @@ mod tests {
         assert!(parse_sequence("sequenceDiagram\n A->>B: hi\n broken=yes").is_none());
         assert!(parse_sequence("sequenceDiagram\n alt x\n A->>B: hi").is_none(), "too much nesting / unclosed block");
         assert!(parse_sequence("classDiagram\n A <|-- B").is_none(), "non-sequence stays out");
+    }
+
+    #[test]
+    fn state_diagram_renders_transitions_and_pseudostates() {
+        let rows = parse_state(
+            "stateDiagram-v2\n state \"Order drafted\" as Draft\n [*] --> Draft\n Draft --> Validating: submit\n Validating --> [*]\n Draft: bare description",
+            60,
+        )
+        .unwrap();
+        assert!(rows.iter().any(|r| r.contains("● initial")), "rows: {rows:?}");
+        assert!(rows.iter().any(|r| r.contains("◎ final")));
+        assert!(rows.iter().any(|r| r.contains("[Validating]")), "rows: {rows:?}");
+        assert!(rows.iter().any(|r| r.contains("[Order drafted]")), "alias wins");
+        // The bare description does not override the alias label.
+        assert!(rows.iter().all(|r| r.contains("Order drafted") || !r.contains("[Draft]")), "rows: {rows:?}");
+    }
+
+    #[test]
+    fn state_diagram_unsupported_syntax_falls_back() {
+        assert!(parse_state("classDiagram\n A <|-- B", 60).is_none(), "wrong header");
+        assert!(parse_state("stateDiagram-v2\n A --- B", 60).is_none(), "only --> transitions");
+        assert!(parse_state("stateDiagram-v2\n A --> [*]\n B --> [*]", 60).is_some());
+        assert!(parse_state("stateDiagram-v2\n state Broken as \n A --> B", 60).is_none(), "empty alias");
+    }
+
+    #[test]
+    fn state_diagram_respects_width_and_node_caps() {
+        let chart_body = |n: usize| {
+            let mut body = String::from("stateDiagram-v2\n [*] --> S0\n");
+            for i in 0..n {
+                body.push_str(&format!("S{i} --> S{}: step\n", i + 1));
+            }
+            body
+        };
+        assert!(parse_state(&chart_body(MAX_NODES), 60).is_none(), "node cap");
+        let wide = "stateDiagram-v2\n[*] --> AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --> [*]";
+        assert!(parse_state(wide, 24).is_none(), "width cap falls back");
     }
 
     #[test]

@@ -805,9 +805,8 @@ fn run(args: &[String]) -> Result<(), String> {
     glass_tui::markdown::enable_mermaid(cfg.mermaid);
     let mermaid_renderer: glass_tui::markdown::MermaidRendererFn =
         Box::new(move |body: &str, width: usize| {
-            if body.trim_start().starts_with("sequenceDiagram")
-                || body.trim_start().starts_with("sequence")
-            {
+            let head = body.trim_start();
+            if head.starts_with("sequenceDiagram") || head.starts_with("sequence") {
                 let fits = crate::mermaid::parse_sequence(body)
                     .is_some_and(|rows| rows.iter().all(|r| r.chars().count() <= width));
                 return if fits {
@@ -815,6 +814,9 @@ fn run(args: &[String]) -> Result<(), String> {
                 } else {
                     None
                 };
+            }
+            if head.starts_with("stateDiagram") {
+                return crate::mermaid::parse_state(body, width);
             }
             crate::mermaid::parse(body).and_then(|chart| crate::mermaid::render(&chart, width))
         });

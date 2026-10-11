@@ -229,3 +229,18 @@ need their own bounded layouts (two families is the honest slice); the
 - Tests: composite nest renders, double-nest falls back, unclosed block
   falls back. Suite 699 unit + 13 doc + 93 integration; clippy
   `-D warnings` clean; `smoke-mermaid` green.
+
+## Follow-up 5: class diagrams (this commit)
+
+- **Mermaid class diagrams → implemented.** `parse_class` handles the
+  `classDiagram` header plus the relation grammar: `<|--` inheritance,
+  `*--` composition, `o--` aggregation, `-->`/`..>` dependency, each
+  with an optional `: label`, rendered through the shared rank tree with
+  the relation kind named in the edge glyph (`◁─`/`✦─`/`◇─`). Members,
+  generics (`List~T~`), and stereotype lines are unsupported — they fall
+  back to source, stated in the module doc and tests. The fan-out width
+  behavior is the flowchart's own: a row that does not fit under the
+  column falls back, tested at both 60 and 88 columns. Remaining
+  honestly out of scope: `erDiagram` (own entity/attribute layout).
+- Tests: 4 new class tests. Suite 702 unit + 13 doc + 93 integration;
+  clippy `-D warnings` clean; `smoke-mermaid` green.

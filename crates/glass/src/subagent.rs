@@ -78,6 +78,7 @@ pub fn run_task(
     workspace: &Path,
     scratch: &Path,
     make_provider: &MakeProvider<'_>,
+    parent_prompt: Option<&str>,
 ) -> String {
     let result = (|| -> Result<String, String> {
         let provider = make_provider(task.model.as_deref())?;
@@ -93,6 +94,15 @@ pub fn run_task(
         let mut state = tools::State::new();
         let mods: Vec<Box<dyn glass_mod_api::Mod_>> = Vec::new();
         let mut registry = ext::Registry::empty();
+        // Cache affinity (opencode's session-affinity idea, adapted): a
+        // subagent without its own persona runs under the parent's system
+        // prompt, so its provider-side cacheable prefix equals the parent's —
+        // the first request can hit the cache the parent just wrote instead
+        // of paying a second full prefix write. A task that names its own
+        // persona keeps an isolated prefix, by design.
+        let base = parent_prompt
+            .map(str::to_string)
+            .unwrap_or_else(|| compose_prompt(task));
         let mut agent = Agent::new(
             provider.as_ref(),
             &mut session,
@@ -101,7 +111,7 @@ pub fn run_task(
             &mut registry,
             &run_workspace,
         )
-        .with_prompt(compose_prompt(task), None, None);
+        .with_prompt(base, None, None);
         if task.read_only {
             // The inspection tools only: a second-opinion review can look at
             // everything and change nothing.
@@ -311,5 +321,69 @@ mod tests {
         let err = worktree(&base, &base.join("wts"), "x").unwrap_err();
         assert!(err.contains("worktree"), "{err}");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A spy provider capturing the system prompt each request saw, so the
+    /// affinity test can compare prefixes without a network.
+    struct SystemSpy {
+        seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Provider for SystemSpy {
+        fn id(&self) -> &str {
+            "spy"
+        }
+        fn stream(
+            &self,
+            req: &crate::provider::Request<'_>,
+        ) -> Result<Box<dyn Iterator<Item = crate::provider::Event> + '_>, crate::provider::Error>
+        {
+            self.seen.lock().unwrap().push(req.system.to_string());
+            Ok(Box::new(
+                [crate::provider::Event::Text("done".into()), crate::provider::Event::Done]
+                    .into_iter(),
+            ))
+        }
+        fn context_window(&self) -> u32 {
+            100_000
+        }
+    }
+
+    #[test]
+    fn cache_affinity_reuses_the_parent_system_prefix() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let t = task("do a thing");
+        let scratch = std::env::temp_dir().join(format!("gc-affinity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        let seen_for_closure = std::sync::Arc::clone(&seen);
+        let make = move |_: Option<&str>| -> Result<Box<dyn Provider>, String> {
+            // Each call must capture the same shared vector: clone the Arc.
+            let s = SystemSpy {
+                seen: std::sync::Arc::clone(&seen_for_closure),
+            };
+            Ok(Box::new(s))
+        };
+        let parent = "PARENT system prompt body";
+        let report = run_task(&t, &scratch, &scratch, &make, Some(parent));
+        assert!(!report.is_empty());
+        let got = seen.lock().unwrap().clone();
+        assert!(!got.is_empty(), "the subagent must have made a request");
+        assert!(
+            got.iter().all(|s| s == parent),
+            "every request must carry the parent's prefix for cache affinity, got: {got:?}"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn a_persona_task_keeps_its_own_prefix() {
+        let mut t = task("do a thing");
+        t.prompt = Some("You are a custom agent.".into());
+        let _ = compose_prompt(&t);
+        // The affinity decision only substitutes when no persona was given;
+        // run_task consults `task.prompt` in compose_prompt, so a persona
+        // task keeps the isolated prefix it already opted into.
+        assert!(compose_prompt(&t).starts_with("You are a custom agent."));
     }
 }

@@ -1,7 +1,7 @@
 ---
 id: six-wave-a-001
 scope: wave A — loop detection, read recency, sticky routing, provider cache affinity
-status: ready
+status: implemented
 source: research/six-codebases-2026-10-10.md candidates #2, #3, #15, #1
 ---
 
@@ -77,3 +77,44 @@ type: recency and stickiness derive from existing records.
 - PTY: a scripted mock provider that repeats one bash call six times shows
   one reminder in the transcript; performance gate: time-to-first-token
   and startup within release budget.
+
+## Implementation notes
+
+- `loop_detect.rs`: a 10-slot SHA-256 ring (name + raw arguments); the
+  reminder fires once per streak at 5 repeats, appends `Record::Meta`, and
+  the window clears at every turn boundary in `run_turn`. Both built-ins
+  funnel through `Agent::loop_guard` at each of the four dispatch sites in
+  `run_tool_batch`, so batched, pumped, and inline executions all count.
+- Read recency: `ReadSet` carries `last_read: HashMap<String, u64>`.
+  `observe_at` threads the turn's tool-call index through the read scans;
+  `Agent::tool_call_index` increments in `loop_guard`. `state` edit results
+  name `path`/`file`, and when `current_call - last_read >= 25` the result
+  gains one hint line. Callers without an index (tests, replay) land at 0,
+  which can never satisfy the age check.
+- Sticky routing: `Chain` carries a `sticky` Cell<usize>; a served fallback
+  sets it and later requests skip earlier levels until `unstick()`. The
+  live harness rebuilds the chain from `factory()` at each user turn
+  (`main.rs`), which resets stickiness by construction; explicit
+  `unstick`/`serving_model` remain for reused chains and tests
+  (`cfg_attr(not(test), allow(dead_code))` documented).
+- Cache affinity: `subagent::run_task` takes `parent_prompt`; when the
+  task has no persona (`task.prompt` unset) the subagent's base prompt is
+  the parent's system prompt, so its provider-side cacheable prefix equals
+  the parent's request prefix instead of the bespoke `compose_prompt`
+  framing. Persona tasks keep their isolated prefix by design. Wired at
+  all three call sites (headless run, interactive `run_subagents`,
+  `/code-review`).
+
+## Verification
+
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo test --locked --workspace` — 640 + 13 + 91 pass, 0 fail
+  (7 new loop-detect, 2 new chain sticky, 2 new affinity,
+  readguard extended).
+- Startup path unchanged: no new allocations before the first tool call;
+  the ring is empty and the index is 0 at construction.
+- Performance notes measured inline: window hashing is SHA-256 over the
+  call arguments per call (bounded by args length; State args are capped
+  4 KiB). The hint lookup is one HashMap probe per state edit.
+- Pending: headless two-subagent cache-write delta and PTY transcript
+  checks, run with the final wave verification.

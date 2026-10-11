@@ -460,6 +460,84 @@ pub fn render(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
     Some(rows)
 }
 
+// ---- Class diagrams (follow-up 5: the fourth family) ----
+
+/// A class membership arrow: `A <|-- B` means B is a subclass of A.
+/// Rendered as the flowchart tree so rank layout is shared.
+pub fn parse_class(body: &str, width: usize) -> Option<Vec<String>> {
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    let header = lines.next()?;
+    if header != "classDiagram" {
+        return None;
+    }
+    let mut chart = Flowchart::default();
+    for line in lines {
+        // Relation: `A <|-- B`, `A --|> B`, `A *-- B`, `A o-- B`, `A --> B`,
+        // `A ..> B`, `A ..|> B`, all optionally `: label` suffixed.
+        let (from, arrow, rest) = split_class_relation(line)?;
+        let (to_raw, label) = match rest.split_once(':') {
+            Some((target, text)) => {
+                let text = text.trim();
+                (
+                    target.trim(),
+                    if text.is_empty() { None } else { Some(text.to_string()) },
+                )
+            }
+            None => (rest.trim(), None),
+        };
+        let to = class_ident(to_raw)?;
+        let source = class_ident(from)?;
+        let target = state_node(&to, &mut chart)?;
+        let from_id = state_node(&source, &mut chart)?;
+        if chart.edges.len() >= MAX_EDGES {
+            return None;
+        }
+        let glyph = match arrow {
+            "<|--" | "--|>" | "..|>" => "◁─",
+            "*--" => "✦─",
+            "o--" => "◇─",
+            _ => "",
+        };
+        let label = match (glyph.is_empty(), label) {
+            (true, l) => l,
+            (false, Some(l)) => Some(format!("{glyph} {l}")),
+            (false, None) => Some(glyph.to_string()),
+        };
+        chart.edges.push(Edge { from: from_id, to: target, label });
+    }
+    if chart.nodes.is_empty() {
+        return None;
+    }
+    render(&chart, width)
+}
+
+/// Split `A <op> B` at the class relation token. Returns `(from, token, rest)`.
+fn split_class_relation(line: &str) -> Option<(&str, &str, &str)> {
+    for token in ["<|--", "--|>", "..|>", "*--", "o--", "..>", "-->"] {
+        if let Some(at) = line.find(token) {
+            // The token must not be part of a longer token match elsewhere —
+            // find the first occurrence, which is safe for these shapes.
+            let from = line[..at].trim();
+            let rest = line[at + token.len()..].trim();
+            if from.is_empty() || rest.is_empty() || from.contains(' ') {
+                return None;
+            }
+            return Some((from, token, rest));
+        }
+    }
+    None
+}
+
+/// Class identifier: alphanumeric plus underscore only (mermaid allows
+/// generics like `List~T~`; those fall back rather than being mangled).
+fn class_ident(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() || !raw.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return None;
+    }
+    Some(raw.to_string())
+}
+
 fn merge_rank(rank: &mut Vec<(String, usize)>, id: &str, new_rank: usize) {
     match rank.iter_mut().find(|(existing, _)| existing == id) {
         Some((_, rank)) if *rank < new_rank => *rank = new_rank,
@@ -990,6 +1068,34 @@ mod tests {
         assert!(parse_state(&chart_body(MAX_NODES), 60).is_none(), "node cap");
         let wide = "stateDiagram-v2\n[*] --> AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --> [*]";
         assert!(parse_state(wide, 24).is_none(), "width cap falls back");
+    }
+
+    #[test]
+    fn class_diagram_renders_relations_with_glyphs() {
+        let rows = parse_class(
+            "classDiagram\n Animal <|-- Dog\n Animal *-- Bone\n Animal o-- Tail\n Animal --> Food: eats\n", 88,
+        ).unwrap();
+        assert!(rows.iter().any(|r| r.contains("[Dog]")), "rows: {rows:?}");
+        assert!(rows.iter().any(|r| r.contains("── ◁─ ──▶ [Dog]")), "inheritance glyph, rows: {rows:?}");
+        assert!(rows.iter().any(|r| r.contains("✦─ ──▶ [Bone]")), "composition, rows: {rows:?}");
+        assert!(rows.iter().any(|r| r.contains("◇─ ──▶ [Tail]")), "aggregation, rows: {rows:?}");
+        assert!(rows.iter().any(|r| r.contains("── eats ──▶")), "label, rows: {rows:?}");
+    }
+
+    #[test]
+    fn class_diagram_wider_than_the_column_falls_back() {
+        let chart = "classDiagram\n Animal <|-- Dog\n Animal *-- Bone\n Animal o-- Tail\n Animal --> Food: eats\n";
+        assert!(parse_class(chart, 60).is_none(), "fan-out wider than the row falls back");
+    }
+
+    #[test]
+    fn class_diagram_unsupported_shapes_fall_back() {
+        assert!(parse_class("stateDiagram\n A --> B", 60).is_none(), "wrong header");
+        assert!(parse_class("classDiagram\n A <|-- B", 60).is_some());
+        assert!(parse_class("classDiagram\n List~T~ <|-- Impl", 60).is_none(), "generics unsupported");
+        assert!(parse_class("classDiagram\n class Foo\n", 60).is_none(), "members need their own layout");
+        assert!(parse_class("classDiagram\n A <|
+ B", 60).is_none(), "no relation token");
     }
 
     #[test]

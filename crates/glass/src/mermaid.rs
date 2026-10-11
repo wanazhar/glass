@@ -129,17 +129,16 @@ pub fn parse_state(body: &str, width: usize) -> Option<Vec<String>> {
         }
         if let Some(rest) = line.strip_prefix("state ") {
             if let Some((open, after)) = rest.split_once('{') {
-                // `state X {` opens a composite block.
+                // `state X {` opens a composite block. The parent is
+                // registered as a node even if no edge names it — a
+                // state that exists only to be nested is still drawn.
                 let id = open.trim();
                 if id.is_empty() || !after.trim().is_empty() || stack.len() >= MAX_COMPOSITE_DEPTH {
                     return None;
                 }
-                if let Some(existing) = chart.nodes.iter().find(|n| n.id == id) {
-                    let label = existing.label.clone();
-                    stack.push(label);
-                } else {
-                    stack.push(id.to_string());
-                }
+                let existing = chart.nodes.iter().find(|n| n.id == id).map(|n| n.label.clone());
+                state_node(id, &mut chart)?;
+                stack.push(existing.unwrap_or_else(|| id.to_string()));
                 continue;
             }
             // No `{`: fall through to the alias form below via `rest`.
@@ -1104,9 +1103,19 @@ mod tests {
             "stateDiagram-v2\n state Active {\n [*] --> Ticking\n Ticking --> Done: finish\n }\n [*] --> Active\n", 60,
         ).unwrap();
         // Composite members belong to the parent; the block contents parse
-        // without falling back.
+        // without falling back, and the parent itself is drawn.
         assert!(rows.iter().any(|r| r.contains("[Active]")), "rows: {rows:?}");
         assert!(rows.iter().any(|r| r.contains("● initial")), "rows: {rows:?}");
+    }
+
+    #[test]
+    fn state_composite_parent_is_drawn_even_without_edges() {
+        // The parent is named only by the block header.
+        let rows = parse_state(
+            "stateDiagram-v2\n state Idle {\n [*] --> Breathing\n Breathing --> [*]\n }\n", 60,
+        ).unwrap();
+        assert!(rows.iter().any(|r| r.contains("[Idle]")), "rows: {rows:?}");
+        assert!(rows.iter().any(|r| r.contains("[Breathing]")), "rows: {rows:?}");
     }
 
     #[test]

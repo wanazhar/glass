@@ -48,6 +48,106 @@ impl Mode {
 /// Turns shorter than this are answered while the user is still there.
 pub const NOTIFY_AFTER_S: u64 = 5;
 
+/// Typed turn-lifecycle event (task six-wave-e-001, crush `notify` package).
+///
+/// One domain enum published from the agent loop's turn boundaries;
+/// `emit` and the TUI status subscribe to it. Structure only: the emitted
+/// sequences and throttles are unchanged, and the PTY history must be
+/// byte-identical (asserted by existing transcript tests).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnEvent {
+    /// The last turn of a series finished cleanly. `cost` is the reported
+    /// money string when pricing was known, None otherwise.
+    Finished {
+        seconds: u64,
+        elapsed: Duration,
+        cost: Option<String>,
+    },
+    /// The turn ended in a provider or session error.
+    Failed { seconds: u64 },
+    /// The user steered mid-turn; no alert is warranted.
+    Steered,
+    /// A queued follow-up remains; the series is not done.
+    Waiting,
+}
+
+impl TurnEvent {
+    /// The event published when a turn boundary asks "should we notify?".
+    /// Centralizes the old scattered `wanted` decisions so future external
+    /// subscribers see the same rule the bell sees.
+    pub fn notifies(&self) -> bool {
+        match self {
+            TurnEvent::Failed { .. } => true,
+            TurnEvent::Finished { elapsed, .. } => {
+                wanted(false, true, *elapsed, NOTIFY_AFTER_S)
+            }
+            TurnEvent::Steered | TurnEvent::Waiting => false,
+        }
+    }
+
+    /// Notification body for an event that earned one.
+    pub fn message(&self) -> Option<String> {
+        match self {
+            TurnEvent::Failed { seconds } => {
+                Some(format!("glass-core · turn failed · {seconds}s"))
+            }
+            TurnEvent::Finished { seconds, cost, .. } => Some(match cost {
+                Some(c) => format!("glass-core · {seconds}s · {c}"),
+                None => format!("glass-core · {seconds}s"),
+            }),
+            TurnEvent::Steered | TurnEvent::Waiting => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod turn_event_tests {
+    use super::*;
+
+    #[test]
+    fn event_ordering_matches_the_old_scattered_rules() {
+        // Failed always notifies, however fast.
+        let failed = TurnEvent::Failed { seconds: 0 };
+        assert!(failed.notifies());
+        assert_eq!(failed.message().as_deref(), Some("glass-core · turn failed · 0s"));
+        // Finished notifies only past the threshold.
+        let slow = TurnEvent::Finished {
+            seconds: 9,
+            elapsed: Duration::from_secs(9),
+            cost: None,
+        };
+        assert!(slow.notifies());
+        let fast = TurnEvent::Finished {
+            seconds: 1,
+            elapsed: Duration::from_secs(1),
+            cost: None,
+        };
+        assert!(!fast.notifies());
+        // Cost suffix survives when present.
+        let priced = TurnEvent::Finished {
+            seconds: 30,
+            elapsed: Duration::from_secs(30),
+            cost: Some("$0.01".into()),
+        };
+        assert_eq!(priced.message().as_deref(), Some("glass-core · 30s · $0.01"));
+        // Steered/Waiting never alert.
+        assert!(!TurnEvent::Steered.notifies());
+        assert!(!TurnEvent::Waiting.notifies());
+        assert!(TurnEvent::Steered.message().is_none());
+        assert!(TurnEvent::Waiting.message().is_none());
+    }
+}
+
+/// Publish a turn event subscribers act on: today that is `emit` with the
+/// configured mode; later it could include external listeners.
+pub fn publish(mode: Mode, event: &TurnEvent) {
+    if event.notifies()
+        && let Some(message) = event.message()
+    {
+        emit(mode, &message);
+    }
+}
+
 /// Whether a finished turn deserves attention.
 ///
 /// `finished` excludes user-cancelled and steered turns: the user is

@@ -112,7 +112,6 @@ impl Cancel {
     ///
     /// Set by the agent loop's cancel path. The extension host itself only
     /// reads the flag, so the setter has no caller here yet.
-    #[allow(dead_code)]
     pub fn cancel(&self) {
         self.flag.store(true, std::sync::atomic::Ordering::Release);
     }
@@ -178,16 +177,18 @@ impl CallOutcome {
         Self { output: None, stop }
     }
 
-    // `is_completed`, `is_cancelled` and `describe` are how the agent loop
-    // turns an outcome into a transcript entry; the host itself only needs
-    // `into_output`.
-    #[allow(dead_code)]
+    // `is_completed` and `is_cancelled` are how the outcome's state is
+    // inspected; the agent loop reports through `describe`. Both are also
+    // the assertions the registry tests need, and no live caller needs a
+    // boolean query that `describe` already answers in words, so they are
+    // gated to tests to keep the public surface exactly what is consumed.
+    #[cfg(test)]
     pub fn is_completed(&self) -> bool {
         self.output.is_some()
     }
 
     /// Whether this call was cancelled rather than completed or failed.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_cancelled(&self) -> bool {
         matches!(self.stop, CallStop::Cancelled(_))
     }
@@ -245,7 +246,6 @@ impl CallScope {
     ///
     /// The agent loop builds one of these per model tool call; nothing inside
     /// the extension host has a model tool call to build one from.
-    #[allow(dead_code)]
     pub fn from_call(call_id: &str, cancel: Cancel) -> Self {
         Self {
             lineage: super::protocol::CallLineage::root(call_id),

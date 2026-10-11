@@ -220,6 +220,21 @@ scripts PASS against the merged binary. Citation markers (item 25) are a
 recorded audit with the dedupe helper in place, not a shipped user surface
 — the statement is in the task file, not a silent skip.
 
+### Post-merge follow-up 4: agent-loop call-scope wiring (item 32 closed)
+
+The one remaining item-32 gap — the agent loop never built a `CallScope`
+for extension tool calls — is now wired: every extension dispatch carries
+`CallScope::from_call(call_id, turn_cancel)`, so lineage is real for
+nested calls and the per-turn token cancels a running exchange the moment
+a steer arrives. The transcript reports cancelled calls through
+`CallOutcome::describe` — cooperative stop vs. killed process group —
+instead of the old generic "did not return a result" error. Scope-bearing
+helpers became the only live path; `run_tool`/`run_tool_with_input` are
+test-only, and the `#[allow(dead_code)]` annotations the wiring made
+unnecessary are gone. Test: `ext_cancel_tests::a_steer_mid_turn_cancels…`
+against a real Python extension process. Suite 706 unit + 13 doc + 93
+integration; clippy `-D warnings` clean.
+
 ### Post-merge follow-up: wave E limitations fixed (this commit)
 
 - **Citations (wave E item 2)**: `@path#L10-L24#hash8` markers now ship.

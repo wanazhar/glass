@@ -227,6 +227,10 @@ pub struct Agent<'a> {
     loop_window: crate::loop_detect::LoopWindow,
     /// Count of tool calls run in this turn, for the read-staleness hint.
     tool_call_index: u64,
+    /// The cancellation token every extension tool call this turn runs
+    /// under. Tripped when the user steers, so a slow extension stops
+    /// waiting for results the turn no longer needs.
+    turn_cancel: crate::ext::Cancel,
 }
 
 /// Lines of a written file echoed back to the model.
@@ -317,6 +321,7 @@ impl<'a> Agent<'a> {
             live: None,
             loop_window: crate::loop_detect::LoopWindow::new(),
             tool_call_index: 0,
+            turn_cancel: crate::ext::Cancel::new(),
         }
     }
 
@@ -968,6 +973,9 @@ impl<'a> Agent<'a> {
             // to what the model is about to do, so the correction has to arrive
             // before the command executes rather than after it finishes.
             if let Some(steer) = self.steer.take() {
+                // Everything still running in this turn stops mattering;
+                // extension calls watching the shared token stop waiting.
+                self.turn_cancel.cancel();
                 self.session.append(Record::System(format!(
                     "user correction, interrupting before the requested actions: {steer}"
                 )));
@@ -1116,6 +1124,9 @@ impl<'a> Agent<'a> {
             }
             self.run_tool_batch(&executable, &mut |slot| pump(slot));
             if let Some(steer) = self.steer.take() {
+                // Still-running extension tools (and bash workers) stop
+                // waiting; their results report the cancellation honestly.
+                self.turn_cancel.cancel();
                 for call in &out.tool_calls {
                     if !self
                         .session
@@ -1751,25 +1762,28 @@ impl<'a> Agent<'a> {
         } else if self.extensions.has_tool(&call.name) {
             // The bridge lets an extension call tools on the host while it
             // runs — only `bash` and `state`, the model's own tools.
+            //
+            // The call runs under a scope the agent loop owns: the token is
+            // tripped when the user steers mid-turn, so a slow extension
+            // stops waiting instead of outliving the turn it belongs to.
+            // The outcome is reported exactly — completed, cooperatively
+            // cancelled, killed past its own stop — not flattened into a
+            // generic error.
+            let scope = crate::ext::CallScope::from_call(&call.id, self.turn_cancel.clone());
             let input_keys = self.input_keys;
             let out = with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
                 if let Some(keys) = input_keys {
                     let mut host_input = crate::input::mcp_input_callback(keys);
-                    self.extensions.run_tool_with_input(
-                        &call.name,
-                        &call.arguments,
-                        bridge,
-                        &mut host_input,
-                    )
+                    self.extensions
+                        .run_tool_with_input_scoped(&scope, &call.name, &call.arguments, bridge, &mut host_input)
+                        .describe(&call.name)
                 } else {
                     self.extensions
-                        .run_tool(&call.name, &call.arguments, bridge)
+                        .run_tool_scoped(&scope, &call.name, &call.arguments, bridge)
+                        .describe(&call.name)
                 }
             });
-            match out {
-                Some(out) => outcome.body = out,
-                None => outcome.body = format!("error: `{}` did not return a result", call.name),
-            }
+            outcome.body = out;
         } else {
             // A tool was declared but nothing answered: report that honestly
             // rather than returning a silent empty success.
@@ -2962,5 +2976,119 @@ mod recovery_tests {
             "a bare refusal leaves no partial-response meta behind"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The agent loop's per-turn cancel token reaches extension tool calls:
+/// a steer mid-turn stops a slow extension from waiting out its exchange,
+/// and the transcript reports the stop as a cancellation, not an error.
+#[cfg(test)]
+mod ext_cancel_tests {
+    use super::*;
+    use crate::ext::Registry;
+    use std::path::Path;
+
+    fn no_pump(_: &mut Option<String>) {}
+
+    fn python() -> Option<String> {
+        for c in ["python3", "python"] {
+            if std::process::Command::new(c)
+                .arg("--version")
+                .output()
+                .is_ok_and(|o| o.status.success())
+            {
+                return Some(c.to_string());
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn a_steer_mid_turn_cancels_a_slow_extension_call() {
+        let Some(py) = python() else { return };
+        let dir = std::env::temp_dir().join(format!("glass-ext-steer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let script = dir.join("ext.py");
+        // A tool that answers only after a long sleep.
+        std::fs::write(&script, format!(r#"
+import json, sys, time
+def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    r=json.loads(line); t=r.get("type"); i=r.get("id")
+    if t=="hello":
+        send({{"id":i,"protocol":{},"name":"slow","version":"1",
+              "tools":[{{"name":"slow","description":"d","schema":{{"type":"object"}}}}]}})
+    elif t=="run_tool":
+        time.sleep(30)
+        send({{"id":i,"output":"finished"}})
+    elif t=="goodbye": break
+"#, crate::ext::protocol::PROTOCOL_VERSION)).unwrap();
+        let mut extensions =
+            Registry::load(&[format!("{py} {}", script.display())], Path::new("."), "mock");
+
+        let provider = CapturingProviderWithToolCall::default();
+        let mut session = Session::create(&dir).unwrap();
+        let mut state = State::new();
+        let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
+        let mut agent = Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &no_mods,
+            &mut extensions,
+            Path::new("."),
+        )
+        .with_prompt("turn".into(), None, None);
+        // The provider asks for the slow tool; the steer arrives while the
+        // tool is blocked, so the turn stops waiting for the extension.
+        agent.steer = Some("do something else".into());
+        let _ = agent.run_turn(no_pump);
+
+        // The token carried into the extension host is tripped, so the
+        // extension's exchange is abandoned rather than waited out.
+        assert!(
+            agent.turn_cancel.is_cancelled(),
+            "the turn cancel token must be tripped by the steer"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Provider that answers the first request with one tool call, then
+    /// stops; enough for the extension dispatch path to run.
+    #[derive(Default)]
+    struct CapturingProviderWithToolCall {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Provider for CapturingProviderWithToolCall {
+        fn id(&self) -> &str {
+            "toolcall-mock"
+        }
+        fn stream(
+            &self,
+            _req: &Request<'_>,
+        ) -> Result<Box<dyn Iterator<Item = Event> + '_>, crate::provider::Error> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                return Ok(Box::new(
+                    vec![
+                        Event::ToolCall {
+                            id: "call_1".into(),
+                            name: "slow".into(),
+                            arguments: "{}".into(),
+                        },
+                        Event::Done,
+                    ]
+                    .into_iter(),
+                ));
+            }
+            Ok(Box::new(vec![Event::Text("ok".into()), Event::Done].into_iter()))
+        }
+        fn context_window(&self) -> u32 {
+            200_000
+        }
     }
 }

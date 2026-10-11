@@ -377,8 +377,11 @@ impl Registry {
     /// This entry point carries no call scope, so the work is unattributed and
     /// only the extension's own token can cancel it. Callers that know which
     /// model tool call they are serving — which is every caller inside the
-    /// agent loop — use [`Registry::run_tool_scoped`] so the work is
-    /// attributable and cancellable from the caller's token too.
+    /// Run an extension tool with no scope. Test-only convenience: live
+    /// dispatch (the agent loop, ACP, headless runners) must use
+    /// [`Registry::run_tool_scoped`] so the work is attributable and
+    /// cancellable from the caller's token.
+    #[cfg(test)]
     pub fn run_tool(
         &mut self,
         name: &str,
@@ -416,27 +419,6 @@ impl Registry {
         self.exts[idx].run_tool_scoped(name, arguments, host_tools, scope)
     }
 
-    /// Run an extension tool with an interactive elicitation callback bound only to this call.
-    ///
-    /// Like [`Registry::run_tool`], this carries no call scope; see
-    /// [`Registry::run_tool_with_input_scoped`] for the scoped form.
-    pub fn run_tool_with_input(
-        &mut self,
-        name: &str,
-        arguments: &str,
-        host_tools: &mut HostToolBridge<'_>,
-        host_input: &mut HostInputFn<'_>,
-    ) -> Option<String> {
-        self.run_tool_with_input_scoped(
-            &CallScope::unscoped(),
-            name,
-            arguments,
-            host_tools,
-            host_input,
-        )
-        .into_output()
-    }
-
     /// Run an extension tool with a scoped input callback, reporting exactly
     /// how the call ended.
     pub fn run_tool_with_input_scoped(
@@ -462,9 +444,12 @@ impl Registry {
     /// ends as cancelled. Processes that do not stop on their own are still
     /// taken down by `Drop` and by the next shutdown, so a cancel never
     /// leaves a process the session can no longer account for.
-    // Consumed by the agent loop's cancel and shutdown reporting paths,
-    // which another task in this wave owns.
-    #[allow(dead_code)]
+    ///
+    /// Test-only for now: the live paths cancel through the per-turn
+    /// [`Cancel`] token the agent loop holds, which cancels exactly the
+    /// calls that belong to the turn rather than every loaded extension
+    /// indiscriminately.
+    #[cfg(test)]
     pub fn cancel_all(&self) {
         for e in &self.exts {
             e.cancel();

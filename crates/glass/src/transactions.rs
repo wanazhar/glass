@@ -16,6 +16,23 @@ struct Saved { workspace:std::path::PathBuf, changes:Vec<Change>, originals:Vec<
 fn request(c:&Change,preview:bool)->Value {json!({"path":c.path,"expected":c.expected,"text":c.text,"validate":c.validate,"preview":preview})}
 fn id_valid(id:&str)->bool {!id.is_empty()&&id.len()<100&&id.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'-')}
 fn persist(path:&Path,saved:&Saved)->Result<(),String> {crate::auth::secure_write(path,&serde_json::to_vec(saved).map_err(|e|e.to_string())?)}
+// One writer owns a journal through application or recovery. A recovery
+// command cannot roll back a batch that is still being applied.
+fn lock_receipt(path: &Path) -> Result<std::fs::File, String> {
+    let lock = path.with_extension("lock");
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(lock).map_err(|e| e.to_string())?;
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("Transaction lock must be a regular file".into());
+    }
+    fs2::FileExt::try_lock_exclusive(&file).map_err(|_| "Transaction is already applying or recovering".to_string())?;
+    Ok(file)
+}
 fn reverse(root:&Path,saved:&mut Saved,path:&Path)->Result<(),String> {
     while saved.applied>0 {
         let index=saved.applied-1;
@@ -55,6 +72,7 @@ pub fn execute(root:&Path,input:Value,apply:bool)->Result<Value,String> {
     let dir=crate::config::data_dir().join("transactions");
     std::fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
     let path=dir.join(format!("{id}.json"));
+    let _lock = lock_receipt(&path)?;
     let mut saved=Saved{workspace:root.clone(),changes:plan.files,originals,applied:0,state:"applying".into()};
     persist(&path,&saved)?;
     for index in 0..saved.changes.len() {
@@ -76,8 +94,10 @@ pub fn command(args:&[String])->Result<(),String> {
     let value=if action=="recover" {
         if args.len()!=2||!id_valid(args[1]) {return Err("gc transaction recover RECEIPT".into());}
         let path=crate::config::data_dir().join("transactions").join(format!("{}.json",args[1]));
+        let _lock = lock_receipt(&path)?;
         let mut saved:Saved=serde_json::from_slice(&crate::requests::bounded(&path,100*1024*1024)?).map_err(|e|e.to_string())?;
         let root=std::env::current_dir().map_err(|e|e.to_string())?.canonicalize().map_err(|e|e.to_string())?;
+        if saved.changes.is_empty() || saved.changes.len()>32 || saved.changes.iter().map(|c| c.text.len()).sum::<usize>() + saved.originals.iter().flatten().map(String::len).sum::<usize>() > 16*1024*1024 { return Err("Recovery receipt exceeds transaction bounds".into()); }
         if root!=saved.workspace||saved.applied>saved.changes.len()||saved.originals.len()!=saved.changes.len() {return Err("Recovery receipt workspace or bounds differ".into());}
         reverse(&root,&mut saved,&path)?;json!({"status":"recovered","receipt":args[1]})
     } else {
@@ -87,4 +107,20 @@ pub fn command(args:&[String])->Result<(),String> {
         execute(&std::env::current_dir().map_err(|e|e.to_string())?,serde_json::from_slice(&bytes).map_err(|e|e.to_string())?,action=="apply")?
     };
     if std::env::args().any(|a|a=="--json") {crate::emit_json(value);}else{crate::cli::report("File transaction",&value);}Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn receipt_lock_excludes_concurrent_recovery() {
+        let dir = std::env::temp_dir().join(format!("gc-transaction-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("receipt.json");
+        let guard = lock_receipt(&path).unwrap();
+        assert!(lock_receipt(&path).is_err());
+        drop(guard);
+        assert!(lock_receipt(&path).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

@@ -116,6 +116,11 @@ impl Cancel {
         self.flag.store(true, std::sync::atomic::Ordering::Release);
     }
 
+    /// Share cancellation with owned nested shell processes.
+    pub(crate) fn shared_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.flag.clone()
+    }
+
     /// Clear the flag. Only meaningful at a lifecycle boundary, where the
     /// previous holder has already given up the right to set it.
     pub fn reset(&self) {
@@ -1173,6 +1178,12 @@ impl Extension {
                     "replied without an output field".into(),
                 )),
             },
+            RequestOutcome::Cancelled(_) => {
+                // A half-finished serial exchange cannot be reused: its late
+                // reply could be mistaken for the next request's result.
+                let path = self.force_stop();
+                CallOutcome::stopped(CallStop::Cancelled(path))
+            }
             other => CallOutcome::stopped(other.stop()),
         }
     }
@@ -1246,6 +1257,11 @@ impl Extension {
                     "replied without an output field".into(),
                 )),
             },
+            RequestOutcome::Cancelled(_) => {
+                // The pending reply must never become the next call's reply.
+                let path = self.force_stop();
+                CallOutcome::stopped(CallStop::Cancelled(path))
+            }
             other => CallOutcome::stopped(other.stop()),
         }
     }

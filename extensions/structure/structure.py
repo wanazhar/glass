@@ -26,14 +26,14 @@ def source(path):
         file = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
         try:
             meta = os.fstat(file)
-            if not stat.S_ISREG(meta.st_mode) or meta.st_size > 8*1024*1024:
-                raise ValueError('Select a UTF-8 regular file up to 8 MiB')
+            if not stat.S_ISREG(meta.st_mode) or meta.st_size > 512*1024:
+                raise ValueError('Select a UTF-8 regular file up to 512 KiB')
             chunks = []; count = 0
             while True:
                 chunk = os.read(file, 65536)
                 if not chunk: break
                 chunks.append(chunk); count += len(chunk)
-                if count > 8*1024*1024: raise ValueError('File exceeds 8 MiB')
+                if count > 512*1024: raise ValueError('File exceeds 512 KiB')
             data = b''.join(chunks)
             after = os.fstat(file)
             if (meta.st_size, meta.st_mtime_ns, meta.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
@@ -44,6 +44,7 @@ def source(path):
 
 
 def transform(data, old, new, line=None, column=None, expression=False):
+    if len(data) > 512*1024: raise ValueError('AST input exceeds 512 KiB')
     text = data.decode('utf-8'); tree = ast.parse(text)
     offsets = [0]
     for row in data.splitlines(keepends=True): offsets.append(offsets[-1]+len(row))

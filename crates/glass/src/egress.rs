@@ -14,7 +14,7 @@
 //! panic the listener — the session's shell commands run through it.
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 
 use crate::sandbox::HostPolicy;
 
@@ -28,7 +28,8 @@ const MAX_RELAYS: usize = 32;
 /// wind down as their sockets close.
 pub struct Proxy {
     port: u16,
-    listener: std::thread::JoinHandle<()>,
+    listener: Option<std::thread::JoinHandle<()>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     policy: std::sync::Arc<HostPolicy>,
 }
 
@@ -44,13 +45,16 @@ impl Proxy {
             .port();
         let policy = std::sync::Arc::new(policy);
         let thread_policy = std::sync::Arc::clone(&policy);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_stop = stop.clone();
         let handle = std::thread::Builder::new()
             .name("glass-egress-proxy".into())
-            .spawn(move || serve(listener, thread_policy))
+            .spawn(move || serve(listener, thread_policy, worker_stop))
             .map_err(|e| format!("egress proxy spawn failed: {e}"))?;
         Ok(Self {
             port,
-            listener: handle,
+            listener: Some(handle),
+            stop,
             policy,
         })
     }
@@ -75,23 +79,18 @@ impl Proxy {
 
 impl Drop for Proxy {
     fn drop(&mut self) {
-        // Dropping the TcpListener is not possible once the thread owns it;
-        // the accept loop exits when it sees an error, and the process
-        // exit closes the descriptor. Connect-from-self forces the loop awake.
-        let port = self.port;
-        let _ = TcpStream::connect(("127.0.0.1", port));
-        // The thread heads a `listen` loop; it cannot be joined promptly
-        // without an explicit shutdown socket, so a leak here costs one
-        // thread at process exit only. Detached is the honest trade.
-        let _ = self.listener;
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        let _ = TcpStream::connect(("127.0.0.1", self.port));
+        if let Some(listener) = self.listener.take() { let _ = listener.join(); }
     }
 }
 
-fn serve(listener: TcpListener, policy: std::sync::Arc<HostPolicy>) {
+fn serve(listener: TcpListener, policy: std::sync::Arc<HostPolicy>, stop: std::sync::Arc<std::sync::atomic::AtomicBool>) {
     let relays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     loop {
         match listener.accept() {
             Ok((stream, _addr)) => {
+                if stop.load(std::sync::atomic::Ordering::Acquire) { break; }
                 if relays.load(std::sync::atomic::Ordering::SeqCst) >= MAX_RELAYS {
                     let mut s = stream;
                     let _ = s.write_all(b"HTTP/1.1 503 Service Unavailable\r\n\r\n");
@@ -99,15 +98,16 @@ fn serve(listener: TcpListener, policy: std::sync::Arc<HostPolicy>) {
                     continue;
                 }
                 let policy = std::sync::Arc::clone(&policy);
-                let relays = std::sync::Arc::clone(&relays);
+                relays.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let worker_relays = std::sync::Arc::clone(&relays);
                 let spawned = std::thread::Builder::new()
                     .name("glass-egress-relay".into())
                     .spawn(move || {
-                        relays.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         handle(stream, policy);
-                        relays.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                        worker_relays.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                     });
                 if spawned.is_err() {
+                    relays.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                     continue;
                 }
             }
@@ -128,9 +128,13 @@ fn serve(listener: TcpListener, policy: std::sync::Arc<HostPolicy>) {
 fn handle(mut client: TcpStream, policy: std::sync::Arc<HostPolicy>) {
     // Read the CONNECT preamble up to the blank line, capped so a long
     // header cannot allocate unbounded memory.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let _ = client.set_write_timeout(Some(std::time::Duration::from_secs(5)));
     let mut preamble = Vec::with_capacity(512);
     let mut byte = [0u8; 1];
     loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() || client.set_read_timeout(Some(remaining)).is_err() { return; }
         match client.read(&mut byte) {
             Ok(1) => {
                 preamble.push(byte[0]);
@@ -173,14 +177,19 @@ fn handle(mut client: TcpStream, policy: std::sync::Arc<HostPolicy>) {
         return;
     }
     // Tunnel open: connect upstream, reply 200, then blind relay both ways.
-    let upstream = match TcpStream::connect((&*host, 443)).or_else(|_| {
-        // Non-TLS ports (plain HTTP through CONNECT) connect with the port
-        // from the target when present.
-        match parse_host_port(rest) {
-            Some((h, p)) => TcpStream::connect((&*h, p)),
-            None => Err(std::io::Error::other("no port")),
-        }
-    }) {
+    let upstream = match parse_host_port(rest)
+        .ok_or_else(|| std::io::Error::other("invalid target port"))
+        .and_then(|(host, port)| (host.as_str(), port).to_socket_addrs())
+        .and_then(|addresses| {
+            let mut last = std::io::Error::other("no target addresses");
+            for address in addresses.take(8) {
+                match TcpStream::connect_timeout(&address, std::time::Duration::from_secs(3)) {
+                    Ok(stream) => return Ok(stream),
+                    Err(error) => last = error,
+                }
+            }
+            Err(last)
+        }) {
         Ok(s) => s,
         Err(e) => {
             let body = format!("HTTP/1.1 502 Bad Gateway\r\nContent-Length: {}\r\n\r\nupstream: {e}\n", (e.to_string().len())+10usize);
@@ -193,6 +202,7 @@ fn handle(mut client: TcpStream, policy: std::sync::Arc<HostPolicy>) {
         .ok();
     let _ = client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n");
     let _ = client.flush();
+    let _ = client.set_read_timeout(Some(std::time::Duration::from_secs(300)));
     relay(client, upstream);
 }
 
@@ -297,4 +307,23 @@ mod tests {
         let proxy = Proxy::spawn(HostPolicy::new(vec!["127.0.0.1".into()], vec![])).unwrap();
         assert!(proxy.url().starts_with("http://127.0.0.1:"), "{}", proxy.url());
     }
+    #[test]
+    fn connect_uses_requested_port_and_drop_releases_listener() {
+        let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        upstream.set_nonblocking(true).unwrap();
+        let target_port = upstream.local_addr().unwrap().port();
+        let proxy = Proxy::spawn(HostPolicy::new(vec!["127.0.0.1".into()], vec![])).unwrap();
+        let proxy_port = proxy.port();
+        let mut client = TcpStream::connect(("127.0.0.1", proxy_port)).unwrap();
+        client.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+        write!(client, "CONNECT 127.0.0.1:{target_port} HTTP/1.1\r\n\r\n").unwrap();
+        let mut response = [0; 128];
+        let count = client.read(&mut response).unwrap();
+        assert!(String::from_utf8_lossy(&response[..count]).contains("200 Connection Established"));
+        assert!(upstream.accept().is_ok(), "requested endpoint accepted the tunnel");
+        drop(client);
+        drop(proxy);
+        assert!(TcpStream::connect(("127.0.0.1", proxy_port)).is_err());
+    }
+
 }

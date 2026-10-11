@@ -6,10 +6,9 @@
 //! glass-core: the sandbox policy and credential-scrub switch. Project
 //! settings cannot relax user restrictions, so this layer sits above every
 //! other source: whatever `requirements.toml` says wins, and corruption
-//! fails closed (a corrupted file forces nothing and warns — it never
-//! silently passes a setting through as if it were an operator choice).
+//! fails closed: loading errors abort launch before any turn can execute.
 //!
-//! Unknown keys are skipped with a warning rather than rejected: the point
+//! Unknown keys are ignored rather than rejected: the point
 //! of the layer is a small, auditable force list, not a second schema.
 
 use std::path::Path;
@@ -26,7 +25,7 @@ pub struct Requirements {
 
 /// Load `requirements.toml` from the config directory. A missing file is
 /// the normal no-requirements case; a corrupted file is refused loudly
-/// (the layer forces nothing) rather than guessed at.
+/// (launch is refused) rather than guessed at.
 pub fn load(dir: &Path) -> Result<Requirements, String> {
     let path = dir.join("requirements.toml");
     let text = match std::fs::read_to_string(&path) {

@@ -428,7 +428,7 @@ mod tests {
         assert_eq!(crate::theme::current(), 0);
         assert_eq!(
             crate::theme::color(crate::theme::Tone::Accent),
-            ratatui::style::Color::Indexed(81)
+            if crate::theme::no_color() { ratatui::style::Color::Reset } else { ratatui::style::Color::Indexed(81) }
         );
 
         let assistant = build_lines("A plain answer", Role::Assistant, 40);

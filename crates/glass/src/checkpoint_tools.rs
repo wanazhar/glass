@@ -108,9 +108,13 @@ pub fn rewind(call: &ToolCall, session: &mut Session) -> Outcome {
             // Elide the middle of an over-long report; the start and end are
             // what carry meaning, and the log keeps this bound visible.
             if r.len() > MAX_REPORT_BYTES {
-                let head = &r[..MAX_REPORT_BYTES / 2];
-                let tail = &r[r.len() - MAX_REPORT_BYTES / 2..];
-                format!("{head}\n…[{over} bytes elided; full text lives in the raw log]…\n{tail}", over = r.len() - MAX_REPORT_BYTES)
+                let mut head_end = MAX_REPORT_BYTES / 2;
+                while !r.is_char_boundary(head_end) { head_end -= 1; }
+                let mut tail_start = r.len() - MAX_REPORT_BYTES / 2;
+                while !r.is_char_boundary(tail_start) { tail_start += 1; }
+                let head = &r[..head_end];
+                let tail = &r[tail_start..];
+                format!("{head}\n…[{over} bytes elided; full text lives in the raw log]…\n{tail}", over = tail_start - head_end)
             } else {
                 r
             }
@@ -346,7 +350,7 @@ mod tests {
         let mut s = fresh_session();
         s.append(Record::User("start".into()));
         checkpoint(&call("checkpoint", r#"{"label":"probe"}"#), &mut s);
-        let long = format!("HEAD{}\n{}\nTAIL", "x".repeat(9_000), "y".repeat(9_000));
+        let long = format!("HEAD{}😀\n{}\n😀TAIL", "x".repeat(2043), "界".repeat(3_000));
         let out = rewind(
             &call("rewind", &format!(r#"{{"report":{}}}"#, serde_json::to_string(&long).unwrap())),
             &mut s,

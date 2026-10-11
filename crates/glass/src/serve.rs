@@ -381,7 +381,9 @@ pub fn serve(
                 let _ = stream.set_nonblocking(true);
                 let mut slots = clients.borrow_mut();
                 if slots.len() >= MAX_CLIENTS {
-                    slots.remove(0);
+                    // Preserve existing clients, particularly the input owner.
+                    drop(stream);
+                    continue;
                 }
                 client_sequence = client_sequence.checked_add(1).ok_or("Client sequence exhausted")?;
                 slots.push(Client {
@@ -482,7 +484,12 @@ pub fn serve(
         }
         match message.get("t").and_then(Value::as_str) {
             Some("control") => {
-                let release=message["action"].as_str()==Some("release");
+                let action = message["action"].as_str();
+                if !matches!(action, Some("claim" | "release")) {
+                    to_origin(json!({"t":"error","message":"Control action must be claim or release"}));
+                    continue;
+                }
+                let release=action==Some("release");
                 if release && sender_id==owner.get() { owner.set(None); }
                 else if !release && owner.get().is_none() { owner.set(sender_id); }
                 to_origin(json!({"t":"control","owner":owner.get(),"client":sender_id,"can_write":sender_id.is_some()&&sender_id==owner.get()}));

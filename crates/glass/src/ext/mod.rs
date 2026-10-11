@@ -19,7 +19,7 @@ pub struct Registry {
     exts: Vec<Extension>,
     failures: Vec<String>,
     sources: std::collections::BTreeMap<String, String>,
-    runner_factory: Option<Box<dyn Fn() -> SubagentFn>>,
+    runner_factory: Option<Box<dyn Fn() -> SubagentFn + Send>>,
     /// The tool list declared to the model, frozen after the
     /// first turn. See [`Registry::declared_tools`].
     frozen_tools: Option<Vec<(String, String, String)>>,
@@ -101,7 +101,7 @@ impl Registry {
     /// Only the extension that declares the `subagent` tool will
     /// actually invoke it; the rest hold an unused runner, which
     /// is cheap — an `Arc` clone and a `PathBuf`.
-    pub fn set_subagent(&mut self, make: impl Fn() -> SubagentFn + 'static) {
+    pub fn set_subagent(&mut self, make: impl Fn() -> SubagentFn + Send + 'static) {
         for ext in self.exts.iter_mut() {
             ext.set_subagent(make());
         }

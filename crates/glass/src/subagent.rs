@@ -94,15 +94,10 @@ pub fn run_task(
         let mut state = tools::State::new();
         let mods: Vec<Box<dyn glass_mod_api::Mod_>> = Vec::new();
         let mut registry = ext::Registry::empty();
-        // Cache affinity (opencode's session-affinity idea, adapted): a
-        // subagent without its own persona runs under the parent's system
-        // prompt, so its provider-side cacheable prefix equals the parent's —
-        // the first request can hit the cache the parent just wrote instead
-        // of paying a second full prefix write. A task that names its own
-        // persona keeps an isolated prefix, by design.
-        let base = parent_prompt
-            .map(str::to_string)
-            .unwrap_or_else(|| compose_prompt(task));
+        // Reuse only the raw base prompt for tasks without a persona. This
+        // does not imply equal provider cache keys: tools, project context
+        // and extension prompts can differ from the parent request.
+        let base = task_prompt(task, parent_prompt);
         let mut agent = Agent::new(
             provider.as_ref(),
             &mut session,
@@ -129,6 +124,14 @@ pub fn run_task(
 ///
 /// An agent definition body replaces the default framing; the task text
 /// is always appended so a custom persona cannot lose the assignment.
+fn task_prompt(task: &SubagentTask, parent: Option<&str>) -> String {
+    if task.prompt.as_ref().is_some_and(|prompt| !prompt.trim().is_empty()) {
+        compose_prompt(task)
+    } else {
+        parent.map(str::to_owned).unwrap_or_else(|| compose_prompt(task))
+    }
+}
+
 pub fn compose_prompt(task: &SubagentTask) -> String {
     let tools = if task.read_only {
         "the read-only inspection tools (list, read, search). You cannot modify anything"
@@ -371,7 +374,7 @@ mod tests {
         assert!(!got.is_empty(), "the subagent must have made a request");
         assert!(
             got.iter().all(|s| s == parent),
-            "every request must carry the parent's prefix for cache affinity, got: {got:?}"
+            "every request must carry the inherited raw base prompt, got: {got:?}"
         );
         let _ = std::fs::remove_dir_all(&scratch);
     }
@@ -380,10 +383,8 @@ mod tests {
     fn a_persona_task_keeps_its_own_prefix() {
         let mut t = task("do a thing");
         t.prompt = Some("You are a custom agent.".into());
-        let _ = compose_prompt(&t);
-        // The affinity decision only substitutes when no persona was given;
-        // run_task consults `task.prompt` in compose_prompt, so a persona
-        // task keeps the isolated prefix it already opted into.
-        assert!(compose_prompt(&t).starts_with("You are a custom agent."));
+        assert!(task_prompt(&t, Some("parent prompt")).starts_with("You are a custom agent."));
+        t.prompt = None;
+        assert_eq!(task_prompt(&t, Some("parent prompt")), "parent prompt");
     }
 }

@@ -17,6 +17,10 @@ fn values(c:&config::Config)->BTreeMap<String,Value> {
 }
 
 pub fn snapshot(effective:&config::Config)->Result<Value,String> {
+    let requirements = crate::requirements::load(&config::config_dir())?;
+    let mut governed = effective.clone();
+    crate::requirements::apply(&requirements, &mut governed);
+    let effective = &governed;
     let mut candidate=config::load(&config::default_path()).map_err(|e|e.to_string())?;
     candidate.workspace=effective.workspace.clone();
     let mut current=values(&candidate);
@@ -41,9 +45,11 @@ pub fn snapshot(effective:&config::Config)->Result<Value,String> {
         apply("workspace profile",&candidate);
     }
     apply("current process override",effective);
+    if requirements.sandbox.is_some() { sources.insert("sandbox".into(), "admin requirement".into()); }
+    if requirements.sandbox_env.is_some() { sources.insert("sandbox_env".into(), "admin requirement".into()); }
     let rows=values(effective).into_iter().map(|(key,value)|json!({"setting":key,"value":value,"source":sources.get(&key)})).collect::<Vec<_>>();
     Ok(json!({"schema_version":1,"active_workspace_profile":active,"settings":rows,
-        "precedence":["defaults","global configuration","active saved connection","extension preferences","workspace profile","current process override"],
+        "precedence":["defaults","global configuration","active saved connection","extension preferences","workspace profile","current process override","admin requirement"],
         "attribution":"Source is the last layer that changed a value; explicitly equal overrides cannot be distinguished from defaults by value comparison.",
         "redaction":"Endpoint URLs, executable arguments, prompt contents and credentials are omitted; fingerprints identify changes.",
         "reset":"Use /profiles → Use global settings for this workspace to remove the profile binding. Existing saved profiles are preserved."}))

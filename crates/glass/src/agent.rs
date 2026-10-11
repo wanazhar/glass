@@ -1166,9 +1166,6 @@ impl<'a> Agent<'a> {
     /// the count matches what actually runs, independent of batching mode.
     fn loop_guard(&mut self, call: &ToolCall) {
         self.tool_call_index = self.tool_call_index.saturating_add(1);
-        if call.name != "bash" && call.name != "state" {
-            return;
-        }
         if self.loop_window.record(&call.name, &call.arguments) {
             let reminder = crate::loop_detect::reminder(&call.name);
             self.emit(Progress::ProviderNotice(&reminder));
@@ -1344,7 +1341,7 @@ impl<'a> Agent<'a> {
         call: &ToolCall,
         pump: &mut impl FnMut(&mut Option<String>),
     ) {
-        if call.name == "bash" {
+        if call.name == "bash" || self.extensions.has_tool(&call.name) {
             self.run_tool_pumped(call, pump);
         } else {
             self.run_tool(call);
@@ -1370,7 +1367,7 @@ impl<'a> Agent<'a> {
     fn run_tool_pumped(&mut self, call: &ToolCall, pump: &mut impl FnMut(&mut Option<String>)) {
         // `bash` and `state` are the only built-ins that can block, and only
         // `bash` is worth a worker thread. Everything else is microseconds.
-        if call.name != "bash" {
+        if call.name != "bash" && !self.extensions.has_tool(&call.name) {
             self.run_tool(call);
             return;
         }
@@ -1421,6 +1418,10 @@ impl<'a> Agent<'a> {
         // invisible in the default view.
         self.emit_tool_start(call);
 
+        if self.extensions.has_tool(&call.name) {
+            self.run_ext_observably(call, pump);
+            return;
+        }
         // Read-before-write is checked here rather than in `run_tool`, because a
         // bash call on this path never passes through `run_tool`: it goes
         // straight to a worker thread. Checking in one place and dispatching
@@ -1489,6 +1490,151 @@ impl<'a> Agent<'a> {
         }
     }
 
+    /// Keep input live while an extension runs. Scoped borrowing retains the
+    /// registry and the actual state even if the worker fails; one channel
+    /// carries the result, and interactive requests return to the UI thread.
+    fn run_ext_observably(&mut self, call: &ToolCall, pump: &mut impl FnMut(&mut Option<String>)) {
+        let scope = crate::ext::CallScope::from_call(&call.id, self.turn_cancel.clone());
+        let cancel = self.turn_cancel.clone();
+        let keys = self.input_keys;
+        let workspace = self.workspace;
+        let owner = self.session.id.clone();
+        let registry = &mut *self.extensions;
+        let state = &mut *self.state;
+        let session = &mut *self.session;
+        let steer = &mut self.steer;
+        type InputRequest = (
+            String,
+            serde_json::Value,
+            std::sync::mpsc::Sender<serde_json::Value>,
+        );
+        let (inputs_tx, inputs_rx) = std::sync::mpsc::channel::<InputRequest>();
+        let (state_tx, state_rx) =
+            std::sync::mpsc::channel::<(String, std::sync::mpsc::Sender<String>)>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let interactive = keys.is_some();
+        let mut body = std::thread::scope(|threads| {
+            let worker = threads.spawn(move || {
+                let mut bridge = |tool: &str, arguments: &str| {
+                    if tool == "state" {
+                        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+                        if state_tx.send((arguments.to_owned(), reply_tx)).is_err() {
+                            return "error: state writer unavailable".into();
+                        }
+                        return reply_rx
+                            .recv()
+                            .unwrap_or_else(|_| "error: state writer unavailable".into());
+                    }
+                    if tool == "bash" {
+                        let nested = ToolCall { id: format!("{}-nested", call.id), name: "bash".into(), arguments: arguments.to_owned() };
+                        return tools::bash_owned(&nested, workspace, &scope.cancel.shared_flag(), &crate::sandbox::SessionApprovals::default(), Some(&owner)).body;
+                    }
+                    format!("error: extensions may only call bash or state, not `{tool}`")
+                };
+                let output = {
+                    if interactive {
+                        let mut input = |server: &str, params: &serde_json::Value| {
+                            let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+                            if inputs_tx
+                                .send((server.to_owned(), params.clone(), reply_tx))
+                                .is_err()
+                            {
+                                return serde_json::json!({"action":"decline"});
+                            }
+                            loop {
+                                match reply_rx.recv_timeout(std::time::Duration::from_millis(25)) {
+                                    Ok(value) => return value,
+                                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                                        if !scope.cancel.is_cancelled() => {}
+                                    _ => return serde_json::json!({"action":"decline"}),
+                                }
+                            }
+                        };
+                        registry
+                            .run_tool_with_input_scoped(
+                                &scope,
+                                &call.name,
+                                &call.arguments,
+                                &mut bridge,
+                                &mut input,
+                            )
+                            .describe(&call.name)
+                    } else {
+                        registry
+                            .run_tool_scoped(&scope, &call.name, &call.arguments, &mut bridge)
+                            .describe(&call.name)
+                    }
+                };
+                let _ = done_tx.send(output);
+            });
+            let output = loop {
+                match done_rx.try_recv() {
+                    Ok(body) => break body,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        break "error: extension worker stopped without a result".into();
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+                if let Ok((arguments, reply)) = state_rx.try_recv() {
+                    let previous = state.clone();
+                    let nested = ToolCall {
+                        id: format!("{}-nested", call.id),
+                        name: "state".into(),
+                        arguments,
+                    };
+                    let mut output = state.apply(&nested).body;
+                    if previous.items() != state.items()
+                        && let Err(error) = session.append_checked(&[Record::State(state.items().to_vec())])
+                    {
+                        *state = previous;
+                        output = format!("error: nested state was rolled back: {error}");
+                    }
+                    let _ = reply.send(output);
+                }
+                if let Ok((server, params, reply)) = inputs_rx.try_recv() {
+                    let value = if cancel.is_cancelled() {
+                        serde_json::json!({"action":"decline"})
+                    } else if let Some(keys) = keys {
+                        crate::input::mcp_input_callback(keys)(&server, &params)
+                    } else {
+                        serde_json::json!({"action":"decline"})
+                    };
+                    let _ = reply.send(value);
+                }
+                pump(steer);
+                if steer.is_some() {
+                    cancel.cancel();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            if worker.join().is_err() {
+                "error: extension worker panicked; partial state retained for persistence".into()
+            } else {
+                output
+            }
+        });
+        let before = self.state.clone();
+        with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
+            self.extensions
+                .rewrite_tool_result(&call.id, &call.name, &mut body, bridge)
+        });
+        if let Err(error) = self.persist_state_change(before) {
+            body = error;
+        }
+        self.finish_tool(
+            call,
+            tools::Outcome {
+                body,
+                truncated: false,
+                exit_code: None,
+                spill: None,
+            },
+        );
+        for (kind, data) in self.extensions.drain_custom() {
+            self.session.append(Record::Custom { kind, data });
+        }
+    }
+
     /// Record a bash result produced on a worker thread.
     fn apply_bash_result(&mut self, call: &ToolCall, outcome: tools::Outcome) {
         let state_before = self.state.clone();
@@ -1507,6 +1653,11 @@ impl<'a> Agent<'a> {
         // place every bash result passes through, whether it ran inline or on a
         // worker thread.
         let touched = verify::written_paths(&command, self.workspace);
+        for path in touched.iter().take(16) {
+            if let Some(hint) = self.reads.staleness_hint(path, self.tool_call_index) {
+                body.push_str(&format!("\n{}: {hint}", path.display()));
+            }
+        }
         if !touched.is_empty() {
             let note = verify::report(&touched, self.workspace, VERIFY_TAIL_LINES);
             if !note.is_empty() {
@@ -1739,25 +1890,7 @@ impl<'a> Agent<'a> {
                 };
             } else {
                 outcome = self.state.apply(call);
-                // Staleness hint for editing results: an edit against a file
-                // last read many tool calls ago gains one line, so the model
-                // rereads before stacking further edits. The revision guard
-                // already rejects genuinely stale writes; this covers the
-                // model's memory, which the guard cannot see.
-                let target = call
-                    .arg_str("path")
-                    .or_else(|| call.arg_str("file"));
-                if let (true, Some(hint), Some(path)) = (
-                    call.name == "state" && !outcome.body.is_empty(),
-                    target
-                        .as_ref()
-                        .and_then(|p| self.reads.staleness_hint(Path::new(p), self.tool_call_index)),
-                    target,
-                ) {
-                    let _ = path;
-                    outcome.body.push('\n');
-                    outcome.body.push_str(&hint);
-                }
+
             }
         } else if self.extensions.has_tool(&call.name) {
             // The bridge lets an extension call tools on the host while it
@@ -2988,8 +3121,6 @@ mod ext_cancel_tests {
     use crate::ext::Registry;
     use std::path::Path;
 
-    fn no_pump(_: &mut Option<String>) {}
-
     fn python() -> Option<String> {
         for c in ["python3", "python"] {
             if std::process::Command::new(c)
@@ -3025,6 +3156,7 @@ for line in sys.stdin:
         time.sleep(30)
         send({{"id":i,"output":"finished"}})
     elif t=="goodbye": break
+    else: send({{"id":i,"allow":True}})
 "#, crate::ext::protocol::PROTOCOL_VERSION)).unwrap();
         let mut extensions =
             Registry::load(&[format!("{py} {}", script.display())], Path::new("."), "mock");
@@ -3044,8 +3176,17 @@ for line in sys.stdin:
         .with_prompt("turn".into(), None, None);
         // The provider asks for the slow tool; the steer arrives while the
         // tool is blocked, so the turn stops waiting for the extension.
-        agent.steer = Some("do something else".into());
-        let _ = agent.run_turn(no_pump);
+        let started = std::time::Instant::now();
+        let tool = ToolCall { id: "call_slow".into(), name: "slow".into(), arguments: "{}".into() };
+        agent.run_tool_pumped_or_inline(&tool, &mut |steer| {
+            if started.elapsed() >= std::time::Duration::from_millis(100) {
+                *steer = Some("do something else".into());
+            }
+        });
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        assert!(agent.extensions.has_tool("slow"), "registry retained after cancellation");
+        assert_eq!(agent.session.records.iter().filter(|r| matches!(r, Record::ToolResult {call_id, ..} if call_id == "call_slow")).count(), 1);
+        assert!(!agent.session.records.iter().any(|r| matches!(r, Record::Bash {..})), "extension results are not shell results");
 
         // The token carried into the extension host is tripped, so the
         // extension's exchange is abandoned rather than waited out.

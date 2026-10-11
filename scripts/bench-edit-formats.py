@@ -72,7 +72,7 @@ def main():
             line = len(source.splitlines()) // 2
             for kind in ["revision", "hashline"]:
                 read_ms, edit_ms = [], []
-                request_bytes, response_bytes = [], []
+                request_bytes, response_bytes, correctness = [], [], []
                 for _ in range(args.repeats):
                     path = root / "fixture.txt"
                     path.write_bytes(source)
@@ -99,8 +99,8 @@ def main():
                     expected_lines = source.splitlines(keepends=True)
                     ending = b"\r\n" if source.endswith(b"\r\n") else b"\n"
                     expected_lines[line-1] = b"changed" + ending
-                    correct = result == b"".join(expected_lines)
-                rows.append({"fixture":label,"format":kind,"source_bytes":len(source),"read_median_ms":statistics.median(read_ms),"edit_median_ms":statistics.median(edit_ms),"edit_request_bytes":statistics.median(request_bytes),"read_and_edit_response_bytes":statistics.median(response_bytes),"exact_expected_bytes":correct,"result_sha256":hashlib.sha256(result).hexdigest()})
+                    correctness.append(result == b"".join(expected_lines))
+                rows.append({"fixture":label,"format":kind,"source_bytes":len(source),"read_median_ms":statistics.median(read_ms),"edit_median_ms":statistics.median(edit_ms),"edit_request_bytes":statistics.median(request_bytes),"read_and_edit_response_bytes":statistics.median(response_bytes),"exact_expected_bytes":all(correctness),"result_sha256":hashlib.sha256(result).hexdigest()})
     print(json.dumps({"method":"Fresh process per read/edit for both paths; filesystem cache not flushed. Hashline worker uses bundled read_lines/apply_ops; no model success-rate inference.","repeats":args.repeats,"rows":rows}, indent=2))
 
 

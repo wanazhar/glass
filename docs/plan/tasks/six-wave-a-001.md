@@ -118,3 +118,15 @@ type: recency and stickiness derive from existing records.
   4 KiB). The hint lookup is one HashMap probe per state edit.
 - Pending: headless two-subagent cache-write delta and PTY transcript
   checks, run with the final wave verification.
+
+## Integrated review correction (2026-10-11)
+
+Raw base-prompt reuse is implemented for persona-free tasks; explicit personas
+must take precedence. Full parent/child cache affinity is not established: the
+parent's effective prompt, tool schemas, project instructions and extension
+context may differ. The earlier claim of equal provider cache prefixes and
+measured duplicate warm-write savings is withdrawn pending exact identity and
+provider usage evidence. No token-saving figure is claimed for this feature.
+
+Read-recency notices belong to observed shell write results, not state notes.
+Loop detection includes extension tools as well as built-ins.

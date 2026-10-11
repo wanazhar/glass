@@ -184,29 +184,33 @@ delivered and the remaining state-ownership surface stays open.
 
 ## Waves A–E delivered 2026-10-11 (six-codebase feature wave)
 
+These waves use candidate numbers from `research/six-codebases-2026-10-10.md`,
+not the original 43-item roadmap. They do not close identically numbered rows
+in the acceptance table above.
+
 Five parallel task branches merged to master, each behind its own task file
 with disjoint path ownership, each green on strict clippy and the full test
 suite before merge. Commit per wave:
 
-- `e06417d` (wave A, items 1–3, 15): loop detection module, read recency /
+- `e06417d` (wave A; six-codebase candidates 1–3, 15): loop detection module, read recency /
   staleness hints, sticky routing, cache affinity.
-- `3e8fc78` (wave B, items 7, 9, 10): process hardening (ctor hardening
+- `3e8fc78` (wave B; six-codebase candidates 7, 9, 10): process hardening (ctor hardening
   strip), admin `requirements.toml` layer, egress policy proxy with per-
   permission-profile allow/deny. [Smoke](../../../scripts/smoke-egress.py) PASS.
-- `06ba3b2` (wave C, items 11–14): model-invoked checkpoint/rewind with the
+- `06ba3b2` (wave C; six-codebase candidates 11–14): model-invoked checkpoint/rewind with the
   durable `Record::Checkpoint` marker and projection drop; extension-tool
   `wait` on the attention rows; prewalk cheap-model handoff with a headless
   `gc prewalk --check` gate; branch summarization past the 60-record gap.
   [checkpoint/rewind](../../../scripts/smoke-checkpoint-rewind.py) and
   [wait](../../../scripts/smoke-wait.py) PASS.
-- `1b8ea54` (wave D, items 5, 6, 20, 21): bounded mermaid flowchart
+- `1b8ea54` (wave D; six-codebase candidates 5, 6, 20, 21): bounded mermaid flowchart
   renderer gated by `mermaid = true` (caps fall back to source); bounded
   fs-scan walk cache for plugins/skills with counters in `gc usage`;
   content-addressed spill blobs (`blob:<sha256>`, atomic rename, dedup);
   OSC 8 hyperlinks behind a conservative TERM gate.
   [mermaid](../../../scripts/smoke-mermaid.py) and
   [blob addressing](../../../scripts/smoke-blob-addressing.py) PASS.
-- `74bb707` (wave E, items 4, 8, 16, 25): pre-tool-use shell hook (exit 2
+- `74bb707` (wave E; six-codebase candidates 4, 8, 16, 25): pre-tool-use shell hook (exit 2
   block with stdout as the refusal body, 49 cancels the turn, others
   warn-and-allow, 3 s bounded, process-group killed, sequential, never in
   read-only mode); typed `TurnEvent` publish from the turn boundaries with
@@ -281,3 +285,16 @@ integration; clippy `-D warnings` clean.
   and same-rank nodes render with their own edges.
 - Evidence: 3 new state tests + existing mermaid tests green; full suite
   696+13+93; clippy -D warnings; smoke-mermaid rerun green.
+
+## Integrated implementation audit, 2026-10-11
+
+[Review and corrections](../reviews/merged-roadmap-2026-10-11.md): fixed extension
+steering, nested state receipt persistence, cancelled-exchange isolation, Unicode
+rewind reports, proxy lifecycle/port/worker bounds, subagent persona precedence,
+read-recency wiring, extension loop detection, remote ownership, transaction
+recovery locking and adapter cleanup/bounds. Admin requirements are now shown in
+settings provenance. Raw prompt reuse is not a verified full-prefix cache-affinity
+implementation; the earlier equal-cache-prefix/savings claim is withdrawn.
+
+Original-roadmap acceptance gaps are still open unless explicitly verified above.
+Six-codebase candidate numbers are not interchangeable with original roadmap IDs.

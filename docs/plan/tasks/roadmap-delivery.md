@@ -2,13 +2,18 @@
 
 Source: [43-item roadmap](../../../research/t3code-parity-2026-10-10.md).
 
-Status: in progress. All items are authorized. Existing primitives do not count as completed workflows. Root implements the full sweep; Luna medium reviews only after implementation. Slice commits are allowed; builds, regression execution and actual release PTYs run in the final pass. Each delivery requires measured performance where the hot path changes.
+Status: complete for the original 43 bounded roadmap workflows. The current item-by-item acceptance map is
+[Roadmap completion, 2026-10-11](../reviews/roadmap-completion-2026-10-11.md).
+The chronological checkpoints below retain their original gap statements;
+they describe their checkpoint date, not the latest implementation state.
+Final builds, review, release PTYs and performance evidence are recorded in the
+current acceptance map.
 
 ## Verified checkpoint
 
 `7e08f2b`: tooling and turn recovery foundation. [Evidence](../reviews/tooling-foundation-001.md). This is partial delivery of items 3 and 38–43.
 
-## Acceptance gaps from source review
+## Historical acceptance gaps from initial source review
 
 | Items | Remaining delivery |
 | --- | --- |
@@ -296,5 +301,6 @@ recovery locking and adapter cleanup/bounds. Admin requirements are now shown in
 settings provenance. Raw prompt reuse is not a verified full-prefix cache-affinity
 implementation; the earlier equal-cache-prefix/savings claim is withdrawn.
 
-Original-roadmap acceptance gaps are still open unless explicitly verified above.
+This checkpoint preceded the final workflow completion sweep; use the current
+acceptance map linked at the top for the latest status.
 Six-codebase candidate numbers are not interchangeable with original roadmap IDs.

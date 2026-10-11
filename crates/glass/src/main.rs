@@ -821,6 +821,9 @@ fn run(args: &[String]) -> Result<(), String> {
             if head.starts_with("classDiagram") {
                 return crate::mermaid::parse_class(body, width);
             }
+            if head.starts_with("erDiagram") {
+                return crate::mermaid::parse_er(body, width);
+            }
             crate::mermaid::parse(body).and_then(|chart| crate::mermaid::render(&chart, width))
         });
     glass_tui::markdown::set_mermaid_renderer(mermaid_renderer);

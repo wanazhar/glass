@@ -86,3 +86,31 @@ Do not edit `agent.rs`, `ext/**`, `subagent.rs`, `attention.rs`,
 - PTY: `/tools` lists the two new cards with the shared card presenter;
   rewind projection visible in history at 40×24; 20×8 shows the focusable
   detail row per existing dialog rules.
+
+## Shipped (2026-10-11)
+
+- `Record::Checkpoint { label, log_len, rewind_summary }` in session.rs with
+  replay-safe serialization; open checkpoint hides later records from the
+  projection, a rewind injects the retained report as a system note.
+- `checkpoint_tools.rs`: `checkpoint` (label ≤ 80 B), `rewind` (report ≤ 4 KiB,
+  start/end preserved with the middle elided but full text noted), `wait`
+  (default 60 s, cap 300 s, polls the attention summary rows — same taxonomy,
+  no second event source).
+- Schemas registered via `provider::checkpoint_tool_schemas`, gated by
+  `checkpoint_tools = true` (zero schema bytes when off). Dispatch in
+  agent.rs `run_tool` (fixed: the branch was nested under `state`).
+- Prewalk: `prewalk = "MODEL"` config, `/prewalk` `/prewalk off` commands,
+  one durable `Record::System` handoff note, next turn routes via
+  `runtime_config`; headless `gc prewalk --check [--json] [SESSION]` reports
+  the read-only gate (pending plan, failing tail, target configured).
+- Branch summarization: `compact::BRANCH_SUMMARY_GAP` (60) with an extractive
+  `branch_summary` (last assistant action, ≤ 4 named files, action bounded at
+  200 chars) injected when the compaction gap exceeds the bound.
+- Smoke: `scripts/smoke-checkpoint-rewind.py` (marker durable, rewind retains
+  the report, exploration kept in the raw log, tools absent when off);
+  `scripts/smoke-wait.py` (bounded timeout line; a recorded command failure
+  later wakes wait from the attention rows).
+- Tests: 637 unit tests + 13 doc + 91 integration green; clippy `-D warnings`
+  clean. Notable fixes en route: wait parsed `seconds` as JSON number via
+  `arg_raw` (arg_str only unquotes strings); tool schemas carried string
+  `maxLength`/`maximum` literals the validator rejects — now numeric.

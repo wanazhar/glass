@@ -89,6 +89,21 @@ pub fn markdown(session: &Session, thinking: bool, records: &[Record]) -> String
             Record::ContextEdit { turn, mode, .. } => {
                 out.push_str(&format!("_[context edit: turn {turn} {mode}]_\n\n"));
             }
+            Record::Checkpoint {
+                label,
+                rewind_summary,
+                ..
+            } => {
+                // Checkpoints are real events: the mark names what the model
+                // was preserving; a rewind carries the retained report.
+                if let Some(report) = rewind_summary {
+                    out.push_str(&format!(
+                        "_[checkpoint `{label}` rewound — retained report]_\n\n{report}\n\n"
+                    ));
+                } else {
+                    out.push_str(&format!("_[checkpoint `{label}` marked]_\n\n"));
+                }
+            }
             // A bash tool result duplicates the Bash record above; log
             // metadata and the call/result plumbing are not content.
             Record::ToolResult { .. }

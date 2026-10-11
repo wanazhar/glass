@@ -13,6 +13,7 @@ mod btw;
 mod budget;
 mod capture;
 mod checkpoint;
+mod checkpoint_tools;
 mod cli;
 mod compact;
 mod completions;
@@ -145,9 +146,53 @@ fn main() {
         } else {
             cli::error("glass-core doctor", message);
         }
-        std::process::exit(2);
+        std::process::exit(2);    }
+    // Headless prewalk gate (task six-wave-c-001): `gc prewalk --check SESSION`
+    // reports whether the newest (or named) session ends with a pending plan
+    // and no failing tool state — the precondition `/prewalk` runs under
+    // interactively. Purely a read; it never routes.
+    if args.first().is_some_and(|a| a == "prewalk") {
+        let rest = &args[1..];
+        if !rest.iter().any(|a| a.as_str() == "--check") {
+            crate::cli::error("Prewalk", "gc prewalk --check SESSION\ngc prewalk --check        (newest session)");
+            std::process::exit(2);
+        }
+        let result = (|| -> Result<(), String> {
+            let cfg = config::load(&config::default_path()).map_err(|e| e.to_string())?;
+            let dir = config::data_dir();
+            let id = match rest.iter().position(|a| a.as_str() == "--check") {
+                Some(p) if p + 1 < rest.len() => rest[p + 1].clone(),
+                _ => {
+                    let mut rows: Vec<(std::time::SystemTime, String)> = std::fs::read_dir(&dir)
+                        .map_err(|e| format!("{}: {e}", dir.display()))?
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+                        .filter_map(|e| {
+                            let m = e.metadata().ok()?;
+                            Some((m.modified().ok()?, e.path().file_stem()?.to_string_lossy().into_owned()))
+                        })
+                        .collect();
+                    rows.sort_by_key(|r| std::cmp::Reverse(r.0));
+                    rows.into_iter().next().map(|(_, id)| id).ok_or_else(|| format!("no sessions in {}", dir.display()))?
+                }
+            };
+            let session = Session::open_readonly(&dir, &id).map_err(|e| e.to_string())?;
+            let gate = crate::checkpoint_tools::prewalk_gate(&session, &cfg.prewalk);
+            if rest.iter().any(|a| a.as_str() == "--json") {
+                emit_json(gate);
+            } else {
+                crate::cli::report("Prewalk", &gate);
+            }
+            Ok(())
+        })();
+        return match result {
+            Ok(()) => (),
+            Err(error) => {
+                cli::error("Prewalk", &error);
+                std::process::exit(2);
+            }
+        };
     }
-
     match args.first().map(String::as_str) {
         Some("--help") | Some("-h") | Some("help") => {
             if let Err(error) = help::show(&args[1..]) {
@@ -1252,6 +1297,7 @@ fn headless(
     .with_prompt(cfg.system_prompt.clone(), catalogue, prompt_instructions)
     .with_limits(cfg.max_tokens, cfg.reasoning_budget, usize::MAX)
     .with_recovery(recovering)
+    .with_checkpoint_tools(cfg.checkpoint_tools)
     .with_live(cfg.live_flush_ms as u64)
     .with_stream_factory(Arc::clone(&factory))
     .run_turn(|slot| {
@@ -3272,6 +3318,40 @@ fn repl(
             continue;
         }
 
+        if let Some(args) = text.strip_prefix("/prewalk") {
+            let args = args.trim();
+            if args.eq_ignore_ascii_case("off") {
+                cfg.prewalk.clear();
+                *runtime_config.lock().unwrap() = cfg.clone();
+                ui_println!("\x1b[90mprewalk off: the primary model answers again\x1b[0m");
+            } else if args.is_empty() {
+                ui_println!(
+                    "\x1b[90mprewalk: {} — set a target with `prewalk = \"MODEL\"` in config, arm it with /prewalk, disarm with /prewalk off\x1b[0m",
+                    if cfg.prewalk.is_empty() { "not configured" } else { &cfg.prewalk }
+                );
+            } else if cfg.prewalk.is_empty() {
+                ui_println!("\x1b[31mprewalk is not configured: set `prewalk = \"MODEL\"` in config.toml first\x1b[0m");
+            } else {
+                // The handoff is one durable note: the planning model wrote
+                // the plan and state; the target continues from them. The
+                // model id recorded in the note is who answers next.
+                let from = cfg.model.clone();
+                let target = cfg.prewalk.clone();
+                match crate::checkpoint_tools::prewalk_note(&mut session, &from, &target) {
+                    Ok(note) => {
+                        // Route: the runtime config is what the factory reads
+                        // when the next turn rebuilds the provider.
+                        cfg.model = target.clone();
+                        *runtime_config.lock().unwrap() = cfg.clone();
+                        ui_println!("\x1b[90mprewalk: {note}\x1b[0m");
+                        warmer.begin_turn();
+                    }
+                    Err(e) => ui_println!("\x1b[31mprewalk failed: {e}\x1b[0m"),
+                }
+            }
+            continue;
+        }
+
         if let Some(name) = text.strip_prefix("/model ") {
             let name = name.trim();
             if !name.is_empty() {
@@ -3561,6 +3641,7 @@ fn repl(
                 )
                 .with_limits(cfg.max_tokens, cfg.reasoning_budget, usize::MAX)
                 .with_recovery(recovering)
+                .with_checkpoint_tools(cfg.checkpoint_tools)
                 .with_live(cfg.live_flush_ms as u64)
                 .with_stream_factory(Arc::clone(&factory))
                 .with_input_keys(&keys)

@@ -77,6 +77,11 @@ pub struct Config {
     /// How often streamed partial output is committed to the sidecar, in ms.
     /// 0 disables the sidecar; a crash otherwise loses at most this window.
     pub live_flush_ms: u32,
+    /// Model-invoked context tools (checkpoint/rewind/wait): off by default.
+    pub checkpoint_tools: bool,
+    /// Prewalk target model id: when set and the user confirms, `/prewalk`
+    /// hands the remaining session work to this model. Empty = disabled.
+    pub prewalk: String,
     /// OSC 7501 program status: "on" (default; interactive terminals only)
     /// or "off".
     pub program_status: String,
@@ -110,6 +115,8 @@ impl Default for Config {
             log_fsync: "off".into(),
             live_flush_ms: 250,
             program_status: "on".into(),
+            checkpoint_tools: false,
+            prewalk: String::new(),
             system_prompt: BASE_SYSTEM_PROMPT.to_string(),
         }
     }
@@ -236,6 +243,8 @@ struct Raw {
     log_fsync: Option<String>,
     live_flush_ms: Option<u32>,
     program_status: Option<String>,
+    checkpoint_tools: Option<bool>,
+    prewalk: Option<String>,
 
     skills_dir: Option<String>,
     skills: Option<Vec<String>>,
@@ -434,6 +443,19 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
             )));
         }
         cfg.program_status = v;
+    }
+    if let Some(v) = raw.checkpoint_tools {
+        cfg.checkpoint_tools = v;
+    }
+    if let Some(v) = raw.prewalk {
+        let v = v.trim();
+        // A model id has no separator characters that could form an option.
+        if v.starts_with('-') || v.contains(char::is_whitespace) {
+            return Err(LoadError::Invalid(format!(
+                "prewalk must be a model id (got `{v}`)"
+            )));
+        }
+        cfg.prewalk = v.to_string();
     }
 
     // `skills = [...]` in the default location narrows the set, so an empty

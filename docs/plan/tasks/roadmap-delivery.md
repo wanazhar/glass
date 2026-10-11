@@ -239,3 +239,18 @@ recorded audit with the dedupe helper in place, not a shipped user surface
   `polish::tests::excerpt_marker…`, `session::tests::dedupe…`,
   `citation_marker_parses…`; full suite 689+13+93 green, clippy
   `-D warnings` clean.
+
+### Post-merge follow-up 2: codemode protocol + sequence diagrams (this commit)
+
+- Codemode reaches pi's output-item contract at protocol level (no engine
+  swap): `==> text N/M <==` items, `<console_output>` blocks,
+  `// @options:` first line with warn-on-unknown, bounded overflow spill
+  naming the temp file, timeout enforced as a tool result (the old code
+  crashed the extension process on vm timeouts). Smoke:
+  `scripts/smoke-codemode.py`, 12 checks, all green.
+- Mermaid renders sequence diagrams natively: participants/actors,
+  four arrow families + `x` marks, self-messages, `Note over`, one
+  nesting level of loop/opt/break, 8/64/1/88-col caps, source fallback
+  outside them. 4 new unit tests; `smoke-mermaid` rerun green.
+- Full suite after both: 693 unit + 13 doc + 93 integration, clippy
+  `-D warnings` clean.

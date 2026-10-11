@@ -16,8 +16,100 @@
 const fs = require("fs");
 const vm = require("vm");
 
-const PROTOCOL = 1;
+const PROTOCOL = 2;
 const MAX_LINE = 8 * 1024 * 1024;
+// Output budget (parity with pi codemode): scripts that produce more than
+// this spill the FULL text to a temp file and the model sees a bounded
+// head+tail preview with the path. PI parity constants: estimated tokens,
+// 4 chars/token, default 10k tokens.
+const CHARS_PER_TOKEN = 4;
+const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
+const MAX_OUTPUT_TOKENS = 100_000;
+const DEFAULT_TIMEOUT_MS = 10_000;
+const MAX_TIMEOUT_MS = 120_000;
+
+/** Parse the optional first line: `// @options: {json}`. Unknown keys are
+ * reported, not ignored, so a typo does not silently change nothing. */
+function parseOptions(code) {
+  const first = code.split("\n", 1)[0];
+  const match = /^\/\/\s*@options:\s*(\{.*\})\s*$/.exec(first);
+  if (!match) return { code, warnings: [] };
+  let parsed;
+  try {
+    parsed = JSON.parse(match[1]);
+  } catch (e) {
+    return { code, warnings: ["@options line is not valid JSON: " + e.message] };
+  }
+  const warnings = [];
+  const options = {};
+  for (const key of Object.keys(parsed)) {
+    if (key === "max_output_tokens") {
+      if (typeof parsed[key] !== "number" || !Number.isInteger(parsed[key]) || parsed[key] <= 0) {
+        warnings.push("@options max_output_tokens must be a positive integer");
+      } else if (parsed[key] > MAX_OUTPUT_TOKENS) {
+        warnings.push(`@options max_output_tokens capped at ${MAX_OUTPUT_TOKENS}`);
+        options.max_output_tokens = MAX_OUTPUT_TOKENS;
+      } else {
+        options.max_output_tokens = parsed[key];
+      }
+    } else if (key === "timeout_ms") {
+      if (typeof parsed[key] !== "number" || !Number.isInteger(parsed[key]) || parsed[key] <= 0) {
+        warnings.push("@options timeout_ms must be a positive integer");
+      } else if (parsed[key] > MAX_TIMEOUT_MS) {
+        warnings.push(`@options timeout_ms capped at ${MAX_TIMEOUT_MS}`);
+        options.timeout_ms = MAX_TIMEOUT_MS;
+      } else {
+        options.timeout_ms = parsed[key];
+      }
+    } else {
+      warnings.push(`unknown @options key "${key}" ignored`);
+    }    
+  }
+  return { code, options, warnings };
+}
+
+/** Overflow spill: full text to a temp file, like bash truncation does.
+ * The path is named so a later `bash` call can read it with offset/limit. */
+function spillOutput(text) {
+  try {
+    const dir = "/tmp";
+    const path = `${dir}/gc-codemode-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`;
+    // 0600: same protection as the host's own spill files.
+    const fd = fs.openSync(path, "wx", 0o600);
+    try {
+      fs.writeSync(fd, text);
+    } finally {
+      fs.closeSync(fd);
+    }
+    return { path };
+  } catch (error) {
+    return { error: error && error.message ? error.message : String(error) };
+  }
+}
+
+/**
+ * The output item protocol (pi contract, task six-wave-e-001):
+ * more than one text item → each item after the first starts with
+ * `==> text N/M <==`; console lines gather in one trailing block.
+ * The `total` counts text items only, image items are not applicable here
+ * (no image support in this sandbox).
+ */
+function formatOutput(items, consoleLines) {
+  const total = items.length;
+  let out = "";
+  if (total > 1) {
+    items.forEach((item, i) => {
+      out += `==> text ${i + 1}/${total} <==\n${item}\n`;
+    });
+  } else if (total === 1) {
+    out = items[0];
+  }
+  if (consoleLines.length > 0) {
+    if (out && !out.endsWith("\n")) out += "\n";
+    out += `<console_output>\n${consoleLines.join("\n")}\n</console_output>`;
+  }
+  return out;
+}
 
 function send(obj) {
   fs.writeSync(1, JSON.stringify(obj) + "\n");
@@ -76,6 +168,22 @@ function readLine() {
  * editing this file.
  */
 let callSeq = 0;
+// Output items and console lines collected during the current script.
+// Module-level so the sandbox closures and the run_tool handler share them;
+// reset before every run.
+let scriptOutput = [];
+let scriptConsole = [];
+
+/** Strings as-is, other values as compact JSON (pi valueText). */
+function valueText(value) {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
 function callHostTool(name, args) {
   const callId = "cm-" + process.pid + "-" + ++callSeq;
   send({ type: "call_tool", call_id: callId, name, arguments: JSON.stringify(args || {}) });
@@ -103,7 +211,7 @@ function callHostTool(name, args) {
  * the boundary is that the host only forwards `bash` and `state` — it exists
  * so a runaway script cannot keep this process alive.
  */
-function runScript(code) {
+function runScript(code, timeoutMs) {
   const context = vm.createContext({
     tools: {
       bash: (command) => callHostTool("bash", { command }),
@@ -113,8 +221,16 @@ function runScript(code) {
       unique: (a) => Array.from(new Set(a)),
       count: (a) => a.length,
       join: (a, sep) => a.join(sep === undefined ? "\n" : sep),
+      text: (value) => {
+        scriptOutput.push(valueText(value));
+      },
     },
-    console: { log: () => {}, error: () => {} },
+    // console now collects (pi parity): the lines surface in one trailing
+    // <console_output> block instead of vanishing.
+    console: {
+      log: (...parts) => scriptConsole.push(parts.map(String).join(" ")),
+      error: (...parts) => scriptConsole.push("ERROR: " + parts.map(String).join(" ")),
+    },
   });
 
   const script = new vm.Script("(async () => {\n" + code + "\n})()", {
@@ -123,8 +239,22 @@ function runScript(code) {
   // `runInContext` returns the promise the async wrapper created. Every tool
   // call inside the script blocks on the host synchronously, so the promise
   // has already settled by the time we get it; awaiting it is what recovers
-  // the script's actual return value.
-  return script.runInContext(context, { timeout: 10_000 });
+  // the script's actual return value. The timeout is the @options timeout,
+  // never above MAX_TIMEOUT_MS.
+  //
+  // A vm timeout is NOT a promise rejection: it throws synchronously inside
+  // runInContext and unwinds through the caller's stack. Thrown inside the
+  // extension's main loop that would kill the process and the model would
+  // get nothing, so with a timeout set we catch here and return a rejected
+  // promise — the same shape every other script failure takes.
+  try {
+    return script.runInContext(context, { timeout: timeoutMs });
+  } catch (error) {
+    if (error && /Script execution timed out/i.test(error.message || "")) {
+      return Promise.reject(error);
+    }
+    throw error;
+  }
 }
 
 function main() {
@@ -151,18 +281,27 @@ function main() {
           system_prompt:
             "A `codemode` tool is available. It runs a JavaScript program that can call " +
             "`tools.bash(command)` and `tools.state(items)`, plus helpers `tools.lines`, " +
-            "`tools.grep(s, /re/)`, `tools.unique`, `tools.count`, `tools.join`. Only the " +
+            "`tools.grep(s, /re/)`, `tools.unique`, `tools.count`, `tools.join`, " +
+            "`tools.text(value)`. Only the " +
             "value you return reaches you, so intermediate tool output never enters " +
-            "context. Use it when a task would otherwise need many bash calls or would " +
-            "dump large output into context. Do not use it for a single command.",
+            "context. Optional first line `// @options: {\"max_output_tokens\": 10000, " +
+            "\"timeout_ms\": 60000}` tunes the output budget (default 10000 tokens; over " +
+            "budget, the full output is spilled to a file whose path is named) and the " +
+            "script timeout (default 10s). Several returned items arrive each preceded " +
+            "by a `==> text N/M <==` line; console.log/error surface in one trailing " +
+            "<console_output> block. Use it when a task would otherwise need many bash " +
+            "calls or would dump large output into context. Do not use it for a single command.",
           tools: [
             {
               name: "codemode",
               description:
                 "Run a JS program that orchestrates tools. `await tools.bash(cmd)` returns " +
                 "the output as a string. Helpers: tools.lines, tools.grep, tools.unique, " +
-                "tools.count, tools.join. Return the summary worth keeping. Use instead of " +
-                "many sequential bash calls.",
+                "tools.count, tools.join, tools.text(value). Optional first line " +
+                "`// @options: {\"max_output_tokens\": 10000, \"timeout_ms\": 60000}`. " +
+                "Multiple items come back each after a `==> text N/M <==` line; over the output " +
+                "budget the full output spills to a named file. Return the summary worth " +
+                "keeping. Use instead of many sequential bash calls.",
               schema: {
                 type: "object",
                 properties: {
@@ -177,7 +316,7 @@ function main() {
         break;
 
       case "command":
-        send({ id, output: "codemode 1.0.0 (node " + process.version + ")" });
+        send({ id, output: "codemode 2.0.0 (node " + process.version + ", items+budget+@options)" });
         break;
 
       case "run_tool": {
@@ -195,13 +334,22 @@ function main() {
           break;
         }
 
+        // @options (pi contract): optional first `// @options: {...}` line
+        // tunes max_output_tokens and timeout_ms; unknown keys warn instead
+        // of silently doing nothing.
+        const { code: body, options = {}, warnings = [] } = parseOptions(code);
+        const timeoutMs = options.timeout_ms || DEFAULT_TIMEOUT_MS;
+        const maxTokens = options.max_output_tokens || DEFAULT_MAX_OUTPUT_TOKENS;
+
         // Settle synchronously. The main loop is about to block in readLine(),
         // and a pending promise would never get its turn, so the microtask
         // queue has to be drained here with Node's internal tick hook.
+        scriptOutput = [];
+        scriptConsole = [];
         let settled = false;
         let value;
         let failure = null;
-        runScript(code).then(
+        runScript(body, timeoutMs).then(
           (v) => {
             settled = true;
             value = v;
@@ -215,19 +363,46 @@ function main() {
           if (typeof process._tickCallback === "function") process._tickCallback();
         }
 
+        let output;
         if (!settled) {
-          send({ id, output: "codemode error: script did not settle (await something the sandbox cannot provide?)" });
+          output = "codemode error: script did not settle (await something the sandbox cannot provide?)";
         } else if (failure) {
-          send({ id, output: "codemode error: " + (failure.message || String(failure)) });
+          const timedOut = /Script execution timed out|timed out/i.test(
+            failure.message || String(failure)
+          );
+          output = timedOut
+            ? `codemode error: script timed out after ${timeoutMs}ms`
+            : "codemode error: " + (failure.message || String(failure));
         } else {
-          const out =
-            value === undefined
-              ? "(script returned nothing)"
-              : typeof value === "string"
-                ? value
-                : JSON.stringify(value, null, 2);
-          send({ id, output: out });
+          // Every produced text value is an item (pi contract): text() calls
+          // in order, then the returned value last.
+          const items = scriptOutput.map(valueText);
+          if (value !== undefined) items.push(valueText(value));
+          let text = formatOutput(items, scriptConsole);
+          if (warnings.length > 0) text = `${warnings.join("\n")}\n${text}`;
+
+          // Overflow budget (pi parity): over budget → bounded head+tail
+          // preview, full text spilled to a temp file whose path is named;
+          // spill failure must not discard the script's own work.
+          const budget = maxTokens * CHARS_PER_TOKEN;
+          if (text.length > budget) {
+            const lines = text.split("\n").length;
+            const headChars = Math.floor(budget / 2);
+            const tailChars = budget - headChars;
+            const head = text.slice(0, headChars);
+            const tail = tailChars > 0 ? text.slice(-tailChars) : "";
+            const spilled = spillOutput(text);
+            const spillNote =
+              "path" in spilled
+                ? `[full output saved to ${spilled.path} — read it with \`head\`, \`tail\`, or \`rg\`]`
+                : `[Could not save the full output: ${spilled.error}]`;
+            text =
+              `Warning: truncated output (original token estimate: ${Math.ceil(text.length / CHARS_PER_TOKEN)}, budget: ${maxTokens})\n` +
+              `Total output lines: ${lines}\n\n${head}…${Math.ceil((text.length - headChars - tailChars) / CHARS_PER_TOKEN)} tokens truncated…${tail}\n\n${spillNote}`;
+          }
+          output = text.length > 0 ? text : "(script returned nothing)";
         }
+        send({ id, output });
         break;
       }
 

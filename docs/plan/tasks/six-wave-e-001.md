@@ -149,3 +149,42 @@ corrected above); codemode parity deltas stay documented without an
 engine swap; blob range reads remain offset/length only; mermaid covers
 flowcharts only; the `#hooks` PTY identity check remains covered by the
 existing transcript tests.
+
+## Follow-up 2: the "by design" list, cut down (this commit)
+
+The remaining weak spots from the original delivery were re-judged; those
+that fit the existing design are now implemented rather than excused:
+
+- **Codemode deltas → implemented.** The pi output-item contract ships in
+  `extensions/codemode/codemode.js` (protocol 2): `tools.text(value)`
+  items each preceded by `==> text N/M <==`, console lines in one trailing
+  `<console_output>` block, the optional `// @options:` first line
+  (`max_output_tokens`, `timeout_ms`; unknown keys warn instead of
+  silently doing nothing), overflow spill of the full output to a temp
+  file in the same shape the bash tool already reports
+  (`[full output saved to <path> — read it with head/tail/rg]`), and
+  timeout enforcement that now catches the vm's synchronous timeout
+  unwind (previously it killed the extension process; the timeout landed
+  as a process crash, not a tool result). No engine swap happened — the
+  deltas were all protocol-level. Smoke: `scripts/smoke-codemode.py`
+  (12 checks: handshake, items, order, console, unknown-key warning,
+  timeout enforce, spill + bounded preview).
+- **Mermaid sequence diagrams → implemented.** `mermaid.rs` grows a second
+  family: `sequenceDiagram` with `participant`/`actor` (labels via
+  `as`), all four message arrow classes (`->`, `->>`, `-->`, `-->>`) plus
+  `x` dispositions marked in text, self-messages, `Note over A,B`, and
+  one nesting level of `loop`/`opt`/`break`. Caps mirror the flowchart
+  philosophy: ≤8 participants, ≤64 messages, one level of nesting,
+  88-column ceiling — anything wider or unsupported falls back to the
+  fenced source, never a clipped drawing. Rows render from a `Vec<char>`
+  canvas (byte-offset `replace_range` anchors broke on multi-byte
+  labels — caught by the participant test). Class/state/ER remain source
+  fallback, stated honestly. Tests: 4 new sequence tests inside
+  `mermaid::tests`; `smoke-mermaid` rerun green.
+
+Still not fixed, now with the reason attached: item 25 in-message
+markers were an audit (fixed in follow-up 1); blob range reads stay
+offset/length (the range protocol in the research doc needs consumer
+work first — no consumer exists yet); class/state/ER diagram families
+need their own bounded layouts (two families is the honest slice); the
+`#hooks` PTY identity check remains covered by the transcript tests.

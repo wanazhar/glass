@@ -97,3 +97,4 @@
 - [Wave E: extensibility + review](plan/tasks/six-wave-e-001.md): pre-tool-use hook, typed notify events, codemode parity audit (`74bb707`).
 - [Delivery ledger](plan/tasks/roadmap-delivery.md): per-commit evidence and integrated verification for every shipped wave.
 - [Six-codebase follow-up: citations + blob GC](plan/tasks/six-wave-e-001.md): in-message `@path#L..#hash8` markers now ship, and `gc blobs sweep` removes unreferenced blobs; corrects the wave E note that claimed a session.rs dedupe helper pre-existed (follow-up commit).
+- [Six-codebase follow-up 2](plan/tasks/six-wave-e-001.md): codemode ships the pi output-item protocol (@options, `==> text N/M <==`, console block, overflow spill, enforced timeout) and mermaid renders sequence diagrams natively within the existing caps (follow-up commit).

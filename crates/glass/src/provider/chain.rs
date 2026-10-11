@@ -24,16 +24,46 @@ pub struct Chain {
     levels: Vec<Box<dyn Provider>>,
     /// The model id the primary was built for, reported by `id()`.
     primary: String,
+    /// Sticky serving index, set when a fallback answers. Requests until the
+    /// next `unstick()` reuse that model instead of probing the failing
+    /// primary every round (pi's sticky virtual-model routing). A user-set
+    /// selection lives above this type: the provider is rebuilt on `/model`,
+    /// which constructs a fresh chain and therefore resets stickiness.
+    sticky: std::cell::Cell<usize>,
 }
 
 impl Chain {
     pub fn new(primary: String, levels: Vec<Box<dyn Provider>>) -> Self {
-        Self { levels, primary }
+        Self {
+            levels,
+            primary,
+            sticky: std::cell::Cell::new(0),
+        }
     }
 
     /// Whether a failed attempt may be routed around.
     fn worth_falling_back(e: &Error) -> bool {
         !matches!(e, Error::Status(401 | 403, _) | Error::Config(_))
+    }
+
+    /// Start fresh: the primary is probed again. The live harness rebuilds
+    /// the chain for every user turn (`factory()` at turn dispatch), which
+    /// resets stickiness by construction; this explicit reset exists for
+    /// callers that reuse one chain across turn sequences, and for tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn unstick(&self) {
+        self.sticky.set(0);
+    }
+
+    /// The model id actually answering, the primary's when healthy.
+    /// Diagnostic surface for tests and the recovery inspector's provider
+    /// identity record.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn serving_model(&self) -> &str {
+        self.levels
+            .get(self.sticky.get())
+            .map(|p| p.model())
+            .unwrap_or(&self.primary)
     }
 }
 
@@ -45,6 +75,14 @@ impl Provider for Chain {
     fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
         let mut first_error: Option<Error> = None;
         for (index, provider) in self.levels.iter().enumerate() {
+            // Stickiness: once a fallback has served this turn's requests,
+            // keep probing from there rather than failing the primary each
+            // round. Index 0 is never sticky, so the healthy path is
+            // unchanged; and skip-to-sticky only advances from a level that
+            // already produced an Ok stream once.
+            if index < self.sticky.get() {
+                continue;
+            }
             let model = provider.model();
             // The request is rebuilt per level: the model id travels in the
             // request, and sending the primary's id to a fallback adapter
@@ -60,6 +98,7 @@ impl Provider for Chain {
             match provider.stream(&rebuilt) {
                 Ok(stream) if index == 0 => return Ok(stream),
                 Ok(stream) => {
+                    self.sticky.set(index);
                     let why = first_error
                         .as_ref()
                         .map(|e| e.to_string())
@@ -280,5 +319,45 @@ mod tests {
         );
         let err = events(&chain).unwrap_err().to_string();
         assert!(err.contains("transport"), "{err}");
+    }
+
+    #[test]
+    fn sticky_routing_skips_a_known_bad_primary_within_a_chain() {
+        let primary = Stub::failing("primary", || Error::Transport("t".into()));
+        let h = primary.handle().clone();
+        let backup = Stub::ok("backup", "b");
+        let bh = backup.handle().clone();
+        let chain = Chain::new(
+            "primary".into(),
+            vec![Box::new(primary), Box::new(backup)],
+        );
+        // First request: falls to backup (1 primary attempt).
+        events(&chain).expect("backup answers");
+        assert_eq!(h.calls(), 1);
+        // Second request: sticky — no new primary attempt.
+        events(&chain).expect("backup answers again");
+        assert_eq!(h.calls(), 1, "primary must not be re-probed while sticky");
+        assert_eq!(bh.calls(), 2);
+        // unstick re-opens probing: the primary is attempted (and fails)
+        // again, then the backup serves as before.
+        chain.unstick();
+        events(&chain).expect("backup answers after unstick");
+        assert_eq!(h.calls(), 2, "unstick must re-probe the primary");
+    }
+
+    #[test]
+    fn serving_model_reflects_the_sticky_level() {
+        let chain = Chain::new(
+            "primary".into(),
+            vec![
+                Box::new(Stub::failing("primary", || Error::Transport("t".into()))),
+                Box::new(Stub::ok("backup", "b")),
+            ],
+        );
+        assert_eq!(chain.serving_model(), "primary");
+        let _ = events(&chain).expect("backup");
+        assert_eq!(chain.serving_model(), "backup");
+        chain.unstick();
+        assert_eq!(chain.serving_model(), "primary");
     }
 }

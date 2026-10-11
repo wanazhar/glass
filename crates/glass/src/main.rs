@@ -805,6 +805,17 @@ fn run(args: &[String]) -> Result<(), String> {
     glass_tui::markdown::enable_mermaid(cfg.mermaid);
     let mermaid_renderer: glass_tui::markdown::MermaidRendererFn =
         Box::new(move |body: &str, width: usize| {
+            if body.trim_start().starts_with("sequenceDiagram")
+                || body.trim_start().starts_with("sequence")
+            {
+                let fits = crate::mermaid::parse_sequence(body)
+                    .is_some_and(|rows| rows.iter().all(|r| r.chars().count() <= width));
+                return if fits {
+                    crate::mermaid::parse_sequence(body)
+                } else {
+                    None
+                };
+            }
             crate::mermaid::parse(body).and_then(|chart| crate::mermaid::render(&chart, width))
         });
     glass_tui::markdown::set_mermaid_renderer(mermaid_renderer);

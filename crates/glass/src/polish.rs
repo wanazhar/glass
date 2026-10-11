@@ -24,13 +24,26 @@ pub struct Attachment {
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
-    pub text: String,
-    /// `"image/png"` etc. for image attachments; `text` is empty and `data`
-    /// holds the base64 payload instead.
+    pub text: String,/// `"image/png"` etc. for image attachments; `text` is empty and `data`
+/// holds the base64 payload instead.
+#[serde(default)]
+pub media_type: Option<String>,
+#[serde(default)]
+pub data: Option<String>,
+/// Range citation state (task six-wave-e-001): set only for line-range
+/// excerpts. `consumed` flips once the marker has been written into a
+/// user message, so each citation enters the log exactly once.
+#[serde(default)]
+pub citation: Option<Citation>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Citation {
+    pub first: usize,
+    pub last: usize,
+    /// sha256 of the excerpted bytes at citation time.
+    pub revision: String,
     #[serde(default)]
-    pub media_type: Option<String>,
-    #[serde(default)]
-    pub data: Option<String>,
+    pub consumed: bool,
 }
 fn meta_path(s: &Session) -> PathBuf {
     s.path.with_extension("meta.json")
@@ -284,6 +297,7 @@ pub fn attach(s: &mut Session, workspace: &Path, path: &str) -> Result<(), Strin
             text: String::new(),
             media_type: Some(media.clone()),
             data: Some(data.clone()),
+            citation: None,
         });
         save(s, &m)?;
         s.append(Record::Image {
@@ -305,6 +319,7 @@ pub fn attach(s: &mut Session, workspace: &Path, path: &str) -> Result<(), Strin
         text,
         media_type: None,
         data: None,
+        citation: None,
     });
     save(s, &m)
 }
@@ -321,11 +336,86 @@ pub fn attach_excerpt(s: &Session, workspace: &Path, path: &str, first: usize, c
         excerpt.push_str(line); excerpt.push('\n'); lines += 1;
     }
     if lines == 0 { return Err("No lines at this range".into()); }
+    let revision = crate::workspace::hash(&bytes);
     let mut meta = metadata(s);
     meta.attachments.retain(|a| a.path != path);
     if meta.attachments.iter().map(|a| a.text.len()).sum::<usize>() + excerpt.len() > 131072 { return Err("Context attachments exceed 128 KiB".into()); }
-    meta.attachments.push(Attachment { path, source: Some(format!("lines {first}–{} · revision {}", first + lines - 1, crate::workspace::hash(&bytes))), text:excerpt,media_type:None,data:None });
+    meta.attachments.push(Attachment {
+        path,
+        source: Some(format!("lines {first}–{} · revision {revision}", first + lines - 1)),
+        text: excerpt,
+        media_type: None,
+        data: None,
+        citation: Some(Citation {
+            first,
+            last: first + lines - 1,
+            revision: revision.clone(),
+            consumed: false,
+        }),
+    });
     save(s, &meta)
+}
+
+/// The in-message citation marker for one attachment (task six-wave-e-001,
+/// t3 assistant-citations): `@<file>#L<first>-L<last>#<8-hex revision>`.
+/// It is a plain line of the user message — no new Record variant, so old
+/// logs, exports and resumptions are untouched — and it survives its
+/// source changing or disappearing because the revision hash names the
+/// exact bytes that were quoted.
+pub fn citation_marker(a: &Attachment) -> Option<String> {
+    let c = a.citation.as_ref()?;
+    Some(format!(
+        "@{}#L{}-L{}#{}",
+        a.path.display(),
+        c.first,
+        c.last,
+        &c.revision[..c.revision.len().min(8)]
+    ))
+}
+
+/// Markers for every range attachment that has not yet been cited in a
+/// message, marking them consumed for this session. `session_marker_only`
+/// attachments (whole-file) never produce a marker.
+pub fn pending_citation_markers(s: &Session) -> Vec<String> {
+    let mut meta = metadata(s);
+    let mut markers = Vec::new();
+    for a in meta.attachments.iter_mut() {
+        if let Some(marker) = a.citation.as_ref().map(|c| !c.consumed).unwrap_or(false)
+            .then(|| citation_marker(a))
+            .flatten()
+        {
+            if let Some(c) = a.citation.as_mut() {
+                c.consumed = true;
+            }
+            markers.push(marker);
+        }
+    }
+    if !markers.is_empty()
+        && let Err(error) = save(s, &meta)
+    {
+        eprintln!("citation state not saved: {error}");
+        return Vec::new();
+    }
+    markers
+}
+
+/// Append one marker line per uncited range attachment to a submitted
+/// prompt, deduplicated against markers already present in the text.
+pub fn with_citation_markers(s: &Session, text: &str) -> String {
+    let markers = pending_citation_markers(s);
+    if markers.is_empty() {
+        return text.to_string();
+    }
+    let mut out = text.to_string();
+    for m in markers {
+        if !out.contains(&m) {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&m);
+        }
+    }
+    crate::session::dedupe_citation_markers(&out)
 }
 
 pub fn attach_picker(keys: &KeyReader, s: &mut Session, workspace: &Path, path: &str) -> Result<bool, String> {
@@ -1047,6 +1137,37 @@ mod tests {
         assert!(prompt_context(&s, &None).is_none());
         std::fs::write(root.join("huge"), vec![b'x'; 32769]).unwrap();
         assert!(attach(&mut s, &root, "huge").is_err());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn excerpt_marker_is_stamped_once_into_the_next_message() {
+        let root = scratch();
+        let s = Session::create(&root).unwrap();
+        bind(&s, &root).unwrap();
+        std::fs::write(root.join("src.txt"), "alpha\nbeta\ngamma\ndelta\n").unwrap();
+        attach_excerpt(&s, &root, "src.txt", 2, 2).unwrap();
+        let m = metadata(&s);
+        let marker = citation_marker(&m.attachments[0]).unwrap();
+        assert!(
+            crate::session::citation_marker_of_test(&marker),
+            "marker uses the documented @path#L..#hash8 shape: {marker}"
+        );
+        assert!(marker.contains("@"));
+        assert!(marker.contains("#L2-L3#"));
+        assert_eq!(marker.matches('#').count(), 2);
+
+        // First submit consumes the pending citation.
+        let text = with_citation_markers(&s, "what changed here?");
+        assert!(text.starts_with("what changed here?\n"));
+        assert!(text.ends_with(&marker));
+        assert!(
+            with_citation_markers(&s, "next question").ends_with("next question"),
+            "consumed citations do not re-stamp later turns"
+        );
+        // Marker survives the source changing: hash was taken at attach time.
+        std::fs::write(root.join("src.txt"), "rewritten").unwrap();
+        assert_eq!(citation_marker(&metadata(&s).attachments[0]).unwrap(), marker);
         std::fs::remove_dir_all(root).ok();
     }
 

@@ -281,6 +281,48 @@ fn main() {
             if let Err(error) = result { cli::error("Usage", &error); std::process::exit(2); }
             return;
         }
+        Some("blobs") => {
+            let rest: Vec<&str> = args[1..].iter().map(String::as_str).collect();
+            let action = rest.first().copied().unwrap_or("");
+            let json = rest.contains(&"--json");
+            if action != "sweep" || rest.iter().filter(|a| !a.starts_with("--")).count() > 1 {
+                crate::cli::error("Blobs", "gc blobs sweep [--json]");
+                std::process::exit(2);
+            }
+            let result = blobs::sweep(&config::data_dir());
+            match result {
+                Ok(report) => {
+                    if json {
+                        emit_json(serde_json::json!({
+                            "status": "ok",
+                            "scanned": report.scanned,
+                            "kept_referenced": report.kept_referenced,
+                            "kept_recent": report.kept_recent,
+                            "removed": report.removed,
+                            "errors": report.errors,
+                        }));                    } else {
+                        let value = serde_json::json!({
+                            "text": format!(
+                                "scanned {} · kept (referenced) {} · kept (recent) {} · removed {} · errors {}",
+                                report.scanned, report.kept_referenced, report.kept_recent,
+                                report.removed, report.errors
+                            ),
+                            "scanned": report.scanned,
+                            "kept_referenced": report.kept_referenced,
+                            "kept_recent": report.kept_recent,
+                            "removed": report.removed,
+                            "errors": report.errors,
+                        });
+                        crate::cli::report("Blob sweep", &value);
+                    }
+                }
+                Err(error) => {
+                    crate::cli::error("Blobs", &error);
+                    std::process::exit(2);
+                }
+            }
+            return;
+        }
         Some("attention") => {
             if let Err(error) = attention::command(&args[1..]) {
                 cli::error("Attention", &error); std::process::exit(2);
@@ -3602,14 +3644,23 @@ fn repl(
                 Err(error) => { modal::info(&keys,"Follow-up remains queued",&error); continue; },
             }
         }
-        if !recovering && !run_saved_queue && let Err(error) = session.append_checked(&[Record::User(text.clone())]) {
-            modal::info(
-                &keys,
-                "Session log write failed",
-                &format!("Prompt was not sent: {error}"),
-            );
-            editor.set_text(&text);
-            continue;
+        if !recovering && !run_saved_queue {
+            // In-message citations (task six-wave-e-001): every range
+            // attachment cited since the last turn becomes a durable
+            // `@path#L..#hash8` line of this very message, so the quote
+            // survives its source changing or vanishing. Dedupe happens at
+            // projection; a hand-typed copy of the same marker collapses
+            // there instead of double-citing.
+            text = polish::with_citation_markers(&session, &text);
+            if let Err(error) = session.append_checked(&[Record::User(text.clone())]) {
+                modal::info(
+                    &keys,
+                    "Session log write failed",
+                    &format!("Prompt was not sent: {error}"),
+                );
+                editor.set_text(&text);
+                continue;
+            }
         }
         // The typed prompt is still on the prompt row. Clear those
         // rows and print the prompt once, whole: a prompt must be

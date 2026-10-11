@@ -1726,6 +1726,41 @@ fn tool_card_preview_truncates_at_unicode_boundary() {
     assert!(!text.contains("tail"));
 }
 
+#[test]
+fn dedupe_keeps_first_duplicate_marker_and_drops_second_range_same_file() {
+    let m1 = "@/w/src.txt#L2-L3#abcd1234";
+    let text = format!("look at this\n{m1}\npasted again\n{m1}");
+    assert_eq!(
+        dedupe_citation_markers(&text),
+        format!("look at this\n{m1}\npasted again"),
+        "exact repeats collapse, surrounding lines stay byte-identical"
+    );
+    // A second range of the same file also collapses: one revision per file.
+    let m2 = "@/w/src.txt#L40-L44#abcd1234";
+    let text2 = format!("{m1}\nand\n{m2}");
+    assert_eq!(
+        dedupe_citation_markers(&text2),
+        format!("{m1}\nand"),
+        "later marker for the same file drops; prose lines never");
+    // Different files keep both.
+    let a = "@/w/a.txt#L1-L2#abcd1234";
+    let b = "@/w/b.txt#L1-L2#abcd1234";
+    assert_eq!(dedupe_citation_markers(&format!("{a}\n{b}")), format!("{a}\n{b}"));
+    // Non-marker prose with @ and code lines pass through untouched.
+    let prose = "email me @bob about @file:L1#nothex\nlet x = 1;";
+    assert_eq!(dedupe_citation_markers(prose), prose);
+}
+
+#[test]
+fn citation_marker_parses_exactly_the_documented_shape() {
+    assert!(citation_marker_of_test("@/w/src.txt#L10-L24#abcd1234"));
+    assert!(!citation_marker_of_test("see @/w/src.txt#L10-L24#abcd1234 below"));
+    assert!(!citation_marker_of_test("@/w/src.txt#L10-L24#abc"), "8 hex required");
+    assert!(!citation_marker_of_test("@/w/src.txt#L10L24#abcd1234"));
+    assert!(!citation_marker_of_test("@/w/src txt#L10-L24#abcd1234"), "no spaces");
+    assert!(!citation_marker_of_test("@with space/path#L1-L2#abcd1234"));
+}
+
 fn latest_reasoning(records: &[Record]) -> String {
     let mut latest = String::new();
     for record in records {
@@ -1784,7 +1819,86 @@ fn readable_output(body: &str) -> String {
 /// opening task, the model's own recorded state, and the stored summary, which
 /// is exactly what the in-memory rebuild produces at compaction time. Applying
 /// it here makes compaction idempotent across a resume instead of something
-/// that only exists for the life of one process.
+/// that only exists for the life of one process./// Collapse repeated in-message citation markers (`@path#L10-L24#hash8`,
+/// task six-wave-e-001 / t3 assistant-citations) inside one user message.
+///
+/// Rules:
+/// - The exact same marker line repeated in one message keeps only its first
+///   occurrence (paste + composer often duplicates it).
+/// - Two markers for the same file keep the first; a later marker for a
+///   different range of the *same* file is still dropped — one message cites
+///   one revision per file, and `with_citation_markers` consumed the
+///   attachment state at submit time.
+/// - Everything else is byte-identical output.
+pub fn dedupe_citation_markers(text: &str) -> String {
+    let mut seen_files: Vec<String> = Vec::new();
+    let mut seen_lines: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut kept: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        let Some(m) = citation_marker_of(line) else {
+            kept.push(line);
+            continue;
+        };
+        if seen_lines.contains(line) {
+            continue;
+        }
+        if seen_files.contains(&m.file) {
+            continue;
+        }
+        seen_lines.insert(line.to_string());
+        seen_files.push(m.file);
+        kept.push(line);
+    }
+    let mut out = kept.join("\n");
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+#[derive(Debug, PartialEq)]
+struct CitationMarker {
+    file: String,
+}
+
+/// Parse a line that is exactly a citation marker. Anything else (prose
+/// containing `@`, code, a marker with trailing text) is not a marker.
+fn citation_marker_of(line: &str) -> Option<CitationMarker> {
+    let body = line.strip_prefix('@')?;
+    let hash_pos = body.find('#')?;
+    let file = &body[..hash_pos];
+    if file.is_empty() || file.contains(char::is_whitespace) {
+        return None;
+    }
+    // …#L10-L24#<8-hex> with nothing after the 8 hex digits.
+    let after = &body[hash_pos + 1..];
+    let r_pos = after.find("#")?;
+    let range = &after[..r_pos];
+    let revision = &after[r_pos + 1..];
+    let mut range_parts = range.split('-');
+    let ok_num = |s: &str| {
+        s.strip_prefix("L")
+            .map(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+            .unwrap_or(false)
+    };
+    match (range_parts.next(), range_parts.next(), range_parts.next()) {
+        (Some(a), Some(b), None) if ok_num(a) && ok_num(b) => {}
+        _ => return None,
+    }
+    if revision.len() != 8 || !revision.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(CitationMarker {
+        file: file.to_string(),
+    })
+}
+
+/// Test-visible alias of the marker parser used by polish tests.
+#[cfg(test)]
+pub(crate) fn citation_marker_of_test(line: &str) -> bool {
+    citation_marker_of(line).is_some()
+}
+
 fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
     // A model-invoked checkpoint bounds the context first (OMP
     // checkpoint/rewind): records after an open checkpoint are the

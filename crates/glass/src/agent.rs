@@ -857,6 +857,26 @@ impl<'a> Agent<'a> {
                 "session log is not writable; turn refused: {error}"
             )));
         }
+        // Freeze completed results before recovery starts. Reuse is a one-time
+        // replay of the interrupted batch, never a cache for newly run tools.
+        let mut recovery_results = Vec::new();
+        if self.recovering {
+            let start = self.session.records.iter()
+                .rposition(|r| matches!(r, Record::User(_))).unwrap_or(0);
+            let completed: std::collections::HashMap<_, _> = self.session.records[start..].iter()
+                .filter_map(|record| match record {
+                    Record::ToolResult { call_id, body, .. } => Some((call_id.as_str(), body)),
+                    _ => None,
+                }).collect();
+            for record in self.session.records[start..].iter().rev() {
+                if let Record::ToolCall { id, name, arguments } = record
+                    && let Ok(arguments) = serde_json::from_str::<serde_json::Value>(arguments)
+                    && let Some(body) = completed.get(id.as_str())
+                {
+                    recovery_results.push((name.clone(), arguments, (*body).clone()));
+                }
+            }
+        }
         self.extensions.clear_scope();
         crate::reminders::apply(self.session).map_err(provider::Error::Config)?;
         let mut last = TurnOutput {
@@ -1059,40 +1079,11 @@ impl<'a> Agent<'a> {
             // the transcript is identical to a sequential run.
             let mut executable = Vec::new();
             for call in &out.tool_calls {
-                let cached = if self.recovering {
-                    let start = self
-                        .session
-                        .records
-                        .iter()
-                        .rposition(|r| matches!(r, Record::User(_)))
-                        .unwrap_or(0);
-                    self.session.records[start..]
-                        .iter()
-                        .rev()
-                        .find_map(|r| match r {
-                            Record::ToolCall {
-                                id,
-                                name,
-                                arguments,
-                            } if name == &call.name
-                                && serde_json::from_str::<serde_json::Value>(arguments).ok()
-                                    == serde_json::from_str::<serde_json::Value>(
-                                        &call.arguments,
-                                    )
-                                    .ok() =>
-                            {
-                                self.session.records.iter().find_map(|r| {
-                                    if let Record::ToolResult { call_id, body, .. } = r {
-                                        (call_id == id).then(|| body.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                            }
-                            _ => None,
-                        })
-                } else {
-                    None
+                let cached = if recovery_results.is_empty() { None } else {
+                    serde_json::from_str::<serde_json::Value>(&call.arguments).ok()
+                        .and_then(|arguments| recovery_results.iter()
+                            .position(|(name, value, _)| name == &call.name && value == &arguments))
+                        .map(|index| recovery_results.remove(index).2)
                 };
                 if let Err(error) = self.session.append_checked(&[Record::ToolCall {
                     id: call.id.clone(),
@@ -1122,6 +1113,10 @@ impl<'a> Agent<'a> {
                     executable.push(executable_call);
                 }
             }
+            // Beyond this first valid batch, identical calls are intentional
+            // fresh reads/checks and must observe current workspace state.
+            recovery_results.clear();
+            self.recovering = false;
             self.run_tool_batch(&executable, &mut |slot| pump(slot));
             if let Some(steer) = self.steer.take() {
                 // Still-running extension tools (and bash workers) stop

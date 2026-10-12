@@ -10,7 +10,9 @@
 //! mtime; in-flight blobs have no reference yet, so they win the race by
 //! remaining unreadable rather than being deleted mid-write.
 
-use ring::digest::{digest, SHA256};
+use ring::digest::{Context, SHA256};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::path::{Path, PathBuf};
 
 /// Blob store root. Same isolation as the rest of the data tree.
@@ -42,44 +44,66 @@ pub fn hex_of(reference: &str) -> Option<&str> {
         .filter(|hex| hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
-/// Store content, returning `(reference, path)`. Dedup: identical content
-/// maps to one stored object, and a second write is a no-op rename of    /// renamed — a crashed `put` leaves it, and a failed rename
-    /// leaves it too. Age is the only safe signal, so sweep removes old
-    /// tmp files and leaves recent ones.
-pub fn put(content: &[u8]) -> std::io::Result<(String, PathBuf)> {
-    let hex = encode_hex(digest(&SHA256, content).as_ref());
-    let dir = dir();
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(&hex);
-    if path.exists() {
-        return Ok((reference(&hex), path));
-    }
-    // Atomic tmp-rename; a partial file can never masquerade as a blob
-    // because the name is only the content's digest once rename lands.
-    let tmp = dir.join(format!(".tmp-{}-{}", std::process::id(), hex));
-    {
-        use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true).mode(0o600);
-        let mut f = options.open(&tmp)?;
-        f.write_all(content)?;
-        f.flush()?;
-    }
-    std::fs::rename(&tmp, &path)?;
-    Ok((reference(&hex), path))
+/// Atomically store content, returning its stable reference and path.
+#[cfg(test)]
+fn put(content: &[u8]) -> std::io::Result<(String, PathBuf)> {
+    put_reader(content)
 }
 
-/// Read a blob back by reference. Offset/length supported for ranged
-/// re-reads from a later session or handoff.
+/// Hash and store a spill without loading the entire log into memory.
+pub fn put_file(path: &Path) -> std::io::Result<(String, PathBuf)> {
+    put_reader(std::fs::File::open(path)?)
+}
+
+fn put_reader(mut reader: impl Read) -> std::io::Result<(String, PathBuf)> {
+    use std::os::unix::fs::OpenOptionsExt;
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = dir();
+    std::fs::create_dir_all(&dir)?;
+    let (tmp, mut file) = loop {
+        let tmp = dir.join(format!(".tmp-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp) {
+            Ok(file) => break (tmp, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+    let result = (|| {
+        let mut digest = Context::new(&SHA256);
+        let mut buffer = [0u8; 32 * 1024];
+        loop {
+            let size = match reader.read(&mut buffer) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                value => value?,
+            };
+            if size == 0 { break; }
+            digest.update(&buffer[..size]);
+            file.write_all(&buffer[..size])?;
+        }
+        file.flush()?;
+        let hex = encode_hex(digest.finish().as_ref());
+        let path = dir.join(&hex);
+        // Concurrent identical stores have unique temporaries and identical
+        // final content, so neither caller loses a valid reference.
+        if !path.exists() { std::fs::rename(&tmp, &path)?; }
+        Ok((reference(&hex), path))
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
+/// Read only the requested range; oversized offsets and lengths cannot wrap.
 pub fn get(reference: &str, offset: usize, length: Option<usize>) -> std::io::Result<Vec<u8>> {
     let hex = hex_of(reference)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a blob reference"))?;
-    let path = dir().join(hex);
-    let data = std::fs::read(path)?;
-    let start = offset.min(data.len());
-    let end = length.map(|l| start + l).unwrap_or(data.len()).min(data.len());
-    Ok(data[start..end].to_vec())
+    let mut file = std::fs::File::open(dir().join(hex))?;
+    let size = file.metadata()?.len();
+    let start = (offset as u64).min(size);
+    file.seek(SeekFrom::Start(start))?;
+    let count = length.map(|n| n as u64).unwrap_or(u64::MAX).min(size - start);
+    let mut data = Vec::new();
+    file.take(count).read_to_end(&mut data)?;
+    Ok(data)
 }
 
 /// One sweep outcome, in count form so `--json` stays introspectable.
@@ -283,6 +307,24 @@ mod tests {
         assert_eq!(get(&r1, 0, None).unwrap(), content);
         // Ranged read.
         assert_eq!(get(&r1, 4, Some(4)).unwrap(), &content[4..8]);
+    }
+
+    #[test]
+    fn ranged_reads_do_not_wrap_oversized_lengths() {
+        let (reference, _) = put(b"range overflow regression").unwrap();
+        assert_eq!(get(&reference, 6, Some(usize::MAX)).unwrap(), b"overflow regression");
+        assert!(get(&reference, usize::MAX, Some(usize::MAX)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn concurrent_identical_streams_store_successfully() {
+        let workers: Vec<_> = (0..8).map(|_| std::thread::spawn(|| {
+            let content = vec![b'x'; 1024 * 1024];
+            put_reader(content.as_slice()).unwrap()
+        })).collect();
+        let results: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+        assert!(results.iter().all(|result| result == &results[0]));
+        assert_eq!(get(&results[0].0, 999_999, Some(4)).unwrap(), b"xxxx");
     }
 
     #[test]

@@ -100,3 +100,32 @@ The parallel test run hit a transient inherited session-lock failure in the
 compaction reopen test; the complete serial run passed. Release prompt startup
 median was under 8 ms; visible key latency under 0.2 ms. Evidence:
 `/tmp/gc-round3-*.log` and `/tmp/gc-round3-performance.json`.
+
+## Fourth bug hunt
+
+Two Luna medium hunters checked runtime recovery and UI state; an independent
+Luna medium reviewer reviewed the fixes. Recovery now snapshots completed results
+before retry, prefers the latest matching result, consumes each replay once, and
+ends replay after the first valid batch. Newly issued identical tool calls then
+execute normally instead of receiving stale cached results.
+
+Spill hashing now uses a 32 KiB buffer instead of loading the whole saved log.
+Blob range reads seek and read only the requested range, and oversized lengths
+cannot wrap the range calculation. Unique atomic temporary files permit concurrent
+identical writes; stale names left by crashes are skipped safely. New Rust tests
+cover saturated ranges and concurrent deduplication. `smoke-retry-fresh.py` verifies
+one safe replay followed by fresh execution at 80x30, 40x24, and 20x8. It reproduced
+the stale replay defect against the preceding release.
+
+The UI hunter found no new behavior defect, and the motion/input suite passed.
+Outdated reader action labels and navigation fixture record assumptions were
+updated to exercise the current UI and metadata format.
+
+Final fourth-round evidence: 832 workspace tests pass serially; strict all-target
+Clippy and the optimized build pass. The unchanged release binary passes retry
+freshness, inherited-pipe/dual-spill/search, reader, navigation, native files/jobs,
+motion, daily-use polish, and performance checks. No-color exact scrolling is
+also checked at five sizes. Release prompt startup medians stay under 6 ms and
+visible key latency under 0.15 ms. Logs: `/tmp/gc-round4-*.log`; performance artifact:
+`/tmp/gc-round4-performance.json`. Reader and navigation are now included in the
+roadmap release acceptance runner alongside the new recovery regression.

@@ -406,7 +406,7 @@ fn read_capped(r: &mut Option<impl Read>) -> (String, Option<PathBuf>) {
     // spill file stays as the materialized copy for this session; a later
     // session or handoff re-reads by content through the reference.
     if let Some(p) = path.take() {
-        path = match std::fs::read(&p).ok().and_then(|bytes| crate::blobs::put(&bytes).ok()) {
+        path = match crate::blobs::put_file(&p).ok() {
             Some((reference, _)) => {
                 record_blob(reference, &p);
                 Some(p)

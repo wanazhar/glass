@@ -209,7 +209,7 @@ with tempfile.TemporaryDirectory(prefix='gc-reader-pty-') as tmp:
             if size[0] > 20:
                 terminal.visible('1 choices')
             terminal.send('\r')
-            terminal.visible('Read output' if size[0] > 20 else 'Read output')
+            terminal.visible('Live output and stdin' if size[0] > 20 else 'Live output')
             terminal.send('\r')
             terminal.visible('ACTIVITY_JOB')
             terminal.send('\x1b')

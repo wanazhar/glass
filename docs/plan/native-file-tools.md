@@ -74,3 +74,29 @@ Second-round final release checks passed: Attention inspector and bidi CLI/JSON
 fidelity at all three sizes, native files/jobs, exact no-color scroll roundtrip at
 five sizes, and performance thresholds. Evidence: `/tmp/gc-hunt2-release-*.log`
 and `/tmp/gc-hunt2-performance.json`.
+
+## Third bug hunt
+
+Two Luna medium hunters and an independent Luna medium reviewer checked runtime
+ownership and transcript navigation. Corrections:
+
+- Foreground shell completion stops remaining members of its owned process group
+  before joining output readers, avoiding hangs when ordinary background children
+  retain stdout/stderr. Persistent processes should use bash jobs. Descendants
+  that deliberately escape the process group can still retain inherited pipes.
+- When both output streams overflow, the result exposes both saved log paths
+  without combining or copying the files.
+- Search positions the viewport at matching text instead of overriding it with
+  the end of an expanded tool card.
+- Session switches reset live reasoning, parked views, and expanded-card state.
+
+`scripts/smoke-pipes-search.py` exercises inherited pipes, both overflow paths, and
+search placement through the actual binary at 80x30, 40x24, and 20x8.
+
+Third-round verification: 830 workspace tests pass serially, strict all-target
+Clippy passes, and the actual release binary passes the new regression,
+presentation, native files/jobs, CLI workflow, scrolling, and performance checks.
+The parallel test run hit a transient inherited session-lock failure in the
+compaction reopen test; the complete serial run passed. Release prompt startup
+median was under 8 ms; visible key latency under 0.2 ms. Evidence:
+`/tmp/gc-round3-*.log` and `/tmp/gc-round3-performance.json`.

@@ -2473,6 +2473,8 @@ fn repl(
                 Ok(Some(s)) => {
                     permissions::clear_session_approvals()?;
                     session = s;
+                    *painter.live.borrow_mut() = live::Live::new();
+                    painter.seed_live(session.history_entries(), session.reasoning_history());
                     navigation::viewed(&session)?;
                     inbox_mailbox = crate::inbox::Mailbox::open(&session);
                     pending = queue::Queue::open(&session)?;
@@ -3249,6 +3251,8 @@ fn repl(
                     let parent_metadata = polish::metadata(&session);
                     polish::save(&s, &parent_metadata)?;
                     session = s;
+                    *painter.live.borrow_mut() = live::Live::new();
+                    painter.seed_live(session.history_entries(), session.reasoning_history());
                     navigation::viewed(&session)?;
                     inbox_mailbox = crate::inbox::Mailbox::open(&session);
                     pending = queue::Queue::open(&session)?;
@@ -3614,6 +3618,8 @@ fn repl(
                     // conversation; a new session supersedes it.
                     warmer.begin_turn();
                     session = s;
+                    *painter.live.borrow_mut() = live::Live::new();
+                    painter.seed_live(session.history_entries(), session.reasoning_history());
                     navigation::viewed(&session)?;
                     inbox_mailbox = crate::inbox::Mailbox::open(&session);
                     pending = queue::Queue::open(&session)?;

@@ -139,43 +139,9 @@ pub fn view(keys: &crate::input::KeyReader, title: &str, text: &str) {
     }
 }
 pub fn outputs(keys: &crate::input::KeyReader, session: &crate::session::Session) {
-    use crate::session::Record;
-    let entries = session
-        .records
-        .iter()
-        .rev()
-        .filter_map(|r| match r {
-            Record::Bash {
-                command, output, ..
-            } => Some((
-                format!("Command · {}", glass_tui::text::clip(command, 60)),
-                output.as_str(),
-            )),
-            Record::ToolResult { name, body, .. } => {
-                Some((format!("Tool · {name}"), body.as_str()))
-            }
-            Record::Assistant(text) => Some(("Response".into(), text.as_str())),
-            _ => None,
-        })
-        .take(100)
-        .collect::<Vec<_>>();
-    if entries.is_empty() {
-        crate::modal::info(keys, "Outputs", "No responses or tool outputs yet.");
-        return;
-    }
-    let labels = entries
-        .iter()
-        .map(|(label, _)| label.clone())
-        .collect::<Vec<_>>();
-    while let Some(index) = crate::modal::choose(
-        keys,
-        "Outputs",
-        "Recent outputs · parse on selection · full text stays in /details",
-        &labels,
-    ) {
-        view(keys, &entries[index].0, entries[index].1);
-    }
+    crate::output_view::view(keys, session, crate::output_view::Filter::All);
 }
+
 pub fn command(args: &[String]) -> Result<(), String> {
     let path = args.first().ok_or("Usage: gc inspect FILE [--json]")?;
     let bytes = crate::requests::bounded(std::path::Path::new(path), 64 * 1024)?;

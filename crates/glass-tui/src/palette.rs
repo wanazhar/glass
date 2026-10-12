@@ -3,12 +3,16 @@ use crate::{Edit, Editor};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::io::{self, Write};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Command {
     pub name: String,
     pub hint: String,
     pub description: String,
     pub required_args: bool,
+    pub label: String,
+    pub aliases: Vec<String>,
+    pub keywords: String,
+    pub primary: bool,
 }
 
 pub struct Palette {
@@ -86,26 +90,37 @@ impl Palette {
         self.close();
     }
     fn matches(&self, query: &str) -> Vec<&Command> {
-        let query = query
-            .trim_start_matches('/')
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        // Exact and prefix matches outrank bare substrings, so one
-        // command whose name merely contains another's cannot shadow
-        // it: `/review` must select `review`, not `code-review`.
-        // The sort is stable, so catalogue order holds within a rank.
+        let query = query.trim_start_matches('/').trim().to_ascii_lowercase();
+        let rooted = self.commands.iter().any(|c| c.primary);
         let mut matches: Vec<(u8, &Command)> = self
             .commands
             .iter()
             .filter_map(|c| {
+                if query.is_empty() && rooted && !c.primary {
+                    return None;
+                }
                 let name = c.name.to_ascii_lowercase();
-                let rank = if name == query {
+                let aliases = c
+                    .aliases
+                    .iter()
+                    .map(|a| a.to_ascii_lowercase())
+                    .collect::<Vec<_>>();
+                let haystack = format!(
+                    "{name} {} {} {} {}",
+                    aliases.join(" "),
+                    c.label,
+                    c.description,
+                    c.keywords
+                )
+                .to_ascii_lowercase();
+                let rank = if name == query || aliases.iter().any(|a| a == &query) {
                     0
-                } else if name.starts_with(&query) {
+                } else if name.starts_with(&query) || aliases.iter().any(|a| a.starts_with(&query))
+                {
                     1
-                } else if name.contains(&query) {
+                } else if query == "*"
+                    || query.split_whitespace().all(|word| haystack.contains(word))
+                {
                     2
                 } else {
                     return None;
@@ -137,7 +152,18 @@ impl Palette {
                 }
             }
             KeyCode::Enter | KeyCode::Tab => {
-                if editor.text().contains(char::is_whitespace) && key.code == KeyCode::Enter {
+                let first = editor
+                    .text()
+                    .trim_start_matches('/')
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("");
+                let exact_with_args = editor.text().contains(char::is_whitespace)
+                    && self.commands.iter().any(|c| {
+                        (!c.hint.is_empty() || c.required_args)
+                            && (c.name == first || c.aliases.iter().any(|a| a == first))
+                    });
+                if exact_with_args && key.code == KeyCode::Enter {
                     self.dispatched_draft = self.saved_draft.take();
                     self.close();
                     if let Edit::Submit(text) = editor.key(key) {
@@ -150,7 +176,14 @@ impl Palette {
                         .cloned()
                         .cloned()?;
                     let args = key.code == KeyCode::Tab && !command.hint.is_empty();
-                    editor.set_text(&format!("/{}{}", command.name, if args { " " } else { "" }));
+                    let query = editor.text().trim_start_matches('/').trim();
+                    let dispatch = command
+                        .aliases
+                        .iter()
+                        .find(|alias| alias.as_str() == query)
+                        .map(String::as_str)
+                        .unwrap_or(&command.name);
+                    editor.set_text(&format!("/{}{}", dispatch, if args { " " } else { "" }));
                     if key.code == KeyCode::Enter {
                         self.dispatched_draft = self.saved_draft.take();
                         self.close();
@@ -182,11 +215,20 @@ impl Palette {
         let framed = width >= 24 && height >= 12;
         let compact = height < 14;
         let header = if compact { 2 } else { 3 };
+        let hint_row = usize::from(rooted_hint(width, height));
         let visible = height
-            .saturating_sub(header + 1 + usize::from(framed) * 2)
+            .saturating_sub(header + 1 + hint_row + usize::from(framed) * 2)
             .clamp(1, 8);
         let start = self.selected.saturating_sub(visible - 1);
-        let mut lines = vec!["Commands".to_string(), format!("❯ {query}")];
+        let rooted = self.commands.iter().any(|c| c.primary);
+        let mut lines = vec![
+            if rooted {
+                format!("Search actions · {} · * all", self.commands.len())
+            } else {
+                "Commands".to_string()
+            },
+            format!("❯ {query}"),
+        ];
         if !compact {
             lines.push(String::new());
         }
@@ -194,13 +236,33 @@ impl Palette {
             lines.push("No matching commands".into());
         }
         for (i, command) in matches.iter().enumerate().skip(start).take(visible) {
-            lines.push(format!(
-                "{} /{} {} — {}",
-                if i == self.selected { "›" } else { " " },
-                command.name,
-                command.hint,
-                command.description
-            ));
+            let label = if command.label.is_empty() {
+                &command.name
+            } else {
+                &command.label
+            };
+            lines.push(
+                if width < 40 || command.primary && query.trim_start_matches('/').trim().is_empty()
+                {
+                    format!("{} {}", if i == self.selected { "›" } else { " " }, label)
+                } else {
+                    format!(
+                        "{} /{} {} — {}",
+                        if i == self.selected { "›" } else { " " },
+                        command.name,
+                        command.hint,
+                        command.description
+                    )
+                },
+            );
+        }
+        if hint_row > 0 {
+            lines.push(
+                matches
+                    .get(self.selected)
+                    .map(|c| c.description.clone())
+                    .unwrap_or_else(|| "Type * to browse all".into()),
+            );
         }
         lines.push(
             if compact {
@@ -278,6 +340,10 @@ impl Palette {
         crate::theme::neutralize(&out)
     }
 }
+fn rooted_hint(width: usize, height: usize) -> bool {
+    width < 40 && height >= 8
+}
+
 impl Drop for Palette {
     fn drop(&mut self) {
         self.close();
@@ -294,21 +360,72 @@ mod tests {
                 hint: "".into(),
                 description: "Help".into(),
                 required_args: false,
+                ..Default::default()
             },
             Command {
                 name: "model".into(),
                 hint: "<name>".into(),
                 description: "Switch model".into(),
                 required_args: true,
+                ..Default::default()
             },
             Command {
                 name: "mine".into(),
                 hint: "".into(),
                 description: "Extension command".into(),
                 required_args: false,
+                ..Default::default()
             },
         ])
     }
+    #[test]
+    fn roots_intent_aliases_and_argument_dispatch() {
+        let mut p = Palette::new(vec![
+            Command {
+                name: "work".into(),
+                label: "Work".into(),
+                primary: true,
+                ..Default::default()
+            },
+            Command {
+                name: "outputs".into(),
+                aliases: vec!["details".into()],
+                keywords: "copy code".into(),
+                ..Default::default()
+            },
+            Command {
+                name: "compact".into(),
+                hint: "[focus]".into(),
+                aliases: vec!["compaction".into()],
+                ..Default::default()
+            },
+        ]);
+        assert_eq!(p.matches("/").len(), 1);
+        assert_eq!(p.matches("/copy code")[0].name, "outputs");
+        assert_eq!(p.matches("/*").len(), 3);
+        let mut editor = Editor::new();
+        editor.set_text("/details");
+        p.open_managed(&mut editor).unwrap();
+        assert_eq!(
+            p.key(
+                &mut editor,
+                KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE)
+            )
+            .as_deref(),
+            Some("/details")
+        );
+        editor.set_text("/compaction preserve task");
+        // Explicit arguments reach the original command unchanged.
+        assert_eq!(
+            p.key(
+                &mut editor,
+                KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE)
+            )
+            .as_deref(),
+            Some("/compaction preserve task")
+        );
+    }
+
     #[test]
     fn filtering_includes_extension_commands() {
         let p = palette();
@@ -325,12 +442,14 @@ mod tests {
                 hint: "[max]".into(),
                 description: "Review the diff".into(),
                 required_args: false,
+                ..Default::default()
             },
             Command {
                 name: "review".into(),
                 hint: "".into(),
                 description: "Task review".into(),
                 required_args: false,
+                ..Default::default()
             },
         ]);
         assert_eq!(p.matches("/review")[0].name, "review");
@@ -380,7 +499,10 @@ mod tests {
         let mut editor = Editor::new();
         editor.set_text("/help");
         palette.open_managed(&mut editor).unwrap();
-        palette.key(&mut editor, KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE));
+        palette.key(
+            &mut editor,
+            KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE),
+        );
         assert!(!palette.active());
         assert_eq!(editor.text(), "");
     }

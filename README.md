@@ -577,6 +577,12 @@ binding when explicitly resumed, and then appear in that project's browser.
 current title, and an empty field falls back to the first message. `glass-core
 list` shows titles, and so does `/sessions`.
 
+Resuming a conversation shows a themed **welcome-back recap** with the latest
+request, a saved reply excerpt, and any unresolved error. `/recap` reopens it in a
+scrollable modal (Enter/Escape closes). It is generated locally and cached outside
+model history: **zero extra tokens**, no provider request, and no automatic tool
+execution. An excerpt reports saved text, not a new verification of completed work.
+
 `/context` shows the last foreground model request and a browser of past requests,
 plus current prompt configuration, attachments, context edits, and compaction.
 Request manifests record instruction/attachment paths and byte counts, available

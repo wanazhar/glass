@@ -72,6 +72,7 @@ mod provider;
 mod queue;
 mod reader;
 mod readguard;
+mod recap;
 mod recovery;
 mod requirements;
 mod requests;
@@ -1486,6 +1487,7 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
         ("pr", "", "Pull request, CI and review cockpit", false),
         ("hub", "", "Conversations, teammates, attention and tasks", false),
         ("handoff", "", "Preview a bounded portable handoff", false),
+        ("recap", "", "Reopen your welcome-back recap · no extra tokens", false),
         (
             "workspace",
             "",
@@ -1988,6 +1990,7 @@ fn repl(
     let mut totals = Totals::new();
     let painter = Painter::new();
     painter.seed_live(session.history_entries(), session.reasoning_history());
+    painter.welcome_back(&session);
 
     let mut retry_available = session
         .records
@@ -2475,6 +2478,7 @@ fn repl(
                     session = s;
                     *painter.live.borrow_mut() = live::Live::new();
                     painter.seed_live(session.history_entries(), session.reasoning_history());
+                    painter.welcome_back(&session);
                     navigation::viewed(&session)?;
                     inbox_mailbox = crate::inbox::Mailbox::open(&session);
                     pending = queue::Queue::open(&session)?;
@@ -2854,6 +2858,11 @@ fn repl(
                     painter.live.borrow_mut().close().ok();
                 }
             }
+            continue;
+        }
+        if text == "/recap" {
+            let text = recap::cached(&session).unwrap_or_else(|| "Your recap will appear after your first message. No extra tokens are used.".into());
+            modal::info(&keys, "Welcome back", &text);
             continue;
         }
         if text == "/help" {
@@ -3253,6 +3262,7 @@ fn repl(
                     session = s;
                     *painter.live.borrow_mut() = live::Live::new();
                     painter.seed_live(session.history_entries(), session.reasoning_history());
+                    painter.welcome_back(&session);
                     navigation::viewed(&session)?;
                     inbox_mailbox = crate::inbox::Mailbox::open(&session);
                     pending = queue::Queue::open(&session)?;
@@ -3620,6 +3630,7 @@ fn repl(
                     session = s;
                     *painter.live.borrow_mut() = live::Live::new();
                     painter.seed_live(session.history_entries(), session.reasoning_history());
+                    painter.welcome_back(&session);
                     navigation::viewed(&session)?;
                     inbox_mailbox = crate::inbox::Mailbox::open(&session);
                     pending = queue::Queue::open(&session)?;
@@ -4751,6 +4762,22 @@ impl Painter {
         if self.reader_active() {
             self.reader_dirty.set(true);
             self.sync_reader();
+        }
+    }
+
+    fn welcome_back(&self, session: &Session) {
+        if let Some(text) = recap::cached(session) {
+            self.append_live_entry(glass_tui::Role::System, text.clone());
+            let mut io = surface::BodyWriter;
+            for (index, section) in text.split("\n\n").enumerate() {
+                let tone = if index == 0 { glass_tui::theme::Tone::Accent }
+                    else if section.starts_with("Blocker:") { glass_tui::theme::Tone::Warning }
+                    else if section.starts_with("Next:") { glass_tui::theme::Tone::Secondary }
+                    else if section.starts_with("Saved conversation") { glass_tui::theme::Tone::Muted }
+                    else { glass_tui::theme::Tone::Body };
+                if index > 0 { let _ = writeln!(io); }
+                self.notice(&mut io, &glass_tui::theme::ansi(tone), section);
+            }
         }
     }
 

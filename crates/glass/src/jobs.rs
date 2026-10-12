@@ -364,12 +364,18 @@ pub fn attention(workspace:&Path,owner:&str)->Vec<Value> {
 }
 pub struct Handle {
     key: String,
+    cleanup_on_drop: bool,
 }
 impl Handle {
     pub fn new(workspace: &Path, owner: &str) -> Self {
         Self {
             key: owner_key(workspace, owner),
+            cleanup_on_drop: true,
         }
+    }
+    /// Temporary inspectors share job state without owning session cleanup.
+    pub fn observer(workspace: &Path, owner: &str) -> Self {
+        Self { key: owner_key(workspace, owner), cleanup_on_drop: false }
     }
     pub fn set_owner(&mut self, workspace: &Path, owner: &str) {
         let key = owner_key(workspace, owner);
@@ -454,6 +460,7 @@ impl Handle {
 }
 impl Drop for Handle {
     fn drop(&mut self) {
+        if !self.cleanup_on_drop { return; }
         if let Ok(mut r) = registry().lock() {
             r.remove(&self.key);
         }
@@ -663,6 +670,28 @@ mod tests {
         handle.stop(1).unwrap();
         drop(handle);
         registry().lock().unwrap().remove(&owner_key(&dir, "two"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn observer_drop_keeps_completed_and_running_sibling_jobs() {
+        let dir = scratch("observer");
+        let mut owner = Handle::new(&dir, "session");
+        owner.start("echo COMPLETED", &dir, &dir).unwrap();
+        owner.start("echo RUNNING; sleep 30", &dir, &dir).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !owner.list().contains("1: exit 0") || !owner.output(1).unwrap().contains("COMPLETED") {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        {
+            let observer = Handle::observer(&dir, "session");
+            assert!(observer.output(1).unwrap().contains("COMPLETED"));
+        }
+        assert!(owner.list().contains("2: running"));
+        assert!(owner.output(1).unwrap().contains("COMPLETED"));
+        owner.stop(2).unwrap();
+        drop(owner);
+        assert!(!registry().lock().unwrap().contains_key(&owner_key(&dir, "session")));
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]

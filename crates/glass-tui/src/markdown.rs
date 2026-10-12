@@ -53,9 +53,17 @@ pub fn code_blocks(text: &str) -> Vec<(String, String)> {
 }
 /// Provider text is display data, never terminal instructions.
 pub fn sanitize(text: &str) -> String {
-    text.chars()
-        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
-        .collect()
+    let mut clean = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{206f}') {
+            // Show direction overrides explicitly: filenames and tool output
+            // must not silently reorder their displayed neighbors.
+            clean.extend(c.escape_unicode());
+        } else if !c.is_control() || matches!(c, '\n' | '\t') {
+            clean.push(c);
+        }
+    }
+    clean
 }
 
 fn inline(text: &str) -> Vec<Span<'static>> {
@@ -942,6 +950,15 @@ mod tests {
                 .count(),
             2500
         );
+    }
+    #[test]
+    fn bidi_formatting_is_visible_without_removing_natural_unicode() {
+        assert_eq!(sanitize("safe\u{202e}txt\u{2069}"), "safe\\u{202e}txt\\u{2069}");
+        let natural = "مرحبا 👩\u{200d}💻 café\n\t";
+        assert_eq!(sanitize(natural), natural);
+        for c in ['\u{061c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}'] {
+            assert!(!sanitize(&c.to_string()).contains(c));
+        }
     }
     #[test]
     fn unicode_and_provider_controls_cannot_escape_cell_bounds() {

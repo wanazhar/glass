@@ -268,7 +268,7 @@ impl<'a> Agent<'a> {
         if let Some(live) = self.live.as_mut() {
             live.tool(&call.id, &call.name);
         }
-        let command = call.arg_str("command").or_else(|| {
+        let command = call.arg_str("command").or_else(|| call.arg_str("path")).or_else(|| {
             call.arg_raw("job")
                 .and_then(|raw| serde_json::from_str(&raw).ok())
                 .map(|v| crate::jobs::label(&v))
@@ -1200,7 +1200,8 @@ impl<'a> Agent<'a> {
             return;
         }
 
-        if !self.mods.is_empty()
+        if calls.iter().any(|call|crate::files::is_tool(&call.name))
+            || !self.mods.is_empty()
             || !self.extensions.is_empty()
             || calls
                 .iter()
@@ -1341,11 +1342,57 @@ impl<'a> Agent<'a> {
         call: &ToolCall,
         pump: &mut impl FnMut(&mut Option<String>),
     ) {
-        if call.name == "bash" || self.extensions.has_tool(&call.name) {
+        if crate::files::is_tool(&call.name) {
+            self.run_file_pumped(call,pump);
+        } else if call.name == "bash" || self.extensions.has_tool(&call.name) {
             self.run_tool_pumped(call, pump);
         } else {
             self.run_tool(call);
         }
+    }
+
+    /// Native IO runs off the input thread. Preserve results even when steered:
+    /// atomic commits must never become unobserved background mutations.
+    fn run_file_pumped(&mut self,call:&ToolCall,pump:&mut impl FnMut(&mut Option<String>)) {
+        if let Some(verdict)=self.pre_tool_verdict(call) {
+            match verdict {
+                crate::hooks_shell::Verdict::Block(reason)=>return self.finish_tool(call,tools::Outcome::err(reason)),
+                crate::hooks_shell::Verdict::Halt(reason)=>{
+                    self.session.append(Record::Meta("error: pre-tool-use hook cancelled the rest of the turn".into()));
+                    return self.finish_tool(call,tools::Outcome::err(reason));
+                },
+                crate::hooks_shell::Verdict::Warn(warning)=>self.session.append(Record::Meta(format!("hook warning: {warning}"))),
+                crate::hooks_shell::Verdict::Allow=>{},
+            }
+        }
+        if let Some(reason)=self.authorization_refusal(call) {return self.finish_tool(call,tools::Outcome::err(reason));}
+        if let Some(reason)=self.read_before_write_refusal(call) {return self.finish_tool(call,tools::Outcome::err(reason));}
+        self.emit_tool_start(call);
+        let workspace=self.workspace.to_path_buf();let worker=call.clone();
+        let (tx,rx)=std::sync::mpsc::channel();
+        let cancel=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancel=cancel.clone();
+        std::thread::spawn(move || {let _=tx.send(crate::files::tool_cancellable(&worker,&workspace,&worker_cancel));});
+        let outcome=loop {
+            match rx.recv_timeout(std::time::Duration::from_millis(10)) {
+                Ok(result)=>break result,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)=>{
+                    pump(&mut self.steer);
+                    if self.steer.is_some() {cancel.store(true,std::sync::atomic::Ordering::Release);}
+                },
+                Err(_)=>break tools::Outcome::err("Native file worker failed; re-read before retrying a mutation"),
+            }
+        };
+        if call.name=="read" && outcome.exit_code==Some(0)
+            && let Some(path)=call.arg_str("path") {self.reads.mark_at(&self.workspace.join(path),self.tool_call_index);}
+        let mut body=outcome.body;
+        let before=self.state.clone();
+        with_tool_bridge(self.workspace,&mut *self.state,&call.id,|bridge| {
+            self.extensions.rewrite_tool_result(&call.id,&call.name,&mut body,bridge)
+        });
+        if let Err(error)=self.persist_state_change(before) {body.push_str(&format!("\n{error}"));}
+        self.finish_tool(call,tools::Outcome {body,truncated:outcome.truncated,exit_code:outcome.exit_code,spill:outcome.spill});
+        for (kind,data) in self.extensions.drain_custom() {self.session.append(Record::Custom {kind,data});}
     }
 
     fn authorization_refusal(&mut self, call: &ToolCall) -> Option<String> {
@@ -1729,15 +1776,20 @@ impl<'a> Agent<'a> {
     /// Creating a new file is never blocked, so this only ever gets in the way
     /// of a genuinely blind overwrite.
     fn read_before_write_refusal(&self, call: &ToolCall) -> Option<String> {
-        let command = call.arg_str("command")?;
-        let targets = verify::written_paths(&command, self.workspace);
+        let targets = if matches!(call.name.as_str(),"edit"|"write") {
+            if call.arg_raw("preview").as_deref()==Some("true") {return None;}
+            vec![self.workspace.join(call.arg_str("path")?)]
+        } else {
+            let command=call.arg_str("command")?;
+            verify::written_paths(&command,self.workspace)
+        };
         let blocked = self.reads.blocked(&targets);
         if blocked.is_empty() {
             return None;
         }
         let names: Vec<String> = blocked.iter().map(|p| p.display().to_string()).collect();
         Some(format!(
-            "refused: {} has not been read. Read it first (cat, or rg with the path), \
+            "refused: {} has not been read. Read it first (read, or rg with the path), \
              then retry. Overwriting a file you have not looked at is how changes get lost.",
             names.join(", ")
         ))
@@ -1802,9 +1854,9 @@ impl<'a> Agent<'a> {
             }
         }
 
-        // Mods may add tools and may block them; the two built-ins are always
+        // Mods may add tools and may block them; core built-ins are always
         // present but a mod can still refuse to run one.
-        let known = call.name == "bash"
+        let known = crate::files::is_tool(&call.name) || call.name == "bash"
             || call.name == "state"
             || (self.checkpoint_tools
                 && matches!(
@@ -1831,7 +1883,7 @@ impl<'a> Agent<'a> {
                 .flat_map(|m| m.tools())
                 .map(|(n, _, _)| n)
                 .collect();
-            let mut avail = vec!["bash".to_string(), "state".to_string()];
+            let mut avail = vec!["read".into(),"edit".into(),"write".into(),"bash".into(), "state".into()];
             avail.extend(extra);
             outcome.body = format!(
                 "error: no tool named `{}`. Available tools: {}.",
@@ -1845,6 +1897,10 @@ impl<'a> Agent<'a> {
             outcome.body = format!("blocked by extension: {denied}");
         } else if let Some(denied) = self.mods.iter().find_map(|m| m.authorize(call).err()) {
             outcome.body = format!("blocked: {denied}");
+        } else if crate::files::is_tool(&call.name) {
+            if let Some(refusal)=self.read_before_write_refusal(call) {return self.finish_tool(call,tools::Outcome::err(refusal));}
+            outcome=crate::files::tool(call,self.workspace);
+            if call.name=="read" && outcome.exit_code==Some(0) && let Some(path)=call.arg_str("path") {self.reads.mark_at(&self.workspace.join(path),self.tool_call_index);}
         } else if call.name == "bash" {
             if let Some(refusal) = self.read_before_write_refusal(call) {
                 self.emit(Progress::BlockedByGuard(&refusal));
@@ -2559,7 +2615,7 @@ for line in sys.stdin:
         let mut session = Session::create(&dir).unwrap();
         let mut state = State::new();
         let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
-        let mut extensions = Registry::load(&[warmer_extension()], Path::new("."), "mock");
+        let mut extensions = Registry::load(&[format!("env GLASS_CACHE_WARMER_MIN_PREFIX_BYTES=16000 {}",warmer_extension())], Path::new("."), "mock");
 
         let calls = Arc::new(AtomicU64::new(0));
         let warmer = Warmer::new(counting_factory(Arc::clone(&calls)));
@@ -2573,7 +2629,7 @@ for line in sys.stdin:
                 &mut extensions,
                 Path::new("."),
             )
-            // Short prompt: well under the 4000-byte minimum.
+            // Short prompt: well under the 16000-byte test minimum.
             .with_prompt("you are glass".into(), None, None)
             .with_warmer(&warmer);
 

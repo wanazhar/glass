@@ -1,7 +1,4 @@
-//! The two tools glass ships: `bash` and `state`.
-//!
-//! Everything else the model needs is a shell one-liner away, and every tool
-//! we do not ship is schema the model pays for on every single request.
+//! Shell execution and shared outcomes for core tool dispatch.
 
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;

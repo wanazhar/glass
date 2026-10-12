@@ -1786,6 +1786,9 @@ fn readable_tool_call(name: &str, arguments: &str) -> String {
             .unwrap_or_else(|| format!("{name} [arguments unavailable]"));
     }
     let arguments = serde_json::from_str::<serde_json::Value>(arguments).ok();
+    if crate::files::is_tool(name) && let Some(value)=&arguments {
+        return format!("{name} · {}{}",value["path"].as_str().unwrap_or("[path unavailable]"),if value["preview"]==true {" · preview"} else {""});
+    }
     let details = match arguments {
         Some(serde_json::Value::Object(values)) if !values.is_empty() => values
             .into_iter()

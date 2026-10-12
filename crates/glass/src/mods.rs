@@ -246,10 +246,10 @@ mod tests {
 
     #[test]
     fn mod_tool_does_not_shadow_builtins() {
-        // The builtin surface is two tools and stays two regardless of mods.
+        // Mods cannot shadow the compact core tool surface.
         let all = crate::provider::collect_tools(&[Box::new(Noisy) as Box<dyn Mod_>]);
         let names: Vec<_> = all.iter().map(|(n, _, _)| n.as_str()).collect();
-        assert_eq!(names, vec!["bash", "state", "todo"]);
+        assert_eq!(names, vec!["bash", "state", "read", "edit", "write", "todo"]);
     }
 
     #[test]
@@ -261,11 +261,11 @@ mod tests {
     }
 
     #[test]
-    fn builtin_names_are_bash_and_state() {
+    fn builtin_names_include_native_files() {
         let names: Vec<String> = crate::provider::builtin_tools()
             .into_iter()
             .map(|(n, _, _)| n)
             .collect();
-        assert_eq!(names, vec!["bash".to_string(), "state".to_string()]);
+        assert_eq!(names, vec!["bash", "state", "read", "edit", "write"]);
     }
 }

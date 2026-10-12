@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 const RECIPES: &[(&str, &str)] = &[
     (
         "files",
-        "Use gc file --help for bounded reads, revision-checked edits, atomic writes, previews and diagnostics. Read before editing; retain the returned revision. Use gc structure --help for lazy AST edits. Verify changed content before reporting success.",
+        "Prefer native read/edit/write: bounded reads return revisions; edits and replacing writes require expected. preview:true shows proposed changes; validate:true requires supported syntax checks. gc file --help exposes the same engine. Read before editing; retain the returned revision. Use gc structure --help for lazy AST edits. Verify changed content before reporting success.",
     ),
     (
         "background",

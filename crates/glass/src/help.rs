@@ -323,6 +323,9 @@ pub fn show(args: &[String]) -> Result<(), String> {
         .write_all(text.as_bytes())
         .map_err(|e| e.to_string())
 }
+/// Shared human and model command discovery.
+pub fn catalogue() -> Vec<Item> { [START, SESSIONS, TOOLS, CONNECT, INTEGRATE, KEYS, RUN].into_iter().flatten().copied().collect() }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,6 +356,3 @@ mod tests {
         assert!(render("missing", 80, false).is_err());
     }
 }
-
-/// Shared human and model command discovery.
-pub fn catalogue() -> Vec<Item> { [START, SESSIONS, TOOLS, CONNECT, INTEGRATE, KEYS, RUN].into_iter().flatten().copied().collect() }

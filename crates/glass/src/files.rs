@@ -1,4 +1,4 @@
-//! Bounded native file operations, exposed through bash rather than extra tool schemas.
+//! Bounded native file operations shared by model tools and CLI helpers.
 use serde_json::{Value, json};
 use std::{
     ffi::CString,
@@ -247,6 +247,18 @@ fn preview(old: &str, new: &str) -> String {
     out
 }
 pub fn execute(root: &Path, action: &str, v: &Value) -> Result<Value, String> {
+    execute_cancellable(root, action, v, &std::sync::atomic::AtomicBool::new(false))
+}
+fn execute_cancellable(
+    root: &Path,
+    action: &str,
+    v: &Value,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<Value, String> {
+    let cancelled = || cancel.load(std::sync::atomic::Ordering::Acquire);
+    if cancelled() {
+        return Err("File operation cancelled before execution".into());
+    }
     if !matches!(action, "read" | "check" | "edit" | "write") {
         return Err("action must be read, edit, write, or check".into());
     }
@@ -255,6 +267,9 @@ pub fn execute(root: &Path, action: &str, v: &Value) -> Result<Value, String> {
     if mutation {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
+            if cancelled() {
+                return Err("File operation cancelled while waiting for writer lock".into());
+            }
             match fs2::FileExt::try_lock_exclusive(&target.dir) {
                 Ok(()) => break,
                 Err(e)
@@ -283,7 +298,9 @@ pub fn execute(root: &Path, action: &str, v: &Value) -> Result<Value, String> {
         }
         let rev = revision(bytes);
         if let Some(expected) = v.get("expected") {
-            let expected = expected.as_str().ok_or("expected must be a revision string for reads")?;
+            let expected = expected
+                .as_str()
+                .ok_or("expected must be a revision string for reads")?;
             if expected != rev {
                 return Err("stale read continuation; file changed, restart the read to obtain a new revision".into());
             }
@@ -297,21 +314,35 @@ pub fn execute(root: &Path, action: &str, v: &Value) -> Result<Value, String> {
             }
             let start = number(v, "byte_offset", 0)?;
             if start > source.len() || !source.is_char_boundary(start) {
-                return Err("byte_offset must be within the file at a UTF-8 character boundary".into());
+                return Err(
+                    "byte_offset must be within the file at a UTF-8 character boundary".into(),
+                );
             }
             offset = source[..start].bytes().filter(|b| *b == b'\n').count() + 1;
             start
         } else {
-            source.split_inclusive('\n').take(offset - 1).map(str::len).sum()
+            source
+                .split_inclusive('\n')
+                .take(offset - 1)
+                .map(str::len)
+                .sum()
         };
         let total = source.lines().count();
         let mut body = String::new();
         let mut shown = 0;
         let mut partial = false;
         let mut end = start;
-        for (i, segment) in source[start..].split_inclusive('\n').take(limit).enumerate() {
+        for (i, segment) in source[start..]
+            .split_inclusive('\n')
+            .take(limit)
+            .enumerate()
+        {
             let line = segment.strip_suffix('\n').unwrap_or(segment);
-            let line = if segment.ends_with('\n') { line.strip_suffix('\r').unwrap_or(line) } else { line };
+            let line = if segment.ends_with('\n') {
+                line.strip_suffix('\r').unwrap_or(line)
+            } else {
+                line
+            };
             let prefix = format!("{}|", offset + i);
             let room = MAX_PREVIEW.saturating_sub(body.len());
             if prefix.len() + line.len() + 1 > room {
@@ -331,7 +362,8 @@ pub fn execute(root: &Path, action: &str, v: &Value) -> Result<Value, String> {
             shown += 1;
         }
         let truncated = end < bytes.len();
-        let next = truncated.then(|| json!({"path":target.label,"byte_offset":end,"expected":rev,"limit":limit}));
+        let next = truncated
+            .then(|| json!({"path":target.label,"byte_offset":end,"expected":rev,"limit":limit}));
         return Ok(
             json!({"kind":"file_read","path":target.label,"revision":rev,"offset":offset,"shown":shown,"total_lines":total,"bytes":bytes.len(),"byte_offset":start,"end_byte_offset":end,"truncated":truncated,"next_offset":if !partial && truncated {Some(offset+shown)} else {None},"next_read":next,"partial_line":partial,"text":body}),
         );
@@ -395,11 +427,20 @@ pub fn execute(root: &Path, action: &str, v: &Value) -> Result<Value, String> {
             "\n"
         };
         for (index, op) in ops.iter().enumerate() {
-            let fields = op.as_object().ok_or_else(|| format!("edit {} must be an object; nothing written", index + 1))?;
+            let fields = op
+                .as_object()
+                .ok_or_else(|| format!("edit {} must be an object; nothing written", index + 1))?;
             let exact = fields.contains_key("old");
-            let allowed = if exact { &["old", "new"][..] } else { &["start", "end", "text"][..] };
+            let allowed = if exact {
+                &["old", "new"][..]
+            } else {
+                &["start", "end", "text"][..]
+            };
             if let Some(unknown) = fields.keys().find(|key| !allowed.contains(&key.as_str())) {
-                return Err(format!("edit {}: unexpected field {unknown}; use old/new or start/end/text, not both; nothing written", index + 1));
+                return Err(format!(
+                    "edit {}: unexpected field {unknown}; use old/new or start/end/text, not both; nothing written",
+                    index + 1
+                ));
             }
             if exact {
                 let old = required(op, "old")?;
@@ -408,13 +449,18 @@ pub fn execute(root: &Path, action: &str, v: &Value) -> Result<Value, String> {
                 }
                 let first = source.find(old);
                 if first.is_none() {
-                    return Err(format!("edit {}: old text was not found; nothing written. Re-read the target range with the current revision", index + 1));
+                    return Err(format!(
+                        "edit {}: old text was not found; nothing written. Re-read the target range with the current revision",
+                        index + 1
+                    ));
                 }
                 if first.is_some_and(|at| {
-                        source[at + source[at..].chars().next().unwrap().len_utf8()..].contains(old)
-                    })
-                {
-                    return Err(format!("edit {}: old text matches more than once; nothing written. Use original-file line ranges for repeated text", index + 1));
+                    source[at + source[at..].chars().next().unwrap().len_utf8()..].contains(old)
+                }) {
+                    return Err(format!(
+                        "edit {}: old text matches more than once; nothing written. Use original-file line ranges for repeated text",
+                        index + 1
+                    ));
                 }
                 let start = first.unwrap();
                 spans.push((start, start + old.len(), required(op, "new")?.to_string()));
@@ -429,11 +475,23 @@ pub fn execute(root: &Path, action: &str, v: &Value) -> Result<Value, String> {
                 let from = offsets[start - 1];
                 let mut to = offsets[end];
                 // Choose the target's local line style, not another line's style.
-                let ending = source[from..].find('\n').map(|at| {
-                    if at > 0 && source.as_bytes()[from + at - 1] == b'\r' { "\r\n" } else { "\n" }
-                }).unwrap_or(ending);
-                let terminal_ending = if from < to && source[from..to].ends_with("\r\n") { "\r\n" }
-                    else if from < to && source[from..to].ends_with('\n') { "\n" } else { ending };
+                let ending = source[from..]
+                    .find('\n')
+                    .map(|at| {
+                        if at > 0 && source.as_bytes()[from + at - 1] == b'\r' {
+                            "\r\n"
+                        } else {
+                            "\n"
+                        }
+                    })
+                    .unwrap_or(ending);
+                let terminal_ending = if from < to && source[from..to].ends_with("\r\n") {
+                    "\r\n"
+                } else if from < to && source[from..to].ends_with('\n') {
+                    "\n"
+                } else {
+                    ending
+                };
                 let mut replacement = required(op, "text")?
                     .replace("\r\n", "\n")
                     .replace('\n', ending);
@@ -516,6 +574,9 @@ pub fn execute(root: &Path, action: &str, v: &Value) -> Result<Value, String> {
     let mode = existing.as_ref().map_or(0o600, |(_, m)| m.mode());
     let created = existing.is_none();
     let changed = bytes != result.as_bytes() || created;
+    if cancelled() {
+        return Err("File operation cancelled before atomic commit; nothing written".into());
+    }
     if changed && !dry_run {
         target.commit(
             existing.as_ref().map(|(b, _)| b.as_slice()),
@@ -527,16 +588,25 @@ pub fn execute(root: &Path, action: &str, v: &Value) -> Result<Value, String> {
         json!({"kind":"file_change","path":target.label,"operation":action,"status":if dry_run {"proposed"} else if changed {"applied"} else {"unchanged"},"applied":!dry_run && changed,"created":created,"base_revision":existing.as_ref().map(|_| revision(bytes)),"revision":revision(result.as_bytes()),"bytes":result.len(),"changed":changed,"preview":diff,"diagnostics":diagnostics}),
     )
 }
-pub(crate) fn snapshot_text(root:&Path,path:&str)->Result<Option<String>,String> {
-    let target=Target::new(root,path)?;
-    target.read()?.map(|(bytes,_)|text(&bytes).map(str::to_owned)).transpose()
+pub(crate) fn snapshot_text(root: &Path, path: &str) -> Result<Option<String>, String> {
+    let target = Target::new(root, path)?;
+    target
+        .read()?
+        .map(|(bytes, _)| text(&bytes).map(str::to_owned))
+        .transpose()
 }
-pub(crate) fn remove_created(root:&Path,path:&str,expected:&str)->Result<(),String> {
-    let target=Target::new(root,path)?;
+pub(crate) fn remove_created(root: &Path, path: &str, expected: &str) -> Result<(), String> {
+    let target = Target::new(root, path)?;
     fs2::FileExt::try_lock_exclusive(&target.dir).map_err(error)?;
-    let Some((bytes,_))=target.read()? else {return Ok(());};
-    if revision(&bytes)!=expected {return Err("Recovery refuses a changed created file".into());}
-    if unsafe {libc::unlinkat(target.dir.as_raw_fd(),target.name.as_ptr(),0)}<0 {return Err(error(std::io::Error::last_os_error()));}
+    let Some((bytes, _)) = target.read()? else {
+        return Ok(());
+    };
+    if revision(&bytes) != expected {
+        return Err("Recovery refuses a changed created file".into());
+    }
+    if unsafe { libc::unlinkat(target.dir.as_raw_fd(), target.name.as_ptr(), 0) } < 0 {
+        return Err(error(std::io::Error::last_os_error()));
+    }
     target.dir.sync_all().map_err(error)
 }
 
@@ -550,8 +620,9 @@ pub fn command(args: &[String]) -> Result<(), String> {
         .collect::<Vec<_>>();
     let args = &filtered;
     if args.is_empty() || args[0] == "--help" {
-        crate::cli::text("Files",
-            "Usage:\n  gc file [--json] read PATH [OFFSET LIMIT] [--byte-offset N --expected SHA256] | check PATH | edit|write < JSON\n\nEdit request:\n {\"path\":\"a.rs\",\"expected\":\"SHA256 from read\",\"edits\":[{\"start\":2,\"end\":3,\"text\":\"replacement\"}]}\nExact edit: {\"old\":\"unique text\",\"new\":\"replacement\"}; insertion: end=start-1.\n\nWrite request:\n {\"path\":\"a.rs\",\"expected\":null,\"text\":\"new file\"} (null=create-only). Optional validate:true requires a passing supported syntax check. preview:true validates and returns a proposed result without writing.\n\nSafety:\nUTF-8 regular files only, 8 MiB maximum; workspace-relative paths; no symlinks. JSON results are bounded; revisions cover the entire file. Truncated reads include next_read with a byte cursor and expected revision. Byte continuation requires --expected; restart a line read when stale. Atomic replacement preserves mode bits, not ownership or extended attributes; locks coordinate GC writers, not arbitrary external writers."
+        crate::cli::text(
+            "Files",
+            "Usage:\n  gc file [--json] read PATH [OFFSET LIMIT] [--byte-offset N --expected SHA256] | check PATH | edit|write < JSON\n\nEdit request:\n {\"path\":\"a.rs\",\"expected\":\"SHA256 from read\",\"edits\":[{\"start\":2,\"end\":3,\"text\":\"replacement\"}]}\nExact edit: {\"old\":\"unique text\",\"new\":\"replacement\"}; insertion: end=start-1.\n\nWrite request:\n {\"path\":\"a.rs\",\"expected\":null,\"text\":\"new file\"} (null=create-only). Optional validate:true requires a passing supported syntax check. preview:true validates and returns a proposed result without writing.\n\nSafety:\nUTF-8 regular files only, 8 MiB maximum; workspace-relative paths; no symlinks. JSON results are bounded; revisions cover the entire file. Truncated reads include next_read with a byte cursor and expected revision. Byte continuation requires --expected; restart a line read when stale. Atomic replacement preserves mode bits, not ownership or extended attributes; locks coordinate GC writers, not arbitrary external writers.",
         );
         return Ok(());
     }
@@ -567,8 +638,14 @@ pub fn command(args: &[String]) -> Result<(), String> {
         while cursor < args.len() {
             let arg = &args[cursor];
             if matches!(arg.as_str(), "--byte-offset" | "--expected") && action == "read" {
-                let value = args.get(cursor + 1).ok_or_else(|| format!("{arg} requires a value"))?;
-                let key = if arg == "--byte-offset" { "byte_offset" } else { "expected" };
+                let value = args
+                    .get(cursor + 1)
+                    .ok_or_else(|| format!("{arg} requires a value"))?;
+                let key = if arg == "--byte-offset" {
+                    "byte_offset"
+                } else {
+                    "expected"
+                };
                 if request.get(key).is_some() {
                     return Err(format!("{arg} specified more than once"));
                 }
@@ -603,33 +680,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
     if json_output {
         crate::emit_json(out.clone());
     } else {
-        let display = match out["kind"].as_str() {
-            Some("file_read") => format!(
-                "[file {} · revision {} · lines {}/{}]\n{}{}",
-                out["path"].as_str().unwrap(),
-                out["revision"].as_str().unwrap(),
-                out["shown"],
-                out["total_lines"],
-                out["text"].as_str().unwrap(),
-                if out["truncated"] == true {
-                    format!(
-                        "\n[partial read; continue with file read PATH --byte-offset {} --expected {}]\n",
-                        out["end_byte_offset"], out["revision"].as_str().unwrap()
-                    )
-                } else {
-                    String::new()
-                }
-            ),
-            Some("file_change") => format!(
-                "[file {} · {} · revision {}]\n{}{}",
-                out["path"].as_str().unwrap(),
-                out["status"].as_str().unwrap(),
-                out["revision"].as_str().unwrap(),
-                crate::diagnostics::summary(&out["diagnostics"]),
-                out["preview"].as_str().unwrap()
-            ),
-            _ => crate::diagnostics::summary(&out),
-        };
+        let display = display(&out);
         crate::cli::literal("Files", &glass_tui::markdown::sanitize(&display));
     }
     if action == "check" && out["status"] != "ok" {
@@ -639,6 +690,150 @@ pub fn command(args: &[String]) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+pub fn is_tool(name: &str) -> bool {
+    matches!(name, "read" | "edit" | "write")
+}
+
+pub fn schemas() -> Vec<(String, String, String)> {
+    let read = json!({"type":"object","additionalProperties":false,"required":["path"],"properties":{
+        "path":{"type":"string"},"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":1000},
+        "byte_offset":{"type":"integer","minimum":0},"expected":{"type":"string"}}});
+    let mut mutation = json!({"type":"object","additionalProperties":false,"required":["path","expected"],"properties":{
+        "path":{"type":"string"},"expected":{"type":["string","null"]},"preview":{"type":"boolean"},"validate":{"type":"boolean"}}});
+    let mut write = mutation.clone();
+    write["required"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("text"));
+    write["properties"]["text"] = json!({"type":"string"});
+    mutation["required"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("edits"));
+    mutation["properties"]["edits"] = json!({"type":"array","minItems":1,"maxItems":128,"items":{"anyOf":[
+        {"type":"object","additionalProperties":false,"required":["old","new"],"properties":{"old":{"type":"string","minLength":1},"new":{"type":"string"}}},
+        {"type":"object","additionalProperties":false,"required":["start","end","text"],"properties":{"start":{"type":"integer","minimum":1},"end":{"type":"integer","minimum":0},"text":{"type":"string"}}}
+    ]}});
+    vec![
+        ("read".into(),"Read a workspace UTF-8 file with line numbers and whole-file revision. Defaults: offset=1, limit=200. Follow next_read for truncated output; byte_offset requires expected. No symlinks; max 8 MiB.".into(),read.to_string()),
+        ("edit".into(),"Edit a previously read file using its expected revision. edits use unique old/new text or original 1-based start/end/text ranges (insert: end=start-1). Atomic; preview returns a diff without writing; validate requires supported syntax checks.".into(),mutation.to_string()),
+        ("write".into(),"Atomically write a workspace UTF-8 file. expected:null creates only; replacing requires a prior read revision. preview returns a diff without writing; validate requires supported syntax checks. No symlinks; max 8 MiB.".into(),write.to_string())
+    ]
+}
+
+pub fn tool(call: &glass_mod_api::ToolCall, root: &Path) -> crate::tools::Outcome {
+    tool_cancellable(call, root, &std::sync::atomic::AtomicBool::new(false))
+}
+pub fn tool_cancellable(
+    call: &glass_mod_api::ToolCall,
+    root: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> crate::tools::Outcome {
+    if let Some(reason) = crate::sandbox::refusal() {
+        return crate::tools::Outcome::err(reason);
+    }
+    let value: Value = match serde_json::from_str(&call.arguments) {
+        Ok(v) => v,
+        Err(e) => return crate::tools::Outcome::err(e.to_string()),
+    };
+    if matches!(call.name.as_str(), "edit" | "write")
+        && value["preview"] != true
+        && crate::sandbox::permission_profile_label() == "read-only"
+    {
+        return crate::tools::Outcome::err(
+            "Read-only permission profile blocks file mutations; preview:true remains available",
+        );
+    }
+    match execute_cancellable(root, &call.name, &value, cancel) {
+        Ok(value) => {
+            let mut body = display(&value);
+            if let Some(next) = value.get("next_read").filter(|v| !v.is_null()) {
+                body.push_str(&format!("\nnext_read: {next}"));
+            }
+            crate::tools::Outcome::ok(body)
+        }
+        Err(error) => crate::tools::Outcome::err(error),
+    }
+}
+
+/// Shared readable rendering for CLI and native model results.
+pub fn display(out: &Value) -> String {
+    match out["kind"].as_str() {
+        Some("file_read") => format!(
+            "[file {} · revision {} · lines {}/{}]\n{}{}",
+            out["path"].as_str().unwrap(),
+            out["revision"].as_str().unwrap(),
+            out["shown"],
+            out["total_lines"],
+            out["text"].as_str().unwrap(),
+            if out["truncated"] == true {
+                format!(
+                    "\n[partial read; continue with file read PATH --byte-offset {} --expected {}]\n",
+                    out["end_byte_offset"],
+                    out["revision"].as_str().unwrap()
+                )
+            } else {
+                String::new()
+            }
+        ),
+        Some("file_change") => format!(
+            "[file {} · {} · revision {}]\n{}{}",
+            out["path"].as_str().unwrap(),
+            out["status"].as_str().unwrap(),
+            out["revision"].as_str().unwrap(),
+            crate::diagnostics::summary(&out["diagnostics"]),
+            out["preview"].as_str().unwrap()
+        ),
+        _ => crate::diagnostics::summary(out),
+    }
+}
+
+#[cfg(test)]
+mod direct_tool_tests {
+    use super::*;
+    #[test]
+    fn schemas_validate_native_shapes() {
+        for (name, _, schema) in schemas() {
+            let schema: Value = serde_json::from_str(&schema).unwrap();
+            let args = match name.as_str() {
+                "read" => json!({"path":"a","limit":20}),
+                "write" => json!({"path":"a","expected":null,"text":"x"}),
+                _ => json!({"path":"a","expected":"revision","edits":[{"old":"x","new":"y"}]}),
+            };
+            let call = glass_mod_api::ToolCall {
+                id: "test".into(),
+                name: name.clone(),
+                arguments: args.to_string(),
+            };
+            let tools = vec![(name.clone(), schema.clone())];
+            assert!(crate::tool_repair::validate(&call, &tools).is_ok());
+            let invalid = glass_mod_api::ToolCall {
+                id: "bad".into(),
+                name,
+                arguments: json!({"path":"a","typo":true}).to_string(),
+            };
+            assert!(crate::tool_repair::validate(&invalid, &tools).is_err());
+        }
+    }
+    #[test]
+    fn cancellation_prevents_a_new_file() {
+        let root = std::env::temp_dir().join(format!("gc-native-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        assert!(
+            execute_cancellable(
+                &root,
+                "write",
+                &json!({"path":"never","expected":null,"text":"x"}),
+                &cancelled
+            )
+            .is_err()
+        );
+        assert!(!root.join("never").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -781,10 +976,16 @@ mod tests {
         write(&d, "a", "one\r\ntwo\nthree\r\nfour\n");
         let r = read(&d, "a");
         execute(&d.0,"edit",&json!({"path":"a","expected":r["revision"],"edits":[{"start":2,"end":2,"text":"TWO"}]})).unwrap();
-        assert_eq!(std::fs::read_to_string(d.0.join("a")).unwrap(), "one\r\nTWO\nthree\r\nfour\n");
+        assert_eq!(
+            std::fs::read_to_string(d.0.join("a")).unwrap(),
+            "one\r\nTWO\nthree\r\nfour\n"
+        );
         let r = read(&d, "a");
         execute(&d.0,"edit",&json!({"path":"a","expected":r["revision"],"edits":[{"start":3,"end":4,"text":"THREE\nFOUR"}]})).unwrap();
-        assert_eq!(std::fs::read_to_string(d.0.join("a")).unwrap(), "one\r\nTWO\nTHREE\r\nFOUR\n");
+        assert_eq!(
+            std::fs::read_to_string(d.0.join("a")).unwrap(),
+            "one\r\nTWO\nTHREE\r\nFOUR\n"
+        );
     }
     #[test]
     fn symlinks_hardlinks_and_binary_rejected() {
@@ -868,14 +1069,20 @@ mod tests {
             assert!(page["text"].as_str().unwrap().len() <= MAX_PREVIEW);
             cursor = end;
             pages += 1;
-            if page["next_read"].is_null() { break; }
+            if page["next_read"].is_null() {
+                break;
+            }
             request = page["next_read"].clone();
             assert!(pages < 10);
         }
         assert_eq!(cursor, original.len());
         assert!(pages >= 3);
         write(&d, "a", "changed");
-        assert!(execute(&d.0, "read", &request).unwrap_err().contains("stale read"));
+        assert!(
+            execute(&d.0, "read", &request)
+                .unwrap_err()
+                .contains("stale read")
+        );
     }
     #[test]
     fn read_cursor_and_expected_revision_are_validated() {
@@ -892,20 +1099,35 @@ mod tests {
         ] {
             assert!(execute(&d.0, "read", &request).is_err(), "{request}");
         }
-        let empty = execute(&d.0, "read", &json!({"path":"a","byte_offset":4,"expected":rev})).unwrap();
+        let empty = execute(
+            &d.0,
+            "read",
+            &json!({"path":"a","byte_offset":4,"expected":rev}),
+        )
+        .unwrap();
         assert_eq!(empty["truncated"], false);
         assert_eq!(empty["next_read"], Value::Null);
     }
     #[test]
     fn mutation_previews_do_not_write_and_empty_creation_is_a_change() {
         let d = dir();
-        let proposed = execute(&d.0, "write", &json!({"path":"empty","expected":null,"text":"","preview":true})).unwrap();
+        let proposed = execute(
+            &d.0,
+            "write",
+            &json!({"path":"empty","expected":null,"text":"","preview":true}),
+        )
+        .unwrap();
         assert_eq!(proposed["status"], "proposed");
         assert_eq!(proposed["applied"], false);
         assert_eq!(proposed["created"], true);
         assert_eq!(proposed["changed"], true);
         assert!(!d.0.join("empty").exists());
-        let created = execute(&d.0, "write", &json!({"path":"empty","expected":null,"text":""})).unwrap();
+        let created = execute(
+            &d.0,
+            "write",
+            &json!({"path":"empty","expected":null,"text":""}),
+        )
+        .unwrap();
         assert_eq!(created["status"], "applied");
         assert_eq!(created["changed"], true);
         let r = read(&d, "empty");
@@ -913,7 +1135,12 @@ mod tests {
         let edited = execute(&d.0, "edit", &request).unwrap();
         assert_eq!(edited["base_revision"], r["revision"]);
         assert_eq!(std::fs::read_to_string(d.0.join("empty")).unwrap(), "");
-        let unchanged = execute(&d.0, "write", &json!({"path":"empty","expected":r["revision"],"text":""})).unwrap();
+        let unchanged = execute(
+            &d.0,
+            "write",
+            &json!({"path":"empty","expected":r["revision"],"text":""}),
+        )
+        .unwrap();
         assert_eq!(unchanged["status"], "unchanged");
         assert_eq!(unchanged["applied"], false);
     }

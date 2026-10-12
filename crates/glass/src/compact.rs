@@ -46,6 +46,13 @@ pub fn branch_summary(dropped: &[Record]) -> Option<String> {
             Record::Assistant(text) if !text.trim().is_empty() => {
                 last_action = Some(text.lines().next().unwrap_or(text).to_string());
             }
+            Record::ToolCall {name,arguments,..} if crate::files::is_tool(name) => {
+                if let Ok(value)=serde_json::from_str::<serde_json::Value>(arguments)
+                    && let Some(path)=value["path"].as_str()
+                    && !files.iter().any(|p|p==path) && files.len()<4 {
+                    files.push(glass_tui::text::clip(path,512));
+                }
+            }
             // A plausible path literal from a shell command: same heuristic
             // the inspector uses; false positives cost one bounded word.
             Record::Bash { command, .. }

@@ -47,8 +47,8 @@ for size in [(80,30),(40,24),(20,8)]:
             assert '✓ syntax' in t.seen and '◆ sample.json' in t.seen,t.seen
             assert '\x1b[38;5;' in t.seen,t.seen
             if size[0]>=40: assert '-   "value": 1' in re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',t.seen),t.seen
-            assert all(len(request['tools'])==2 for request in Provider.requests)
-            assert all([x['function']['name'] for x in request['tools']]==['bash','state'] for request in Provider.requests)
+            assert all(len(request['tools'])==5 for request in Provider.requests)
+            assert all([x['function']['name'] for x in request['tools']]==['bash','state','read','edit','write'] for request in Provider.requests)
             t.send('draft');t.collect(.1);t.resize(20,8);t.resize(*size);assert 'draft' in t.vt.text(),t.vt.text()
             records=[json.loads(line) for p in data.glob('*.jsonl') if p.stem!='history' for line in p.read_text().splitlines()]
             assert any(r.get('k')=='tool' and 'ECHO:native-input' in str(r) for r in records),records
@@ -67,4 +67,4 @@ with tempfile.TemporaryDirectory(prefix='gc-native-headless-') as tmp:
     p=subprocess.run([str(BIN),'file','--json','unknown'],cwd=root,env=env,input='',text=True,capture_output=True,timeout=3);assert p.returncode!=0 and json.loads(p.stdout)['status']=='error'
     (root/'bad.json').write_text('{bad}')
     p=subprocess.run([str(BIN),'file','--json','check','bad.json'],cwd=root,env=env,text=True,capture_output=True);assert p.returncode!=0 and json.loads(p.stdout)['status']=='error'
-print('PASS: native CAS edits, colored previews, diagnostics, owned background start/input/incremental poll/stop, exact records, two tools, headless/non-Git and PTY 80x30/40x24/20x8')
+print('PASS: native CAS edits, colored previews, diagnostics, owned background start/input/incremental poll/stop, exact records, five core tools, headless/non-Git and PTY 80x30/40x24/20x8')

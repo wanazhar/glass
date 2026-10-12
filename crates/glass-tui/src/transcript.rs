@@ -170,6 +170,14 @@ impl Transcript {
         self.matches.len()
     }
 
+    /// Recompute live matches without moving the user's viewport or selection.
+    pub fn refresh_search(&mut self, query: &str) -> usize {
+        let selected = self.match_index;
+        let count = self.search(query);
+        self.match_index = selected.filter(|index| *index < count);
+        count
+    }
+
     pub fn search_next(&mut self, reverse: bool, height: u16) -> bool {
         if self.matches.is_empty() {
             return false;
@@ -709,6 +717,29 @@ mod tests {
         assert!(t.is_empty());
         t.step(5, H);
         assert_eq!(t.scroll, 0);
+    }
+
+    #[test]
+    fn live_search_refresh_preserves_selected_match_and_viewport() {
+        let entries = vec![
+            Entry { role: Role::User, text: "needle first".into(), turn: 1, tool_card: None },
+            Entry { role: Role::Assistant, text: "filler\n".repeat(40), turn: 1, tool_card: None },
+            Entry { role: Role::User, text: "needle second".into(), turn: 2, tool_card: None },
+            Entry { role: Role::Assistant, text: "tail\n".repeat(40), turn: 2, tool_card: None },
+        ];
+        let mut t = Transcript::new(entries.clone());
+        t.search("needle");
+        t.search_next(false, H);
+        t.search_next(false, H);
+        let scroll = t.scroll;
+        let mut updated = entries;
+        updated.last_mut().unwrap().text.push_str("streaming delta");
+        t.replace_entries(updated);
+        assert_eq!(t.refresh_search("needle"), 2);
+        assert_eq!(t.scroll, scroll);
+        assert_eq!(t.match_index, Some(1));
+        t.search_next(false, H);
+        assert_eq!(t.match_index, Some(0));
     }
 
     #[test]

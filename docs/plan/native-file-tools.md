@@ -129,3 +129,34 @@ also checked at five sizes. Release prompt startup medians stay under 6 ms and
 visible key latency under 0.15 ms. Logs: `/tmp/gc-round4-*.log`; performance artifact:
 `/tmp/gc-round4-performance.json`. Reader and navigation are now included in the
 roadmap release acceptance runner alongside the new recovery regression.
+
+## Fifth bug hunt
+
+Two Luna medium hunters checked runtime and UI state; an independent Luna medium
+reviewer accepted the corrections. Confirmed fixes:
+
+- Foreground output drains use nonblocking reads and a 100 ms grace period after
+  shell completion. A detached descendant cannot hold the drain joins open.
+  Buffered output is retained; cutoff is explicitly marked incomplete/truncated.
+  Setup/read failures retain their actual error and a separate I/O diagnostic.
+  Detached processes are not claimed to have been terminated.
+- Job polling rejects manually supplied offsets inside UTF-8 characters and
+  directs callers to the previous `next_offset`; valid incremental polling keeps
+  complete Unicode scalars intact.
+- Live transcript search refresh retains viewport and selected match instead of
+  navigating back to the first result on every streamed delta. The gated release
+  PTY regression reproduced the jump on the preceding release, then passed with
+  the fix through both streaming updates and turn completion at 80x30/40x24/20x8.
+
+New Rust regressions cover escaped-child capture, invalid Unicode cursors, and
+live search refresh. `smoke-stream-search.py` is included in release acceptance;
+`smoke-pipes-search.py` now also checks detached pipes and explicit cutoff output.
+
+Final fifth-round evidence: 835 workspace tests, strict all-target Clippy, optimized
+build, and all targeted release PTYs pass. Coverage includes streaming search,
+ordinary/detached pipe capture, Unicode job polling, native files/jobs, retry
+freshness, reader actions, motion/busy input, and no-color exact scroll roundtrips.
+Performance thresholds pass both alongside the PTYs and in an isolated rerun;
+isolated worst startup median was 5.37 ms, key latency 0.124 ms, and redraw
+0.311 ms. Evidence: `/tmp/gc-round5-*.log` and
+`/tmp/gc-round5-performance-isolated.json`.

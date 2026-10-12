@@ -2,6 +2,7 @@
 
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -216,8 +217,14 @@ pub fn bash_owned(
     // which `cargo build` and `git push` both do routinely.
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
-    let out_buf = std::thread::spawn(move || read_capped(&mut stdout));
-    let err_buf = std::thread::spawn(move || read_capped(&mut stderr));
+    let capture_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let capture_cutoff = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let done = capture_done.clone();
+    let cutoff = capture_cutoff.clone();
+    let out_buf = std::thread::spawn(move || read_capped(&mut stdout, &done, &cutoff));
+    let done = capture_done.clone();
+    let cutoff = capture_cutoff.clone();
+    let err_buf = std::thread::spawn(move || read_capped(&mut stderr, &done, &cutoff));
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout);
     let mut timed_out = false;
@@ -250,6 +257,7 @@ pub fn bash_owned(
     let descendants_stopped = !cancelled && !timed_out && child.id() > 1
         && unsafe { kill(-(child.id() as i32), SIGKILL) } == 0;
 
+    capture_done.store(true, Ordering::Release);
     let (out, out_spill) = out_buf.join().unwrap_or_else(|_| (String::new(), None));
     let (err, err_spill) = err_buf.join().unwrap_or_else(|_| (String::new(), None));
 
@@ -285,6 +293,11 @@ pub fn bash_owned(
     if descendants_stopped {
         body.push_str("\n[shell exited; remaining owned background processes stopped; use bash job start for persistent work]\n");
     }
+    match capture_cutoff.load(Ordering::Acquire) {
+        1 => body.push_str("\n[output capture incomplete: detached process retained a pipe after shell completion; use bash jobs for persistent work]\n"),
+        2 | 3 => body.push_str("\n[output capture incomplete: output pipe I/O failed; see capture error above]\n"),
+        _ => {}
+    }
     if cancelled {
         body.push_str("\n[command cancelled; owned process group stopped]\n");
     }
@@ -315,7 +328,7 @@ pub fn bash_owned(
     crate::fs_scan::invalidate_all();
 
     Outcome {
-        truncated: spill.is_some(),
+        truncated: spill.is_some() || capture_cutoff.load(Ordering::Acquire) != 0,
         body: prefix,
         exit_code: code,
         spill,
@@ -367,18 +380,48 @@ fn kill_group(child: &mut Child) {
 /// a spill the model can always recover the tail with `tail` or `rg` instead of
 /// re-running the command. Temp files are the OS's to reap, so a crashed session
 /// leaves nothing behind that needs cleaning up.
-fn read_capped(r: &mut Option<impl Read>) -> (String, Option<PathBuf>) {
+fn read_capped(
+    r: &mut Option<impl Read + AsRawFd>,
+    done: &std::sync::atomic::AtomicBool,
+    cutoff: &std::sync::atomic::AtomicU8,
+) -> (String, Option<PathBuf>) {
     let Some(reader) = r.as_mut() else {
         return (String::new(), None);
     };
 
+    // Nonblocking capture keeps escaped descendants from holding joins open.
+    // Hot reads need no extra poll syscall; only quiet pipes sleep briefly.
+    let fd = reader.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        cutoff.fetch_max(2, Ordering::AcqRel);
+        return (format!("[output capture setup failed: {}]", std::io::Error::last_os_error()), None);
+    }
+    let mut drain_deadline = None;
     let mut head: Vec<u8> = Vec::new();
     let mut spill: Option<(std::fs::File, PathBuf)> = None;
     let mut chunk = [0u8; 8192];
 
     loop {
+        if done.load(Ordering::Acquire) {
+            let deadline = drain_deadline.get_or_insert_with(|| std::time::Instant::now() + std::time::Duration::from_millis(100));
+            if std::time::Instant::now() >= *deadline {
+                cutoff.fetch_max(1, Ordering::AcqRel);
+                break;
+            }
+        }
         let n = match reader.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                continue;
+            }
+            Err(error) => {
+                cutoff.fetch_max(3, Ordering::AcqRel);
+                head.extend_from_slice(format!("\n[output capture read failed: {error}]\n").as_bytes());
+                break;
+            }
             Ok(n) => n,
         };
 
@@ -1022,6 +1065,16 @@ mod tests {
         assert!(start.elapsed() < std::time::Duration::from_secs(2));
         assert_eq!(out.exit_code, Some(0));
         assert!(out.body.contains("done"));
+    }
+
+    #[test]
+    fn escaped_descendant_cannot_hold_capture_open() {
+        let start = std::time::Instant::now();
+        let out = bash(&call(r#"{"command":"setsid sh -c 'sleep 2' & echo done","timeout_ms":200}"#), std::path::Path::new("."));
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        assert!(out.body.contains("done"));
+        assert!(out.body.contains("capture incomplete"));
+        assert!(out.truncated);
     }
 
     #[test]

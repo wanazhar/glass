@@ -68,7 +68,7 @@ impl Reader {
             return Ok(());
         }
         if let Some(query) = self.search.clone() {
-            self.search_matches(&query);
+            self.search_matches(&query, false);
         }
         if following {
             self.unread = 0;
@@ -123,7 +123,7 @@ impl Reader {
                     }
                     if refresh_search {
                         let query = self.search.clone().unwrap_or_default();
-                        self.search_matches(&query);
+                        self.search_matches(&query, true);
                     }
                     draw = true;
                     if draw {
@@ -323,10 +323,10 @@ impl Reader {
         self.transcript.follow = false;
     }
 
-    fn search_matches(&mut self, query: &str) {
+    fn search_matches(&mut self, query: &str, navigate: bool) {
         if !query.is_empty() {
             let needle = query.to_lowercase();
-            self.selected_card = None;
+            if navigate { self.selected_card = None; }
             for entry in &self.entries {
                 if let Some(card) = &entry.tool_card
                     && (card.command.to_lowercase().contains(&needle)
@@ -350,8 +350,12 @@ impl Reader {
                 &self.loaded_spills,
             ));
         }
-        self.match_count = self.transcript.search(query);
-        self.transcript.search_next(false, Transcript::content_rect(body_rect()).height);
+        if navigate {
+            self.match_count = self.transcript.search(query);
+            self.transcript.search_next(false, Transcript::content_rect(body_rect()).height);
+        } else {
+            self.match_count = self.transcript.refresh_search(query);
+        }
     }
 }
 

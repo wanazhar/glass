@@ -264,6 +264,9 @@ impl Jobs {
         f.take(((limit + 3) as u64).min(size - offset))
             .read_to_end(&mut bytes)
             .map_err(err)?;
+        if offset > 0 && bytes.first().is_some_and(|byte| byte & 0xc0 == 0x80) {
+            return Err("offset is inside a UTF-8 character; use the previous next_offset cursor".into());
+        }
         let mut end = limit.min(bytes.len());
         while end < bytes.len() && bytes[end] & 0xc0 == 0x80 {
             end += 1;
@@ -713,6 +716,24 @@ mod tests {
         }
         assert_eq!(output, "A€😀Z");
         drop(jobs);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn poll_rejects_cursors_inside_unicode_scalars() {
+        let dir = scratch("unicode-offset");
+        let mut jobs = Jobs::default();
+        jobs.start("printf '😀Z'", &dir, &dir).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while jobs.poll(1, 0, 100).unwrap()["captured_bytes"].as_u64().unwrap() < 5 {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        for offset in 1..4 {
+            assert!(jobs.poll(1, offset, 100).unwrap_err().contains("UTF-8"));
+        }
+        assert_eq!(jobs.poll(1, 4, 100).unwrap()["output"], "Z");
+        jobs.stop(1).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
 

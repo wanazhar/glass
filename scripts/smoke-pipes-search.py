@@ -13,6 +13,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
             delta = {'tool_calls': [{'index': 0, 'id': 'pipes', 'function': {'name': 'bash', 'arguments': json.dumps({'command': 'sleep 30 & echo PIPE_DONE', 'timeout_ms': 200})}}]}
         elif len(results) == 1:
             assert 'PIPE_DONE' in results[0]
+            delta = {'tool_calls': [{'index': 0, 'id': 'detached', 'function': {'name': 'bash', 'arguments': json.dumps({'command': "setsid sh -c 'sleep 2' & echo DETACHED_DONE", 'timeout_ms': 200})}}]}
+        elif len(results) == 2:
+            assert 'capture incomplete' in results[-1], results[-1]
             delta = {'tool_calls': [{'index': 0, 'id': 'overflow', 'function': {'name': 'bash', 'arguments': json.dumps({'command': "printf 'SEARCH_NEEDLE\\n'; seq 1 40000; seq 40001 80000 >&2"})}}]}
         else:
             assert 'stderr overflow saved to ' in results[-1], results[-1]

@@ -1143,7 +1143,7 @@ impl<'a> Agent<'a> {
                 }
                 if steer.is_empty() {
                     self.session.append(Record::Meta(
-                        "Cancelled: running shell process group stopped; remaining tools skipped."
+                        "Cancelled: tool execution stopped; remaining tools skipped."
                             .into(),
                     ));
                     return Ok((last, Stop::Cancelled));
@@ -1354,10 +1354,12 @@ impl<'a> Agent<'a> {
     /// Native IO runs off the input thread. Preserve results even when steered:
     /// atomic commits must never become unobserved background mutations.
     fn run_file_pumped(&mut self,call:&ToolCall,pump:&mut impl FnMut(&mut Option<String>)) {
+        self.emit_tool_start(call);
         if let Some(verdict)=self.pre_tool_verdict(call) {
             match verdict {
                 crate::hooks_shell::Verdict::Block(reason)=>return self.finish_tool(call,tools::Outcome::err(reason)),
                 crate::hooks_shell::Verdict::Halt(reason)=>{
+                    self.steer = Some(String::new());
                     self.session.append(Record::Meta("error: pre-tool-use hook cancelled the rest of the turn".into()));
                     return self.finish_tool(call,tools::Outcome::err(reason));
                 },
@@ -1367,7 +1369,6 @@ impl<'a> Agent<'a> {
         }
         if let Some(reason)=self.authorization_refusal(call) {return self.finish_tool(call,tools::Outcome::err(reason));}
         if let Some(reason)=self.read_before_write_refusal(call) {return self.finish_tool(call,tools::Outcome::err(reason));}
-        self.emit_tool_start(call);
         let workspace=self.workspace.to_path_buf();let worker=call.clone();
         let (tx,rx)=std::sync::mpsc::channel();
         let cancel=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1386,6 +1387,11 @@ impl<'a> Agent<'a> {
         if call.name=="read" && outcome.exit_code==Some(0)
             && let Some(path)=call.arg_str("path") {self.reads.mark_at(&self.workspace.join(path),self.tool_call_index);}
         let mut body=outcome.body;
+        if matches!(call.name.as_str(), "edit" | "write")
+            && let Some(path) = call.arg_str("path")
+            && let Some(hint) = self.reads.staleness_hint(&self.workspace.join(path), self.tool_call_index) {
+            body.push_str(&format!("\n{hint}"));
+        }
         let before=self.state.clone();
         with_tool_bridge(self.workspace,&mut *self.state,&call.id,|bridge| {
             self.extensions.rewrite_tool_result(&call.id,&call.name,&mut body,bridge)
@@ -1433,6 +1439,7 @@ impl<'a> Agent<'a> {
                     );
                 }
                 crate::hooks_shell::Verdict::Halt(reason) => {
+                    self.steer = Some(String::new());
                     self.session.append(Record::Meta(format!(
                         "hook halting turn at {name}: {reason}", name = call.name
                     )));
@@ -1833,6 +1840,7 @@ impl<'a> Agent<'a> {
                     );
                 }
                 crate::hooks_shell::Verdict::Halt(reason) => {
+                    self.steer = Some(String::new());
                     self.session.append(Record::Meta(format!(
                         "hook halting turn at {name}: {reason}", name = call.name
                     )));

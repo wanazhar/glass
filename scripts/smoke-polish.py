@@ -96,7 +96,7 @@ def main():
                     # Escape must erase the managed palette, not merely repaint
                     # the composer below a stale modal in the middle of the screen.
                     for query in ('/', '/not-a-command'):
-                        key(t,query);t.visible('Commands');back(t);t.visible('❯ '+query)
+                        key(t,query);t.visible('Commands');back(t);t.idle();assert ('❯ '+query) not in t.screen.text(), t.screen.text()
                         assert 'Commands' not in t.screen.text(), t.screen.text()
                         assert 'No matching commands' not in t.screen.text(), t.screen.text()
                         key(t,'\x03');t.idle()
@@ -105,7 +105,7 @@ def main():
                     # A palette-dispatched modal keeps a non-command draft.
                     key(t,'draft');key(t,'\x10');t.visible('Commands');key(t,'status\r');t.visible('Connection');t.dismiss();t.visible('❯ draft');key(t,'\x03');t.idle()
                     # File/path picker and snapshot attachment stay usable on a small screen.
-                    t.send('/attach');t.visible('Files');key(t,'note.txt');t.visible('› note.txt');key(t,'\x1bOP');t.visible('Selection details');back(t);t.visible('Files');key(t,'\r');t.wait('Attached note.txt');t.idle()
+                    t.send('/attach');t.visible('Files');key(t,'note.txt');t.visible('› note.txt');key(t,'\x1bOP');t.visible('Selection details');back(t);t.visible('Files');key(t,'\r');t.visible('Attach context');key(t,'\r');t.wait('Attached note.txt');t.idle()
                     t.send('attachment check');t.wait('Polished reply.');t.idle();assert 'ATTACHED-SNAPSHOT-CONTENT' in json.dumps(Endpoint.requests[-1])
                     t.send('/context');t.visible('Context');t.received='';choose(t,'Remove');t.wait('\x1b[2J');t.visible('Context');back(t);t.idle();t.send('attachment removed');t.wait('Polished reply.');t.idle();assert 'ATTACHED-SNAPSHOT-CONTENT' not in json.dumps(Endpoint.requests[-1])
                     t.send('/review');t.visible('Task review');key(t,'\x1b[F');t.dismiss();t.idle()

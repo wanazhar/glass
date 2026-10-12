@@ -661,7 +661,7 @@ pub fn markdown(title: &str, body: &str) {
     if !p.color {
         bytes = glass_tui::markdown::sanitize(&String::from_utf8_lossy(&bytes)).into_bytes();
     }
-    let mut out = glass_tui::theme::TerminalWriter(io::stdout().lock());
+    let mut out = glass_tui::theme::TerminalWriter::new(io::stdout().lock());
     let _ = out.write_all(&bytes);
 }
 

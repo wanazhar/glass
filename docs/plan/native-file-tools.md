@@ -30,3 +30,26 @@ Completed against `target/release/glass-core`:
   permission error for unread existing files; both refuse the mutation.
 
 No PATH binary installation or publication was performed.
+
+## Follow-up bug hunt
+
+Two GPT-6-Luna medium agents audited runtime/tool contracts and UI/UX; a separate
+Luna medium agent reviewed the fixes. Confirmed and corrected:
+
+- Hook halt now cancels the turn across native, shell and inline dispatch,
+  preserving a result for each skipped call and preventing provider continuation.
+- Native edit/write results include the existing stale-read advisory.
+- Native refusal cards retain tool/path identity; file paths use a file marker.
+- The no-color terminal writer buffers incomplete CSI sequences (64-byte cap),
+  preserving emphasis across fragmented Crossterm output and scroll redraws.
+- Updated stale UI smoke expectations for Escape and attachment selection.
+
+Regression coverage includes native/bash hook halt batches, native stale reads,
+refusal identity, fragmented SGR, and exact scrolling cells/styles in both color
+modes. Final workspace suite: 826 tests; strict all-target clippy passes.
+
+Final optimized release validation passed: exact wheel roundtrip cell/style
+comparisons at five sizes with NO_COLOR both enabled and unset; direct native
+file tools at 20x8/40x24/80x30; hook halt batches; broad UI polish flow; offline
+performance thresholds. Local evidence logs use `/tmp/gc-hunt-release-*.log`;
+performance report is `/tmp/gc-hunt-performance.json`.

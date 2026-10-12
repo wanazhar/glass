@@ -19,6 +19,7 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
             call('read',{'path':'source.txt','limit':2})
             call('bash',{'command':'printf NATIVE_SHELL_OK'})
             call('read',{'path':'../outside.txt'})
+            for _ in range(25):call('bash',{'command':'printf AGE_READ'})
         elif n==2:
             assert 'has not been read' in results[0]
             assert '1|alpha' in results[1] and 'NATIVE_SHELL_OK' in results[2]
@@ -28,6 +29,7 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
             call('edit',dict(edit,preview=True));call('edit',edit)
         elif n==3:
             assert 'proposed' in results[-2]
+            assert 'tool calls ago; reread' in results[-2]
             assert ('Read-only' in results[-1]) if readonly else ('applied' in results[-1])
             call('write',{'path':'created.json','expected':None,'text':'{"ok":true}\n','validate':True})
             call('read',{'path':'source.txt'})
@@ -56,7 +58,9 @@ for readonly,size in [(False,None),(True,None),(False,(20,8)),(False,(40,24)),(F
         try:
             if size:
                 t=Terminal(root,env,size)
-                try:t.idle();t.send('exercise native files\r');t.wait('FILES_OK',30)
+                try:
+                    t.idle();t.send('exercise native files\r');t.wait('FILES_OK',30)
+                    assert '× write' in t.seen, 'native refusal lost tool identity'
                 finally:t.close()
             else:
                 p=subprocess.run([str(BIN),'run','--json','exercise native files'],cwd=root,env=env,text=True,capture_output=True,timeout=30)

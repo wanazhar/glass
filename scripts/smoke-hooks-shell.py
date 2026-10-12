@@ -44,6 +44,9 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
         if step == 1:
             delta = {"tool_calls": [{"index": 0, "id": "h", "function": {
                 "name": "bash", "arguments": json.dumps({"command": "echo hi"})}}]}
+            if getattr(type(self), "halt_tool", None):
+                delta["tool_calls"][0]["function"] = {"name": type(self).halt_tool, "arguments": json.dumps({"path":"blocked.txt", "expected":None, "text":"blocked"} if type(self).halt_tool == "write" else {"command":"echo blocked"})}
+                delta["tool_calls"].append({"index":1,"id":"after-halt","function":{"name":"bash","arguments":json.dumps({"command":"touch should-not-exist"})}})
         else:
             delta = {"content": "Done."}
         frames = [
@@ -75,8 +78,9 @@ def main():
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Endpoint)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            for name, hook in HOOKS.items():
+            for name, hook in list(HOOKS.items()) + [("halt-write", HOOKS["halt"] + 'matcher = "write"\n'), ("halt-bash", HOOKS["halt"] + 'matcher = "bash"\n')]:
                 Endpoint.calls = 0
+                Endpoint.halt_tool = name.removeprefix("halt-") if name.startswith("halt-") else None
                 conf = root / "config/glass-core"
                 conf.mkdir(parents=True, exist_ok=True)
                 (conf / "config.toml").write_text(
@@ -91,9 +95,9 @@ def main():
                     cwd=workspace, env=env, text=True, capture_output=True,
                     timeout=120 if name == "timeout" else 60,
                 )
-                assert done.returncode == 0, f"[{name}] {done.stderr}"
+                assert (done.returncode != 0) if name.startswith("halt") else (done.returncode == 0), f"[{name}] {done.stderr}"
                 result = json.loads(done.stdout)
-                assert result["status"] == "finished", f"[{name}] {result}"
+                assert result["status"] == ("cancelled" if name.startswith("halt") else "finished"), f"[{name}] {result}"
                 log_path = root / "data/glass-core" / (result["session"] + ".jsonl")
                 raw = [json.loads(l) for l in log_path.read_text().splitlines() if l.strip()]
                 bash_results = [
@@ -102,7 +106,14 @@ def main():
                 if name == "block":
                     assert any("blocked by pre-tool-use hook" in t and "no-mutating-today" in t
                                for t in bash_results), f"[block] {bash_results}"
-                elif name == "halt":
+                elif name.startswith("halt"):
+                    assert Endpoint.calls == 1, Endpoint.calls
+                    assert not (workspace / "should-not-exist").exists()
+                    assert not (workspace / "blocked.txt").exists()
+                    if name != "halt":
+                        assert any(r.get("id") == "after-halt" and "Cancelled before execution" in r.get("t", "") for r in raw), raw
+                    if name == "halt-write":
+                        continue
                     assert any("turn cancelled" in t for t in bash_results), f"[halt] {bash_results}"
                     metas = [r["t"] for r in raw if r.get("k") == "meta"]
                     assert any("hook halting turn" in m for m in metas), f"[halt] {metas}"

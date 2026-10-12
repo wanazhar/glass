@@ -269,7 +269,7 @@ impl Live {
         // Alternate screen uses full margins; the primary owner restores its own on close.
         use std::io::Write;
         write!(io::stdout(), "\x1b[r")?;
-        let tui = Terminal::new(CrosstermBackend::new(glass_tui::theme::TerminalWriter(
+        let tui = Terminal::new(CrosstermBackend::new(glass_tui::theme::TerminalWriter::new(
             io::stdout(),
         )))?;
         let transcript = self

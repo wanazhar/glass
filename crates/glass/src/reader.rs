@@ -409,7 +409,7 @@ fn body_rect() -> Rect {
 
 fn make_terminal(rect: Rect) -> io::Result<Tui> {
     Terminal::with_options(
-        CrosstermBackend::new(TerminalWriter(io::stdout())),
+        CrosstermBackend::new(TerminalWriter::new(io::stdout())),
         TerminalOptions {
             viewport: Viewport::Fixed(rect),
         },

@@ -78,7 +78,7 @@ impl Screen {
         } else {
             1
         };
-        let mut out = glass_tui::theme::TerminalWriter(std::io::stdout().lock());
+        let mut out = glass_tui::theme::TerminalWriter::new(std::io::stdout().lock());
         let _ = write!(out, "\x1b[?2026h\x1b[2J\x1b[H\x1b[?25l");
         if framed {
             let _ = write!(
@@ -685,7 +685,7 @@ pub fn markdown(keys: &KeyReader, title: &str, text: &str) {
         widgets::Paragraph,
     };
     let _screen = Screen::new();
-    let Ok(mut terminal) = Terminal::new(CrosstermBackend::new(glass_tui::theme::TerminalWriter(
+    let Ok(mut terminal) = Terminal::new(CrosstermBackend::new(glass_tui::theme::TerminalWriter::new(
         std::io::stdout(),
     ))) else {
         return;
@@ -768,7 +768,7 @@ pub fn rich_info(keys: &KeyReader, title: &str, text: &str) {
             cached_width = width;
         }
         offset = offset.min(lines.len().saturating_sub(page));
-        let mut out = glass_tui::theme::TerminalWriter(std::io::stdout().lock());
+        let mut out = glass_tui::theme::TerminalWriter::new(std::io::stdout().lock());
         let _ = write!(
             out,
             "\x1b[?2026h\x1b[2J\x1b[H\x1b[?25l{}{}\x1b[0m",

@@ -243,6 +243,13 @@ pub fn bash_owned(
         }
     };
 
+    // A shell may exit while a background descendant retains the pipes.
+    // Foreground calls own their process group; persistent work uses jobs.
+    // Kill remaining group members before joining readers, without adding the
+    // graceful-shutdown delay to every successful command.
+    let descendants_stopped = !cancelled && !timed_out && child.id() > 1
+        && unsafe { kill(-(child.id() as i32), SIGKILL) } == 0;
+
     let (out, out_spill) = out_buf.join().unwrap_or_else(|_| (String::new(), None));
     let (err, err_spill) = err_buf.join().unwrap_or_else(|_| (String::new(), None));
 
@@ -264,6 +271,9 @@ pub fn bash_owned(
     // A stream that overran the cap left a file behind. Point the model at it
     // rather than discarding the remainder: losing the tail of a build log or a
     // search result is exactly the information the model came for.
+    if out_spill.is_some() && let Some(path) = &err_spill {
+        body.push_str(&format!("\n[stderr overflow saved to {} — read with `tail` or `rg`]\n", path.display()));
+    }
     let spill = out_spill.or(err_spill);
     if let Some(p) = &spill {
         body.push_str(&format!(
@@ -271,6 +281,9 @@ pub fn bash_owned(
              read it with `head`, `tail`, or `rg`]\n",
             p.display()
         ));
+    }
+    if descendants_stopped {
+        body.push_str("\n[shell exited; remaining owned background processes stopped; use bash job start for persistent work]\n");
     }
     if cancelled {
         body.push_str("\n[command cancelled; owned process group stopped]\n");
@@ -1000,6 +1013,26 @@ mod tests {
         let want = std::fs::canonicalize(&dir).unwrap();
         assert_eq!(got, want);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn exited_shell_cannot_leave_descendants_holding_capture_pipes() {
+        let start = std::time::Instant::now();
+        let out = bash(&call(r#"{"command":"sleep 30 & echo done","timeout_ms":200}"#), std::path::Path::new("."));
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(out.exit_code, Some(0));
+        assert!(out.body.contains("done"));
+    }
+
+    #[test]
+    fn both_overflow_streams_remain_accessible() {
+        let out = bash(&call(r#"{"command":"seq 1 40000; seq 40001 80000 >&2"}"#), std::path::Path::new("."));
+        let stdout_path = out.spill.as_ref().unwrap();
+        assert!(std::fs::read_to_string(stdout_path).unwrap().contains("40000"));
+        let stderr_path = out.body.split("[stderr overflow saved to ").nth(1).unwrap().split(" — ").next().unwrap();
+        assert!(std::fs::read_to_string(stderr_path).unwrap().contains("80000"));
+        let _ = std::fs::remove_file(stdout_path);
+        let _ = std::fs::remove_file(stderr_path);
     }
 
     #[test]

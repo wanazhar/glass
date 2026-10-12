@@ -107,11 +107,9 @@ impl Reader {
                         }
                         KeyCode::Enter | KeyCode::Down => {
                             self.transcript.search_next(false, area.height);
-                            self.align_selected_card_end(area.height);
                         }
                         KeyCode::Up => {
                             self.transcript.search_next(true, area.height);
-                            self.align_selected_card_end(area.height);
                         }
                         KeyCode::Backspace => {
                             query.pop();
@@ -353,7 +351,7 @@ impl Reader {
             ));
         }
         self.match_count = self.transcript.search(query);
-        self.align_selected_card_end(Transcript::content_rect(body_rect()).height);
+        self.transcript.search_next(false, Transcript::content_rect(body_rect()).height);
     }
 }
 

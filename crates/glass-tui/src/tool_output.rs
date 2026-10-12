@@ -57,7 +57,8 @@ pub fn lines(
     let body_width = width.saturating_sub(2).max(1);
     if !compact && !command.is_empty() {
         let clipped = text::clip(&markdown::sanitize(command), body_width * 3);
-        let wrapped = text::wrap_words(&format!("$ {clipped}"), body_width);
+        let prefix = if matches!(name, "read" | "edit" | "write") { "◆" } else { "$" };
+        let wrapped = text::wrap_words(&format!("{prefix} {clipped}"), body_width);
         for row in wrapped.iter().take(2) {
             rows.push(line("  ", row, Tone::Secondary, width));
         }
@@ -221,6 +222,15 @@ mod tests {
                     .iter()
                     .all(|r| text::width(&r.to_string()) <= width)
             );
+        }
+    }
+    #[test]
+    fn direct_file_paths_are_not_presented_as_shell_commands() {
+        for name in ["read", "edit", "write"] {
+            let rows = lines(name, "src/main.rs", true, 0.1, "error: refused", 40, false);
+            let rendered = rows.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+            assert!(rendered.contains("◆ src/main.rs"), "{rendered}");
+            assert!(!rendered.contains("$ src/main.rs"));
         }
     }
     #[test]

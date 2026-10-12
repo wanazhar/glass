@@ -309,14 +309,14 @@ impl Editor {
 
     /// Draw one prompt frame, then flush before waiting for another key.
     pub fn render(&self, base_row: u16, width: u16, focused: bool) -> u16 {
-        let mut stdout = crate::theme::TerminalWriter(io::stdout().lock());
+        let mut stdout = crate::theme::TerminalWriter::new(io::stdout().lock());
         self.render_into(&mut stdout, base_row, width, focused)
             .unwrap_or(1)
     }
 
     /// A single-row viewport while tools/providers own the neighboring output row.
     pub fn render_limited(&self, base_row: u16, width: u16, focused: bool, rows: usize) -> u16 {
-        let mut stdout = crate::theme::TerminalWriter(io::stdout().lock());
+        let mut stdout = crate::theme::TerminalWriter::new(io::stdout().lock());
         self.render_into_limited(&mut stdout, base_row, width, focused, rows)
             .unwrap_or(1)
     }

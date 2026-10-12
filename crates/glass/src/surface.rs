@@ -65,7 +65,7 @@ impl Surface {
     fn repaint(&mut self) -> io::Result<()> {
         self.x = 0;
         self.y = 1;
-        let mut out = theme::TerminalWriter(io::stdout());
+        let mut out = theme::TerminalWriter::new(io::stdout());
         write!(out, "\x1b[?2026h\x1b[r")?;
         for row in 1..=self.height {
             write!(out, "\x1b[{row};1H\x1b[2K")?;
@@ -166,7 +166,7 @@ impl Surface {
         if self.reading {
             return Ok(());
         }
-        let mut out = theme::TerminalWriter(io::stdout());
+        let mut out = theme::TerminalWriter::new(io::stdout());
         // CUP cannot represent a terminal's pending autowrap column. Resolve it
         // before relocating the cursor, without duplicating a following CR/LF.
         if self.x >= usize::from(self.width) {
@@ -269,7 +269,7 @@ pub fn enter() -> io::Result<Guard> {
         cursor: (height.saturating_sub(2).max(1), 3.min(width)),
         reader_invalidated: false,
     };
-    let mut out = theme::TerminalWriter(io::stdout());
+    let mut out = theme::TerminalWriter::new(io::stdout());
     // One alternate surface for the lifetime of the interactive application.
     // The shell's primary screen and scrollback remain untouched.
     write!(
@@ -287,7 +287,7 @@ impl Drop for Guard {
         PRIMARY.with(|slot| {
             if let Some(mut state) = slot.borrow_mut().take() {
                 let _ = state.overlay(false);
-                let mut out = theme::TerminalWriter(io::stdout());
+                let mut out = theme::TerminalWriter::new(io::stdout());
                 let _ = write!(out, "\x1b[r\x1b[?1049l\x1b[?25h");
                 let _ = out.flush();
             }
@@ -298,7 +298,7 @@ pub fn emit(text: &str) -> io::Result<()> {
     PRIMARY.with(|slot| match slot.borrow_mut().as_mut() {
         Some(state) => state.emit(text),
         None => {
-            let mut out = theme::TerminalWriter(io::stdout());
+            let mut out = theme::TerminalWriter::new(io::stdout());
             write!(out, "{text}")?;
             out.flush()
         }
@@ -319,7 +319,7 @@ pub fn status_colored(text: &str, color: &str) -> io::Result<()> {
             return Ok(());
         }
         state.geometry()?;
-        let mut out = theme::TerminalWriter(io::stdout());
+        let mut out = theme::TerminalWriter::new(io::stdout());
         write!(out, "\x1b[s")?;
         state.status_into(&mut out)?;
         write!(out, "\x1b[u")?;
@@ -368,7 +368,7 @@ pub fn clear_composer() {
         }
         let _ = state.geometry();
         let first_row = state.height.saturating_sub(2).max(1);
-        let mut out = theme::TerminalWriter(io::stdout());
+        let mut out = theme::TerminalWriter::new(io::stdout());
         for row in composer_rows(state.height) {
             let _ = out.write_all(clear_row_sequence(row).as_bytes());
         }
@@ -382,7 +382,7 @@ pub fn clear_composer() {
 pub fn restore_composer_cursor() {
     PRIMARY.with(|slot| {
         if let Some(state) = slot.borrow().as_ref() {
-            let mut out = theme::TerminalWriter(io::stdout());
+            let mut out = theme::TerminalWriter::new(io::stdout());
             let _ = write!(out, "\x1b[{};{}H\x1b[?25h", state.cursor.0, state.cursor.1);
             let _ = out.flush();
         }

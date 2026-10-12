@@ -1409,7 +1409,7 @@ fn headless(
         Ok((out, Stop::Cancelled)) => (
             out.text,
             "cancelled",
-            Some("cancelled: owned shell process groups stopped; partial response saved".into()),
+            Some("cancelled: tool execution stopped; partial response saved".into()),
         ),
         Ok((out, stop)) => (
             out.text,
@@ -4262,7 +4262,7 @@ fn render_prompt(io: &mut impl Write, text: &str, width: u16) {
 }
 
 fn echo_prompt(_io: &mut impl Write, text: &str, _row: u16, _rows: u16) {
-    let mut io = glass_tui::theme::TerminalWriter(surface::BodyWriter);
+    let mut io = glass_tui::theme::TerminalWriter::new(surface::BodyWriter);
     render_prompt(&mut io, text, term_size().0);
     let _ = io.flush();
 }
@@ -4540,7 +4540,7 @@ impl Painter {
             self.reader_dirty.set(true);
         }
         self.set_width(term_size().0);
-        let mut io = glass_tui::theme::TerminalWriter(surface::BodyWriter);
+        let mut io = glass_tui::theme::TerminalWriter::new(surface::BodyWriter);
         if self.waiting.replace(false) {
             let _ = surface::status("");
         }
@@ -4722,7 +4722,7 @@ impl Painter {
         self.activity_frame
             .set(self.activity_frame.get().wrapping_add(1));
         self.set_width(term_size().0);
-        let mut io = glass_tui::theme::TerminalWriter(surface::BodyWriter);
+        let mut io = glass_tui::theme::TerminalWriter::new(surface::BodyWriter);
         self.draw_activity(&mut io);
         let _ = io.flush();
     }
@@ -4875,7 +4875,7 @@ impl Painter {
     }
 
     fn notice(&self, io: &mut impl Write, color: &str, text: &str) {
-        let io = &mut glass_tui::theme::TerminalWriter(io);
+        let io = &mut glass_tui::theme::TerminalWriter::new(io);
         let width = self.width.get().saturating_sub(3).max(1) as usize;
         for row in glass_tui::text::wrap_words(&glass_tui::markdown::sanitize(text), width) {
             let _ = writeln!(io, "  {color}{row}\x1b[0m");
@@ -4989,7 +4989,7 @@ fn view_transcript(
         transcript.page(-1, term_size().1.saturating_sub(2));
     }
     let mut tui = Terminal::new(glass_tui::ratatui::backend::CrosstermBackend::new(
-        glass_tui::theme::TerminalWriter(std::io::stdout()),
+        glass_tui::theme::TerminalWriter::new(std::io::stdout()),
     ))
     .map_err(|e| format!("cannot start viewer: {e}"))?;
 

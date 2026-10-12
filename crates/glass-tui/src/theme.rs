@@ -91,6 +91,12 @@ fn strip_colors(text: &str) -> String {
         if tail.as_bytes()[end] != b'm' {
             output.push_str(&rest[start..start + end + 3]);
         } else {
+            // Crossterm suppresses both color values under NO_COLOR but
+            // retains their separator. ESC[;m would reset emphasis as well.
+            if &tail[..end] == ";" {
+                rest = &rest[start + end + 3..];
+                continue;
+            }
             let codes: Vec<&str> = tail[..end].split(';').collect();
             let mut keep = Vec::new();
             let mut i = 0;
@@ -119,22 +125,46 @@ fn strip_colors(text: &str) -> String {
     output
 }
 /// Use on terminal writers only, never log files or headless source output.
-pub struct TerminalWriter<W>(pub W);
+pub struct TerminalWriter<W> {
+    inner: W,
+    pending: Vec<u8>,
+    neutral: bool,
+}
+impl<W: Write> TerminalWriter<W> {
+    pub fn new(inner: W) -> Self {
+        Self { inner, pending: Vec::new(), neutral: no_color() }
+    }
+}
 impl<W: Write> Write for TerminalWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if no_color()
-            && let Ok(text) = std::str::from_utf8(bytes)
-        {
-            self.0.write_all(neutralize(text).as_bytes())?;
-            return Ok(bytes.len());
+        if !self.neutral { return self.inner.write(bytes); }
+        // Crossterm can split one CSI command across several writes. Buffer
+        // only its bounded prefix, never transcript content or a whole frame.
+        let mut out = Vec::with_capacity(bytes.len() + self.pending.len());
+        for &byte in bytes {
+            if self.pending.is_empty() {
+                if byte == 0x1b { self.pending.push(byte); } else { out.push(byte); }
+                continue;
+            }
+            self.pending.push(byte);
+            if self.pending.len() == 2 && byte != b'[' {
+                out.append(&mut self.pending);
+            } else if self.pending.len() > 2 && (b'@'..=b'~').contains(&byte) {
+                if let Ok(sequence) = std::str::from_utf8(&self.pending) {
+                    out.extend_from_slice(strip_colors(sequence).as_bytes());
+                } else { out.extend_from_slice(&self.pending); }
+                self.pending.clear();
+            } else if self.pending.len() >= 64 {
+                out.append(&mut self.pending);
+            }
         }
-        self.0.write(bytes)
-    }
-    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> io::Result<()> {
-        self.0.write_all(neutralize(&format!("{args}")).as_bytes())
+        self.inner.write_all(&out)?;
+        Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
+        self.inner.write_all(&self.pending)?;
+        self.pending.clear();
+        self.inner.flush()
     }
 }
 
@@ -157,6 +187,16 @@ mod tests {
             "\x1b[1mstrong\x1b[0m"
         );
         assert_eq!(strip_colors("\x1b[31merror\x1b[39m\x1b[49m"), "error");
+        assert_eq!(strip_colors("\x1b[1m\x1b[;m❯ \x1b[0m"), "\x1b[1m❯ \x1b[0m");
+    }
+    #[test]
+    fn neutral_writer_handles_fragmented_color_sequences() {
+        let mut writer = TerminalWriter { inner: Vec::new(), pending: Vec::new(), neutral: true };
+        for fragment in ["\x1b[1m", "\x1b[", ";", "m", "❯ ", "\x1b[38;", "5;81m", "text", "\x1b[0m", "\x1b[3;2H"] {
+            writer.write_all(fragment.as_bytes()).unwrap();
+        }
+        writer.flush().unwrap();
+        assert_eq!(String::from_utf8(writer.inner).unwrap(), "\x1b[1m❯ text\x1b[0m\x1b[3;2H");
     }
     #[test]
     fn active_frames_change_without_terminal_controls() {

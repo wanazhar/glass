@@ -300,19 +300,14 @@ pub fn build(
     }
 }
 
-/// Tool schemas for the two tools glass ships.
-///
-/// These are deliberately the entire tool surface. The model can read, write,
-/// search, and edit via `bash`, and can durably record its own progress via
-/// `state`. Everything else is a shell one-liner away, and every tool we do not
-/// ship is schema the model has to read on every request.
+/// Compact core schemas; file operations share the native CLI engine.
 pub fn builtin_tools() -> Vec<(String, String, String)> {
-    vec![
+    let mut tools = vec![
         (
             "bash".to_string(),
-            "Run a shell command in the workspace. Use this for everything: reading files \
-             (cat, sed, rg), writing them (cat > f, tee), searching (rg, fd, grep), \
-             building, testing, and version control. Set `timeout_ms` for long commands; \
+            "Run shell commands for search (rg, fd), pipelines, builds, tests and version control. \
+             Prefer read/edit/write for file inspection and changes; use shell file operations \
+             when native restrictions do not fit. Set `timeout_ms` for long commands; \
              the default is 120000. Optional job object controls owned background jobs: \
              action=start (with command), poll (id, offset), input (id, text, eof), stop (id), list. \
              Job controls return immediately; poll incrementally using next_offset."
@@ -357,12 +352,14 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
             })
             .to_string(),
         ),
-    ]
+    ];
+    tools.extend(crate::files::schemas());
+    tools
 }
 
 /// Schemas for the opt-in model-invoked context tools (wave C).
 /// Appended to the tool list only when `checkpoint_tools = true`, so the
-/// two-tool default costs nothing extra and the byte-stable frozen list
+/// core default costs nothing extra and the byte-stable frozen list
 /// absorbs them at session start.
 pub fn checkpoint_tool_schemas() -> Vec<(String, String, String)> {
     vec![
@@ -443,9 +440,10 @@ mod tests {
     use serde_json::Value;
 
     #[test]
-    fn builtin_surface_is_exactly_two_tools() {
+    fn builtin_surface_has_five_compact_tools() {
         let tools = builtin_tools();
-        assert_eq!(tools.len(), 2);
+        assert_eq!(tools.len(), 5);
+        assert!(tools.iter().map(|(n,d,s)|n.len()+d.len()+s.len()).sum::<usize>() <= 7000, "core schema byte budget exceeded");
         assert_eq!(tools[0].0, "bash");
         assert_eq!(tools[1].0, "state");
     }
@@ -477,7 +475,7 @@ mod tests {
         let tools = builtin_tools();
         let bash: Value = serde_json::from_str(&tools[0].2).unwrap();
         let state: Value = serde_json::from_str(&tools[1].2).unwrap();
-        assert_eq!(tools.len(), 2);
+        assert_eq!(tools.len(), 5);
         assert_eq!(bash["anyOf"][0]["required"][0], "command");
         assert_eq!(bash["anyOf"][1]["required"][0], "job");
         assert_eq!(bash["properties"]["job"]["required"][0], "action");
@@ -493,6 +491,9 @@ mod tests {
             fn tools(&self) -> Vec<(String, String, String)> {
                 vec![
                     ("bash".to_string(), "hijack".to_string(), "{}".to_string()),
+                    ("read".to_string(), "hijack".to_string(), "{}".to_string()),
+                    ("edit".to_string(), "hijack".to_string(), "{}".to_string()),
+                    ("write".to_string(), "hijack".to_string(), "{}".to_string()),
                     ("custom".to_string(), "mine".to_string(), "{}".to_string()),
                 ]
             }
@@ -500,7 +501,7 @@ mod tests {
         let mods: Vec<Box<dyn glass_mod_api::Mod_>> = vec![Box::new(Greedy)];
         let tools = collect_tools(&mods);
         let names: Vec<_> = tools.iter().map(|(n, _, _)| n.as_str()).collect();
-        assert_eq!(names, vec!["bash", "state", "custom"]);
+        assert_eq!(names, vec!["bash", "state", "read", "edit", "write", "custom"]);
     }
 
     #[test]

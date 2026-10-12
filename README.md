@@ -1,32 +1,27 @@
 # glass-core
 
-A minimal coding harness. Two tools, one loop, native terminal.
+A minimal coding harness. Five compact tools, one loop, native terminal.
 
 ```
 binary   ~4.8 MB   (stripped, lto=fat, codegen-units=1)
 RSS      ~3.7 MB  idle
 startup  <10 ms
-tools    bash + state
+tools    read + edit + write + bash + state
 ```
 
-### Why two tools
+### Compact native tools
 
-Measured, not assumed. Microsoft's *Is Bash All You Need?*
-([arXiv:2609.11999](https://arxiv.org/abs/2609.11999), Opus-4.8 and GPT-5.5, two
-benchmarks, 1,308 paired runs) found bash alone beats a typed tool catalogue by
-**+24.6pp** on TheAgentCompany and **+6.2pp** on APEX-Agents, while using
-**19–72% fewer tokens**. Adding typed tools on top of bash produced no
-detectable gain. Separately, frontier models pick the right tool 93.1% of the
-time at K=2 versus 87.1% at K=5 — the curve slopes down with tool count.
+`read`, `edit`, and `write` expose the bounded native file engine directly.
+Reads return line numbers and revisions; changes require those revisions and support
+previews and syntax checks. `bash` handles search, pipelines, builds, tests and
+processes. `state` preserves task notes and discovers deeper workflows on demand.
 
-What bash-only does cost is edit-format reliability, and that is handled in the
-harness rather than with a third tool: see below.
+The CLI and tool interfaces share implementation, confinement and file semantics.
+Schemas stay compact; performance checks cover startup, input, redraw and history.
 
-### What the research said to build instead
+### Runtime guarantees
 
-The same literature is clear that the win is a *harness-side guardrail*, not a
-better tool. SWE-agent measured its lint-and-revert guardrail at ~3pp, worth more
-than its edit tool. So:
+The harness adds these checks around tool execution:
 
 - **Every tool result leads with its exit code.** A model without one re-runs
   commands to find out what happened, and those retries show up as duplicated
@@ -50,13 +45,15 @@ than its edit tool. So:
   it and no tool ran. A 4xx is a request problem, not a blip, and is
   never retried.
 
-## Why two tools
+## Native file tools
 
-`bash` is the only tool that matters. The model can read, write, search, edit,
-build, test, and use git with it, and every tool we don't ship is schema the
-model pays for on every single request. `state` exists because with only `bash`
-there is no durable place for the model to record what it is doing, and that is
-exactly what context compaction needs to survive a long task.
+Prefer `read` for file inspection, `edit` for surgical changes, and `write` for new
+files or deliberate replacement. Existing-file changes require a previous read and
+its whole-file `expected` revision. `expected:null` is create-only. `preview:true`
+shows a proposed diff without writing; `validate:true` requires a passing supported
+syntax check. Reads are bounded and return continuation instructions when truncated.
+Native calls keep input responsive and remain ordered with adjacent shell calls.
+Planning mode remains inspect-only; read-only permissions block native mutations.
 
 ## Tool call repair
 
@@ -861,15 +858,15 @@ extensions = ["python3 ~/.config/glass-core/ext/todo.py"]
 ```
 
 It is an extension for the same reason hashline is: a plan is a capability, not
-a core tool, and shipping it out of process keeps the two core tools to two.
+a core tool. Keeping it out of process makes it optional.
 
 ## Delegation
 
 `extensions/subagent` adds a `subagent` tool: delegate one to eight
 self-contained tasks and get back their reports. Every task runs a full turn
 loop with its own isolated context, so scratch work never enters your
-conversation — only the reports do. Sub-agents carry the two core tools
-(`bash` and `state`) and nothing else; the work happens in your workspace, so
+conversation — only the reports do. Sub-agents carry the five core tools
+(`read`, `edit`, `write`, `bash`, and `state`); the work happens in your workspace, so
 a sub-agent can edit the same files you can.
 
 Independent tasks in one call run in parallel, up to four at a time, and the

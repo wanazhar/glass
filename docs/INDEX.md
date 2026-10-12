@@ -100,3 +100,5 @@
 - [Six-codebase follow-up 2](plan/tasks/six-wave-e-001.md): codemode ships the pi output-item protocol (@options, `==> text N/M <==`, console block, overflow spill, enforced timeout) and mermaid renders sequence diagrams natively within the existing caps (follow-up commit).
 
 - [Neuralnets and model guidance protocol](plan/neuralnets.md): local attributed learning, human review, versioned capability discovery, cache and security boundaries.
+
+- [Direct native file tools](plan/native-file-tools.md): compact read/edit/write schemas, permissions, responsive execution and shared previews.

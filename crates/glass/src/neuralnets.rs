@@ -278,66 +278,6 @@ pub fn command(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn reviewed_context_replaces_old_compaction_snapshot() {
-        let old = "base<neuralnets path=\"reviewed-project-learning\">old</neuralnets>".to_string();
-        assert_eq!(refresh_context(old.clone(), None), "base");
-        let new = refresh_context(
-            old,
-            Some("<neuralnets path=\"reviewed-project-learning\">new</neuralnets>"),
-        );
-        assert_eq!(
-            new,
-            "base<neuralnets path=\"reviewed-project-learning\">new</neuralnets>"
-        );
-        assert_eq!(
-            refresh_context(
-                new.clone(),
-                Some("<neuralnets path=\"reviewed-project-learning\">new</neuralnets>")
-            ),
-            new
-        );
-    }
-    #[test]
-    fn models_cannot_review_and_readonly_cannot_learn() {
-        let root = std::env::temp_dir();
-        for action in ["approve", "forget", "restore", "purge"] {
-            assert!(
-                request(
-                    &root,
-                    &json!({"action":action}),
-                    Some("session:test tool:call"),
-                    false
-                )
-                .unwrap_err()
-                .contains("human review")
-            );
-        }
-        assert!(
-            request(
-                &root,
-                &json!({"action":"propose","kind":"fact","text":"x"}),
-                Some("test"),
-                true
-            )
-            .unwrap_err()
-            .contains("Read-only")
-        );
-        assert!(
-            request(
-                &root,
-                &json!({"action":"list","unexpected":true}),
-                None,
-                true
-            )
-            .is_err()
-        );
-    }
-}
-
 /// Keep explicit review/forget authoritative across old compaction snapshots.
 /// The caller supplies one snapshot per user turn, preserving retry cache prefixes.
 pub fn refresh_context(mut system: String, current: Option<&str>) -> String {
@@ -441,5 +381,65 @@ pub fn view(keys: &crate::input::KeyReader, root: &Path) {
         ) {
             crate::modal::info(keys, "Review changed", &error);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn reviewed_context_replaces_old_compaction_snapshot() {
+        let old = "base<neuralnets path=\"reviewed-project-learning\">old</neuralnets>".to_string();
+        assert_eq!(refresh_context(old.clone(), None), "base");
+        let new = refresh_context(
+            old,
+            Some("<neuralnets path=\"reviewed-project-learning\">new</neuralnets>"),
+        );
+        assert_eq!(
+            new,
+            "base<neuralnets path=\"reviewed-project-learning\">new</neuralnets>"
+        );
+        assert_eq!(
+            refresh_context(
+                new.clone(),
+                Some("<neuralnets path=\"reviewed-project-learning\">new</neuralnets>")
+            ),
+            new
+        );
+    }
+    #[test]
+    fn models_cannot_review_and_readonly_cannot_learn() {
+        let root = std::env::temp_dir();
+        for action in ["approve", "forget", "restore", "purge"] {
+            assert!(
+                request(
+                    &root,
+                    &json!({"action":action}),
+                    Some("session:test tool:call"),
+                    false
+                )
+                .unwrap_err()
+                .contains("human review")
+            );
+        }
+        assert!(
+            request(
+                &root,
+                &json!({"action":"propose","kind":"fact","text":"x"}),
+                Some("test"),
+                true
+            )
+            .unwrap_err()
+            .contains("Read-only")
+        );
+        assert!(
+            request(
+                &root,
+                &json!({"action":"list","unexpected":true}),
+                None,
+                true
+            )
+            .is_err()
+        );
     }
 }

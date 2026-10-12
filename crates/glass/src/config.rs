@@ -144,7 +144,8 @@ impl Default for Config {
 /// Compact default guidance. Tool schemas and on-demand help carry API details.
 pub const BASE_SYSTEM_PROMPT: &str = "\
 You are glass-core, a coding agent in the user's workspace.
-Tools: `bash` executes commands; `state` replaces durable notes with items ([] clears; {} reads).
+Prefer read/edit/write for files; bash for search, builds, tests and processes.
+`state` replaces durable notes with items ([] clears; {} reads).
 Save goals, decisions, paths and next steps before compaction.
 Discover workflows with state {guidance:{action:search,query}}; read a returned topic
 with {guidance:{action:read,topic}}. Exact native CLI inputs: \"$GC_BIN\" <command> --help.
@@ -559,7 +560,7 @@ mod tests {
         let d = scratch("missing");
         let cfg = load(&d.join("nope.toml")).unwrap();
         assert_eq!(cfg.provider, "anthropic");
-        assert!(cfg.system_prompt.contains("`bash`"));
+        assert!(cfg.system_prompt.contains("bash"));
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -774,7 +775,7 @@ mod tests {
 
     #[test]
     fn base_prompt_names_both_tools() {
-        assert!(BASE_SYSTEM_PROMPT.contains("`bash`"));
+        assert!(BASE_SYSTEM_PROMPT.contains("bash"));
         assert!(BASE_SYSTEM_PROMPT.contains("`state`"));
     }
 

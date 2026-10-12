@@ -922,98 +922,10 @@ pub fn git_review(keys: &KeyReader, workspace: &Path) -> Result<Option<String>, 
 }
 
 pub fn responses(keys: &KeyReader, session: &Session) -> Result<(), String> {
-    let records = crate::polish::raw_records(session);
-    let answers = records
-        .iter()
-        .filter_map(|r| {
-            if let Record::Assistant(text) = r {
-                Some(text)
-            } else {
-                None
-            }
-        })
-        .rev()
-        .collect::<Vec<_>>();
-    if answers.is_empty() {
-        modal::info(keys, "Responses", "No assistant responses yet.");
-        return Ok(());
-    }
-    let rows = answers
-        .iter()
-        .map(|t| glass_tui::text::clip(&t.replace('\n', " "), 80))
-        .collect::<Vec<_>>();
-    if let Some(i) = modal::choose(
-        keys,
-        "Responses",
-        "Read a response, inspect its code blocks, or copy exact text.",
-        &rows,
-    ) {
-        loop {
-            let actions = [
-                "Read formatted response".into(),
-                "Browse code blocks".into(),
-                "Copy response".into(),
-            ];
-            match modal::choose(keys, "Response actions", &rows[i], &actions) {
-                Some(0) => modal::markdown(keys, "Assistant response", answers[i]),
-                Some(1) => {
-                    let blocks = glass_tui::markdown::code_blocks(answers[i]);
-                    if blocks.is_empty() {
-                        modal::info(
-                            keys,
-                            "Code blocks",
-                            "No fenced code blocks in this response.",
-                        );
-                        continue;
-                    }
-                    let names = blocks
-                        .iter()
-                        .enumerate()
-                        .map(|(i, (lang, body))| {
-                            format!(
-                                "{} · {} · {} lines",
-                                i + 1,
-                                if lang.is_empty() { "code" } else { lang },
-                                body.lines().count()
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    if let Some(block) =
-                        modal::choose(keys, "Code blocks", "Select a code block", &names)
-                    {
-                        match modal::choose(
-                            keys,
-                            "Code block actions",
-                            &names[block],
-                            &["Read code".into(), "Copy code".into()],
-                        ) {
-                            Some(0) => modal::info(keys, "Code block", &blocks[block].1),
-                            Some(1) => {
-                                copy(&blocks[block].1)?;
-                                modal::info(
-                                    keys,
-                                    "Copy requested",
-                                    "Sent exact code through OSC 52. Clipboard support depends on your terminal and SSH settings.",
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                Some(2) => {
-                    copy(answers[i])?;
-                    modal::info(
-                        keys,
-                        "Copy requested",
-                        "Sent the response through OSC 52. Clipboard support depends on your terminal and SSH settings.",
-                    );
-                }
-                _ => break,
-            }
-        }
-    }
+    crate::output_view::view(keys, session, crate::output_view::Filter::Replies);
     Ok(())
 }
+
 pub(crate) fn copy(text: &str) -> Result<(), String> {
     use base64::Engine;
     if text.len() > 1_000_000 {

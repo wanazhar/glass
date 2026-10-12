@@ -508,7 +508,9 @@ mid-turn: compaction keeps using the primary's window.
 ### Command palette
 
 Type `/` at an empty prompt or press `ctrl-p` to open the command modal.
-Type to filter, use `up`/`down` to choose, and press `enter` to select. Commands
+The empty palette shows **Conversations**, **Work**, and **Settings**. Search any action by name, legacy alias, or intent (for example, `copy code` or `change model`); type `*` to browse every action. Work and Settings show the effect of each action before selection. Existing slash shortcuts remain available.
+
+Use `up`/`down` to choose, and press `enter` to select. Commands
 open selectors or input fields inside a modal. `/model` chooses a provider or
 account and then fetches its available models; `/help` and `/keys` are searchable. `tab`
 completes a command for editing inside the palette; `esc` closes the modal. A draft opened with
@@ -516,7 +518,9 @@ completes a command for editing inside the palette; `esc` closes the modal. A dr
 alongside the built-ins.
 
 The palette and its command dialogs draw inside the app-owned screen, without
-nested alternate screens. Ordinary typing uses the terminal's cursor and flushes
+nested alternate screens. `/outputs`, `/responses`, and `/details` share one output inspector, filtered to all outputs, replies, or tools respectively. In the inspector, `c` copies original text, `b` selects fenced code, `r` toggles raw display, `l` loads a saved output range (64 KiB), and `k` copies a shell command. Display caps never alter copied content.
+
+Ordinary typing uses the terminal's cursor and flushes
 every frame, keeping the first and last typed characters visible immediately.
 
 ### Provider onboarding

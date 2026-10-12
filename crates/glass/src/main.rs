@@ -4,6 +4,9 @@
 //! `glass-mod-api`; everything the model can call is in `provider::builtin_tools`.
 
 mod acp;
+mod actions;
+mod workbench;
+mod output_view;
 mod addons;
 mod agent;
 mod agents_md;
@@ -1468,253 +1471,7 @@ fn headless(
 }
 
 fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Command> {
-    use glass_tui::palette::Command;
-    let builtin = [
-        ("help", "", "Show help", false),
-        ("neuralnets", "", "Review attributed project learning", false),
-        ("guidance", "", "Discover model workflows and capabilities", false),
-        ("history", "", "Inspect compaction receipts and branch lineage", false),
-        ("branches", "", "Browse retained conversation alternatives", false),
-        ("queue-run", "", "Run saved follow-ups now", false),
-        ("rewind", "", "Fork earlier context; optionally restore guarded files", false),
-        ("turns", "", "Review observed changes by turn", false),
-        ("constraints", "[list|on|off|clear|add TEXT]", "Opt-in turn-boundary task reminders", false),
-        ("settings", "", "Effective settings and layer provenance", false),
-        ("usage", "", "Reported usage, cost completeness and cache changes", false),
-        ("attention", "", "Review failures and teammate event targets", false),
-        ("quote", "", "Attach attributed conversation excerpts", false),
-        ("advisor", "", "Review cadence, notes and separate usage", false),
-        ("pr", "", "Pull request, CI and review cockpit", false),
-        ("hub", "", "Conversations, teammates, attention and tasks", false),
-        ("handoff", "", "Preview a bounded portable handoff", false),
-        ("recap", "", "Reopen your welcome-back recap · no extra tokens", false),
-        (
-            "workspace",
-            "",
-            "Tasks, debug evidence, artifacts and role presets",
-            false,
-        ),
-        (
-            "capture",
-            "",
-            "Capture selected turns as a reviewed reusable skill",
-            false,
-        ),
-        (
-            "outputs",
-            "",
-            "Native structured response and tool output viewer",
-            false,
-        ),
-        (
-            "requests",
-            "",
-            "Request timing, context changes and cache diagnostics",
-            false,
-        ),
-        (
-            "keys",
-            "",
-            "Discover draft, active-turn and viewer shortcuts",
-            false,
-        ),
-        ("btw", "<question>", "Ask a side question", true),
-        ("model", "[name]", "Choose provider and model", false),
-        ("login", "", "Connect a provider or ChatGPT account", false),
-        ("logout", "", "Remove saved credentials", false),
-        ("status", "", "View connection and session status", false),
-        ("sessions", "", "Browse project conversations", false),
-        ("search", "", "Search this conversation", false),
-        ("name", "[title]", "Name this conversation", false),
-        ("skill-doctor", "", "Skill sizes and context cost", false),
-        (
-            "code-review",
-            "[max]",
-            "Review the diff for bugs, read-only",
-            false,
-        ),
-        ("retry", "", "Recover a failed response", false),
-        ("details", "", "Expand tool activity and output", false),
-        (
-            "agents",
-            "",
-            "Persistent teammates, interactions and transcripts",
-            false,
-        ),
-        (
-            "activity",
-            "",
-            "Inspect tools, subagents, jobs and loops",
-            false,
-        ),
-        (
-            "thinking",
-            "",
-            "View live provider reasoning · Ctrl-T",
-            false,
-        ),
-        (
-            "context",
-            "",
-            "Inspect context and manage attached files",
-            false,
-        ),
-        (
-            "attach",
-            "[path]",
-            "Attach a text file to model context",
-            false,
-        ),
-        (
-            "review",
-            "",
-            "Review task summary, commands and changes",
-            false,
-        ),
-        ("prompts", "", "Search prompt history", false),
-        ("editor", "", "Edit your draft in VISUAL or EDITOR", false),
-        ("redraw", "", "Repaint after terminal drift", false),
-        ("clear", "", "Start a fresh session", false),
-        (
-            "queue",
-            "",
-            "Manage saved follow-ups: edit, reorder, promote or delete",
-            false,
-        ),
-        ("diagnostics", "", "Preview a private diagnostic bundle", false),
-        ("recovery", "", "Inspect recent failure classes, retries and cache changes", false),
-        ("compact", "[focus]", "Compact the conversation now", false),
-        (
-            "compaction",
-            "[focus]",
-            "Compact the conversation now (alias)",
-            false,
-        ),
-        ("diff", "[checkpoint]", "Review task changes", false),
-        ("budget", "[USD|off]", "Show or set spending limit", false),
-        (
-            "loop",
-            "[interval] [prompt]",
-            "Schedule a repeating prompt",
-            false,
-        ),
-        (
-            "send",
-            "[session-id] [message]",
-            "Message another running session",
-            false,
-        ),
-        (
-            "forget",
-            "[turn]",
-            "Hide a turn from future model context",
-            false,
-        ),
-        ("unforget", "[turn]", "Restore a forgotten turn", false),
-        (
-            "rewrite",
-            "[turn] [text]",
-            "Rewrite a turn for future context",
-            false,
-        ),
-        ("branch", "[turn]", "Fork conversation history", false),
-        ("checkpoint", "", "Save workspace baseline", false),
-        ("checkpoints", "", "List saved checkpoints", false),
-        ("undo", "[checkpoint]", "Undo task changes", false),
-        ("restore", "<checkpoint>", "Restore a saved baseline", true),
-        ("bg", "<command>", "Start a background command", true),
-        ("jobs", "", "List background jobs", false),
-        ("job", "<id> [stop]", "Read output or stop a job", true),
-        (
-            "plan",
-            "[task]",
-            "Inspect read-only, review a plan, then choose execution",
-            false,
-        ),
-        (
-            "init",
-            "[notes]",
-            "Draft AGENTS.md for this repository",
-            false,
-        ),
-        (
-            "git",
-            "",
-            "Review files and hunks, stage, and draft commits",
-            false,
-        ),
-        (
-            "doctor",
-            "",
-            "Diagnose provider, streaming, and tool compatibility",
-            false,
-        ),
-        ("profiles", "", "Save and select workspace settings", false),
-        (
-            "responses",
-            "",
-            "Read Markdown and copy responses or code blocks",
-            false,
-        ),
-        (
-            "export",
-            "[path]",
-            "Write the conversation as a Markdown file",
-            false,
-        ),
-        ("theme", "", "Choose a terminal color palette", false),
-        (
-            "dashboard",
-            "",
-            "Workspace dashboard and quick actions",
-            false,
-        ),
-        (
-            "security",
-            "",
-            "Review permission profiles, exact-command exceptions, and extension capabilities",
-            false,
-        ),
-        (
-            "permissions",
-            "",
-            "Review permission profiles, exact-command exceptions, and extension capabilities",
-            false,
-        ),
-        (
-            "mods",
-            "",
-            "Enable or disable built-in mods for this session",
-            false,
-        ),
-        (
-            "extensions",
-            "",
-            "Inspect and stop loaded extensions",
-            false,
-        ),
-        ("skills", "", "List loaded skills", false),
-    ];
-    let mut commands: Vec<_> = builtin
-        .into_iter()
-        .map(|(name, hint, description, required_args)| Command {
-            name: name.into(),
-            hint: hint.into(),
-            description: description.into(),
-            required_args,
-        })
-        .collect();
-    for (name, description) in extensions.commands() {
-        if !commands.iter().any(|c| c.name == name) {
-            commands.push(Command {
-                name,
-                hint: String::new(),
-                description,
-                required_args: false,
-            });
-        }
-    }
-    commands
+    actions::commands(extensions)
 }
 
 /// Build a metered provider for `cfg`, optionally overriding the model.
@@ -2274,52 +2031,19 @@ fn repl(
         // the prompt.
         crate::history::record(&config::data_dir(), &text);
 
-        if text == "/dashboard" {
-            let choices = [
-                "Plan a task",
-                "Git review",
-                "Provider diagnostics",
-                "Workspace profiles",
-                "Responses and code",
-                "Provider and model",
-                "Sessions",
-                "Task review",
-                "Context",
-                "Mods",
-                "Extensions",
-                "Security",
-            ];
-            let actions = [
-                "/plan",
-                "/git",
-                "/doctor",
-                "/profiles",
-                "/responses",
-                "/model",
-                "/sessions",
-                "/review",
-                "/context",
-                "/mods",
-                "/extensions",
-                "/security",
-            ];
-            let note = format!(
-                "{} · {}\n{}",
-                cfg.model,
-                cfg.workspace.display(),
-                auth::status(&cfg)
-            );
-            if let Some(i) = modal::choose(
-                &keys,
-                "Workspace dashboard",
-                &note,
-                &choices.map(String::from),
-            ) {
-                text = actions[i].into();
-            } else {
-                continue;
+        if matches!(text.as_str(), "/work" | "/dashboard" | "/hub" | "/workspace") {
+            match workbench::choose(&keys, actions::Group::Work) {
+                Some(action) => text = action,
+                None => continue,
             }
         }
+        if text == "/settings" {
+            match workbench::choose(&keys, actions::Group::Settings) {
+                Some(action) => text = action,
+                None => continue,
+            }
+        }
+        if text == "/conversations" { text = "/sessions".into(); }
         if text == "/profiles" {
             match profiles::manage(&keys, &cfg) {
                 Ok(Some(candidate)) => {
@@ -2400,7 +2124,7 @@ fn repl(
             }
             continue;
         }
-        if text == "/settings" {
+        if text == "/settings-info" {
             match settings::snapshot(&cfg) {
                 Ok(value)=>structured::view(&keys,"Effective settings",&value.to_string()),
                 Err(error)=>modal::info(&keys,"Settings unavailable",&error),
@@ -2430,24 +2154,6 @@ fn repl(
             text="/sessions".into();
         }
         if text == "/branches" { hub_resume=navigation::view(&keys,&session,&cfg.workspace,true);if hub_resume.is_none(){continue;}text="/sessions".into(); }
-        if text == "/hub" {
-            let choices = ["Conversations", "Persistent teammates", "Attention", "Tasks and findings", "Usage and cache", "History boundaries"].map(String::from);
-            match modal::choose(&keys,"Workspace hub","Search a workflow · loads details only when selected",&choices) {
-                Some(0) => {hub_resume=navigation::view(&keys,&session,&cfg.workspace,false);if hub_resume.is_none(){continue;}text="/sessions".into();},
-                Some(1) => { team::view(&keys,&session.id); continue; },
-                Some(2) => { attention::view(&keys,&session); continue; },
-                Some(3) => { workspace::view(&keys,&cfg.workspace); continue; },
-                Some(4) => {
-                    match requests::usage_summary(&session) {
-                        Ok(value) => structured::view(&keys,"Usage and cache",&value.to_string()),
-                        Err(error) => modal::info(&keys,"Usage unavailable",&error),
-                    }
-                    continue;
-                },
-                Some(5) => { structured::view(&keys,"History boundaries",&history_inspector::receipts(&session).to_string()); continue; },
-                _ => continue,
-            }
-        }
         if text == "/history" {
             structured::view(&keys, "History boundaries", &history_inspector::receipts(&session).to_string());
             continue;
@@ -2546,7 +2252,7 @@ fn repl(
             structured::outputs(&keys, &session);
             continue;
         }
-        if text == "/workspace" {
+        if text == "/tasks" {
             workspace::view(&keys, &cfg.workspace);
             continue;
         }
@@ -3763,7 +3469,7 @@ fn repl(
             let turn_started = std::time::Instant::now();
             let mut busy_commands = command_catalogue(extensions);
             for command in &mut busy_commands {
-                if !matches!(command.name.as_str(), "queue" | "agents" | "thinking" | "details" | "help") {
+                if !actions::available_during_turn(&command.name) {
                     command.description = format!("After this turn · {}", command.description);
                 }
             }
@@ -4077,7 +3783,7 @@ fn drain_input(
                         { return Some(correction.to_string()); }
                     }
                     "/agents" => team::view(keys, team_owner),
-                    "/details" => {
+                    "/details" | "/outputs" | "/responses" | "/work" | "/dashboard" | "/hub" | "/workspace" | "/activity" => {
                         let entries = painter.live.borrow().snapshot();
                         if let Err(error) = painter.open_reader(entries, false) { ui_println!("Reader unavailable: {error}"); }
                     }

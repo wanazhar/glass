@@ -678,82 +678,17 @@ pub fn task<T: Send + 'static>(
 }
 
 pub fn markdown(keys: &KeyReader, title: &str, text: &str) {
-    use glass_tui::ratatui::{
-        Terminal,
-        backend::CrosstermBackend,
-        layout::{Constraint, Direction, Layout},
-        widgets::Paragraph,
-    };
-    let _screen = Screen::new();
-    let Ok(mut terminal) = Terminal::new(CrosstermBackend::new(glass_tui::theme::TerminalWriter::new(
-        std::io::stdout(),
-    ))) else {
-        return;
-    };
-    let mut offset = 0usize;
-    loop {
-        let mut count = 0usize;
-        let mut height = 1usize;
-        if terminal
-            .draw(|frame| {
-                let areas = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(1),
-                        Constraint::Min(1),
-                        Constraint::Length(1),
-                    ])
-                    .split(frame.area());
-                let lines = glass_tui::markdown::lines(text, areas[1].width as usize);
-                count = lines.len();
-                height = areas[1].height.max(1) as usize;
-                offset = offset.min(count.saturating_sub(height));
-                frame.render_widget(
-                    Paragraph::new(glass_tui::text::clip(title, areas[0].width as usize)),
-                    areas[0],
-                );
-                frame.render_widget(
-                    Paragraph::new(
-                        lines
-                            .into_iter()
-                            .skip(offset)
-                            .take(height)
-                            .collect::<Vec<_>>(),
-                    ),
-                    areas[1],
-                );
-                frame.render_widget(
-                    Paragraph::new(glass_tui::text::clip(
-                        "↑↓ scroll · PgUp/PgDn · Esc close",
-                        areas[2].width as usize,
-                    )),
-                    areas[2],
-                );
-            })
-            .is_err()
-        {
-            return;
-        }
-        match keys.next_blocking() {
-            Some(Event::Key(k)) if cancelled(k.code, k.modifiers) => return,
-            Some(Event::Key(k)) => match k.code {
-                KeyCode::Up => offset = offset.saturating_sub(1),
-                KeyCode::Down => offset = (offset + 1).min(count.saturating_sub(height)),
-                KeyCode::PageUp => offset = offset.saturating_sub(height),
-                KeyCode::PageDown => offset = (offset + height).min(count.saturating_sub(height)),
-                KeyCode::Home => offset = 0,
-                KeyCode::End => offset = count.saturating_sub(height),
-                _ => {}
-            },
-            None => return,
-            _ => {}
-        }
-    }
+    rich_info(keys, title, text);
 }
 
 /// Native Markdown information panel. Layout is rebuilt only after a resize;
 /// scrolling paints the visible cached rows with the same renderer as chat.
 pub fn rich_info(keys: &KeyReader, title: &str, text: &str) {
+    let _ = rich_actions(keys, title, text, &[]);
+}
+
+/// One cached native item inspector. Actions return to the owning domain handler.
+pub fn rich_actions(keys: &KeyReader, title: &str, text: &str, actions: &[(char, &str)]) -> Option<char> {
     let title=glass_tui::markdown::sanitize(title).replace(['\n','\r']," ");
     let _screen = Screen::new();
     let mut offset = 0usize;
@@ -780,12 +715,18 @@ pub fn rich_info(keys: &KeyReader, title: &str, text: &str) {
             glass_tui::markdown::write_ansi(&mut out, line);
         }
         if h > 2 {
-            let footer = format!(
-                "{}–{}/{} · ↑↓ PgUp/PgDn · Esc back",
+            let mut footer = format!(
+                "Esc back · {}–{}/{} · ↑↓ PgUp/PgDn",
                 offset + 1,
                 (offset + page).min(lines.len()),
                 lines.len()
             );
+            if !actions.is_empty() {
+                footer = format!("Esc back · {}", actions.iter().map(|(key,label)|format!("{key} {label}")).collect::<Vec<_>>().join(" · "));
+                if w < 40 {
+                    footer = format!("Esc · {}", actions.iter().map(|(key,_)|key.to_string()).collect::<Vec<_>>().join("/"));
+                }
+            }
             let _ = write!(
                 out,
                 "\x1b[{};1H{}{}\x1b[0m",
@@ -799,7 +740,11 @@ pub fn rich_info(keys: &KeyReader, title: &str, text: &str) {
         drop(out);
         match keys.next_blocking() {
             Some(Event::Key(k)) if cancelled(k.code, k.modifiers) || k.code == KeyCode::Enter => {
-                return;
+                return None;
+            }
+            Some(Event::Key(k)) if matches!(k.code, KeyCode::Char(c) if actions.iter().any(|(key,_)| *key==c))
+                && !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                if let KeyCode::Char(c) = k.code { return Some(c); }
             }
             Some(Event::Key(k)) => match k.code {
                 KeyCode::Up => offset = offset.saturating_sub(1),
@@ -819,7 +764,7 @@ pub fn rich_info(keys: &KeyReader, title: &str, text: &str) {
                 }
                 _ => {}
             },
-            None => return,
+            None => return None,
             _ => {}
         }
     }

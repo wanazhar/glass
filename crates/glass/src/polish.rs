@@ -122,13 +122,13 @@ pub fn browser(
     workspace: &Path,
 ) -> Result<Option<Session>, String> {
     loop {
-        let all = sessions(workspace);
+        let all = crate::resume_picker::index(&config::data_dir(), workspace);
         let rows = all
             .iter()
             .map(|s| {
                 format!(
                     "{} · {}{}",
-                    title(s),
+                    s.title,
                     s.id,
                     if s.id == current.id { " (current)" } else { "" }
                 )
@@ -142,7 +142,10 @@ pub fn browser(
         ) else {
             return Ok(None);
         };
-        let s = &all[i];
+        let selected = &all[i];
+        let selected_session = Session::open_readonly(&config::data_dir(), &selected.id)
+            .map_err(|error| error.to_string())?;
+        let s = &selected_session;
         let preview = s
             .records
             .iter()
@@ -758,14 +761,6 @@ pub fn completion(s: &Session, checkpoint: Option<&Checkpoint>, width: usize) ->
         format!("{commands} commands · {changed} · /review · /details")
     }
 }
-struct ToolDetail {
-    label: String,
-    command: Option<String>,
-    output: String,
-    spill: Option<String>,
-    truncated: bool,
-}
-
 pub(crate) fn load_spill(path: &str) -> Result<(String, bool), String> {
     // Content-addressed spill (task six-wave-d-001): `blob:<sha256>` paths
     // read through the blob store, ranged at the same 64 KiB cap. Plain
@@ -871,147 +866,8 @@ pub(crate) fn activity_items(s: &Session, job_list: &str) -> Vec<ActivityItem> {
     items.reverse();
     items
 }
-fn tool_details(records: &[Record]) -> Vec<ToolDetail> {
-    records
-        .iter()
-        .filter_map(|record| match record {
-            Record::Bash {
-                command,
-                output,
-                exit_code,
-                spill,
-                truncated,
-                ..
-            } => Some(ToolDetail {
-                label: format!(
-                    "bash · exit {} · {}",
-                    exit_code
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|| "signal".into()),
-                    command.replace('\n', " ")
-                ),
-                command: Some(command.clone()),
-                output: output.clone(),
-                spill: spill.clone(),
-                truncated: *truncated,
-            }),
-            Record::ToolResult { name, body, .. } if name != "bash" => Some(ToolDetail {
-                label: format!("{name} · {}", glass_tui::text::clip(body, 50)),
-                command: None,
-                output: body.clone(),
-                spill: None,
-                truncated: false,
-            }),
-            _ => None,
-        })
-        .rev()
-        .collect()
-}
-pub fn details(keys: &KeyReader, s: &Session) {
-    let entries = tool_details(&raw_records(s));
-    if entries.is_empty() {
-        modal::info(
-            keys,
-            "Tool details",
-            "No tool activity in this session yet.",
-        );
-        return;
-    }
-    let labels: Vec<_> = entries
-        .iter()
-        .map(|e| glass_tui::markdown::sanitize(&e.label))
-        .collect();
-    let searchable: Vec<_> = entries
-        .iter()
-        .map(|e| {
-            format!(
-                "{}\n{}\n{}",
-                e.label,
-                e.command.as_deref().unwrap_or(""),
-                e.output
-            )
-        })
-        .collect();
-    while let Some(i) = modal::choose_search(
-        keys,
-        "Tool details",
-        "Search names, commands and recorded inline output; no execution",
-        &labels,
-        &searchable,
-    ) {
-        let entry = &entries[i];
-        let mut actions = vec!["Read command and recorded output".into()];
-        if entry.command.is_some() {
-            actions.push("Copy command".into());
-        }
-        actions.push("Copy recorded output".into());
-        if entry.spill.is_some() {
-            actions.push("Load spill (up to 64 KiB)".into());
-        }
-        while let Some(action) = modal::choose(
-            keys,
-            "Tool actions",
-            "Explicit clipboard copy only · Esc back",
-            &actions,
-        ) {
-            if action == 0 {
-                let command = entry
-                    .command
-                    .as_deref()
-                    .map(|c| format!("Command\n$ {c}\n\n"))
-                    .unwrap_or_default();
-                let location = if let Some(spill) = &entry.spill {
-                    format!(
-                        "Recorded inline preview only. Full output saved at: {spill}\nCopy recorded output copies this preview; the spill file is not loaded."
-                    )
-                } else if entry.truncated {
-                    "Recorded inline output is truncated; no full output path was recorded.".into()
-                } else {
-                    "Complete recorded inline output. Copy preserves these original bytes.".into()
-                };
-                modal::info(
-                    keys,
-                    "Command / recorded output",
-                    &format!("{command}Recorded output\n{}\n\n{location}", entry.output),
-                );
-            } else if actions[action] == "Load spill (up to 64 KiB)" {
-                let path = entry
-                    .spill
-                    .as_deref()
-                    .expect("spill action requires a path");
-                match load_spill(path) {
-                    Ok((text, truncated)) => modal::info(
-                        keys,
-                        "Recorded spill output",
-                        &format!(
-                            "{}{}",
-                            text,
-                            if truncated {
-                                "\n\n[display capped at 64 KiB]"
-                            } else {
-                                ""
-                            }
-                        ),
-                    ),
-                    Err(error) => modal::info(keys, "Recorded spill output", &error),
-                }
-            } else {
-                let copied = if actions[action] == "Copy command" {
-                    entry.command.as_deref().unwrap()
-                } else {
-                    &entry.output
-                };
-                match crate::workflows::copy(copied) {
-                    Ok(()) => modal::info(
-                        keys,
-                        "Copied",
-                        "Exact original bytes copied through OSC52. Your SSH terminal must support clipboard forwarding.",
-                    ),
-                    Err(e) => modal::info(keys, "Copy error", &e),
-                }
-            }
-        }
-    }
+pub fn details(keys: &KeyReader, session: &Session) {
+    crate::output_view::view(keys, session, crate::output_view::Filter::Tools);
 }
 
 pub fn keys(keys: &KeyReader) {

@@ -74,13 +74,16 @@ pub fn request(value: &Value) -> Result<Value, String> {
         .take(24)
         .map(|(c, d)| json!({"command":c,"purpose":d}))
         .collect();
+    let actions: Vec<_> = crate::actions::references().into_iter()
+        .filter(|(command, purpose)| format!("{command} {purpose}").to_lowercase().contains(&q))
+        .take(24).map(|(command,purpose)|json!({"command":command,"purpose":purpose})).collect();
     let topics: Vec<_> = RECIPES
         .iter()
         .filter(|(id, text)| format!("{id} {text}").to_lowercase().contains(&q))
         .map(|(id, _)| *id)
         .collect();
     Ok(
-        json!({"protocol":1,"commands":commands,"topics":topics,"command_limit":24,"discovery":"Run quoted $GC_BIN <command> --help for exact inputs and effects. Listed integrations may require configuration; inspect their status before use. state capabilities discovers installed extension schemas."}),
+        json!({"protocol":1,"commands":commands,"human_actions":actions,"topics":topics,"command_limit":24,"discovery":"Run quoted $GC_BIN <command> --help for exact inputs and effects. Listed integrations may require configuration; inspect their status before use. state capabilities discovers installed extension schemas."}),
     )
 }
 pub fn command(args: &[String]) -> Result<(), String> {

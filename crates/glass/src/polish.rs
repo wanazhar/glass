@@ -471,6 +471,11 @@ pub fn prompt_context(s: &Session, instructions: &Option<String>) -> Option<Stri
         Ok(None) => {},
         Err(error) => eprintln!("Project memory was not loaded: {error}"),
     }
+    match crate::neuralnets::context(&m.workspace) {
+        Ok(Some(memory)) => text.push_str(&memory),
+        Ok(None) => {},
+        Err(error) => eprintln!("Neuralnets was not loaded: {error}"),
+    }
     // Images ride as conversation records, not prompt text; only text
     // snapshots belong in the system prompt.
     for a in m.attachments.iter().filter(|a| a.data.is_none()) {

@@ -98,3 +98,5 @@
 - [Delivery ledger](plan/tasks/roadmap-delivery.md): per-commit evidence and integrated verification for every shipped wave.
 - [Six-codebase follow-up: citations + blob GC](plan/tasks/six-wave-e-001.md): in-message `@path#L..#hash8` markers now ship, and `gc blobs sweep` removes unreferenced blobs; corrects the wave E note that claimed a session.rs dedupe helper pre-existed (follow-up commit).
 - [Six-codebase follow-up 2](plan/tasks/six-wave-e-001.md): codemode ships the pi output-item protocol (@options, `==> text N/M <==`, console block, overflow spill, enforced timeout) and mermaid renders sequence diagrams natively within the existing caps (follow-up commit).
+
+- [Neuralnets and model guidance protocol](plan/neuralnets.md): local attributed learning, human review, versioned capability discovery, cache and security boundaries.

@@ -39,6 +39,8 @@ const SESSIONS: &[Item] = &[
     ("gc export ID", "Export a conversation to Markdown."),
 ];
 const TOOLS: &[Item] = &[
+    ("gc neuralnets --help", "Review attributed local learning and pending proposals."),
+    ("gc guidance --help", "Discover model capabilities and workflow recipes."),
     ("gc advisor SESSION", "Opt-in milestone reviews, separate usage and dispositions."),
     ("gc pr --help", "Inspect PR checks and reviews; preview explicit draft publication."),
     ("gc structure --help", "Lazy AST previews and stale-checked transactional edits."),
@@ -351,3 +353,6 @@ mod tests {
         assert!(render("missing", 80, false).is_err());
     }
 }
+
+/// Shared human and model command discovery.
+pub fn catalogue() -> Vec<Item> { [START, SESSIONS, TOOLS, CONNECT, INTEGRATE, KEYS, RUN].into_iter().flatten().copied().collect() }

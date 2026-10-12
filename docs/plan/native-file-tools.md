@@ -53,3 +53,24 @@ comparisons at five sizes with NO_COLOR both enabled and unset; direct native
 file tools at 20x8/40x24/80x30; hook halt batches; broad UI polish flow; offline
 performance thresholds. Local evidence logs use `/tmp/gc-hunt-release-*.log`;
 performance report is `/tmp/gc-hunt-performance.json`.
+
+## Second bug hunt
+
+Two Luna medium agents audited additional runtime and UI paths; an independent
+Luna medium reviewer found no blocker in the corrections:
+
+- Opening a background completion from Attention now uses a non-owning job
+  observer. Closing it preserves completed logs and running sibling jobs; the
+  main session handle retains cleanup ownership.
+- Terminal sanitization renders bidi formatting controls as visible Unicode
+  escapes. Natural RTL text and emoji joiners remain intact, as do raw JSON/model
+  data. This prevents invisible direction overrides from spoofing displayed paths.
+
+Added unit coverage for observer cleanup and bidi handling and a release PTY
+regression for Attention, sibling jobs, and escaped output at 80x30/40x24/20x8.
+Workspace tests: 828 pass. Strict all-target clippy passes.
+
+Second-round final release checks passed: Attention inspector and bidi CLI/JSON
+fidelity at all three sizes, native files/jobs, exact no-color scroll roundtrip at
+five sizes, and performance thresholds. Evidence: `/tmp/gc-hunt2-release-*.log`
+and `/tmp/gc-hunt2-performance.json`.

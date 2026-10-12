@@ -106,7 +106,7 @@ pub fn view(keys: &crate::input::KeyReader,session:&Session) {
     while let Some(index)=crate::modal::choose_search(keys,"Attention","Search recorded events · exact durable record targets",&rows,&searchable) {
         let target=&targets[index];
         if let Some(job)=target["job"].as_u64().and_then(|j|u32::try_from(j).ok()) {
-            let mut handle=crate::jobs::Handle::new(&crate::polish::metadata(session).workspace,&session.id);
+            let mut handle=crate::jobs::Handle::observer(&crate::polish::metadata(session).workspace,&session.id);
             if let Err(error)=handle.inspect(keys,job) {crate::modal::info(keys,"Job output unavailable",&error);}
             continue;
         }

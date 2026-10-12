@@ -45,6 +45,8 @@ pub const COMMANDS: &[&str] = &[
     "handoff",
     "diagnostics",
     "memory",
+    "neuralnets",
+    "guidance",
     "skill",
 ];
 pub const FLAGS: &[&str] = &[

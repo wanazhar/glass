@@ -66,7 +66,7 @@ impl Snapshot {
         let prefix = hash(format!("{}:{system}:{tools}", req.model).as_bytes());
         let messages = req.messages.iter().map(message_hash).collect();
         let mut sources = std::collections::BTreeMap::new();
-        for tag in ["project_instructions", "attached_file", "project_memory"] {
+        for tag in ["project_instructions", "attached_file", "project_memory", "neuralnets"] {
             for rest in req.system.split(&format!("<{tag} path=")).skip(1).take(128) {
                 if let Some((path, body)) = rest.split_once(">\n")
                     && let Some((body, _)) = body.split_once(&format!("</{tag}>"))

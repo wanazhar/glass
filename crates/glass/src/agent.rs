@@ -1884,7 +1884,15 @@ impl<'a> Agent<'a> {
                 outcome = crate::checkpoint_tools::run(call, self.session, &mut noop);
             }
         } else if call.name == "state" {
-            if let Some(capabilities)=call.arg_raw("capabilities") {
+            let namespaces = ["guidance", "neuralnets", "capabilities", "items"].iter().filter(|key| call.arg_raw(key).is_some()).count();
+            if namespaces > 1 {
+                outcome = tools::Outcome::err("Use one state namespace per call");
+            } else if let Some(raw) = call.arg_raw("guidance") {
+                outcome = match serde_json::from_str(&raw).map_err(|e|e.to_string()).and_then(|value|crate::guidance::request(&value)) { Ok(value)=>tools::Outcome::ok(value.to_string()), Err(error)=>tools::Outcome::err(error) };
+            } else if let Some(raw) = call.arg_raw("neuralnets") {
+                let source = format!("session:{} tool:{}",self.session.id,call.id);
+                outcome = match serde_json::from_str(&raw).map_err(|e|e.to_string()).and_then(|value|crate::neuralnets::request(self.workspace,&value,Some(&source),self.read_only)) { Ok(value)=>tools::Outcome::ok(value.to_string()), Err(error)=>tools::Outcome::err(error) };
+            } else if let Some(capabilities)=call.arg_raw("capabilities") {
                 outcome=match serde_json::from_str(&capabilities).map_err(|e|e.to_string()).and_then(|value|self.extensions.capabilities(&value)) {
                     Ok(value)=>tools::Outcome::ok(value.to_string()),Err(error)=>tools::Outcome::err(error),
                 };
@@ -2013,8 +2021,9 @@ impl<'a> Agent<'a> {
         if self.read_only {
             return self.system_prompt();
         }
-        latest_system_checkpoint(&self.session.history_records())
-            .unwrap_or_else(|| self.system_prompt())
+        let system = latest_system_checkpoint(&self.session.history_records())
+            .unwrap_or_else(|| self.system_prompt());
+        crate::neuralnets::refresh_context(system, self.project_instructions.as_deref())
     }
 
     /// Assemble the system prompt: base, then mod contributions, then skills.

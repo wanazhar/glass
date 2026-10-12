@@ -66,6 +66,8 @@ mod polish;
 mod pricing;
 mod profiles;
 mod project_memory;
+mod neuralnets;
+mod guidance;
 mod provider;
 mod queue;
 mod reader;
@@ -261,6 +263,11 @@ fn main() {
                 cli::error("Result contract", &error);
                 std::process::exit(2);
             }
+            return;
+        }
+        Some("neuralnets") | Some("guidance") => {
+            let result = if args[0] == "neuralnets" { neuralnets::command(&args[1..]) } else { guidance::command(&args[1..]) };
+            if let Err(error) = result { cli::error("Knowledge", &error); std::process::exit(2); }
             return;
         }
         Some("memory") => {
@@ -1463,6 +1470,8 @@ fn command_catalogue(extensions: &ext::Registry) -> Vec<glass_tui::palette::Comm
     use glass_tui::palette::Command;
     let builtin = [
         ("help", "", "Show help", false),
+        ("neuralnets", "", "Review attributed project learning", false),
+        ("guidance", "", "Discover model workflows and capabilities", false),
         ("history", "", "Inspect compaction receipts and branch lineage", false),
         ("branches", "", "Browse retained conversation alternatives", false),
         ("queue-run", "", "Run saved follow-ups now", false),
@@ -2403,6 +2412,11 @@ fn repl(
             continue;
         }
         if text == "/quote" {if let Err(e)=polish::quote_picker(&keys,&session){modal::info(&keys,"Quote unavailable",&e);}continue;}
+        if text == "/neuralnets" {neuralnets::view(&keys,&cfg.workspace);continue;}
+        if text == "/guidance" {
+            match guidance::request(&serde_json::json!({"action":"catalogue"})) { Ok(value) => structured::view(&keys,"Model guidance",&value.to_string()), Err(error) => modal::info(&keys,"Knowledge",&error) }
+            continue;
+        }
         if text == "/advisor" {advisor::view(&keys,&session);continue;}
         if text == "/pr" {source_control::view(&keys,&cfg.workspace);continue;}
         if text == "/attention" { attention::view(&keys, &session); continue; }

@@ -88,7 +88,8 @@ pub fn capture(
     extension: &str,
     checkpoint: bool,
 ) -> String {
-    let instructions = sources(req.system, "project_instructions");
+    let mut instructions = sources(req.system, "project_instructions");
+    instructions.extend(sources(req.system, "neuralnets").into_iter().map(|s|format!("Neuralnets: {s}")));
     let attachments = sources(req.system, "attached_file");
     let listed = catalogue.filter(|c| !c.is_empty() && req.system.contains(c));
     let skills = listed

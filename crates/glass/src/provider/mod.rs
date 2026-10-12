@@ -350,6 +350,8 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
                     "expected":{"type":"string","description":"Optional state revision from revision:true read"},
                     "request_id":{"type":"string","description":"Optional idempotency key naming this write. A repeat of a known id returns its recorded receipt and does not write again; the same id with different notes fails."},
                     "revision":{"type":"boolean"},
+                    "guidance":{"type":"object","additionalProperties":false,"properties":{"action":{"type":"string","enum":["search","catalogue","read"]},"query":{"type":"string"},"topic":{"type":"string"}}},
+                    "neuralnets":{"type":"object","additionalProperties":false,"required":["action"],"properties":{"action":{"type":"string","enum":["list","search","read","propose"]},"offset":{"type":"integer","minimum":0},"query":{"type":"string"},"id":{"type":"string"},"kind":{"type":"string","enum":["preference","fact","procedure","lesson"]},"text":{"type":"string"}}},
                     "capabilities":{"type":"object","properties":{"search":{"type":"string"},"activate":{"type":"array","items":{"type":"string"}}}}
                 }
             })

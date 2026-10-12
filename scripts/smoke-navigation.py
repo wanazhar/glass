@@ -43,7 +43,7 @@ with tempfile.TemporaryDirectory(prefix='gc-navigation-pty-') as tmp:
         assert run.returncode==0,run.stderr
         session=json.loads(run.stdout)['session'];requests=Endpoint.requests
         records=[json.loads(s) for p in (root/'data/glass-core').glob('*.jsonl') for s in p.read_text().splitlines()]
-        outputs={r['cmd']:r['out'] for r in records if r['k']=='bash'}
+        outputs={r['cmd']:r['out'] for r in records if r.get('k')=='bash'}
         for size in [(65,30),(40,24),(24,16),(20,12),(20,8)]:
             t=Terminal(root,env,size,args=('resume',session))
             try:

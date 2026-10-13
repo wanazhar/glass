@@ -592,7 +592,7 @@ impl<'a> Agent<'a> {
             let max_tokens = self.max_tokens;
             let reasoning = req.reasoning;
             std::thread::spawn(move || {
-                let result = (|| -> Result<(), String> {
+                let result = provider::with_request_cancel(worker_cancel.clone(), || -> Result<(), String> {
                     let provider = factory()?;
                     let req = Request {
                         model: &model,
@@ -658,7 +658,7 @@ impl<'a> Agent<'a> {
                         let _ = tx.send(StreamUpdate::Event(Event::Done));
                     }
                     Ok(())
-                })();
+                });
                 if let Err(e) = result {
                     let _ = tx.send(StreamUpdate::Event(Event::Error(e)));
                 }
@@ -1712,7 +1712,8 @@ impl<'a> Agent<'a> {
         // Verification belongs here, not at the call site: this is the single
         // place every bash result passes through, whether it ran inline or on a
         // worker thread.
-        let touched = verify::written_paths(&command, self.workspace);
+        let cwd = tools::bash_cwd(call, self.workspace).ok();
+        let touched = cwd.as_ref().map(|cwd| verify::written_paths(&command, cwd)).unwrap_or_default();
         for path in touched.iter().take(16) {
             if let Some(hint) = self.reads.staleness_hint(path, self.tool_call_index) {
                 body.push_str(&format!("\n{}: {hint}", path.display()));
@@ -1725,8 +1726,9 @@ impl<'a> Agent<'a> {
             }
         }
         // Record what the command read, so a later write can be allowed.
-        self.reads
-            .observe_at(&command, &outcome.body, self.workspace, self.tool_call_index);
+        if outcome.exit_code == Some(0) && let Some(cwd) = &cwd {
+            self.reads.observe_at(&command, &outcome.body, cwd, self.tool_call_index);
+        }
 
         let rewritten = with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
             self.extensions
@@ -1794,7 +1796,7 @@ impl<'a> Agent<'a> {
             vec![self.workspace.join(call.arg_str("path")?)]
         } else {
             let command=call.arg_str("command")?;
-            verify::written_paths(&command,self.workspace)
+            verify::written_paths(&command,&tools::bash_cwd(call, self.workspace).ok()?)
         };
         let blocked = self.reads.blocked(&targets);
         if blocked.is_empty() {
@@ -2472,6 +2474,32 @@ for line in sys.stdin:
         fn context_window(&self) -> u32 {
             200_000
         }
+    }
+
+    #[test]
+    fn bash_read_guards_and_observation_use_effective_cwd() {
+        let dir = std::env::temp_dir().join(format!("gc-cwd-guard-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/file.txt"), "sub contents").unwrap();
+        std::fs::write(dir.join("file.txt"), "root contents").unwrap();
+        let mut session = Session::create(&dir.join("sessions")).unwrap();
+        let mut state = State::new();
+        let mut extensions = Registry::load(&[], &dir, "mock");
+        let mods = Vec::new();
+        let call = |command: &str, cwd: Option<&str>| ToolCall { id:"cwd".into(), name:"bash".into(), arguments:serde_json::json!({"command":command,"cwd":cwd}).to_string() };
+        {
+            let mut agent = Agent::new(&MockTurnProvider, &mut session, &mut state, &mods, &mut extensions, &dir);
+            let write = call("printf changed > file.txt", Some("sub"));
+            assert!(agent.read_before_write_refusal(&write).is_some());
+            agent.apply_bash_result(&call("cat file.txt", Some("sub")), tools::Outcome::err("permission denied"));
+            assert!(agent.read_before_write_refusal(&write).is_some(), "failed reads cannot authorize writes");
+            agent.apply_bash_result(&call("cat file.txt", Some("sub")), tools::Outcome::ok("sub contents".into()));
+            assert!(agent.read_before_write_refusal(&write).is_none());
+            let root_write = ToolCall { id:"root".into(), name:"bash".into(), arguments:r#"{"command":"printf changed > file.txt"}"#.into() };
+            assert!(agent.read_before_write_refusal(&root_write).is_some());
+        }
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

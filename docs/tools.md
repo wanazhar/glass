@@ -157,3 +157,5 @@ prints the last 60KB of output. `/job <id> stop` stops the command's process gro
 Live jobs are stopped on normal terminal exit. Logs stay under session data in
 `jobs/<session>/` for inspection. Jobs belong to the running terminal process and
 are not reattached on resume.
+
+For foreground bash calls, `cwd` selects the directory used by execution, read-before-write checks, and verification. Failed reads do not authorize later writes. Job control rejects `cwd` rather than silently ignoring it; use explicit paths in background commands.

@@ -51,6 +51,7 @@ jobs:
           python3 scripts/smoke-auth-back.py
           python3 scripts/smoke-round2-recovery.py
           python3 scripts/smoke-busy-palette.py
+          python3 scripts/smoke-provider-tls.py
           python3 scripts/smoke-live.py
           python3 scripts/smoke-navigation.py
           python3 scripts/smoke-inline-scroll.py

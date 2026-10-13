@@ -3,6 +3,7 @@
 import http.server
 import json
 import os
+import socket
 from pathlib import Path
 import tempfile
 import threading
@@ -26,7 +27,20 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
             frame = {'choices': [{'delta': {'content': 'R4-WAIT\n' if hold else 'R4-DONE'}}]}
             self.wfile.write(('data: ' + json.dumps(frame) + '\n\n').encode())
             self.wfile.flush()
-            if hold: self.server.release.wait(30)
+            if hold:
+                # Observe the abandoned HTTP reader closing, rather than merely
+                # checking that the UI stopped waiting for it.
+                self.connection.settimeout(.1)
+                while not self.server.release.is_set():
+                    try:
+                        if not self.connection.recv(1):
+                            self.server.closed.set()
+                            return
+                    except ConnectionResetError:
+                        self.server.closed.set()
+                        return
+                    except socket.timeout:
+                        continue
             self.wfile.write(b'data: [DONE]\n\n')
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError): pass
@@ -37,6 +51,7 @@ with tempfile.TemporaryDirectory(prefix='gc-busy-palette-') as tmp:
     cfg.mkdir(parents=True)
     server = Server(('127.0.0.1', 0), Endpoint)
     server.release = threading.Event()
+    server.closed = threading.Event()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     (cfg / 'config.toml').write_text(f'provider="openai"\nmodel="mock"\napi_key_env=""\ntrust="always"\nbase_url="http://127.0.0.1:{server.server_port}/v1"\n')
     env = dict(os.environ, XDG_CONFIG_HOME=str(root / 'config'), XDG_DATA_HOME=str(root / 'data'))
@@ -44,6 +59,7 @@ with tempfile.TemporaryDirectory(prefix='gc-busy-palette-') as tmp:
         for size in [(20, 8), (40, 24), (80, 30)]:
             server.hold = True
             server.release.clear()
+            server.closed.clear()
             tty = Terminal(root, env, size)
             try:
                 tty.idle()
@@ -63,11 +79,12 @@ with tempfile.TemporaryDirectory(prefix='gc-busy-palette-') as tmp:
                 tty.send('\x03')
                 tty.wait('state=idle')
                 assert 'Search actions' not in tty.vt.text(), tty.vt.text()
+                assert server.closed.wait(2), 'cancelled provider connection remained open'
                 server.hold = False
                 server.release.set()
                 tty.send('follow-up\r')
                 tty.wait('R4-DONE')
-                print(f'PASS {size}: busy reader restored, Ctrl-C cancels from palette, follow-up works')
+                print(f'PASS {size}: busy reader restored, Ctrl-C closes stalled provider socket, follow-up works')
             finally:
                 server.release.set()
                 tty.close()

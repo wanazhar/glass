@@ -3,7 +3,7 @@
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::os::fd::AsRawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -29,6 +29,26 @@ pub const MAX_OUTPUT_BYTES: usize = 60_000;
 /// Default and maximum command timeout.
 pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 pub const MAX_TIMEOUT_MS: u64 = 900_000;
+
+/// Resolve the same working directory for execution, read guards and verification.
+pub(crate) fn bash_cwd(call: &ToolCall, workspace: &Path) -> Result<PathBuf, String> {
+    if call.arg_raw("job").is_some() && call.arg_raw("cwd").is_some() {
+        return Err("`cwd` is not supported for job control; use explicit paths in the command".into());
+    }
+    match call.arg_raw("cwd") {
+        Some(_) => {
+            let Some(rel) = call.arg_str("cwd").filter(|s| !s.trim().is_empty()) else {
+                return Err("`cwd` must be a nonempty directory path string; omit it to use the workspace".into());
+            };
+            let joined = workspace.join(&rel);
+            if !joined.is_dir() {
+                return Err(format!("`cwd` is not an accessible directory: {}; nothing executed", joined.display()));
+            }
+            Ok(joined)
+        }
+        None => Ok(workspace.to_path_buf()),
+    }
+}
 
 pub struct Outcome {
     pub body: String,
@@ -100,6 +120,9 @@ pub fn bash_owned(
     approvals: &crate::sandbox::SessionApprovals,
     owner: Option<&str>,
 ) -> Outcome {
+    if call.arg_raw("job").is_some() && call.arg_raw("cwd").is_some() {
+        return Outcome::err("`cwd` is not supported for job control; use explicit paths in the command");
+    }
     if call.arg_raw("job").is_some() {
         if cancel.load(Ordering::Relaxed) {
             return Outcome::err("Cancelled before job control");
@@ -125,19 +148,7 @@ pub fn bash_owned(
         ));
     }
 
-    let cwd = match call.arg_raw("cwd") {
-        Some(_) => {
-            let Some(rel) = call.arg_str("cwd").filter(|s| !s.trim().is_empty()) else {
-                return Outcome::err("`cwd` must be a nonempty directory path string; omit it to use the workspace");
-            };
-            let joined = workspace.join(&rel);
-            if !joined.is_dir() {
-                return Outcome::err(format!("`cwd` is not an accessible directory: {}; nothing executed", joined.display()));
-            }
-            joined
-        }
-        None => workspace.to_path_buf(),
-    };
+    let cwd = match bash_cwd(call, workspace) { Ok(cwd) => cwd, Err(error) => return Outcome::err(error) };
     if exception
         && !matches!((cwd.canonicalize(), workspace.canonicalize()), (Ok(cwd), Ok(root)) if cwd == root)
     {
@@ -1069,11 +1080,26 @@ mod tests {
 
     #[test]
     fn escaped_descendant_cannot_hold_capture_open() {
+        let dir = std::env::temp_dir().join(format!("gc-escaped-ready-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("ready");
+        let _ = std::fs::remove_file(&marker);
+        let quoted = format!("'{}'", marker.to_string_lossy().replace('\'', "'\\''"));
+        // Wait for setsid to finish before the parent exits; otherwise the
+        // process-group cleanup may legitimately kill the child before escape.
+        let command = format!("setsid sh -c 'echo $$ > \"$1\"; sleep 30' sh {quoted} & while [ ! -s {quoted} ]; do sleep 0.01; done; echo done");
         let start = std::time::Instant::now();
-        let out = bash(&call(r#"{"command":"setsid sh -c 'sleep 2' & echo done","timeout_ms":200}"#), std::path::Path::new("."));
-        assert!(start.elapsed() < std::time::Duration::from_secs(1));
-        assert!(out.body.contains("done"));
-        assert!(out.body.contains("capture incomplete"));
+        let mut approvals = crate::sandbox::SessionApprovals::default();
+        approvals.approve_exact(&command); // Other tests may have installed a read-only policy.
+        let out = bash_with_approvals(&call(&serde_json::json!({"command":command,"timeout_ms":1000}).to_string()), &dir, &std::sync::atomic::AtomicBool::new(false), &approvals);
+        if let Ok(pid) = std::fs::read_to_string(&marker)
+            && let Ok(pid) = pid.trim().parse::<i32>() {
+            unsafe { kill(-pid, SIGKILL); }
+        }
+        let _ = std::fs::remove_dir_all(dir);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert!(out.body.contains("done"), "{}", out.body);
+        assert!(out.body.contains("capture incomplete"), "{}", out.body);
         assert!(out.truncated);
     }
 

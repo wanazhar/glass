@@ -1,5 +1,7 @@
 # Twenty-item shipping round
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../INDEX.md) for supported user behavior.
+
 Status: all 20 items implemented and verified locally on 2026-10-09.
 
 ## Delivery
@@ -27,7 +29,7 @@ user installs or the separate Glass project. Commit verified waves locally; no p
 | 14 | Provider health | Visible connect/wait/stream/retry/fallback/errors in existing live status, with actionable recoveries. |
 | 15 | Permission profiles | Unrestricted (existing default), workspace-edit and read-only; clear per-command opt-in approval/session rules, headless refusal when interactive approval required. |
 | 16 | Extension isolation | Opt-in kernel confinement and secret environment scrub for extension children and inherited MCP children; unsupported requested strict policy refuses. |
-| 17 | Capability manifests | Declared filesystem/network/subprocess needs inspectable before enable; enforced by confinement where possible, honest limitations. |
+| 17 | Capability manifests | Declared filesystem/network/subprocess needs inspectable before enable; enforced by confinement where possible, documented limitations. |
 | 18 | Plugin integrity | Pin resolved version/revision and SHA256 of installed content; verify before use; show changed capabilities before replacing plugin. |
 | 19 | MCP input requests | Host routes validated input-required requests to interactive selection/form/URL modal; headless returns actionable structured input-required error; no secret logging. |
 | 20 | Doctor | CLI and modal diagnose terminal/provider config/auth/sandbox/extensions/session integrity; redact values and URLs; read-only by default, offline no provider calls unless explicit probe. |

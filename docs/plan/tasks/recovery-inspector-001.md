@@ -57,6 +57,8 @@ depends-on: []
 
 # Failure recovery inspector
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Roadmap item 24. `/recovery` and `gc diagnostics` render a raw JSON snapshot in
 a modal. The failure classification exists; the attempt lineage, cooldown and a
 safe next action do not. This task turns the snapshot into an inspector a user

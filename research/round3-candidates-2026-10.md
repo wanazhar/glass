@@ -1,5 +1,7 @@
 # Round 3 port candidates — October 2026
 
+Research snapshot. External project details describe the cited collection period; use the [current guides](../docs/INDEX.md) for glass-core behavior.
+
 Round 3 of the harness study. Round 1 produced
 [harness-delta-2026-10.md](./harness-delta-2026-10.md); round 2 shipped the pi
 durability set ([pi-durability-2026-10.md](./pi-durability-2026-10.md)). The
@@ -47,6 +49,6 @@ was verified:
   changed replays the compacted region under the prompt that shaped it, until
   the next compaction re-captures the current one. This mirrors pi; `/context`
   reports the checkpoint size so the behaviour is discoverable.
-- **Usage is not tracked.** `/skill-doctor` reports size and age honestly
+- **Usage is not tracked.** `/skill-doctor` reports size and age
   instead of inventing a last-used column: the model reads skill files with
   `bash`, and glass does not instrument those reads.

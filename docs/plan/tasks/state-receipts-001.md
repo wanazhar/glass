@@ -7,6 +7,8 @@ depends-on: []
 
 # State receipts, duplicate-request detection and ownership
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Roadmap item 42. The state tool has an optimistic concurrency guard but no
 idempotency. A retried mutation currently either overwrites or fails with a
 stale revision; neither outcome is safe to replay automatically. This task adds

@@ -1,52 +1,46 @@
-# mcp-bridge
+# MCP bridge extension
 
-Make [Model Context Protocol](https://modelcontextprotocol.io) servers callable
-from glass-core, out of process. The core binary keeps its "no MCP" size
-argument; this bridge is an ordinary extension.
-
-`~/.config/glass-core/mcp.json` (or `GC_MCP_CONFIG`):
+Connect configured Model Context Protocol servers through a Python subprocess.
+Enable `mcp-bridge` in `/extensions`. Configuration uses
+`~/.config/glass-core/mcp.json`, or `GC_MCP_CONFIG`:
 
 ```json
-{
-  "servers": {
-    "files": { "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },
-    "notes": { "command": ["python3", "/path/notes_server.py"], "env": { "NOTES_DIR": "~/notes" } }
-  }
-}
+{"servers":{"files":{"command":["npx","-y","@modelcontextprotocol/server-filesystem","/tmp"]}}}
 ```
 
-- Every tool appears namespaced as `mcp__<server>__<tool>` with its JSON
-  Schema passed through unchanged.
-- Past **40 tools** the manifest switches to two meta-tools, `mcp_search` and
-  `mcp_call`, so a large server does not inflate every prompt — the same
-  deferred-tools idea as Claude Code's tool search.
-- A server that fails to start is skipped with a note on stderr; a call into
-  a dead server returns an error string, never a hung turn.
-- Content arrays are flattened to text; non-text items become
-  `[image content omitted]`-style placeholders rather than disappearing
-  silently.
-- Transports: stdio and Streamable HTTP (`{"type": "streamable-http",
-  "url": …, "headers": {…}}`; non-loopback endpoints must be HTTPS; a 401
-  says to add a bearer token). The legacy HTTP+SSE transport is deprecated
-  in the spec and refused with a pointer rather than implemented.
-- Protocol negotiation: `server/discover` is probed first (the stateless
-  2026-07-28 revision — no handshake, `_meta` on every request, `resultType`
-  honoured, `ttlMs`/`cacheScope` tolerated); a method-not-found falls back
-  to the classic `initialize`/`initialized` handshake, which remains what
-  most servers speak. `resultType: "input_required"` (multi round-trip
-  requests) returns a clear "not supported yet" text instead of a hang.
+Review commands before enabling them. A command such as `npx -y` may download
+third-party code; the server is executable local software with its applicable
+capabilities and confinement.
 
-### Agent Plugins
+## Tools and discovery
 
-The bridge also reads `mcp.json` from every installed
-[Agent Plugin](https://agent-plugins.org) (`~/.config/glass-core/plugins/*/
-mcp.json`), per the 1.0.0 spec: schema match required, `${PLUGIN_ROOT}` and
-`${PLUGIN_DATA}` expanded in `args`/`env`/`cwd`, `./command` and `cwd`
-containment-checked against the plugin root, and per-server failure
-isolation. Plugin servers appear namespaced as `<plugin>.<server>` (so a
-tool is `mcp__plugin.server__tool`), and each plugin gets a persistent
-`plugins/data/<name>/` directory.
+Tools use names such as `mcp__files__read_file`, retaining their server schemas.
+Above 40 tools, the bridge exposes deferred search/call tools to bound the prompt
+catalogue. Startup failure is reported per server. Non-text content uses explicit
+placeholders when it cannot be represented.
 
-Startup is bounded: each server gets 8 seconds to initialize and list tools
-before the bridge's own handshake has to complete, so a wedged server cannot
-hold the session hostage. Offline check: `python3 scripts/smoke-mcp.py`.
+## Transport and protocol
+
+The bridge supports stdio and configured Streamable HTTP. Non-loopback HTTP
+endpoints require HTTPS. Authentication failures identify missing credentials.
+The deprecated HTTP+SSE transport is refused.
+
+The bridge probes `server/discover` for its supported stateless revision and falls
+back to classic `initialize`/`initialized` negotiation on method-not-found. Server
+features remain subject to the bridge's supported protocol methods; unsupported
+multi-round input requirements return an explicit result.
+
+Each configured server has a bounded startup period, including initialization and
+tool listing. An unavailable server does not block startup indefinitely. The host
+can present supported elicitation forms or URL consent; headless requests requiring
+user input fail explicitly.
+
+## Plugins
+
+Installed plugins can supply `mcp.json`. Servers use plugin-qualified names, and
+`${PLUGIN_ROOT}` / `${PLUGIN_DATA}` resolve to validated local paths. Each plugin
+retains its own persistent data directory. Invalid components are reported without
+activating them. See [Integrations](../../docs/integrations.md#agent-plugins) and
+[Permissions](../../docs/security.md).
+
+Offline check: `python3 scripts/smoke-mcp.py` from the repository root.

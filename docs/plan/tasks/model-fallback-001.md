@@ -4,6 +4,9 @@ scope: crates/glass provider chain, config, provider construction
 status: done
 depends-on: []
 ---
+# Model fallback
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 

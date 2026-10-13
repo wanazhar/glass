@@ -3,6 +3,9 @@ id: reader-redraw-001
 status: complete
 scope: clean reader frames and canonical history presentation
 ---
+# Reader redraw
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Contract
 

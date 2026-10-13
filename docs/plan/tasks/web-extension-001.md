@@ -4,6 +4,9 @@ scope: extensions/web, addons catalogue
 status: done
 depends-on: []
 ---
+# Web extension
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 

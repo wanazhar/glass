@@ -1,5 +1,7 @@
 # Feature consolidation audit
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../INDEX.md) for supported user behavior.
+
 Date: 2026-10-12. Scope: current source, 79 builtin slash entries, CLI discovery,
 viewers, project knowledge, navigation and execution boundaries. This is a design
 audit; no runtime changes or performance claims are implied.

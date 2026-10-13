@@ -7,6 +7,8 @@ source: research/six-codebases-2026-10-10.md candidates #10, #7, #9
 
 # Wave B: security hardening
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 ## Objective
 
 1. **Process self-hardening** (codex `process-hardening`): before REPL
@@ -32,7 +34,7 @@ source: research/six-codebases-2026-10-10.md candidates #10, #7, #9
    patterns). Sandboxed bash children get `http_proxy`/`https_proxy`/
    `ALL_PROXY` pointing at it; non-allowlisted CONNECT is refused with a
    diagnostic naming the host. No TLS interception and no SOCKS5 in this
-   slice — that is honest limitation text, not silent omission. Proxy
+   slice — document that limitation explicitly. Proxy
    lifetime is per-session, stops with the process, and adds no startup
    cost when the sandbox is off.
 
@@ -68,7 +70,7 @@ Do not edit `agent.rs`, `session.rs`, `tools.rs`, `ext/**`.
 ## Verification
 
 - Unit tests: rlimit refusal tolerated; LD_* stripped from child env;
-  requirements beats every other layer including runtime overrides;
+  requirements take precedence over every other layer, including runtime overrides;
   wildcard matching exact semantics; CONNECT to denied host refused with
   host named; allowlisted host passes through.
 - `scripts/smoke-egress.py`: sandbox on, curl to denied host fails with
@@ -95,5 +97,5 @@ Do not edit `agent.rs`, `session.rs`, `tools.rs`, `ext/**`.
 - Startup unchanged when the proxy is off: the proxy exists only under
   `sandbox_egress = "policy"` with a nonzero sandbox; benefits: hardening
   runs two setrlimit/env scans at startup (microseconds).
-- Honest limitations recorded in the task text: blind CONNECT relay (no
+- Recorded limitations in the task text: blind CONNECT relay (no
   TLS interception), no SOCKS5 in this slice, no `egress_deny` key yet.

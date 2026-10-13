@@ -1,10 +1,12 @@
 # Tooling foundation: file recovery and explicit shell inputs
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Status: delivered first slice. Roadmap items 38–43 remain partially complete.
 
 Evidence: [delivery review](../reviews/tooling-foundation-001.md).
 
-Root implements; Luna medium reviews. Preserve the two model tools and existing native helpers. No new dependency or startup service.
+Implementation requires independent review. Preserve the two model tools and existing native helpers. No new dependency or startup service.
 
 ## Contracts
 

@@ -1,5 +1,7 @@
 # Conversation scrollbar range
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Date: 2026-10-09.
 
 The conversation followed its real tail, but ScrollbarState received total wrapped lines as its number of possible positions. Ratatui interprets the last position as content_length minus one; the transcript's last legal offset is total lines minus visible text rows. This mismatch left the thumb above the bottom, especially when history was only slightly taller than the viewport.

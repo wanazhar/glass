@@ -1,5 +1,7 @@
 # Codebase deep-read — six harnesses, feature candidates
 
+Research snapshot. External project details describe the cited collection period; use the [current guides](../docs/INDEX.md) for glass-core behavior.
+
 Date: 2026-10-10. Method: shallow clones inspected locally at HEAD
 (`openai/codex` main, `earendil-works/pi` main, `can1357/oh-my-pi` main,
 `pingdotgg/t3code` main, `charmbracelet/crush` main, `anomalyco/opencode`
@@ -178,7 +180,7 @@ Beyond the t3code-parity round's coverage, the tree contains:
   `permission/saved.ts` (permissions persisted in DB per project).
 - `session/affinity.ts` — **cache-routing affinity**: child sessions share
   the parent's session id for provider cache routing; forks inherit the
-  fork source's. A one-file feature with a visible token win.
+  fork source's. A one-file feature with a measurable reduction in prompt content.
 - `session/run-coordinator.ts` — key-based serialization: different keys run
   concurrently, same key joins the active execution.
 - `session/subagent-job.ts` + `Job.Recovery { kind: "subagent" }` —
@@ -233,7 +235,7 @@ those are delivery notes, not new candidates.
 | 19 | **Reversible secret redaction in provider-bound text** | OMP `secrets.md` | GC redacts diagnostics bundles but not the *conversation stream* to providers | Opt-in flag: redact credential-shaped values in message text, restore in tool args before execution. Interacts with cache (churn risk) — needs fingerprint receipts awareness |
 | 20 | **Filesystem scan cache with explicit invalidation** | OMP `fs-scan-cache-architecture.md` (`pi-walker`) | GC greps/globs fresh each time (or at least nothing cached); large repos pay full walk cost per query | Rust-native fit: shared in-process walk cache + `invalidate(path?)` on every mutation tool path; grep stays uncached initially |
 | 21 | **Content-addressed blob storage for large payloads** | OMP `blob-artifact-architecture.md` | Output spill-to-disk exists, but no stable content addressing; handoffs store duplicates | `blob:sha256:` addressing of image payloads AND truncated tool outputs; `artifact://` URLs in renders; `range-readable` references (43-item #23) become byte ranges into blobs |
-| 22 | **DAP debug tool (lazy)** | OMP `debug.md` (one tool drives one DAP session) | 43-item #35 defers the debugger adapter; the OMP file shows the exact single-tool surface | Keep deferred; the single-`debug`-tool shape beats multi-tool |
+| 22 | **DAP debug tool (lazy)** | OMP `debug.md` (one tool drives one DAP session) | 43-item #35 defers the debugger adapter; the OMP file shows the exact single-tool surface | Keep deferred; the single-`debug`-tool shape avoids several separate tools |
 
 ### Tier 3 — larger, strategic, mostly already on ledger
 
@@ -269,7 +271,7 @@ those are delivery notes, not new candidates.
   execution risk. GC keeps data-driven config.
 - **Windows-first sandboxes (MXC, restricted tokens).** GC's platform is
   Linux-first with sandbox-exec on macOS. Port only after the Linux+macOS
-  story is complete.
+  contract is complete.
 - **Crush coordinator/MCP gates, csync, herdr.** These are multi-client
   server internals; GC's serve/attach is 0600-socket-single-session. They
   become relevant only if GC grows a server fleet.

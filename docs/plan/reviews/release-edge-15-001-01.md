@@ -1,5 +1,7 @@
 # Release binary: 15 edge-case suites and live Kilo task
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Date: 2026-10-09. Actual binary: `/home/ubuntu/work/glass-core/target/release/glass-core`; `gc` is its symlink. All subprocess and PTY harnesses explicitly received `GLASS_CORE_TEST_BINARY`. Tests use isolated temporary configuration and workspaces; no installed executable or user settings were replaced.
 
 ## Matrix

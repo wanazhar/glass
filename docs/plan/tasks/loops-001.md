@@ -4,12 +4,15 @@ scope: crates/glass loops module, repl idle tick, serve idle loop
 status: done
 depends-on: [serve-attach]
 ---
+# Loops
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 
 Scheduled runs (Claude `/loop`, Codex automations, Droid missions): a prompt
 that fires on an interval while the session is idle, persisted across
-resume, and — combined with `serve` — the autonomy story with no daemon.
+resume, and — combined with `serve` — persistent scheduling through the existing session owner.
 
 ## Context
 

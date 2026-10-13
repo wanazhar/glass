@@ -7,12 +7,14 @@ source: research/six-codebases-2026-10-10.md candidates #5, #20, #21, #6
 
 # Wave D: representation + perf
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 ## Objective
 
 1. **Mermaid renderer** (codex `mermaid`): a bounded terminal-native
    diagram renderer over the shared Markdown renderer: flowcharts
    (`A --> B`, labeled edges), sequence diagrams and class/states are out
-   of scope this slice — flowchart plus node/edge labels only, honestly
+   of scope this slice — flowchart plus node/edge labels only, with explicit limits
    stated. Edges own lanes; crossings never join; width-capped to the
    reader column; unsupported syntax or overflow returns the source in a
    fenced block (never a halfway drawing). Reuses the existing
@@ -68,7 +70,7 @@ Do not edit `agent.rs`, `tools.rs` dispatch, `ext/**`, `provider/**`.
   directory.
 - Blob writes are atomic tmp-rename; a second write of the same content is
   a no-op. Blobs without a referencing record at gc startup are left
-  alone (no GC sweep in this slice — honest limitation in docs).
+  alone (no GC sweep in this slice — documented limitation).
 - OSC 8 emission is behind the existing capability detection; when
   unsupported, output is byte-identical to today (test the bytes).
 

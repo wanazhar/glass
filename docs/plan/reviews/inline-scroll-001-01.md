@@ -1,5 +1,7 @@
 # Review: inline-scroll-001
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Status: **PARTIALLY VERIFIED — PROVIDER-BACKED UPDATE/CANCEL GATE BLOCKED** (October 7, 2026)
 
 ## Independent offline PTY review

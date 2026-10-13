@@ -4,6 +4,9 @@ scope: session logs, agent turn records, live sidecar, serve protocol
 status: done
 depends-on: []
 ---
+# Durability
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 

@@ -1,5 +1,7 @@
 # Workflow delivery verification — 2026-10-10
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 ## Scope
 
 All twenty features in [the delivery matrix](../workflow-next-20.md) have functional v1 implementations. [The user guide](../../workflows.md) documents commands, optional dependencies and limits.

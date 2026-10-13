@@ -4,6 +4,9 @@ scope: crates/glass compact module, agent loop, /compact command
 status: done
 depends-on: []
 ---
+# Compaction hardening
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 
@@ -13,7 +16,7 @@ Harden context management with three ports from the harness survey
 1. A manual `/compact [focus]` that force-summarizes below the threshold.
 2. Overflow-refusal recovery: a provider "prompt too long" refusal triggers
    deterministic truncation and one retry — never a re-stream of the history
-   that just did not fit (the Crush #3620 permanent-wedge cascade).
+   that just did not fit (the Crush #3620 repeated context-overflow failure).
 3. A circuit breaker: three consecutive summary failures stop paid
    summarization for the session while deterministic compaction continues
    (instead of qwen-code's original one-failure permanent lock).
@@ -28,7 +31,7 @@ Harden context management with three ports from the harness survey
   `Breaker` + `SUMMARY_FAILURE_LIMIT`, tests.
 - `crates/glass/src/agent.rs`: `breaker`/`overflow_recovered` fields,
   `force_compact`, `note_summary_failure`, run_turn recovery wrapper,
-  honest partial-response Meta (only when something survived), tests.
+  an accurate partial-response Meta record (only when something survived), tests.
 - `crates/glass/src/main.rs`: `/compact` dispatch, palette catalogue, help.
 - `README.md`: context-management section.
 

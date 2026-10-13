@@ -1,5 +1,7 @@
 # Ship Next 20: Wave 1 Independent Verification
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 **Result:** PASS for wave 1 at production source freeze `04335e5`. The verification checkout was at `7884c3c71cd6fe25f49bdbac4a5b2be37850f39a`; the intervening changes are limited to smoke assertions in `scripts/smoke-motion.py` and `scripts/smoke-workflows.py`.
 
 ## Checks

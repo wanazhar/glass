@@ -1,5 +1,7 @@
 # Prompt caching and compaction: research notes
 
+Research snapshot. External project details describe the cited collection period; use the [current guides](../docs/INDEX.md) for glass-core behavior.
+
 Collected October 2026. Primary sources only; every number below is from vendor
 documentation unless marked otherwise.
 

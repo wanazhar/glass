@@ -1,5 +1,7 @@
 # CLI help presentation
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 2026-10-10. Replaced the flat, outdated CLI help text with a small native
 renderer. `gc help` shows a quick start, focused guides and copyable examples.
 `gc help commands`, `run`, `keys`, and `all` expose detailed guides. `agent` and

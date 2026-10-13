@@ -1,40 +1,39 @@
-# subagent
+# Subagent extension
 
-Delegate one to eight self-contained tasks and get back their reports. Each
-task runs in a fresh context with the `bash` and `state` tools; nothing from
-the parent conversation reaches it.
+Delegate one to eight independent tasks through one tool call. Each task receives
+a fresh session and state. Writing tasks use the five core tools; read-only tasks
+use inspection tools. Parent conversation history is not copied automatically.
 
-- **Parallel by batch.** Independent tasks in one call run up to four at a
-  time. The host owns the fan-out — one extension is one serial stdio pipe,
-  so a batch arrives as a single `run_subagents` request and the reports come
-  back in request order. The extension declares `concurrency: "serial"` so
-  two batches cannot overlap.
-- **Failure contained.** A task that fails, or whose worker panics, gets an
-  error string in its own slot; siblings finish normally.
-- **Agent definitions.** `~/.config/glass-core/agents/*.md`:
+## Execution
 
-  ```markdown
-  ---
-  name: security-review
-  description: Reviews a diff for injection and secret-handling bugs.
-  model: claude-opus-4-5
-  ---
+The host runs up to four tasks concurrently and returns reports in request order.
+A task failure or worker panic produces an error in that task's slot; siblings
+continue. The extension declares serial batch execution so two batches do not
+run concurrently through the same extension process.
 
-  You review code changes for security defects. Be specific: file, line,
-  and the concrete failure mode.
-  ```
+The extension forwards `run_subagents` to the host. If no runner is installed,
+the host returns an explicit error. Generated reports retain delegated provenance;
+review their contents before treating them as instructions or verified evidence.
 
-  The body becomes the sub-agent's prompt; `model` (optional) routes the task
-  to that model on the active connection. `/agents` lists what is loaded.
-- **Worktree isolation.** `"worktree": true` on a task runs it in a detached
-  git worktree at HEAD under the data directory. The report includes the
-  path; nothing is merged back. Uncommitted parent changes are absent by
-  design.
-- **One tool schema.** The tool takes a `tasks` array (1–8). Text after a
-  colon/frontmatter is passed through; the host composes the final prompt, so
-  a custom agent body cannot lose its assignment.
+## Definitions and isolation
 
-Protocol surface: `system_prompt`, `authorize` (always allows), `run_tool`
-(forwarding `run_subagents`), and the `agents` slash command. The host must
-have a subagent runner installed; without one, the request is refused with a
-reason rather than left hanging.
+Named definitions live under `~/.config/glass-core/agents/`:
+
+```markdown
+---
+name: security-review
+description: Inspect a diff for injection and credential-handling defects.
+model: YOUR_MODEL_ID
+---
+
+Report concrete failure cases with file locations and evidence.
+```
+
+The body supplies the persona; the host preserves the explicit assignment.
+The optional model ID uses the active connection. A task with `worktree: true`
+runs in a detached worktree at HEAD. Parent uncommitted edits are absent, and
+changes are not merged back automatically.
+
+For persistent workers, follow-ups, transcript inspection, and interruption,
+use [Persistent teammates](../../docs/agents.md). Apply-back behavior is documented
+under [Worktrees](../../docs/workflows.md#worktree-isolation).

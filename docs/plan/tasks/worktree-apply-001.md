@@ -4,6 +4,9 @@ scope: crates/glass worktree module, subagent scratch location
 status: done
 depends-on: [subagent-fanout-001]
 ---
+# Worktree apply
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 

@@ -4,6 +4,9 @@ scope: crates/glass status module, config, repl hooks
 status: done
 depends-on: []
 ---
+# Program status
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 

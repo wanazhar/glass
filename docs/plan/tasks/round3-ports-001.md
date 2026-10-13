@@ -4,6 +4,9 @@ scope: round-3 harness borrow list
 status: done
 depends-on: []
 ---
+# Round3 ports
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 
@@ -66,7 +69,7 @@ Capabilities:
   queued appends after the tool call or turn that queued them, and exports
   show them.
 - `/skill-doctor`: per-skill body bytes, catalogue bytes, and last-modified —
-  honest size and age, since skill reads are not instrumented.
+  size and modification date, since skill reads are not instrumented.
 - `/code-review [max]`: the working diff reviewed through a read-only
   delegated agent; findings are posted as a system record so the model can
   act on them; a clean tree is refused before spending a provider call.

@@ -1,5 +1,7 @@
 # Integrated roadmap implementation review
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Status: implementation review complete; release checks passed.
 
 ## Scope

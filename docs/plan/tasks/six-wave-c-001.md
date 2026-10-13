@@ -7,6 +7,8 @@ source: research/six-codebases-2026-10-10.md candidates #12, #13, #14, #11
 
 # Wave C: context management
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 ## Objective
 
 1. **Checkpoint → rewind tool pair** (OMP tools, default off):

@@ -3,6 +3,9 @@ id: ship-reliability-001
 status: completed
 scope: ship-next-20 items 1-6
 ---
+# Delivery: reliability
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 Implement contracts 1-6 in ../ship-next-20.md. Own session.rs, agent.rs,
 partial.rs, serve.rs, ext/host.rs, ext/mod.rs and required integration call sites.

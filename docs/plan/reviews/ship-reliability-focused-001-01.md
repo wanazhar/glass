@@ -1,5 +1,7 @@
 # Reliability and plugin focused review
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Status: focused review passed; full release gates pending integration.
 
 Independent verifier reviewed root `1252259` reliability changes and plugin

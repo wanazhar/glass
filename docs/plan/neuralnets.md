@@ -1,5 +1,7 @@
 # Neuralnets and model guidance protocol
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../INDEX.md) for supported user behavior.
+
 Local, project-scoped learning with explicit provenance. Model proposals are pending;
 only a human review promotes them into retrieved reference facts. Memory never grants
 permissions or overrides current instructions. No embeddings, background model calls,
@@ -23,8 +25,10 @@ release PTY verification and final independent review.
   approve/forget/restore/purge; `/neuralnets` provides paginated native inspection and human review.
 - Models use `state {"neuralnets":{"action":"propose","kind":"lesson","text":"..."}}`.
   Source records the session and call ID. Candidates are never automatically approved.
-- Existing `gc memory` facts remain independent and compatible; no migration or
-  deletion of old optional extension files is performed.
+- The original checkpoint kept native `gc memory` facts separate. The later
+  consolidation migrates them into the shared native store on explicit mutation,
+  preserving a legacy backup. Optional extension files remain separate. See
+  [current knowledge behavior](../knowledge.md).
 - Confirmed reference injection is capped at 8 entries / 2 KiB, refreshed once per
   user turn and reused across tool rounds. Proposals leave the prefix unchanged.
   Explicit review or forgetting changes the next turn's reference snapshot, including

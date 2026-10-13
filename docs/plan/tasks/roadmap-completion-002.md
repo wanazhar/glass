@@ -1,5 +1,7 @@
 # Roadmap workflow completion sweep
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Status: complete. [Final acceptance and explicit limits](../reviews/roadmap-completion-2026-10-11.md). Source acceptance remains the original
 43-item roadmap and `roadmap-delivery.md`. Existing delivery notes require
 fresh acceptance mapping; candidate numbers from other research are separate.

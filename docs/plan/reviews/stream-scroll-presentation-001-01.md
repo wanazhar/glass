@@ -1,5 +1,7 @@
 # Streaming and scrolling presentation
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 2026-10-10. User screenshots showed lost streaming colors, a selected-tool ID
 footer in ordinary scrolling, and missing usage summaries in transcript replay.
 

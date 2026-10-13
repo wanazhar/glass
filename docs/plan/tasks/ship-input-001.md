@@ -4,6 +4,9 @@ status: complete
 depends-on: [ship-terminal-001, ship-security-001]
 scope: ship-next-20 item 19 and security UI integration
 ---
+# Delivery: input
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Contract
 
@@ -37,7 +40,7 @@ requires consent; never navigate automatically. Review before submit.
 
 Wire the security foundation's session exception approval and permission/capability
 inspection APIs into existing modals without changing the unrestricted default.
-Update doctor to show profiles and extension enforcement honestly.
+Update doctor to show configured profiles and enforced extension restrictions.
 
 ## Sources and verification
 

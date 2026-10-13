@@ -4,6 +4,9 @@ scope: searchable tool inspection and keyboard discovery
 status: in-progress
 depends-on: [live-turn-ui-001]
 ---
+# Tool navigation
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 

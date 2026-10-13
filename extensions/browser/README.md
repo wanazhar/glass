@@ -1,22 +1,30 @@
-# Browser verification add-on
+# Browser verification extension
 
-Enable `browser` in GC's `/extensions` picker. Optional dependency: Python `playwright`.
-Set `GC_BROWSER_CDP=http://127.0.0.1:9222` for a browser you explicitly expose.
-GC connects to that local endpoint, creates a fresh isolated context, and closes
-only that context. It never installs dependencies or starts/closes your browser.
+Enable `browser` in `/extensions`. The extension requires Python Playwright and
+an explicitly exposed local CDP connection:
 
-`browser_verify` accepts `url` and optional `expected_text`. It reports HTTP status,
-expected text presence at DOMContentLoaded, bounded console/page errors, a viewport
-PNG, and `passed`. Dynamic pages may need another check after application startup.
-Screenshots/reports are private workspace `.gc-artifacts/browser-*` files. Register
-returned paths with `gc workspace artifact add LABEL PATH` to add them to the shelf.
-The default timeout budgets are 10s connection, 20s navigation and 10s screenshot.
-No background polling or requests occur when this add-on is disabled.
+```sh
+export GC_BROWSER_CDP=http://127.0.0.1:9222
+```
 
-Use a dedicated browser profile. Local CDP grants browser control and is not an
-authentication boundary against other local programs. Refer to
-[GC workflows](../../docs/workflows.md) for policies, artifacts and verification.
+It creates an isolated context in that browser and closes only its own context.
+It does not install dependencies, launch a browser, or close an existing browser.
 
-Tests: `python3 scripts/smoke-browser.py`. To exercise actual Chromium, set
-`GC_BROWSER_TEST_EXECUTABLE` to a Chromium executable. The test launches and closes
-its own temporary browser, never an existing user process.
+## Interface
+
+`browser_verify` accepts `url` and optional `expected_text`. Results include HTTP
+status, expected-text presence at DOMContentLoaded, bounded console/page errors,
+a viewport PNG, and `passed`. Dynamic pages may need a later check after startup.
+
+Screenshots and reports are private `.gc-artifacts/browser-*` files in the
+workspace. Register a returned path with `gc workspace artifact add LABEL PATH`
+to expose it through the artifact shelf. Default timeouts are 10 seconds for
+connection, 20 for navigation, and 10 for screenshots.
+
+Use a dedicated browser profile. CDP grants browser control and does not
+isolate credentials from other local programs. No polling or browser requests
+occur while the extension is disabled. See [Workflows](../../docs/workflows.md).
+
+Check: `python3 scripts/smoke-browser.py`. Setting `GC_BROWSER_TEST_EXECUTABLE`
+allows the suite to launch its own temporary Chromium instance. It does not
+terminate an existing user's browser.

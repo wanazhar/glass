@@ -4,6 +4,9 @@ scope: crates/glass serve multi-client, inbox module
 status: done
 depends-on: [serve-attach, loops-001]
 ---
+# Session comms
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 

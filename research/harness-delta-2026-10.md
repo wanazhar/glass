@@ -1,5 +1,7 @@
 # Harness delta survey — August–October 2026
 
+Research snapshot. External project details describe the cited collection period; use the [current guides](../docs/INDEX.md) for glass-core behavior.
+
 Follow-up to `harness-features-2026.md`. Compiled 2026-10-08 from primary sources: vendor changelogs,
 GitHub release bodies and API metadata, official docs, and protocol specifications, all fetched
 2026-10-07/08. Version→date mapping for Claude Code comes from npm registry publish timestamps
@@ -227,7 +229,7 @@ Verdict key: **SHIP** (worth doing next), **LATER**, **SKIP**.
 | # | Candidate | State of the art (Aug–Oct 2026 evidence) | Verdict |
 |---|---|---|---|
 | 1 | Tool search / deferred tools | Claude Code: on by default, `auto:N` thresholds, 10k catalog, 5 results, `alwaysLoad` exemption, `isDeferred` for mods ([docs](https://code.claude.com/docs/en/agent-sdk/tool-search)). Also Copilot CLI, pi, Amp (Dec 2025). glass-core already defers MCP past 40 tools | LATER (delta only) |
-| 2 | LSP integration | opencode (40+ servers, diagnostics into edits) is still best-in-class ([docs](https://opencode.ai/docs/lsp/)); qwen "experimental LSP support for code intelligence"; Copilot CLI ships `lsp.json` plugins + `copilot lsp list`, warms servers, sandbox-aware; Claude Code has an LSP tool with per-server `requestTimeout` (60s) | SHIP |
+| 2 | LSP integration | opencode (40+ servers, diagnostics into edits) provides a documented reference ([docs](https://opencode.ai/docs/lsp/)); qwen "experimental LSP support for code intelligence"; Copilot CLI ships `lsp.json` plugins + `copilot lsp list`, warms servers, sandbox-aware; Claude Code has an LSP tool with per-server `requestTimeout` (60s) | SHIP |
 | 3 | Repo map / code index | Aider's tree-sitter+PageRank repomap is frozen; **Maki's `index` tool** is the new reference and publishes the accounting: +59 tok/turn, saves 224 tok/turn on reads ([README](https://github.com/tontinton/maki)). Cline `search_codebase`, Copilot "indexed search" | SHIP |
 | 4 | Auto-verification after edits | Aider's `--auto-lint`/`--auto-test` unchanged ([docs](https://aider.chat/docs/usage/lint-test.html)); Claude Code now tells Claude to run a project `verify` skill right before commits ([changelog](https://code.claude.com/docs/en/changelog)); Codex hooks run async + can call MCP tools; Droid Droid Shield pre-commit scan | SHIP |
 | 5 | Cross-session memory | Claude Code auto memory (format above) is now the de-facto reference; Codex memories; Maki `memory` tool + `/memory` | SHIP |
@@ -261,7 +263,7 @@ Notes where the verdict needs nuance:
   selection. Keep not-doing it.
 - **Multi-client attach is valuable but currently dangerous for glass-core** because it has no
   permission prompts. A 0600 Unix socket is a sane boundary; a relay/phone client needs an auth and
-  revocation story first.
+  revocation behavior first.
 - **Image input is the cheapest real capability gap.** Every competing harness accepts images; a
   bash-only agent cannot see a failing UI. It is core work (message assembly + paste detection) but
   small.
@@ -325,7 +327,7 @@ verification, the `turn_end` hook, exit-code-first tool results, and the cache-w
 ### 4. `index` — a tree-sitter/ctags code skeleton tool — out-of-process extension, medium
 
 A tool that returns a file's high-level skeleton with exact start–end lines per symbol (functions,
-classes, exports) and is advertised as "use before read". This is the cheapest large token win for a
+classes, exports) and is advertised as "use before read". This is the low-overhead opportunity to reduce read context for a
 bash-first harness: reads dominate a coding agent's token spend, and Maki publishes the accounting
 (+59 tok/turn, −224 tok/turn on reads) at [github.com/tontinton/maki](https://github.com/tontinton/maki).
 Aider's PageRank repomap remains the reference for *cross-file* ranking
@@ -379,7 +381,7 @@ scope.
 
 An extension that manages language servers for the workspace and surfaces diagnostics after edits,
 injected through the existing `tool_result` rewriting hook so a broken write comes back with the
-compiler's error rather than the model discovering it three turns later. Best-in-class is opencode's
+compiler's error rather than the model discovering it three turns later. A reference implementation is OpenCode's
 LSP integration (40+ servers, diagnostics wired into edits,
 [docs](https://opencode.ai/docs/lsp/)); Copilot CLI's `lsp.json` plugin component and `copilot lsp
 list` show how to package it; Claude Code's 60s per-server `requestTimeout` is the failure mode to
@@ -414,7 +416,7 @@ adversarial one. Composes with agent definitions, model fallback chains, budgets
 second pass is visible), and `/git` for diff selection.
 
 **Honourable mentions (rank 11–13):** image/paste input (core, small–medium — the cheapest real
-capability gap); multi-client attach with an auth story (core, medium — worth doing only after an
+capability gap); multi-client attach with an explicit authentication design (core, medium — worth doing only after an
 auth/revocation design, since glass-core has no permission prompts); a session inbox so two
 glass-core sessions can message each other (extension, small — Claude and Codex both now ship this).
 

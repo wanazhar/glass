@@ -1,5 +1,7 @@
 # Persistent teammates verification
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 2026-10-09, Linux ARM64. Root implemented; GPT-6 Luna medium independently
 reviewed runtime and UI. Local delivery only.
 

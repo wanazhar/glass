@@ -4,6 +4,9 @@ scope: regression review of 0954ab1 and 41b71a1
 status: done
 depends-on: []
 ---
+# Pi shipping
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 

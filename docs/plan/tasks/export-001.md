@@ -4,6 +4,9 @@ scope: crates/glass export module, /export command, gc export
 status: done
 depends-on: []
 ---
+# Export
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 

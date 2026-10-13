@@ -7,6 +7,8 @@ source: research/six-codebases-2026-10-10.md candidates #2, #3, #15, #1
 
 # Wave A: agent-loop correctness
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Four small changes in the turn loop, implemented as one task because they
 touch the same files and the same tests. They are independent features with
 independent acceptances.

@@ -3,6 +3,9 @@ id: oct8-regressions-001
 status: complete
 scope: confirmed defects from recent shipping commit review
 ---
+# Oct8 regressions
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Confirmed LSP defects
 

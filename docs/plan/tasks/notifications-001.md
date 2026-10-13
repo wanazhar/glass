@@ -4,6 +4,9 @@ scope: crates/glass notify module, config, interactive turn end
 status: done
 depends-on: []
 ---
+# Notifications
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 
@@ -19,7 +22,7 @@ Crush (`auto|native|osc|bell|disabled`), Codex notifications, and Amp's
   practical; everything else (fan-out, background jobs, budgets) is worth
   less if you cannot walk away.
 - tmux is deliberately not treated as OSC-capable: OSC 9 is swallowed
-  without passthrough, so the bell (window flag) is the honest default.
+  without passthrough, so the bell (window flag) is the supported default.
 - Provider or tool text must never reach the escape sequence; messages are
   composed by the harness and sanitized anyway.
 

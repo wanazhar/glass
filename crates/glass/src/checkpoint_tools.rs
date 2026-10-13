@@ -34,26 +34,14 @@ const MAX_GATE_SCAN: usize = 256;
 /// Whether a session has a checkpoint to rewind that is not already
 /// closed by that very record. Used to give a precise refusal message.
 fn find_checkpoint_label(session: &Session) -> Option<String> {
-    for r in session.history_records().iter().rev() {
-        if let Record::Checkpoint {
-            label,
-            rewind_summary: None,
-            ..
-        } = r
-        {
-            return Some(label.clone());
-        }
-        // A rewind with a summary closes earlier markers of any label:
-        // walk no further back than that.
-        if let Record::Checkpoint {
-            rewind_summary: Some(_),
-            ..
-        } = r
-        {
-            return None;
+    let mut open = Vec::new();
+    for record in session.history_records() {
+        if let Record::Checkpoint { label, rewind_summary, .. } = record {
+            if rewind_summary.is_none() { open.push(label); }
+            else if let Some(index) = open.iter().rposition(|name| name == &label) { open.truncate(index); }
         }
     }
-    None
+    open.pop()
 }
 
 /// `checkpoint {label}`: mark the current state.
@@ -353,6 +341,21 @@ mod tests {
         drop(session);
         let resumed = Session::open(path.parent().unwrap(), &id).unwrap();
         assert_eq!(format!("{:?}", resumed.messages()), text);
+    }
+
+    #[test]
+    fn nested_checkpoints_can_rewind_inner_then_outer() {
+        let mut session = fresh_session();
+        session.append(Record::User("goal".into()));
+        checkpoint(&call("checkpoint", r#"{"label":"outer"}"#), &mut session);
+        checkpoint(&call("checkpoint", r#"{"label":"inner"}"#), &mut session);
+        let inner = rewind(&call("rewind", r#"{"label":"inner","report":"inner finding"}"#), &mut session);
+        assert!(!inner.body.starts_with("error:"));
+        assert_eq!(find_checkpoint_label(&session).as_deref(), Some("outer"));
+        let outer = rewind(&call("rewind", r#"{"label":"outer","report":"outer finding"}"#), &mut session);
+        assert!(!outer.body.starts_with("error:"), "{}", outer.body);
+        assert!(find_checkpoint_label(&session).is_none());
+        assert!(!format!("{:?}", session.messages()).contains("inner finding"));
     }
 
     #[test]

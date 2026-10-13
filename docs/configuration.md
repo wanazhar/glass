@@ -145,3 +145,16 @@ written by the pacer. Independent GC processes do not share this state.
 In selection menus, F1 or Right opens the full entry in a scrollable reader.
 Larger menus also show a wrapped selection preview. The slash command palette
 uses F1 for complete command details. Escape returns from details to the menu.
+
+### Activity animations and exit confirmation
+
+Use `/animation` to preview Dot, MiniDot, Pulse, Spark, Bounce, Orbit, Grow, or
+Blink. Arrow keys move through the live previews; Enter applies the selection.
+The picker scrolls on small terminals. An active workspace profile retains the
+selected animation. Each frame occupies one terminal cell and uses the existing
+100 ms activity timer.
+
+Ctrl-D opens an exit confirmation. Enter exits; Escape returns to GC with the
+composer and menu state preserved. During an active turn, confirming cancels the
+current request before exit. Saved conversation history remains available;
+unsent drafts are discarded on confirmed exit.

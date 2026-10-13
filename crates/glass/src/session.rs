@@ -293,6 +293,9 @@ impl Record {
                 body: body.clone(),
             }),
             Record::System(t) => Some(Message::System(t.clone())),
+            Record::Checkpoint { label, rewind_summary: Some(report), .. } => Some(Message::System(format!(
+                "Checkpoint `{label}` rewound; retained report:\n{report}"
+            ))),
             Record::Image { media_type, data } => Some(Message::Image {
                 media_type: media_type.clone(),
                 data: data.clone(),
@@ -1258,6 +1261,13 @@ impl Session {
         (!edits.is_empty()).then_some(edits)
     }
 
+    /// Rebuild once after a rewind, including compaction markers it invalidates.
+    pub(crate) fn reproject_history(&mut self) {
+        let (records, turn) = apply_projection(self.history_records());
+        self.records = records;
+        self.turn = turn;
+    }
+
     /// `/forget`, `/unforget`, `/rewrite`: append-only context edits.
     ///
     /// They change only what the model sees next: raw history, the transcript,
@@ -1282,11 +1292,11 @@ impl Session {
                     return Ok(self.context_edits_listing(turns));
                 }
                 let turn = parse_turn(args)?;
-                self.append(Record::ContextEdit {
+                self.append_checked(&[Record::ContextEdit {
                     turn,
                     mode: "hide".into(),
                     text: None,
-                });
+                }]).map_err(|e| format!("context edit was not saved: {e}"))?;
                 Ok(format!(
                     "turn {turn} hidden from future context \
                      (raw history and files unchanged; /unforget {turn} restores it)"
@@ -1294,11 +1304,11 @@ impl Session {
             }
             "unforget" => {
                 let turn = parse_turn(args)?;
-                self.append(Record::ContextEdit {
+                self.append_checked(&[Record::ContextEdit {
                     turn,
                     mode: "restore".into(),
                     text: None,
-                });
+                }]).map_err(|e| format!("context edit was not saved: {e}"))?;
                 Ok(format!("turn {turn} restored to future context"))
             }
             "rewrite" => {
@@ -1313,11 +1323,11 @@ impl Session {
                 if replacement.len() > 8_000 {
                     return Err("the replacement is longer than 8 KB".into());
                 }
-                self.append(Record::ContextEdit {
+                self.append_checked(&[Record::ContextEdit {
                     turn,
                     mode: "replace".into(),
                     text: Some(replacement.to_string()),
-                });
+                }]).map_err(|e| format!("context edit was not saved: {e}"))?;
                 Ok(format!(
                     "turn {turn}'s message rewritten for future context \
                      (the transcript keeps the original)"
@@ -1903,10 +1913,7 @@ pub(crate) fn citation_marker_of_test(line: &str) -> bool {
 }
 
 fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
-    // A model-invoked checkpoint bounds the context first (OMP
-    // checkpoint/rewind): records after an open checkpoint are the
-    // exploratory work the checkpoint exists to forget. A rewind record
-    // re-enters them as nothing and injects the retained report instead.
+    // Rewinds hide exploration without changing raw record coordinates.
     let records = apply_checkpoint_projection(records);
     let Some(epoch) = records
         .iter()
@@ -1990,50 +1997,37 @@ fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
     (out, turn)
 }
 
-/// Checkpoint projection: everything after the latest open checkpoint is
-/// dropped; the rewind's retained report is kept as a system note.
-///
-/// "Open" means: a `Checkpoint` marker with no later rewind of the same
-/// label. Rewinding multiple times is one open→rewound cycle per label;
-/// the latest rewind wins and the report reflects the final state.
-fn apply_checkpoint_projection(records: Vec<Record>) -> Vec<Record> {
-    // Find the latest checkpoint marker and whether any rewind closed it.
-    let latest = records
-        .iter()
-        .rposition(|r| matches!(r, Record::Checkpoint { .. }));
-    let Some(marker_index) = latest else {
-        return records;
-    };
-    let (label, log_len, summary) = match &records[marker_index] {
-        Record::Checkpoint {
-            label,
-            log_len,
-            rewind_summary,
-        } => (label.clone(), *log_len, rewind_summary.clone()),
-        _ => unreachable!("position matched a Checkpoint record"),
-    };
-    if summary.is_some() {
-        // The latest marker IS the rewind: nothing is hidden, but the
-        // retained report belongs in context as a system note.
-        let mut out = records;
-        if let Some(report) = summary {
-            out.push(Record::System(format!(
-                "Checkpoint `{label}` rewound; retained report:\n{report}"
-            )));
+/// Open checkpoints leave exploration visible. A completed rewind hides only
+/// its exploratory region. Invisible placeholders preserve raw compaction indices.
+fn apply_checkpoint_projection(mut records: Vec<Record>) -> Vec<Record> {
+    let mut open: Vec<(String, usize)> = Vec::new();
+    for index in 0..records.len() {
+        let Record::Checkpoint { label, rewind_summary, .. } = &records[index] else { continue };
+        if rewind_summary.is_none() {
+            open.push((label.clone(), index));
+        } else if let Some(position) = open.iter().rposition(|(name, _)| name == label) {
+            let start = open[position].1;
+            // Calls still awaiting results belong to the active batch, including
+            // siblings after rewind. Keep them paired with their later results.
+            let mut pending = std::collections::HashSet::new();
+            for record in &records[start + 1..index] {
+                match record {
+                    Record::ToolCall { id, .. } => { pending.insert(id.clone()); }
+                    Record::ToolResult { call_id, .. } => { pending.remove(call_id); }
+                    _ => {}
+                }
+            }
+            for record in &mut records[start + 1..index] {
+                let keep = matches!(record, Record::User(_))
+                    || matches!(record, Record::ToolCall { id, .. } if pending.contains(id));
+                if !keep {
+                    *record = Record::Meta("Checkpoint exploration hidden from context".into());
+                }
+            }
+            open.truncate(position);
         }
-        return out;
     }
-    // Open checkpoint: keep records up to the marker, drop the exploratory
-    // region, and note the boundary honestly so the model knows there is a
-    // hidden region (it can ask the user to restore nothing — files are
-    // untouched; and a `/rewind` user command restores files separately).
-    let mut out: Vec<Record> = records[..marker_index + 1].to_vec();
-    let hidden = records.len().saturating_sub(marker_index + 1);
-    out.push(Record::System(format!(
-        "Context rewound to checkpoint `{label}`: {hidden} later records hidden \u{7c} files unchanged \u{7c} report what should be kept, or ask the user for /rewind to restore files"
-    )));
-    let _ = log_len;
-    out
+    records
 }
 
 /// Sortable session id: base-36 millis, process ID, and a per-process counter.
@@ -2070,6 +2064,102 @@ mod tests {
             std::env::temp_dir().join(format!("glass-session-{}-{tag}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn context_edits_fail_honestly_when_session_is_readonly() {
+        let dir = tmpdir("context-write-error");
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("original task".into()));
+        let id = session.id.clone();
+        drop(session);
+        for (command, args) in [("forget", "1"), ("unforget", "1"), ("rewrite", "1 replacement")] {
+            let mut readonly = Session::open_readonly(&dir, &id).unwrap();
+            let before = readonly.messages();
+            assert!(readonly.context_command(command, args).unwrap_err().contains("not saved"));
+            assert_eq!(format!("{:?}", readonly.messages()), format!("{before:?}"));
+            assert!(!readonly.history_records().iter().any(|r| matches!(r, Record::ContextEdit { .. })));
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn checkpoints_keep_live_exploration_and_rewind_only_when_closed() {
+        let records = vec![
+            Record::User("goal".into()),
+            Record::Checkpoint { label:"a".into(), log_len:1, rewind_summary:None },
+            Record::Assistant("exploration".into()),
+        ];
+        let (open, _) = apply_projection(records.clone());
+        assert!(open.iter().any(|r| matches!(r, Record::Assistant(t) if t == "exploration")));
+        let mut raw = records;
+        raw.push(Record::Checkpoint { label:"a".into(), log_len:3, rewind_summary:Some("kept finding".into()) });
+        raw.push(Record::User("follow-up".into()));
+        let (closed, _) = apply_projection(raw);
+        let messages = crate::compact::project(&closed);
+        let text = format!("{messages:?}");
+        assert!(!text.contains("exploration"));
+        assert!(text.contains("kept finding"));
+        assert!(text.contains("follow-up"));
+        assert_eq!(closed.len(), 5, "raw coordinates must survive projection");
+        assert_eq!(apply_checkpoint_projection(closed.clone()), closed);
+    }
+
+    #[test]
+    fn rewind_keeps_human_followups_outside_exploration_mask() {
+        let records = vec![
+            Record::User("goal".into()),
+            Record::Checkpoint { label:"a".into(), log_len:1, rewind_summary:None },
+            Record::Assistant("exploration".into()),
+            Record::User("follow-up: keep the API unchanged".into()),
+            Record::Checkpoint { label:"a".into(), log_len:4, rewind_summary:Some("finding".into()) },
+        ];
+        let (projected, _) = apply_projection(records);
+        let text = format!("{:?}", crate::compact::project(&projected));
+        assert!(text.contains("keep the API unchanged"));
+        assert!(!text.contains("exploration"));
+    }
+
+    #[test]
+    fn rewind_preserves_pending_sibling_calls_and_their_results() {
+        let records = vec![
+            Record::Checkpoint { label:"a".into(), log_len:0, rewind_summary:None },
+            Record::ToolCall { id:"old".into(), name:"bash".into(), arguments:"{}".into() },
+            Record::ToolResult { call_id:"old".into(), name:"bash".into(), body:"exploration".into() },
+            Record::ToolCall { id:"rew".into(), name:"rewind".into(), arguments:"{}".into() },
+            Record::ToolCall { id:"next".into(), name:"read".into(), arguments:"{}".into() },
+            Record::Checkpoint { label:"a".into(), log_len:5, rewind_summary:Some("finding".into()) },
+            Record::ToolResult { call_id:"rew".into(), name:"rewind".into(), body:"done".into() },
+            Record::ToolResult { call_id:"next".into(), name:"read".into(), body:"contents".into() },
+        ];
+        let projected = apply_checkpoint_projection(records);
+        for id in ["rew", "next"] {
+            assert!(projected.iter().any(|r| matches!(r, Record::ToolCall { id: call, .. } if call == id)));
+            assert!(projected.iter().any(|r| matches!(r, Record::ToolResult { call_id, .. } if call_id == id)));
+        }
+        let messages = crate::compact::project(&projected);
+        let first_call = messages.iter().position(|m| matches!(m, Message::ToolCall { .. })).unwrap();
+        assert!(messages[..first_call].iter().any(|m| matches!(m, Message::System(t) if t.contains("retained report"))));
+        assert!(!messages[first_call..].iter().any(|m| matches!(m, Message::System(_))));
+        assert!(!projected.iter().any(|r| matches!(r, Record::ToolCall { id, .. } if id == "old")));
+    }
+
+    #[test]
+    fn compaction_during_open_checkpoint_survives_resume() {
+        let dir = tmpdir("checkpoint-compaction");
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("goal".into()));
+        session.append(Record::Checkpoint { label:"open".into(), log_len:1, rewind_summary:None });
+        session.append(Record::Assistant("investigation".into()));
+        session.append(Record::User("latest task".into()));
+        session.append(Record::Compacted { kept:2, dropped:2, summary:Some("saved summary".into()), tail_start:2, system:None });
+        let id = session.id.clone();
+        drop(session);
+        let resumed = Session::open(&dir, &id).unwrap();
+        let text = format!("{:?}", resumed.messages());
+        assert!(text.contains("saved summary") && text.contains("latest task"), "{text}");
+        drop(resumed);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

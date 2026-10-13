@@ -34,7 +34,7 @@ const MAX_GATE_SCAN: usize = 256;
 /// Whether a session has a checkpoint to rewind that is not already
 /// closed by that very record. Used to give a precise refusal message.
 fn find_checkpoint_label(session: &Session) -> Option<String> {
-    for r in session.records.iter().rev() {
+    for r in session.history_records().iter().rev() {
         if let Record::Checkpoint {
             label,
             rewind_summary: None,
@@ -120,19 +120,15 @@ pub fn rewind(call: &ToolCall, session: &mut Session) -> Outcome {
             }
         })
         .unwrap_or_else(|| "The model rewound a checkpoint without a report; the exploration is hidden from context and everything behind it stays on disk and in history.".to_string());
-    session
-        .append_checked(&[Record::Checkpoint {
-            label,
-            log_len: session.log_len(),
-            rewind_summary: Some(report),
-        }])
-        .err()
-        .map_or_else(
-            || Outcome::ok(
-                "Rewound. The exploration after the checkpoint is hidden from your context; the retained report above is what survives. Files and raw history are unchanged.".to_string(),
-            ),
-            |e| Outcome::err(format!("error: rewind could not be recorded; context unchanged: {e}")),
-        )
+    if let Err(e) = session.append_checked(&[Record::Checkpoint {
+        label,
+        log_len: session.log_len(),
+        rewind_summary: Some(report),
+    }]) {
+        return Outcome::err(format!("error: rewind could not be recorded; context unchanged: {e}"));
+    }
+    session.reproject_history();
+    Outcome::ok("Rewound. The exploration after the checkpoint is hidden from your context; the retained report above is what survives. Files and raw history are unchanged.".to_string())
 }
 
 /// Dispatch for the three wave-C tools by name; shared by the tool schema
@@ -332,8 +328,31 @@ mod tests {
             !text.contains("messy exploration notes"),
             "exploration must be hidden: {text}"
         );
+        assert!(!format!("{messages:?}").contains("messy exploration notes"));
         // ...but the raw log keeps it (transcript and exports are honest).
-        assert!(s.records.iter().any(|r| matches!(r, Record::Assistant(t) if t.contains("messy exploration notes"))));
+        assert!(s.history_records().iter().any(|r| matches!(r, Record::Assistant(t) if t.contains("messy exploration notes"))));
+    }
+
+    #[test]
+    fn rewind_after_real_compaction_drops_exploration_summary_and_resumes() {
+        let mut session = fresh_session();
+        session.append(Record::User("original goal".into()));
+        checkpoint(&call("checkpoint", r#"{"label":"before"}"#), &mut session);
+        for _ in 0..30 { session.append(Record::Assistant("EXPLORATION_SECRET".into())); }
+        crate::compact::fallback(&mut session, &crate::tools::State::new(), "test").unwrap();
+        assert!(format!("{:?}", session.messages()).contains("EXPLORATION_SECRET"));
+        session.append(Record::ToolCall { id:"rewind-call".into(), name:"rewind".into(), arguments:r#"{"report":"use retained finding"}"#.into() });
+        let outcome = rewind(&call("rewind", r#"{"report":"use retained finding"}"#), &mut session);
+        assert!(!outcome.body.starts_with("error:"), "{}", outcome.body);
+        session.append(Record::ToolResult { name:"rewind".into(), call_id:"rewind-call".into(), body:outcome.body });
+        let text = format!("{:?}", session.messages());
+        assert!(!text.contains("EXPLORATION_SECRET"), "{text}");
+        assert!(text.contains("retained finding") && text.contains("rewind-call"));
+        let path = session.path.clone();
+        let id = session.id.clone();
+        drop(session);
+        let resumed = Session::open(path.parent().unwrap(), &id).unwrap();
+        assert_eq!(format!("{:?}", resumed.messages()), text);
     }
 
     #[test]

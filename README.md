@@ -1365,6 +1365,17 @@ as `[verify exit N]` and the first success after a failure reports
 guess about how to test a project is worse than silence, so anything beyond
 the two detected cases is opt-in.
 
+## Conversations
+
+`/sessions`, `/branches` and `gc resume --browse` share a metadata-first chooser.
+Lists contain 64 rows per page, with older pages, all-project scope and an explicit
+search across every indexed title, ID and project. Selecting a conversation opens
+its bounded preview, model/status, lineage and unread recorded-event count.
+Use `r` to resume, `p` for the shared transcript reader, `n` to rename, `f` to fork,
+`s` to save an inbox follow-up and `d` to delete with confirmation. Previewing is
+read-only and does not change the unread cursor. Active writers cannot be deleted.
+`gc resume` keeps direct selection; `--browse` opens details before resuming.
+
 ## Native reviewed knowledge and Work
 
 `/neuralnets` (also `/memory`) combines reviewed project facts and proposed learning.

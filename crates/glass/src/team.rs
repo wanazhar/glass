@@ -685,12 +685,11 @@ impl Hub {
                 &mut registry,
                 &info.workspace,
             )
-            .with_prompt({
+            .with_task_context({
                 let mut prompt = crate::subagent::compose_prompt(&task);
                 if let Some(schema) = &info.result_schema { prompt.push_str(&format!("\nFinal deliverable contract: return only JSON satisfying this schema. Preserve incomplete work in the transcript if you cannot complete it; do not invent findings.\n{schema}")); }
                 prompt
-            }, None, None)
-            .with_plan_mode(info.read_only)
+            }, info.read_only)
             .with_stream_factory(Arc::clone(&stream_factory))
             .with_limits(turn_info.output_limit, turn_info.reasoning_limit, turn_info.round_limit)
             .with_progress(|p| {

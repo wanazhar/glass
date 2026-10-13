@@ -6,8 +6,8 @@
 //! the per-task runner (fresh provider, fresh session, fresh context), and
 //! optional git-worktree isolation.
 //!
-//! Delegation is deliberately coarse. A task gets `bash` and `state` and
-//! nothing else, because anything else would be the parent conversation
+//! Delegation is deliberately coarse. A writing task gets native file tools, `bash` and `state`,
+//! while a read-only task gets inspection tools, because anything else would be the parent conversation
 //! leaking into a context that is supposed to be isolated.
 
 use std::path::{Path, PathBuf};
@@ -106,12 +106,7 @@ pub fn run_task(
             &mut registry,
             &run_workspace,
         )
-        .with_prompt(base, None, None);
-        if task.read_only {
-            // The inspection tools only: a second-opinion review can look at
-            // everything and change nothing.
-            agent = agent.with_plan_mode(true);
-        }
+        .with_task_context(base, task.read_only);
         match agent.run_turn(|_| {}) {
             Ok((out, _)) => Ok(format!("{}{note}", out.text)),
             Err(e) => Err(e.to_string()),
@@ -136,7 +131,7 @@ pub fn compose_prompt(task: &SubagentTask) -> String {
     let tools = if task.read_only {
         "the read-only inspection tools (list, read, search). You cannot modify anything"
     } else {
-        "bash and state"
+        "read, edit, write, bash and state; prefer bounded native file operations with revision guards"
     };
     if let Some(body) = task
         .prompt

@@ -661,9 +661,11 @@ fn code_review(
     /// degrade, and the cap keeps the delegated prompt bounded.
     const DIFF_CAP: usize = 96 * 1024;
     let diff = if diff.len() > DIFF_CAP {
+        let mut end = DIFF_CAP;
+        while !diff.is_char_boundary(end) { end -= 1; }
         format!(
             "{}…\n[diff truncated at {DIFF_CAP} bytes]",
-            &diff[..DIFF_CAP]
+            &diff[..end]
         )
     } else {
         diff.to_string()
@@ -682,12 +684,9 @@ fn code_review(
     let reports = crate::subagent::run_batch(&[task], 1, |t| {
         crate::subagent::run_task(t, workspace, scratch, &make, parent_prompt.as_deref())
     });
-    reports
-        .first()
-        .cloned()
-        .map(|report| report.trim().to_string())
-        .filter(|report| !report.is_empty())
-        .ok_or_else(|| "the reviewer produced no report".into())
+    let report = reports.first().map(|report| report.trim()).filter(|report| !report.is_empty()).ok_or("the reviewer produced no report")?;
+    if let Some(error) = report.strip_prefix("subagent failed: ") { return Err(error.into()); }
+    Ok(report.to_owned())
 }
 
 /// The first user message of a session, for `glass-core list`.

@@ -300,12 +300,8 @@ Implemented in this change:
 - Markdown modal and rich item inspection share one cached native renderer.
 - Session browser indexes metadata before loading only the selected transcript.
 
-Still pending, and not claimed complete:
-- Fully shared conversation chooser/controller with resume and branch navigation.
-- Lifecycle behavioral audit before sharing setup paths.
-
-These require behavior and migration parity checks; moving launchers alone does
-not complete those implementation consolidations.
+The remaining chooser and lifecycle work was completed in the final checkpoint
+below; the earlier checkpoints retain their original verification evidence.
 
 ### Verification of this checkpoint
 
@@ -330,8 +326,7 @@ wire bytes. General tasks and teammates appear in Work, while Attention stays
 focused. Interrupted tool cards use canonical turn/compaction pairing.
 
 One Luna medium reviewer checked implementation and fixes. Final release evidence
-is recorded below after verification. Conversation chooser and lifecycle audit
-remain explicitly pending above.
+is recorded below after verification. Conversation chooser and lifecycle audit were completed in the final checkpoint below.
 
 #### Continuation verification
 
@@ -345,3 +340,66 @@ remain explicitly pending above.
   visibility 0.090 ms, redraw 0.311 ms, 12,000-record reader frame 126.08 ms.
   Local measurements only; report `/tmp/gc-consolidation2-performance.json`.
 - No PATH installation, service interruption or remote publication performed.
+
+### Final checkpoint: conversations and execution lifecycle
+
+- Resume, sessions and branch alternatives now share `navigation::choose` over
+  the metadata-first index. Direct resume retains its one-selection contract;
+  `--browse`, `/sessions` and `/branches` open the selected preview directly.
+- Lists page at 64 rows, disclose page search, and offer explicit catalogue-wide
+  title/ID/project search, older pages and all-project visibility. Branch families
+  use graph traversal with cycle protection. Directory metadata still requires
+  a scan; transcript bodies are never enumerated to build the list.
+- Selected detail shows bounded chat preview, status/model, lineage and unread
+  **recorded events**. Full preview uses the shared reader and remains read-only;
+  preview does not mark an entire conversation read. Resume/fork/rename/send/delete
+  are explicit actions. In-app cross-project resume/fork tells the user to switch
+  workspace; CLI resume may switch it explicitly as before.
+- Delete requires confirmation and the session writer lock; the current or another
+  actively written conversation cannot be removed. Rename/fork validate metadata
+  instead of silently replacing corrupt metadata with defaults. Metadata index
+  reads are bounded to 64 KiB and reject symlinks/nonregular files.
+- Execution lifecycle source audit: `execution-lifecycle-audit.md`. Shared task
+  prompt/read-only setup replaces the matching delegate/teammate builder sequence.
+  Provider/meter/cancellation/persistence ownership remains explicit. Code review
+  now propagates delegate failure and truncates Unicode diffs safely on Rust 1.88.
+
+UI contract:
+
+```text
+Conversations           Current project · page N/M
+  title · ID · unread events · current marker
+  Search all indexed conversations…
+  All projects / Current project only
+  Next page / Previous page
+         ↓ selected item
+Conversation
+  title / project / model / status / lineage / unread events
+  bounded recent preview (native Markdown)
+  r resume · p reader · n rename · f fork · s send · d delete
+```
+
+At 20x8, the existing searchable modal scrolls the list and the selected detail
+uses compact action keys; content and controls remain keyboard accessible.
+No consolidation items remain pending in this audit.
+
+#### Final checkpoint verification
+
+- One GPT-6-Luna medium reviewer; Rust 1.88 compatibility finding corrected,
+  final fixes reviewed with no further findings.
+- 850 workspace tests passed; one intentionally ignored doctest. Strict Clippy
+  passed on final source and the optimized release build completed.
+- Actual `target/release/glass-core` passed conversation chooser PTYs at 80x30,
+  40x24 and 20x8: older-page/global search, branch navigation, read-only previews,
+  rename/fork/resume/delete and refusal to delete another active writer.
+- CLI/help/resume suite passed at 80x30, 40x24 and 20x8, including headless guidance,
+  cancellation, empty projects and exact selected-thread continuation.
+- Consolidation, live-reader (five sizes), reader/search/jobs/diff suites passed.
+  Persistent-agent wire/headless/PTY suite passed, including 20x8, interruption,
+  follow-ups, restart, privacy, reported and unknown accounting.
+- Unicode diff / failed-provider code review PTY passed: read-only tools, bounded
+  valid Unicode request and no failed review saved as successful findings.
+- Offline performance gate passed: worst median prompt startup 6.70 ms, key
+  visibility 0.952 ms, redraw 0.361 ms, 12,000-record reader frame 123.83 ms.
+  Local measurements only; `/tmp/gc-final-consolidation-performance.json`.
+- No PATH installation or remote publication performed.

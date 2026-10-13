@@ -6,6 +6,8 @@
 
 mod anthropic;
 mod chain;
+mod cancellable;
+pub(crate) use cancellable::scoped as with_request_cancel;
 mod openai;
 
 pub use anthropic::Anthropic;
@@ -196,11 +198,10 @@ pub fn read_lossy(mut r: impl Read) -> io::Result<String> {
 /// Build an HTTP agent with sane timeouts and no automatic error statuses,
 /// so callers can read the body of a 429 or 500 for the error message.
 pub fn http_agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
+    cancellable::agent(ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(600)))
         .http_status_as_error(false)
-        .build()
-        .new_agent()
+        .build())
 }
 
 /// Stream one turn, retrying eligible HTTP status responses.

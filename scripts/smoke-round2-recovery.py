@@ -31,6 +31,12 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data); return
         if mode == 'reasoning' and number == 1:
             delta = {'reasoning_content': 'Provider summary without an answer.'}
+        elif mode == 'cwd' and number <= 3:
+            if number == 2:
+                assert 'refused:' in body['messages'][-1]['content'], body['messages'][-1]
+                assert (state.workspace / 'sub/file.txt').read_text() == 'OLD'
+            command = 'cat file.txt' if number == 2 else ('printf BAD > file.txt' if number == 1 else 'printf NEW > file.txt')
+            delta = {'tool_calls': [{'index': 0, 'id': f'cwd-{number}', 'function': {'name': 'bash', 'arguments': json.dumps({'command': command, 'cwd':'sub'})}}]}
         elif mode == 'read' and number <= 2:
             command = 'head -n 5 a.rs' if number == 1 else 'printf NEW > a.rs'
             delta = {'tool_calls': [{'index': 0, 'id': f'call-{number}', 'function': {'name': 'bash', 'arguments': json.dumps({'command': command})}}]}
@@ -43,7 +49,7 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
 
 with tempfile.TemporaryDirectory(prefix='gc-round2-wire-') as tmp:
     root = Path(tmp); cfg = root / 'config/glass-core'; cfg.mkdir(parents=True)
-    server = Server(('127.0.0.1', 0), Endpoint); server.mode = 'reasoning'; server.requests = []
+    server = Server(('127.0.0.1', 0), Endpoint); server.mode = 'reasoning'; server.requests = []; server.workspace = root
     threading.Thread(target=server.serve_forever, daemon=True).start()
     env = dict(os.environ, XDG_CONFIG_HOME=str(root / 'config'), XDG_DATA_HOME=str(root / 'data'))
     def configure(fallback=()):
@@ -60,10 +66,13 @@ with tempfile.TemporaryDirectory(prefix='gc-round2-wire-') as tmp:
                 print(f'PASS {size}: async reasoning recovery sends the reduced budget')
             finally:
                 tty.close()
-        for mode, expected in [('drop', 1), ('fallback-drop', 2), ('http', 2), ('read', 3), ('priced', 2)]:
+        for mode, expected in [('drop', 1), ('fallback-drop', 2), ('http', 2), ('read', 3), ('priced', 2), ('cwd', 4)]:
             configure(['gpt-5-backup', 'gpt-5-third'] if mode in ['drop', 'fallback-drop', 'priced'] else [])
             server.mode = mode; server.requests = []
             if mode == 'read': (root / 'a.rs').write_text('OLD\n')
+            if mode == 'cwd':
+                (root / 'sub').mkdir()
+                (root / 'sub/file.txt').write_text('OLD')
             result = subprocess.run([str(BIN), 'run', '--json', 'finish task'], cwd=root, env=env, capture_output=True, text=True, timeout=20)
             if mode in ['drop', 'fallback-drop']:
                 assert result.returncode != 0, (result.stdout, result.stderr)
@@ -72,6 +81,7 @@ with tempfile.TemporaryDirectory(prefix='gc-round2-wire-') as tmp:
                 assert result.returncode == 0 and f'R2-{mode.upper()}-DONE' in result.stdout, (result.stdout, result.stderr)
                 assert len(server.requests) == expected
             if mode == 'read': assert (root / 'a.rs').read_text() == 'NEW', result.stdout
+            if mode == 'cwd': assert (root / 'sub/file.txt').read_text() == 'NEW'
             if mode == 'priced':
                 rows = [json.loads(line) for file in (root / 'data').rglob('*.requests.jsonl') for line in file.read_text().splitlines()]
                 assert any(row.get('model_served') == 'gpt-5-backup' and abs(row.get('cost_usd', 0) - 0.00012) < 1e-10 for row in rows), rows

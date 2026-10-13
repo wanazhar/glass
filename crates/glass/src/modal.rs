@@ -382,7 +382,10 @@ pub fn choose_search(
         let compact = h < 14 || w < 56;
         let framed = w >= 24 && h >= 12;
         let overhead = if compact { 3 } else { 8 } + if framed { 4 } else { 0 };
-        let visible = usize::from(h).saturating_sub(overhead).max(1);
+        let preview_rows = if !compact { 3 } else { 0 };
+        let visible = usize::from(h)
+            .saturating_sub(overhead + preview_rows)
+            .max(1);
         let start = selected.saturating_sub(visible - 1);
         let mut lines = if compact {
             vec![format!("Find: {}", query.text())]
@@ -405,13 +408,22 @@ pub fn choose_search(
             lines.push("No matches. Change your search.".into());
         }
         if !compact {
-            lines.push(format!("{} choices", matches.len()));
+            if let Some((index, item)) = matches.get(selected) {
+                let width = usize::from(w.saturating_sub(6)).clamp(1, 100);
+                let detail = searchable.get(*index).unwrap_or(item);
+                lines.extend(
+                    glass_tui::text::wrap_words(&glass_tui::markdown::sanitize(detail), width)
+                        .into_iter()
+                        .take(preview_rows),
+                );
+            }
+            lines.push(format!("{} choices · F1/→ full text", matches.len()));
         }
         screen.draw(
             title,
             &lines,
             if compact {
-                "↵ · Esc back · F1"
+                "↵ · Esc · → details"
             } else {
                 "↑↓ select · Enter choose · Esc back · F1 details"
             },
@@ -425,9 +437,13 @@ pub fn choose_search(
                 }
                 KeyCode::Down if !matches.is_empty() => selected = (selected + 1) % matches.len(),
                 KeyCode::F(1) | KeyCode::Right => {
-                    if let Some((_, item)) = matches.get(selected) {
+                    if let Some((index, item)) = matches.get(selected) {
                         drop(screen);
-                        info(keys, "Selection details", item);
+                        info(
+                            keys,
+                            "Selection details",
+                            searchable.get(*index).unwrap_or(item),
+                        );
                         screen = Screen::new();
                     }
                 }
@@ -549,6 +565,9 @@ pub fn validated_field(
 pub fn info(keys: &KeyReader, title: &str, text: &str) {
     let screen = Screen::new();
     let mut offset = 0usize;
+    let clean = glass_tui::markdown::sanitize(text);
+    let mut layout_width = 0;
+    let mut lines = Vec::new();
     loop {
         let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
         let framed = w >= 24 && h >= 12;
@@ -561,7 +580,10 @@ pub fn info(keys: &KeyReader, title: &str, text: &str) {
         let page = capacity
             .saturating_sub(2 + usize::from(capacity > 10))
             .max(1);
-        let lines = glass_tui::text::wrap_words(&glass_tui::markdown::sanitize(text), width);
+        if layout_width != width {
+            lines = glass_tui::text::wrap_words(&clean, width);
+            layout_width = width;
+        }
         offset = offset.min(lines.len().saturating_sub(page));
         screen.draw(
             title,

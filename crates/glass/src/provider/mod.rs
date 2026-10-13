@@ -9,6 +9,8 @@ mod chain;
 mod cancellable;
 pub(crate) use cancellable::scoped as with_request_cancel;
 mod openai;
+mod pacing;
+pub(crate) use pacing::with_notice as with_pacing_notice;
 
 pub use anthropic::Anthropic;
 pub use chain::Chain;

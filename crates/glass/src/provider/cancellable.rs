@@ -32,6 +32,14 @@ pub(crate) fn scoped<T>(cancel: Arc<AtomicBool>, f: impl FnOnce() -> T) -> T {
     f()
 }
 
+pub(super) fn is_cancelled() -> bool {
+    CANCEL.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    })
+}
+
 pub(super) fn agent(config: ureq::config::Config) -> ureq::Agent {
     match CANCEL.with(|slot| slot.borrow().clone()) {
         Some(cancel) => ureq::Agent::with_parts(
@@ -156,8 +164,8 @@ mod tests {
                 ready_tx.send(()).unwrap();
                 if cancel_request {
                     match socket.read(&mut request) {
-                        Ok(0) => {},
-                        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {},
+                        Ok(0) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
                         result => panic!("cancelled socket must close: {result:?}"),
                     }
                 } else {

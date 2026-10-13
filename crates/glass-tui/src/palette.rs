@@ -41,6 +41,17 @@ impl Palette {
             owns_screen: false,
         }
     }
+    pub fn selected_details(&self, query: &str) -> Option<String> {
+        let matches = self.matches(query);
+        let command = matches.get(self.selected.min(matches.len().saturating_sub(1)))?;
+        Some(format!(
+            "/{} {}\n\n{}\n\nAliases: {}",
+            command.name,
+            command.hint,
+            command.description,
+            command.aliases.join(", ")
+        ))
+    }
     pub fn take_draft(&mut self) -> Option<String> {
         self.dispatched_draft.take()
     }
@@ -289,9 +300,9 @@ impl Palette {
                 width
             }) < 50
             {
-                "↑↓ ↵ · Esc close"
+                "F1 · Esc close"
             } else {
-                "↑↓ select · Enter choose · Tab complete · Esc close"
+                "↑↓ select · Enter choose · F1 details · Esc close"
             }
             .into(),
         );

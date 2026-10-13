@@ -600,7 +600,8 @@ impl<'a> Agent<'a> {
             let max_tokens = self.max_tokens;
             let reasoning = req.reasoning;
             std::thread::spawn(move || {
-                let result = provider::with_request_cancel(worker_cancel.clone(), || -> Result<(), String> {
+                let notice_tx = tx.clone();
+                let result = provider::with_pacing_notice(move |notice| { let _ = notice_tx.send(StreamUpdate::Event(Event::Warning(notice))); }, || provider::with_request_cancel(worker_cancel.clone(), || -> Result<(), String> {
                     let provider = factory()?;
                     let req = Request {
                         model: &model,
@@ -666,7 +667,7 @@ impl<'a> Agent<'a> {
                         let _ = tx.send(StreamUpdate::Event(Event::Done));
                     }
                     Ok(())
-                });
+                }));
                 if let Err(e) = result {
                     let _ = tx.send(StreamUpdate::Event(Event::Error(e)));
                 }

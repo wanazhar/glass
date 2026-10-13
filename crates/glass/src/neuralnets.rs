@@ -383,7 +383,7 @@ pub fn view(keys: &crate::input::KeyReader, root: &Path) {
                     "{} · {} · {}",
                     e["status"].as_str().unwrap_or(""),
                     e["kind"].as_str().unwrap_or(""),
-                    glass_tui::text::clip(e["text"].as_str().unwrap_or(""), 100)
+                    e["text"].as_str().unwrap_or("")
                 )
             })
             .collect::<Vec<_>>();

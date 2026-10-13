@@ -56,6 +56,7 @@ MAX_STDIO_MESSAGE = 8 * 1024 * 1024
 # Agent Plugins 1.0 schema identifiers (agent-plugins.org).
 PLUGIN_MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
 MAX_PLUGIN_LOCK_BYTES = 1024 * 1024
+MAX_CONFIG_BYTES = 1024 * 1024
 
 
 def plugin_content_hash(root):
@@ -174,7 +175,10 @@ def load_servers():
     servers = {}
     try:
         with open(config_path(), "r", encoding="utf-8") as fh:
-            data = json.load(fh)
+            encoded = fh.read(MAX_CONFIG_BYTES + 1)
+            if len(encoded.encode("utf-8")) > MAX_CONFIG_BYTES:
+                raise ValueError("MCP config exceeds 1 MiB limit")
+            data = json.loads(encoded)
         configured = data.get("servers") if isinstance(data, dict) else None
         if isinstance(configured, dict):
             servers.update(configured)
@@ -228,7 +232,10 @@ def plugin_servers():
             continue
         try:
             with open(mcp, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
+                encoded = fh.read(MAX_CONFIG_BYTES + 1)
+                if len(encoded.encode("utf-8")) > MAX_CONFIG_BYTES:
+                    raise ValueError("MCP config exceeds 1 MiB limit")
+                data = json.loads(encoded)
         except (OSError, ValueError) as error:
             print(f"mcp-bridge: plugin {name}: mcp.json unreadable: {error}", file=sys.stderr)
             continue

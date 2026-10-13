@@ -40,13 +40,27 @@ pub fn load_dir(dir: &Path) -> Vec<Skill> {
         .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
         .filter_map(|e| {
             let path = e.path();
-            let text = std::fs::read_to_string(&path).ok()?;
-            parse(&text, path).ok()
+            load_metadata(path).ok()
         })
         .collect();
 
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// Discovery reads only a bounded prefix; skill bodies are loaded on demand.
+/// Front matter must finish within 64 KiB. Large bodies do not affect discovery.
+pub(crate) fn load_metadata(path: PathBuf) -> Result<Skill, String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK)
+        .open(&path).map_err(|e| e.to_string())?;
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("skill must be a regular file".into());
+    }
+    let mut prefix = Vec::new();
+    file.take(64 * 1024).read_to_end(&mut prefix).map_err(|e| e.to_string())?;
+    parse(&String::from_utf8_lossy(&prefix), path)
 }
 
 /// Parse one skill file. The name falls back to the file stem.
@@ -135,6 +149,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn metadata_discovery_bounds_body_reads_and_rejects_unclosed_headers() {
+        let dir = scratch("large-body");
+        let path = dir.join("large.md");
+        let mut file = std::fs::File::create(&path).unwrap();
+        use std::io::Write;
+        file.write_all(b"---\nname: bounded\ndescription: large body\n---\n").unwrap();
+        file.set_len(64 * 1024 * 1024).unwrap();
+        let skill = load_metadata(path.clone()).unwrap();
+        assert_eq!(skill.name, "bounded");
+        assert_eq!(load_dir(&dir).len(), 1);
+        std::fs::write(&path, format!("---\n{}", "x".repeat(70_000))).unwrap();
+        assert!(load_metadata(path).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

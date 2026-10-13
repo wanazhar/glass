@@ -96,10 +96,35 @@ test('native preview fences cannot be closed by source and diagnostic rows stay 
 
 test('cleanup still runs when sending the failure reply also fails', async () => {
   const input = new PassThrough(); let disposed = 0;
+  const output = new PassThrough(); output.write = () => { throw new Error('broken output'); };
   const running = runExtension({ name: 'broken-output', version: '1', dispose() { disposed++; } }, {
-    input, output: { write() { throw new Error('broken output'); } }, errors: { write() { return true; } },
+    input, output, errors: { write() { return true; } },
   });
   input.write('{"id":1,"type":"hello","protocol":1}\n');
   await assert.rejects(running, /broken output/);
   assert.equal(disposed, 1);
+});
+
+test('closing a backpressured output aborts the transport and cleans listeners', async () => {
+  const input = new PassThrough(), output = new PassThrough({ highWaterMark: 1 });
+  let disposed = 0;
+  const running = runExtension({ name: 'closed-output', version: '1', dispose() { disposed++; } }, { input, output });
+  const rejected = assert.rejects(running, /output closed|aborted/i);
+  input.write('{"id":1,"type":"hello","protocol":1}\n');
+  await new Promise(resolve => setImmediate(resolve));
+  output.destroy();
+  await rejected;
+  assert.equal(disposed, 1);
+  assert.equal(output.listenerCount('close'), 0);
+  assert.equal(output.listenerCount('drain'), 0);
+});
+test('output stream errors stop the transport even without backpressure', async () => {
+  const input = new PassThrough(), output = new PassThrough();
+  let disposed = 0;
+  const running = runExtension({ name: 'failed-output', version: '1', dispose() { disposed++; } }, { input, output });
+  const rejected = assert.rejects(running, /broken pipe/);
+  output.destroy(new Error('broken pipe'));
+  await rejected;
+  assert.equal(disposed, 1);
+  assert.equal(output.listenerCount('error'), 0);
 });

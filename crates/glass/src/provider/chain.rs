@@ -5,11 +5,9 @@
 //! chain tries the primary, then each configured fallback in order, and the
 //! first provider whose *setup* succeeds serves the request.
 //!
-//! The safety rule is the same one `stream_with_retry` relies on: fall
-//! through only when the failed attempt produced no events, which is exactly
-//! what `Provider::stream` returning `Err` means. An HTTP 401 or 403 is
-//! never routed around — that is a credential problem, and the next model
-//! would fail the same way.
+//! Fallback is limited to explicit HTTP responses. Transport errors may occur
+//! after a billable request was accepted and are never replayed automatically.
+//! HTTP 401/403 and configuration failures stop the chain at any level.
 //!
 //! The serving fallback is visible: the stream opens with a `Warning` naming
 //! it, because a silently swapped model is a debugging trap when outputs and
@@ -43,7 +41,7 @@ impl Chain {
 
     /// Whether a failed attempt may be routed around.
     fn worth_falling_back(e: &Error) -> bool {
-        !matches!(e, Error::Status(401 | 403, _) | Error::Config(_))
+        !matches!(e, Error::Status(401 | 403, _) | Error::Config(_) | Error::Transport(_))
     }
 
     /// Start fresh: the primary is probed again. The live harness rebuilds
@@ -110,7 +108,7 @@ impl Provider for Chain {
                     return Ok(Box::new(std::iter::once(warning).chain(stream)));
                 }
                 Err(e) => {
-                    if index == 0 && !Self::worth_falling_back(&e) {
+                    if !Self::worth_falling_back(&e) {
                         return Err(e);
                     }
                     if first_error.is_none() {
@@ -313,17 +311,45 @@ mod tests {
         let chain = Chain::new(
             "primary".into(),
             vec![
-                Box::new(Stub::failing("primary", || Error::Transport("t".into()))),
-                Box::new(Stub::failing("backup", || Error::Status(403, "nope".into()))),
+                Box::new(Stub::failing("primary", || Error::Status(503, "overloaded".into()))),
+                Box::new(Stub::failing("backup", || Error::Status(502, "upstream".into()))),
             ],
         );
         let err = events(&chain).unwrap_err().to_string();
-        assert!(err.contains("transport"), "{err}");
+        assert!(err.contains("503"), "{err}");
+    }
+
+    #[test]
+    fn ambiguous_transport_failure_stops_primary_and_later_fallbacks() {
+        for failed_level in [0, 1] {
+            let primary = if failed_level == 0 { Stub::failing("primary", || Error::Transport("POST accepted".into())) }
+                else { Stub::failing("primary", || Error::Status(429,"busy".into())) };
+            let backup = if failed_level == 1 { Stub::failing("backup", || Error::Transport("POST accepted".into())) }
+                else { Stub::ok("backup", "must not run") };
+            let backup_handle = backup.handle();
+            let third = Stub::ok("third", "must not run");
+            let third_handle = third.handle();
+            let chain = Chain::new("primary".into(), vec![Box::new(primary),Box::new(backup),Box::new(third)]);
+            assert!(matches!(events(&chain), Err(Error::Transport(_))));
+            assert_eq!(backup_handle.calls(), usize::from(failed_level == 1));
+            assert_eq!(third_handle.calls(), 0);
+        }
+    }
+
+    #[test]
+    fn fallback_authentication_errors_cannot_route_to_another_model() {
+        let primary = Stub::failing("primary", || Error::Status(429, "busy".into()));
+        let backup = Stub::failing("backup", || Error::Status(403, "denied".into()));
+        let third = Stub::ok("third", "must not run");
+        let handle = third.handle();
+        let chain = Chain::new("primary".into(), vec![Box::new(primary),Box::new(backup),Box::new(third)]);
+        assert!(matches!(events(&chain), Err(Error::Status(403,_))));
+        assert_eq!(handle.calls(), 0);
     }
 
     #[test]
     fn sticky_routing_skips_a_known_bad_primary_within_a_chain() {
-        let primary = Stub::failing("primary", || Error::Transport("t".into()));
+        let primary = Stub::failing("primary", || Error::Status(503, "overloaded".into()));
         let h = primary.handle().clone();
         let backup = Stub::ok("backup", "b");
         let bh = backup.handle().clone();
@@ -350,7 +376,7 @@ mod tests {
         let chain = Chain::new(
             "primary".into(),
             vec![
-                Box::new(Stub::failing("primary", || Error::Transport("t".into()))),
+                Box::new(Stub::failing("primary", || Error::Status(503, "overloaded".into()))),
                 Box::new(Stub::ok("backup", "b")),
             ],
         );

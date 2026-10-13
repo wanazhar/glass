@@ -67,6 +67,9 @@ turn completion, and slash commands. Nested `call_tool` requests invoke host too
 under their applicable policy. `extensions/hello.py` is the protocol example;
 `crates/glass/src/ext/protocol.rs` defines the host messages.
 
+Each reply must echo the request’s unsigned integer `id`. Missing or malformed
+IDs fail the exchange; late replies cannot stand in for a current request.
+
 Every exchange has a timeout and byte limit. Startup failures remain visible as
 warnings. If an extension must authorize calls, declare `authorization_required:
 true`; missing or invalid replies then block the call. An optional legacy hook

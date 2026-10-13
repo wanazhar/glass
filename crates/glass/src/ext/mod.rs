@@ -718,6 +718,23 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn extension_replies_require_unsigned_correlated_request_ids() {
+        let Some(py) = python() else { return };
+        for invalid in ["None", "'wrong'", "-1", "1.5", "'missing'"] {
+            let response = format!("\n        bad={{'output':'unsolicited'}}\n        if {invalid} != 'missing': bad['id']={invalid}\n        send(bad)\n        send({{'id':i,'output':'real'}})");
+            let body = helper_script().replace("elif t==\"run_tool\": send({\"id\":i,\"output\":\"pong\"})", &format!("elif t=='run_tool':{response}"));
+            let path = echo_ext(&body);
+            let mut ext = Extension::spawn(&format!("{py} {}",path.display()), "/tmp", "mock").unwrap();
+            let mut bridge = |_name: &str, _args: &str| String::new();
+            let result = ext.run_tool_scoped("ping", "{}", &mut bridge, &CallScope::from_call("origin", Cancel::new()));
+            assert!(result.output.is_none(), "accepted {invalid} reply: {result:?}");
+            assert!(matches!(result.stop, CallStop::Failed(ref reason) if reason.contains("request id")));
+            drop(ext);
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
     fn registry_loads_and_aggregates() {
         let Some(py) = python() else { return };
         let p = echo_ext(&helper_script());

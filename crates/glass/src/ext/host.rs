@@ -924,13 +924,13 @@ impl Extension {
                 deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
                 continue;
             }
-            // A reply to an earlier fire-and-forget event. It is not the answer
-            // we asked for, so hold it and keep reading rather than returning
-            // it as if it were.
-            if let Some(want) = v.get("id").and_then(serde_json::Value::as_u64)
-                && want != id
-            {
-                continue;
+            // Only an unsigned request ID can correlate a reply. Nested host
+            // requests have already been dispatched above using their own types.
+            let Some(reply_id) = v.get("id").and_then(serde_json::Value::as_u64) else {
+                return Err(RequestOutcome::Unavailable("extension reply is missing a valid unsigned request id".into()));
+            };
+            if reply_id != id {
+                continue; // A late reply to an earlier exchange.
             }
             return Ok(v);
         }

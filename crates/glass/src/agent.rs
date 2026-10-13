@@ -1006,8 +1006,9 @@ impl<'a> Agent<'a> {
                 // Everything still running in this turn stops mattering;
                 // extension calls watching the shared token stop waiting.
                 self.turn_cancel.cancel();
-                self.session.append(Record::System(format!(
-                    "user correction, interrupting before the requested actions: {steer}"
+                if steer.is_empty() { return Ok((last, Stop::Cancelled)); }
+                self.session.append(Record::User(format!(
+                    "Follow-up received before the requested actions: {steer}"
                 )));
                 self.emit(Progress::Steered(&steer));
                 return Ok((last, Stop::Steered));
@@ -1154,7 +1155,7 @@ impl<'a> Agent<'a> {
                     return Ok((last, Stop::Cancelled));
                 }
                 self.session
-                    .append(Record::System(format!("User correction: {steer}")));
+                    .append(Record::User(format!("Follow-up: {steer}")));
                 self.emit(Progress::Steered(&steer));
                 return Ok((last, Stop::Steered));
             }
@@ -2470,6 +2471,30 @@ for line in sys.stdin:
         }
         fn context_window(&self) -> u32 {
             200_000
+        }
+    }
+
+    #[test]
+    fn live_followups_keep_user_role_and_empty_interrupts_cancel() {
+        for text in ["[main → teammate] review the patch", ""] {
+            let dir = std::env::temp_dir().join(format!("gc-steer-role-{}-{}", std::process::id(), text.len()));
+            let mut session = Session::create(&dir).unwrap();
+            session.append(Record::User("original task".into()));
+            let mut state = State::new();
+            let mods = Vec::new();
+            let mut extensions = Registry::load(&[], &dir, "mock");
+            let stop = {
+                let mut agent = Agent::new(&MockTurnProvider, &mut session, &mut state, &mods, &mut extensions, &dir);
+                agent.run_turn(|steer| { if steer.is_none() { *steer = Some(text.into()); } }).unwrap().1
+            };
+            if text.is_empty() { assert_eq!(stop, Stop::Cancelled); }
+            else {
+                assert_eq!(stop, Stop::Steered);
+                assert!(session.messages().iter().any(|m| matches!(m, Message::User(t) if t.contains(text))));
+                assert!(!session.messages().iter().any(|m| matches!(m, Message::System(t) if t.contains(text))));
+            }
+            drop(session);
+            std::fs::remove_dir_all(dir).unwrap();
         }
     }
 

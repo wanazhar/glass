@@ -22,7 +22,7 @@ teammate's transcript while work continues.
 - **Agents you can follow.** Persistent teammates retain their context. Review
   their messages and transcripts, send a follow-up, or interrupt their work.
 - **Context you can account for.** Inspect supplied instructions, attachments,
-  tool schemas, request usage, cache reports, and reviewed project knowledge.
+  tool schemas, request usage, cache reports, and saved project knowledge.
 - **Extensions in TypeScript.** Add typed tools and commands with native previews
   and diagnostics. Implementations can load on first use in a persistent process.
   See the [TypeScript SDK](packages/extension-sdk/README.md).
@@ -90,8 +90,8 @@ Additional workflows are discovered on demand. Optional subprocess extensions ad
 web search, MCP tools, browser checks, language services, and other integrations.
 Skills and compiled mods provide instructions and hooks.
 
-Neuralnets stores attributed project knowledge with review controls. Pending
-learning stays out of model context, and local recaps make no provider requests.
+Neuralnets lets agents save and recall attributed project knowledge directly.
+You can inspect, edit or forget memories; local recaps make no provider requests.
 See [Project knowledge](docs/knowledge.md) and [Extending glass-core](docs/extending.md).
 
 ## Permissions

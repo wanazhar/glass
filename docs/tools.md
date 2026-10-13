@@ -118,6 +118,8 @@ to a session. Switching sessions retains jobs under their original owner; exitin
 the application stops owned process groups. Stop sends TERM, allows 250 ms for
 shutdown, then sends KILL and reaps the child. No detached persistence is promised;
 programs that deliberately escape their process group are outside job ownership.
+After stop or shell exit, capture drains for at most 100 ms before closing its pipes,
+so a detached writer cannot keep the UI waiting indefinitely.
 Shell permissions and explicit command approvals still apply.
 
 ## Tool call repair

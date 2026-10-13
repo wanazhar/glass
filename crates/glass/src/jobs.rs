@@ -145,7 +145,14 @@ impl Jobs {
             }
             drains.push(std::thread::spawn(move || {
                 let mut buffer = [0u8; 8192];
+                let mut stop_deadline = None;
                 loop {
+                    // A detached writer can keep the pipe readable forever. Allow
+                    // final buffered output, but bound capture even under continuous reads.
+                    if stopping.load(Ordering::Relaxed) {
+                        let deadline = stop_deadline.get_or_insert_with(|| Instant::now() + Duration::from_millis(100));
+                        if Instant::now() >= *deadline { break }
+                    }
                     let n = match pipe.read(&mut buffer) {
                         Ok(0) => break,
                         Ok(n) => n,
@@ -327,6 +334,8 @@ impl Jobs {
     pub fn stop(&mut self, id: u32) -> Result<String, String> {
         let j = self.jobs.get_mut(&id).ok_or("unknown job")?;
         if j.closed {
+            j.stopping.store(true, Ordering::Relaxed);
+            for h in j.drains.drain(..) { let _ = h.join(); }
             return Ok(format!("job {id} already exited"));
         }
         j.input.take();
@@ -616,6 +625,41 @@ mod tests {
         std::fs::create_dir_all(&p).unwrap();
         p
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn escaped_continuous_writers_cannot_block_capture_shutdown() {
+        for natural in [false, true] {
+            let dir = scratch(if natural { "escaped-exit" } else { "escaped-stop" });
+            let mut jobs = Jobs::default();
+            // SIGPIPE ends this test-owned descendant once capture closes.
+            let command = format!("setsid sh -c 'echo $$ > escaped.pid; while printf xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; do :; done' & {}", if natural { "sleep 0.1; exit 0" } else { "wait" });
+            jobs.start(&command, &dir, &dir).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !dir.join("escaped.pid").exists() {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if natural {
+                while !jobs.jobs[&1].closed {
+                    jobs.refresh();
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            let started = Instant::now();
+            jobs.stop(1).unwrap();
+            assert!(started.elapsed() < Duration::from_secs(2));
+            assert!(jobs.jobs[&1].drains.is_empty());
+            // Reap only the descendant launched by this test if still exiting.
+            if let Ok(pid) = std::fs::read_to_string(dir.join("escaped.pid"))
+                && let Ok(pid) = pid.trim().parse::<i32>() {
+                unsafe { libc::kill(pid, libc::SIGKILL); }
+            }
+            drop(jobs);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
     #[test]
     fn input_poll_and_cleanup() {
         let dir = scratch("io");

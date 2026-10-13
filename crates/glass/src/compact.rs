@@ -442,12 +442,12 @@ pub fn fallback(session: &mut Session, state: &State, reason: &str) -> Result<()
 }
 
 pub fn run_manual(provider: &dyn Provider, session: &mut Session, state: &State, focus: Option<&str>) -> Result<(usize, usize), String> {
-    let before = provider.estimate_tokens(&project(&session.records)) as usize;
+    let before = provider.estimate_tokens(&session.messages()) as usize;
     match run_manual_summary(provider, session, state, focus) {
         Ok(result) => Ok(result),
         Err(error) => {
             fallback(session, state, &error)?;
-            Ok((before, provider.estimate_tokens(&project(&session.records)) as usize))
+            Ok((before, provider.estimate_tokens(&session.messages()) as usize))
         }
     }
 }
@@ -458,7 +458,7 @@ fn run_manual_summary(
     state: &State,
     focus: Option<&str>,
 ) -> Result<(usize, usize), String> {
-    let before = provider.estimate_tokens(&project(&session.records)) as usize;
+    let before = provider.estimate_tokens(&session.messages()) as usize;
     let prompt = manual_prompt(&session.records, state, focus);
     let tools: Vec<(String, String, String)> = Vec::new();
     let model = provider.model().to_string();
@@ -507,7 +507,7 @@ fn run_manual_summary(
         tail_start,
         system: None,
     });
-    let after = provider.estimate_tokens(&project(&session.records)) as usize;
+    let after = provider.estimate_tokens(&session.messages()) as usize;
     Ok((before, after))
 }
 
@@ -545,7 +545,9 @@ pub fn apply_summary(records: &[Record], summary: &str) -> Vec<Record> {
 ///
 /// Mirrors `Session::messages`, but takes a slice so compaction can project a
 /// rebuilt list before deciding to commit it.
-pub fn project(records: &[Record]) -> Vec<Message> {
+pub fn project(records: &[Record]) -> Vec<Message> { project_filtered(records, None) }
+
+pub(crate) fn project_filtered(records: &[Record], active: Option<&std::collections::HashSet<&str>>) -> Vec<Message> {
     let calls = records
         .iter()
         .filter_map(|r| {
@@ -568,7 +570,10 @@ pub fn project(records: &[Record]) -> Vec<Message> {
         .collect::<std::collections::HashSet<_>>();
     let mut earlier = Vec::new();
     let mut messages = Vec::new();
-    for record in records {
+    let latest: std::collections::HashMap<&str, usize> = records.iter().enumerate().filter_map(|(index, r)| match r { Record::Image {data, ..} => Some((data.as_str(), index)), _ => None }).collect();
+    for (index, record) in records.iter().enumerate() {
+        if let (Some(active), Record::Image {data, ..}) = (active, record)
+            && (!active.contains(data.as_str()) || latest.get(data.as_str()) != Some(&index)) { continue; }
         let Some(m) = record.to_message() else { continue };
         if matches!(record, Record::Checkpoint { rewind_summary: Some(_), .. }) {
             // A rewind happens inside a tool batch. Its report must not split
@@ -606,7 +611,7 @@ pub fn project(records: &[Record]) -> Vec<Message> {
         }
     }
     earlier.extend(messages);
-    earlier
+    crate::images::expand(earlier)
 }
 
 #[cfg(test)]

@@ -50,7 +50,7 @@ fn meta_path(s: &Session) -> PathBuf {
     s.path.with_extension("meta.json")
 }
 pub fn metadata(s: &Session) -> Metadata {
-    std::fs::read(meta_path(s))
+    crate::requests::bounded(&meta_path(s), 4 * 1024 * 1024)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default()
@@ -158,39 +158,31 @@ pub fn attach(s: &mut Session, workspace: &Path, path: &str) -> Result<(), Strin
         .join(path)
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    let bytes = crate::requests::bounded(&p, 2 * 1024 * 1024)?;
+    let bytes = crate::requests::bounded(&p, 8 * 1024 * 1024)?;
     let mut m = metadata(s);
     m.attachments.retain(|a| a.path != p);
-    if let Some(media) = image_media_type(&bytes) {
-        const IMAGE_MAX_BYTES: usize = 1_048_576;
-        const IMAGES_TOTAL_BYTES: usize = 2_097_152;
-        if bytes.len() > IMAGE_MAX_BYTES {
-            return Err("Image exceeds 1 MiB. Attach a smaller screenshot.".into());
-        }
-        let existing: usize = m
-            .attachments
-            .iter()
-            .filter_map(|a| a.data.as_ref().map(|d| d.len() * 3 / 4))
-            .sum();
-        if existing + bytes.len() > IMAGES_TOTAL_BYTES {
+    if image_media_type(&bytes).is_some() {
+        let prepared = crate::images::prepare(&bytes, path, || false)?;
+        let reference = prepared["reference"].as_str().ok_or("missing image reference")?;
+        let data_bytes = crate::files::read_workspace_bytes(
+            &crate::config::data_dir().join("images"), &format!("{reference}.jpg"))?;
+        let existing: usize = m.attachments.iter()
+            .filter_map(|a| a.data.as_ref().map(|d| d.len() * 3 / 4)).sum();
+        if existing + data_bytes.len() > 2_097_152 {
             return Err("Image attachments exceed 2 MiB total. Remove one in /context.".into());
         }
         use base64::Engine;
-        let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let media = media.to_string();
-        m.attachments.push(Attachment {
-            path: p,
-            source: None,
-            text: String::new(),
-            media_type: Some(media.clone()),
-            data: Some(data.clone()),
-            citation: None,
-        });
+        let data = base64::engine::general_purpose::STANDARD.encode(&data_bytes);
+        let duplicate = metadata(s).attachments.iter().any(|a| a.data.as_deref() == Some(data.as_str()))
+            && matches!(s.records.last(), Some(Record::Image {data: old, ..}) if old == &data);
+        if !duplicate {
+            s.append(Record::Image {media_type: "image/jpeg".into(), data: data.clone()});
+            if let Some(error) = s.write_error() { return Err(error.into()); }
+        }
+        m.attachments.push(Attachment {path: p,
+            source: Some(format!("image · {}×{} → {}×{} · {} KiB", prepared["width"], prepared["height"], prepared["sent_width"], prepared["sent_height"], data_bytes.len().div_ceil(1024))),
+            text: String::new(), media_type: Some("image/jpeg".into()), data: Some(data), citation: None});
         save(s, &m)?;
-        s.append(Record::Image {
-            media_type: media,
-            data,
-        });
         return Ok(());
     }
     if bytes.len() > 32_768 {
@@ -646,7 +638,7 @@ pub fn context(
                 "Remove {} · {} · ~{} tokens",
                 a.path.display(),
                 a.source.as_deref().unwrap_or("snapshot"),
-                a.text.len().div_ceil(4)
+                if a.data.is_some() { 2300 } else { a.text.len().div_ceil(4) }
             )
         }));
         match modal::choose(
@@ -1079,17 +1071,43 @@ mod tests {
     }
 
     #[test]
+    fn image_replacement_deduplicates_and_removal_changes_future_context() {
+        let root = scratch();
+        let mut session = Session::create(&root).unwrap();
+        bind(&session, &root).unwrap();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(3, 3).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        std::fs::write(root.join("shot.png"), png.into_inner()).unwrap();
+        attach(&mut session, &root, "shot.png").unwrap();
+        session.append(Record::User("later turn".into()));
+        attach(&mut session, &root, "shot.png").unwrap();
+        let messages = session.messages();
+        assert!(matches!(messages.last(), Some(glass_mod_api::Message::Image {..})), "reattach must occur after the later user turn");
+        assert_eq!(session.messages().iter().filter(|m| matches!(m, glass_mod_api::Message::Image {..})).count(), 1);
+        let mut meta = metadata(&session);
+        meta.attachments.clear(); save(&session, &meta).unwrap();
+        assert!(!session.messages().iter().any(|m| matches!(m, glass_mod_api::Message::Image {..})));
+        assert!(session.records.iter().any(|r| matches!(r, Record::Image {..})));
+        attach(&mut session, &root, "shot.png").unwrap();
+        assert_eq!(session.messages().iter().filter(|m| matches!(m, glass_mod_api::Message::Image {..})).count(), 1);
+        // Simulate a compacted retained window that no longer contains pixels.
+        session.records.retain(|r| !matches!(r, Record::Image {..}));
+        assert_eq!(session.messages().iter().filter(|m| matches!(m, glass_mod_api::Message::Image {..})).count(), 1);
+    }
+
+    #[test]
     fn image_attachments_become_records_without_reaching_the_prompt() {
         let root = scratch();
         let mut s = Session::create(&root).unwrap();
         bind(&s, &root).unwrap();
-        // A PNG header is enough: the sniff reads magic bytes, never decodes.
-        let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0];
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let png = png.into_inner();
         std::fs::write(root.join("shot.png"), png).unwrap();
         attach(&mut s, &root, "shot.png").unwrap();
         assert!(
             s.records.iter().any(
-                |r| matches!(r, Record::Image { media_type, .. } if media_type == "image/png")
+                |r| matches!(r, Record::Image { media_type, .. } if media_type == "image/jpeg")
             ),
             "image must be recorded so every wire format replays it"
         );
@@ -1101,7 +1119,7 @@ mod tests {
             .map(|r| r.to_entry())
             .unwrap();
         assert_eq!(entry.0, glass_tui::Role::User);
-        assert!(entry.1.starts_with("[image: png"), "{}", entry.1);
+        assert!(entry.1.starts_with("[image: jpeg"), "{}", entry.1);
 
         // Sniffing itself.
         assert_eq!(image_media_type(b"GIF89a-anything"), Some("image/gif"));

@@ -439,9 +439,9 @@ mod tests {
     use serde_json::Value;
 
     #[test]
-    fn builtin_surface_has_five_compact_tools() {
+    fn builtin_surface_has_six_compact_tools() {
         let tools = builtin_tools();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
         assert!(tools.iter().map(|(n,d,s)|n.len()+d.len()+s.len()).sum::<usize>() <= 7000, "core schema byte budget exceeded");
         assert_eq!(tools[0].0, "bash");
         assert_eq!(tools[1].0, "state");
@@ -474,7 +474,7 @@ mod tests {
         let tools = builtin_tools();
         let bash: Value = serde_json::from_str(&tools[0].2).unwrap();
         let state: Value = serde_json::from_str(&tools[1].2).unwrap();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
         assert_eq!(bash["anyOf"][0]["required"][0], "command");
         assert_eq!(bash["anyOf"][1]["required"][0], "job");
         assert_eq!(bash["properties"]["job"]["required"][0], "action");
@@ -500,7 +500,7 @@ mod tests {
         let mods: Vec<Box<dyn glass_mod_api::Mod_>> = vec![Box::new(Greedy)];
         let tools = collect_tools(&mods);
         let names: Vec<_> = tools.iter().map(|(n, _, _)| n.as_str()).collect();
-        assert_eq!(names, vec!["bash", "state", "read", "edit", "write", "custom"]);
+        assert_eq!(names, vec!["bash", "state", "view_image", "read", "edit", "write", "custom"]);
     }
 
     #[test]

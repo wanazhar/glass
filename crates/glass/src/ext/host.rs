@@ -1259,7 +1259,7 @@ impl Extension {
     ) -> CallOutcome {
         match self.request_scoped(req, REQUEST_TIMEOUT_MS * 10, host_tools, host_input, scope) {
             RequestOutcome::Answered(v) => match v.get("output").and_then(|o| o.as_str()) {
-                Some(out) if !out.is_empty() => CallOutcome::completed(out.to_string()),
+                Some(out) if !out.is_empty() => CallOutcome::completed(if v.get("is_error").and_then(|x| x.as_bool()) == Some(true) && !out.starts_with("error:") { format!("error: {out}") } else { out.to_string() }),
                 Some(_) => CallOutcome::stopped(CallStop::Failed("returned an empty result".into())),
                 None => CallOutcome::stopped(CallStop::Failed(
                     "replied without an output field".into(),

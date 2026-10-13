@@ -221,7 +221,7 @@ impl Registry {
         let collision = self.names().contains(&extension.manifest.name.as_str())
             || tools
                 .iter()
-                .any(|name| matches!(*name, "bash" | "state" | "read" | "edit" | "write") || self.has_tool(name))
+                .any(|name| matches!(*name, "bash" | "state" | "read" | "edit" | "write" | "view_image") || self.has_tool(name))
             || tools
                 .iter()
                 .enumerate()

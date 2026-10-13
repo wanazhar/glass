@@ -51,7 +51,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='gc-web-') as tmp:
         cfg = Path(tmp) / 'web.json'
         cfg.write_text(
-            json.dumps({'search': 'ddg', 'ddg_url': f'http://127.0.0.1:{port}/results'})
+            json.dumps({'search': 'ddg', 'allow_private': True, 'ddg_url': f'http://127.0.0.1:{port}/results'})
         )
         env = dict(os.environ, GC_WEB_CONFIG=str(cfg))
         p = subprocess.Popen(
@@ -111,7 +111,9 @@ def main():
         )
         assert 'HTTP 404' in recv()['output']
 
-        send({'type': 'goodbye', 'id': 5})
+        send({'type':'tool_result','id':5,'name':'view_image','body':'unchanged image reference'})
+        assert recv()=={'id':5,'body':'unchanged image reference'}
+        send({'type': 'goodbye', 'id': 6})
         p.stdin.close()
         p.wait(timeout=10)
     server.shutdown()

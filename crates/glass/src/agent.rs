@@ -179,6 +179,7 @@ pub struct Agent<'a> {
     /// processes on a pipe rather than in-process trait objects.
     pub extensions: &'a mut ext::Registry,
     pub workspace: &'a Path,
+    pub image_input: bool,
     pub max_tokens: u32,
     pub reasoning: Option<u32>,
     /// Cap on tool calls per turn, so a confused model cannot loop forever.
@@ -297,6 +298,7 @@ impl<'a> Agent<'a> {
             mods,
             extensions,
             workspace,
+            image_input: true,
             max_tokens: 16_000,
             reasoning: None,
             max_tool_rounds: usize::MAX,
@@ -357,6 +359,7 @@ impl<'a> Agent<'a> {
             crate::inspect::schema()
         } else {
             let mut tools = provider::collect_tools(self.mods);
+            if !self.image_input { tools.retain(|(name, _, _)| name != "view_image"); }
             if self.checkpoint_tools {
                 tools.extend(crate::provider::checkpoint_tool_schemas());
             }
@@ -473,6 +476,8 @@ impl<'a> Agent<'a> {
         self
     }
 
+    pub fn with_image_input(mut self, enabled: bool) -> Self { self.image_input = enabled; self }
+
     pub fn with_limits(mut self, max_tokens: u32, reasoning: Option<u32>, rounds: usize) -> Self {
         self.max_tokens = max_tokens;
         self.reasoning = reasoning;
@@ -495,6 +500,9 @@ impl<'a> Agent<'a> {
             )));
         }
         let mut messages = self.session.messages();
+        if !self.image_input && messages.iter().any(|m| matches!(m, glass_mod_api::Message::Image {..})) {
+            return Err(provider::Error::Config("Image input is disabled for this model (image_input=false). Remove image attachments in /context or select a vision-capable model.".into()));
+        }
         let context_epoch = self.session.log_len();
         self.ensure_context_fits(&messages)?;
         // Compaction updates records; send that projection, not the stale
@@ -1348,7 +1356,9 @@ impl<'a> Agent<'a> {
         call: &ToolCall,
         pump: &mut impl FnMut(&mut Option<String>),
     ) {
-        if crate::files::is_tool(&call.name) {
+        if call.name == "view_image" && !self.image_input {
+            self.finish_tool(call, tools::Outcome::err("Image input is disabled for this model"));
+        } else if crate::files::is_tool(&call.name) {
             self.run_file_pumped(call,pump);
         } else if call.name == "bash" || self.extensions.has_tool(&call.name) {
             self.run_tool_pumped(call, pump);
@@ -1899,7 +1909,7 @@ impl<'a> Agent<'a> {
                 .flat_map(|m| m.tools())
                 .map(|(n, _, _)| n)
                 .collect();
-            let mut avail = vec!["read".into(),"edit".into(),"write".into(),"bash".into(), "state".into()];
+            let mut avail = vec!["read".into(),"edit".into(),"write".into(),"view_image".into(),"bash".into(), "state".into()];
             avail.extend(extra);
             outcome.body = format!(
                 "error: no tool named `{}`. Available tools: {}.",
@@ -1913,6 +1923,8 @@ impl<'a> Agent<'a> {
             outcome.body = format!("blocked by extension: {denied}");
         } else if let Some(denied) = self.mods.iter().find_map(|m| m.authorize(call).err()) {
             outcome.body = format!("blocked: {denied}");
+        } else if call.name == "view_image" && !self.image_input {
+            outcome = tools::Outcome::err("Image input is disabled for this model");
         } else if crate::files::is_tool(&call.name) {
             if let Some(refusal)=self.read_before_write_refusal(call) {return self.finish_tool(call,tools::Outcome::err(refusal));}
             outcome=crate::files::tool(call,self.workspace);

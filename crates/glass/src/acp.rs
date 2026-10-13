@@ -303,6 +303,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                         &mut extensions,
                         &conversation.cfg.workspace,
                     )
+                    .with_image_input(conversation.cfg.image_input)
                     .prime_extensions()
                     .with_prompt(
                         conversation.cfg.system_prompt.clone(),

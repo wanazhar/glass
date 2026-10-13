@@ -144,3 +144,7 @@ for the session and shut down on exit. An explicitly requested `lsp {path}`
 tool and a `/lsp` status command exist for the warm-up case; a server that
 cannot start is reported once and then ignored, because a missing language
 server must never break the edit loop.
+
+Web source references, cached continuation, network policy and configuration are
+documented in the [Web extension](../extensions/web/README.md). Screenshots can be
+read through native [Image viewing](tools.md#image-viewing).

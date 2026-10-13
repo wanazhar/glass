@@ -19,14 +19,18 @@ spec = importlib.util.spec_from_file_location(
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 
-# Smallest well-known 1x1 PNG; the harness relays bytes and never decodes.
-PNG = base64.b64decode(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
-)
+# Valid tiny PNG. The harness validates pixels and sends normalized JPEG.
+import struct
+import zlib
+def chunk(kind, data):
+    return struct.pack('>I',len(data))+kind+data+struct.pack('>I',zlib.crc32(kind+data)&0xffffffff)
+PNG = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR',struct.pack('>IIBBBBB',1,1,8,2,0,0,0))
+       + chunk(b'IDAT',zlib.compress(b'\x00\xff\xff\xff')) + chunk(b'IEND',b''))
 
 
 class Endpoint(http.server.BaseHTTPRequestHandler):
     saw_image = False
+    calls = 0
 
     def log_message(self, *_):
         pass
@@ -39,9 +43,10 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self):
+        type(self).calls += 1
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         text = json.dumps(body)
-        if 'data:image/png;base64,' in text and 'iVBORw0KGgo' in text:
+        if 'data:image/jpeg;base64,' in text:
             type(self).saw_image = True
             frames = [{'choices': [{'delta': {'content': 'SAW-IMAGE'}}]}]
         else:
@@ -87,6 +92,14 @@ def main():
             assert logs, 'no session log written'
             kinds = [json.loads(line).get('k') for path in logs for line in open(path)]
             assert 'image' in kinds, kinds
+            calls = Endpoint.calls
+            with (cfg / 'config.toml').open('a') as output:
+                output.write('image_input=false\n')
+            disabled = subprocess.run(
+                [str(f.BINARY), 'run', '--json', '--attach', 'shot.png', 'look at this'],
+                cwd=repo, env=env, text=True, capture_output=True, timeout=120)
+            assert 'Image input is disabled' in disabled.stdout + disabled.stderr, disabled
+            assert Endpoint.calls == calls, 'disabled vision dispatched a provider request'
         finally:
             server.shutdown()
     print(

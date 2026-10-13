@@ -1234,15 +1234,40 @@ impl Session {
                     })
                 });
                 if edit_invalidates_summary {
-                    crate::compact::project(&bounded_edited_context(&apply_checkpoint_projection(raw), &edits))
+                    self.project_messages(&bounded_edited_context(&apply_checkpoint_projection(raw), &edits))
                 } else {
                     let edited = apply_edits(&raw, &edits);
                     let (projected, _) = apply_projection(edited);
-                    crate::compact::project(&projected)
+                    self.project_messages(&projected)
                 }
             }
-            None => crate::compact::project(&apply_checkpoint_projection(self.records.clone())),
+            None => self.project_messages(&apply_checkpoint_projection(self.records.clone())),
         }
+    }
+
+    fn project_messages(&self, records: &[Record]) -> Vec<Message> {
+        // Legacy image records stay in the transcript. The attachment sidecar
+        // decides which of those snapshots may enter a future request.
+        if !self.path.with_extension("meta.json").exists() { return crate::compact::project(records); }
+        let meta = crate::polish::metadata(self);
+        let active: std::collections::HashSet<&str> = meta.attachments.iter().filter_map(|a| a.data.as_deref()).collect();
+        let mut messages = crate::compact::project_filtered(records, Some(&active));
+        // Compaction may summarize the original image turn. Active snapshots
+        // remain attachments, just as text snapshots do, until explicitly removed.
+        let mut restored_bytes = 0usize;
+        for attachment in &meta.attachments {
+            if let (Some(data), Some(media_type)) = (&attachment.data, &attachment.media_type)
+                && !messages.iter().any(|m| matches!(m, Message::Image {data: sent, ..} if sent == data)) {
+                restored_bytes = restored_bytes.saturating_add(data.len() * 3 / 4);
+                if restored_bytes > 2_097_152 || !crate::images::valid_snapshot(media_type, data) {
+                    messages.push(Message::User("An image attachment snapshot is invalid or exceeds its bound; remove it in /context and attach the source again.".into()));
+                    continue;
+                }
+                messages.push(Message::User(format!("Active image attachment: {}", attachment.path.display())));
+                messages.push(Message::Image {media_type:media_type.clone(), data:data.clone()});
+            }
+        }
+        messages
     }
 
     /// The latest edit per turn: `restore` removes the entry, so the last

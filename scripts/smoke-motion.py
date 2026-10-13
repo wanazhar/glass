@@ -51,10 +51,10 @@ def key(t, text): os.write(t.master, text.encode())
 def choose(t, text): key(t, '\x15' + text + '\r')
 def back(t): t.received = ''; key(t, '\x1b'); t.wait('\x1b[?25h')
 def animated(output, colored=True):
-    assert len(set(re.findall(r'[◐◓◑◒]', output))) >= 3, repr(output)
+    assert len(set(re.findall(r'[⣾⣽⣻⢿⡿⣟⣯⣷]', output))) >= 3, repr(output)
     assert '\n' not in output, 'Animation must not enter terminal scrollback'
-    # The pump runs often; visual redraws remain bounded to eight per second.
-    assert output.count('\x1b[2K') <= 8, repr(output)
+    # The pump runs often; visual redraws remain bounded to ten per second.
+    assert output.count('\x1b[2K') <= 10, repr(output)
     if colored: assert '\x1b[38;5;81m' in output and '\x1b[38;5;183m' in output
 
 def has_color(output):
@@ -80,13 +80,13 @@ with tempfile.TemporaryDirectory(prefix='gc-motion-') as tmp:
                 key(t, '\x15\x1b[200~first line\nsecond line\nlast line\x1b[201~'); t.visible('last line')
                 output = collect(t, .35); assert 'last line' in t.screen.text(); assert '\n' not in output
                 key(t, '\x03'); t.wait('Cancelled'); t.idle()
-                settled = collect(t, .4); assert not re.search(r'[◐◓◑◒]', settled), repr(settled)
+                settled = collect(t, .4); assert not re.search(r'[⣾⣽⣻⢿⡿⣟⣯⣷]', settled), repr(settled)
                 # Finished prose uses coordinated distinct semantic colors.
                 Endpoint.gate.set(); t.send('colorful answer'); output = t.wait('Finished.'); t.idle()
                 if size[0] == 65:
                     Path('/tmp/gc-visual-chat-65.ansi').write_text(output)
                     assert '\x1b[38;5;183m' in output and '\x1b[38;5;114m' in output and '\x1b[38;5;252m' in output
-                settled = collect(t, .4); assert not re.search(r'[◐◓◑◒]', settled)
+                settled = collect(t, .4); assert not re.search(r'[⣾⣽⣻⢿⡿⣟⣯⣷]', settled)
                 assert not t.screen.invalid_positions, (size, t.screen.invalid_positions)
             finally: Endpoint.gate.set(); t.close()
         # Active real shell tools use the same animation without erasing the draft.
@@ -94,15 +94,15 @@ with tempfile.TemporaryDirectory(prefix='gc-motion-') as tmp:
         try:
             t.idle(); t.send('slow tool'); t.wait('bash running'); animated(collect(t))
             key(t, 'tool draft'); t.visible('tool draft'); collect(t, .25); assert 'tool draft' in t.screen.text()
-            t.wait('Finished.'); t.visible('❯ tool draft'); assert not re.search(r'[◐◓◑◒]', collect(t, .3)); key(t, '\x15'); t.idle()
+            t.wait('Finished.'); t.visible('❯ tool draft'); assert not re.search(r'[⣾⣽⣻⢿⡿⣟⣯⣷]', collect(t, .3)); key(t, '\x15'); t.idle()
             # Delayed catalog checks animate inside an alternate-screen modal.
             Endpoint.models.clear(); t.send('/doctor'); t.visible('Diagnostics'); choose(t, 'Check connection'); t.visible('Checking provider')
-            output = collect(t); assert len(set(re.findall(r'[◐◓◑◒]', output))) >= 3
+            output = collect(t); assert len(set(re.findall(r'[⣾⣽⣻⢿⡿⣟⣯⣷]', output))) >= 3
             assert '\x1b[38;5;81m' in output and '\x1b[38;5;183m' in output
-            key(t, '\x1b'); t.wait('\x1b[?25h'); t.idle(); Endpoint.models.set()
+            key(t, '\x1b'); t.wait('\x1b[?25h'); t.visible('Esc close'); key(t, '\x1b'); t.idle(); Endpoint.models.set()
             # Profile persistence keeps old indices and supports new palettes.
             t.send('/theme'); t.visible('Appearance'); choose(t, 'Orchid'); t.idle()
-            t.send('/profiles'); t.visible('Workspace profiles'); choose(t, 'Save current'); t.visible('Save workspace profile'); key(t, 'motion profile\r'); t.visible('Profile saved'); back(t); t.visible('Workspace profiles'); back(t); t.idle()
+            t.send('/profiles'); t.visible('Workspace profiles'); choose(t, 'Save current'); t.visible('Save workspace profile'); key(t, 'motion profile\r'); t.visible('Profile saved'); back(t); t.visible('Workspace profiles'); back(t); t.visible('Esc close'); key(t, '\x1b'); t.idle()
             store = json.loads((cfg / 'profiles.json').read_text()); assert store['profiles']['motion profile']['theme'] == 3
             assert 'reduced_motion' not in store['profiles']['motion profile']
         finally: Endpoint.models.set(); t.close()
@@ -125,7 +125,7 @@ with tempfile.TemporaryDirectory(prefix='gc-motion-') as tmp:
             t.send('neutral motion'); t.wait('Waiting for provider'); output = collect(t); animated(output, colored=False); assert not has_color(output)
             Endpoint.gate.set(); output = t.wait('Finished.'); t.idle(); assert not has_color(output)
             for command, title in [('/theme', 'Appearance'), ('/help', 'Help')]:
-                t.received = ''; t.send(command); output = t.wait(title); assert not has_color(output); back(t); t.idle()
+                t.received = ''; t.send(command); output = t.wait(title); assert not has_color(output); back(t); t.visible('Esc close'); key(t, '\x1b'); t.idle()
             t.received = ''; key(t, '\x07'); output = t.wait('following'); assert not has_color(output); back(t); t.idle()
         finally: Endpoint.gate.set(); t.close()
         result = subprocess.run([str(f.BINARY), 'run', '--json', 'headless source'], cwd=repo, env=neutral, text=True, capture_output=True, timeout=10)

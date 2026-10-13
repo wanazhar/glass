@@ -23,6 +23,9 @@ teammate's transcript while work continues.
   their messages and transcripts, send a follow-up, or interrupt their work.
 - **Context you can account for.** Inspect supplied instructions, attachments,
   tool schemas, request usage, cache reports, and reviewed project knowledge.
+- **Extensions in TypeScript.** Add typed tools and commands with native previews
+  and diagnostics. Implementations can load on first use in a persistent process.
+  See the [TypeScript SDK](packages/extension-sdk/README.md).
 - **Your choice of connection.** Use Anthropic Messages, OpenAI Chat Completions,
   or Responses endpoints, including compatible local runtimes. Authentication
   supports API keys and ChatGPT sign-in.

@@ -18,6 +18,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm test
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -41,6 +47,7 @@ jobs:
           python3 scripts/smoke-mobile.py
           python3 scripts/smoke-chat.py
           python3 scripts/smoke-motion.py
+          python3 scripts/smoke-typescript.py
           python3 scripts/smoke-live.py
           python3 scripts/smoke-navigation.py
           python3 scripts/smoke-inline-scroll.py
@@ -93,7 +100,7 @@ jobs:
           mkdir -p dist/package
           cp target/release/glass-core dist/package/
           ln -s glass-core dist/package/gc
-          cp README.md dist/package/
+          cp README.md LICENSE THIRD_PARTY.md dist/package/
           python3 -c 'import platform; print("glass-core-" + platform.system().lower() + "-" + platform.machine())' > dist/name
           tar -czf "dist/$(cat dist/name).tar.gz" -C dist/package .
           python3 -c 'import hashlib,pathlib; [(p.with_suffix(p.suffix+".sha256").write_text(hashlib.sha256(p.read_bytes()).hexdigest()+"  "+p.name+"\n")) for p in pathlib.Path("dist").glob("*.tar.gz")]'

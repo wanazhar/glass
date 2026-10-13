@@ -1,0 +1,8 @@
+{
+  "name": "@glass-core/typescript-starter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {"@glass-core/extension-sdk": "file:../../packages/extension-sdk"},
+  "scripts": {"build": "tsc -p tsconfig.json"}
+}

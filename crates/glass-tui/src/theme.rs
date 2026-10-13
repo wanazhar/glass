@@ -4,6 +4,41 @@ use std::io::{self, Write};
 use std::sync::atomic::{AtomicU8, Ordering};
 
 static ACTIVE: AtomicU8 = AtomicU8::new(0);
+static ANIMATION: AtomicU8 = AtomicU8::new(0);
+pub const ANIMATION_NAMES: [&str; 4] = ["Dot", "MiniDot", "Pulse", "Spark"];
+pub const ACTIVITY_INTERVAL_MS: u64 = 100;
+// Dot, MiniDot and Pulse frames follow Charm Bubbles (MIT); see THIRD_PARTY.md.
+const DOT: [&str; 8] = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+const MINI_DOT: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const PULSE: [&str; 4] = ["█", "▓", "▒", "░"];
+const SPARK: [&str; 4] = ["·", "+", "✦", "+"];
+pub fn select_animation(index: usize) {
+    ANIMATION.store(
+        index.min(ANIMATION_NAMES.len() - 1) as u8,
+        Ordering::Relaxed,
+    );
+}
+pub fn current_animation() -> usize {
+    ANIMATION.load(Ordering::Relaxed) as usize
+}
+pub fn animation_frame(animation: usize, tick: usize) -> &'static str {
+    let frames: &[&str] = match animation {
+        1 => &MINI_DOT,
+        2 => &PULSE,
+        3 => &SPARK,
+        _ => &DOT,
+    };
+    frames[tick % frames.len()]
+}
+pub fn activity_glyph_tick(glyph: char) -> Option<usize> {
+    (0..10).find(|tick| frame(*tick).starts_with(glyph))
+}
+pub fn is_activity_glyph(glyph: char) -> bool {
+    [&DOT[..], &MINI_DOT[..], &PULSE[..], &SPARK[..]]
+        .iter()
+        .flat_map(|frames| frames.iter())
+        .any(|frame| frame.starts_with(glyph))
+}
 pub const NAMES: [&str; 5] = ["Aurora", "Amber", "Monochrome", "Orchid", "Ocean"];
 pub fn select(index: usize) {
     ACTIVE.store(index.min(NAMES.len() - 1) as u8, Ordering::Relaxed);
@@ -61,7 +96,7 @@ pub fn selected() -> String {
     }
 }
 pub fn frame(tick: usize) -> &'static str {
-    ["◐", "◓", "◑", "◒", "◐", "◓", "◑", "◒"][tick % 8]
+    animation_frame(current_animation(), tick)
 }
 pub fn activity_color(tick: usize) -> String {
     ansi(if tick % 4 < 2 {
@@ -132,18 +167,28 @@ pub struct TerminalWriter<W> {
 }
 impl<W: Write> TerminalWriter<W> {
     pub fn new(inner: W) -> Self {
-        Self { inner, pending: Vec::new(), neutral: no_color() }
+        Self {
+            inner,
+            pending: Vec::new(),
+            neutral: no_color(),
+        }
     }
 }
 impl<W: Write> Write for TerminalWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if !self.neutral { return self.inner.write(bytes); }
+        if !self.neutral {
+            return self.inner.write(bytes);
+        }
         // Crossterm can split one CSI command across several writes. Buffer
         // only its bounded prefix, never transcript content or a whole frame.
         let mut out = Vec::with_capacity(bytes.len() + self.pending.len());
         for &byte in bytes {
             if self.pending.is_empty() {
-                if byte == 0x1b { self.pending.push(byte); } else { out.push(byte); }
+                if byte == 0x1b {
+                    self.pending.push(byte);
+                } else {
+                    out.push(byte);
+                }
                 continue;
             }
             self.pending.push(byte);
@@ -152,7 +197,9 @@ impl<W: Write> Write for TerminalWriter<W> {
             } else if self.pending.len() > 2 && (b'@'..=b'~').contains(&byte) {
                 if let Ok(sequence) = std::str::from_utf8(&self.pending) {
                     out.extend_from_slice(strip_colors(sequence).as_bytes());
-                } else { out.extend_from_slice(&self.pending); }
+                } else {
+                    out.extend_from_slice(&self.pending);
+                }
                 self.pending.clear();
             } else if self.pending.len() >= 64 {
                 out.append(&mut self.pending);
@@ -191,17 +238,48 @@ mod tests {
     }
     #[test]
     fn neutral_writer_handles_fragmented_color_sequences() {
-        let mut writer = TerminalWriter { inner: Vec::new(), pending: Vec::new(), neutral: true };
-        for fragment in ["\x1b[1m", "\x1b[", ";", "m", "❯ ", "\x1b[38;", "5;81m", "text", "\x1b[0m", "\x1b[3;2H"] {
+        let mut writer = TerminalWriter {
+            inner: Vec::new(),
+            pending: Vec::new(),
+            neutral: true,
+        };
+        for fragment in [
+            "\x1b[1m",
+            "\x1b[",
+            ";",
+            "m",
+            "❯ ",
+            "\x1b[38;",
+            "5;81m",
+            "text",
+            "\x1b[0m",
+            "\x1b[3;2H",
+        ] {
             writer.write_all(fragment.as_bytes()).unwrap();
         }
         writer.flush().unwrap();
-        assert_eq!(String::from_utf8(writer.inner).unwrap(), "\x1b[1m❯ text\x1b[0m\x1b[3;2H");
+        assert_eq!(
+            String::from_utf8(writer.inner).unwrap(),
+            "\x1b[1m❯ text\x1b[0m\x1b[3;2H"
+        );
+    }
+    #[test]
+    fn animation_frames_have_stable_single_cell_width() {
+        for animation in 0..ANIMATION_NAMES.len() {
+            for tick in 0..40 {
+                let frame = animation_frame(animation, tick);
+                assert_eq!(crate::text::width(frame), 1);
+                assert!(is_activity_glyph(frame.chars().next().unwrap()));
+                assert!(!frame.contains('\x1b'));
+            }
+        }
+        assert_eq!(animation_frame(0, 0), "⣾");
+        assert_eq!(animation_frame(0, 8), "⣾");
     }
     #[test]
     fn active_frames_change_without_terminal_controls() {
         let frames: std::collections::BTreeSet<_> = (0..8).map(frame).collect();
-        assert_eq!(frames.len(), 4);
+        assert!(frames.len() >= 3);
         assert!(
             frames
                 .iter()

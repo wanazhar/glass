@@ -3303,6 +3303,16 @@ fn repl(
             continue;
         }
 
+        if text == "/animation" {
+            if let Some(index) = modal::animation(&keys) {
+                glass_tui::theme::select_animation(index);
+                if let Err(error) = profiles::update_active(&cfg) {
+                    modal::info(&keys, "Profile save error", &error);
+                }
+            }
+            continue;
+        }
+
         if text == "/theme" {
             let names = glass_tui::theme::NAMES.map(String::from);
             if let Some(i) = modal::choose(
@@ -3465,7 +3475,7 @@ fn repl(
             let (cmd, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
             if extensions.has_command(cmd) {
                 match extensions.run_command(cmd, args.trim()) {
-                    Some(out) => ui_println!("{}", out.trim_end()),
+                    Some(out) => modal::rich_info(&keys, &format!("/{cmd}"), out.trim_end()),
                     None => ui_println!("\x1b[33m/{cmd} did not return a result\x1b[0m"),
                 }
                 continue;
@@ -4590,7 +4600,7 @@ impl Painter {
         if self
             .last_tick
             .get()
-            .is_some_and(|last| last.elapsed() < std::time::Duration::from_millis(125))
+            .is_some_and(|last| last.elapsed() < std::time::Duration::from_millis(glass_tui::theme::ACTIVITY_INTERVAL_MS))
         {
             return;
         }

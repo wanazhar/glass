@@ -15,6 +15,8 @@ pub struct Profile {
     pub extensions: Vec<String>,
     pub system_prompt: String,
     pub theme: usize,
+    #[serde(default)]
+    pub animation: usize,
 }
 #[derive(Default, Serialize, Deserialize)]
 pub struct Store {
@@ -53,6 +55,7 @@ impl Profile {
             extensions: cfg.extensions.clone(),
             system_prompt: cfg.system_prompt.clone(),
             theme: glass_tui::theme::current(),
+            animation: glass_tui::theme::current_animation(),
         }
     }
     pub fn apply(&self, cfg: &mut config::Config) -> Result<(), String> {
@@ -66,6 +69,7 @@ impl Profile {
         cfg.extensions = self.extensions.clone();
         cfg.system_prompt = self.system_prompt.clone();
         glass_tui::theme::select(self.theme);
+        glass_tui::theme::select_animation(self.animation);
         Ok(())
     }
 }

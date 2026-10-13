@@ -70,6 +70,11 @@ Tool cards separate outcome, duration, command, and a bounded output preview.
 active work shows an animated glyph and elapsed time. `/tools` changes card
 presentation without removing recorded output.
 
+`/animation` previews Dot, MiniDot, Pulse, and Spark. Charm's Dot animation is the
+default: eight fixed-width frames, updated at the existing activity cadence
+(target 100 ms). The chooser makes no model requests. A saved workspace profile
+retains the selected animation; without one, the selection lasts for the session.
+
 `/theme` offers Aurora, Amber, Monochrome, Orchid, and Ocean. Input, Markdown,
 modals, and status share the selected palette. Active-work motion uses the existing
 input loop, capped at eight redraws per second. Completed text stays still.

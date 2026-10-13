@@ -123,7 +123,7 @@ impl Screen {
             } else if let Some(frame) = line
                 .chars()
                 .next()
-                .and_then(|glyph| ['◐', '◓', '◑', '◒'].iter().position(|c| *c == glyph))
+                .and_then(glass_tui::theme::activity_glyph_tick)
             {
                 glass_tui::theme::activity_color(frame)
             } else if line.starts_with('+') && !line.starts_with("+++") {
@@ -617,8 +617,9 @@ pub fn work<T: Send + 'static>(
             0,
         );
         tick += 1;
-        if let Some(Event::Key(k)) = keys.next_timeout(Duration::from_millis(125))
-            && cancelled(k.code, k.modifiers)
+        if let Some(Event::Key(k)) = keys.next_timeout(Duration::from_millis(
+            glass_tui::theme::ACTIVITY_INTERVAL_MS,
+        )) && cancelled(k.code, k.modifiers)
         {
             return None;
         }
@@ -680,8 +681,9 @@ pub fn task<T: Send + 'static>(
             0,
         );
         tick += 1;
-        if let Some(Event::Key(k)) = keys.next_timeout(Duration::from_millis(125))
-            && cancelled(k.code, k.modifiers)
+        if let Some(Event::Key(k)) = keys.next_timeout(Duration::from_millis(
+            glass_tui::theme::ACTIVITY_INTERVAL_MS,
+        )) && cancelled(k.code, k.modifiers)
         {
             return None;
         }
@@ -802,6 +804,43 @@ pub fn rich_actions(
             },
             None => return None,
             _ => {}
+        }
+    }
+}
+
+/// Preview activity frames without launching a model or repainting the transcript.
+pub fn animation(keys: &KeyReader) -> Option<usize> {
+    let screen = Screen::new();
+    let mut selected = glass_tui::theme::current_animation();
+    let started = std::time::Instant::now();
+    loop {
+        let tick = (started.elapsed().as_millis()
+            / u128::from(glass_tui::theme::ACTIVITY_INTERVAL_MS)) as usize;
+        let rows: Vec<_> = glass_tui::theme::ANIMATION_NAMES
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                format!(
+                    "{} {} {name}{}",
+                    if i == selected { "›" } else { " " },
+                    glass_tui::theme::animation_frame(i, tick),
+                    if i == 0 { " · Charm" } else { "" }
+                )
+            })
+            .collect();
+        screen.draw("Activity animation", &rows, "↑↓ ↵ · Esc back", 0);
+        if let Some(Event::Key(key)) = keys.next_timeout(Duration::from_millis(
+            glass_tui::theme::ACTIVITY_INTERVAL_MS,
+        )) {
+            if cancelled(key.code, key.modifiers) {
+                return None;
+            }
+            match key.code {
+                KeyCode::Up => selected = (selected + rows.len() - 1) % rows.len(),
+                KeyCode::Down => selected = (selected + 1) % rows.len(),
+                KeyCode::Enter => return Some(selected),
+                _ => {}
+            }
         }
     }
 }

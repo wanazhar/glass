@@ -1383,12 +1383,9 @@ pub fn dock(owner: &str, last: &mut String) {
         .filter(|w| w.info.status == "working")
         .collect::<Vec<_>>();
     let text = if let Some(w) = active.first() {
-        let frame = ['◐', '◓', '◑', '◒'][(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            / 125
-            % 4) as usize];
+        let frame = glass_tui::theme::frame((std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis()
+            / u128::from(glass_tui::theme::ACTIVITY_INTERVAL_MS)) as usize);
         let width = glass_tui::crossterm::terminal::size().unwrap_or((80, 24)).0;
         if width < 32 {
             format!("{frame} {} · Alt-A", w.info.name)
@@ -1556,7 +1553,7 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
             follow,
             cache.before,
             if working && tab == 0 {
-                start.elapsed().as_millis() / 125
+                start.elapsed().as_millis() / u128::from(glass_tui::theme::ACTIVITY_INTERVAL_MS)
             } else {
                 0
             },
@@ -1571,7 +1568,7 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
             } else {
                 usize::from(width.saturating_sub(1).max(1))
             };
-            let frame = ['◐', '◓', '◑', '◒'][(start.elapsed().as_millis() / 125 % 4) as usize];
+            let frame = glass_tui::theme::frame((start.elapsed().as_millis() / u128::from(glass_tui::theme::ACTIVITY_INTERVAL_MS)) as usize);
 
             let title = if width < 60 {
                 format!(
@@ -1712,7 +1709,7 @@ pub fn view(keys: &crate::input::KeyReader, owner: &str) {
                 previous = signature;
             }
         }
-        let ev = match keys.wait_timeout(Duration::from_millis(if working { 125 } else { 500 })) {
+        let ev = match keys.wait_timeout(Duration::from_millis(if working { glass_tui::theme::ACTIVITY_INTERVAL_MS } else { 500 })) {
             Ok(Some(e)) => e,
             Ok(None) => continue,
             Err(_) => break,

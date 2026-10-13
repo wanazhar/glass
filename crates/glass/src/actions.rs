@@ -55,6 +55,7 @@ fn keywords(name: &str) -> &'static str {
         "settings" => "configure preferences options setup",
         "outputs" => "copy code read response full output tools details json markdown",
         "model" => "change model choose provider account switch model",
+        "animation" => "spinner dot charm pulse motion loading waiting working",
         "recovery" => "why failed error failure debug repair troubleshoot",
         "undo" | "restore" | "rewind" => "undo file restore previous changes rollback",
         "search" => "search conversation find text chat",
@@ -339,6 +340,7 @@ const BUILTIN: &[(&str, &str, &str, bool)] = &[
         false,
     ),
     ("theme", "", "Choose a terminal color palette", false),
+    ("animation", "", "Preview and choose the activity animation", false),
     (
         "dashboard",
         "",

@@ -77,6 +77,20 @@ stable. New declarations apply in a new session. Disabling an extension stops it
 process; calls to its frozen declarations then report unavailability. Duplicate
 extension or tool names, including native tool replacements, are rejected.
 
+## TypeScript extensions
+
+The [TypeScript SDK](../packages/extension-sdk/README.md) provides typed tools,
+commands, hooks, host calls, session state, previews, and diagnostics. Build the
+[starter](../extensions/typescript/README.md) with `npm ci --ignore-scripts` and
+`npm run build`, then configure its compiled entry point with Node. The SDK is
+available in this source checkout and has not been published to npm.
+
+GC starts the extension's small handshake process once. Tool implementation
+modules can load on the first call and remain cached. Node and extension
+dependencies stay outside GC's Rust process; disabled extensions add no process.
+Previews and diagnostic tables use native Markdown inspection. See the SDK guide
+for validation, cancellation, transport bounds, and permission requirements.
+
 ## Extension state
 
 `append_custom`, `read_custom`, and `seed_custom` manage namespaced records in the

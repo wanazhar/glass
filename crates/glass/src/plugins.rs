@@ -13,7 +13,10 @@
 //! config dir); a repository cannot add one, so this stays outside the
 //! trust-gate surface.
 
-use ring::digest::{SHA256, digest};
+use ring::digest::SHA256;
+#[cfg(test)]
+use ring::digest::digest;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::auth;
@@ -270,20 +273,50 @@ fn content_hash(root: &Path) -> Result<String, String> {
                     .map_err(|e| e.to_string())?
                     .to_string_lossy()
                     .replace('\\', "/");
-                let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-                entries.push((rel, bytes));
+                entries.push((rel, path));
             }
         }
     }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut data = Vec::new();
-    for (path, bytes) in entries {
-        data.extend_from_slice(&(path.len() as u64).to_le_bytes());
-        data.extend_from_slice(path.as_bytes());
-        data.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
-        data.extend_from_slice(&bytes);
+    let mut hash = ring::digest::Context::new(&SHA256);
+    for (path, filename) in entries {
+        hash.update(&(path.len() as u64).to_le_bytes());
+        hash.update(path.as_bytes());
+        let mut file = std::fs::File::open(filename).map_err(|e| e.to_string())?;
+        let mut remaining = file.metadata().map_err(|e| e.to_string())?.len();
+        hash.update(&remaining.to_le_bytes());
+        let mut buffer = [0u8; 65536];
+        while remaining > 0 {
+            let limit = remaining.min(buffer.len() as u64) as usize;
+            let n = file.read(&mut buffer[..limit]).map_err(|e| e.to_string())?;
+            if n == 0 { return Err("plugin changed during hashing".into()) }
+            hash.update(&buffer[..n]);
+            remaining -= n as u64;
+        }
+        if file.read(&mut buffer[..1]).map_err(|e| e.to_string())? != 0 {
+            return Err("plugin changed during hashing".into());
+        }
     }
-    Ok(hex(digest(&SHA256, &data).as_ref()))
+    Ok(hex(hash.finish().as_ref()))
+}
+
+#[cfg(test)]
+#[test]
+fn streamed_plugin_hash_preserves_receipt_format() {
+    let dir = std::env::temp_dir().join(format!("gc-plugin-stream-hash-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("nested")).unwrap();
+    let contents = vec![b'x'; 200_000];
+    std::fs::write(dir.join("nested/a"), &contents).unwrap();
+    std::fs::write(dir.join("z"), b"hello").unwrap();
+    let mut expected = Vec::new();
+    for (path, bytes) in [("nested/a", contents.as_slice()), ("z", b"hello".as_slice())] {
+        expected.extend_from_slice(&(path.len() as u64).to_le_bytes());
+        expected.extend_from_slice(path.as_bytes());
+        expected.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        expected.extend_from_slice(bytes);
+    }
+    assert_eq!(content_hash(&dir).unwrap(), hex(digest(&SHA256, &expected).as_ref()));
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 fn hex(bytes: &[u8]) -> String {

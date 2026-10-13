@@ -122,3 +122,5 @@ Plugins package optional components and preserve separate persistent data.
 Installation and update actions inspect integrity and capability changes. See
 [Integrations](integrations.md#agent-plugins) for the plugin interface and MCP
 bridge configuration.
+
+The MCP bridge limits each stdio reply to 8 MiB, matching its HTTP response limit. Oversized replies fail with a transport diagnostic. Plugin integrity checks stream file contents in bounded chunks; existing content hashes and installation receipts remain compatible.

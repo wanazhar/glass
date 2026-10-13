@@ -16,10 +16,6 @@ use serde_json::Value;
 use std::io::Write;
 use std::path::Path;
 
-/// Most recent attempt records read back. Matches the bounded tail the request
-/// diagnostics already use; a longer lineage is truncated, never guessed.
-pub const MAX_RECORDS: usize = 100;
-
 /// One retry attempt, as the retry loop reported it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Attempt {
@@ -110,8 +106,7 @@ pub fn records(session_path: &Path) -> Result<Vec<Attempt>, String> {
 /// exist. The caller shows that as "lineage may be truncated" rather than
 /// presenting a short list as the whole history.
 pub fn window(session_path: &Path) -> Result<(Vec<Attempt>, bool), String> {
-    let rows: Vec<Value> = crate::requests::tail(&path_for(session_path))?;
-    let complete = rows.len() < MAX_RECORDS;
+    let (rows, complete): (Vec<Value>, bool) = crate::requests::tail_window(&path_for(session_path))?;
     Ok((
         rows.into_iter()
             .filter_map(|value| serde_json::from_value::<Attempt>(value).ok())

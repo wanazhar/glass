@@ -1234,7 +1234,7 @@ impl Session {
                     })
                 });
                 if edit_invalidates_summary {
-                    crate::compact::project(&bounded_edited_context(&raw, &edits))
+                    crate::compact::project(&bounded_edited_context(&apply_checkpoint_projection(raw), &edits))
                 } else {
                     let edited = apply_edits(&raw, &edits);
                     let (projected, _) = apply_projection(edited);
@@ -2064,6 +2064,30 @@ mod tests {
             std::env::temp_dir().join(format!("glass-session-{}-{tag}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn old_turn_edits_do_not_resurrect_rewound_exploration() {
+        let dir = tmpdir("edit-rewind");
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("original".into()));
+        session.append(Record::User("task".into()));
+        session.append(Record::Checkpoint { label:"a".into(), log_len:2, rewind_summary:None });
+        session.append(Record::Assistant("EXPLORATION_SECRET".into()));
+        session.append(Record::Checkpoint { label:"a".into(), log_len:4, rewind_summary:Some("retained finding".into()) });
+        session.reproject_history();
+        for _ in 0..20 { session.append(Record::Assistant("later work".into())); }
+        crate::compact::fallback(&mut session, &crate::tools::State::new(), "test").unwrap();
+        session.context_command("rewrite", "1 revised").unwrap();
+        let text = format!("{:?}", session.messages());
+        assert!(!text.contains("EXPLORATION_SECRET"), "{text}");
+        assert!(text.contains("revised"));
+        let id = session.id.clone();
+        drop(session);
+        let resumed = Session::open(&dir, &id).unwrap();
+        assert_eq!(format!("{:?}", resumed.messages()), text);
+        drop(resumed);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

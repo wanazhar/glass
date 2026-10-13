@@ -159,3 +159,12 @@ Its prompt and answer are not appended to the main conversation. It still consum
 provider quota and is metered through the session ledger. Provider caching and
 usage can vary; keeping the side exchange out of history does not guarantee a
 particular cost for the next request.
+
+## Provider retry boundaries
+
+GC automatically backs off on explicit HTTP 429 and 5xx responses before a
+stream starts. A network failure can happen after the provider accepts a POST,
+so ambiguous transport errors require an explicit `/retry` and do not trigger
+automatic model fallback. Automatic HTTP
+retries also depend on provider billing policy; they are not guaranteed free.
+Completed local tools are not replayed by this connection retry loop.

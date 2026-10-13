@@ -589,7 +589,7 @@ impl<'a> Agent<'a> {
             let messages = messages.clone();
             let tools = tools.clone();
             let max_tokens = self.max_tokens;
-            let reasoning = self.reasoning;
+            let reasoning = req.reasoning;
             std::thread::spawn(move || {
                 let result = (|| -> Result<(), String> {
                     let provider = factory()?;
@@ -2467,6 +2467,42 @@ for line in sys.stdin:
         fn context_window(&self) -> u32 {
             200_000
         }
+    }
+
+    #[test]
+    fn async_reasoning_recovery_preserves_effective_budget() {
+        struct ReasoningProvider(std::sync::Arc<std::sync::Mutex<Vec<Option<u32>>>>);
+        impl Provider for ReasoningProvider {
+            fn id(&self) -> &str { "reasoning" }
+            fn context_window(&self) -> u32 { 200_000 }
+            fn stream(&self, request: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+                let mut calls = self.0.lock().unwrap();
+                calls.push(request.reasoning);
+                let events = if calls.len() == 1 { vec![Event::Error("reasoning arrived without an answer".into())] }
+                    else { vec![Event::Text("recovered".into()), Event::Done] };
+                Ok(Box::new(events.into_iter()))
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("gc-async-reasoning-{}", std::process::id()));
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let provider = ReasoningProvider(calls.clone());
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("continue".into()));
+        let mut state = State::new();
+        let mods = Vec::new();
+        let mut extensions = Registry::load(&[], &dir, "reasoning");
+        {
+            let mut agent = Agent::new(&provider, &mut session, &mut state, &mods, &mut extensions, &dir);
+            agent.reasoning = Some(8192);
+            let factory_calls = calls.clone();
+            agent = agent.with_stream_factory(std::sync::Arc::new(move || Ok(Box::new(ReasoningProvider(factory_calls.clone())))));
+            let (output, stop) = agent.run_turn(no_pump).unwrap();
+            assert_eq!(output.text, "recovered");
+            assert_eq!(stop, Stop::Finished);
+        }
+        assert_eq!(*calls.lock().unwrap(), vec![Some(8192), Some(0)]);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

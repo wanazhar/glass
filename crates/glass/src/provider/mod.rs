@@ -203,12 +203,12 @@ pub fn http_agent() -> ureq::Agent {
         .new_agent()
 }
 
-/// Stream one turn, retrying transient failures.
+/// Stream one turn, retrying eligible HTTP status responses.
 ///
-/// A 429 or a 5xx means the request never produced an event, so
-/// re-sending it is safe: the model never saw the first attempt
-/// and no tool ran. A 4xx is a request problem, not a blip, and
-/// retrying it would only burn the same money again.
+/// Only explicit 429/5xx responses enter bounded backoff. A transport failure
+/// may occur after a provider accepted the POST; without idempotency support,
+/// automatically repeating it can duplicate a billable generation. Such failures
+/// require an explicit retry. HTTP retries also carry no billing guarantee.
 ///
 /// `delays` is the backoff in seconds per retry, passed in so a
 /// test does not have to sit through the production delays.
@@ -238,14 +238,12 @@ pub fn stream_with_retry<'a>(
     }
 }
 
-/// True when a failed request can be re-sent safely.
+/// Whether policy permits automatic retries before a stream is obtained.
 pub(crate) fn is_transient(e: &Error) -> bool {
     match e {
         Error::Status(code, _) => *code == 429 || *code >= 500,
-        // The request never reached the provider, or the
-        // connection dropped before the first event: nothing
-        // happened, so trying again is free.
-        Error::Transport(_) => true,
+        // Transport errors do not prove that a generation was never accepted.
+        Error::Transport(_) => false,
         Error::Config(_) => false,
     }
 }
@@ -644,6 +642,24 @@ mod tests {
         let out = stream_with_retry(&p, &flaky_req(), 3, &[0, 0], |_, _, _| {});
         assert!(out.is_err(), "persistent failure still fails the turn");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn ambiguous_transport_failure_is_not_replayed_automatically() {
+        struct Accepted(std::cell::Cell<u32>);
+        impl Provider for Accepted {
+            fn id(&self) -> &str { "accepted" }
+            fn context_window(&self) -> u32 { 100_000 }
+            fn stream(&self, _: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+                self.0.set(self.0.get() + 1);
+                Err(Error::Transport("connection closed after POST acceptance".into()))
+            }
+        }
+        let provider = Accepted(std::cell::Cell::new(0));
+        let mut retries = 0;
+        assert!(stream_with_retry(&provider, &flaky_req(), 3, &[0,0], |_,_,_| retries += 1).is_err());
+        assert_eq!(provider.0.get(), 1);
+        assert_eq!(retries, 0);
     }
 
     #[test]

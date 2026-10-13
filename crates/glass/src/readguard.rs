@@ -60,7 +60,9 @@ impl ReadSet {
 
     /// Tool-call index of the most recent read, or `None` when never read.
     pub fn last_read_at(&self, path: &Path) -> Option<u64> {
-        self.last_read.get(&super::concurrency::canonical_key(path)).copied()
+        self.last_read
+            .get(&super::concurrency::canonical_key(path))
+            .copied()
     }
 
     /// The staleness hint for an edit result, or `None` when the read is
@@ -70,7 +72,10 @@ impl ReadSet {
         let last = self.last_read_at(path)?;
         let age = current_call.saturating_sub(last);
         (age >= STALE_READ_CALLS).then(|| {
-            format!("note: `{}` was last read {age} tool calls ago; reread it before further edits.", path.display())
+            format!(
+                "note: `{}` was last read {age} tool calls ago; reread it before further edits.",
+                path.display()
+            )
         })
     }
 
@@ -87,9 +92,8 @@ impl ReadSet {
 
     /// Inspect a bash command for reads and record them.
     ///
-    /// Deliberately generous about what counts as a read. A false positive
-    /// costs nothing; a false negative lets the overwrite through, which is the
-    /// whole thing this guards against.
+    /// Recognize explicit reads without executing or expanding shell text.
+    /// Unknown shell syntax may require a native read before a later write.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn observe(&mut self, command: &str, output: &str, workspace: &Path) {
         self.observe_at(command, output, workspace, 0)
@@ -100,40 +104,14 @@ impl ReadSet {
     /// recovery replay) use 0, which is "oldest possible" — a hint on age 0
     /// would fire immediately, so 0 means fresh-enough by construction: the
     /// age check only fires when `current_call - last >= STALE_READ_CALLS`.
-    pub fn observe_at(
-        &mut self,
-        command: &str,
-        output: &str,
-        workspace: &Path,
-        call_index: u64,
-    ) {
+    pub fn observe_at(&mut self, command: &str, output: &str, workspace: &Path, call_index: u64) {
         let cmd = command.trim();
         if cmd.is_empty() {
             return;
         }
 
-        // The overwhelmingly common idiom: `cat path`, `head -n5 path`, `less`.
-        for (i, tok) in cmd.split_whitespace().enumerate() {
-            let t = tok.trim_matches(|c: char| {
-                !c.is_alphanumeric() && c != '.' && c != '/' && c != '_' && c != '-'
-            });
-            if t.is_empty() || !looks_like_path(t) {
-                continue;
-            }
-            let prev = if i > 0 {
-                cmd.split_whitespace().nth(i - 1).unwrap_or("")
-            } else {
-                ""
-            };
-            let next = cmd.split_whitespace().nth(i + 1).unwrap_or("");
-            let reader = [
-                "cat", "head", "tail", "less", "bat", "wc", "nl", "source", "stat", "file", "wc",
-            ]
-            .contains(&prev.trim_matches(|c: char| !c.is_alphanumeric()));
-            let _ = next;
-            if reader {
-                self.mark_at(&abs(t, workspace), call_index);
-            }
+        for path in reader_paths(cmd, workspace) {
+            self.mark_at(&path, call_index);
         }
 
         // `rg` / `grep` counts as reading only when the path was named
@@ -191,6 +169,149 @@ impl ReadSet {
     }
 }
 
+// Small lexical scan, never shell execution. Operators terminate commands;
+// quotes preserve literal file names and redirection targets are not reads.
+fn reader_paths(command: &str, workspace: &Path) -> Vec<std::path::PathBuf> {
+    let mut tokens = Vec::new();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut comment = false;
+    for ch in command.chars() {
+        if comment {
+            if ch != '\n' {
+                continue;
+            }
+            comment = false;
+        }
+        if escaped {
+            word.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+            continue;
+        }
+        if let Some(end) = quote {
+            if ch == end {
+                quote = None;
+            } else {
+                word.push(ch);
+            }
+        } else if ch == '#' && word.is_empty() {
+            comment = true;
+        } else if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+        } else if matches!(ch, ';' | '|' | '&' | '<' | '>' | '\n') {
+            if !word.is_empty() {
+                if matches!(ch, '<' | '>') && word.bytes().all(|byte| byte.is_ascii_digit()) {
+                    word.clear(); // An adjacent numeric descriptor is not a file operand.
+                } else {
+                    tokens.push((std::mem::take(&mut word), false));
+                }
+            }
+            tokens.push((ch.to_string(), true));
+        } else if ch.is_whitespace() {
+            if !word.is_empty() {
+                tokens.push((std::mem::take(&mut word), false));
+            }
+        } else {
+            word.push(ch);
+        }
+    }
+    if quote.is_some() || escaped {
+        return Vec::new();
+    }
+    if !word.is_empty() {
+        tokens.push((word, false));
+    }
+    let mut command_word = true;
+    let mut reader = String::new();
+    let mut redirect = None;
+    let mut inputs = Vec::new();
+    let mut option_value = false;
+    let mut options = true;
+    let mut paths = Vec::new();
+    for (token, operator) in tokens {
+        if operator {
+            if matches!(token.as_str(), ">" | "<") {
+                redirect = if redirect == Some('!') || token == "<" && redirect == Some('<') {
+                    Some('!')
+                } else {
+                    token.chars().next()
+                };
+            } else {
+                command_word = true;
+                reader.clear();
+                redirect = None;
+                inputs.clear();
+                option_value = false;
+                options = true;
+            }
+            continue;
+        }
+        if let Some(kind) = redirect.take() {
+            if kind == '<' && !token.contains(['$', '`', '*', '?']) {
+                let path = abs(&token, workspace);
+                if path.is_file() {
+                    if !reader.is_empty() {
+                        paths.push(path);
+                    } else if command_word {
+                        inputs.push(path);
+                    }
+                }
+            }
+            continue;
+        }
+        if command_word {
+            command_word = false;
+            let name = Path::new(&token)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if [
+                "cat", "head", "tail", "less", "bat", "wc", "nl", "source", "stat", "file",
+            ]
+            .contains(&name)
+            {
+                reader = name.into();
+                paths.append(&mut inputs);
+            }
+            continue;
+        }
+        if reader.is_empty() {
+            continue;
+        }
+        if option_value {
+            option_value = false;
+            continue;
+        }
+        if options && token == "--" {
+            options = false;
+            continue;
+        }
+        if options && token.starts_with('-') {
+            option_value = matches!(
+                (reader.as_str(), token.as_str()),
+                ("head" | "tail", "-n" | "-c" | "--lines" | "--bytes")
+                    | ("stat", "-c" | "--format" | "--printf")
+                    | ("bat", "-l" | "--language" | "--theme" | "--style")
+                    | ("nl", "-b" | "-n" | "-s" | "-w")
+            );
+            continue;
+        }
+        if token.contains(['$', '`', '*', '?']) {
+            continue;
+        }
+        let path = abs(&token, workspace);
+        if path.is_file() {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
 fn strip_tool<'a>(cmd: &'a str, tool: &str) -> Option<&'a str> {
     cmd.strip_prefix(tool).map(str::trim_start)
 }
@@ -233,6 +354,74 @@ mod tests {
         rs.observe(&format!("cat {}", f.display()), "fn main() {}", &ws);
         assert!(rs.contains(&f), "cat must count as a read");
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn reader_options_quotes_and_multiple_files_count_as_reads() {
+        let dir = scratch("reader-options");
+        for name in ["a.rs", "space name.rs", "README"] {
+            std::fs::write(dir.join(name), "contents").unwrap();
+        }
+        for command in [
+            "cat -n a.rs",
+            "head -n 5 a.rs",
+            "head -n5 a.rs",
+            "tail --bytes 8 a.rs",
+            "/bin/cat -- a.rs",
+            "cat a.rs README",
+            "cat 'space name.rs'",
+        ] {
+            let mut reads = ReadSet::new();
+            reads.observe_at(command, "contents", &dir, 7);
+            let name = if command.contains("space name") {
+                "space name.rs"
+            } else {
+                "a.rs"
+            };
+            assert_eq!(reads.last_read_at(&dir.join(name)), Some(7), "{command}");
+            if command.ends_with("README") {
+                assert!(reads.contains(&dir.join("README")));
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reader_arguments_do_not_mark_redirects_comments_or_other_commands() {
+        let dir = scratch("reader-boundaries");
+        for name in ["a.rs", "b.rs"] {
+            std::fs::write(dir.join(name), "contents").unwrap();
+        }
+        for command in [
+            "echo cat b.rs",
+            "cat a.rs > b.rs",
+            "cat a.rs; echo b.rs",
+            "cat a.rs | echo b.rs",
+            "cat a.rs # b.rs",
+        ] {
+            let mut reads = ReadSet::new();
+            reads.observe(command, "contents", &dir);
+            assert!(!reads.contains(&dir.join("b.rs")), "{command}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn input_redirection_is_read_but_here_documents_and_output_targets_are_not() {
+        let dir = scratch("input-redirection");
+        let path = dir.join("a.rs");
+        std::fs::write(&path, "contents").unwrap();
+        for command in ["cat < a.rs", "head -n 2 <a.rs", "< a.rs cat"] {
+            let mut reads = ReadSet::new();
+            reads.observe(command, "contents", &dir);
+            assert!(reads.contains(&path), "{command}");
+        }
+        for command in ["echo > a.rs", "cat << a.rs", "cat <<< a.rs"] {
+            let mut reads = ReadSet::new();
+            reads.observe(command, "contents", &dir);
+            assert!(!reads.contains(&path), "{command}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

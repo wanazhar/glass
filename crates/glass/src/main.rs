@@ -3897,6 +3897,16 @@ fn drain_input(
     let mut dirty = false;
 
     while let Some(ev) = keys.try_next() {
+        // Interrupt must work before overlays consume editing keys.
+        if matches!(&ev, Event::Key(k) if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c')) {
+            palette.close();
+            surface::overlay(false).ok();
+            editor.clear();
+            painter.append_live_entry(glass_tui::Role::System,
+                "Cancelled the current turn; partial output is saved.");
+            ui_println!("\r\x1b[2K\x1b[33m⚡ interrupt\x1b[0m");
+            return Some(String::new());
+        }
         if palette.active() {
             let selected = match ev {
                 Event::Key(key) => palette.key(editor, key),
@@ -3949,6 +3959,11 @@ fn drain_input(
                         "This command changes session or provider state. Finish or cancel the current turn, then invoke it again. Your draft is preserved.",
                     ),
                 }
+            }
+            if !palette.active()
+                && let Some(reader) = painter.reader.borrow_mut().as_mut()
+            {
+                let _ = reader.restore_after_overlay();
             }
             continue;
         }
@@ -4050,17 +4065,6 @@ fn drain_input(
             Event::Key(k) => k,
             _ => continue,
         };
-
-        if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
-            // Ctrl-C is an escape hatch: abandon the turn and drop the draft.
-            editor.clear();
-            painter.append_live_entry(
-                glass_tui::Role::System,
-                "Cancelled the current turn; partial output is saved.",
-            );
-            ui_println!("\r\x1b[2K\x1b[33m⚡ interrupt\x1b[0m");
-            return Some(String::new());
-        }
 
         let alt = k.modifiers.contains(KeyModifiers::ALT);
         let edit_key = if alt && k.code == KeyCode::Enter {

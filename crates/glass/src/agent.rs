@@ -335,6 +335,12 @@ impl<'a> Agent<'a> {
         self
     }
 
+    /// Shared isolated-task setup. Callers still own providers, sessions,
+    /// metering, cancellation and persistence; no permissions are broadened.
+    pub fn with_task_context(self, prompt: String, read_only: bool) -> Self {
+        self.with_prompt(prompt, None, None).with_plan_mode(read_only)
+    }
+
     pub fn with_plan_mode(mut self, enabled: bool) -> Self {
         self.read_only = enabled;
         self

@@ -108,18 +108,18 @@ with tempfile.TemporaryDirectory(prefix='gc-cli-') as temp:
             requests_before=len(Provider.requests)
             t=TTY(work,env,['resume'],size)
             try:
-                t.wait('Resume conversation');assert 'Hidden' not in t.vt.text();t.send(cancel);code,raw=t.finish();assert code==0
+                t.wait('Conversations');assert 'Hidden' not in t.vt.text();t.send(cancel);code,raw=t.finish();assert code==0
                 assert '?1049l' in raw and '?2004l' in raw
                 assert before=={p.name:p.read_bytes() for p in data.glob('*.jsonl')}
                 assert len(Provider.requests)==requests_before, 'Cancel must not contact a provider'
             except Exception:t.close();raise
         t=TTY(work,env,['resume'],size)
         try:
-            t.wait('Resume conversation');t.send('no-such-thread');t.wait('No matches');t.send('\x1b');assert t.finish()[0]==0
+            t.wait('Conversations');t.send('no-such-thread');t.wait('No matches');t.send('\x1b');assert t.finish()[0]==0
         except Exception:t.close();raise
         t=TTY(work,env,['resume'],size)
         try:
-            t.wait('Resume conversation');t.send('Alpha');t.wait('Alpha');t.send('\r');t.wait('❯');t.send('continue\r')
+            t.wait('Conversations');t.send('Alpha');t.wait('Alpha');t.send('\r');t.wait('❯');t.send('continue\r')
             end=time.monotonic()+15
             while 'RESUME_OK' not in (data/'alpha.jsonl').read_text() and time.monotonic()<end:t.read()
             assert 'RESUME_OK' in (data/'alpha.jsonl').read_text(),t.raw
@@ -130,7 +130,6 @@ with tempfile.TemporaryDirectory(prefix='gc-cli-') as temp:
         print(f'PASS CLI presentation and resume selection/cancel/search {size[0]}x{size[1]}')
     t=TTY(work,env,['init','--write'],(40,24));code,raw=t.finish();assert code==0 and 'wrote' in plain(raw),(code,raw)
     assert (work/'AGENTS.md').read_text().strip()=='RESUME_OK'
-    empty=root/'empty';empty.mkdir();t=TTY(empty,env,['resume'],(20,8));code,raw=t.finish();assert code==0 and '?1049' not in raw
-    assert 'No conversations' in plain(raw)
+    empty=root/'empty';empty.mkdir();t=TTY(empty,env,['resume'],(20,8));t.wait('Conversations');t.wait('All projects');t.send('\x1b');code,raw=t.finish();assert code==0 and '?1049l' in raw
     server.shutdown();server.server_close()
 print('PASS all command help, JSON, raw export, non-Git startup, headless guidance and empty project')

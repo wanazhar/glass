@@ -1,5 +1,7 @@
 # Empty provider responses and transcript error styling
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 2026-10-09. The reported session contained reasoning deltas immediately before
 its generic empty-response failures. The old adapter discarded completion reason,
 response identity and shape information, so historical records cannot establish

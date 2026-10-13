@@ -1,14 +1,11 @@
-# Context Window Management in AI Coding Harnesses — State of the Art, October 2026
+# Context management survey, October 2026
 
-Research compiled from primary sources: vendor documentation, live source code, and GitHub issues.
-Every factual claim below is cited. Anything I could not verify is explicitly marked **UNVERIFIED**.
+Research snapshot. External project details describe the cited collection period; use the [current guides](../docs/INDEX.md) for glass-core behavior.
 
-**Important framing note on model versions:** As of October 2026 the frontier model line has moved
-past the Claude Opus 4.x / GPT-5.x / Gemini 3.x naming in the original request. Current Anthropic
-aliases resolve to Opus 5.5 and Sonnet 5.5 (native 1M window), plus a "Fable" family
-(Fable 5.1 / Fable 5) for long-horizon work; Google model constants include `gemini-3-pro-preview`
-and `gemini-3.1-pro-preview`. I report what the docs actually say as of today rather than the
-4.x/5.x-era numbers in the request.
+This survey records observations from vendor documentation, source code, and issue
+reports collected in October 2026. Sources accompany the observations; statements
+marked **UNVERIFIED** lacked confirmation in the collection record. Model names,
+limits, and defaults are historical observations and may have changed.
 
 ---
 
@@ -21,10 +18,10 @@ and `gemini-3.1-pro-preview`. I report what the docs actually say as of today ra
 | **Compaction strategy (one line)** | Replaces conversation with an LLM-generated structured summary, then re-injects a curated subset of durable state from disk and up to 5 recently-touched files. |
 | **Threshold** | Configurable window, not a percentage. Default: compacts "when the conversation reaches the model's context limit," except models with a **native 1M window, which auto-compact at ~967K tokens**. `/autocompact <100k–1M>`, `--autocompact`, `autoCompactWindow` setting, or `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var (takes precedence over all). |
 | **Model-driven?** | **Yes.** LLM writes the summary. As of v2.1.198 the summarization request inherits the session's extended-thinking config. |
-| **Notable mechanism** | **Most sophisticated survival contract of any harness.** After compaction: project-root CLAUDE.md and unscoped rules re-injected from disk; auto memory re-injected; fresh git status snapshot; plan-mode plan re-injected from disk; up to **5** recently-modified files re-read (files >5,000 tokens return as a *path reference*, not content); invoked skill bodies re-injected capped at 5,000 tokens/skill and 25,000 total, oldest dropped first; running background commands/subagents kept alive and re-announced; `SessionStart` hooks matching the `compact` source fire and re-add output. Path-scoped rules and nested CLAUDE.md are *summarized away*. |
+| **Notable mechanism** | After compaction: project-root CLAUDE.md and unscoped rules re-injected from disk; auto memory re-injected; fresh git status snapshot; plan-mode plan re-injected from disk; up to **5** recently-modified files re-read (files >5,000 tokens return as a *path reference*, not content); invoked skill bodies re-injected capped at 5,000 tokens/skill and 25,000 total, oldest dropped first; running background commands/subagents kept alive and re-announced; `SessionStart` hooks matching the `compact` source fire and re-add output. Path-scoped rules and nested CLAUDE.md are *summarized away*. |
 | **Sliding window / eviction** | No classic sliding window. Two-stage fallback: if a model must be swapped during compaction, Claude Code refuses to fall back to a **smaller** context window. Separately, Anthropic exposes server-side **`clear_tool_uses_20250919`** (clears oldest tool results in place, placeholder text left behind; default trigger 100,000 input tokens, `keep` 3 tool uses, optional `clear_at_least`, `exclude_tools`, `clear_tool_inputs`) and **`clear_thinking_20251015`**. |
 | **Token counting** | Mix of API-reported usage and local estimation; `CLAUDE_CODE_MAX_CONTEXT_TOKENS` lets you declare the window for unrecognized/gateway model IDs. `count_tokens` endpoint available client-side. |
-| **Persistent on-disk state** | **Yes — the richest.** CLAUDE.md hierarchy, auto memory, plan-mode plan file, plan/todo tracking, AGENTS.md support, hooks (`PreCompact`/`PostCompact`, `SessionStart` w/ `compact` source). |
+| **Persistent on-disk state** | **Yes.** CLAUDE.md hierarchy, auto memory, plan-mode plan file, plan/todo tracking, AGENTS.md support, hooks (`PreCompact`/`PostCompact`, `SessionStart` w/ `compact` source). |
 | **System prompt approach for long-horizon tracking** | Anthropic's engineering guidance: compaction + structured note-taking + sub-agents are the three levers. Subagent returns "only the summary and a small metadata trailer"; README quotes "often 1,000–2,000 tokens." |
 | **Published cost/quality measurements** | Anthropic says compaction should enable "minimal performance degradation" and recommends tuning prompts "start by maximizing recall… then iterate to improve precision." **I found no published token-cost or quality benchmark for Claude Code's own compaction.** UNVERIFIED. |
 
@@ -70,7 +67,7 @@ Sources: [compact.rs (source)](https://github.com/openai/codex/blob/main/codex-r
 | **Threshold** | `max_chat_history_tokens`, documented as `min(max_input_tokens / 16, 8192)`, floored at 1024. So **8192 tokens for a 128K model**, 1024 for an 8K model. |
 | **Model-driven?** | **Yes** — `model.simple_send_with_retries()` with `prompts.summarize`. |
 | **Notables** | `/drop` (remove files from the chat to free context), `/clear`, `/reset` (drop files + clear history), `/tokens` (report context tokens), `/copy-context`, `/context`, `/map`. **Architect/editor two-model split** (`/architect`, `/editor-model`, `/weak-model`) reduces context by having a cheaper/weak model plan and a strong model execute. **Repo map** (`repomap`) uses tree-sitter + PageRank over a dependency graph to pick the most relevant slices of a repo map that would otherwise not fit. |
-| **Token counting** | Real tokenizer via LiteLLM, with `model_prices_and_context_window.json` (cached, 24h TTL) for window sizes and costs. This is the most exact-tokenizer-happy design of the bunch. |
+| **Token counting** | Real tokenizer via LiteLLM, with `model_prices_and_context_window.json` (cached, 24h TTL) for window sizes and costs. The implementation uses tokenizer-based estimates. |
 | **Persistent state** | Git-based: edits are committed, so "state" is the repo, not a side file. |
 | **Published cost/quality** | Aider's own release notes mention "Optimized chat history summarization performance." No quality measurement. UNVERIFIED. |
 | **Notable complaint** | **The threshold heuristic is decoupled from the real context window.** On a 1M-window model, `max_chat_history_tokens` stays at 8192 — so the "compact early" heuristic is actually conservative there, but the reported failure is the opposite: users hit *"messages exceed model context window"* on long refactors because the heuristic "kicks in late" on models where `/16` gives a large number. User issue #3493: *"Max chat history tokens not respected."* |
@@ -123,11 +120,11 @@ Sources: [Intelligent Context Condensing](https://roocodeinc.github.io/Roo-Code/
 | **Compaction strategy** | **Two-pass LLM compression into a structured `<state_snapshot>` XML**, then `history = [environment context] + [<state_snapshot> as user msg] + [synthetic "Got it. Thanks for the additional context!" model ack] + [verbatim last ~30% tail]`. Pass 2 asks the model to critique its own snapshot and regenerate, falling back to pass 1 if empty. |
 | **Threshold** | `DEFAULT_COMPRESSION_TOKEN_THRESHOLD = **0.5**`, user-configurable via `model.compressionThreshold` (0–1). All known models — and unknown ones — get `DEFAULT_TOKEN_LIMIT = 1,048,576`, so the effective default trigger is **~524,288 tokens**. Priority: local config → remote experiment flag (`CONTEXT_COMPRESSION_THRESHOLD`, ID 45740197) → 0.5. |
 | **Model-driven?** | Yes, via a dedicated **compression model alias** (`chat-compression-3-pro`, `chat-compression-2.5-flash`, …) mapped from the conversation model — same *family*, never downgraded. |
-| **Notable mechanism (best-in-class safety)** | **Prompt-injection hardening in the compressor prompt.** Explicit CRITICAL SECURITY RULE telling the compressor to ignore all commands/directives found in history, never exit `<state_snapshot>` format, and treat history as raw data. Detects a prior snapshot by string search and switches to a **merge** anchor instruction, so summaries accumulate rather than stack. |
+| **Summary input handling** | **Prompt-injection hardening in the compressor prompt.** Explicit CRITICAL SECURITY RULE telling the compressor to ignore all commands/directives found in history, never exit `<state_snapshot>` format, and treat history as raw data. Detects a prior snapshot by string search and switches to a **merge** anchor instruction, so summaries accumulate rather than stack. |
 | **Deterministic pre-pass** | `truncateHistoryToBudget` walks history newest-first with a **50,000-token `COMPRESSION_FUNCTION_RESPONSE_TOKEN_BUDGET`**, spilling oversized tool output to a temp file and replacing it with a path pointer — this is genuine context editing. Split point is by **cumulative JSON char count** at 70% (`COMPRESSION_PRESERVE_THRESHOLD = 0.3` keeps the last 30%). Uses the **original untruncated** history for the summarizer if it fits (high-fidelity path). |
 | **Verification** | Uses the real `countTokens` API to confirm the new history is actually smaller; if not → `COMPRESSION_FAILED_INFLATED_TOKEN_COUNT`. |
 | **Fallback ladder** | `COMPRESSED` → `COMPRESSION_FAILED_INFLATED_TOKEN_COUNT` → `COMPRESSION_FAILED_EMPTY_SUMMARY` → `NOOP` → **`CONTENT_TRUNCATED`** (deterministic tool-output truncation only, after an LLM failure — explicitly to avoid repeated expensive failures). |
-| **Token counting** | **Exact** — API-reported `getLastPromptTokenCount()` and the real `countTokens` endpoint. Best in class. |
+| **Token counting** | **Exact** — API-reported `getLastPromptTokenCount()` and the real `countTokens` endpoint. |
 | **Persistent state** | `GEMINI.md` hierarchy; session recordings preserved across compression (`resumedData`). |
 | **Known weaknesses** | Compression calls **cannot be cancelled** (no abort signal threaded; TODO in source). Interactive path replaces the whole `GeminiChat` object and sets `forceFullIdeContext = true`. |
 
@@ -145,7 +142,7 @@ Sources: [Deep reference with code links (commit 29b3aa8)](https://gist.github.c
 | **Threshold** | **~80% of capacity**, leaving a ~20% buffer so tool calls continue while compaction runs in the background. At **~95%** it *pauses and waits* for compaction to finish. Manual `/compact` (Esc cancels); `/clear` wipes. |
 | **Model-driven?** | Yes. |
 | **Deterministic tool-output gating** | **Tool output >20 KiB is spilled to a temp file by default**; the model gets the path + preview. Tunable via `COPILOT_LARGE_OUTPUT_THRESHOLD_BYTES`. Applies to MCP tools too. |
-| **Persistent state (notable)** | **Every compaction writes a numbered, titled checkpoint file into the session workspace.** Retrievable with `/session checkpoints` / `/session checkpoints N`. This is the best *auditability* story in the comparison — you can read back what was preserved. |
+| **Persistent state (notable)** | **Every compaction writes a numbered, titled checkpoint file into the session workspace.** Retrievable with `/session checkpoints` / `/session checkpoints N`. The saved checkpoint exposes the retained content for inspection. |
 | **Token counting** | Exact; `/context` breaks usage down by System Prompt / Custom Instructions / System Tools / MCP Tools / Messages / Free Space / Buffer. |
 | **Documented self-assessment** | GitHub is explicit that compaction is lossy: *"the exact wording of every message, the full output of every command, or minor decisions made early… may not be included,"* and that compaction **cannot be reversed** (though `/resume` restores prior sessions). |
 | **Published cost/quality** | None found. UNVERIFIED. |
@@ -161,7 +158,7 @@ Source: [Managing context in GitHub Copilot CLI](https://docs.github.com/en/copi
 | **Compaction strategy** | `StopWhen` predicate halts the agent loop when remaining context ≤ threshold, then calls `Summarize()` — a full LLM summarization turn over session history, stored as an `IsSummaryMessage` message; `getSessionMessages` then reads only from `SummaryMessageID` forward. If tool calls were pending, the turn is **re-queued** with the prompt rewritten: *"The previous session was interrupted because it got too long, the initial user request was: `…`"*. |
 | **Threshold** | **Hardcoded constants in `internal/agent/agent.go`**: `largeContextWindowThreshold = 200_000`; `largeContextWindowBuffer = 20_000`; `smallContextWindowRatio = 0.2`. So **>200K window → summarize when 20,000 tokens remain (≈98%); ≤200K → when 20% remains (≈80%)**. |
 | **Model-driven?** | Yes — the **large model** produces the summary (`summaryPrompt` template). |
-| **Persistent state** | **Yes, and it's the best integrated:** Crush has a real **`todos` tool**, persists `session.Todos`, and `buildSummaryPrompt()` injects the todo list into the compaction prompt with: *"Include these tasks and their statuses in your summary. Instruct the resuming assistant to use the `todos` tool to continue tracking progress."* It also injects a `<system_reminder>` when the todo list is empty. |
+| **Persistent state** | **Yes:** Crush has a real **`todos` tool**, persists `session.Todos`, and `buildSummaryPrompt()` injects the todo list into the compaction prompt with: *"Include these tasks and their statuses in your summary. Instruct the resuming assistant to use the `todos` tool to continue tracking progress."* It also injects a `<system_reminder>` when the todo list is empty. |
 | **Token counting** | Provider-reported usage accumulated across `InputTokens + CacheReadTokens + CacheCreationTokens`; falls back to `approxTokenCount` only when usage is zero. |
 | **Notables** | **Loop detection** as a second stop condition; sessions/messages in SQLite. `disable_auto_summarize` is all-or-nothing. Two open issues (#3564, #3620) request a configurable ratio. |
 | **Known complaints** | **#3620 is the best-documented hard-stop failure in this whole report** (details in Part 3). Also: the summary is display-only, with no way to copy it into a new session (#3599). |
@@ -196,7 +193,7 @@ Source: [Smart Context Management](https://goose-docs.ai/docs/guides/sessions/sm
 |---|---|
 | **Compaction strategy** | A pluggable **Condenser** subsystem (`CondenserBase` → `RollingCondenser` → `LLMSummarizingCondenser`, plus `NoOpCondenser` and `PipelineCondenser` for multi-stage). Replaces the middle of history with a `Condensation` event carrying `forgotten_event_ids`, `summary`, `summary_offset`. |
 | **Threshold** | **Event-count based, not token-based**: `max_size` (default **120**), with `keep_first` (default 4) always preserved. Post-condensation target is `max_size // 2` (default 60). |
-| **Model-driven?** | Yes, and **the summarizing LLM is explicitly a separate instance** — `llm=llm.model_copy(update={"usage_id": "condenser"})`, "often cheaper model than reasoning LLM." This is the opposite of Roo Code's deliberate decision. |
+| **Model-driven?** | Yes, and **the summarizing LLM is explicitly a separate instance** — `llm=llm.model_copy(update={"usage_id": "condenser"})`, "often cheaper model than reasoning LLM." Roo Code uses a different summarizer-selection policy. |
 | **Sliding window** | **Yes, and it's the purest rolling window of the group**: keep head (`keep_first`), keep tail (`target_size - keep_first - 1`), summarize the middle. |
 | **Manual trigger** | Agent can emit a `CondensationRequest` event on hitting an LLM context-window error — i.e. **reactive recovery on overflow**, in addition to proactive thresholding. |
 | **Token counting** | Event-count proxy rather than true tokens. |
@@ -258,15 +255,15 @@ Source: [Context Management in Amp](https://ampcode.com/guides/context-managemen
 
 ### 14. pi (minimal TypeScript harness, `@earendil-works/pi-coding-agent`)
 
-This is the most rigorously specified minimal harness I found, and the best documented on edge cases.
+The collected documentation specifies compaction boundaries and edge cases.
 
 | Field | Finding |
 |---|---|
 | **Compaction strategy** | Walks **backwards** accumulating token estimates to `keepRecentTokens` (default **20,000**), summarizes everything before the cut point, appends a `CompactionEntry` with `firstKeptEntryId`, and rebuilds context as `[summary][messages from firstKeptEntryId]`. |
 | **Threshold** | `contextTokens > contextWindow − reserveTokens`, `reserveTokens` default **16,384**. Configurable globally **and per-model** via `compaction.modelOverrides` — e.g. `reserveTokens: 400000` triggers above 600K on a 1M model. |
 | **Model-driven?** | Yes. **Summarization requests disable prompt-cache writes**, since these are one-off prompts unlikely to be reused — a nice cost detail most harnesses ignore. |
-| **Best-in-class: repeated-compaction correctness** | "On repeated compactions, the summarized span starts at the previous compaction's **kept boundary** (`firstKeptEntryId`), **not at the compaction entry itself**." This deliberately re-summarizes messages that survived the previous compaction, so information isn't stranded in a kept-but-never-re-summarized zone. |
-| **Best-in-class: cut-point validity** | Cut points may only be user messages, assistant messages, bash-execution messages, or custom messages. **"Never cut at tool results (they must stay with their tool call)."** Handles "split user-message spans" (a single span exceeding the budget) by generating **two summaries and merging them**. |
+| **Repeated-compaction boundaries** | "On repeated compactions, the summarized span starts at the previous compaction's **kept boundary** (`firstKeptEntryId`), **not at the compaction entry itself**." This deliberately re-summarizes messages that survived the previous compaction, so information isn't stranded in a kept-but-never-re-summarized zone. |
+| **Valid compaction cut points** | Cut points may only be user messages, assistant messages, bash-execution messages, or custom messages. **"Never cut at tool results (they must stay with their tool call)."** Handles "split user-message spans" (a single span exceeding the budget) by generating **two summaries and merging them**. |
 | **Overflow recovery** | A provider context-overflow error or early `stopReason: "length"` can select **one** compact-and-retry. Ordering is precisely specified: persist final response → `turn_end` → `agent_end` → append context-edit omissions → compaction → fresh retry. If recovery compaction fails, omission edits are kept, no compaction appended, no retry scheduled. |
 | **Deterministic pre-processing** | `serializeConversation()` flattens messages to text (with `[User]:`, `[Assistant tool calls]: read(path=…)` labels) to stop the model treating it as a conversation to continue. **Tool results truncated to 2,000 characters** during serialization. |
 | **Persistent state** | Append-only session log with typed entries; compaction is *recorded*, not destructive. Summary format: Goal / Constraints & Preferences / Progress (Done, In Progress, Blocked) / Key Decisions with rationale / Next Steps / Critical Context, plus **`<read-files>` and `<modified-files>` tags accumulated across compactions**. |
@@ -345,21 +342,20 @@ bypasses every threshold). Both are real bugs that shipped in production harness
 
 ### Persistent on-disk state re-injected
 
-This is the most under-appreciated mechanism, and it's what separates harnesses that survive
-compaction from those that merely don't crash.
+Persistent state can restore task information after compaction. The collected examples include:
 
-- **Richest**: Claude Code (CLAUDE.md, auto memory, plan file, git status, 5 files, skills, hooks).
-- **Best integrated into the summary itself**: Crush — it literally injects the todo list into the
+- **Claude Code** (CLAUDE.md, auto memory, plan file, git status, 5 files, skills, hooks).
+- **Crush** injects the todo list into the
   compaction prompt and instructs the resuming assistant to keep using the `todos` tool.
-- **Best auditability**: Copilot CLI's per-compaction checkpoint files.
-- **Best accumulation discipline**: pi's `<read-files>` / `<modified-files>` tags carried across
+- **Copilot CLI** exposes per-compaction checkpoint files.
+- **pi** retains `<read-files>` / `<modified-files>` tags carried across
   compactions, and the `firstKeptEntryId` re-summarization rule.
-- **Strongest stated rationale**: Anthropic's structured note-taking section — Claude Code's todo
+- **Anthropic guidance** discusses structured note-taking; Claude Code's todo
   list and the memory tool are explicitly framed as "persistent memory with minimal overhead."
 
 ### Published token costs / quality measurements of compaction
 
-This is where the field is genuinely thin. **Only OpenHands publishes numbers**: up to 2x
+The collected sources include an OpenHands quantitative claim: up to 2x
 per-turn cost reduction and "equivalent or better performance" on SWE tasks (methodology
 unverified). Anthropic publishes qualitative guidance only ("maximize recall, then improve
 precision"). Everyone else: nothing published that I could find. **UNVERIFIED across the board.**
@@ -368,10 +364,9 @@ precision"). Everyone else: nothing published that I could find. **UNVERIFIED ac
 
 ## PART 3 — FAILURE MODES
 
-### The best-documented hard-stop: Crush #3620
+### Context-overflow failure: Crush #3620
 
-This is the single most instructive failure I found, because it was diagnosed from a frozen SQLite
-store with hard numbers:
+The issue record includes counters from a saved SQLite store:
 
 Session counters at death: `prompt_tokens = 151,610`, `completion_tokens = 65,536`. Context window
 1,000,000. The stop condition was **correctly not due** (remaining ≈848K vs. a 20K buffer).
@@ -463,7 +458,7 @@ lossy strategy for you.
 
 ## PART 4 — DOES THE FRONTIER NEED A COMPACTOR?
 
-**The evidence says yes, decisively, and the vendor consensus has converged on ~60–80%.**
+The collected sources describe compaction triggers in roughly the 60–80% range, with differing reserve policies and model limits.
 
 ### Direct evidence that models degrade
 
@@ -574,7 +569,7 @@ pure percentage, and Gemini CLI chose the most aggressive default (50%).
 - **Never derive a trigger from a percentage of an advertised window.** Use an absolute reserve
   scaled to the window, and let the user lower it.
 - **Arm recovery on the refusal path**, not just between steps. The Crush #3620 cascade shows a
-  harness can wedge itself permanently if overflow is only detected at safe points.
+  harness can remain blocked if overflow is only detected at safe points.
 - **Recovery from overflow must truncate, not re-summarize** — the full history is what didn't fit.
 - **Bound the compaction call's output tokens.** Without a hard `maxOutputTokens`, thinking tokens make
   the buffer math unpredictable across providers (qwen-code documents this precisely for Anthropic vs.

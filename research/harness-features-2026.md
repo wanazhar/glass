@@ -1,4 +1,6 @@
-# Features Across Open-Source Coding Harnesses — State of the Art, October 2026
+# Coding harness feature survey, October 2026
+
+Research snapshot. External project details describe the cited collection period; use the [current guides](../docs/INDEX.md) for glass-core behavior.
 
 Research compiled from primary sources: repository source, official documentation, changelogs,
 and protocol sites. The field is large — one curated index lists 130+ CLI coding agents

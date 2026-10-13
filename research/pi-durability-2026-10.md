@@ -1,5 +1,7 @@
 # pi durability survey — what to borrow
 
+Research snapshot. External project details describe the cited collection period; use the [current guides](../docs/INDEX.md) for glass-core behavior.
+
 Compiled 2026-10-08 from primary sources: a clone of `github.com/earendil-works/pi`
 at tag `v1.1.0` (release 2026-10-07), its in-tree docs and packages, and the
 Program Status Protocol spec. Every claim cites a repo path or URL. Anything

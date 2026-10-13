@@ -1,5 +1,7 @@
 # T3 Code parity research
 
+Research snapshot. External project details describe the cited collection period; use the [current guides](../docs/INDEX.md) for glass-core behavior.
+
 Date: 2026-10-10. T3 Code source revision: `f7664fdf425555e0f85b74d904cfa4eaf57cf7af`.
 GC baseline: `a1e6460`. Findings come from documentation and source inspection, not a runtime comparison.
 

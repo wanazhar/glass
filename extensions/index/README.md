@@ -1,20 +1,19 @@
-# index
+# Source index extension
 
-A file's skeleton before the file itself: symbol names with exact line
-numbers, so the model reads a range instead of a whole file. Reads dominate
-a bash-first harness's token spend; Maki's published accounting for this
-pattern is +59 tokens/turn for the tool and −224 tokens/turn on reads.
+Return symbol names and line numbers before reading a complete source file.
+The extension supports Rust, Python, Go, JavaScript, and TypeScript variants.
 
-- `index {path: "src/agent.rs"}` — outline one file (`rust`, `python`, `go`,
-  `js/ts/jsx/tsx`, unknown types explain themselves instead of guessing).
-- `index {query: "retry_backoff"}` — files containing the literal (ripgrep
-  when available, a bounded stdlib scan otherwise) with outlines.
-- Caps: 60 outline lines per file, 200 per call, 256 KB per scanned file.
-- Containment: paths resolve inside the workspace; `../` is refused.
+- `index {"path":"src/agent.rs"}` outlines one file.
+- `index {"query":"retry_backoff"}` finds files containing a literal query and
+  returns their outlines. It uses ripgrep when available, with a bounded fallback.
 
-Deliberately regex, not tree-sitter: a simple scanner that never lies about
-line numbers beats a parser that occasionally does, and the core stays
-dependency-free. Doc-comment lines are skipped so documentation does not
-masquerade as symbols.
+Output is limited to 60 outline lines per file and 200 per call. Scanned files
+are limited to 256 KiB. Paths must remain within the workspace. Unsupported file
+types return an explanation.
 
-Offline checks: `python3 index.py --selftest` and `scripts/smoke-index.py`.
+The implementation uses regular expressions and skips comment lines. It reports
+source line numbers but does not provide complete parsing, type analysis, or all
+language constructs. Read the relevant source range before editing it.
+
+Checks: `python3 index.py --selftest` from this directory, or
+`python3 scripts/smoke-index.py` from the repository root.

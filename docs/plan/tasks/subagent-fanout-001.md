@@ -4,6 +4,9 @@ scope: crates/glass extension host, subagent batch runner, extensions/subagent
 status: done
 depends-on: []
 ---
+# Subagent fanout
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 

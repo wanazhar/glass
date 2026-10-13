@@ -1,5 +1,7 @@
 # Review: composer-greeting-001
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Status: **PARTIALLY VERIFIED — PROVIDER GATE BLOCKED** (October 7, 2026)
 
 ## Source review

@@ -4,6 +4,9 @@ scope: extensions/mcp-bridge, addons catalogue
 status: done
 depends-on: []
 ---
+# Mcp bridge
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 
@@ -19,7 +22,7 @@ extensions ethos says capability belongs (research/harness-features-2026.md).
   `mcp_call` meta-tools so a large server cannot inflate every prompt.
 - stdio transport only; HTTP/SSE is explicitly out of scope for v1.
 - Startup is bounded (8s per server to initialize and list) because the glass
-  handshake has its own deadline; a wedged server is skipped, not hung on.
+  handshake has its own deadline; an unresponsive server is skipped after its deadline.
 - A dead server reports an error string per call; it never stalls a turn.
 
 ## Paths

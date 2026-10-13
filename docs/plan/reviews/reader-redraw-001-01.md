@@ -1,5 +1,7 @@
 # Review: reader-redraw-001
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Status: **PASS — OFFLINE READER AND HISTORY GATES** (October 7, 2026)
 
 ## Findings

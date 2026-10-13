@@ -1,5 +1,7 @@
 # Six-codebase feature wave — delivery plan
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../INDEX.md) for supported user behavior.
+
 Source: [six-codebases-2026-10-10.md](../../research/six-codebases-2026-10-10.md).
 The user authorized shipping all candidates. This plan orders them into five
 waves of disjoint tasks. Two standing requirements bind every task.
@@ -25,7 +27,7 @@ waves of disjoint tasks. Two standing requirements bind every task.
 
 ## Delivery contract
 
-- Root implements; Luna medium reviews after implementation, per slice.
+- Each implementation checkpoint requires independent review.
 - Each wave ships behind its own task file with disjoint path ownership
   (the ext-lifecycle relocation lesson). Verify clippy + tests + smoke +
   PTY per wave, commit locally, update the 43-item ledger with new

@@ -1,5 +1,7 @@
 # History and handoff contracts
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Status: implemented; final verification pending. Roadmap items 14, 26 and 27 remain partial.
 
 `gc history SESSION [--json]` and `/history` expose retained compaction boundaries,

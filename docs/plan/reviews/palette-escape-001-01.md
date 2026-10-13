@@ -1,5 +1,7 @@
 # Slash palette Escape restoration
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Date: 2026-10-09.
 
 Escape already closed palette state, but a managed palette clears and paints the application screen. The normal composer repaint left its body rows visible. Restore the managed surface when the palette transitions from active to closed; an active reader then uses its existing overlay restoration path.

@@ -1,5 +1,7 @@
 # Color and motion
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../INDEX.md) for supported user behavior.
+
 Status: Implemented, independently reviewed, installed and verified in PTY, October 7, 2026. Motion is active by default, as requested.
 
 ## Overall layout

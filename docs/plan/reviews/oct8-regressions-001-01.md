@@ -1,5 +1,7 @@
 # Oct 8 shipping ports independent review
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 **Verdict: PASS with one constrained-fixture limitation.** I reviewed commits `3780736`, `037a4b1`, `de987c5`, and the current shipping workflow commit `174a125`. The confirmed LSP deadline/cleanup/buffering and MCP HTTP negotiation/streaming/URL defects were fixed in the working tree. No remaining production defect was reproduced against the final source.
 
 ## Verification

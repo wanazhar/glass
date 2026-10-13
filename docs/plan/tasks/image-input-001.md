@@ -4,6 +4,9 @@ scope: crates/glass-mod-api Message, session records, providers, attachments
 status: done
 depends-on: []
 ---
+# Image input
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 

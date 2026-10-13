@@ -1,5 +1,7 @@
 # Original roadmap acceptance map
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Status: complete for the original 43-item roadmap, within the explicit limits below. This maps the original 43 candidates,
 not the separate six-codebase research numbering. Root implemented the sweep;
 two GPT-6-Luna medium agents reviewed it after implementation.

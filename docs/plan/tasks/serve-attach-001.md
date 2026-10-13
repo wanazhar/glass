@@ -4,6 +4,9 @@ scope: crates/glass serve module, gc serve / gc attach subcommands
 status: done
 depends-on: []
 ---
+# Serve attach
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 

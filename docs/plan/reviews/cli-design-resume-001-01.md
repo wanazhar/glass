@@ -1,5 +1,7 @@
 # Consistent CLI presentation and resume picker
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 2026-10-10. All human CLI reports now share the native help palette and a small
 buffered renderer. Wide screens align labels and values; narrow screens stack
 and wrap them. Reports use an accent heading, a border divider, secondary labels,

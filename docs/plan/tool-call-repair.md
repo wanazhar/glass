@@ -1,5 +1,7 @@
 # Bounded tool-call repair
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../INDEX.md) for supported user behavior.
+
 ## Research
 
 - AI SDK tool calling: invalid calls can be returned to the model on the next step; custom repair can re-ask using original context and schema. https://ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling
@@ -16,4 +18,4 @@ Raw model arguments stay in the local call record. Provider history adapters rep
 
 ## Verification
 
-Unit and mock-provider integration: malformed JSON, missing/wrong arguments, unknown tools, mixed batches, correction success, exhaustion, no duplicate side effects, interrupted streams and authorization after correction. Cover OpenAI chat and Responses and Anthropic. Release PTYs include 20x8 and interactive follow-up after repair, plus existing scrolling/job/output suites. Root implements; GPT-6 Luna medium reviewers inspect the changes.
+Unit and mock-provider integration: malformed JSON, missing/wrong arguments, unknown tools, mixed batches, correction success, exhaustion, no duplicate side effects, interrupted streams and authorization after correction. Cover OpenAI chat and Responses and Anthropic. Release PTYs include 20x8 and interactive follow-up after repair, plus existing scrolling/job/output suites. Implementation requires independent review.

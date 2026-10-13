@@ -1,5 +1,7 @@
 # Live turn UI
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../INDEX.md) for supported user behavior.
+
 Status: Implemented; final verification and default installation blocked by environment restrictions, October 7, 2026.
 
 ## Screen ownership
@@ -29,7 +31,7 @@ Fix the supplied screenshots: duplicated composer rules, output/draft collision 
 - One owner for composer, activity and scrolling output. Separator never accumulates into history on typing, Ctrl-G, resize, tools or viewer close. Never erase prior conversation to remove cosmetic ghosts.
 - Ctrl-G opens the transcript both idle and running; Ctrl-G/Esc closes it, preserving draft and current work. Agent execution and provider consumption continue while a viewer is open. Output goes to the right surface and redraws cleanly on close.
 - Show actual Bash command text by default in an expanded, styled tool card. Bound previews for phone screens, preserve full details/copy, indicate exit/status/duration; optional compact presentation can be selected without changing execution. Running timer ticks update only the owned status row, never repeat command bodies.
-- Forward provider-exposed reasoning events to an honest Thinking indicator and a live scrollable thinking modal, accessible through /thinking and a documented key shortcut during active work. Use only text/summaries returned by the provider; do not invent hidden reasoning or expose opaque/redacted/signature payloads. Distinguish waiting, receiving reasoning, answer streaming, and tool execution. Unsupported/not-yet-returned reasoning shows a clear empty state.
+- Forward provider-exposed reasoning events to a provider-backed reasoning indicator and a live scrollable thinking modal, accessible through /thinking and a documented key shortcut during active work. Use only text/summaries returned by the provider; do not invent hidden reasoning or expose opaque/redacted/signature payloads. Distinguish waiting, receiving reasoning, answer streaming, and tool execution. Unsupported/not-yet-returned reasoning shows a clear empty state.
 - Existing Anthropic thinking, OpenAI-compatible reasoning_content/reasoning text and Responses reasoning summaries are handled when present. Preserve exact private session logs, original copying, headless JSON/stdin/resume, controls filtering, themes/profiles and account flows.
 
 ## Interactions

@@ -4,6 +4,9 @@ scope: submitted composer ownership and conversational tool intent
 status: in-progress
 depends-on: [live-turn-ui-001]
 ---
+# Composer greeting
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## User report
 

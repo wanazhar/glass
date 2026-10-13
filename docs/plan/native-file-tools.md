@@ -1,5 +1,7 @@
 # Direct native file tools
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../INDEX.md) for supported user behavior.
+
 Expose read/edit/write using the existing bounded revision-checked file engine.
 Keep bash for search, pipelines, builds, tests and processes. Schemas stay compact;
 advanced CLI helpers remain available. No duplicate file implementation.

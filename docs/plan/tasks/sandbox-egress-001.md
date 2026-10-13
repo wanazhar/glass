@@ -4,6 +4,9 @@ scope: crates/glass sandbox module, config, bash/jobs spawn sites
 status: done
 depends-on: [sandbox is part of wave 1 of the first port batch]
 ---
+# Sandbox egress
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 
@@ -41,4 +44,4 @@ unbounded egress and readable API keys.
   name classification; config validation/defaults.
 - `scripts/smoke-sandbox.py`: through the binary — port-limited egress,
   scrub default, `inherit` escape hatch, plus the existing write/read jails.
-- Kernel here is 6.17 (ABI ≥ 4), so the network test genuinely ran.
+- Kernel here is 6.17 (ABI ≥ 4), so the network test ran.

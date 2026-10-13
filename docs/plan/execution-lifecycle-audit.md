@@ -1,5 +1,7 @@
 # Execution lifecycle consolidation
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../INDEX.md) for supported user behavior.
+
 Date: 2026-10-13. Source audit of planning, code review, advisor, one-shot
 delegation and persistent teammates. All execute through `agent::Agent`.
 

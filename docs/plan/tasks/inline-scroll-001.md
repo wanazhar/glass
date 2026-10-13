@@ -4,6 +4,9 @@ scope: scrollable main conversation with pinned input
 status: in-progress
 depends-on: [composer-greeting-001]
 ---
+# Inline scroll
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 Implement ../inline-scroll.md. Reuse transcript/layout state, integrate idle and active keyboard pumps, preserve owned surface boundaries and current rendering/security/headless behavior. Provide offline PTY proof across five sizes, unit state contracts and independent review. No default installation or publication under the current restricted environment. Provider-backed verification remains explicitly outstanding if localhost is still denied.
 

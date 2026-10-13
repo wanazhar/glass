@@ -4,6 +4,9 @@ status: complete
 depends-on: [ship-terminal-001]
 scope: ship-next-20 items 15-19
 ---
+# Delivery: security
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 

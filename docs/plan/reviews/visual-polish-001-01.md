@@ -1,5 +1,7 @@
 # Independent review: visual-polish-001
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 ## Scope
 
 Reviewed the updated color and motion contract, semantic theme helpers, Painter/event pump ownership, busy composer rendering, modal workers and profile theme persistence. Latest user steering removes reduced-motion settings; active work animates by default.

@@ -1,5 +1,7 @@
 # Welcome-back recap
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../INDEX.md) for supported user behavior.
+
 A local, display-only catch-up appears when opening or switching to a saved
 conversation. `/recap` reopens it in the existing scrollable, resize-aware modal;
 Enter/Escape dismisses it without editing the composer. Empty conversations show

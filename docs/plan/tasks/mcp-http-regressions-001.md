@@ -3,6 +3,9 @@ id: mcp-http-regressions-001
 status: complete
 scope: verify and fix HTTP transport interoperability defects
 ---
+# Mcp http regressions
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Contract
 

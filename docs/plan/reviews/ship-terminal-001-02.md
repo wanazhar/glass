@@ -1,5 +1,7 @@
 # Terminal shipping review 10–14
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 **Reviewed:** `fbc56a0`  
 **Scope:** transcript/tool reader, diff pager, activity actions, provider status, and durable serve/attach recovery.  
 **Conclusion:** **pass** after the attach recovery fix below.
@@ -20,7 +22,7 @@ Before the attach follow-up change, all four smoke scripts passed against the th
 
 ### Resolved P2 — Provider construction errors left an attached prompt pending
 
-The original implementation in [`serve.rs`](../../../crates/glass/src/serve.rs:481) durably accepted a request before provider construction, but a `factory()` error omitted the request ID and cursor. The attach client only clears a matching durable pending request when an `error` carries that ID ([`update_attach_state`](../../../crates/glass/src/serve.rs:89)).
+The original implementation in [`serve.rs`](../../../crates/glass/src/serve.rs#L481) durably accepted a request before provider construction, but a `factory()` error omitted the request ID and cursor. The attach client only clears a matching durable pending request when an `error` carries that ID ([`update_attach_state`](../../../crates/glass/src/serve.rs#L89)).
 
 The fix now includes the correlated request ID and cursor, persists `failed` for the accepted request, and sanitizes the provider construction detail. A repeated failed ID is reported as failed before execution, with instructions to submit a new request, rather than incorrectly described as completed. The regression above verifies that pending clears, no provider request runs, and the same attach client can submit successfully afterward.
 

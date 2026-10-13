@@ -1,5 +1,7 @@
 # Full roadmap delivery ledger
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Source: [43-item roadmap](../../../research/t3code-parity-2026-10-10.md).
 
 Status: complete for the original 43 bounded roadmap workflows. The current item-by-item acceptance map is

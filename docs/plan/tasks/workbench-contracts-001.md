@@ -1,5 +1,7 @@
 # Workbench contracts sweep
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Status: implementation in progress; final build, tests, release PTYs and Luna medium review pending.
 
 Part of the full roadmap sweep, not a claim that all roadmap items are complete.

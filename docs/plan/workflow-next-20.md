@@ -1,10 +1,12 @@
 # Coding workflow delivery
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../INDEX.md) for supported user behavior.
+
 Status: functional v1 delivered and verified locally on 2026-10-10. All twenty items are implemented with performance and consistent presentation as delivery requirements. See [verification and limitations](reviews/workflow-next-20-001.md).
 
 ## Contracts
 
-- Root implements; Luna medium reviewers review. Existing user work and live processes stay intact.
+- Implementation requires independent review. Preserve existing work and unrelated live processes.
 - No extra runtime dependency or service starts on ordinary startup. Disk-backed data is bounded and loaded on demand. No background model polling.
 - UI uses the shared theme, modal input, Markdown and CLI Page renderer. Esc closes overlays; 20×8, 40×24 and 80×30 remain supported.
 - Full outputs stay locally accessible; model context and inspector previews have explicit caps. Metadata is not evidence that a model read content.
@@ -20,7 +22,7 @@ Status: functional v1 delivered and verified locally on 2026-10-10. All twenty i
 | 3 | Debug mode | Persist hypotheses, evidence and instrumentation; no unsolicited model calls |
 | 4 | Request inspector | Metadata timing/events/errors/export; no prompt or secret copies |
 | 5 | Context changes | Fingerprints and source/message changes per request |
-| 6 | Cache diagnostics | Prefix changes versus reported cache usage; honest unknowns |
+| 6 | Cache diagnostics | Prefix changes versus reported cache usage; explicit unknown values |
 | 7 | Shell completions | Bash/zsh/fish; common command metadata |
 | 8 | Shared tasks | Atomic claims/dependencies/blockers/acceptance |
 | 9 | Typed handoffs | Validated findings/checks/changes/questions/artifacts |

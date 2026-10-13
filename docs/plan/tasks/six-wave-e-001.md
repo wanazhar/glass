@@ -7,6 +7,8 @@ source: research/six-codebases-2026-10-10.md candidates #4, #25, #8, #16(parity 
 
 # Wave E: extensibility + review
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 ## Objective
 
 1. **Pre-tool-use hook** (crush `PreToolUse`): one user-registered shell hook,
@@ -33,7 +35,7 @@ source: research/six-codebases-2026-10-10.md candidates #4, #25, #8, #16(parity 
 4. **Codemode parity audit** (research candidate #16): verify GC's existing
    codemode surface against pi's contract — output item protocol
    (`==> text N/M <==`), `@options` line, overflow spill to a temp file
-   with the path named, timeout enforcing. Report the deltas honestly in
+   with the path named, timeout enforcing. Report the differences explicitly in
    the task file; implement the deltas that fit the existing design (the
    referenced file is the existing GC codemode implementation; if
    gaps require a JS engine change, stop and record — no engine swap
@@ -112,7 +114,7 @@ Do not edit `tools.rs` dispatch, `ext/**`, `provider/**`, `sandbox.rs`,
   green (639 unit + 13 doc + 91 integration); clippy `-D warnings` clean.
 ## Follow-up: citations shipped (post-merge)
 
-The two honest limitations in the original wave E report that could be
+The two documented limitations in the original wave E report that could be
 fixed without an engine or protocol swap are now fixed on master:
 
 - **In-message citations, for real this time.** `attach_excerpt` now
@@ -179,14 +181,14 @@ that fit the existing design are now implemented rather than excused:
   fenced source, never a clipped drawing. Rows render from a `Vec<char>`
   canvas (byte-offset `replace_range` anchors broke on multi-byte
   labels — caught by the participant test). Class/state/ER remain source
-  fallback, stated honestly. Tests: 4 new sequence tests inside
+  fallback, documented explicitly. Tests: 4 new sequence tests inside
   `mermaid::tests`; `smoke-mermaid` rerun green.
 
 Still not fixed, now with the reason attached: item 25 in-message
 markers were an audit (fixed in follow-up 1); blob range reads stay
 offset/length (the range protocol in the research doc needs consumer
 work first — no consumer exists yet); class/state/ER diagram families
-need their own bounded layouts (two families is the honest slice); the
+need their own bounded layouts (this checkpoint supports two families); the
 `#hooks` PTY identity check remains covered by the transcript tests.
 
 ## Follow-up 3: state diagrams + the rank bug they exposed (this commit)
@@ -223,8 +225,8 @@ need their own bounded layouts (two families is the honest slice); the
   before render — the block boundary is not silently dropped). The alias
   parser was factored into `parse_state_alias` so the composite-branch
   and the plain `state "L" as ID` branch share one body. Remaining
-  honestly out of scope: `classDiagram`/`erDiagram`, which need their own
-  bounded layout trees — two-plus-one families is the honest slice so
+  outside this implementation scope: `classDiagram`/`erDiagram`, which need their own
+  bounded layout trees — this checkpoint supports those diagram families so
   far.
 - Tests: composite nest renders, double-nest falls back, unclosed block
   falls back. Suite 699 unit + 13 doc + 93 integration; clippy
@@ -241,7 +243,7 @@ need their own bounded layouts (two families is the honest slice); the
   back to source, stated in the module doc and tests. The fan-out width
   behavior is the flowchart's own: a row that does not fit under the
   column falls back, tested at both 60 and 88 columns. Remaining
-  honestly out of scope: `erDiagram` (own entity/attribute layout).
+  outside this implementation scope: `erDiagram` (own entity/attribute layout).
 - Tests: 4 new class tests. Suite 702 unit + 13 doc + 93 integration;
   clippy `-D warnings` clean; `smoke-mermaid` green.
 

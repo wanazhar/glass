@@ -4,6 +4,9 @@ scope: extensions/index
 status: done
 depends-on: []
 ---
+# Index
+
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
 
 ## Objective
 
@@ -22,9 +25,8 @@ no tree-sitter, no core change.
   extensions explained rather than guessed.
 - Caps: 60 outline lines/file, 200/call, 256 KB scanned/file; paths resolve
   inside the workspace, `../` refused.
-- Deliberate trade-off recorded in the README: a regex that never lies about
-  line numbers beats a parser that occasionally does, and the core stays
-  dependency-free.
+- The regular-expression scanner reports source line numbers without adding a
+  parser dependency. It does not provide complete language parsing.
 
 ## Paths
 

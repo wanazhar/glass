@@ -1,5 +1,7 @@
 # Model-managed teammate limits — 2026-10-10
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 ## Changes
 
 The main model receives compact delegation guidance and can explicitly set worker cumulative allowance, output allowance, reasoning hint and tool-round count. Create supports `--tokens`, `--output`, `--reasoning`, `--rounds`; `gc agent limits ID ...` changes per-turn limits without starting a model request. `budget` remains the explicit cumulative allowance control. Defaults are 100,000 cumulative tokens, 16,000 output tokens and 24 rounds. Reasoning remains provider-dependent; zero restores the provider default.

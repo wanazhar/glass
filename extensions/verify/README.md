@@ -1,34 +1,31 @@
-# verify
+# Verification extension
 
-Run the project's verifier after commands that write files, and append
-failures to the tool result the model is about to read — before it builds
-more work on a broken file.
+Run a configured project check after detected shell writes and append relevant
+feedback to the tool result. Native file validation remains a separate mechanism.
 
-- **Trigger**: a `tool_result` for `bash` whose body contains the host's
-  `[wrote …]` note (heredoc, redirect, tee, `sed -i`), at most once per
-  `debounce_s` window.
-- **Execution**: through the host's own `bash` tool as a nested `call_tool`
-  request, so the sandbox policy, timeout, and output caps apply. No shell
-  of its own, no bypass.
-- **Feedback**: failures append as `[verify exit N] <command>\n<head+tail,
-  capped 4 KiB>`; after a failure, the first success appends `[verify ok]`
-  so "back to green" is visible. Quiet otherwise.
+## Trigger and execution
 
-Config at `~/.config/glass-core/verify.json` (or `GC_VERIFY_CONFIG`):
+The extension recognizes the host's `[wrote …]` result markers for supported shell
+write patterns, subject to a debounce interval. It invokes the host's `bash` tool
+through a nested call, retaining the applicable policy, timeout, and output limits.
+Unsupported shell patterns may not produce a marker.
+
+Failures append the check's exit status and a bounded 4 KiB head/tail preview.
+The first success after a failure appends a recovery notice. Other successful checks
+remain quiet.
+
+## Configuration
+
+Use `~/.config/glass-core/verify.json`, or `GC_VERIFY_CONFIG`:
 
 ```json
-{
-  "command": "cargo test --quiet",
-  "timeout_s": 90,
-  "debounce_s": 8
-}
+{"command":"cargo test --quiet","timeout_s":90,"debounce_s":8}
 ```
 
-Without a config, detection is deliberately small: `Cargo.toml` →
-`cargo check --quiet`; `package.json` with `scripts.typecheck` →
-`npm run --silent typecheck`. Anything else stays inactive — a wrong guess
-about how to test a project is worse than silence. `debounce_s: 0` verifies
-after every detected write.
+Without a command, detection supports `Cargo.toml` (`cargo check --quiet`) and a
+`package.json` typecheck script (`npm run --silent typecheck`). Other projects
+remain inactive until configured. A zero debounce interval checks every detected
+write. `/verify` shows the command and last result.
 
-`/verify` shows the active command and the last result. Offline checks:
-`python3 verify.py --selftest` and `scripts/smoke-verify.py`.
+Checks: `python3 verify.py --selftest` from this directory, or
+`python3 scripts/smoke-verify.py` from the repository root.

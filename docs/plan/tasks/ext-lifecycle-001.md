@@ -7,6 +7,8 @@ depends-on: []
 
 # Extension cancellation, shutdown and call lineage
 
+Implementation record. Scope and verification statements describe the recorded checkpoint. See the [current guides](../../INDEX.md) for supported user behavior.
+
 Roadmap item 32. Closes the verified cancellation and lineage gaps. The
 shutdown hook already exists and must keep working; this task adds the missing
 contracts around it rather than replacing it.
@@ -20,7 +22,7 @@ contracts around it rather than replacing it.
    running tool call: `Registry::run_tool`, `run_tool_with_input` and
    `run_command` currently accept no token. A cancelled call must stop waiting
    promptly, report cancellation distinctly from an extension failure, and leave
-   the transcript honest about what completed.
+   an accurate transcript of completed operations.
 2. **Nested-call lineage.** `RunTool` and `RunToolInput` in the protocol carry
    no `call_id`, so nothing links an extension's nested work back to the model
    tool call that caused it. Carry the originating call id through the nested

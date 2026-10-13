@@ -259,7 +259,7 @@ fn reader_paths(command: &str, workspace: &Path) -> Vec<std::path::PathBuf> {
                 .and_then(|name| name.to_str())
                 .unwrap_or("");
             if [
-                "cat", "head", "tail", "less", "bat", "wc", "nl", "source", "stat", "file",
+                "cat", "head", "tail", "less", "bat", "nl",
             ]
             .contains(&name)
             {
@@ -399,6 +399,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn metadata_and_count_commands_do_not_authorize_content_edits() {
+        let dir = scratch("metadata-only");
+        let file = dir.join("a.rs");
+        std::fs::write(&file, "private contents").unwrap();
+        for command in ["wc -l a.rs", "stat a.rs", "file a.rs", "source a.rs"] {
+            let mut reads = ReadSet::new();
+            reads.observe(command, "metadata", &dir);
+            assert!(!reads.contains(&file), "{command}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

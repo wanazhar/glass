@@ -17,6 +17,7 @@ an additional runtime. Review its access and configuration first.
 | [Memory](memory/README.md) | Separate Markdown memory index | Python |
 | [Oracle](oracle/README.md) | Explicit alternate-model review | Python |
 | [Subagent](subagent/README.md) | One-shot delegated tasks | Python |
+| [TypeScript starter](typescript/README.md) | Typed tools, native previews and diagnostics | Node |
 | [Todo](todo/README.md) | Process-local task checklist | Python |
 | [Verify](verify/README.md) | Project checks after detected shell writes | Python |
 | [Web](web/README.md) | Readable pages and search results | Python |

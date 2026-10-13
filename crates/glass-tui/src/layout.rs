@@ -171,7 +171,7 @@ impl Layout {
         let mut rows = crate::tool_output::lines(name, &card.command, failed,
             card.elapsed_ms.unwrap_or(0) as f32 / 1000.0, if card.expanded { "" } else { &card.output }, card_width, false);
         if card.status == "running" {
-            rows[0] = Line::from(Span::styled(format!("◐ {name} running · {:.1}s", card.elapsed_ms.unwrap_or(0) as f32 / 1000.0), role_style(Role::User)));
+            rows[0] = Line::from(Span::styled(format!("{} {name} running · {:.1}s", crate::theme::frame(0), card.elapsed_ms.unwrap_or(0) as f32 / 1000.0), role_style(Role::User)));
         }
         if card.expanded {
             rows.pop(); // trailing card spacer

@@ -1,0 +1,10 @@
+{
+  "name": "glass-core-extension-workspace",
+  "private": true,
+  "workspaces": ["packages/extension-sdk", "extensions/typescript"],
+  "scripts": {
+    "build": "npm run build --workspace @glass-core/extension-sdk && npm run build --workspace @glass-core/typescript-starter",
+    "test": "npm run build && node --test packages/extension-sdk/test/*.test.mjs"
+  },
+  "devDependencies": {"typescript": "^5.9.3", "@types/node": "^24.0.0"}
+}

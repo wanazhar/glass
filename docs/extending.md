@@ -126,3 +126,5 @@ bridge configuration.
 The MCP bridge limits each stdio reply to 8 MiB, matching its HTTP response limit. Oversized replies fail with a transport diagnostic. Plugin integrity checks stream file contents in bounded chunks; existing content hashes and installation receipts remain compatible.
 
 Skill discovery reads the first 64 KiB for front matter and leaves the body on disk until requested. Front matter must close within that prefix. MCP configuration files are limited to 1 MiB; an oversized plugin configuration disables that plugin's MCP entries without hiding its skills or other servers.
+
+Extension custom state has a 3 MiB serialized replay limit per extension and session. An append that would exceed it fails before the session log changes. Store large data in files and append references. Older oversized state remains in the raw log; it is reported and omitted from startup seeding so the extension transport stays usable. Malformed plugin MCP entries are isolated from other plugins and configured servers.

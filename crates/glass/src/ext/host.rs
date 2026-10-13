@@ -395,6 +395,9 @@ impl RequestOutcome {
     }
 }
 
+// Leave framing overhead below the SDK's 4 MiB transport limit.
+const MAX_CUSTOM_STATE_BYTES: usize = 3 * 1024 * 1024;
+
 /// A running extension process.
 pub struct Extension {
     pub manifest: Manifest,
@@ -422,6 +425,7 @@ pub struct Extension {
     /// so an extension can reconstruct state after a restart
     /// without the entries entering the model context.
     custom: std::collections::BTreeMap<String, Vec<String>>,
+    custom_bytes: usize,
     /// Appends queued by the extension, drained by the agent into
     /// the session log after the tool call or turn that queued them.
     pending_custom: Vec<(String, Option<String>)>,
@@ -489,6 +493,7 @@ impl Extension {
             next_id: 0,
             subagent: None,
             custom: std::collections::BTreeMap::new(),
+            custom_bytes: 64,
             pending_custom: Vec::new(),
             session_path: None,
             child,
@@ -816,7 +821,10 @@ impl Extension {
                     .to_string();
                 let call_id = v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
                 let entries = self.read_custom(&kind);
-                self.reply_or_fail(protocol::custom_result_json(&call_id, true, &entries, None))?;
+                let reply = protocol::custom_result_json(&call_id, true, &entries, None);
+                if serde_json::to_vec(&reply).map_or(true, |v| v.len() > MAX_CUSTOM_STATE_BYTES) {
+                    self.reply_or_fail(protocol::custom_result_json(&call_id, false, &[], Some("saved custom entries exceed the replay limit; inspect the session log")))?;
+                } else { self.reply_or_fail(reply)?; }
                 deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
                 continue;
             }
@@ -1280,11 +1288,17 @@ impl Extension {
         if !kind.starts_with(&prefix) {
             return Err(format!("custom kinds are namespaced: `{prefix}…`"));
         }
+        let added = data.as_ref().map_or(0, |text| serde_json::to_vec(text).map_or(usize::MAX, |v| v.len().saturating_add(1)))
+            .saturating_add(if self.custom.contains_key(&kind) { 0 } else { serde_json::to_vec(&kind).map_or(usize::MAX, |v| v.len().saturating_add(32)) });
+        if self.custom_bytes.saturating_add(added) > MAX_CUSTOM_STATE_BYTES {
+            return Err("custom state exceeds the 3 MiB serialized replay limit; entry was not saved. Store large data in files and append a reference".into());
+        }
         let path = self.session_path.as_ref().ok_or_else(|| {
             "session log is unavailable; custom entry was not acknowledged".to_string()
         })?;
         crate::session::Session::append_custom_path(path, &kind, data.as_deref())
             .map_err(|error| format!("cannot durably append custom entry: {error}"))?;
+        self.custom_bytes = self.custom_bytes.saturating_add(added);
         self.custom
             .entry(kind.clone())
             .or_default()
@@ -1310,6 +1324,8 @@ impl Extension {
             .into_iter()
             .filter(|(kind, _)| kind.starts_with(&prefix))
             .collect();
+        let seed_bytes = serde_json::to_vec(&Request::SeedCustom { entries: mine.clone() }.to_json(0)).map_or(usize::MAX, |v| v.len());
+        self.custom_bytes = seed_bytes;
         let had_custom = !self.custom.is_empty();
         self.custom.clear();
         self.pending_custom.clear();
@@ -1318,6 +1334,13 @@ impl Extension {
         }
         // Best-effort: an extension that does not answer the
         // seed keeps working, it just starts with empty state.
+        if seed_bytes > MAX_CUSTOM_STATE_BYTES {
+            // Clear the extension-side view on session switches; never leave
+            // another session's state active when this seed cannot be replayed.
+            let _ = self.request(&Request::SeedCustom { entries: Vec::new() }, REQUEST_TIMEOUT_MS, None);
+            eprintln!("extension {}: saved custom state exceeds the 3 MiB replay limit; state remains in the session log and was not sent", self.manifest.name);
+            return;
+        }
         if !mine.is_empty() || had_custom {
             let req = Request::SeedCustom { entries: mine };
             let _ = self.request(&req, REQUEST_TIMEOUT_MS, None);

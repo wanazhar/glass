@@ -52,6 +52,7 @@ INIT_TIMEOUT = 8.0
 CALL_TIMEOUT = 120.0
 DEFER_AT = 40  # switch to search/call meta-tools above this many tools
 MAX_HTTP_RESPONSE = 8 * 1024 * 1024
+MAX_STDIO_MESSAGE = 8 * 1024 * 1024
 # Agent Plugins 1.0 schema identifiers (agent-plugins.org).
 PLUGIN_MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
 MAX_PLUGIN_LOCK_BYTES = 1024 * 1024
@@ -75,16 +76,24 @@ def plugin_content_hash(root):
                     pending.append(entry.path)
                 elif entry.is_file(follow_symlinks=False):
                     relative = os.path.relpath(entry.path, root).replace(os.sep, "/")
-                    with open(entry.path, "rb") as stream:
-                        content = stream.read()
-                    files.append((relative.encode("utf-8"), content))
+                    files.append((relative.encode("utf-8"), entry.path))
     files.sort(key=lambda item: item[0])
     hashed = hashlib.sha256()
-    for path, content in files:
+    for path, filename in files:
         hashed.update(len(path).to_bytes(8, "little"))
         hashed.update(path)
-        hashed.update(len(content).to_bytes(8, "little"))
-        hashed.update(content)
+        with open(filename, "rb") as stream:
+            size = os.fstat(stream.fileno()).st_size
+            hashed.update(size.to_bytes(8, "little"))
+            remaining = size
+            while remaining:
+                chunk = stream.read(min(65536, remaining))
+                if not chunk:
+                    raise ValueError("plugin changed during hashing")
+                hashed.update(chunk)
+                remaining -= len(chunk)
+            if stream.read(1):
+                raise ValueError("plugin changed during hashing")
     return hashed.hexdigest()
 
 
@@ -489,6 +498,13 @@ class Server(BaseServer):
             if not chunk:
                 raise EOFError("server closed the stream")
             self.buffer += chunk
+            first_line = self.buffer.find(b"\n")
+            if (first_line if first_line >= 0 else len(self.buffer)) > MAX_STDIO_MESSAGE:
+                self.buffer = b""
+                raise ValueError("stdio MCP message exceeds 8 MiB limit")
+        if self.buffer.find(b"\n") > MAX_STDIO_MESSAGE:
+            self.buffer = b""
+            raise ValueError("stdio MCP message exceeds 8 MiB limit")
         line, _, self.buffer = self.buffer.partition(b"\n")
         return json.loads(line.decode("utf-8", "replace"))
 

@@ -181,7 +181,42 @@ def input_round_trip_checks():
         assert private_value not in bridge.proc.stderr.read()
 
 
+def bounded_stdio_and_streamed_hash():
+    import io
+    import hashlib
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    for payload in [b'x' * 129, b'x' * 129 + b'\n', b'{}\n' + b'x' * 129 + b'\n']:
+        server = object.__new__(BRIDGE_MODULE.Server)
+        server.buffer = b''
+        server.proc = SimpleNamespace(stdout=io.BytesIO(payload))
+        with patch.object(BRIDGE_MODULE, 'MAX_STDIO_MESSAGE', 128), patch.object(BRIDGE_MODULE.select, 'select', return_value=([server.proc.stdout], [], [])):
+            if payload.startswith(b'{}'):
+                assert server.read_message(1) == {}
+            try:
+                server.read_message(1)
+                raise AssertionError('oversized stdio message accepted')
+            except ValueError as error:
+                assert 'limit' in str(error)
+                assert server.buffer == b''
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / 'nested').mkdir()
+        (root / 'nested/a').write_bytes(b'x' * 200000)
+        (root / 'z').write_bytes(b'hello')
+        expected = hashlib.sha256()
+        for relative in [b'nested/a', b'z']:
+            content = (root / relative.decode()).read_bytes()
+            expected.update(len(relative).to_bytes(8, 'little'))
+            expected.update(relative)
+            expected.update(len(content).to_bytes(8, 'little'))
+            expected.update(content)
+        assert BRIDGE_MODULE.plugin_content_hash(root) == expected.hexdigest()
+    print('PASS bounded stdio frames and compatible streamed plugin hashing')
+
+
 def main():
+    bounded_stdio_and_streamed_hash()
     input_round_trip_checks()
     with tempfile.TemporaryDirectory(prefix='gc-mcp-') as tmp:
         root = Path(tmp)

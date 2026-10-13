@@ -2115,6 +2115,13 @@ fn repl(
             }
             continue;
         }
+        if palette.active() && key.code == glass_tui::crossterm::event::KeyCode::F(1) {
+            if let Some(details) = palette.selected_details(editor.text()) {
+                modal::info(&keys, "Command details", &details);
+                surface::overlay(true).ok();
+            }
+            continue;
+        }
         let bookmark = palette.active().then(|| palette.bookmark(&editor));
         let text = if palette.active() {
             match palette.key(&mut editor, key) {
@@ -3912,6 +3919,14 @@ fn drain_input(
         }
         if palette.active() {
             let selected = match ev {
+                Event::Key(key) if key.code == KeyCode::F(1) => {
+                    if let Some(details) = palette.selected_details(editor.text()) {
+                        modal::info(keys, "Command details", &details);
+                        surface::overlay(true).ok();
+                    }
+                    dirty = true;
+                    None
+                }
                 Event::Key(key) => palette.key(editor, key),
                 Event::Paste(text) => {
                     editor.insert_str(&text);
@@ -4560,9 +4575,12 @@ impl Painter {
             }
             Progress::ProviderNotice(text) => {
                 self.flush(&mut io);
-                self.waiting.set(false);
+                let cooldown = text.starts_with("Provider cooldown");
+                if !cooldown { self.waiting.set(false); }
                 let detail = live::sanitize_provider_detail(text);
-                let notice = if text.starts_with("Tool repair") {
+                let notice = if cooldown {
+                    detail
+                } else if text.starts_with("Tool repair") {
                     format!("⟳ {detail}")
                 } else if text.starts_with("Reasoning-only") {
                     detail

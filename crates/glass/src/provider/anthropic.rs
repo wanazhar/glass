@@ -253,7 +253,9 @@ impl Anthropic {
 }
 
 impl Provider for Anthropic {
-    fn model(&self)->&str{&self.model}
+    fn model(&self) -> &str {
+        &self.model
+    }
     fn id(&self) -> &str {
         "anthropic"
     }
@@ -265,6 +267,7 @@ impl Provider for Anthropic {
     fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
         let body = self.build_body(req);
 
+        let pacing_key = super::pacing::acquire(&self.base_url, &self.api_key)?;
         let resp = http_agent()
             .post(format!(
                 "{}/v1/messages",
@@ -275,6 +278,12 @@ impl Provider for Anthropic {
             .send_json(&body)
             .map_err(map_transport)?;
         let status = resp.status().as_u16();
+        super::pacing::observe(pacing_key, status, |name| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        });
         let mut reader = resp.into_body().into_reader();
         if !(200..300).contains(&status) {
             let text = read_lossy(&mut reader).unwrap_or_default();

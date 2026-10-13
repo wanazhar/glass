@@ -1853,6 +1853,8 @@ fn repl(
     // Messages from other sessions arrive through this mailbox while idle.
     let mut inbox_mailbox = crate::inbox::Mailbox::open(&session);
     let mut accepted_background: Option<(String, String)> = None;
+    let mut menu_dispatched = false;
+    let mut menu_parents: Vec<(Option<glass_tui::palette::Bookmark>, String)> = Vec::new();
     crate::status::set("idle", "");
     loop {
         if team_owner != session.id {
@@ -1870,6 +1872,22 @@ fn repl(
         team::record_notices(&mut session)?;
         team::dock(&session.id, &mut team_dock);
         jobs.set_owner(&cfg.workspace, &session.id);
+        let parent = if menu_dispatched {
+            menu_dispatched = false;
+            if modal::take_back() { menu_parents.pop() } else { menu_parents.clear(); None }
+        } else { None };
+        let reopen = match parent {
+            Some((Some(bookmark), _)) => {
+                palette.restore_managed(&mut editor, bookmark).map_err(|e| e.to_string())?;
+                None
+            }
+            Some((None, command)) => Some(command),
+            None => None,
+        };
+        let revisiting = reopen.is_some();
+        let (text, prompt_row, prompt_rows, background_recorded) = if let Some(command) = reopen {
+            (command, term_size().1.saturating_sub(2).max(1), 1, false)
+        } else {
         let _ = painter.refresh_geometry(!palette.active());
         let (w, nh) = term_size();
         let prompt_row = nh.saturating_sub(2).max(1);
@@ -2095,6 +2113,7 @@ fn repl(
             }
             continue;
         }
+        let bookmark = palette.active().then(|| palette.bookmark(&editor));
         let text = if palette.active() {
             match palette.key(&mut editor, key) {
                 Some(t) => t,
@@ -2119,7 +2138,11 @@ fn repl(
         if let Some(draft) = palette.take_draft() {
             editor.set_text(&draft);
         }
+        if let Some(bookmark) = bookmark { menu_parents.push((Some(bookmark), String::new())); }
+        (text, prompt_row, prompt_rows, background_recorded)
+        };
         let mut text = text.trim().to_string();
+        menu_dispatched = true;
         let run_saved_queue = text == "/queue-run";
         if text.is_empty() {
             continue;
@@ -2128,20 +2151,20 @@ fn repl(
         // Every submitted prompt enters the history, commands
         // included: a shell records what was typed, and so does
         // the prompt.
-        crate::history::record(&config::data_dir(), &text);
+        if !revisiting { crate::history::record(&config::data_dir(), &text); }
 
         if matches!(
             text.as_str(),
             "/work" | "/dashboard" | "/hub" | "/workspace"
         ) {
             match workbench::view(&keys, &session, &mut jobs, workbench::Scope::All) {
-                Some(action) => text = action,
+                Some(action) => { menu_parents.push((None, text.clone())); text = action; },
                 None => continue,
             }
         }
         if text == "/settings" {
             match workbench::choose(&keys, actions::Group::Settings) {
-                Some(action) => text = action,
+                Some(action) => { menu_parents.push((None, text.clone())); text = action; },
                 None => continue,
             }
         }
@@ -3500,6 +3523,7 @@ fn repl(
             }
         }
         accepted_background = None;
+        menu_parents.clear();
         if !recovering && !run_saved_queue && !background_recorded {
             // In-message citations (task six-wave-e-001): every range
             // attachment cited since the last turn becomes a durable

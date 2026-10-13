@@ -211,22 +211,28 @@ fn model_for(keys: &KeyReader, cfg: &Config, key: Option<String>) -> Option<Stri
         })
         .collect();
     items.push("Enter a custom model ID…".into());
-    let idx = modal::choose(
-        keys,
-        "Provider and model",
-        &format!("{} · {} models", cfg.base_url, models.len()),
-        &items,
-    )?;
-    if idx == models.len() {
-        modal::field(
+    loop {
+        let idx = modal::choose(
             keys,
-            "Custom model",
-            "Model ID supplied by your provider",
-            &cfg.model,
-            false,
-        )
-    } else {
-        Some(models[idx].id.clone())
+            "Provider and model",
+            &format!("{} · {} models", cfg.base_url, models.len()),
+            &items,
+        )?;
+        if idx == models.len() {
+            let model = modal::field(
+                keys,
+                "Custom model",
+                "Model ID supplied by your provider",
+                &cfg.model,
+                false,
+            );
+            if model.is_none() && modal::take_back() {
+                continue;
+            }
+            return model;
+        } else {
+            return Some(models[idx].id.clone());
+        }
     }
 }
 fn candidate(cfg: &Config, c: &Connection, store: &Store) -> Result<Option<String>, String> {
@@ -543,38 +549,47 @@ pub fn model(keys: &KeyReader, cfg: &mut Config) -> Result<bool, String> {
         })
         .collect();
     items.push("Add provider or account…".into());
-    let Some(i) = modal::choose(
-        keys,
-        "Provider and model",
-        "Choose a provider/account, then its available model",
-        &items,
-    ) else {
-        return Ok(false);
-    };
-    if i == connections.len() {
-        return login(keys, cfg);
-    }
-    let mut c = connections[i].clone();
-    let mut next = cfg.clone();
-    auth::configure(&mut next, &c);
-    let key = if let Some(id) = &c.credential {
-        auth::resolve_credential(id).map(Some)
-    } else {
-        auth::resolve(&next)
-    };
-    let key = match key {
-        Ok(k) => k,
-        Err(e) => {
-            modal::info(keys, "Connection needs setup", &e);
-            return login(keys, cfg);
+    loop {
+        let Some(i) = modal::choose(
+            keys,
+            "Provider and model",
+            "Choose a provider/account, then its available model",
+            &items,
+        ) else {
+            return Ok(false);
+        };
+        if i == connections.len() {
+            let changed = login(keys, cfg)?;
+            if !changed && modal::take_back() {
+                continue;
+            }
+            return Ok(changed);
         }
-    };
-    let Some(model) = model_for(keys, &next, key) else {
-        return Ok(false);
-    };
-    c.model = model;
-    commit(cfg, &mut store, c, false)?;
-    Ok(true)
+        let mut c = connections[i].clone();
+        let mut next = cfg.clone();
+        auth::configure(&mut next, &c);
+        let key = if let Some(id) = &c.credential {
+            auth::resolve_credential(id).map(Some)
+        } else {
+            auth::resolve(&next)
+        };
+        let key = match key {
+            Ok(k) => k,
+            Err(e) => {
+                modal::info(keys, "Connection needs setup", &e);
+                return login(keys, cfg);
+            }
+        };
+        let Some(model) = model_for(keys, &next, key) else {
+            if modal::take_back() {
+                continue;
+            }
+            return Ok(false);
+        };
+        c.model = model;
+        commit(cfg, &mut store, c, false)?;
+        return Ok(true);
+    }
 }
 pub fn logout(keys: &KeyReader, cfg: &mut Config) -> Result<bool, String> {
     let store = auth::load()?;

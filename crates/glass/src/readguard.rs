@@ -114,28 +114,9 @@ impl ReadSet {
             self.mark_at(&path, call_index);
         }
 
-        // `rg` / `grep` counts as reading only when the path was named
-        // explicitly. A bare `rg foo .` searched the tree and says nothing about
-        // any one file's contents.
-        for tool in ["rg", "grep"] {
-            if let Some(rest) = strip_tool(cmd, tool) {
-                for tok in rest.split_whitespace().skip(1) {
-                    let t = tok.trim_matches(|c: char| {
-                        !c.is_alphanumeric()
-                            && c != '.'
-                            && c != '/'
-                            && c != '_'
-                            && c != '-'
-                            && c != '*'
-                    });
-                    if t.is_empty() || t.starts_with('-') || t == "." || t == ".." {
-                        continue;
-                    }
-                    if looks_like_path(t) {
-                        self.mark_at(&abs(t, workspace), call_index);
-                    }
-                }
-            }
+        // Only positional search operands count, never option values or patterns.
+        for path in search_paths(cmd, workspace) {
+            self.mark_at(&path, call_index);
         }
 
         // A compiler or test run read and validated every file it touched, and
@@ -171,7 +152,7 @@ impl ReadSet {
 
 // Small lexical scan, never shell execution. Operators terminate commands;
 // quotes preserve literal file names and redirection targets are not reads.
-fn reader_paths(command: &str, workspace: &Path) -> Vec<std::path::PathBuf> {
+fn shell_tokens(command: &str) -> Option<Vec<(String, bool)>> {
     let mut tokens = Vec::new();
     let mut word = String::new();
     let mut quote = None;
@@ -221,11 +202,18 @@ fn reader_paths(command: &str, workspace: &Path) -> Vec<std::path::PathBuf> {
         }
     }
     if quote.is_some() || escaped {
-        return Vec::new();
+        return None;
     }
     if !word.is_empty() {
         tokens.push((word, false));
     }
+    Some(tokens)
+}
+
+fn reader_paths(command: &str, workspace: &Path) -> Vec<std::path::PathBuf> {
+    let Some(tokens) = shell_tokens(command) else {
+        return Vec::new();
+    };
     let mut command_word = true;
     let mut reader = String::new();
     let mut redirect = None;
@@ -301,6 +289,9 @@ fn reader_paths(command: &str, workspace: &Path) -> Vec<std::path::PathBuf> {
             );
             continue;
         }
+        if token == "-" {
+            continue;
+        }
         if token.contains(['$', '`', '*', '?']) {
             continue;
         }
@@ -312,8 +303,75 @@ fn reader_paths(command: &str, workspace: &Path) -> Vec<std::path::PathBuf> {
     paths
 }
 
-fn strip_tool<'a>(cmd: &'a str, tool: &str) -> Option<&'a str> {
-    cmd.strip_prefix(tool).map(str::trim_start)
+// Conservative parsing: unsupported shell syntax/options require a native read.
+fn search_paths(command: &str, workspace: &Path) -> Vec<std::path::PathBuf> {
+    let Some(tokens) = shell_tokens(command) else {
+        return Vec::new();
+    };
+    if tokens.iter().any(|(_, operator)| *operator) {
+        return Vec::new();
+    }
+    let mut words = tokens.into_iter().map(|(word, _)| word);
+    let Some(tool) = words.next() else {
+        return Vec::new();
+    };
+    if !matches!(
+        Path::new(&tool).file_name().and_then(|n| n.to_str()),
+        Some("rg" | "grep")
+    ) {
+        return Vec::new();
+    }
+    let mut pattern = false;
+    let mut options = true;
+    let mut paths = Vec::new();
+    while let Some(word) = words.next() {
+        if options && word == "--" {
+            options = false;
+            continue;
+        }
+        if options && word.starts_with('-') {
+            let (flag, attached) = word
+                .split_once('=')
+                .map_or((word.as_str(), false), |(f, _)| (f, true));
+            match flag {
+                "-e" | "--regexp" | "-f" | "--file" => {
+                    pattern = true;
+                    if !attached && words.next().is_none() {
+                        return Vec::new();
+                    }
+                }
+                "-g" | "--glob" | "--iglob" | "-t" | "--type" | "-T" | "--type-not"
+                | "--include" | "--exclude" | "--exclude-dir" | "-m" | "--max-count" | "-A"
+                | "-B" | "-C" | "--after-context" | "--before-context" | "--context"
+                | "--encoding" | "--color" => {
+                    if !attached && words.next().is_none() {
+                        return Vec::new();
+                    }
+                }
+                "-n" | "--line-number" | "-i" | "--ignore-case" | "-S" | "--smart-case" | "-s"
+                | "--no-messages" | "-F" | "--fixed-strings" | "-w" | "--word-regexp" | "-r"
+                | "-R" | "--recursive" | "-H" | "--with-filename" | "-h" | "--no-filename"
+                | "--hidden" | "--no-ignore" | "-v" | "--invert-match" => {}
+                _ => return Vec::new(),
+            }
+            continue;
+        }
+        if !pattern {
+            pattern = true;
+            continue;
+        }
+        if word == "-" {
+            continue;
+        }
+        if word.contains(['$', '`', '*', '?']) {
+            continue;
+        }
+        let path = abs(&word, workspace);
+        if path.is_file() {
+            paths.push(path)
+        }
+    }
+    paths
 }
 
 fn looks_like_path(t: &str) -> bool {
@@ -459,6 +517,43 @@ mod tests {
         rs.observe(&format!("rg foo {}", f.display()), "1:foo", &d);
         assert!(rs.contains(&f));
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn search_options_and_patterns_never_authorize_writes() {
+        let dir = scratch("search-options");
+        let file = dir.join("config.rs");
+        std::fs::write(&file, "secret contents").unwrap();
+        for command in [
+            "rg --glob config.rs no_such_match .",
+            "grep --include config.rs missing .",
+            "rg -e config.rs .",
+            "rg --files config.rs",
+            "rg -l pattern config.rs",
+            "rgfoo pattern config.rs",
+            "rg pattern .; echo config.rs",
+            "echo < config.rs",
+        ] {
+            let mut reads = ReadSet::new();
+            reads.observe(command, "", &dir);
+            assert!(!reads.contains(&file), "{command}");
+        }
+        for command in [
+            "rg -n --glob '*.rs' secret config.rs",
+            "grep -e secret -- config.rs",
+            "rg secret 'config.rs'",
+        ] {
+            let mut reads = ReadSet::new();
+            reads.observe(command, "secret contents", &dir);
+            assert!(reads.contains(&file), "{command}");
+        }
+        std::fs::write(dir.join("-"), "literal dash").unwrap();
+        for command in ["rg -- secret -", "grep -- secret -", "cat -- -"] {
+            let mut reads = ReadSet::new();
+            reads.observe(command, "stdin contents", &dir);
+            assert!(!reads.contains(&dir.join("-")), "{command}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

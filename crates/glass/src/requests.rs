@@ -133,6 +133,7 @@ pub struct Trace {
     workflow: &'static str,
     raw_record: Option<usize>,
     rate: Option<crate::pricing::RateCard>,
+    serving_model: Option<String>,
     started: Instant,
     first_event: Option<u128>,
     text_bytes: usize,
@@ -167,6 +168,7 @@ impl Trace {
             workflow: if background {"cache_warmer"} else {"agent"},
             raw_record: None,
             rate: None,
+            serving_model: None,
             started: Instant::now(),
             first_event: None,
             text_bytes: 0,
@@ -180,6 +182,10 @@ impl Trace {
         }
     }
     pub fn pricing(&mut self, rate: Option<crate::pricing::RateCard>) {
+        self.rate = rate;
+    }
+    pub fn serving(&mut self, model: &str, rate: Option<crate::pricing::RateCard>) {
+        self.serving_model = Some(model.to_owned());
         self.rate = rate;
     }
     pub fn retry(&mut self) {
@@ -207,7 +213,7 @@ impl Trace {
 impl Drop for Trace {
     fn drop(&mut self) {
         let usage=self.usage.map(|u|serde_json::json!({"input":u.input,"cache_read":u.cache_read,"cache_write":u.cache_write,"output":u.output}));
-        let report = serde_json::json!({"kind":self.workflow,"raw_record_at_request":self.raw_record,"cost_usd":self.rate.zip(self.usage).map(|(rate,usage)|rate.cost(&usage)),"model_requested":self.snapshot.model,"elapsed_ms":self.started.elapsed().as_millis(),"first_event_ms":self.first_event,
+        let report = serde_json::json!({"kind":self.workflow,"raw_record_at_request":self.raw_record,"cost_usd":self.rate.zip(self.usage).map(|(rate,usage)|rate.cost(&usage)),"model_requested":self.snapshot.model,"model_served":self.serving_model,"elapsed_ms":self.started.elapsed().as_millis(),"first_event_ms":self.first_event,
             "text_bytes":self.text_bytes,"reasoning_bytes":self.reasoning_bytes,"tool_calls":self.calls,"transport_retries":self.retries,"outcome":self.outcome,
             "usage":usage,"context_delta":self.delta,"prefix_fingerprint":self.snapshot.prefix,
             "cache_note":"Fingerprint describes the requested model/system/tools, not the provider cache key. Zero/absent usage cannot establish why caching missed. Provider response identity and finish reason are in /context when exposed. Cache warmer requests have kind=cache_warmer and consume provider usage; unknown pricing is not zero cost."});

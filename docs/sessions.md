@@ -168,3 +168,5 @@ so ambiguous transport errors require an explicit `/retry` and do not trigger
 automatic model fallback. Automatic HTTP
 retries also depend on provider billing policy; they are not guaranteed free.
 Completed local tools are not replayed by this connection retry loop.
+
+Fallback chains size context conservatively: the smallest reachable context window and the largest token estimate determine compaction pressure. Request diagnostics record `model_requested` and `model_served` separately, and use the serving model's rate card when available.

@@ -222,7 +222,7 @@ pub fn view(
         let labels: Vec<_> = items.iter().map(|item| item.label.clone()).collect();
         let searchable: Vec<_> = items
             .iter()
-            .map(|item| format!("{} {:?}", item.label, item.key))
+            .map(|item| item.label.clone())
             .collect();
         let title = match scope {
             Scope::All => "Work",

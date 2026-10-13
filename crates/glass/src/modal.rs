@@ -102,6 +102,8 @@ impl Screen {
             let selected = line.starts_with("› ");
             let style = if i == 0 {
                 glass_tui::theme::accent()
+            } else if !diff_rows && (line.starts_with("│ ") || line.starts_with("Preview ·")) {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Secondary)
             } else if diff_rows {
                 glass_tui::theme::ansi(diff_line_tone(line))
             } else if selected {
@@ -382,7 +384,7 @@ pub fn choose_search(
         let compact = h < 14 || w < 56;
         let framed = w >= 24 && h >= 12;
         let overhead = if compact { 3 } else { 8 } + if framed { 4 } else { 0 };
-        let preview_rows = if !compact { 3 } else { 0 };
+        let preview_rows = if !compact { 4 } else { 0 };
         let visible = usize::from(h)
             .saturating_sub(overhead + preview_rows)
             .max(1);
@@ -411,10 +413,12 @@ pub fn choose_search(
             if let Some((index, item)) = matches.get(selected) {
                 let width = usize::from(w.saturating_sub(6)).clamp(1, 100);
                 let detail = searchable.get(*index).unwrap_or(item);
+                lines.push("Preview · F1 to read in full".into());
                 lines.extend(
-                    glass_tui::text::wrap_words(&glass_tui::markdown::sanitize(detail), width)
+                    glass_tui::text::wrap_words(&glass_tui::markdown::sanitize(detail), width.saturating_sub(2).max(1))
                         .into_iter()
-                        .take(preview_rows),
+                        .take(preview_rows - 1)
+                        .map(|line| format!("│ {line}")),
                 );
             }
             lines.push(format!("{} choices · F1/→ full text", matches.len()));
@@ -850,7 +854,11 @@ pub fn animation(keys: &KeyReader) -> Option<usize> {
                 )
             })
             .collect();
-        screen.draw("Activity animation", &rows, "↑↓ ↵ · Esc back", 0);
+        let (_, height) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+        let framed = height >= 12 && glass_tui::crossterm::terminal::size().unwrap_or((80,24)).0 >= 24;
+        let page = usize::from(height).saturating_sub(if framed { 7 } else { 2 }).max(1);
+        let offset = selected.saturating_sub(page - 1);
+        screen.draw("Activity animation", &rows, "↑↓ ↵ · Esc back", offset);
         if let Some(Event::Key(key)) = keys.next_timeout(Duration::from_millis(
             glass_tui::theme::ACTIVITY_INTERVAL_MS,
         )) {
@@ -863,6 +871,24 @@ pub fn animation(keys: &KeyReader) -> Option<usize> {
                 KeyCode::Enter => return Some(selected),
                 _ => {}
             }
+        }
+    }
+}
+
+/// Ctrl-D confirmation preserves the caller's composer and navigation state.
+pub fn confirm_exit(keys: &KeyReader) -> bool {
+    let screen = Screen::new();
+    loop {
+        screen.draw("Exit glass-core?", &["Saved chat stays.".into(), "Draft is lost.".into()], "↵ exit · Esc stay", 0);
+        match keys.next_blocking() {
+            Some(Event::Key(key)) => match key.code {
+                KeyCode::Enter => return true,
+                KeyCode::Esc => return false,
+                _ if cancelled(key.code, key.modifiers) => return false,
+                _ => {}
+            },
+            None => return false,
+            _ => {}
         }
     }
 }

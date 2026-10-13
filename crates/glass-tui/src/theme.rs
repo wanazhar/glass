@@ -5,13 +5,17 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 static ACTIVE: AtomicU8 = AtomicU8::new(0);
 static ANIMATION: AtomicU8 = AtomicU8::new(0);
-pub const ANIMATION_NAMES: [&str; 4] = ["Dot", "MiniDot", "Pulse", "Spark"];
+pub const ANIMATION_NAMES: [&str; 8] = ["Dot", "MiniDot", "Pulse", "Spark", "Bounce", "Orbit", "Grow", "Blink"];
 pub const ACTIVITY_INTERVAL_MS: u64 = 100;
 // Dot, MiniDot and Pulse frames follow Charm Bubbles (MIT); see THIRD_PARTY.md.
 const DOT: [&str; 8] = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
 const MINI_DOT: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const PULSE: [&str; 4] = ["█", "▓", "▒", "░"];
 const SPARK: [&str; 4] = ["·", "+", "✦", "+"];
+const BOUNCE: [&str; 6] = ["⠁", "⠂", "⠄", "⡀", "⠄", "⠂"];
+const ORBIT: [&str; 4] = ["◐", "◓", "◑", "◒"];
+const GROW: [&str; 8] = ["▁", "▂", "▄", "▆", "█", "▆", "▄", "▂"];
+const BLINK: [&str; 4] = ["○", "◌", "●", "◌"];
 pub fn select_animation(index: usize) {
     ANIMATION.store(
         index.min(ANIMATION_NAMES.len() - 1) as u8,
@@ -26,6 +30,10 @@ pub fn animation_frame(animation: usize, tick: usize) -> &'static str {
         1 => &MINI_DOT,
         2 => &PULSE,
         3 => &SPARK,
+        4 => &BOUNCE,
+        5 => &ORBIT,
+        6 => &GROW,
+        7 => &BLINK,
         _ => &DOT,
     };
     frames[tick % frames.len()]
@@ -34,7 +42,7 @@ pub fn activity_glyph_tick(glyph: char) -> Option<usize> {
     (0..10).find(|tick| frame(*tick).starts_with(glyph))
 }
 pub fn is_activity_glyph(glyph: char) -> bool {
-    [&DOT[..], &MINI_DOT[..], &PULSE[..], &SPARK[..]]
+    [&DOT[..], &MINI_DOT[..], &PULSE[..], &SPARK[..], &BOUNCE[..], &ORBIT[..], &GROW[..], &BLINK[..]]
         .iter()
         .flat_map(|frames| frames.iter())
         .any(|frame| frame.starts_with(glyph))

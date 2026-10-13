@@ -1859,6 +1859,7 @@ fn repl(
     let mut menu_parents: Vec<(Option<glass_tui::palette::Bookmark>, String)> = Vec::new();
     crate::status::set("idle", "");
     loop {
+        if EXIT_REQUESTED.swap(false, std::sync::atomic::Ordering::AcqRel) { return Ok(()); }
         if team_owner != session.id {
             team_guard.take();
             team_guard = Some(team::start(
@@ -2074,9 +2075,13 @@ fn repl(
                     continue;
                 }
                 glass_tui::crossterm::event::KeyCode::Char('d') => {
-                    palette.close();
-                    ui_println!("\nbye");
-                    return Ok(());
+                    if modal::confirm_exit(&keys) {
+                        palette.close();
+                        ui_println!("\nbye");
+                        return Ok(());
+                    }
+                    surface::overlay(palette.active()).ok();
+                    continue;
                 }
                 glass_tui::crossterm::event::KeyCode::Char('t') => {
                     painter
@@ -3894,6 +3899,8 @@ fn repl(
 /// Only the two submission intents are honoured. Navigation and editing keys go
 /// to this editor, so a message can be typed and corrected normally while the
 /// model works.
+static EXIT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn drain_input(
     keys: &input::KeyReader,
     editor: &mut glass_tui::Editor,
@@ -3907,6 +3914,17 @@ fn drain_input(
     let mut dirty = false;
 
     while let Some(ev) = keys.try_next() {
+        if matches!(&ev, Event::Key(k) if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('d')) {
+            if modal::confirm_exit(keys) {
+                EXIT_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
+                palette.close();
+                surface::overlay(false).ok();
+                return Some(String::new());
+            }
+            surface::overlay(palette.active()).ok();
+            dirty = true;
+            continue;
+        }
         // Interrupt must work before overlays consume editing keys.
         if matches!(&ev, Event::Key(k) if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c')) {
             palette.close();

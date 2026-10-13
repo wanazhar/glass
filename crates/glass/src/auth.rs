@@ -658,7 +658,7 @@ pub fn chatgpt(
     store: &mut Store,
     existing: Option<Credential>,
 ) -> Result<Option<Credential>, String> {
-    use glass_tui::crossterm::event::{Event, KeyCode, KeyModifiers};
+    use glass_tui::crossterm::event::{Event, KeyCode};
     let attempt = Attempt::start(store, existing)?;
     // Never display the ID-token hint in terminal output.
     let opened = browser(&attempt.url);
@@ -771,10 +771,7 @@ pub fn chatgpt(
             Err(e) => return Err(format!("Sign-in callback failed: {e}")),
         }
         if let Some(Event::Key(k)) = keys.next_timeout(Duration::from_millis(100)) {
-            if k.code == KeyCode::Esc
-                || (k.modifiers.contains(KeyModifiers::CONTROL)
-                    && matches!(k.code, KeyCode::Char('c' | 'd')))
-            {
+            if modal::cancelled(k.code, k.modifiers) {
                 return Ok(None);
             }
             match k.code {

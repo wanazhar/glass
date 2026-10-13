@@ -123,7 +123,7 @@ when the callback completes. An interrupted callback may lose that queued entry.
 Do not write logs to stdout: it belongs to the protocol. Use `context.log` or
 `console.error`. Use `signal` for cooperative cleanup. GC currently cancels a
 running extension by stopping its process; the SDK cannot promise to reuse a
-process after cancellation. It aborts pending work on shutdown, EOF or SIGTERM and
+process after cancellation. It aborts pending work on shutdown, EOF, output-pipe failure or SIGTERM and
 calls `dispose` for cleanup when the process can exit normally. SIGKILL cannot run
 cleanup. Await nested host calls before returning your tool result.
 

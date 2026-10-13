@@ -122,6 +122,10 @@ export async function runExtension(extension: Extension, options: TransportOptio
     for (const item of pending.values()) { clearTimeout(item.timer); item.reject(reason); }
     pending.clear();
   };
+  const outputFailed = (error: Error) => { stop(error); input.destroy(error); };
+  const outputClosed = () => outputFailed(new ToolError('TRANSPORT_CLOSED', 'Extension output closed before shutdown'));
+  output.once('error', outputFailed);
+  output.once('close', outputClosed);
   const terminate = () => { stop(new Error('Extension terminated')); input.destroy(); };
   process.once('SIGTERM', terminate);
   const send = async (message: Wire) => {
@@ -252,6 +256,8 @@ export async function runExtension(extension: Extension, options: TransportOptio
       await chain;
     } finally {
       process.removeListener('SIGTERM', terminate);
+      output.removeListener('error', outputFailed);
+      output.removeListener('close', outputClosed);
       await extension.dispose?.();
     }
   }

@@ -24,6 +24,12 @@ pub struct Palette {
     owns_screen: bool,
 }
 
+#[derive(Clone)]
+pub struct Bookmark {
+    query: String,
+    selected: usize,
+}
+
 impl Palette {
     pub fn new(commands: Vec<Command>) -> Self {
         Self {
@@ -37,6 +43,18 @@ impl Palette {
     }
     pub fn take_draft(&mut self) -> Option<String> {
         self.dispatched_draft.take()
+    }
+    pub fn bookmark(&self, editor: &Editor) -> Bookmark {
+        Bookmark {
+            query: editor.text().to_string(),
+            selected: self.selected,
+        }
+    }
+    pub fn restore_managed(&mut self, editor: &mut Editor, bookmark: Bookmark) -> io::Result<()> {
+        self.open_managed(editor)?;
+        editor.set_text(&bookmark.query);
+        self.selected = bookmark.selected;
+        Ok(())
     }
     pub fn active(&self) -> bool {
         self.active
@@ -265,8 +283,13 @@ impl Palette {
             );
         }
         lines.push(
-            if compact {
-                "↑↓ Enter · Esc back"
+            if (if framed {
+                width.saturating_sub(8).clamp(1, 76)
+            } else {
+                width
+            }) < 50
+            {
+                "↑↓ ↵ · Esc close"
             } else {
                 "↑↓ select · Enter choose · Tab complete · Esc close"
             }
@@ -516,6 +539,16 @@ mod tests {
         p.cancel(&mut e);
         assert_eq!(e.text(), "unfinished prompt");
     }
+    #[test]
+    fn root_footer_says_close_at_mobile_and_desktop_sizes() {
+        let p = palette();
+        for (width, height) in [(20, 8), (24, 12), (40, 24), (80, 30)] {
+            let frame = p.frame("/", width, height);
+            assert!(frame.contains("Esc close"), "{width}x{height}: {frame}");
+            assert!(!frame.contains("Esc back"));
+        }
+    }
+
     #[test]
     fn frame_handles_small_terminals_without_losing_the_query() {
         let p = palette();

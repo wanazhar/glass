@@ -7,11 +7,18 @@ use glass_tui::{
 use std::io::Write;
 use std::time::Duration;
 
+thread_local! { static BACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+pub fn take_back() -> bool {
+    BACK.with(|back| back.replace(false))
+}
+
 pub struct Screen {
     managed: bool,
 }
 impl Screen {
     pub fn new() -> Self {
+        take_back();
         let mut out = std::io::stdout();
         let managed = crate::surface::managed();
         if managed {
@@ -336,8 +343,12 @@ impl Drop for Screen {
     }
 }
 fn cancelled(code: KeyCode, mods: KeyModifiers) -> bool {
-    code == KeyCode::Esc
-        || (mods.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('c' | 'd')))
+    let cancel = code == KeyCode::Esc
+        || (mods.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('c' | 'd')));
+    if cancel {
+        BACK.with(|back| back.set(code == KeyCode::Esc));
+    }
+    cancel
 }
 pub fn choose(keys: &KeyReader, title: &str, note: &str, items: &[String]) -> Option<usize> {
     choose_search(keys, title, note, items, items)
@@ -560,7 +571,7 @@ pub fn info(keys: &KeyReader, title: &str, text: &str) {
         );
         match keys.next_blocking() {
             Some(Event::Key(k)) => match k.code {
-                KeyCode::Enter | KeyCode::Esc => return,
+                KeyCode::Enter => return,
                 _ if cancelled(k.code, k.modifiers) => return,
                 KeyCode::Down => offset = (offset + 1).min(lines.len().saturating_sub(1)),
                 KeyCode::Up => offset = offset.saturating_sub(1),
@@ -688,8 +699,13 @@ pub fn rich_info(keys: &KeyReader, title: &str, text: &str) {
 }
 
 /// One cached native item inspector. Actions return to the owning domain handler.
-pub fn rich_actions(keys: &KeyReader, title: &str, text: &str, actions: &[(char, &str)]) -> Option<char> {
-    let title=glass_tui::markdown::sanitize(title).replace(['\n','\r']," ");
+pub fn rich_actions(
+    keys: &KeyReader,
+    title: &str,
+    text: &str,
+    actions: &[(char, &str)],
+) -> Option<char> {
+    let title = glass_tui::markdown::sanitize(title).replace(['\n', '\r'], " ");
     let _screen = Screen::new();
     let mut offset = 0usize;
     let mut cached_width = 0usize;
@@ -722,9 +738,23 @@ pub fn rich_actions(keys: &KeyReader, title: &str, text: &str, actions: &[(char,
                 lines.len()
             );
             if !actions.is_empty() {
-                footer = format!("Esc back · {}", actions.iter().map(|(key,label)|format!("{key} {label}")).collect::<Vec<_>>().join(" · "));
+                footer = format!(
+                    "Esc back · {}",
+                    actions
+                        .iter()
+                        .map(|(key, label)| format!("{key} {label}"))
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                );
                 if w < 40 {
-                    footer = format!("Esc · {}", actions.iter().map(|(key,_)|key.to_string()).collect::<Vec<_>>().join("/"));
+                    footer = format!(
+                        "Esc · {}",
+                        actions
+                            .iter()
+                            .map(|(key, _)| key.to_string())
+                            .collect::<Vec<_>>()
+                            .join("/")
+                    );
                 }
             }
             let _ = write!(
@@ -742,9 +772,15 @@ pub fn rich_actions(keys: &KeyReader, title: &str, text: &str, actions: &[(char,
             Some(Event::Key(k)) if cancelled(k.code, k.modifiers) || k.code == KeyCode::Enter => {
                 return None;
             }
-            Some(Event::Key(k)) if matches!(k.code, KeyCode::Char(c) if actions.iter().any(|(key,_)| *key==c))
-                && !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
-                if let KeyCode::Char(c) = k.code { return Some(c); }
+            Some(Event::Key(k))
+                if matches!(k.code, KeyCode::Char(c) if actions.iter().any(|(key,_)| *key==c))
+                    && !k
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                if let KeyCode::Char(c) = k.code {
+                    return Some(c);
+                }
             }
             Some(Event::Key(k)) => match k.code {
                 KeyCode::Up => offset = offset.saturating_sub(1),

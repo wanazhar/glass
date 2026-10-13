@@ -784,6 +784,25 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn custom_state_refuses_oversized_growth_before_durable_ack() {
+        let Some(py) = python() else { return };
+        let script = helper_script().replace("import json, sys", "import json, sys\nseed_count = 99").replace("\"output\":\"pong\"", "\"output\":\"pong:\"+str(seed_count)").replace("elif t==\"turn_end\":", "elif t==\"seed_custom\": seed_count = len(r.get(\"entries\", [])); send({\"id\":i})\n    elif t==\"turn_end\":");
+        let file = echo_ext(&script);
+        let dir = file.parent().unwrap();
+        let session = crate::session::Session::create(&dir.join("sessions")).unwrap();
+        let mut reg = Registry::load(&[format!("{py} {}", file.display())], dir, "mock");
+        reg.bind_session_path(session.path.clone());
+        let ext = &mut reg.exts[0];
+        ext.append_custom("t/state".into(), Some("x".repeat(1_700_000))).unwrap();
+        assert!(ext.append_custom("t/state".into(), Some("x".repeat(1_700_000))).unwrap_err().contains("not saved"));
+        assert_eq!(crate::session::Session::raw_records(&session.path).unwrap().len(), 1);
+        ext.seed_custom(vec![("t/legacy".into(), vec!["x".repeat(4_200_000)])]);
+        let mut host = |_name: &str, _args: &str| String::new();
+        assert_eq!(reg.run_tool("ping", "{}", &mut host).as_deref(), Some("pong:0"));
+        reg.shutdown();
+    }
+
+    #[test]
     fn broken_extension_does_not_stop_the_load() {
         let reg = Registry::load(
             &["/definitely/not/here".to_string()],

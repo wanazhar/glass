@@ -276,6 +276,10 @@ pub fn reports(path: &Path) -> Result<Vec<serde_json::Value>, String> {
     tail(&path.with_extension("requests.jsonl"))
 }
 pub fn tail(path: &Path) -> Result<Vec<serde_json::Value>, String> {
+    tail_window(path).map(|(rows, _)| rows)
+}
+
+pub fn tail_window(path: &Path) -> Result<(Vec<serde_json::Value>, bool), String> {
     // Tail-only reads keep long sessions cheap; a partial first row is skipped.
     use std::io::{Seek, SeekFrom};
     let mut options = std::fs::OpenOptions::new();
@@ -287,7 +291,7 @@ pub fn tail(path: &Path) -> Result<Vec<serde_json::Value>, String> {
     }
     let mut file = match options.open(path) {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), true)),
         Err(e) => return Err(e.to_string()),
     };
     let metadata = file.metadata().map_err(|e| e.to_string())?;
@@ -299,18 +303,19 @@ pub fn tail(path: &Path) -> Result<Vec<serde_json::Value>, String> {
         .map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(file.take(256 * 1024));
     if offset > 0 {
-        let mut partial = String::new();
-        reader.read_line(&mut partial).map_err(|e| e.to_string())?;
+        let mut partial = Vec::new();
+        reader.read_until(b'\n', &mut partial).map_err(|e| e.to_string())?;
     }
     let mut rows = reader
-        .lines()
+        .split(b'\n')
         .map_while(Result::ok)
-        .filter_map(|s| serde_json::from_str(&s).ok())
+        .filter_map(|s| serde_json::from_slice(&s).ok())
         .collect::<Vec<_>>();
+    let complete = offset == 0 && rows.len() <= 100;
     if rows.len() > 100 {
         rows.drain(..rows.len() - 100);
     }
-    Ok(rows)
+    Ok((rows, complete))
 }
 pub fn view(keys: &crate::input::KeyReader, session: &Session) {
     match reports(&session.path) {
@@ -386,6 +391,20 @@ pub fn usage_summary(session: &Session) -> Result<serde_json::Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn byte_tail_skips_partial_unicode_and_reports_byte_truncation() {
+        let path = std::env::temp_dir().join(format!("gc-tail-unicode-{}.jsonl", std::process::id()));
+        let mut bytes = serde_json::to_vec(&serde_json::json!({"long":"€".repeat(100_000)})).unwrap();
+        bytes.extend_from_slice(b"\n{\"last\":true}\n");
+        std::fs::write(&path, &bytes).unwrap();
+        let (rows, complete) = tail_window(&path).unwrap();
+        assert!(!complete);
+        assert_eq!(rows, vec![serde_json::json!({"last":true})]);
+        std::fs::write(&path, b"{\"first\":true}\n\xff\n{\"last\":true}\n").unwrap();
+        assert_eq!(tail(&path).unwrap().len(), 2, "corrupt UTF-8 must not hide later rows");
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn delta_tracks_changes_without_contents() {
         let messages = vec![glass_mod_api::Message::User("PRIVATE_MESSAGE".into())];

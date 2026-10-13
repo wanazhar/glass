@@ -295,7 +295,23 @@ impl Jobs {
         let n = if text.is_empty() {
             0
         } else {
-            match input.write(text.as_bytes()) {
+            // Nonblocking writes above PIPE_BUF may split a Unicode scalar.
+            // Keep each write atomic so accepted_bytes is a reusable string boundary.
+            let end = if text.is_ascii() {
+                text.len()
+            } else {
+                let atomic = unsafe { libc::fpathconf(input.as_raw_fd(), libc::_PC_PIPE_BUF) };
+                let atomic = usize::try_from(atomic)
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .ok_or("cannot determine atomic job stdin write size")?;
+                let mut end = text.len().min(atomic);
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                end
+            };
+            match input.write(&text.as_bytes()[..end]) {
                 Ok(n) => n,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
                 Err(e) => return Err(err(e)),
@@ -635,6 +651,29 @@ mod tests {
         drop(jobs);
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn partial_stdin_writes_keep_unicode_resend_boundaries() {
+        let dir = scratch("unicode-input");
+        let mut jobs = Jobs::default();
+        jobs.start("sleep 30", &dir, &dir).unwrap();
+        let input = jobs.jobs[&1].input.as_ref().unwrap();
+        assert_eq!(
+            unsafe { libc::fcntl(input.as_raw_fd(), libc::F_SETPIPE_SZ, 4096) },
+            4096
+        );
+        let payload = "€".repeat(2730);
+        let result = jobs.input(1, &payload, true).unwrap();
+        let accepted = result["accepted_bytes"].as_u64().unwrap() as usize;
+        assert!(accepted > 0 && accepted < payload.len());
+        assert!(payload.is_char_boundary(accepted));
+        assert_eq!(result["remaining_bytes"], payload.len() - accepted);
+        assert_eq!(result["stdin_closed"], false);
+        jobs.stop(1).unwrap();
+        drop(jobs);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn nonreading_stdin_and_graceful_shutdown_are_bounded() {
         let dir = scratch("nonblocking");

@@ -5,12 +5,12 @@
 
 mod acp;
 mod actions;
-mod workbench;
-mod output_view;
 mod addons;
+mod advisor;
 mod agent;
 mod agents_md;
 mod attempt_log;
+mod attention;
 mod auth;
 mod blobs;
 mod btw;
@@ -25,26 +25,19 @@ mod concurrency;
 mod config;
 mod context_audit;
 mod contracts;
-mod diagnostics;
-mod egress;
 mod diagnostic_bundle;
-mod history_inspector;
-mod attention;
-mod settings;
-mod reminders;
-mod rewind;
-mod transactions;
-mod navigation;
-mod advisor;
-mod source_control;
+mod diagnostics;
 mod doctor;
+mod egress;
 mod export;
 mod ext;
 mod files;
 mod fs_scan;
+mod guidance;
 mod hardening;
 mod help;
 mod history;
+mod history_inspector;
 mod hooks_shell;
 mod inbox;
 mod input;
@@ -53,13 +46,16 @@ mod jobs;
 mod live;
 mod loop_detect;
 mod loops;
-mod modal;
 mod mermaid;
+mod modal;
 mod mods;
+mod navigation;
+mod neuralnets;
 mod notify;
 #[allow(dead_code)]
 mod onboarding;
 mod osc8;
+mod output_view;
 mod partial;
 mod permissions;
 mod plugin_dev;
@@ -69,22 +65,24 @@ mod polish;
 mod pricing;
 mod profiles;
 mod project_memory;
-mod neuralnets;
-mod guidance;
 mod provider;
 mod queue;
 mod reader;
 mod readguard;
 mod recap;
 mod recovery;
-mod requirements;
+mod reminders;
 mod requests;
+mod requirements;
 mod resume_picker;
+mod rewind;
 mod sandbox;
 mod serve;
 mod session;
+mod settings;
 mod signals;
 mod skills;
+mod source_control;
 mod sse;
 mod status;
 mod structured;
@@ -93,10 +91,12 @@ mod surface;
 mod team;
 mod tool_repair;
 mod tools;
+mod transactions;
 mod transport;
 mod trust;
 mod verify;
 mod warmer;
+mod workbench;
 mod workflows;
 mod workspace;
 mod worktree;
@@ -160,7 +160,8 @@ fn main() {
         } else {
             cli::error("glass-core doctor", message);
         }
-        std::process::exit(2);    }
+        std::process::exit(2);
+    }
     // Headless prewalk gate (task six-wave-c-001): `gc prewalk --check SESSION`
     // reports whether the newest (or named) session ends with a pending plan
     // and no failing tool state — the precondition `/prewalk` runs under
@@ -168,7 +169,10 @@ fn main() {
     if args.first().is_some_and(|a| a == "prewalk") {
         let rest = &args[1..];
         if !rest.iter().any(|a| a.as_str() == "--check") {
-            crate::cli::error("Prewalk", "gc prewalk --check SESSION\ngc prewalk --check        (newest session)");
+            crate::cli::error(
+                "Prewalk",
+                "gc prewalk --check SESSION\ngc prewalk --check        (newest session)",
+            );
             std::process::exit(2);
         }
         let result = (|| -> Result<(), String> {
@@ -183,11 +187,17 @@ fn main() {
                         .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
                         .filter_map(|e| {
                             let m = e.metadata().ok()?;
-                            Some((m.modified().ok()?, e.path().file_stem()?.to_string_lossy().into_owned()))
+                            Some((
+                                m.modified().ok()?,
+                                e.path().file_stem()?.to_string_lossy().into_owned(),
+                            ))
                         })
                         .collect();
                     rows.sort_by_key(|r| std::cmp::Reverse(r.0));
-                    rows.into_iter().next().map(|(_, id)| id).ok_or_else(|| format!("no sessions in {}", dir.display()))?
+                    rows.into_iter()
+                        .next()
+                        .map(|(_, id)| id)
+                        .ok_or_else(|| format!("no sessions in {}", dir.display()))?
                 }
             };
             let session = Session::open_readonly(&dir, &id).map_err(|e| e.to_string())?;
@@ -248,18 +258,63 @@ fn main() {
             return;
         }
         Some("structure") => {
-            let status=std::process::Command::new("python3").arg("-c").arg(include_str!("../../../extensions/structure/structure.py")).args(&args[1..]).env("GC_BIN",std::env::current_exe().unwrap_or_else(|_|"glass-core".into())).status();
-            match status {Ok(status)=>std::process::exit(status.code().unwrap_or(1)),Err(error)=>{cli::error("Structural edit",&error.to_string());std::process::exit(2);}}
+            let status = std::process::Command::new("python3")
+                .arg("-c")
+                .arg(include_str!("../../../extensions/structure/structure.py"))
+                .args(&args[1..])
+                .env(
+                    "GC_BIN",
+                    std::env::current_exe().unwrap_or_else(|_| "glass-core".into()),
+                )
+                .status();
+            match status {
+                Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+                Err(error) => {
+                    cli::error("Structural edit", &error.to_string());
+                    std::process::exit(2);
+                }
+            }
         }
         Some("companion") => {
-            let status=std::process::Command::new("python3").arg("-c").arg(include_str!("../../../extensions/companion/companion.py")).args(&args[1..]).status();
-            match status {Ok(status)=>std::process::exit(status.code().unwrap_or(1)),Err(error)=>{cli::error("Companion",&error.to_string());std::process::exit(2);}}
+            let status = std::process::Command::new("python3")
+                .arg("-c")
+                .arg(include_str!("../../../extensions/companion/companion.py"))
+                .args(&args[1..])
+                .status();
+            match status {
+                Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+                Err(error) => {
+                    cli::error("Companion", &error.to_string());
+                    std::process::exit(2);
+                }
+            }
         }
-        Some("advisor") => {if let Err(error)=advisor::command(&args[1..]) {cli::error("Advisor",&error);std::process::exit(2);}return;}
-        Some("pr") => {if let Err(error)=source_control::command(&args[1..]) {cli::error("Pull request",&error);std::process::exit(2);}return;}
-        Some("hub") => {if let Err(error)=navigation::command(&args[1..]) {cli::error("Workspace hub",&error);std::process::exit(2);}return;}
+        Some("advisor") => {
+            if let Err(error) = advisor::command(&args[1..]) {
+                cli::error("Advisor", &error);
+                std::process::exit(2);
+            }
+            return;
+        }
+        Some("pr") => {
+            if let Err(error) = source_control::command(&args[1..]) {
+                cli::error("Pull request", &error);
+                std::process::exit(2);
+            }
+            return;
+        }
+        Some("hub") => {
+            if let Err(error) = navigation::command(&args[1..]) {
+                cli::error("Workspace hub", &error);
+                std::process::exit(2);
+            }
+            return;
+        }
         Some("transaction") => {
-            if let Err(error)=transactions::command(&args[1..]) {cli::error("File transaction",&error);std::process::exit(2);}
+            if let Err(error) = transactions::command(&args[1..]) {
+                cli::error("File transaction", &error);
+                std::process::exit(2);
+            }
             return;
         }
         Some("contract") => {
@@ -270,8 +325,15 @@ fn main() {
             return;
         }
         Some("neuralnets") | Some("guidance") => {
-            let result = if args[0] == "neuralnets" { neuralnets::command(&args[1..]) } else { guidance::command(&args[1..]) };
-            if let Err(error) = result { cli::error("Knowledge", &error); std::process::exit(2); }
+            let result = if args[0] == "neuralnets" {
+                neuralnets::command(&args[1..])
+            } else {
+                guidance::command(&args[1..])
+            };
+            if let Err(error) = result {
+                cli::error("Knowledge", &error);
+                std::process::exit(2);
+            }
             return;
         }
         Some("memory") => {
@@ -282,18 +344,31 @@ fn main() {
             return;
         }
         Some("settings") => {
-            if let Err(error)=settings::command(&args[1..]) {cli::error("Settings",&error);std::process::exit(2);}
+            if let Err(error) = settings::command(&args[1..]) {
+                cli::error("Settings", &error);
+                std::process::exit(2);
+            }
             return;
         }
         Some("usage") => {
             let result = (|| -> Result<(), String> {
-                if args.len() < 2 || args.len() > 3 || args.get(2).is_some_and(|s|s != "--json") { return Err("gc usage SESSION [--json]".into()); }
-                let session = Session::open_readonly(&config::data_dir(), &args[1]).map_err(|e|e.to_string())?;
+                if args.len() < 2 || args.len() > 3 || args.get(2).is_some_and(|s| s != "--json") {
+                    return Err("gc usage SESSION [--json]".into());
+                }
+                let session = Session::open_readonly(&config::data_dir(), &args[1])
+                    .map_err(|e| e.to_string())?;
                 let value = requests::usage_summary(&session)?;
-                if args.iter().any(|s|s == "--json") { emit_json(value); } else { cli::report("Usage and cache", &value); }
+                if args.iter().any(|s| s == "--json") {
+                    emit_json(value);
+                } else {
+                    cli::report("Usage and cache", &value);
+                }
                 Ok(())
             })();
-            if let Err(error) = result { cli::error("Usage", &error); std::process::exit(2); }
+            if let Err(error) = result {
+                cli::error("Usage", &error);
+                std::process::exit(2);
+            }
             return;
         }
         Some("blobs") => {
@@ -315,7 +390,8 @@ fn main() {
                             "kept_recent": report.kept_recent,
                             "removed": report.removed,
                             "errors": report.errors,
-                        }));                    } else {
+                        }));
+                    } else {
                         let value = serde_json::json!({
                             "text": format!(
                                 "scanned {} · kept (referenced) {} · kept (recent) {} · removed {} · errors {}",
@@ -340,7 +416,8 @@ fn main() {
         }
         Some("attention") => {
             if let Err(error) = attention::command(&args[1..]) {
-                cli::error("Attention", &error); std::process::exit(2);
+                cli::error("Attention", &error);
+                std::process::exit(2);
             }
             return;
         }
@@ -1186,8 +1263,11 @@ fn headless(
             "--plan" if prompt.is_empty() => planning = true,
             "--output-schema" if prompt.is_empty() => {
                 i += 1;
-                output_schema = Some(contracts::load(std::path::Path::new(args.get(i).ok_or("--output-schema requires a schema file")?))?);
-            },
+                output_schema = Some(contracts::load(std::path::Path::new(
+                    args.get(i)
+                        .ok_or("--output-schema requires a schema file")?,
+                ))?);
+            }
             "--trust" if prompt.is_empty() => {} // consumed by run(); accepted here
             "--budget" if prompt.is_empty() => {
                 i += 1;
@@ -1361,7 +1441,11 @@ fn headless(
     let (mut checkpoint, mut checkpoint_error) = if planning {
         (None, None)
     } else {
-        match checkpoint::begin_if_repository(&cfg.workspace, &dir, &format!("task-{}",session.log_len())) {
+        match checkpoint::begin_if_repository(
+            &cfg.workspace,
+            &dir,
+            &format!("task-{}", session.log_len()),
+        ) {
             Ok(c) => (c, None),
             Err(e) => (None, Some(e)),
         }
@@ -1406,7 +1490,9 @@ fn headless(
     });
     if let Some(c) = checkpoint.as_mut() {
         checkpoint_error = c.finish(&dir).err();
-        if checkpoint_error.is_none() {checkpoint_error=checkpoint::record_turn(&mut session,c).err();}
+        if checkpoint_error.is_none() {
+            checkpoint_error = checkpoint::record_turn(&mut session, c).err();
+        }
     }
     let (mut text, mut status, mut error) = match result {
         Ok((out, Stop::Finished)) => (out.text, "finished", None),
@@ -1440,16 +1526,26 @@ fn headless(
             (partial, "error", Some(e.to_string()))
         }
     };
-    if error.is_none() && let Some(schema) = &output_schema
+    if error.is_none()
+        && let Some(schema) = &output_schema
         && contracts::parse(schema, &text).is_err()
     {
         match contracts::repair(p.as_ref(), &mut session, schema, &text, cfg.max_tokens) {
             Ok(corrected) => text = corrected,
-            Err(reason) => { status = "invalid_output"; error = Some(format!("Final answer contract failed after one correction: {reason}")); },
+            Err(reason) => {
+                status = "invalid_output";
+                error = Some(format!(
+                    "Final answer contract failed after one correction: {reason}"
+                ));
+            }
         }
     }
-    if let Err(error) = navigation::record(&session, &cfg.workspace, &cfg.model, status) { eprintln!("navigation receipt: {error}"); }
-    let structured = output_schema.as_ref().and_then(|schema| contracts::parse(schema,&text).ok());
+    if let Err(error) = navigation::record(&session, &cfg.workspace, &cfg.model, status) {
+        eprintln!("navigation receipt: {error}");
+    }
+    let structured = output_schema
+        .as_ref()
+        .and_then(|schema| contracts::parse(schema, &text).ok());
     let l = ledger.lock().unwrap();
     if let Some(e) = &error {
         session.append(Record::Meta(format!("error: {e}")));
@@ -1687,7 +1783,9 @@ fn repl(
         }
     }
     let mut pending = queue::Queue::open(&session)?;
-    if !pending.is_empty() { ui_println!("Saved follow-ups available · /queue to review · /queue-run to run"); }
+    if !pending.is_empty() {
+        ui_println!("Saved follow-ups available · /queue to review · /queue-run to run");
+    }
 
     let warmer = crate::warmer::Warmer::new(Arc::clone(&factory));
 
@@ -1755,7 +1853,7 @@ fn repl(
         .is_some_and(|r| matches!(r,Record::Meta(t) if t.starts_with("error:")));
     // Messages from other sessions arrive through this mailbox while idle.
     let mut inbox_mailbox = crate::inbox::Mailbox::open(&session);
-    let mut accepted_background: Option<(String,String)> = None;
+    let mut accepted_background: Option<(String, String)> = None;
     crate::status::set("idle", "");
     loop {
         if team_owner != session.id {
@@ -1792,7 +1890,9 @@ fn repl(
             surface::composer(&editor, true, false)
         };
 
-        let mut background_recorded = accepted_background.as_ref().is_some_and(|(id,text)|id==&session.id&&text==editor.text());
+        let mut background_recorded = accepted_background
+            .as_ref()
+            .is_some_and(|(id, text)| id == &session.id && text == editor.text());
         let ev = loop {
             match keys.try_next() {
                 Some(event) => break Some(event),
@@ -1811,7 +1911,7 @@ fn repl(
                             && let Some((from, message)) = inbox_mailbox.deliver(&mut session)?
                         {
                             background_recorded = true;
-                            accepted_background = Some((session.id.clone(),message.clone()));
+                            accepted_background = Some((session.id.clone(), message.clone()));
                             ui_println!("\x1b[90minbox ({from}):\x1b[0m {message}");
                             editor.insert_str(&message);
                             break Some(glass_tui::crossterm::event::Event::Key(
@@ -1822,10 +1922,10 @@ fn repl(
                             ));
                         }
                         if editor.text().is_empty()
-                            && let Some(prompt) = crate::loops::due_for(&mut session,&cfg)?
+                            && let Some(prompt) = crate::loops::due_for(&mut session, &cfg)?
                         {
                             background_recorded = true;
-                            accepted_background = Some((session.id.clone(),prompt.clone()));
+                            accepted_background = Some((session.id.clone(), prompt.clone()));
                             ui_println!("\x1b[90mloop:\x1b[0m {prompt}");
                             editor.insert_str(&prompt);
                             break Some(glass_tui::crossterm::event::Event::Key(
@@ -2031,8 +2131,11 @@ fn repl(
         // the prompt.
         crate::history::record(&config::data_dir(), &text);
 
-        if matches!(text.as_str(), "/work" | "/dashboard" | "/hub" | "/workspace") {
-            match workbench::choose(&keys, actions::Group::Work) {
+        if matches!(
+            text.as_str(),
+            "/work" | "/dashboard" | "/hub" | "/workspace"
+        ) {
+            match workbench::view(&keys, &session, &mut jobs, workbench::Scope::All) {
                 Some(action) => text = action,
                 None => continue,
             }
@@ -2043,7 +2146,9 @@ fn repl(
                 None => continue,
             }
         }
-        if text == "/conversations" { text = "/sessions".into(); }
+        if text == "/conversations" {
+            text = "/sessions".into();
+        }
         if text == "/profiles" {
             match profiles::manage(&keys, &cfg) {
                 Ok(Some(candidate)) => {
@@ -2118,44 +2223,76 @@ fn repl(
             continue;
         }
         if text == "/constraints" || text.starts_with("/constraints ") {
-            match reminders::command(&session,text.strip_prefix("/constraints").unwrap_or("")) {
-                Ok(value)=>structured::view(&keys,"Constraint reminders",&value),
-                Err(error)=>modal::info(&keys,"Constraints unavailable",&error),
+            match reminders::command(&session, text.strip_prefix("/constraints").unwrap_or("")) {
+                Ok(value) => structured::view(&keys, "Constraint reminders", &value),
+                Err(error) => modal::info(&keys, "Constraints unavailable", &error),
             }
             continue;
         }
         if text == "/settings-info" {
             match settings::snapshot(&cfg) {
-                Ok(value)=>structured::view(&keys,"Effective settings",&value.to_string()),
-                Err(error)=>modal::info(&keys,"Settings unavailable",&error),
+                Ok(value) => structured::view(&keys, "Effective settings", &value.to_string()),
+                Err(error) => modal::info(&keys, "Settings unavailable", &error),
             }
             continue;
         }
         if text == "/usage" {
             match requests::usage_summary(&session) {
-                Ok(value) => structured::view(&keys,"Usage and cache",&value.to_string()),
-                Err(error) => modal::info(&keys,"Usage unavailable",&error),
+                Ok(value) => structured::view(&keys, "Usage and cache", &value.to_string()),
+                Err(error) => modal::info(&keys, "Usage unavailable", &error),
             }
             continue;
         }
-        if text == "/quote" {if let Err(e)=polish::quote_picker(&keys,&session){modal::info(&keys,"Quote unavailable",&e);}continue;}
-        if text == "/neuralnets" {neuralnets::view(&keys,&cfg.workspace);continue;}
-        if text == "/guidance" {
-            match guidance::request(&serde_json::json!({"action":"catalogue"})) { Ok(value) => structured::view(&keys,"Model guidance",&value.to_string()), Err(error) => modal::info(&keys,"Knowledge",&error) }
+        if text == "/quote" {
+            if let Err(e) = polish::quote_picker(&keys, &session) {
+                modal::info(&keys, "Quote unavailable", &e);
+            }
             continue;
         }
-        if text == "/advisor" {advisor::view(&keys,&session);continue;}
-        if text == "/pr" {source_control::view(&keys,&cfg.workspace);continue;}
-        if text == "/attention" { attention::view(&keys, &session); continue; }
-        let mut hub_resume=None;
-        if text=="/handoff" {
-            hub_resume=history_inspector::view(&keys,&session,&cfg.workspace);
-            if hub_resume.is_none() {continue;}
-            text="/sessions".into();
+        if matches!(text.as_str(), "/neuralnets" | "/memory") {
+            neuralnets::view(&keys, &cfg.workspace);
+            continue;
         }
-        if text == "/branches" { hub_resume=navigation::view(&keys,&session,&cfg.workspace,true);if hub_resume.is_none(){continue;}text="/sessions".into(); }
+        if text == "/guidance" {
+            match guidance::request(&serde_json::json!({"action":"catalogue"})) {
+                Ok(value) => structured::view(&keys, "Model guidance", &value.to_string()),
+                Err(error) => modal::info(&keys, "Knowledge", &error),
+            }
+            continue;
+        }
+        if text == "/advisor" {
+            advisor::view(&keys, &session);
+            continue;
+        }
+        if text == "/pr" {
+            source_control::view(&keys, &cfg.workspace);
+            continue;
+        }
+        if text == "/attention" {
+            attention::view(&keys, &session);
+            continue;
+        }
+        let mut hub_resume = None;
+        if text == "/handoff" {
+            hub_resume = history_inspector::view(&keys, &session, &cfg.workspace);
+            if hub_resume.is_none() {
+                continue;
+            }
+            text = "/sessions".into();
+        }
+        if text == "/branches" {
+            hub_resume = navigation::view(&keys, &session, &cfg.workspace, true);
+            if hub_resume.is_none() {
+                continue;
+            }
+            text = "/sessions".into();
+        }
         if text == "/history" {
-            structured::view(&keys, "History boundaries", &history_inspector::receipts(&session).to_string());
+            structured::view(
+                &keys,
+                "History boundaries",
+                &history_inspector::receipts(&session).to_string(),
+            );
             continue;
         }
         // `/recovery` is the navigable failure inspector; `/diagnostics` stays
@@ -2177,7 +2314,13 @@ fn repl(
         }
         if text == "/sessions" {
             warmer.begin_turn();
-            let selected=match hub_resume.take() {Some(id) if id==session.id=>Ok(None),Some(id)=>Session::open(&config::data_dir(),&id).map(Some).map_err(|e|e.to_string()),None=>polish::browser(&keys,&session,&cfg.workspace)};
+            let selected = match hub_resume.take() {
+                Some(id) if id == session.id => Ok(None),
+                Some(id) => Session::open(&config::data_dir(), &id)
+                    .map(Some)
+                    .map_err(|e| e.to_string()),
+                None => polish::browser(&keys, &session, &cfg.workspace),
+            };
             match selected {
                 Ok(Some(s)) => {
                     permissions::clear_session_approvals()?;
@@ -2278,7 +2421,7 @@ fn repl(
             if let Some(p) = path {
                 match polish::attach_picker(&keys, &mut session, &cfg.workspace, &p) {
                     Ok(true) => ui_println!("Attached {p} · /context to inspect or remove"),
-                    Ok(false) => {},
+                    Ok(false) => {}
                     Err(e) => modal::info(&keys, "Attachment error", &e),
                 }
             }
@@ -2298,92 +2441,7 @@ fn repl(
             continue;
         }
         if text == "/activity" {
-            loop {
-                let items = polish::activity_items(&session, &jobs.list());
-                if items.is_empty() {
-                    modal::info(
-                        &keys,
-                        "Activity",
-                        "No tools, subagents, jobs or loops in this session yet.",
-                    );
-                    break;
-                }
-                let labels = items
-                    .iter()
-                    .map(|item| format!("{} · {}", item.status, item.label))
-                    .collect::<Vec<_>>();
-                let searchable = items
-                    .iter()
-                    .map(|item| format!("{}\n{}\n{}", item.label, item.status, item.detail))
-                    .collect::<Vec<_>>();
-                let Some(index) = modal::choose_search(
-                    &keys,
-                    "Activity",
-                    "Tools, subagents, jobs and loops · choose a row",
-                    &labels,
-                    &searchable,
-                ) else {
-                    break;
-                };
-                let item = &items[index];
-                match item.action {
-                    polish::ActivityAction::Tool => {
-                        modal::info(&keys, "Tool activity", &item.detail);
-                        polish::details(&keys, &session);
-                    }
-                    polish::ActivityAction::Subagent => {
-                        modal::info(&keys, "Subagent activity", &item.detail)
-                    }
-                    polish::ActivityAction::Job(id) => {
-                        match modal::choose(
-                            &keys,
-                            "Background job",
-                            &item.label,
-                            &["Live output and stdin".into(), "Stop job…".into()],
-                        ) {
-                            Some(0) => if let Err(error)=jobs.inspect(&keys,id) {modal::info(&keys,"Job inspector",&error);},
-                            Some(1)
-                                if modal::choose(
-                                    &keys,
-                                    "Stop background job?",
-                                    &item.detail,
-                                    &["Cancel".into(), "Stop owned job".into()],
-                                ) == Some(1) =>
-                            {
-                                match jobs.stop(id) {
-                                    Ok(message) => modal::info(&keys, "Background job", &message),
-                                    Err(error) => modal::info(&keys, "Background job", &error),
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    polish::ActivityAction::Loop(index) => {
-                        modal::info(&keys, "Scheduled loop", &item.detail);
-                        if modal::choose(
-                            &keys,
-                            "Loop action",
-                            &item.label,
-                            &["Keep scheduled".into(), "Remove loop…".into()],
-                        ) == Some(1)
-                            && modal::choose(
-                                &keys,
-                                "Remove loop?",
-                                &item.label,
-                                &["Cancel".into(), "Remove loop".into()],
-                            ) == Some(1)
-                        {
-                            let result =
-                                crate::loops::command(&session, &format!("rm {}", index + 1));
-                            modal::info(
-                                &keys,
-                                "Scheduled loop",
-                                &result.unwrap_or_else(|error| error),
-                            );
-                        }
-                    }
-                }
-            }
+            workbench::view(&keys, &session, &mut jobs, workbench::Scope::Activity);
             continue;
         }
         if text == "/review" {
@@ -2567,7 +2625,9 @@ fn repl(
             continue;
         }
         if text == "/recap" {
-            let text = recap::cached(&session).unwrap_or_else(|| "Your recap will appear after your first message. No extra tokens are used.".into());
+            let text = recap::cached(&session).unwrap_or_else(|| {
+                "Your recap will appear after your first message. No extra tokens are used.".into()
+            });
             modal::info(&keys, "Welcome back", &text);
             continue;
         }
@@ -2931,13 +2991,22 @@ fn repl(
             let _ = args;
             continue;
         }
-        if text == "/turns" {rewind::review(&keys,&session);continue;}
-        let mut prepared_branch=None;
+        if text == "/turns" {
+            rewind::review(&keys, &session);
+            continue;
+        }
+        let mut prepared_branch = None;
         if text == "/rewind" {
-            match rewind::choose(&keys,&session,&cfg.workspace) {
-                Ok(Some((fork,through)))=>{prepared_branch=Some(fork);text=format!("/branch {through}");},
-                Ok(None)=>continue,
-                Err(error)=>{modal::info(&keys,"Rewind unavailable",&error);continue;},
+            match rewind::choose(&keys, &session, &cfg.workspace) {
+                Ok(Some((fork, through))) => {
+                    prepared_branch = Some(fork);
+                    text = format!("/branch {through}");
+                }
+                Ok(None) => continue,
+                Err(error) => {
+                    modal::info(&keys, "Rewind unavailable", &error);
+                    continue;
+                }
             }
         }
         if let Some(args) = text
@@ -2950,18 +3019,17 @@ fn repl(
             } else {
                 args.trim().parse::<usize>()
             };
-            match through.map_err(|e| e.to_string()).and_then(|t| {
-                match prepared_branch.take() {
-                    Some(fork)=>Ok(fork),
-                    None=>session.branch(&config::data_dir(),t).map_err(|e|e.to_string()),
-                }
-            }) {
+            match through
+                .map_err(|e| e.to_string())
+                .and_then(|t| match prepared_branch.take() {
+                    Some(fork) => Ok(fork),
+                    None => session
+                        .branch(&config::data_dir(), t)
+                        .map_err(|e| e.to_string()),
+                }) {
                 Ok(s) => {
                     permissions::clear_session_approvals()?;
-                    ui_println!(
-                        "branch {} — conversation alternative retained",
-                        s.id
-                    );
+                    ui_println!("branch {} — conversation alternative retained", s.id);
                     warmer.begin_turn();
                     let parent_metadata = polish::metadata(&session);
                     polish::save(&s, &parent_metadata)?;
@@ -3161,10 +3229,16 @@ fn repl(
             } else if args.is_empty() {
                 ui_println!(
                     "\x1b[90mprewalk: {} — set a target with `prewalk = \"MODEL\"` in config, arm it with /prewalk, disarm with /prewalk off\x1b[0m",
-                    if cfg.prewalk.is_empty() { "not configured" } else { &cfg.prewalk }
+                    if cfg.prewalk.is_empty() {
+                        "not configured"
+                    } else {
+                        &cfg.prewalk
+                    }
                 );
             } else if cfg.prewalk.is_empty() {
-                ui_println!("\x1b[31mprewalk is not configured: set `prewalk = \"MODEL\"` in config.toml first\x1b[0m");
+                ui_println!(
+                    "\x1b[31mprewalk is not configured: set `prewalk = \"MODEL\"` in config.toml first\x1b[0m"
+                );
             } else {
                 // The handoff is one durable note: the planning model wrote
                 // the plan and state; the target continues from them. The
@@ -3363,7 +3437,8 @@ fn repl(
         // extension claims it, say so rather than sending it to the model as a
         // prompt, where it would read as confused text.
         if let Some(rest) = text.strip_prefix('/')
-            && !recovering && !run_saved_queue
+            && !recovering
+            && !run_saved_queue
         {
             let (cmd, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
             if extensions.has_command(cmd) {
@@ -3378,8 +3453,12 @@ fn repl(
         }
 
         if run_saved_queue {
-            if let Some(prompt) = pending.next_prompt() { text = prompt.to_owned(); }
-            else { modal::info(&keys,"Follow-up queue","No saved follow-ups to run."); continue; }
+            if let Some(prompt) = pending.next_prompt() {
+                text = prompt.to_owned();
+            } else {
+                modal::info(&keys, "Follow-up queue", "No saved follow-ups to run.");
+                continue;
+            }
         }
 
         // A new turn supersedes any cache refresh the previous
@@ -3415,7 +3494,10 @@ fn repl(
             match pending.deliver(&mut session) {
                 Ok(Some(prompt)) => text = prompt,
                 Ok(None) => continue,
-                Err(error) => { modal::info(&keys,"Follow-up remains queued",&error); continue; },
+                Err(error) => {
+                    modal::info(&keys, "Follow-up remains queued", &error);
+                    continue;
+                }
             }
         }
         accepted_background = None;
@@ -3441,7 +3523,7 @@ fn repl(
         // rows and print the prompt once, whole: a prompt must be
         // recorded once, and a multi-line one must land intact.
         echo_prompt(&mut std::io::stdout(), &text, prompt_row, prompt_rows);
-        navigation::record(&session,&cfg.workspace,&cfg.model,"running")?;
+        navigation::record(&session, &cfg.workspace, &cfg.model, "running")?;
         // Submission transfers ownership of the prompt to conversation
         // history. Remove its visible draft before provider work can begin.
         surface::clear_composer();
@@ -3504,7 +3586,9 @@ fn repl(
                     if painter.refresh_geometry(!busy_palette.active()) && !busy_palette.active() {
                         surface::composer(&draft, true, true);
                     }
-                    if !busy_palette.active() { painter.tick(); }
+                    if !busy_palette.active() {
+                        painter.tick();
+                    }
                     if let Some(s) = drain_input(
                         &keys,
                         &mut draft,
@@ -3542,15 +3626,33 @@ fn repl(
             if let Some(c) = task_checkpoint.as_mut() {
                 match c.finish(&checkpoint_dir) {
                     Ok(()) => {
-                        if let Err(error)=checkpoint::record_turn(&mut session,c) {ui_println!("checkpoint receipt: {error}");}
+                        if let Err(error) = checkpoint::record_turn(&mut session, c) {
+                            ui_println!("checkpoint receipt: {error}");
+                        }
                         latest_checkpoint = task_checkpoint;
-                    },
+                    }
                     Err(e) => ui_println!("checkpoint: {e}"),
                 }
             }
-            if matches!(&outcome,Ok((_,Stop::Finished)))
-                && let Err(error)=advisor::milestone(&session) {ui_println!("Advisor: {error}");}
-            if let Err(error)=navigation::record(&session,&cfg.workspace,&cfg.model,match &outcome {Err(_)=>"blocked",Ok((_,Stop::Cancelled))=>"cancelled",Ok((_,Stop::Steered))=>"steered",Ok((_,Stop::ToolBudget))=>"incomplete",Ok((_,Stop::Finished))=>"completed"}) {ui_println!("navigation receipt: {error}");}
+            if matches!(&outcome, Ok((_, Stop::Finished)))
+                && let Err(error) = advisor::milestone(&session)
+            {
+                ui_println!("Advisor: {error}");
+            }
+            if let Err(error) = navigation::record(
+                &session,
+                &cfg.workspace,
+                &cfg.model,
+                match &outcome {
+                    Err(_) => "blocked",
+                    Ok((_, Stop::Cancelled)) => "cancelled",
+                    Ok((_, Stop::Steered)) => "steered",
+                    Ok((_, Stop::ToolBudget)) => "incomplete",
+                    Ok((_, Stop::Finished)) => "completed",
+                },
+            ) {
+                ui_println!("navigation receipt: {error}");
+            }
             let mut turn_failed = outcome.is_err();
             // The tab status reflects the turn's verdict: finished, failed
             // (first line of the reason), or back to idle after a cancel.
@@ -3765,12 +3867,18 @@ fn drain_input(
         if palette.active() {
             let selected = match ev {
                 Event::Key(key) => palette.key(editor, key),
-                Event::Paste(text) => { editor.insert_str(&text); palette.changed(editor); None },
+                Event::Paste(text) => {
+                    editor.insert_str(&text);
+                    palette.changed(editor);
+                    None
+                }
                 _ => None,
             };
             if !palette.active() {
                 surface::overlay(false).ok();
-                if let Some(draft) = palette.take_draft() { editor.set_text(&draft); }
+                if let Some(draft) = palette.take_draft() {
+                    editor.set_text(&draft);
+                }
                 dirty = true;
             }
             if let Some(command) = selected {
@@ -3780,29 +3888,49 @@ fn drain_input(
                         pending.manage(keys);
                         if pending.correction() != old.as_deref()
                             && let Some(correction) = pending.correction()
-                        { return Some(correction.to_string()); }
+                        {
+                            return Some(correction.to_string());
+                        }
                     }
                     "/agents" => team::view(keys, team_owner),
-                    "/details" | "/outputs" | "/responses" | "/work" | "/dashboard" | "/hub" | "/workspace" | "/activity" => {
+                    "/details" | "/outputs" | "/responses" | "/work" | "/dashboard" | "/hub"
+                    | "/workspace" | "/activity" => {
                         let entries = painter.live.borrow().snapshot();
-                        if let Err(error) = painter.open_reader(entries, false) { ui_println!("Reader unavailable: {error}"); }
+                        if let Err(error) = painter.open_reader(entries, false) {
+                            ui_println!("Reader unavailable: {error}");
+                        }
                     }
                     "/thinking" => {
-                        if let Err(error) = painter.live.borrow_mut().toggle(true) { ui_println!("Reasoning view unavailable: {error}"); }
+                        if let Err(error) = painter.live.borrow_mut().toggle(true) {
+                            ui_println!("Reasoning view unavailable: {error}");
+                        }
                     }
-                    "/help" => modal::info(keys, "Commands during a turn", "Queue, agents, thinking and details are available now. Other commands are marked After this turn. Enter sends a correction; Alt+Enter saves a follow-up. Esc closes the palette."),
-                    _ => modal::info(keys, "Available after this turn", "This command changes session or provider state. Finish or cancel the current turn, then invoke it again. Your draft is preserved."),
+                    "/help" => modal::info(
+                        keys,
+                        "Commands during a turn",
+                        "Queue, agents, thinking and details are available now. Other commands are marked After this turn. Enter sends a correction; Alt+Enter saves a follow-up. Esc closes the palette.",
+                    ),
+                    _ => modal::info(
+                        keys,
+                        "Available after this turn",
+                        "This command changes session or provider state. Finish or cancel the current turn, then invoke it again. Your draft is preserved.",
+                    ),
                 }
             }
             continue;
         }
         if let Event::Key(key) = &ev
-            && key.code == KeyCode::Char('/') && editor.text().is_empty()
-            && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && key.code == KeyCode::Char('/')
+            && editor.text().is_empty()
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
         {
             editor.insert_str("/");
             surface::overlay(true).ok();
-            if palette.open_managed(editor).is_err() { surface::overlay(false).ok(); }
+            if palette.open_managed(editor).is_err() {
+                surface::overlay(false).ok();
+            }
             continue;
         }
         let resized = painter.refresh_geometry(true);
@@ -3916,7 +4044,9 @@ fn drain_input(
                     dirty = true;
                     if pending.correction() != old_correction.as_deref()
                         && let Some(correction) = pending.correction()
-                    { return Some(correction.to_string()); }
+                    {
+                        return Some(correction.to_string());
+                    }
                     continue;
                 }
                 let Some(intent) = queue::classify(&text, alt, true) else {
@@ -4476,12 +4606,20 @@ impl Painter {
             self.append_live_entry(glass_tui::Role::System, text.clone());
             let mut io = surface::BodyWriter;
             for (index, section) in text.split("\n\n").enumerate() {
-                let tone = if index == 0 { glass_tui::theme::Tone::Accent }
-                    else if section.starts_with("Blocker:") { glass_tui::theme::Tone::Warning }
-                    else if section.starts_with("Next:") { glass_tui::theme::Tone::Secondary }
-                    else if section.starts_with("Saved conversation") { glass_tui::theme::Tone::Muted }
-                    else { glass_tui::theme::Tone::Body };
-                if index > 0 { let _ = writeln!(io); }
+                let tone = if index == 0 {
+                    glass_tui::theme::Tone::Accent
+                } else if section.starts_with("Blocker:") {
+                    glass_tui::theme::Tone::Warning
+                } else if section.starts_with("Next:") {
+                    glass_tui::theme::Tone::Secondary
+                } else if section.starts_with("Saved conversation") {
+                    glass_tui::theme::Tone::Muted
+                } else {
+                    glass_tui::theme::Tone::Body
+                };
+                if index > 0 {
+                    let _ = writeln!(io);
+                }
                 self.notice(&mut io, &glass_tui::theme::ansi(tone), section);
             }
         }

@@ -1365,6 +1365,26 @@ as `[verify exit N]` and the first success after a failure reports
 guess about how to test a project is worse than silence, so anything beyond
 the two detected cases is opt-in.
 
+## Native reviewed knowledge and Work
+
+`/neuralnets` (also `/memory`) combines reviewed project facts and proposed learning.
+Facts retain their keys, sources, review dates and explicit enable setting. Native
+`gc memory` commands remain supported. On the first explicit mutation, legacy
+native memory is copied into the neuralnets store atomically; the legacy file is
+kept as a backup. Use the current version for subsequent writes. Pending learning
+never enters prompts. Retrieval deduplicates included facts and enforces escaped
+JSON budgets of 16 facts / 8 KiB and 8 confirmed learning entries / 2 KiB.
+
+`/work` joins recorded tools, owned jobs, loops, attention, tasks and teammates
+without a new event database or background polling. `/activity` filters recorded
+activity; `/attention` filters items requiring attention. Selected output and job
+controls retain their original owner and confirmation rules.
+
+Inline chat, Ctrl-G conversation and Ctrl-T reasoning share a reader controller.
+Search, scrolling, following, selected cards and expansion survive view switches;
+fullscreen reasoning uses the same native Markdown presentation. Esc returns to
+the composer. These local views do not make model requests.
+
 ## Cross-session memory, opt-in
 
 `extensions/memory` keeps durable project memory across sessions:
@@ -1377,7 +1397,7 @@ Memories live under `~/.config/glass-core/memory/<project>/` with a
 `MEMORY.md` index (capped at 200 lines / 25 KB) that is injected into the
 system prompt at session start; topic files are read on demand. The model
 records and prunes them with the `memory` tool (`add`/`read`/`list`/
-`remove`), and `/memory` shows the index and directory. It is user-level
+`remove`). The native `/memory` shortcut opens neuralnets; extension files remain separate. It is user-level
 only — a repository can never add memories that flow into its own prompt,
 so this stays outside the trust-gate surface. Use it for conventions,
 gotchas, and preferences; transient task state belongs in `state`.

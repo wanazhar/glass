@@ -19,7 +19,7 @@ pub enum Action {
 
 pub struct Reader {
     terminal: Tui,
-    transcript: Transcript,
+    pub(crate) transcript: Transcript,
     unread: usize,
     search: Option<String>,
     match_count: usize,
@@ -27,11 +27,24 @@ pub struct Reader {
     expanded_cards: HashSet<(usize, String)>,
     selected_card: Option<(usize, String)>,
     loaded_spills: LoadedSpills,
+    fullscreen: bool,
+    title: String,
 }
 
 impl Reader {
     pub fn new(entries: Vec<Entry>, page_up: bool) -> io::Result<Self> {
-        let rect = body_rect();
+        Self::create(entries, page_up, false, "Conversation")
+    }
+    pub fn overlay(entries: Vec<Entry>, title: &str) -> io::Result<Self> {
+        Self::create(entries, false, true, title)
+    }
+    fn create(
+        entries: Vec<Entry>,
+        page_up: bool,
+        fullscreen: bool,
+        title: &str,
+    ) -> io::Result<Self> {
+        let rect = viewport(fullscreen);
         let terminal = make_clean_terminal(rect)?;
         let loaded_spills = HashMap::new();
         let mut transcript =
@@ -52,11 +65,22 @@ impl Reader {
             expanded_cards: HashSet::new(),
             selected_card: None,
             loaded_spills,
+            fullscreen,
+            title: title.into(),
         };
         reader.draw()?;
         Ok(reader)
     }
 
+    fn area(&self) -> Rect {
+        viewport(self.fullscreen)
+    }
+    pub fn searching(&self) -> bool {
+        self.search.is_some()
+    }
+    pub fn hide_cursor(&mut self) {
+        let _ = self.terminal.hide_cursor();
+    }
     pub fn update(&mut self, entries: Vec<Entry>) -> io::Result<()> {
         let following = self.transcript.follow;
         self.entries = entries;
@@ -80,21 +104,22 @@ impl Reader {
 
     /// Repaint after an overlay has written directly to the same body rows.
     pub fn restore_after_overlay(&mut self) -> io::Result<()> {
-        self.terminal = make_clean_terminal(body_rect())?;
+        self.terminal = make_clean_terminal(self.area())?;
         self.draw()
     }
 
     pub fn resize(&mut self) -> io::Result<()> {
-        self.terminal = make_clean_terminal(body_rect())?;
+        self.terminal = make_clean_terminal(self.area())?;
         self.draw()
     }
 
     pub fn event(&mut self, event: &Event, composer_has_draft: bool) -> io::Result<Action> {
-        let area = Transcript::content_rect(body_rect());
+        let area = Transcript::content_rect(self.area());
         let draw;
         match event {
             Event::Resize(_, _) => {
-                draw = true;
+                self.resize()?;
+                return Ok(Action::Handled);
             }
             Event::Key(key) => {
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -138,6 +163,9 @@ impl Reader {
                 }
                 match key.code {
                     KeyCode::Esc => return Ok(Action::Close),
+                    KeyCode::Char('f') if self.fullscreen && !ctrl => {
+                        self.transcript.follow_tail(area.height);
+                    }
                     KeyCode::End => {
                         self.transcript.follow_tail(area.height);
                     }
@@ -191,7 +219,7 @@ impl Reader {
                         self.match_count = 0;
                     }
                     KeyCode::Char('g' | 't') if ctrl => return Ok(Action::CloseAndPass),
-                    KeyCode::Home if ctrl => self.transcript.top(),
+                    KeyCode::Home if ctrl || self.fullscreen => self.transcript.top(),
                     KeyCode::Up => self.transcript.step(-1, area.height),
                     KeyCode::Down => self.transcript.step(1, area.height),
                     KeyCode::PageUp => self.transcript.step(-(area.height as isize), area.height),
@@ -232,7 +260,9 @@ impl Reader {
                 "/{}  · {} matches · Enter/↓ next · ↑ previous · Esc cancel",
                 query, self.match_count
             )
-        } else if self.selected_card.is_some() && let Some(index) = self.selected_tool_card_index() {
+        } else if self.selected_card.is_some()
+            && let Some(index) = self.selected_tool_card_index()
+        {
             let entry = &self.entries[index];
             let card = entry.tool_card.as_ref().unwrap();
             let key = (entry.turn, card.call_id.clone());
@@ -243,7 +273,8 @@ impl Reader {
                     Ok((_, false)) => "Full output loaded · Enter collapse · Esc back",
                     Ok((_, true)) => "Output loaded (64 KiB cap) · Esc back",
                     Err(_) => "Output load failed · /details · Esc back",
-                }.to_string()
+                }
+                .to_string()
             } else {
                 "Selected output · Enter expand/collapse · Esc back".to_string()
             }
@@ -261,18 +292,22 @@ impl Reader {
         stdout.write_all(b"\x1b[?2026h")?;
         stdout.flush()?;
         let result = self.terminal.draw(|frame| {
-            self.transcript.draw(frame, &[], "Conversation");
+            self.transcript.draw(frame, &[], &self.title);
         });
-        crate::surface::restore_composer_cursor();
+        if !self.fullscreen {
+            crate::surface::restore_composer_cursor();
+        }
         stdout.write_all(b"\x1b[?2026l")?;
         stdout.flush()?;
         result?;
-        crate::surface::reader_drawn();
+        if !self.fullscreen {
+            crate::surface::reader_drawn();
+        }
         Ok(())
     }
 
     fn visible_tool_card_index(&self) -> Option<usize> {
-        let area = Transcript::content_rect(body_rect());
+        let area = Transcript::content_rect(self.area());
         let first = self.transcript.layout.entry_at_line(self.transcript.scroll);
         if self
             .entries
@@ -326,7 +361,9 @@ impl Reader {
     fn search_matches(&mut self, query: &str, navigate: bool) {
         if !query.is_empty() {
             let needle = query.to_lowercase();
-            if navigate { self.selected_card = None; }
+            if navigate {
+                self.selected_card = None;
+            }
             for entry in &self.entries {
                 if let Some(card) = &entry.tool_card
                     && (card.command.to_lowercase().contains(&needle)
@@ -352,7 +389,8 @@ impl Reader {
         }
         if navigate {
             self.match_count = self.transcript.search(query);
-            self.transcript.search_next(false, Transcript::content_rect(body_rect()).height);
+            self.transcript
+                .search_next(false, Transcript::content_rect(self.area()).height);
         } else {
             self.match_count = self.transcript.refresh_search(query);
         }
@@ -402,6 +440,14 @@ fn render_entries(
         .collect()
 }
 
+fn viewport(fullscreen: bool) -> Rect {
+    if fullscreen {
+        let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+        Rect::new(0, 0, w.saturating_sub(1).max(1), h.max(1))
+    } else {
+        body_rect()
+    }
+}
 fn body_rect() -> Rect {
     let (x, y, width, height) = crate::surface::body_rect();
     // Keep the physical rightmost column untouched on SSH terminals that wrap
@@ -419,7 +465,14 @@ fn make_terminal(rect: Rect) -> io::Result<Tui> {
 }
 
 fn make_clean_terminal(rect: Rect) -> io::Result<Tui> {
-    crate::surface::clear_body_rect()?;
+    if rect.y > 0 || rect.height < glass_tui::crossterm::terminal::size().unwrap_or((80, 24)).1 {
+        crate::surface::clear_body_rect()?;
+    } else {
+        glass_tui::crossterm::execute!(
+            io::stdout(),
+            glass_tui::crossterm::terminal::Clear(glass_tui::crossterm::terminal::ClearType::All)
+        )?;
+    }
     make_terminal(rect)
 }
 
@@ -434,7 +487,7 @@ mod tests {
             text: String::new(),
             turn: 7,
             tool_card: Some(glass_tui::ToolCard {
-                    expanded: false,
+                expanded: false,
                 call_id: "exact-call".into(),
                 command: "echo output".into(),
                 output: "inline preview".into(),
@@ -465,7 +518,7 @@ mod tests {
             text: String::new(),
             turn: 2,
             tool_card: Some(glass_tui::ToolCard {
-                    expanded: false,
+                expanded: false,
                 call_id: "call-2".into(),
                 command: "echo inline".into(),
                 output: "inline output".into(),

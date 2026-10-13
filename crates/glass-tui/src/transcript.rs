@@ -40,7 +40,11 @@ struct Anchor {
 
 impl Transcript {
     pub fn new(entries: Vec<super::Entry>) -> Self {
-        let cards = entries.iter().enumerate().filter_map(|(i,e)| e.tool_card.clone().map(|c| (i,c))).collect();
+        let cards = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| e.tool_card.clone().map(|c| (i, c)))
+            .collect();
         let rows: Vec<(String, Role, usize)> = entries
             .into_iter()
             .map(|e| (e.text, e.role, e.turn))
@@ -65,7 +69,11 @@ impl Transcript {
 
     /// Refresh live records without resetting the reader's scroll position.
     pub fn replace_entries(&mut self, entries: Vec<super::Entry>) -> bool {
-        let cards = entries.iter().enumerate().filter_map(|(i,e)| e.tool_card.clone().map(|c| (i,c))).collect();
+        let cards = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| e.tool_card.clone().map(|c| (i, c)))
+            .collect();
         let cards_changed = self.layout.set_cards(cards);
         let rows: Vec<_> = entries
             .into_iter()
@@ -339,7 +347,11 @@ impl Transcript {
         let items = self.layout.visible(self.scroll, content);
 
         let session_label = if area.width < 40 {
-            "Log"
+            if session_label == "Provider reasoning" {
+                "Reasoning"
+            } else {
+                "Log"
+            }
         } else {
             session_label
         };
@@ -413,9 +425,11 @@ impl Transcript {
 
 fn display_line_for_match(text: &str, role: Role, query: &str, width: u16) -> usize {
     if role == Role::Assistant {
-        let query=query.to_lowercase();
-        return crate::markdown::lines(text,usize::from(width)).iter()
-            .position(|row|row.to_string().to_lowercase().contains(&query)).unwrap_or(0);
+        let query = query.to_lowercase();
+        return crate::markdown::lines(text, usize::from(width))
+            .iter()
+            .position(|row| row.to_string().to_lowercase().contains(&query))
+            .unwrap_or(0);
     }
     let mut preceding = 0;
     let lines: Vec<_> = text.lines().collect();
@@ -542,12 +556,19 @@ mod tests {
             transcript.top();
             transcript.step(isize::MAX, content.height);
             assert!(transcript.follow);
-            terminal.draw(|frame| transcript.draw(frame, &[], "Log")).unwrap();
+            terminal
+                .draw(|frame| transcript.draw(frame, &[], "Log"))
+                .unwrap();
             let buffer = terminal.backend().buffer();
             let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
             assert!(text.contains("TAIL"), "{width}x{height}: {text}");
-            assert_eq!(transcript.scroll,
-                transcript.layout.total_lines().saturating_sub(content.height as usize));
+            assert_eq!(
+                transcript.scroll,
+                transcript
+                    .layout
+                    .total_lines()
+                    .saturating_sub(content.height as usize)
+            );
         }
     }
 
@@ -559,14 +580,24 @@ mod tests {
                 let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                 let mut transcript = Transcript::new(entries(count));
                 transcript.top();
-                terminal.draw(|frame| transcript.draw(frame, &[], "Log")).unwrap();
-                assert_eq!(terminal.backend().buffer()[(width - 1, 1)].symbol(), "█",
-                    "top: {width}x{height}, {count} entries");
+                terminal
+                    .draw(|frame| transcript.draw(frame, &[], "Log"))
+                    .unwrap();
+                assert_eq!(
+                    terminal.backend().buffer()[(width - 1, 1)].symbol(),
+                    "█",
+                    "top: {width}x{height}, {count} entries"
+                );
                 transcript.follow = true;
-                terminal.draw(|frame| transcript.draw(frame, &[], "Log")).unwrap();
+                terminal
+                    .draw(|frame| transcript.draw(frame, &[], "Log"))
+                    .unwrap();
                 // Last track cell is above the down arrow and controls row.
-                assert_eq!(terminal.backend().buffer()[(width - 1, height - 3)].symbol(), "█",
-                    "bottom: {width}x{height}, {count} entries");
+                assert_eq!(
+                    terminal.backend().buffer()[(width - 1, height - 3)].symbol(),
+                    "█",
+                    "bottom: {width}x{height}, {count} entries"
+                );
             }
         }
     }
@@ -722,10 +753,30 @@ mod tests {
     #[test]
     fn live_search_refresh_preserves_selected_match_and_viewport() {
         let entries = vec![
-            Entry { role: Role::User, text: "needle first".into(), turn: 1, tool_card: None },
-            Entry { role: Role::Assistant, text: "filler\n".repeat(40), turn: 1, tool_card: None },
-            Entry { role: Role::User, text: "needle second".into(), turn: 2, tool_card: None },
-            Entry { role: Role::Assistant, text: "tail\n".repeat(40), turn: 2, tool_card: None },
+            Entry {
+                role: Role::User,
+                text: "needle first".into(),
+                turn: 1,
+                tool_card: None,
+            },
+            Entry {
+                role: Role::Assistant,
+                text: "filler\n".repeat(40),
+                turn: 1,
+                tool_card: None,
+            },
+            Entry {
+                role: Role::User,
+                text: "needle second".into(),
+                turn: 2,
+                tool_card: None,
+            },
+            Entry {
+                role: Role::Assistant,
+                text: "tail\n".repeat(40),
+                turn: 2,
+                tool_card: None,
+            },
         ];
         let mut t = Transcript::new(entries.clone());
         t.search("needle");

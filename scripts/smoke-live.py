@@ -41,7 +41,7 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
 def compact(text):
     # The modal frames every physical row; strip the frame before joining
     # wrapped text so a word split at a row edge remains searchable.
-    return ''.join(c for c in text.replace('│', '') if not c.isspace())
+    return ''.join(c for c in text.replace('│', '') if not c.isspace() and c not in '▲▼█║')
 
 with tempfile.TemporaryDirectory(prefix='gc-live-pty-') as tmp:
     root = Path(tmp); subprocess.run(['git', 'init', '-q', str(root)], check=True)
@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix='gc-live-pty-') as tmp:
             t = Terminal(root, env, size)
             try:
                 t.idle(); t.send('live fixture\r'); t.wait('Reasoning')
-                t.send('draft'); t.visible('draft'); t.send('\x14'); t.visible('Provider reasonin')
+                t.send('draft'); t.visible('draft'); t.send('\x14'); t.visible('Reasoning' if size[0]<=40 else 'Provider reasonin')
                 Endpoint.gate.set(); t.collect(.4)
                 assert 'Publicsummarylast.' in compact(t.vt.text()), t.vt.text()
                 t.send('\x1b[H'); t.collect(.15)
@@ -86,7 +86,8 @@ with tempfile.TemporaryDirectory(prefix='gc-live-pty-') as tmp:
             finally: Endpoint.gate.set(); t.close()
         Endpoint.mode='unsupported'; t=Terminal(root, env, (20,8))
         try:
-            t.idle();t.send('unsupported fixture\r');t.wait('running');t.send('\x14');t.visible('Provider reasonin');t.collect(.1)
+            t.idle();t.send('unsupported fixture\r');t.wait('running');t.send('\x14');t.visible('Reasoning');t.collect(.1)
+            t.send('\x1b[H');t.collect(.1)
             assert 'No provider' in t.vt.text(), t.vt.text()
             t.send('\x03');t.wait('Cancelled');t.collect(.2)
             assert '❯' in t.vt.text() and 'Provider reasoning' not in t.vt.text(), t.vt.text()

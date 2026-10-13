@@ -4,16 +4,34 @@
 
 ## Neuralnets
 
-Neuralnets stores attributed project knowledge locally. `/neuralnets` and `/memory`
-open the shared review interface. The `state` tool can discover guidance and propose
-learning without adding another core model tool.
+Neuralnets stores attributed project knowledge locally. Agents save useful lessons,
+search for relevant memories, correct outdated entries and forget stale information
+through the `state` tool. No approval is required. `/neuralnets` and `/memory` open
+the memory browser, where you can inspect sources, edit entries and remove them.
 
-Entries have pending, confirmed, or forgotten lifecycle states. Model proposals
-start pending and stay out of retrieved context. Human review through the native
-API is revision-checked. Learning content is reference data; it grants no
-permissions and cannot override current instructions.
+A save becomes active immediately and is available to search/read in the same turn.
+The bounded automatic reference snapshot refreshes on the next user turn; saves do
+not rewrite the system prefix between tool calls. Memory is reference data: it does
+not grant permissions or override current instructions. Save durable facts,
+procedures and verified corrections rather than task progress, raw transcripts,
+credentials or guesses about preferences.
+
+Model API examples:
+
+```json
+{"neuralnets":{"action":"save","kind":"lesson","text":"Run focused release checks after changing terminal layout."}}
+{"neuralnets":{"action":"search","query":"terminal layout"}}
+{"neuralnets":{"action":"update","id":"ENTRY_ID","expected":3,"text":"Updated verified lesson."}}
+{"neuralnets":{"action":"forget","id":"ENTRY_ID","expected":4}}
+```
+
+`id` and `expected` come from the latest read/search/list result. Updates and removals
+reject stale revisions so concurrent agents do not overwrite each other's changes.
+Duplicate saves reuse the existing entry without a write. Forgotten entries remain
+available for inspection and explicit restoration; search excludes them.
 
 ```sh
+gc neuralnets save lesson "Use the release binary for PTY checks" --json
 gc neuralnets list --json
 gc neuralnets search "test setup" --json
 gc neuralnets --help
@@ -24,7 +42,7 @@ Detailed recipes are loaded on demand. `gc guidance` uses the same catalogue as
 native discovery. Context manifests disclose supplied references; they do not
 prove that a model used them.
 
-## Reviewed facts and migration
+## Existing facts and migration
 
 `gc memory` retains the explicit fact interface:
 
@@ -40,7 +58,9 @@ existing key replaces its value. Reviewed-fact retrieval remains opt-in.
 
 Reviewed facts and neuralnets learning share one native store and lock. On the
 first explicit mutation, legacy native facts are copied into that store atomically.
-Reading the legacy store does not migrate it. The old file remains as a backup;
+Reading the legacy fact store does not write it. Existing pending/confirmed
+Neuralnets entries are treated as active on load; the next memory mutation saves
+the normalized status. No approval step is needed for those earlier learnings. The old file remains as a backup;
 use the current application version for later writes. Optional extension-memory
 files are separate and are not migrated.
 
@@ -49,17 +69,17 @@ files are separate and are not migrated.
 | Data | Limit |
 | --- | --- |
 | Retrieved reviewed facts | 16 facts / 8 KiB of escaped JSON |
-| Retrieved confirmed learning | 8 entries / 2 KiB of escaped JSON |
+| Retrieved active learning | 8 entries / 2 KiB of escaped JSON |
 | Neuralnets entries | 512 entries |
 | Combined native store | 1,088 KiB |
 
 Retrieval deduplicates identical included fact text. Conflicting entries remain
-available for review. Pending entries are excluded. Approved or forgotten content
-changes the next turn's reference snapshot; proposals alone leave it unchanged.
+available for inspection. Active saves, updates and removals change the next user
+turn's reference snapshot. `propose` remains an alias for immediate saving, and
+`approve` remains a compatibility alias for activation; neither is required.
 
-Writes use private atomic storage, a nonblocking lock, strict parsing, and review
-revisions. Invalid stores are reported without discarding them. Review controls
-protect the native model API. An unrestricted shell can still invoke CLI commands
+Writes use private atomic storage, a nonblocking lock, strict parsing, and optimistic
+revisions. Invalid stores are reported without discarding them. Read-only agents may inspect memory but cannot mutate it. An unrestricted shell can still invoke CLI commands
 or edit readable files; these controls are not an OS security boundary.
 
 ## Optional memory extension
@@ -74,7 +94,7 @@ extensions = ["python3 /path/to/glass-core/extensions/memory/memory.py"]
 ```
 
 The extension's `memory` tool supports `add`, `read`, `list`, and `remove`. It has a
-different inclusion and review policy from native neuralnets: enabling the
+different storage and inclusion policy from native neuralnets: enabling the
 extension allows its saved index to contribute prompt content. The native
 `/memory` command opens neuralnets. See the
 [extension reference](../extensions/memory/README.md).

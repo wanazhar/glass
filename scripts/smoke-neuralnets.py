@@ -8,16 +8,17 @@ with tempfile.TemporaryDirectory(prefix='gc-neuralnets-') as tmp:
         p=subprocess.run([binary,*args],cwd=tmp,env=env,text=True,capture_output=True)
         assert (p.returncode==0)==ok, (args,p.stdout,p.stderr)
         return json.loads(p.stdout) if ok else p.stderr
-    p=run('neuralnets','propose','preference','Use bounded reads','--json')
+    p=run('neuralnets','save','preference','Use bounded reads','--json')
     entry=p['entries'][0]; ident=entry['id']; revision=p['revision']
-    assert entry['status']=='pending' and entry['source']=='human CLI proposal'
+    assert entry['status']=='active' and entry['source']=='human CLI'
     p=run('neuralnets','approve',ident,str(revision),'--json')
-    assert p['entries'][0]['status']=='confirmed'
+    assert p['entries'][0]['status']=='active'
+    p=run('neuralnets','update',ident,str(p['revision']),'Use bounded reads with revisions','--json')
     run('neuralnets','forget',ident,str(revision),'--json',ok=False)
     p=run('neuralnets','forget',ident,str(p['revision']),'--json')
-    run('neuralnets','propose','preference','Use bounded reads','--json',ok=False)
+    run('neuralnets','propose','preference','Use bounded reads with revisions','--json',ok=False)
     p=run('neuralnets','restore',ident,str(p['revision']),'--json')
-    assert p['entries'][0]['status']=='pending' and len(p['entries'])==1
+    assert p['entries'][0]['status']=='active' and len(p['entries'])==1
     assert run('neuralnets','list','32','--json')['entries']==[]
     for topic in ['files','background','agents','context','learning','workspace','extensions','recovery','ui']:
         assert run('guidance','read',topic,'--json')['topic']==topic
@@ -42,4 +43,4 @@ with tempfile.TemporaryDirectory(prefix='gc-neuralnets-') as tmp:
     store.write_text('{corrupt')
     run('neuralnets','propose','fact','Never replace corrupt data','--json',ok=False)
     assert store.read_text()=='{corrupt'
-print('neuralnets: lifecycle, stale review, restore, pagination, 9 recipes, 3 PTY sizes, privacy, corrupt-store preservation passed')
+print('neuralnets: lifecycle, stale revisions, restore, pagination, 9 recipes, 3 PTY sizes, privacy, corrupt-store preservation passed')

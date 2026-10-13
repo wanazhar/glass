@@ -136,6 +136,9 @@ fn warm(factory: &ProviderFactory, snapshot: &CacheSnapshot) {
     }
     match provider.stream(&req) {
         Ok(stream) => {
+            if let Some(trace) = trace.as_mut() {
+                trace.serving(provider.model(), provider.rate_card());
+            }
             for event in stream {
                 if let Some(trace) = trace.as_mut() {
                     trace.event(&event);

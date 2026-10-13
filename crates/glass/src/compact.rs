@@ -479,6 +479,7 @@ fn run_manual_summary(
         |_, _, _| {},
     )
     .map_err(|e| e.to_string())?;
+    trace.serving(provider.model(), provider.rate_card());
     let mut summary = String::new();
     for ev in stream {
         trace.event(&ev);

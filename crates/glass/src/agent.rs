@@ -152,6 +152,7 @@ fn with_tool_bridge<R>(
 
 enum StreamUpdate {
     Event(Event),
+    Pricing(String, Option<crate::pricing::RateCard>),
     Retry {
         attempt: u8,
         delay_s: u64,
@@ -639,6 +640,7 @@ impl<'a> Agent<'a> {
                             Err(e) => return Err(e.to_string()),
                         }
                     };
+                    if tx.send(StreamUpdate::Pricing(provider.model().to_owned(), provider.rate_card())).is_err() { return Ok(()) }
                     let mut completed = false;
                     for event in stream {
                         if matches!(event, Event::Done) {
@@ -700,6 +702,7 @@ impl<'a> Agent<'a> {
         } else {
             None
         };
+        if receiver.is_none() { trace.serving(self.provider.model(), self.provider.rate_card()); }
         let mut out = TurnOutput {
             text: String::new(),
             tool_calls: Vec::new(),
@@ -715,6 +718,7 @@ impl<'a> Agent<'a> {
                     .recv_timeout(std::time::Duration::from_millis(40))
                 {
                     Ok(StreamUpdate::Event(ev)) => Some(ev),
+                    Ok(StreamUpdate::Pricing(model, rate)) => { trace.serving(&model, rate); None }
                     Ok(StreamUpdate::Retry {
                         attempt,
                         delay_s,
@@ -2471,21 +2475,24 @@ for line in sys.stdin:
 
     #[test]
     fn async_reasoning_recovery_preserves_effective_budget() {
-        struct ReasoningProvider(std::sync::Arc<std::sync::Mutex<Vec<Option<u32>>>>);
+        struct ReasoningProvider(std::sync::Arc<std::sync::Mutex<Vec<Option<u32>>>>, bool);
         impl Provider for ReasoningProvider {
             fn id(&self) -> &str { "reasoning" }
+            fn rate_card(&self) -> Option<crate::pricing::RateCard> {
+                self.1.then_some(crate::pricing::RateCard { input:1.0, output:1.0, cache_read:1.0, cache_write:1.0 })
+            }
             fn context_window(&self) -> u32 { 200_000 }
             fn stream(&self, request: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
                 let mut calls = self.0.lock().unwrap();
                 calls.push(request.reasoning);
                 let events = if calls.len() == 1 { vec![Event::Error("reasoning arrived without an answer".into())] }
-                    else { vec![Event::Text("recovered".into()), Event::Done] };
+                    else { vec![Event::Text("recovered".into()), Event::Usage(provider::Usage { input:1, output:1, cache_read:0, cache_write:0 }), Event::Done] };
                 Ok(Box::new(events.into_iter()))
             }
         }
         let dir = std::env::temp_dir().join(format!("gc-async-reasoning-{}", std::process::id()));
         let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let provider = ReasoningProvider(calls.clone());
+        let provider = ReasoningProvider(calls.clone(), false);
         let mut session = Session::create(&dir).unwrap();
         session.append(Record::User("continue".into()));
         let mut state = State::new();
@@ -2495,12 +2502,16 @@ for line in sys.stdin:
             let mut agent = Agent::new(&provider, &mut session, &mut state, &mods, &mut extensions, &dir);
             agent.reasoning = Some(8192);
             let factory_calls = calls.clone();
-            agent = agent.with_stream_factory(std::sync::Arc::new(move || Ok(Box::new(ReasoningProvider(factory_calls.clone())))));
+            agent = agent.with_stream_factory(std::sync::Arc::new(move || Ok(Box::new(ReasoningProvider(factory_calls.clone(), true)))));
             let (output, stop) = agent.run_turn(no_pump).unwrap();
             assert_eq!(output.text, "recovered");
             assert_eq!(stop, Stop::Finished);
         }
         assert_eq!(*calls.lock().unwrap(), vec![Some(8192), Some(0)]);
+        let trace = std::fs::read_to_string(session.path.with_extension("requests.jsonl")).unwrap();
+        let last: serde_json::Value = serde_json::from_str(trace.lines().last().unwrap()).unwrap();
+        assert_eq!(last["cost_usd"], 0.000002);
+        assert_eq!(last["model_served"], "reasoning");
         drop(session);
         std::fs::remove_dir_all(dir).unwrap();
     }

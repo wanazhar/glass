@@ -222,6 +222,19 @@ def bounded_stdio_and_streamed_hash():
         (plugins / 'mcp.json').write_text(' ' * (1024 * 1024 + 1))
         with patch.dict(os.environ, {'XDG_CONFIG_HOME': tmp}):
             assert BRIDGE_MODULE.plugin_servers() == {}
+    with tempfile.TemporaryDirectory() as tmp:
+        plugins = Path(tmp) / 'glass-core/plugins'
+        for name, config in {
+            'bad': {'$schema': BRIDGE_MODULE.PLUGIN_MCP_SCHEMA, 'mcpServers': [{'command': '/bin/true'}]},
+            'fields': {'$schema': BRIDGE_MODULE.PLUGIN_MCP_SCHEMA, 'mcpServers': {'badenv': {'command':'true', 'env':['bad']}, 'badheaders': {'type':'streamable-http', 'url':'http://127.0.0.1', 'headers':['bad']}, 'badargs': {'command':'true', 'args':{}}}},
+            'good': {'$schema': BRIDGE_MODULE.PLUGIN_MCP_SCHEMA, 'mcpServers': {'ok': {'type':'stdio', 'command':'/bin/true'}}},
+        }.items():
+            directory = plugins / name
+            directory.mkdir(parents=True)
+            (directory / 'mcp.json').write_text(json.dumps(config))
+        with patch.dict(os.environ, {'XDG_CONFIG_HOME': tmp}):
+            servers = BRIDGE_MODULE.plugin_servers()
+            assert set(servers) == {'good.ok'}, servers
     print('PASS bounded stdio frames and compatible streamed plugin hashing')
 
 

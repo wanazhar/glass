@@ -251,8 +251,15 @@ def plugin_servers():
             os.makedirs(pdata, exist_ok=True)
         except OSError:
             pass
-        for sname, spec in (data.get("mcpServers") or {}).items():
+        servers = data.get("mcpServers", {})
+        if not isinstance(servers, dict):
+            print(f"mcp-bridge: plugin {name}: mcpServers must be an object; skipped", file=sys.stderr)
+            continue
+        for sname, spec in servers.items():
             if not isinstance(spec, dict):
+                continue
+            if any(field in spec and not isinstance(spec[field], dict) for field in ("env", "headers")) or ("args" in spec and not isinstance(spec["args"], list)):
+                print(f"mcp-bridge: plugin {name}/{sname}: env/headers must be objects and args an array; skipped", file=sys.stderr)
                 continue
             kind = spec.get("type", "stdio")
             key = f"{name}.{sname}"

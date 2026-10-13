@@ -298,6 +298,96 @@ fn commit(
     Ok(())
 }
 
+// Each field owns its local draft; Esc returns to the preceding wizard step.
+fn custom_connection(
+    keys: &KeyReader,
+    seed: Option<&Connection>,
+    mut step: u8,
+) -> Result<Option<Connection>, String> {
+    let mut label = seed
+        .map(|c| c.label.clone())
+        .unwrap_or_else(|| "Custom provider".into());
+    let mut wire = seed
+        .map(|c| match c.provider.as_str() {
+            "openai-responses" => 1,
+            "anthropic" => 2,
+            _ => 0,
+        })
+        .unwrap_or(0);
+    let mut url = seed.map(|c| c.base_url.clone()).unwrap_or_default();
+    loop {
+        match step {
+            0 => {
+                let Some(value) =
+                    modal::field(keys, "Custom provider", "Connection name", &label, false)
+                else {
+                    return Ok(None);
+                };
+                label = value;
+                step = 1;
+            }
+            1 => {
+                let choices = vec![
+                    "OpenAI Chat Completions".into(),
+                    "OpenAI Responses".into(),
+                    "Anthropic Messages".into(),
+                ];
+                let Some(value) =
+                    modal::choose(keys, "Custom provider", "Choose the wire API", &choices)
+                else {
+                    if modal::take_back() {
+                        step = 0;
+                        continue;
+                    }
+                    return Ok(None);
+                };
+                if value != wire {
+                    url.clear();
+                }
+                wire = value;
+                step = 2;
+            }
+            _ => {
+                let initial = if url.is_empty() {
+                    if wire == 2 {
+                        "http://127.0.0.1:8080"
+                    } else {
+                        "http://127.0.0.1:8080/v1"
+                    }
+                } else {
+                    &url
+                };
+                let Some(value) = modal::validated_field(
+                    keys,
+                    "Custom provider",
+                    "Base URL (include /v1 for OpenAI APIs)",
+                    initial,
+                    false,
+                    |s| crate::provider::validate_endpoint(s).map_err(|e| e.to_string()),
+                ) else {
+                    if modal::take_back() {
+                        step = 1;
+                        continue;
+                    }
+                    return Ok(None);
+                };
+                return Ok(Some(Connection {
+                    id: match seed {
+                        Some(c) => c.id.clone(),
+                        None => auth::random(12)?,
+                    },
+                    label,
+                    provider: ["openai", "openai-responses", "anthropic"][wire].into(),
+                    base_url: value,
+                    model: String::new(),
+                    api_key_env: None,
+                    credential: None,
+                }));
+            }
+        }
+    }
+}
+
 fn setup(
     keys: &KeyReader,
     cfg: &mut Config,
@@ -316,200 +406,208 @@ fn setup(
             credential: None,
         }
     } else {
-        let Some(label) = modal::field(
-            keys,
-            "Custom provider",
-            "Connection name",
-            "Custom provider",
-            false,
-        ) else {
+        let Some(connection) = custom_connection(keys, None, 0)? else {
             return Ok(false);
         };
-        let choices = vec![
-            "OpenAI Chat Completions".into(),
-            "OpenAI Responses".into(),
-            "Anthropic Messages".into(),
-        ];
-        let Some(i) = modal::choose(keys, "Custom provider", "Choose the wire API", &choices)
-        else {
-            return Ok(false);
-        };
-        let Some(url) = modal::validated_field(
-            keys,
-            "Custom provider",
-            "Base URL (include /v1 for OpenAI APIs)",
-            if i == 2 {
-                "http://127.0.0.1:8080"
-            } else {
-                "http://127.0.0.1:8080/v1"
-            },
-            false,
-            |s| crate::provider::validate_endpoint(s).map_err(|e| e.to_string()),
-        ) else {
-            return Ok(false);
-        };
-        Connection {
-            id: auth::random(12)?,
-            label,
-            provider: ["openai", "openai-responses", "anthropic"][i].into(),
-            base_url: url,
-            model: String::new(),
-            api_key_env: None,
-            credential: None,
-        }
+        connection
     };
-    let oauth = preset == Some(0);
-    if oauth {
-        let Some(cred) = auth::chatgpt(keys, store, None)? else {
-            return Ok(false);
-        };
-        c.label = format!(
-            "ChatGPT · {} · {}",
-            cred.email,
-            cred.client_id
-                .chars()
-                .rev()
-                .take(6)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect::<String>()
-        );
-        c.credential = Some(c.id.clone());
-        store.credentials.insert(c.id.clone(), cred);
-        remember(store, &c)?;
-    } else {
-        let env = c
-            .api_key_env
-            .as_ref()
-            .filter(|name| std::env::var(name).is_ok_and(|s| !s.trim().is_empty()))
-            .cloned();
-        let mut methods = vec!["Enter API key (stored privately)".into()];
-        if let Some(name) = &env {
-            methods.insert(0, format!("Use {name} from environment"));
-        }
-        if c.api_key_env.is_none() {
-            methods.push("No key — local/custom endpoint".into());
-        }
-        let Some(method) = modal::choose(
-            keys,
-            &format!("Connect {}", c.label),
-            "Choose authentication",
-            &methods,
-        ) else {
-            return Ok(false);
-        };
-        let use_env = env.is_some() && method == 0;
-        let no_key = c.api_key_env.is_none() && method == methods.len() - 1;
-        if use_env {
-            c.api_key_env = env;
-        } else if no_key {
-            c.api_key_env = None;
-        } else {
-            let Some(key) = modal::field(
-                keys,
-                &format!("Connect {}", c.label),
-                "API key · hidden · saved only in glass-core/auth.json",
-                "",
-                true,
-            ) else {
+    let mut initial = c.clone();
+    let mut previous_method = None;
+    loop {
+        let mut key_method = None;
+        c = initial.clone();
+        store.credentials.remove(&c.id);
+        let oauth = preset == Some(0);
+        if oauth {
+            let Some(cred) = auth::chatgpt(keys, store, None)? else {
                 return Ok(false);
             };
-            c.api_key_env = None;
+            c.label = format!(
+                "ChatGPT · {} · {}",
+                cred.email,
+                cred.client_id
+                    .chars()
+                    .rev()
+                    .take(6)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>()
+            );
             c.credential = Some(c.id.clone());
-            store.credentials.insert(
-                c.id.clone(),
-                Credential {
-                    access_token: key,
-                    refresh_token: String::new(),
-                    expires_at: 0,
-                    client_id: String::new(),
-                    subject: String::new(),
-                    email: String::new(),
-                    id_token: String::new(),
-                    scopes: Vec::new(),
-                },
-            );
-        }
-    }
-    let mut next = cfg.clone();
-    auth::configure(&mut next, &c);
-    let key = candidate(&next, &c, store)?;
-    let Some(model) = model_for(keys, &next, key) else {
-        return Ok(false);
-    };
-    c.model = model;
-    commit(cfg, store, c, true)?;
-    Ok(true)
-}
-pub fn login(keys: &KeyReader, cfg: &mut Config) -> Result<bool, String> {
-    let mut store = auth::load()?;
-    let mut items: Vec<_> = store
-        .connections
-        .iter()
-        .map(|c| format!("Reconnect {}", c.label))
-        .collect();
-    let saved = items.len();
-    items.extend(PRESETS.iter().map(|p| p.label.into()));
-    items.push("Custom provider…".into());
-    let Some(idx) = modal::choose(
-        keys,
-        "Connect a provider",
-        "Choose an account or add a connection",
-        &items,
-    ) else {
-        return Ok(false);
-    };
-    if idx < saved {
-        let mut c = store.connections[idx].clone();
-        let existing = c
-            .credential
-            .as_ref()
-            .and_then(|id| store.credentials.get(id))
-            .cloned();
-        if let Some(cred) = existing.filter(|c| !c.client_id.is_empty()) {
-            let Some(cred) = auth::chatgpt(keys, &mut store, Some(cred))? else {
-                return Ok(false);
-            };
-            store
-                .credentials
-                .insert(c.credential.clone().unwrap(), cred);
-            remember(&store, &c)?;
+            store.credentials.insert(c.id.clone(), cred);
+            remember(store, &c)?;
         } else {
-            let Some(key) =
-                modal::field(keys, "Reconnect provider", "New API key · hidden", "", true)
-            else {
-                return Ok(false);
+            let env = c
+                .api_key_env
+                .as_ref()
+                .filter(|name| std::env::var(name).is_ok_and(|s| !s.trim().is_empty()))
+                .cloned();
+            let mut methods = vec!["Enter API key (stored privately)".into()];
+            if let Some(name) = &env {
+                methods.insert(0, format!("Use {name} from environment"));
+            }
+            if c.api_key_env.is_none() {
+                methods.push("No key — local/custom endpoint".into());
+            }
+            let method = if let Some(method) = previous_method.take() {
+                method
+            } else {
+                let Some(method) = modal::choose(
+                    keys,
+                    &format!("Connect {}", c.label),
+                    "Choose authentication",
+                    &methods,
+                ) else {
+                    if preset.is_none() && modal::take_back() {
+                        let Some(connection) = custom_connection(keys, Some(&c), 2)? else {
+                            return Ok(false);
+                        };
+                        initial = connection;
+                        continue;
+                    }
+                    return Ok(false);
+                };
+                method
             };
-            let id = c.credential.clone().unwrap_or_else(|| c.id.clone());
-            store.credentials.insert(
-                id.clone(),
-                Credential {
-                    access_token: key,
-                    refresh_token: String::new(),
-                    expires_at: 0,
-                    client_id: String::new(),
-                    subject: String::new(),
-                    email: String::new(),
-                    id_token: String::new(),
-                    scopes: Vec::new(),
-                },
-            );
-            c.credential = Some(id);
-            c.api_key_env = None;
+            let use_env = env.is_some() && method == 0;
+            let no_key = c.api_key_env.is_none() && method == methods.len() - 1;
+            if use_env {
+                c.api_key_env = env;
+            } else if no_key {
+                c.api_key_env = None;
+            } else {
+                key_method = Some(method);
+                let Some(key) = modal::field(
+                    keys,
+                    &format!("Connect {}", c.label),
+                    "API key · hidden · saved only in glass-core/auth.json",
+                    "",
+                    true,
+                ) else {
+                    if modal::take_back() {
+                        continue;
+                    }
+                    return Ok(false);
+                };
+                c.api_key_env = None;
+                c.credential = Some(c.id.clone());
+                store.credentials.insert(
+                    c.id.clone(),
+                    Credential {
+                        access_token: key,
+                        refresh_token: String::new(),
+                        expires_at: 0,
+                        client_id: String::new(),
+                        subject: String::new(),
+                        email: String::new(),
+                        id_token: String::new(),
+                        scopes: Vec::new(),
+                    },
+                );
+            }
         }
         let mut next = cfg.clone();
         auth::configure(&mut next, &c);
-        let key = candidate(&next, &c, &store)?;
+        let key = candidate(&next, &c, store)?;
         let Some(model) = model_for(keys, &next, key) else {
+            if !oauth && modal::take_back() {
+                previous_method = key_method;
+                continue;
+            }
             return Ok(false);
         };
         c.model = model;
-        commit(cfg, &mut store, c, true)?;
-        Ok(true)
-    } else {
-        let i = idx - saved;
-        setup(keys, cfg, &mut store, (i < PRESETS.len()).then_some(i))
+        commit(cfg, store, c, true)?;
+        return Ok(true);
+    }
+}
+pub fn login(keys: &KeyReader, cfg: &mut Config) -> Result<bool, String> {
+    loop {
+        let mut store = auth::load()?;
+        let mut items: Vec<_> = store
+            .connections
+            .iter()
+            .map(|c| format!("Reconnect {}", c.label))
+            .collect();
+        let saved = items.len();
+        items.extend(PRESETS.iter().map(|p| p.label.into()));
+        items.push("Custom provider…".into());
+        let Some(idx) = modal::choose(
+            keys,
+            "Connect a provider",
+            "Choose an account or add a connection",
+            &items,
+        ) else {
+            return Ok(false);
+        };
+        let outcome = (|| -> Result<bool, String> {
+            if idx < saved {
+                loop {
+                    let mut c = store.connections[idx].clone();
+                    let existing = c
+                        .credential
+                        .as_ref()
+                        .and_then(|id| store.credentials.get(id))
+                        .cloned();
+                    let oauth = existing.as_ref().is_some_and(|c| !c.client_id.is_empty());
+                    if let Some(cred) = existing.filter(|c| !c.client_id.is_empty()) {
+                        let Some(cred) = auth::chatgpt(keys, &mut store, Some(cred))? else {
+                            return Ok(false);
+                        };
+                        store
+                            .credentials
+                            .insert(c.credential.clone().unwrap(), cred);
+                        remember(&store, &c)?;
+                    } else {
+                        let Some(key) = modal::field(
+                            keys,
+                            "Reconnect provider",
+                            "New API key · hidden",
+                            "",
+                            true,
+                        ) else {
+                            return Ok(false);
+                        };
+                        let id = c.credential.clone().unwrap_or_else(|| c.id.clone());
+                        store.credentials.insert(
+                            id.clone(),
+                            Credential {
+                                access_token: key,
+                                refresh_token: String::new(),
+                                expires_at: 0,
+                                client_id: String::new(),
+                                subject: String::new(),
+                                email: String::new(),
+                                id_token: String::new(),
+                                scopes: Vec::new(),
+                            },
+                        );
+                        c.credential = Some(id);
+                        c.api_key_env = None;
+                    }
+                    let mut next = cfg.clone();
+                    auth::configure(&mut next, &c);
+                    let key = candidate(&next, &c, &store)?;
+                    let Some(model) = model_for(keys, &next, key) else {
+                        if !oauth && modal::take_back() {
+                            continue;
+                        }
+                        return Ok(false);
+                    };
+                    c.model = model;
+                    commit(cfg, &mut store, c, true)?;
+                    return Ok(true);
+                }
+            } else {
+                let i = idx - saved;
+                setup(keys, cfg, &mut store, (i < PRESETS.len()).then_some(i))
+            }
+        })()?;
+        if !outcome && modal::take_back() {
+            continue;
+        }
+        return Ok(outcome);
     }
 }
 pub fn model(keys: &KeyReader, cfg: &mut Config) -> Result<bool, String> {

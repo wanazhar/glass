@@ -342,7 +342,7 @@ impl Drop for Screen {
         let _ = std::io::stdout().flush();
     }
 }
-fn cancelled(code: KeyCode, mods: KeyModifiers) -> bool {
+pub(crate) fn cancelled(code: KeyCode, mods: KeyModifiers) -> bool {
     let cancel = code == KeyCode::Esc
         || (mods.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('c' | 'd')));
     if cancel {
@@ -379,7 +379,7 @@ pub fn choose_search(
             .collect();
         selected = selected.min(matches.len().saturating_sub(1));
         let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
-        let compact = h < 14;
+        let compact = h < 14 || w < 56;
         let framed = w >= 24 && h >= 12;
         let overhead = if compact { 3 } else { 8 } + if framed { 4 } else { 0 };
         let visible = usize::from(h).saturating_sub(overhead).max(1);
@@ -411,7 +411,7 @@ pub fn choose_search(
             title,
             &lines,
             if compact {
-                "Enter · Esc · F1 info"
+                "↵ · Esc back · F1"
             } else {
                 "↑↓ select · Enter choose · Esc back · F1 details"
             },

@@ -38,7 +38,10 @@ Type `/` at an empty prompt or press `ctrl-p` to open the command modal.
 The empty palette shows **Conversations**, **Work**, and **Settings**. Search any action by name, legacy alias, or intent (for example, `copy code` or `change model`); type `*` to browse every action. Work and Settings show the effect of each action before selection. Existing slash shortcuts remain available.
 
 The top-level palette has no parent menu: Esc closes it and restores the draft.
-Esc in a nested menu returns to its parent. Esc at the first screen closes the palette.
+Esc in a nested menu returns to its parent, including sign-in and custom-provider setup. Esc at the first screen closes the palette.
+Canceling an API-key setup discards the staged key. A completed ChatGPT sign-in
+saves its credentials before model selection; returning from that model menu
+does not undo the completed sign-in.
 
 Use `up`/`down` to choose, and press `enter` to select. Commands
 open selectors or input fields inside a modal. `/model` chooses a provider or

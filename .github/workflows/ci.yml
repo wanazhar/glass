@@ -48,6 +48,7 @@ jobs:
           python3 scripts/smoke-chat.py
           python3 scripts/smoke-motion.py
           python3 scripts/smoke-typescript.py
+          python3 scripts/smoke-auth-back.py
           python3 scripts/smoke-live.py
           python3 scripts/smoke-navigation.py
           python3 scripts/smoke-inline-scroll.py

@@ -27,6 +27,7 @@ pub fn canonical(name: &str) -> &str {
         "responses" | "details" => "outputs",
         "compaction" => "compact",
         "permissions" => "security",
+        "memory" => "neuralnets",
         _ => name,
     }
 }
@@ -64,6 +65,12 @@ fn keywords(name: &str) -> &'static str {
     }
 }
 const BUILTIN: &[(&str, &str, &str, bool)] = &[
+    (
+        "memory",
+        "",
+        "Reviewed project facts and context inclusion",
+        false,
+    ),
     ("help", "", "Show help", false),
     (
         "neuralnets",

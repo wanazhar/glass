@@ -1,37 +1,29 @@
 //! Live alternate-screen views driven by the same pump as provider/tool work.
 use crate::{agent::Progress, surface};
 use glass_tui::{
-    Entry, Role, Transcript,
+    Entry, Role,
     crossterm::{
-        event::{Event, KeyCode, KeyModifiers, MouseEventKind},
+        event::{Event, KeyCode, KeyModifiers},
         execute,
         terminal::{Clear, ClearType},
     },
-    ratatui::{
-        Terminal,
-        backend::CrosstermBackend,
-        style::Style,
-        widgets::{Block, Borders, Paragraph},
-    },
 };
+#[cfg(test)]
+use glass_tui::{Transcript, crossterm::event::MouseEventKind};
 use std::collections::HashMap;
 use std::io;
 use std::time::Instant;
-type Tui = Terminal<CrosstermBackend<glass_tui::theme::TerminalWriter<io::Stdout>>>;
 pub struct Live {
     entries: Vec<Entry>,
     reasoning: String,
     phase: &'static str,
     provider_detail: Option<String>,
-    view: Option<(Tui, Transcript, bool)>,
-    parked_views: [Option<Transcript>; 2],
+    view: Option<(crate::reader::Reader, bool)>,
+    parked_views: [Option<crate::reader::Reader>; 2],
     dirty: bool,
     turn: usize,
-    thinking_scroll: usize,
-    thinking_follow: bool,
     content_revision: u64,
     tool_started: HashMap<String, Instant>,
-    expanded_cards: std::collections::HashSet<(usize, String)>,
 }
 impl Live {
     pub fn new() -> Self {
@@ -44,11 +36,8 @@ impl Live {
             parked_views: [None, None],
             dirty: true,
             turn: 0,
-            thinking_scroll: 0,
-            thinking_follow: true,
             content_revision: 0,
             tool_started: HashMap::new(),
-            expanded_cards: std::collections::HashSet::new(),
         }
     }
     pub fn seed(&mut self, entries: Vec<Entry>) {
@@ -75,12 +64,7 @@ impl Live {
                             start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
                         });
                     }
-                    card.expanded = self.expanded_cards.contains(&(e.turn, card.call_id.clone()));
-                    crate::session::tool_card_text(
-                        card,
-                        self.expanded_cards
-                            .contains(&(e.turn, card.call_id.clone())),
-                    )
+                    crate::session::tool_card_text(card, card.expanded)
                 } else {
                     e.text.clone()
                 };
@@ -150,11 +134,15 @@ impl Live {
                 self.tool_started
                     .insert((*call_id).to_string(), Instant::now());
                 self.entries.push(Entry {
-                    role: if *name == "bash" { Role::Bash } else { Role::Tool },
+                    role: if *name == "bash" {
+                        Role::Bash
+                    } else {
+                        Role::Tool
+                    },
                     text: format!("{name}\n{}", command.unwrap_or("")),
                     turn: self.turn,
                     tool_card: Some(glass_tui::ToolCard {
-                    expanded: false,
+                        expanded: false,
                         call_id: (*call_id).to_string(),
                         command: command.unwrap_or(name).to_string(),
                         output: String::new(),
@@ -166,7 +154,9 @@ impl Live {
                 })
             }
             Progress::ToolEnd {
-                call_id, output, summary,
+                call_id,
+                output,
+                summary,
             } => {
                 if let Some(entry) = self.entries.iter_mut().rev().find(|entry| {
                     entry
@@ -257,189 +247,100 @@ impl Live {
         }
         self.dirty = true;
     }
+    fn view_entries(&self, thinking: bool) -> Vec<Entry> {
+        if !thinking {
+            return self.rows();
+        }
+        let body = if self.reasoning.is_empty() {
+            "No provider reasoning has been returned. Some providers expose no reasoning text or public summary."
+        } else {
+            &self.reasoning
+        };
+        vec![Entry {
+            role: Role::Assistant,
+            text: body.to_string(),
+            turn: self.turn,
+            tool_card: None,
+        }]
+    }
     pub fn toggle(&mut self, thinking: bool) -> io::Result<()> {
-        if self.view.as_ref().is_some_and(|v| v.2 == thinking) {
+        if self.view.as_ref().is_some_and(|v| v.1 == thinking) {
             return self.close();
         }
-        if self.active() {
-            self.close()?;
-        }
+        self.close()?;
         surface::overlay(true)?;
         execute!(io::stdout(), Clear(ClearType::All))?;
-        // Alternate screen uses full margins; the primary owner restores its own on close.
         use std::io::Write;
         write!(io::stdout(), "\x1b[r")?;
-        let tui = Terminal::new(CrosstermBackend::new(glass_tui::theme::TerminalWriter::new(
-            io::stdout(),
-        )))?;
-        let transcript = self
-            .take_parked_view(thinking)
-            .unwrap_or_else(|| Transcript::new(self.rows()));
-        self.view = Some((tui, transcript, thinking));
-        self.dirty = true;
-        self.draw()
+        let entries = self.view_entries(thinking);
+        let result = (|| {
+            let mut reader = match self.parked_views[usize::from(thinking)].take() {
+                Some(mut reader) => {
+                    reader.restore_after_overlay()?;
+                    reader.update(entries)?;
+                    reader
+                }
+                None => crate::reader::Reader::overlay(
+                    entries,
+                    if thinking {
+                        "Provider reasoning"
+                    } else {
+                        "Conversation"
+                    },
+                )?,
+            };
+            reader.hide_cursor();
+            self.view = Some((reader, thinking));
+            self.dirty = false;
+            Ok(())
+        })();
+        if result.is_err() {
+            surface::overlay(false).ok();
+        }
+        result
     }
     pub fn close(&mut self) -> io::Result<()> {
-        if let Some((mut tui, view, thinking)) = self.view.take() {
-            tui.show_cursor().ok();
-            self.park_view(thinking, view);
-
+        if let Some((reader, thinking)) = self.view.take() {
+            self.parked_views[usize::from(thinking)] = Some(reader);
             surface::overlay(false)?;
         }
         Ok(())
-    }
-
-    fn take_parked_view(&mut self, thinking: bool) -> Option<Transcript> {
-        self.parked_views[usize::from(thinking)].take()
-    }
-
-    fn park_view(&mut self, thinking: bool, view: Transcript) {
-        self.parked_views[usize::from(thinking)] = Some(view);
     }
     pub fn event(&mut self, ev: &Event) -> bool {
         if !self.active() {
             return false;
         }
-        let height = self
-            .view
-            .as_ref()
-            .and_then(|v| v.0.size().ok())
-            .map(|s| s.height)
-            .unwrap_or(24);
-        let transcript_height = Transcript::content_rect(glass_tui::ratatui::layout::Rect::new(0, 0, 1, height)).height;
-        match ev {
-            Event::Key(k) => {
-                let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-                if ctrl && k.code == KeyCode::Char('c') {
-                    self.close().ok();
-                    return false;
-                }
-                if matches!(k.code, KeyCode::Esc | KeyCode::Char('q'))
-                    || ctrl && matches!(k.code, KeyCode::Char('g') | KeyCode::Char('t'))
-                {
-                    let switch = ctrl
-                        && matches!(k.code, KeyCode::Char('g') | KeyCode::Char('t'))
-                        && self
-                            .view
-                            .as_ref()
-                            .is_some_and(|v| v.2 != (k.code == KeyCode::Char('t')));
-                    if switch {
-                        self.toggle(k.code == KeyCode::Char('t')).ok();
-                    } else {
-                        self.close().ok();
-                    }
-                    return true;
-                }
-                if self.view.as_ref().unwrap().2 {
-                    let amount = (usize::from(height) / 2).max(1);
-                    match k.code {
-                        KeyCode::Up => {
-                            self.thinking_scroll = self.thinking_scroll.saturating_sub(1);
-                            self.thinking_follow = false;
-                        }
-                        KeyCode::Down => {
-                            self.thinking_scroll += 1;
-                            self.thinking_follow = false;
-                        }
-                        KeyCode::PageUp => {
-                            self.thinking_scroll = self.thinking_scroll.saturating_sub(amount);
-                            self.thinking_follow = false;
-                        }
-                        KeyCode::PageDown => {
-                            self.thinking_scroll += amount;
-                            self.thinking_follow = false;
-                        }
-                        KeyCode::Home => {
-                            self.thinking_scroll = 0;
-                            self.thinking_follow = false;
-                        }
-                        KeyCode::End | KeyCode::Char('f') => self.thinking_follow = true,
-                        _ => {}
-                    }
-                }
-                let is_thinking = self.view.as_ref().unwrap().2;
-                if !is_thinking && k.code == KeyCode::Enter {
-                    let selected = self
-                        .view
-                        .as_ref()
-                        .map(|(_, view, _)| view.layout.entry_at_line(view.scroll));
-                    let card_key = selected.and_then(|index| {
-                        self.entries.get(index).and_then(|entry| {
-                            entry
-                                .tool_card
-                                .as_ref()
-                                .map(|card| (entry.turn, card.call_id.clone()))
-                        })
-                    });
-                    if let Some(key) = card_key {
-                        if !self.expanded_cards.insert(key.clone()) {
-                            self.expanded_cards.remove(&key);
-                        }
-                        let rows = self.rows();
-                        if let Some((_, view, _)) = self.view.as_mut() {
-                            view.replace_entries(rows);
-                        }
-                    } else if let Some((_, view, _)) = self.view.as_mut() {
-                        view.toggle_collapse();
-                    }
-                    self.dirty = true;
-                    return true;
-                }
-                let (_, view, _) = self.view.as_mut().unwrap();
-                match k.code {
-                    KeyCode::Up => view.step(-1, transcript_height),
-                    KeyCode::Down => view.step(1, transcript_height),
-                    KeyCode::PageUp => view.page(-1, transcript_height),
-                    KeyCode::PageDown => view.page(1, transcript_height),
-                    KeyCode::Home => view.top(),
-                    KeyCode::End | KeyCode::Char('f') => view.follow_tail(transcript_height),
-                    _ => {}
-                }
+        if let Event::Key(k) = ev {
+            let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+            if ctrl && k.code == KeyCode::Char('c') {
+                self.close().ok();
+                return false;
             }
-            Event::Resize(_, _) => {
-                self.view.as_mut().unwrap().0.autoresize().ok();
+            if ctrl && matches!(k.code, KeyCode::Char('g' | 't')) {
+                self.toggle(k.code == KeyCode::Char('t')).ok();
+                return true;
             }
-            Event::Mouse(mouse) => {
-                if let Some(delta) = wheel_lines(mouse.kind) {
-                    if self.view.as_ref().is_some_and(|view| view.2) {
-                        if delta < 0 {
-                            self.thinking_scroll =
-                                self.thinking_scroll.saturating_sub((-delta) as usize);
-                            self.thinking_follow = false;
-                        } else {
-                            self.thinking_follow = true;
-                        }
-                    } else if let Some((_, view, _)) = self.view.as_mut() {
-                        view.step(delta, transcript_height);
-                    }
-                }
+            if k.code == KeyCode::Char('q') && !ctrl && !self.view.as_ref().unwrap().0.searching() {
+                self.close().ok();
+                return true;
+            }
+        }
+        let result = self.view.as_mut().unwrap().0.event(ev, false);
+        match result {
+            Ok(crate::reader::Action::Close | crate::reader::Action::CloseAndPass) | Err(_) => {
+                self.close().ok();
             }
             _ => {}
         }
-        self.dirty = true;
         true
     }
     pub fn draw(&mut self) -> io::Result<()> {
         if !self.dirty || !self.active() {
             return Ok(());
         }
-        let rows = self.rows();
-        let phase = self.phase;
-        let reasoning = glass_tui::markdown::sanitize(&self.reasoning);
-        let thinking_scroll = &mut self.thinking_scroll;
-        let thinking_follow = self.thinking_follow;
-        if let Some((tui, view, thinking)) = self.view.as_mut() {
-            view.replace_entries(rows);
-            tui.draw(|f|{
-                if *thinking {
-                    let body=if reasoning.is_empty(){format!("{phase}\n\nNo provider reasoning has been returned. Some providers expose no reasoning text or public summary.\n\nCtrl-T / Esc close · work continues")}else{format!("{phase}\n\n{reasoning}\n\nCtrl-T / Esc close · work continues")};
-                    let lines=glass_tui::text::wrap_words(&body,usize::from(f.area().width.saturating_sub(2).max(1)));
-                    let max=lines.len().saturating_sub(usize::from(f.area().height.saturating_sub(2)));
-                    *thinking_scroll=if reasoning.is_empty(){0}else if thinking_follow {max} else {(*thinking_scroll).min(max)};
-                    f.render_widget(Paragraph::new(lines.iter().enumerate().map(|(i,line)|glass_tui::ratatui::text::Line::styled(line.clone(),Style::default().fg(glass_tui::theme::color(if i==0 {glass_tui::theme::Tone::Secondary}else{glass_tui::theme::Tone::Body})))).collect::<Vec<_>>()).scroll(((*thinking_scroll).min(u16::MAX as usize) as u16,0)).style(Style::default().fg(glass_tui::theme::color(glass_tui::theme::Tone::Body))).block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(glass_tui::theme::color(glass_tui::theme::Tone::Accent))).title(glass_tui::ratatui::text::Span::styled(" Provider reasoning ",Style::default().fg(glass_tui::theme::color(glass_tui::theme::Tone::Accent))))),f.area());
-                }else{view.draw(f,&[],"live");}
-            })?;
-        }
+        let thinking = self.view.as_ref().unwrap().1;
+        let rows = self.view_entries(thinking);
+        self.view.as_mut().unwrap().0.update(rows)?;
         self.dirty = false;
         Ok(())
     }
@@ -588,6 +489,7 @@ pub(crate) fn sanitize_provider_detail(text: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn wheel_lines(kind: MouseEventKind) -> Option<isize> {
     match kind {
         MouseEventKind::ScrollUp => Some(-3),
@@ -625,42 +527,20 @@ mod tests {
     }
 
     #[test]
-    fn transcript_and_reasoning_views_keep_independent_paused_positions() {
-        let mut live = Live::new();
+    fn shared_transcript_preserves_paused_anchor_on_live_updates() {
         let mut transcript = Transcript::new(transcript_entries(80));
         transcript.top();
         transcript.step(23, 10);
-        let paused_line = transcript.scroll;
-        let paused_entry = transcript.layout.entry_at_line(paused_line);
-        let paused_text = transcript
-            .layout
-            .entry_text(paused_entry)
-            .unwrap()
-            .to_string();
-        live.park_view(false, transcript);
-
-        let mut reasoning = Transcript::new(transcript_entries(30));
-        reasoning.top();
-        reasoning.step(7, 10);
-        let reasoning_line = reasoning.scroll;
-        live.park_view(true, reasoning);
-
-        // Switching to reasoning and back must not evict the transcript state.
-        let reasoning = live.take_parked_view(true).unwrap();
-        assert_eq!(reasoning.scroll, reasoning_line);
-        live.park_view(true, reasoning);
-        let mut transcript = live.take_parked_view(false).unwrap();
-        assert_eq!(transcript.scroll, paused_line);
+        let line = transcript.scroll;
+        let index = transcript.layout.entry_at_line(line);
+        let text = transcript.layout.entry_text(index).unwrap().to_string();
         transcript.replace_entries(transcript_entries(100));
-        let entry = transcript.layout.entry_at_line(transcript.scroll);
         assert_eq!(
-            transcript.layout.entry_text(entry),
-            Some(paused_text.as_str())
+            transcript
+                .layout
+                .entry_text(transcript.layout.entry_at_line(transcript.scroll)),
+            Some(text.as_str())
         );
-        live.park_view(false, transcript);
-
-        assert_eq!(live.take_parked_view(true).unwrap().scroll, reasoning_line);
-        assert_eq!(live.take_parked_view(false).unwrap().scroll, paused_line);
     }
 
     #[test]

@@ -302,9 +302,6 @@ Implemented in this change:
 
 Still pending, and not claimed complete:
 - Fully shared conversation chooser/controller with resume and branch navigation.
-- Shared inline/fullscreen transcript controller.
-- Typed Work projection joining jobs, attention, task evidence and teammates.
-- Explicit reviewed-memory migration and shared retrieval.
 - Lifecycle behavioral audit before sharing setup paths.
 
 These require behavior and migration parity checks; moving launchers alone does
@@ -322,3 +319,29 @@ not complete those implementation consolidations.
   startup 6.22 ms, key visibility 0.107 ms, redraw 0.319 ms, 12,000-record reader
   frame 117.05 ms. These are local measurements, not cross-machine guarantees.
 - No PATH installation or remote publication performed.
+
+### Continuation: shared owners
+
+Implemented the shared inline/fullscreen/reasoning reader, typed Work projection
+with focused Activity/Attention views, and native reviewed-memory migration into
+neuralnets. Migration preserves opt-in state, keys, sources, dates and legacy
+backup files; reads do not migrate data. Both retrieval budgets count escaped
+wire bytes. General tasks and teammates appear in Work, while Attention stays
+focused. Interrupted tool cards use canonical turn/compaction pairing.
+
+One Luna medium reviewer checked implementation and fixes. Final release evidence
+is recorded below after verification. Conversation chooser and lifecycle audit
+remain explicitly pending above.
+
+#### Continuation verification
+
+- 848 workspace tests passed, one intentionally ignored doctest; serial execution
+  avoids a parallel session-lock flake observed during the first test run.
+- Strict Clippy passed on the final source; optimized release build completed.
+- Final release binary passed consolidation navigation, live-turn reader (five
+  sizes), reader/search/jobs/diff (including 20x8), neuralnets lifecycle and native
+  provider-wire PTYs, and explicit knowledge migration/backup/privacy checks.
+- Offline performance gate passed: worst median prompt startup 6.29 ms, key
+  visibility 0.090 ms, redraw 0.311 ms, 12,000-record reader frame 126.08 ms.
+  Local measurements only; report `/tmp/gc-consolidation2-performance.json`.
+- No PATH installation, service interruption or remote publication performed.

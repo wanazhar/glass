@@ -40,7 +40,7 @@ for size in [None,(20,8),(40,24),(80,30)]:
                     t.send('/guidance\r');t.collect(.5);t.send('\x1b');t.collect(.2)
                     t.send('/neuralnets\r');t.collect(.5)
                     assert 'Neuralnets' in t.vt.text(),t.vt.text()
-                    t.send('\x1b[B\r');t.collect(.3)
+                    t.send('\x1b[B\x1b[B\r');t.collect(.3)
                     t.send('\x1b[B\r');t.collect(.3)
                     t.send('\x1b');t.collect(.2)
                 finally:t.close()

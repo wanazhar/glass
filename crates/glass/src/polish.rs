@@ -24,17 +24,18 @@ pub struct Attachment {
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
-    pub text: String,/// `"image/png"` etc. for image attachments; `text` is empty and `data`
-/// holds the base64 payload instead.
-#[serde(default)]
-pub media_type: Option<String>,
-#[serde(default)]
-pub data: Option<String>,
-/// Range citation state (task six-wave-e-001): set only for line-range
-/// excerpts. `consumed` flips once the marker has been written into a
-/// user message, so each citation enters the log exactly once.
-#[serde(default)]
-pub citation: Option<Citation>,
+    pub text: String,
+    /// `"image/png"` etc. for image attachments; `text` is empty and `data`
+    /// holds the base64 payload instead.
+    #[serde(default)]
+    pub media_type: Option<String>,
+    #[serde(default)]
+    pub data: Option<String>,
+    /// Range citation state (task six-wave-e-001): set only for line-range
+    /// excerpts. `consumed` flips once the marker has been written into a
+    /// user message, so each citation enters the log exactly once.
+    #[serde(default)]
+    pub citation: Option<Citation>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Citation {
@@ -327,25 +328,47 @@ pub fn attach(s: &mut Session, workspace: &Path, path: &str) -> Result<(), Strin
     save(s, &m)
 }
 /// Build an attributed bounded excerpt without running a model or project code.
-pub fn attach_excerpt(s: &Session, workspace: &Path, path: &str, first: usize, count: usize) -> Result<(), String> {
-    if first == 0 || count == 0 { return Err("Line numbers and count must be positive".into()); }
-    let path = workspace.join(path).canonicalize().map_err(|e| e.to_string())?;
+pub fn attach_excerpt(
+    s: &Session,
+    workspace: &Path,
+    path: &str,
+    first: usize,
+    count: usize,
+) -> Result<(), String> {
+    if first == 0 || count == 0 {
+        return Err("Line numbers and count must be positive".into());
+    }
+    let path = workspace
+        .join(path)
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
     let bytes = crate::requests::bounded(&path, 8 * 1024 * 1024)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| "Select a UTF-8 text file")?;
     let mut excerpt = String::new();
     let mut lines = 0;
     for line in text.lines().skip(first - 1).take(count) {
-        if excerpt.len().saturating_add(line.len()).saturating_add(1) > 32768 { return Err("Excerpt exceeds 32 KiB; narrow the range".into()); }
-        excerpt.push_str(line); excerpt.push('\n'); lines += 1;
+        if excerpt.len().saturating_add(line.len()).saturating_add(1) > 32768 {
+            return Err("Excerpt exceeds 32 KiB; narrow the range".into());
+        }
+        excerpt.push_str(line);
+        excerpt.push('\n');
+        lines += 1;
     }
-    if lines == 0 { return Err("No lines at this range".into()); }
+    if lines == 0 {
+        return Err("No lines at this range".into());
+    }
     let revision = crate::workspace::hash(&bytes);
     let mut meta = metadata(s);
     meta.attachments.retain(|a| a.path != path);
-    if meta.attachments.iter().map(|a| a.text.len()).sum::<usize>() + excerpt.len() > 131072 { return Err("Context attachments exceed 128 KiB".into()); }
+    if meta.attachments.iter().map(|a| a.text.len()).sum::<usize>() + excerpt.len() > 131072 {
+        return Err("Context attachments exceed 128 KiB".into());
+    }
     meta.attachments.push(Attachment {
         path,
-        source: Some(format!("lines {first}–{} · revision {revision}", first + lines - 1)),
+        source: Some(format!(
+            "lines {first}–{} · revision {revision}",
+            first + lines - 1
+        )),
         text: excerpt,
         media_type: None,
         data: None,
@@ -383,7 +406,11 @@ pub fn pending_citation_markers(s: &Session) -> Vec<String> {
     let mut meta = metadata(s);
     let mut markers = Vec::new();
     for a in meta.attachments.iter_mut() {
-        if let Some(marker) = a.citation.as_ref().map(|c| !c.consumed).unwrap_or(false)
+        if let Some(marker) = a
+            .citation
+            .as_ref()
+            .map(|c| !c.consumed)
+            .unwrap_or(false)
             .then(|| citation_marker(a))
             .flatten()
         {
@@ -421,62 +448,138 @@ pub fn with_citation_markers(s: &Session, text: &str) -> String {
     crate::session::dedupe_citation_markers(&out)
 }
 
-pub fn attach_picker(keys: &KeyReader, s: &mut Session, workspace: &Path, path: &str) -> Result<bool, String> {
-    let choices = ["Whole file or image", "Line range", "Preview current attachment"].map(String::from);
-    let Some(choice) = modal::choose(keys, "Attach context", path, &choices) else { return Ok(false) };
+pub fn attach_picker(
+    keys: &KeyReader,
+    s: &mut Session,
+    workspace: &Path,
+    path: &str,
+) -> Result<bool, String> {
+    let choices = [
+        "Whole file or image",
+        "Line range",
+        "Preview current attachment",
+    ]
+    .map(String::from);
+    let Some(choice) = modal::choose(keys, "Attach context", path, &choices) else {
+        return Ok(false);
+    };
     match choice {
-        0 => attach(s, workspace, path).map(|_|true),
+        0 => attach(s, workspace, path).map(|_| true),
         1 => {
-            let Some(range) = modal::field(keys, "Attach line range", "FIRST:COUNT · e.g. 20:40", "", false) else { return Ok(false) };
+            let Some(range) = modal::field(
+                keys,
+                "Attach line range",
+                "FIRST:COUNT · e.g. 20:40",
+                "",
+                false,
+            ) else {
+                return Ok(false);
+            };
             let (first, count) = range.split_once(':').ok_or("Use FIRST:COUNT")?;
-            attach_excerpt(s, workspace, path, first.trim().parse().map_err(|_| "Invalid first line")?, count.trim().parse().map_err(|_| "Invalid line count")?).map(|_|true)
+            attach_excerpt(
+                s,
+                workspace,
+                path,
+                first.trim().parse().map_err(|_| "Invalid first line")?,
+                count.trim().parse().map_err(|_| "Invalid line count")?,
+            )
+            .map(|_| true)
         }
         _ => {
-            if let Some(item) = metadata(s).attachments.iter().find(|a| a.path.ends_with(path)) {
-                modal::markdown(keys, "Context snapshot", &format!("{} · ~{} tokens\n\n{}", item.source.as_deref().unwrap_or("saved attachment"), item.text.len().div_ceil(4), item.text));
+            if let Some(item) = metadata(s)
+                .attachments
+                .iter()
+                .find(|a| a.path.ends_with(path))
+            {
+                modal::markdown(
+                    keys,
+                    "Context snapshot",
+                    &format!(
+                        "{} · ~{} tokens\n\n{}",
+                        item.source.as_deref().unwrap_or("saved attachment"),
+                        item.text.len().div_ceil(4),
+                        item.text
+                    ),
+                );
                 Ok(false)
-            } else { Err("No snapshot attached for this path yet".into()) }
+            } else {
+                Err("No snapshot attached for this path yet".into())
+            }
         }
     }
 }
 
 /// Quote a durable conversation entry as removable, attributed context.
 /// The quote is a snapshot and never gains the authority of an instruction file.
-pub fn quote_picker(keys:&KeyReader,s:&Session)->Result<(),String> {
-    let records=s.history_records();
-    let candidates=records.iter().enumerate().filter_map(|(index,r)|match r {
-        Record::User(t)=>Some((index,"You",t)),
-        Record::Assistant(t)=>Some((index,"Response",t)),
-        Record::ToolResult{name,body,..} if name!="bash"=>Some((index,"Tool",body)),
-        Record::Bash{output,..}=>Some((index,"Command output",output)),
-        _=>None,
-    }).rev().take(256).collect::<Vec<_>>();
-    let labels=candidates.iter().map(|(i,role,t)|format!("{role} · record {i} · {}",glass_tui::text::clip(&t.replace('\n'," "),100))).collect::<Vec<_>>();
-    let Some(i)=modal::choose(keys,"Quote conversation context","Newest first · source record stays retained",&labels)else{return Ok(());};
-    let (record,role,text)=candidates[i];
-    let preview=glass_tui::text::clip(text,8000);
-    let Some(quote)=modal::validated_field(keys,"Review quote","Edit this excerpt (up to 32 KiB); source record remains attributed",&preview,false,
-        |s|if s.trim().is_empty()||s.len()>32768{Err("Choose nonempty text up to 32 KiB".into())}else{Ok(())})else{return Ok(());};
-    let mut meta=metadata(s);
-    if meta.attachments.len()>=128||meta.attachments.iter().map(|a|a.text.len()).sum::<usize>()+quote.len()>131072 {return Err("Attachment budget reached; remove context items first".into());}
-    let fingerprint=crate::workspace::hash(text.as_bytes());
-    let path=PathBuf::from(format!("quote:{}:{record}:{}",s.id,&fingerprint[..12]));
-    meta.attachments.retain(|a|a.path!=path);
+pub fn quote_picker(keys: &KeyReader, s: &Session) -> Result<(), String> {
+    let records = s.history_records();
+    let candidates = records
+        .iter()
+        .enumerate()
+        .filter_map(|(index, r)| match r {
+            Record::User(t) => Some((index, "You", t)),
+            Record::Assistant(t) => Some((index, "Response", t)),
+            Record::ToolResult { name, body, .. } if name != "bash" => Some((index, "Tool", body)),
+            Record::Bash { output, .. } => Some((index, "Command output", output)),
+            _ => None,
+        })
+        .rev()
+        .take(256)
+        .collect::<Vec<_>>();
+    let labels = candidates
+        .iter()
+        .map(|(i, role, t)| {
+            format!(
+                "{role} · record {i} · {}",
+                glass_tui::text::clip(&t.replace('\n', " "), 100)
+            )
+        })
+        .collect::<Vec<_>>();
+    let Some(i) = modal::choose(
+        keys,
+        "Quote conversation context",
+        "Newest first · source record stays retained",
+        &labels,
+    ) else {
+        return Ok(());
+    };
+    let (record, role, text) = candidates[i];
+    let preview = glass_tui::text::clip(text, 8000);
+    let Some(quote) = modal::validated_field(
+        keys,
+        "Review quote",
+        "Edit this excerpt (up to 32 KiB); source record remains attributed",
+        &preview,
+        false,
+        |s| {
+            if s.trim().is_empty() || s.len() > 32768 {
+                Err("Choose nonempty text up to 32 KiB".into())
+            } else {
+                Ok(())
+            }
+        },
+    ) else {
+        return Ok(());
+    };
+    let mut meta = metadata(s);
+    if meta.attachments.len() >= 128
+        || meta.attachments.iter().map(|a| a.text.len()).sum::<usize>() + quote.len() > 131072
+    {
+        return Err("Attachment budget reached; remove context items first".into());
+    }
+    let fingerprint = crate::workspace::hash(text.as_bytes());
+    let path = PathBuf::from(format!("quote:{}:{record}:{}", s.id, &fingerprint[..12]));
+    meta.attachments.retain(|a| a.path != path);
     meta.attachments.push(Attachment{path,source:Some(format!("Conversation {} · raw record {record} · {role} · source revision {fingerprint} · edited quote snapshot (data)",s.id)),text:quote,media_type:None,data:None,citation:None});
-    save(s,&meta)
+    save(s, &meta)
 }
 
 pub fn prompt_context(s: &Session, instructions: &Option<String>) -> Option<String> {
     let mut text = instructions.clone().unwrap_or_default();
     let m = metadata(s);
-    match crate::project_memory::context(&m.workspace) {
-        Ok(Some(memory)) => text.push_str(&format!("\n<project_memory path=\"local-reviewed-facts\">\n{memory}\n</project_memory>")),
-        Ok(None) => {},
-        Err(error) => eprintln!("Project memory was not loaded: {error}"),
-    }
     match crate::neuralnets::context(&m.workspace) {
         Ok(Some(memory)) => text.push_str(&memory),
-        Ok(None) => {},
+        Ok(None) => {}
         Err(error) => eprintln!("Neuralnets was not loaded: {error}"),
     }
     // Images ride as conversation records, not prompt text; only text
@@ -484,7 +587,9 @@ pub fn prompt_context(s: &Session, instructions: &Option<String>) -> Option<Stri
     for a in m.attachments.iter().filter(|a| a.data.is_none()) {
         text.push_str(&format!(
             "\n<attached_file path={:?}>\nSource: {}\n{}\n</attached_file>",
-            a.path, a.source.as_deref().unwrap_or("saved file snapshot"), a.text
+            a.path,
+            a.source.as_deref().unwrap_or("saved file snapshot"),
+            a.text
         ));
     }
     (!text.is_empty()).then_some(text)
@@ -497,7 +602,12 @@ pub fn context_report(
 ) -> String {
     let messages = s.messages();
     let instruction_files = agents_md::load(&cfg.workspace)
-        .into_iter().filter(|i| instructions.as_ref().is_some_and(|text| text.contains(&format!("path=\"{}\"", i.path.display()))))
+        .into_iter()
+        .filter(|i| {
+            instructions
+                .as_ref()
+                .is_some_and(|text| text.contains(&format!("path=\"{}\"", i.path.display())))
+        })
         .map(|i| {
             format!(
                 "{}{}",
@@ -597,12 +707,20 @@ pub fn context_report(
                 .join("\n")
         }
     };
-    let failure = s.records.iter().rev().find_map(|r| match r {
-        Record::Meta(t) if t.starts_with("error:") => Some(t.as_str()),
-        _ => None,
-    }).unwrap_or("None recorded");
+    let failure = s
+        .records
+        .iter()
+        .rev()
+        .find_map(|r| match r {
+            Record::Meta(t) if t.starts_with("error:") => Some(t.as_str()),
+            _ => None,
+        })
+        .unwrap_or("None recorded");
     let historical = crate::context_audit::reports(s);
-    let latest = historical.last().map(String::as_str).unwrap_or("No request context recorded yet (older sessions may lack manifests).");
+    let latest = historical
+        .last()
+        .map(String::as_str)
+        .unwrap_or("No request context recorded yet (older sessions may lack manifests).");
     format!(
         "Latest provider failure:\n{failure}\n\nLast request context:\n{latest}\n\nModel: {}\nCurrent configuration (not a historical request):\nEstimated context: {estimate} tokens (includes prompt text; excludes tool schemas)\nMessages: {}\nSystem prompt: {} bytes\nSkill catalogue: {} bytes\n\nLoaded instructions:\n{}\n\nAttached files:\n{}\n\nContext edits:\n{edits}\n\nCompaction:\n{}",
         cfg.model,
@@ -640,11 +758,14 @@ pub fn context(
             "Quote a conversation entry…".into(),
         ];
         let m = metadata(s);
-        rows.extend(
-            m.attachments
-                .iter()
-                .map(|a| format!("Remove {} · {} · ~{} tokens", a.path.display(), a.source.as_deref().unwrap_or("snapshot"), a.text.len().div_ceil(4))),
-        );
+        rows.extend(m.attachments.iter().map(|a| {
+            format!(
+                "Remove {} · {} · ~{} tokens",
+                a.path.display(),
+                a.source.as_deref().unwrap_or("snapshot"),
+                a.text.len().div_ceil(4)
+            )
+        }));
         match modal::choose(
             keys,
             "Context",
@@ -658,7 +779,7 @@ pub fn context(
             ),
             Some(1) => {
                 if let Some(path) = path_picker(keys, &cfg.workspace) {
-                    attach_picker(keys,s,&cfg.workspace,&path)?;
+                    attach_picker(keys, s, &cfg.workspace, &path)?;
                 }
             }
             Some(2) => modal::info(
@@ -676,15 +797,26 @@ pub fn context(
             ),
             Some(5) => {
                 let reports = crate::context_audit::reports(s);
-                if reports.is_empty() { modal::info(keys, "Model requests", "No request context recorded yet."); }
-                else {
-                    let rows = reports.iter().enumerate().rev().map(|(i,_)|format!("Request {}",i+1)).collect::<Vec<_>>();
-                    if let Some(i) = modal::choose(keys, "Model requests", "Newest first · captured before dispatch", &rows) {
-                        modal::info(keys, "Request context", &reports[reports.len()-1-i]);
+                if reports.is_empty() {
+                    modal::info(keys, "Model requests", "No request context recorded yet.");
+                } else {
+                    let rows = reports
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .map(|(i, _)| format!("Request {}", i + 1))
+                        .collect::<Vec<_>>();
+                    if let Some(i) = modal::choose(
+                        keys,
+                        "Model requests",
+                        "Newest first · captured before dispatch",
+                        &rows,
+                    ) {
+                        modal::info(keys, "Request context", &reports[reports.len() - 1 - i]);
                     }
                 }
             }
-            Some(6) => quote_picker(keys,s)?,
+            Some(6) => quote_picker(keys, s)?,
             Some(i) => {
                 let mut m = metadata(s);
                 m.attachments.remove(i - 7);
@@ -1056,7 +1188,10 @@ mod tests {
         );
         // Marker survives the source changing: hash was taken at attach time.
         std::fs::write(root.join("src.txt"), "rewritten").unwrap();
-        assert_eq!(citation_marker(&metadata(&s).attachments[0]).unwrap(), marker);
+        assert_eq!(
+            citation_marker(&metadata(&s).attachments[0]).unwrap(),
+            marker
+        );
         std::fs::remove_dir_all(root).ok();
     }
 

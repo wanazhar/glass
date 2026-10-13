@@ -170,3 +170,5 @@ retries also depend on provider billing policy; they are not guaranteed free.
 Completed local tools are not replayed by this connection retry loop.
 
 Fallback chains size context conservatively: the smallest reachable context window and the largest token estimate determine compaction pressure. Request diagnostics record `model_requested` and `model_served` separately, and use the serving model's rate card when available.
+
+A model checkpoint keeps exploration visible until the model explicitly rewinds it. Rewind hides that region from future context and retains the supplied report; raw history and files remain intact. Open checkpoints also survive compaction and resume. Context-edit commands report a write error if their change cannot be saved.

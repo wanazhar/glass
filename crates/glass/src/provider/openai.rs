@@ -696,6 +696,25 @@ mod tests {
     use glass_mod_api::Message;
 
     #[test]
+    fn checkpoint_reports_do_not_split_wire_tool_batches() {
+        use crate::session::Record;
+        let records = vec![
+            Record::User("task".into()),
+            Record::ToolCall { id:"rew".into(), name:"rewind".into(), arguments:"{}".into() },
+            Record::ToolCall { id:"next".into(), name:"read".into(), arguments:"{}".into() },
+            Record::Checkpoint { label:"a".into(), log_len:3, rewind_summary:Some("retained finding".into()) },
+            Record::ToolResult { call_id:"rew".into(), name:"rewind".into(), body:"done".into() },
+            Record::ToolResult { call_id:"next".into(), name:"read".into(), body:"contents".into() },
+        ];
+        let wire = build_messages("system", &crate::compact::project(&records));
+        let call = wire.iter().position(|m| m["tool_calls"].is_array()).unwrap();
+        assert_eq!(wire[call]["tool_calls"].as_array().unwrap().len(), 2);
+        assert_eq!(wire[call + 1]["role"], "tool");
+        assert_eq!(wire[call + 2]["role"], "tool");
+        assert!(wire[..call].iter().any(|m| m["content"].as_str().is_some_and(|t| t.contains("retained finding"))));
+    }
+
+    #[test]
     fn an_image_message_becomes_a_data_uri_in_both_flavours() {
         let messages = vec![Message::Image {
             media_type: "image/png".into(),

@@ -568,7 +568,14 @@ pub fn project(records: &[Record]) -> Vec<Message> {
         .collect::<std::collections::HashSet<_>>();
     let mut earlier = Vec::new();
     let mut messages = Vec::new();
-    for m in records.iter().filter_map(Record::to_message) {
+    for record in records {
+        let Some(m) = record.to_message() else { continue };
+        if matches!(record, Record::Checkpoint { rewind_summary: Some(_), .. }) {
+            // A rewind happens inside a tool batch. Its report must not split
+            // the assistant calls from their following tool results.
+            earlier.push(m);
+            continue;
+        }
         match &m {
             Message::ToolResult {
                 call_id,

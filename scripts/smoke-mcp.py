@@ -212,6 +212,16 @@ def bounded_stdio_and_streamed_hash():
             expected.update(len(content).to_bytes(8, 'little'))
             expected.update(content)
         assert BRIDGE_MODULE.plugin_content_hash(root) == expected.hexdigest()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'mcp.json'
+        path.write_text(' ' * (1024 * 1024 + 1))
+        with patch.dict(os.environ, {'GC_MCP_CONFIG': str(path), 'XDG_CONFIG_HOME': tmp}):
+            assert BRIDGE_MODULE.load_servers() == {}
+        plugins = Path(tmp) / 'glass-core/plugins/big'
+        plugins.mkdir(parents=True)
+        (plugins / 'mcp.json').write_text(' ' * (1024 * 1024 + 1))
+        with patch.dict(os.environ, {'XDG_CONFIG_HOME': tmp}):
+            assert BRIDGE_MODULE.plugin_servers() == {}
     print('PASS bounded stdio frames and compatible streamed plugin hashing')
 
 

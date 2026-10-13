@@ -202,10 +202,7 @@ pub fn load_one(dir: &Path, report: &mut Vec<String>) -> Option<Plugin> {
                 ));
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&resolved) else {
-                continue;
-            };
-            match crate::skills::parse(&body, resolved) {
+            match crate::skills::load_metadata(resolved) {
                 Ok(skill) => skills.push(skill),
                 Err(e) => report.push(format!("plugin {name}: invalid skill skipped: {e}")),
             }

@@ -124,3 +124,5 @@ Installation and update actions inspect integrity and capability changes. See
 bridge configuration.
 
 The MCP bridge limits each stdio reply to 8 MiB, matching its HTTP response limit. Oversized replies fail with a transport diagnostic. Plugin integrity checks stream file contents in bounded chunks; existing content hashes and installation receipts remain compatible.
+
+Skill discovery reads the first 64 KiB for front matter and leaves the body on disk until requested. Front matter must close within that prefix. MCP configuration files are limited to 1 MiB; an oversized plugin configuration disables that plugin's MCP entries without hiding its skills or other servers.

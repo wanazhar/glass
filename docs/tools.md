@@ -159,3 +159,39 @@ Live jobs are stopped on normal terminal exit. Logs stay under session data in
 are not reattached on resume.
 
 For foreground bash calls, `cwd` selects the directory used by execution, read-before-write checks, and verification. Failed reads do not authorize later writes. Job control rejects `cwd` rather than silently ignoring it; use explicit paths in background commands.
+
+## Image viewing
+
+For a local preview and artifact metadata, run `gc file image PATH` or
+`gc file --json image PATH`. This prepares pixels without a model request.
+
+`view_image {"path":".gc-artifacts/browser-123/viewport.png"}` supplies image
+pixels to the model. It shares the native file engine's workspace boundary,
+regular-file requirement, symlink refusal and worker dispatch. It supports PNG,
+JPEG, GIF and WebP; animated formats use the first frame. The same decoder and
+size limits apply to user attachments. Transparency is composited over white.
+
+The tool card shows the source path, original and transmitted dimensions, and
+encoded size. Base64 is never printed in tool text. A content hash identifies a
+private JPEG artifact under the GC data directory's `images` folder. Replay adds
+pixels after the complete tool-result batch, preserving call/result ordering in
+Chat Completions, Responses and Anthropic transports. Missing or corrupt artifacts
+produce an explicit message asking the model to call `view_image` again.
+
+Preparation and encoded-image caches each retain at most eight entries. Decoding
+runs only on demand, outside the terminal input thread for model tool calls; there
+is no startup scan or background image processing. Durable artifacts remain until
+the data directory is explicitly cleaned. Replayed image inputs still consume
+provider context and may incur charges; local cache hits do not make vision free.
+
+A compatible API does not prove model vision support. Set `image_input = false`
+in the main configuration for a text-only model: foreground, served and ACP agents
+omit `view_image`, reject fabricated calls and report existing image context before
+sending a request. The default is true so unknown compatible vision models can be
+used without an allowlist. Independently configured delegated models must support
+images when their tasks require them.
+
+Enable `browser` and use `browser_verify` to capture a page, then pass its returned
+screenshot path to `view_image`. Browser capture accepts screenshots up to 8 MiB;
+native preparation reduces them to the model input bound. See
+[Browser verification](../extensions/browser/README.md).

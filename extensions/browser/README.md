@@ -14,7 +14,9 @@ It does not install dependencies, launch a browser, or close an existing browser
 
 `browser_verify` accepts `url` and optional `expected_text`. Results include HTTP
 status, expected-text presence at DOMContentLoaded, bounded console/page errors,
-a viewport PNG, and `passed`. Dynamic pages may need a later check after startup.
+a viewport PNG, and `passed`. Tool replies include a readable status card plus
+structured `result` and `is_error` fields. Call `view_image` with the returned
+screenshot path to supply pixels to a vision-capable model. Dynamic pages may need a later check after startup.
 
 Screenshots and reports are private `.gc-artifacts/browser-*` files in the
 workspace. Register a returned path with `gc workspace artifact add LABEL PATH`

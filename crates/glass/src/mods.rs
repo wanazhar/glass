@@ -249,7 +249,7 @@ mod tests {
         // Mods cannot shadow the compact core tool surface.
         let all = crate::provider::collect_tools(&[Box::new(Noisy) as Box<dyn Mod_>]);
         let names: Vec<_> = all.iter().map(|(n, _, _)| n.as_str()).collect();
-        assert_eq!(names, vec!["bash", "state", "read", "edit", "write", "todo"]);
+        assert_eq!(names, vec!["bash", "state", "view_image", "read", "edit", "write", "todo"]);
     }
 
     #[test]
@@ -266,6 +266,6 @@ mod tests {
             .into_iter()
             .map(|(n, _, _)| n)
             .collect();
-        assert_eq!(names, vec!["bash", "state", "read", "edit", "write"]);
+        assert_eq!(names, vec!["bash", "state", "view_image", "read", "edit", "write"]);
     }
 }

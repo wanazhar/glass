@@ -79,7 +79,7 @@ def verify(workspace, args):
 
 
 MANIFEST = {'name': 'browser', 'version': '1.0.0',
- 'system_prompt': 'Optional browser verification is available. browser_verify uses an isolated context in a local CDP browser and returns viewport screenshot, console errors and a report. Use gc workspace artifact add LABEL PATH to register returned artifacts. Never claim a successful check when passed is false.',
+ 'system_prompt': 'Optional browser verification is available. browser_verify uses an isolated context in a local CDP browser and returns viewport screenshot, console errors and a report. Inspect the screenshot with view_image. Use gc workspace artifact add LABEL PATH to register returned artifacts. Never claim a successful check when passed is false.',
  'tools': [{'name': 'browser_verify', 'description': 'Verify a web page in an explicitly exposed local browser; capture screenshot, HTTP status, expected text and console/page errors.',
  'schema': {'type': 'object', 'properties': {'url': {'type': 'string'}, 'expected_text': {'type': 'string'}}, 'required': ['url']}, 'concurrency': 'serial'}]}
 
@@ -98,15 +98,25 @@ def main():
                 reply['text'] = MANIFEST['system_prompt']
             elif kind == 'authorize':
                 reply['allow'] = True
+            elif kind == 'tool_result':
+                reply['body'] = req.get('body', '')
+            elif kind == 'turn_end':
+                continue
             elif kind == 'run_tool':
                 try:
-                    reply['output'] = verify(workspace, json.loads(req.get('arguments') or '{}'))
+                    result = json.loads(verify(workspace, json.loads(req.get('arguments') or '{}')))
+                    reply['result'] = result
+                    reply['is_error'] = not result.get('passed', False)
+                    prefix = 'error: ' if reply['is_error'] else ''
+                    reply['output'] = (f"{prefix}[browser · HTTP {result.get('status')} · {'passed' if result.get('passed') else 'failed'}]\n"
+                        f"{result.get('url')}\nScreenshot: {result.get('screenshot')}\n"
+                        f"Report: {result.get('report')}\nConsole: {len(result.get('console', []))} · Page errors: {len(result.get('page_errors', []))}\n"
+                        'Use view_image with the screenshot path to inspect pixels.')
                 except Exception as error:
-                    reply['output'] = 'browser verification failed: ' + str(error)[:2000]
+                    reply['output'] = 'error: browser verification failed: ' + str(error)[:2000]
+                    reply['is_error'] = True
             elif kind in ('goodbye', 'shutdown'):
                 break
-            else:
-                continue
             print(json.dumps(reply), flush=True)
         except ValueError:
             print(json.dumps({'error': 'invalid protocol JSON'}), flush=True)

@@ -32,6 +32,7 @@ mod egress;
 mod export;
 mod ext;
 mod files;
+mod images;
 mod fs_scan;
 mod guidance;
 mod hardening;
@@ -1469,7 +1470,8 @@ fn headless(
         &cfg.workspace,
     )
     .with_plan_mode(planning)
-    .prime_extensions()
+    .with_image_input(cfg.image_input)
+                    .prime_extensions()
     .with_prompt(cfg.system_prompt.clone(), catalogue, prompt_instructions)
     .with_limits(cfg.max_tokens, cfg.reasoning_budget, usize::MAX)
     .with_recovery(recovering)
@@ -3598,7 +3600,8 @@ fn repl(
                     extensions,
                     &cfg.workspace,
                 )
-                .prime_extensions()
+                .with_image_input(cfg.image_input)
+                    .prime_extensions()
                 .with_prompt(
                     cfg.system_prompt.clone(),
                     catalogue.clone(),

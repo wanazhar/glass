@@ -100,6 +100,8 @@ pub struct Config {
     pub mermaid: bool,
     /// OSC 8 hyperlinks (wave D): "on" | "off" | "auto" (auto consults TERM).
     pub hyperlinks: String,
+    /// Explicit model capability override; compatible transport does not imply vision.
+    pub image_input: bool,
     pub system_prompt: String,
 }
 
@@ -136,6 +138,7 @@ impl Default for Config {
             prewalk: String::new(),
             mermaid: false,
             hyperlinks: "auto".into(),
+            image_input: true,
             system_prompt: BASE_SYSTEM_PROMPT.to_string(),
         }
     }
@@ -144,7 +147,7 @@ impl Default for Config {
 /// Compact default guidance. Tool schemas and on-demand help carry API details.
 pub const BASE_SYSTEM_PROMPT: &str = "\
 You are glass-core, a coding agent in the user's workspace.
-Prefer read/edit/write for files; bash for search, builds, tests and processes.
+Prefer read/edit/write for files; view_image for images; bash for search, builds, tests and processes.
 `state` replaces durable notes with items ([] clears; {} reads).
 Save goals, decisions, paths and next steps before compaction.
 Discover workflows with state {guidance:{action:search,query}}; read a returned topic
@@ -246,6 +249,7 @@ struct Raw {
     reasoning_budget: Option<u32>,
     cost_limit: Option<f64>,
     pricing: Option<PricingRaw>,
+    image_input: Option<bool>,
     system_prompt: Option<String>,
     mods: Option<Vec<String>>,
     extensions: Option<Vec<String>>,
@@ -302,6 +306,7 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
     if let Some(v) = raw.base_url {
         cfg.base_url = v;
     }
+    if let Some(v) = raw.image_input { cfg.image_input = v; }
     if let Some(v) = raw.model {
         cfg.model = v;
     }

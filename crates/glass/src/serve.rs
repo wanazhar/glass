@@ -610,6 +610,7 @@ pub fn serve(
                         &mut extensions,
                         &cfg.workspace,
                     )
+                    .with_image_input(cfg.image_input)
                     .prime_extensions()
                     .with_prompt(cfg.system_prompt.clone(), None, instructions.clone())
                     .with_live(cfg.live_flush_ms as u64)

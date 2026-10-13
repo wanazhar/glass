@@ -29,7 +29,9 @@ api_key_env = ""
 
 The other adapters are `anthropic` and `openai-responses`. Select an adapter that
 matches the endpoint. Protocol compatibility alone does not establish support
-for tools, images, reasoning, model discovery, or every streaming event.
+for tools, images, reasoning, model discovery, or every streaming event. Set
+`image_input = false` for a text-only model to disable native image viewing and
+reject existing image context before a foreground, served or ACP request.
 
 `/settings` and `gc settings --json` show effective settings and their provenance.
 `/profiles` saves workspace-specific provider/model choices, account references,

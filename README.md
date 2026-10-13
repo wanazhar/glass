@@ -84,7 +84,8 @@ same runtime to other interfaces. See [Automation](docs/automation.md).
 
 ## Extend the workflow
 
-The core exposes five tools: `read`, `edit`, `write`, `bash`, and `state`.
+The core exposes six tools: `read`, `edit`, `write`, `view_image`, `bash`, and `state`.
+Agents can inspect screenshots and project images without reading binary files as text.
 Additional workflows are discovered on demand. Optional subprocess extensions add
 web search, MCP tools, browser checks, language services, and other integrations.
 Skills and compiled mods provide instructions and hooks.

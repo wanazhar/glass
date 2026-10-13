@@ -83,13 +83,18 @@ not summed usage across tool rounds. Manifest token estimates include tool schem
 and a rough image allowance; provider-reported usage remains authoritative.
 `/attach` opens a searchable project file picker; `/attach path` also works.
 Text attachments are saved UTF-8 snapshots, capped at 32 KiB per file and
-128 KiB in total. Images (PNG, JPEG, GIF, WebP) attach as pictures instead:
-up to 1 MiB each and 2 MiB in total, relayed to the model as image blocks —
-no codec decodes them, they are bytes passed through — and shown in the
-transcript as `[image: png · N KB]`. They become part of the conversation
-log, so a resumed session still has them. Remove attachments in `/context`;
-removing one changes future prompt context, and does not remove material
-already present in conversation history.
+128 KiB in total. Images (PNG, JPEG, GIF, WebP) attach as pictures instead. Input files are bounded
+at 8 MiB and 32 million pixels. GC validates pixels, strips metadata, composites
+transparency over white, and fits the first frame within 1600×1600. The resulting
+JPEG is bounded at 1 MiB per image and 2 MiB of active attachments. The transcript
+shows a compact image marker; the pixels are supplied as image blocks.
+
+Reattaching the same pixels does not duplicate model input. Replacing a path
+updates the active snapshot. Removing an image in `/context` excludes it from
+future requests without deleting the saved transcript. Active snapshots survive
+resume and compaction until explicitly removed. Native `view_image` results use separate durable,
+content-addressed artifacts and can be inspected again on demand. Image support
+still depends on the model; see [Tools](tools.md#image-viewing).
 
 ## Crash recovery
 

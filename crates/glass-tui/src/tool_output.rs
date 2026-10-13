@@ -57,7 +57,7 @@ pub fn lines(
     let body_width = width.saturating_sub(2).max(1);
     if !compact && !command.is_empty() {
         let clipped = text::clip(&markdown::sanitize(command), body_width * 3);
-        let prefix = if matches!(name, "read" | "edit" | "write") { "◆" } else { "$" };
+        let prefix = if matches!(name, "read" | "edit" | "write" | "view_image" | "web_fetch" | "web_search" | "browser_verify") { "◆" } else { "$" };
         let wrapped = text::wrap_words(&format!("{prefix} {clipped}"), body_width);
         for row in wrapped.iter().take(2) {
             rows.push(line("  ", row, Tone::Secondary, width));
@@ -71,11 +71,13 @@ pub fn lines(
     let skip_exit = first.is_some_and(|s| s.starts_with("[exit ") && s.ends_with(']'));
     let source = first.filter(|_| !skip_exit).into_iter().chain(source);
     let native_file = output.lines().take(2).any(|s| s.starts_with("[file "));
-    let budget = if native_file { 6 } else { 3 };
+    let visual = matches!(name, "view_image" | "web_fetch" | "web_search" | "browser_verify");
+    let budget = if native_file || visual { 6 } else { 3 };
     let mut shown = 0;
     let mut hidden = 0;
     let mut partial = false;
     for raw in source {
+        if visual && raw.trim().is_empty() { continue; }
         if shown >= budget || (compact && !failed) {
             hidden += 1;
             continue;
@@ -84,6 +86,16 @@ pub fn lines(
             raw.split_once(" · revision ")
                 .map(|(path, _)| text::clip(&format!("◆ {}", &path[6..]), body_width))
                 .unwrap_or_else(|| raw.to_string())
+        } else if visual && raw.starts_with("[web source · ") {
+            let status = raw.split(" · ").find(|part| part.starts_with("HTTP ")).unwrap_or("Page");
+            format!("◎ Page · {status}")
+        } else if visual && raw.starts_with("[web search · ") {
+            let parts: Vec<_> = raw.trim_end_matches(']').split(" · ").collect();
+            format!("⌕ {} · {}", parts.get(2).unwrap_or(&"Sources"), parts.get(1).unwrap_or(&"web"))
+        } else if visual && (raw.trim_start().starts_with("http://") || raw.trim_start().starts_with("https://")) {
+            text::clip(raw.trim(), body_width * 2)
+        } else if visual && raw.starts_with("[image ") {
+            raw.split_once(" · ").map(|(_, rest)| format!("▧ {}", rest.trim_end_matches(']'))).unwrap_or_else(|| raw.to_string())
         } else if native_file && raw.starts_with("[diagnostics ") {
             if raw.starts_with("[diagnostics ok") {
                 "✓ syntax checked".into()
@@ -113,6 +125,10 @@ pub fn lines(
                     && (raw.starts_with("+ ") || raw.starts_with("[diagnostics ok"))
                 {
                     Tone::Success
+                } else if visual && (raw.starts_with("[web ") || raw.starts_with("[image ") || raw.starts_with("[browser ")) {
+                    Tone::Accent
+                } else if visual && (raw.trim_start().starts_with("http://") || raw.trim_start().starts_with("https://")) {
+                    Tone::Secondary
                 } else if native_file && raw.starts_with("[file ") {
                     Tone::Accent
                 } else {

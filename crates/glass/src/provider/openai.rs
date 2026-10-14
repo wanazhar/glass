@@ -269,7 +269,11 @@ impl Provider for OpenAiCompat {
         stream.acc.response_id = "not reported".into();
         stream.acc.delta_keys = "none".into();
         Ok(Box::new(stream.map(move |event| {
-            super::redact_event(event, key.as_deref())
+            {
+                if let Event::Error(ref message) = event
+                    && super::pacing::rate_limited(message) { super::pacing::observe(pacing_key, 429, |_| None); }
+                super::redact_event(event, key.as_deref())
+            }
         })))
     }
 }
@@ -467,13 +471,15 @@ impl<R: Read> StreamEvents<R> {
                 *target = value.chars().take(160).collect();
             }
         }
-        if let Some(err) = v
-            .get("error")
-            .and_then(|e| e.get("message"))
-            .and_then(Value::as_str)
-        {
-            self.fail(err.to_string());
-            return;
+        if let Some(error) = v.get("error").or_else(|| v.get("response").and_then(|r| r.get("error"))) {
+            let throttled = error["code"].as_u64() == Some(429)
+                || error["code"].as_str().is_some_and(|c| c == "429" || super::pacing::rate_limited(c))
+                || error["status"].as_u64() == Some(429)
+                || error["type"].as_str().is_some_and(super::pacing::rate_limited);
+            if let Some(message) = error.get("message").and_then(Value::as_str).or_else(|| error.as_str()).or(throttled.then_some("provider temporarily throttled requests")) {
+                self.fail(if throttled { format!("rate limit: {message}") } else { message.to_string() });
+                return;
+            }
         }
 
         if let Some(kind) = v.get("type").and_then(Value::as_str) {

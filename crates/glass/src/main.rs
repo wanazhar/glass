@@ -92,6 +92,7 @@ mod surface;
 mod team;
 mod tool_repair;
 mod tools;
+mod todo;
 mod transactions;
 mod transport;
 mod trust;
@@ -1451,6 +1452,7 @@ fn headless(
         }
     };
     let mut state = tools::State::new();
+    state.restore_todo(&session.history_records())?;
     for r in &session.records {
         if let Record::State(items) = r {
             state.apply(&glass_mod_api::ToolCall {
@@ -1708,6 +1710,7 @@ fn repl(
     let mut provider: Box<dyn provider::Provider>;
 
     let mut state = tools::State::new();
+    state.restore_todo(&session.history_records())?;
     for r in &session.records {
         if let Record::State(items) = r {
             state.apply(&glass_mod_api::ToolCall {
@@ -1724,6 +1727,7 @@ fn repl(
     let mut back = glass_tui::term::BackBuffer::new();
 
     let _surface = surface::enter().map_err(|e| e.to_string())?;
+    todo::publish(&state.todo);
     let narrow = term_size().0 < 60;
     print_banner(&cfg, &loaded_mods, extensions, &session, narrow);
     ui_println!(
@@ -2236,7 +2240,8 @@ fn repl(
             match workflows::plan(
                 &keys,
                 &cfg,
-                &session,
+                &mut session,
+                &mut state,
                 Arc::clone(&factory),
                 text.strip_prefix("/plan").unwrap_or("").trim(),
             ) {
@@ -2368,6 +2373,7 @@ fn repl(
                     inbox_mailbox = crate::inbox::Mailbox::open(&session);
                     pending = queue::Queue::open(&session)?;
                     state = tools::State::new();
+                    state.restore_todo(&session.history_records())?;
                     totals = Totals::new();
                     for r in &session.records {
                         if let Record::State(items) = r {
@@ -3078,6 +3084,7 @@ fn repl(
                     pending = queue::Queue::open(&session)?;
                     polish::bind(&session, &cfg.workspace)?;
                     state = tools::State::new();
+                    state.restore_todo(&session.history_records())?;
                     checkpoint_dir = config::data_dir().join("checkpoints").join(&session.id);
                     latest_checkpoint = None;
                     let limit = ledger.lock().unwrap().limit;
@@ -3330,6 +3337,11 @@ fn repl(
             continue;
         }
 
+        if text == "/todo" {
+            todo::view(&keys, &mut state, &mut session, &cfg.workspace);
+            continue;
+        }
+
         if text == "/animation" {
             if let Some(index) = modal::animation(&keys) {
                 glass_tui::theme::select_animation(index);
@@ -3482,6 +3494,7 @@ fn repl(
                         (Arc::clone(&ledger), Arc::clone(&ledger_path));
                     // Refresh credentials before the next request.
                     state = tools::State::new();
+                    state.restore_todo(&session.history_records())?;
                     totals = Totals::new();
                     latest_checkpoint = None;
                     editor.clear();
@@ -3985,6 +3998,7 @@ fn drain_input(
                         }
                     }
                     "/agents" => team::view(keys, team_owner),
+                    "/todo" => todo::view_current(keys),
                     "/details" | "/outputs" | "/responses" | "/work" | "/dashboard" | "/hub"
                     | "/workspace" | "/activity" => {
                         let entries = painter.live.borrow().snapshot();
@@ -4000,7 +4014,7 @@ fn drain_input(
                     "/help" => modal::info(
                         keys,
                         "Commands during a turn",
-                        "Queue, agents, thinking and details are available now. Other commands are marked After this turn. Enter sends a correction; Alt+Enter saves a follow-up. Esc closes the palette.",
+                        "Queue, agents, checklist, thinking and details are available now. Other commands are marked After this turn. Enter sends a correction; Alt+Enter saves a follow-up. Esc closes the palette.",
                     ),
                     _ => modal::info(
                         keys,

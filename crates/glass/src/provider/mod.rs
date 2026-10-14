@@ -361,6 +361,7 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
              BEFORE context fills up, and after any milestone on a long task: list the \
              specific facts, file paths, and next steps you would need to resume cold. \
              Call `state` with no arguments to read back what is currently recorded. \
+             Use todo.ops for atomic checklist batches: init/add items (title,phase), update by returned ID (status,blocker,owner), remove/clear/configure. Read todo:{} for tasks/revision. Mark progress honestly; completed is not verified. \
              When a write might be retried, send `request_id`: a repeat of an id \
              already applied returns that receipt instead of writing again, and \
              reusing an id for different notes is rejected."
@@ -376,6 +377,7 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
                     "expected":{"type":"string","description":"Optional state revision from revision:true read"},
                     "request_id":{"type":"string","description":"Optional idempotency key naming this write. A repeat of a known id returns its recorded receipt and does not write again; the same id with different notes fails."},
                     "revision":{"type":"boolean"},
+                    "todo":crate::todo::schema(),
                     "guidance":{"type":"object","additionalProperties":false,"properties":{"action":{"type":"string","enum":["search","catalogue","read"]},"query":{"type":"string"},"topic":{"type":"string"}}},
                     "neuralnets":{"type":"object","additionalProperties":false,"required":["action"],"properties":{"action":{"type":"string","enum":["list","search","read","save","update","forget","restore","purge","propose"]},"expected":{"type":"integer","minimum":0},"offset":{"type":"integer","minimum":0},"query":{"type":"string"},"id":{"type":"string"},"kind":{"type":"string","enum":["preference","fact","procedure","lesson"]},"text":{"type":"string"}}},
                     "capabilities":{"type":"object","properties":{"search":{"type":"string"},"activate":{"type":"array","items":{"type":"string"}}}}

@@ -28,6 +28,7 @@ struct Surface {
     overlay: bool,
     pending: Option<Pending>,
     status: String,
+    todo: crate::todo::Board,
     status_color: String,
     body: std::collections::VecDeque<String>,
     body_bytes: usize,
@@ -106,8 +107,12 @@ impl Surface {
         write!(
             out,
             "\x1b[{row};1H\x1b[2K{}{}\x1b[0m",
-            theme::ansi(Tone::Border),
-            separator_line(self.width)
+            theme::ansi(if self.todo.tasks.is_empty() || self.todo.hidden {Tone::Border}else{Tone::Accent}),
+            if self.todo.tasks.is_empty() || self.todo.hidden { separator_line(self.width) } else {
+                let active = self.todo.tasks.iter().find(|t|t.status == crate::todo::Status::InProgress);
+                let line = if self.width >= 40 { format!("{}{}",self.todo.summary(),active.map(|t|format!(" · ◆ {}",t.title)).unwrap_or_default()) } else {self.todo.compact_summary(usize::from(self.width.saturating_sub(1)))};
+                glass_tui::text::clip(&glass_tui::markdown::sanitize(&line),usize::from(self.width.saturating_sub(1)))
+            }
         )?;
         self.status_into(out)
     }
@@ -261,6 +266,7 @@ pub fn enter() -> io::Result<Guard> {
         overlay: false,
         pending: None,
         status: String::new(),
+        todo: crate::todo::Board::default(),
         status_color: theme::ansi(Tone::Accent),
         body: std::collections::VecDeque::new(),
         body_bytes: 0,
@@ -302,6 +308,18 @@ pub fn emit(text: &str) -> io::Result<()> {
             write!(out, "{text}")?;
             out.flush()
         }
+    })
+}
+pub fn checklist(board: &crate::todo::Board) -> io::Result<()> {
+    PRIMARY.with(|slot| {
+        let mut slot=slot.borrow_mut();
+        let Some(state)=slot.as_mut() else {return Ok(());};
+        if state.todo.tasks == board.tasks && state.todo.hidden == board.hidden {return Ok(());}
+        state.todo=board.clone();
+        if state.overlay {return Ok(());}
+        state.geometry()?;
+        let mut out=theme::TerminalWriter::new(io::stdout());
+        write!(out,"\x1b[s")?;state.chrome(&mut out)?;write!(out,"\x1b[u")?;out.flush()
     })
 }
 pub fn status(text: &str) -> io::Result<()> {

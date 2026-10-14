@@ -1456,7 +1456,7 @@ fn bounded_edited_context(
         if matches!(
             record,
             Record::ContextEdit { .. } | Record::Compacted { .. } | Record::State(_)
-        ) || matches!(record, Record::Custom { kind, .. } if kind == state_receipts::RECEIPT_KIND)
+        ) || matches!(record, Record::Custom { kind, .. } if kind == state_receipts::RECEIPT_KIND || kind == crate::todo::KIND)
         {
             continue;
         }
@@ -1634,6 +1634,7 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
 
     let mut entries = Vec::new();
     for (record_index, (record, (turn, epoch))) in records.iter().zip(scopes).enumerate() {
+        if matches!(record, Record::Custom { kind, .. } if kind==crate::todo::KIND) { continue; }
         if matches!(record, Record::Custom { kind, .. } if matches!(kind.as_str(), "queue/delivery" | "constraints/delivery" | "session/branch" | "turn/checkpoint")) { continue; }
         let key = |id: &str| (turn, epoch, id.to_owned());
         let entry = match record {
@@ -1821,6 +1822,7 @@ fn readable_tool_call(name: &str, arguments: &str) -> String {
             .unwrap_or_else(|| format!("{name} [arguments unavailable]"));
     }
     let arguments = serde_json::from_str::<serde_json::Value>(arguments).ok();
+    if name=="state" && arguments.as_ref().is_some_and(|v|v.get("todo").is_some()){return "state · checklist".into();}
     if crate::files::is_tool(name) && let Some(value)=&arguments {
         return format!("{name} · {}{}",value["path"].as_str().unwrap_or("[path unavailable]"),if value["preview"]==true {" · preview"} else {""});
     }
@@ -1983,6 +1985,8 @@ fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
     }) {
         out.push(Record::State(state));
     }
+
+    if let Some(snapshot) = records.iter().rev().find(|r| matches!(r,Record::Custom {kind,..} if kind==crate::todo::KIND)) { out.push(snapshot.clone()); }
 
     // Two regions survive: the tail that compaction kept (the
     // records just before the marker), and every turn that happened

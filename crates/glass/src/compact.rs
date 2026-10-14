@@ -162,6 +162,8 @@ pub fn rebuild(records: &[Record], state: &State) -> Vec<Record> {
         out.push(Record::State(state.items().to_vec()));
     }
 
+    if state.todo != crate::todo::Board::default() { out.push(state.todo.record()); }
+
     // Recent tail, skipping a leading orphan tool result whose requesting
     // assistant turn was dropped. Providers reject that pairing.
     let tail_start = records.len().saturating_sub(KEEP_RECENT);
@@ -430,6 +432,7 @@ pub fn fallback(session: &mut Session, state: &State, reason: &str) -> Result<()
     if let Some(first) = session.records.iter().find(|r| matches!(r, Record::User(_))) { projected.push(first.clone()); }
     projected.push(Record::System(format!("Summary of earlier work in this session:\n{summary}")));
     projected.push(Record::State(state.items().to_vec()));
+    if state.todo != crate::todo::Board::default() { projected.push(state.todo.record()); }
     let kept = projected.len();
     session.append_checked(&[Record::State(state.items().to_vec()), Record::Compacted {
         kept, dropped: before.saturating_sub(kept), summary: Some(summary),
@@ -531,6 +534,7 @@ pub fn apply_summary(records: &[Record], summary: &str) -> Vec<Record> {
     out.push(Record::System(format!(
         "Summary of earlier work in this session:\n{summary}"
     )));
+    if let Some(snapshot)=records.iter().rev().find(|r|matches!(r,Record::Custom{kind,..}if kind==crate::todo::KIND)){out.push(snapshot.clone());}
     // Keep a short tail so the model retains immediate momentum.
     let tail_start = records.len().saturating_sub(KEEP_RECENT);
     let mut tail: Vec<Record> = records[tail_start..].to_vec();
@@ -611,6 +615,9 @@ pub(crate) fn project_filtered(records: &[Record], active: Option<&std::collecti
         }
     }
     earlier.extend(messages);
+    if records.iter().any(|r|matches!(r,Record::Custom{kind,..}if kind==crate::todo::KIND))
+        && let Ok(board)=crate::todo::Board::restore(records)
+        && let Some(context)=board.context() { earlier.push(Message::System(context)); }
     crate::images::expand(earlier)
 }
 

@@ -528,6 +528,8 @@ fn open_spill() -> Option<(std::fs::File, PathBuf)> {
 #[derive(Clone, Default)]
 pub struct State {
     items: Vec<String>,
+    pub todo: crate::todo::Board,
+    todo_loaded: bool,
     receipts: crate::session::state_receipts::Ledger,
     /// The session this state belongs to, when one was opened before it was
     /// built. `None` means unbound, and ownership says so rather than
@@ -546,9 +548,38 @@ impl State {
         };
         Self {
             items: Vec::new(),
+            todo: crate::todo::Board::default(),
+            todo_loaded: false,
             receipts: crate::session::state_receipts::Ledger::restore(&owner.receipts),
             owner: Some(owner),
         }
+    }
+
+    pub fn restore_todo(&mut self, records: &[crate::session::Record]) -> Result<(), String> {
+        self.todo = crate::todo::Board::restore(records)?;
+        self.todo_loaded = true;
+        crate::todo::publish(&self.todo);
+        Ok(())
+    }
+    pub fn load_todo_once(&mut self, session: &crate::session::Session) -> Result<(), String> {
+        if !self.todo_loaded { self.restore_todo(&session.history_records())?; }
+        Ok(())
+    }
+    pub fn persist(&mut self, session: &mut crate::session::Session, before: Self) -> Result<(), String> {
+        self.persist_with(session,before,Vec::new())
+    }
+    pub fn persist_with(&mut self, session: &mut crate::session::Session, before: Self, extra: Vec<crate::session::Record>) -> Result<(), String> {
+        let mut records = Vec::new();
+        if before.items != self.items { records.push(crate::session::Record::State(self.items.clone())); }
+        if before.todo != self.todo { records.push(self.todo.record()); }
+        records.extend(extra);
+        if records.is_empty() { return Ok(()); }
+        if let Err(error) = session.append_checked(&records) {
+            *self = before;
+            return Err(format!("error: state update was not persisted and was rolled back: {error}"));
+        }
+        crate::todo::publish(&self.todo);
+        Ok(())
     }
 
     pub fn items(&self) -> &[String] {
@@ -562,6 +593,13 @@ impl State {
 
     /// Handle a `state` tool call. No `items` argument means read-back.
     pub fn apply(&mut self, call: &ToolCall) -> Outcome {
+        if call.arg_raw("todo").is_some() {
+            if ["items", "guidance", "neuralnets", "capabilities"].iter().any(|key| call.arg_raw(key).is_some()) {
+                return Outcome::err("Use one state namespace per call");
+            }
+            self.todo_loaded = true;
+            return self.todo.apply(call);
+        }
         let base = self.revision();
         let request_id = call
             .arg_raw("request_id")

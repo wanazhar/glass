@@ -402,7 +402,10 @@ impl Presentation {
                 self.continuation.clone().unwrap_or_default(),
             )
         };
-        wrap_spans(inline(content), width, &first, &hanging, cursor)
+        let tone = [("○ `T",crate::theme::Tone::Muted),("◆ `T",crate::theme::Tone::Accent),("✓ `T",crate::theme::Tone::Success),("! `T",crate::theme::Tone::Warning),("– `T",crate::theme::Tone::Muted)].into_iter().find_map(|(prefix,tone)|trimmed.starts_with(prefix).then_some(tone));
+        let mut rows=wrap_spans(inline(content), width, &first, &hanging, cursor);
+        if let Some(tone)=tone {for row in &mut rows {for span in &mut row.line.spans {span.style=span.style.fg(crate::theme::color(tone));}}}
+        rows
     }
 }
 
@@ -1013,5 +1016,16 @@ mod tests {
         assert!(text.contains("─ go ─▶"), "{text}");
         // The header and footer frame remain, and the raw source does not.
         assert!(!text.contains("flowchart TD"), "{text}");
+    }
+}
+
+#[cfg(test)] mod checklist_tests {
+    #[test] fn checklist_status_colors_are_shared_by_stream_and_replay(){
+        for (mark,tone) in [("○",crate::theme::Tone::Muted),("◆",crate::theme::Tone::Accent),("✓",crate::theme::Tone::Success),("!",crate::theme::Tone::Warning)] {
+            let text=format!("{mark} `T1` Native task — status");
+            let rows=super::lines(&text,40);
+            assert!(!rows.is_empty());
+            assert!(rows.iter().flat_map(|row|row.spans.iter()).filter(|span|!span.content.trim().is_empty()).all(|span|span.style.fg==Some(crate::theme::color(tone))));
+        }
     }
 }

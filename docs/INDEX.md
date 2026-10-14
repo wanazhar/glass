@@ -23,6 +23,8 @@ through `gc help` and `gc COMMAND --help`.
 
 ## Detailed references
 
+- [Session checklist](reference/checklist.md): phased tasks, state operations, persistence, and continuation.
+
 - [Workspace](reference/workspace.md): tasks, roles, worker limits, request metadata,
   findings, policy explanations, and artifacts.
 - [Workbench](reference/workbench.md): quoted context, portable handoffs, job input,

@@ -280,15 +280,24 @@ impl Provider for Anthropic {
             .send_json(&body)
             .map_err(map_transport)?;
         let status = resp.status().as_u16();
-        super::pacing::observe(pacing_key, status, |name| {
-            resp.headers()
-                .get(name)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_owned)
-        });
+        let pacing_headers = ["retry-after", "x-ratelimit-remaining-requests", "x-ratelimit-reset-requests"]
+            .map(|name| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned));
+        let header = |name: &str| match name {
+            "retry-after" => pacing_headers[0].clone(),
+            "x-ratelimit-remaining-requests" => pacing_headers[1].clone(),
+            "x-ratelimit-reset-requests" => pacing_headers[2].clone(),
+            _ => None,
+        };
+        // A quota refusal is not pressure. Keep its server deadlines, but do
+        // not teach the pacer to slow healthy future requests.
+        if status != 429 { super::pacing::observe(pacing_key, status, header); }
         let mut reader = resp.into_body().into_reader();
         if !(200..300).contains(&status) {
             let text = read_lossy(&mut reader).unwrap_or_default();
+            if status == 429 {
+                let observed = if super::pacing::quota_limited(&extract_error(&text)) { 400 } else { status };
+                super::pacing::observe(pacing_key, observed, header);
+            }
             return Err(Error::Status(
                 status,
                 if self.api_key.is_empty() {
@@ -321,15 +330,7 @@ fn map_transport(e: ureq::Error) -> Error {
 
 /// Pull the human-readable message out of an Anthropic error body.
 fn extract_error(body: &str) -> String {
-    serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|v| {
-            v.get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| body.chars().take(400).collect())
+    super::http_error_message(body)
 }
 
 /// Turns the SSE byte stream into [`Event`]s.

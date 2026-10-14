@@ -184,9 +184,14 @@ pub(crate) fn stream_status(message: &str) -> Option<u16> {
 }
 
 /// Only explicit throttling is safe to retry; quota and billing failures are not.
+pub(super) fn quota_limited(message: &str) -> bool {
+    let text = message.to_ascii_lowercase().replace(['_', '-'], " ");
+    ["insufficient quota", "quota exceeded", "credits", "billing", "usage limit"].iter().any(|s| text.contains(s))
+}
+
 pub(crate) fn rate_limited(message: &str) -> bool {
     let text = message.to_ascii_lowercase();
-    if ["insufficient_quota", "quota exceeded", "credits", "billing", "usage limit"].iter().any(|s| text.contains(s)) { return false; }
+    if quota_limited(&text) { return false; }
     ["rate limit", "rate_limit", "too many requests", "too_many_requests"].iter().any(|s| text.contains(s))
 }
 

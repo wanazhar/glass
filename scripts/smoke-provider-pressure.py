@@ -8,6 +8,12 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
     def log_message(self,*_):pass
     def do_POST(self):
         s=self.server; s.bodies.append(json.loads(self.rfile.read(int(self.headers['Content-Length'])))); s.starts.append(time.monotonic()); n=len(s.starts)
+        if s.mode in ('http-quota-code', 'http-quota-type', 'http-billing', 'http-quota-root'):
+            field = 'type' if s.mode == 'http-quota-type' else 'code'
+            code = 'billing_required' if s.mode == 'http-billing' else 'insufficient_quota'
+            self.send_response(429);self.end_headers()
+            error = {field:code,'message':'Provider returned error'}
+            self.wfile.write(json.dumps(error if s.mode=='http-quota-root' else {'error':error}).encode());return
         if s.mode=='http-overload' and n==1:
             self.send_response(502);self.end_headers();self.wfile.write(b'{"error":{"message":"Provider returned error"}}');return
         if s.mode=='recover' and n==3:
@@ -60,11 +66,14 @@ with tempfile.TemporaryDirectory(prefix='gc-provider-pressure-') as tmp:
     assert p.returncode==0 and 'PRESSURE_RECOVERED' in p.stdout,p.stdout+p.stderr
     assert len(server.starts)==2 and server.starts[1]-server.starts[0]>=1.9,server.starts
     print('PASS HTTP 502 learns cooldown')
-    for mode in ('auth','quota'):
+    for mode in ('auth','quota','http-quota-code','http-quota-type','http-billing','http-quota-root'):
         server.mode=mode;server.starts=[];server.bodies=[]
         env['XDG_DATA_HOME']=str(root/(mode+'-data'))
         p=run('reject nonretryable provider error')
         assert p.returncode!=0 and len(server.starts)==1,(mode,server.starts,p.stdout+p.stderr)
+        if mode.startswith('http-'):
+            files = list((Path(env['XDG_DATA_HOME'])/'glass-core/provider-pacing').glob('*.json'))
+            assert files and all(json.loads(file.read_text())['gap'] == 0 for file in files), 'quota learned false pressure'
         print('PASS no automatic replay:',mode)
     server.mode='fail'
     # Use a fresh data directory to isolate rendering from the learned cooldown.

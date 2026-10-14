@@ -17,6 +17,26 @@ trait Pipe: Read + AsRawFd + Send {}
 impl<T: Read + AsRawFd + Send> Pipe for T {}
 const MAX_LOG: u64 = 4 * 1024 * 1024;
 const MAX_JOBS: usize = 16;
+// Match modal::Screen's frame, title, optional spacer and footer rows.
+fn viewer_page((width, height): (u16, u16)) -> usize {
+    let framed = width >= 24 && height >= 12;
+    let capacity = usize::from(height).saturating_sub(if framed { 4 } else { 0 });
+    capacity.saturating_sub(2 + usize::from(capacity > 10)).max(1)
+}
+/// Peek at most four bytes so a tail preview starts at a complete scalar.
+fn aligned_tail_cursor(path: &Path, size: u64, window: u64) -> Result<u64, String> {
+    let offset = size.saturating_sub(window);
+    if offset == 0 { return Ok(0); }
+    let start = offset.saturating_sub(3);
+    let mut file = std::fs::File::open(path).map_err(err)?;
+    file.seek(SeekFrom::Start(start)).map_err(err)?;
+    let mut bytes = [0; 4];
+    let mut index = (offset - start) as usize;
+    file.read_exact(&mut bytes[..=index]).map_err(err)?;
+    while index > 0 && bytes[index] & 0xc0 == 0x80 { index -= 1; }
+    Ok(start + index as u64)
+}
+
 struct Capture {
     file: std::fs::File,
     bytes: u64,
@@ -255,6 +275,13 @@ impl Jobs {
             }
         ))
     }
+    fn tail_cursor(&mut self, id: u32, window: u64) -> Result<u64, String> {
+        self.refresh();
+        let job = self.jobs.get(&id).ok_or("unknown job")?;
+        let size = job.capture.lock().map_err(err)?.bytes;
+        aligned_tail_cursor(&job.output, size, window)
+    }
+
     fn poll(&mut self, id: u32, offset: u64, limit: usize) -> Result<Value, String> {
         self.refresh();
         let j = self.jobs.get(&id).ok_or("unknown job")?;
@@ -437,8 +464,7 @@ impl Handle {
         use glass_tui::crossterm::event::{Event,KeyCode,KeyModifiers};
         let screen=crate::modal::Screen::new();
         let poll=|offset|registry().lock().map_err(err)?.get_mut(&self.key).ok_or("unknown job")?.poll(id,offset,8192);
-        let first=poll(0)?;
-        let mut cursor=first["captured_bytes"].as_u64().unwrap_or(0).saturating_sub(24576);
+        let mut cursor=registry().lock().map_err(err)?.get_mut(&self.key).ok_or("unknown job")?.tail_cursor(id,24576)?;
         let mut text=String::new();let mut follow=true;let mut offset=0usize;
         let mut previous=(0,0);let mut lines=Vec::new();
         loop {
@@ -456,7 +482,7 @@ impl Handle {
                 lines=text.lines().flat_map(|row|glass_tui::text::wrap_words(&glass_tui::markdown::sanitize(row),width)).collect();
                 previous=dimensions;
             }
-            let page=usize::from(dimensions.1).saturating_sub(6).max(1);
+            let page=viewer_page(dimensions);
             if follow{offset=lines.len().saturating_sub(page);}else{offset=offset.min(lines.len().saturating_sub(page));}
             let title=format!("Job {id} · {} · exit {} · {:.1}s",value["state"].as_str().unwrap_or("unknown"),value["exit_code"],value["elapsed_seconds"].as_f64().unwrap_or(0.0));
             screen.draw(&title,&lines,&format!("↑↓ scroll · End follow · I stdin · Ctrl-D EOF · Esc close · {} dropped bytes",value["dropped_bytes"]),offset);
@@ -799,6 +825,34 @@ mod tests {
         }
         assert_eq!(output, "A€😀Z");
         drop(jobs);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn job_viewer_follow_page_matches_modal_content_rows() {
+        assert_eq!(viewer_page((80, 30)), 23);
+        assert_eq!(viewer_page((40, 24)), 17);
+        assert_eq!(viewer_page((20, 8)), 6);
+        assert_eq!(viewer_page((20, 12)), 9);
+    }
+
+    #[test]
+    fn job_viewer_tail_starts_at_unicode_boundaries() {
+        let dir = scratch("unicode-tail");
+        let path = dir.join("output");
+        for scalar in ["€", "😀"] {
+            for inside in 1..scalar.len() {
+                let mut output = "x".repeat(5424 - inside);
+                let expected = output.len() as u64;
+                output.push_str(scalar);
+                output.push_str(&"z".repeat(30000 - output.len()));
+                std::fs::write(&path, &output).unwrap();
+                let cursor = aligned_tail_cursor(&path, output.len() as u64, 24576).unwrap();
+                assert_eq!(cursor, expected);
+                assert!(output.is_char_boundary(cursor as usize));
+            }
+        }
+        assert_eq!(aligned_tail_cursor(&path, 30000, 40000).unwrap(), 0);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

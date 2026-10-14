@@ -299,7 +299,11 @@ impl Provider for Anthropic {
 
         let key = self.api_key.clone();
         Ok(Box::new(
-            StreamEvents::new(reader).map(move |event| super::redact_event(event, Some(&key))),
+            StreamEvents::new(reader).map(move |event| {
+                if let Event::Error(ref message) = event
+                    && super::pacing::rate_limited(message) { super::pacing::observe(pacing_key, 429, |_| None); }
+                super::redact_event(event, Some(&key))
+            }),
         ))
     }
 }
@@ -482,6 +486,7 @@ impl<R: Read> StreamEvents<R> {
             }
             "error" => {
                 let text = extract_error(&v.to_string());
+                let text = if v["error"]["type"].as_str().is_some_and(super::pacing::rate_limited) { format!("rate limit: {text}") } else { text };
                 self.outbox
                     .push_back(Event::Error(format!("provider error event: {text}")));
             }

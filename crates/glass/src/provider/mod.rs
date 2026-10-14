@@ -10,7 +10,8 @@ mod cancellable;
 pub(crate) use cancellable::scoped as with_request_cancel;
 mod openai;
 mod pacing;
-pub(crate) use pacing::with_notice as with_pacing_notice;
+mod pacing_shared;
+pub(crate) use pacing::{with_notice as with_pacing_notice, rate_limited};
 
 pub use anthropic::Anthropic;
 pub use chain::Chain;
@@ -252,10 +253,10 @@ pub(crate) fn is_transient(e: &Error) -> bool {
 }
 
 /// How many times one request is attempted before the turn fails.
-pub const RETRY_ATTEMPTS: u8 = 3;
+pub const RETRY_ATTEMPTS: u8 = 5;
 
 /// Backoff in seconds between attempts: 1s, 2s, 4s.
-pub const RETRY_DELAYS: [u64; 3] = [1, 2, 4];
+pub const RETRY_DELAYS: [u64; 5] = [1, 2, 4, 8, 16];
 
 pub fn validate_endpoint(base_url: &str) -> Result<(), Error> {
     let url = url::Url::parse(base_url)

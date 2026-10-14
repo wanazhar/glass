@@ -7,12 +7,12 @@ use std::{
 };
 
 #[derive(Default)]
-struct State {
-    last: Option<Instant>,
-    previous: Option<Instant>,
-    cooldown: Option<Instant>,
-    gap: Duration,
-    healthy: u8,
+pub(super) struct State {
+    pub(super) last: Option<Instant>,
+    pub(super) previous: Option<Instant>,
+    pub(super) cooldown: Option<Instant>,
+    pub(super) gap: Duration,
+    pub(super) healthy: u8,
 }
 static STATES: OnceLock<Mutex<HashMap<[u8; 32], State>>> = OnceLock::new();
 fn states() -> &'static Mutex<HashMap<[u8; 32], State>> {
@@ -35,6 +35,7 @@ pub(super) fn acquire(endpoint: &str, credential: &str) -> Result<[u8; 32], Erro
             ));
         }
         let wait = {
+            let mut shared = super::pacing_shared::Shared::open(key)?;
             let mut all = states().lock().unwrap_or_else(|e| e.into_inner());
             // Expire idle accounts; never retain credentials or unbounded account history.
             if all.len() >= 128 {
@@ -50,7 +51,15 @@ pub(super) fn acquire(endpoint: &str, credential: &str) -> Result<[u8; 32], Erro
                 ));
             }
             let state = all.entry(key).or_default();
+            if let Some(shared) = &shared { shared.load(state); }
             let now = Instant::now();
+            // Old pressure must not make a fresh session slow indefinitely.
+            if state.last.is_some_and(|last| now.duration_since(last) >= Duration::from_secs(300))
+                && state.cooldown.is_none_or(|deadline| deadline <= now) {
+                state.gap = Duration::ZERO;
+                state.healthy = 0;
+                state.previous = None;
+            }
             let burst = state
                 .previous
                 .is_some_and(|t| now.duration_since(t) < Duration::from_secs(1));
@@ -69,6 +78,7 @@ pub(super) fn acquire(endpoint: &str, credential: &str) -> Result<[u8; 32], Erro
             if ready <= now {
                 state.previous = state.last;
                 state.last = Some(now);
+                if let Some(shared) = &mut shared { shared.save(state)?; }
                 Duration::ZERO
             } else {
                 ready.duration_since(now)
@@ -81,7 +91,15 @@ pub(super) fn acquire(endpoint: &str, credential: &str) -> Result<[u8; 32], Erro
             NOTICE.with(|slot| { if let Some(notice) = slot.borrow().as_ref() { notice(format!("Provider cooldown · {:.1}s · waiting before next request", wait.as_secs_f64())); } });
             notified = true;
         }
-        std::thread::sleep(wait.min(Duration::from_millis(25)));
+        // Poll cancellation cheaply; reopen shared state at most once per
+        // five seconds during long cooldowns, or at the precise ready time.
+        let deadline = Instant::now() + wait.min(Duration::from_secs(5));
+        while Instant::now() < deadline {
+            if super::cancellable::is_cancelled() {
+                return Err(Error::Transport("provider pacing cancelled".into()));
+            }
+            std::thread::sleep(deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(25)));
+        }
     }
 }
 fn duration(value: &str) -> Option<Duration> {
@@ -125,10 +143,12 @@ pub(super) fn observe(key: [u8; 32], status: u16, header: impl Fn(&str) -> Optio
     let reset = exhausted
         .then(|| header("x-ratelimit-reset-requests").and_then(|v| duration(&v)))
         .flatten();
+    let mut shared = super::pacing_shared::Shared::open(key).ok().flatten();
     let mut all = states().lock().unwrap_or_else(|e| e.into_inner());
     let state = all.entry(key).or_default();
+    if let Some(shared) = &shared { shared.load(state); }
     if status == 429 || status == 503 {
-        state.gap = (state.gap.max(Duration::from_millis(250)) * 2).min(Duration::from_secs(4));
+        state.gap = (state.gap.max(Duration::from_secs(1)) * 2).min(Duration::from_secs(60));
         state.healthy = 0;
         let delay = retry.unwrap_or(state.gap).max(state.gap);
         state.cooldown = Some(
@@ -155,16 +175,38 @@ pub(super) fn observe(key: [u8; 32], status: u16, header: impl Fn(&str) -> Optio
                 .max(Instant::now() + delay),
         );
     }
+    if let Some(shared) = &mut shared { let _ = shared.save(state); }
 }
+/// Only explicit throttling is safe to retry; quota and billing failures are not.
+pub(crate) fn rate_limited(message: &str) -> bool {
+    let text = message.to_ascii_lowercase();
+    if ["insufficient_quota", "quota exceeded", "credits", "billing", "usage limit"].iter().any(|s| text.contains(s)) { return false; }
+    ["rate limit", "rate_limit", "too many requests", "too_many_requests"].iter().any(|s| text.contains(s))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_explicit_pressure_is_recoverable() {
+        assert!(rate_limited("rate_limit_error"));
+        assert!(rate_limited("Too many requests"));
+        assert!(!rate_limited("rate limit: insufficient_quota"));
+        assert!(!rate_limited("socket closed"));
+    }
     #[test]
     fn reset_durations() {
         assert_eq!(duration("1m2.5s"), Some(Duration::from_millis(62500)));
         assert_eq!(duration("125ms"), Some(Duration::from_millis(125)));
         assert!(duration("NaN").is_none());
         assert!(duration("-1").is_none());
+    }
+    #[test]
+    fn idle_accounts_recover_the_fast_path() {
+        let k=key("idle-pacing-test", "");
+        states().lock().unwrap().insert(k, State { last: Some(Instant::now()-Duration::from_secs(600)), gap: Duration::from_secs(60), ..State::default() });
+        acquire("idle-pacing-test", "").unwrap();
+        assert_eq!(states().lock().unwrap()[&k].gap, Duration::ZERO);
     }
     #[test]
     fn accounts_are_isolated() {
@@ -174,11 +216,11 @@ mod tests {
     fn pressure_learns_and_recovers() {
         let k = key("test-pressure", "test");
         observe(k, 429, |_| None);
-        assert_eq!(states().lock().unwrap()[&k].gap, Duration::from_millis(500));
+        assert_eq!(states().lock().unwrap()[&k].gap, Duration::from_secs(2));
         for _ in 0..8 {
             observe(k, 200, |_| None);
         }
-        assert_eq!(states().lock().unwrap()[&k].gap, Duration::from_millis(250));
+        assert_eq!(states().lock().unwrap()[&k].gap, Duration::from_secs(1));
     }
 }
 

@@ -130,17 +130,28 @@ includes delegated work and survives model switches.
 ## Request pacing
 
 GC coordinates request starts across models and teammates using the same endpoint
-and credentials within one process. The first two requests can start immediately.
+and credentials across GC processes on the same machine. The first two requests can start immediately.
 Further requests in a tight burst have a minimum 200 ms spacing. Ordinary model
 turns usually take longer than this and incur no additional wait. File tools,
 commands, and local previews do not use this gate.
 
-HTTP 429 and 503 responses increase request spacing from 500 ms up to 4 seconds.
-Eight successful responses halve that spacing. GC honors `Retry-After` seconds
+HTTP 429 and 503 responses increase request spacing from 2 seconds up to 60 seconds.
+Eight successful responses halve that spacing. Five idle minutes clear learned
+spacing once any server cooldown has expired. GC honors `Retry-After` seconds
 or HTTP dates, and exhausted OpenAI request-limit reset headers, with a maximum
 cooldown of 24 hours. Longer waits appear as a provider cooldown notice and can
 be cancelled. Credentials are hashed for the in-memory account key and are never
-written by the pacer. Independent GC processes do not share this state.
+written by the pacer. Small private records under the data directory share timing
+and cooldowns across processes; each request holds the account lock only while
+reading or updating that record. Explicit stream throttles before answer text or
+tool calls also trigger cooldown and bounded recovery. Completed tools and the
+request context remain unchanged. Five attempts are allowed before reporting a
+persistent refusal; ambiguous transport failures are not automatically replayed.
+
+Kilo documents a [200-request hourly limit per IP for free models](https://kilo.ai/docs/gateway/usage-and-billing).
+Other applications on the same IP consume that allowance too. Request pacing
+cannot increase an upstream quota; it coordinates GC requests and handles
+transient pressure without replaying completed tools.
 
 In selection menus, F1 or Right opens the full entry in a scrollable reader.
 Larger menus also show a wrapped selection preview. The slash command palette

@@ -1,7 +1,65 @@
 //! Versioned discovery grounded in the same catalogue as human CLI help.
 use serde::Deserialize;
 use serde_json::{Value, json};
+/// Stable suffix: also upgrades resumed sessions whose compaction saved an older prompt.
+/// Detailed recipes stay on demand; no filesystem or provider request is needed here.
+const MODEL_PROTOCOL: &str = "[GC workflow protocol 2]
+For multi-step implementation, investigation or multiple deliverables, create state.todo before substantive work. Skip checklists for greetings and simple answers. Read existing todo:{} before resuming; reuse open tasks. Batch meaningful progress updates using returned IDs; keep the current task in_progress, record blockers, and reconcile all tasks before the final report. Never mark unverified work verified or continue past a user decision.
+Choose workflows proactively: files/structure for code; background for long commands; agents for useful delegation; learning for durable lessons; workspace for coordination/evidence; research for web/images; integrations for language/debug services; sessions for history/handoffs; recovery for failures. Discover exact recipes with state {guidance:{action:read,topic}} and configured tools with state {capabilities:{search:query}}. Availability comes from advertised schemas and CLI status, not this index. Use quoted \"$GC_BIN\" <command> --help for exact CLI inputs; slash menus, login and approvals are human controls. Respect tool permissions and user constraints.";
+
+pub fn model_context(mut system: String) -> String {
+    if !system.contains(MODEL_PROTOCOL) {
+        system.push_str("\n\n");
+        system.push_str(MODEL_PROTOCOL);
+    }
+    system
+}
+
+/// Nudge only on an existing tool-loop boundary: no extra model call or timer.
+/// Once per turn, after twelve tool results since the last checklist update.
+pub fn progress_reminder(records: &[crate::session::Record], board: &crate::todo::Board) -> Option<&'static str> {
+    use crate::session::Record;
+    let mut completed = 0;
+    let mut updated = false;
+    for record in records.iter().rev() {
+        match record {
+            Record::User(_) => break,
+            Record::System(text) if text.starts_with("[GC progress reminder]") => return None,
+            Record::Custom { kind, .. } if kind == "state/todo" => updated = true,
+            Record::ToolResult { name, .. } if name == "state" => {},
+            Record::ToolResult { .. } if !updated => completed += 1,
+            _ => {},
+        }
+    }
+    if completed < 12 { return None; }
+    if board.tasks.is_empty() {
+        Some("[GC progress reminder] This task has required substantial tool work. If work remains, create a concise state.todo checklist covering the remaining deliverables and verification, then continue. Do not invent completed checks.")
+    } else if board.tasks.iter().any(|task| matches!(task.status, crate::todo::Status::Pending | crate::todo::Status::InProgress)) {
+        Some("[GC progress reminder] Reconcile state.todo with actual progress: batch completed steps, the current in_progress step and blockers using returned IDs. Continue the user's task; checklist status is not verification evidence.")
+    } else { None }
+}
+
 const RECIPES: &[(&str, &str)] = &[
+    (
+        "checklist",
+        r#"For multi-step tasks create a concise checklist covering investigation, implementation and actual verification. Example state arguments: {"todo":{"ops":[{"op":"init","items":[{"title":"Investigate"},{"title":"Implement"},{"title":"Verify"}]}]}}. Use returned task IDs for update operations. Read {"todo":{}} to reuse existing work rather than resetting it. Update only when progress changes; batch completed and next in_progress transitions. Blocked requires a blocker reason. Resolve open tasks before reporting completion; abandoned means deliberately removed scope. Do not label unrun tests passed. Auto-continuation is optional and never grants permissions. Humans inspect /todo; the model uses state.todo."#,
+    ),
+    (
+        "research",
+        "For external facts discover configured web/search/fetch tools through state capabilities search; activate returned deferred tools using their exact schema. Search first, fetch primary sources, retain URLs and distinguish retrieved evidence from inference. Use view_image for local images and advertised image tools for supported remote/media workflows. Do not treat a text fetch as visual inspection or claim browsing when no working provider is configured. Network/content failures are not tool permission grants.",
+    ),
+    (
+        "integrations",
+        "For diagnostics, symbols, references or interactive debugging, search state capabilities for configured language or debug tools. Read returned schemas before invocation. gc mcp --help discovers integration management; gc doctor and gc status diagnose configuration. Do not start servers or install dependencies merely to discover tools. Missing integrations are unavailable, not a reason to invent calls. Use native files and bash fallbacks within existing permissions.",
+    ),
+    (
+        "sessions",
+        "Use gc hub, sessions and search for saved conversations; context and requests for loaded sources and provider diagnostics; history for compaction/branch boundaries; details for complete recorded output; usage for reported token/cache costs. Inspect each command's --help and use explicit session IDs. Handoff/export preserve bounded or portable context; review before importing. gc send changes another conversation: send only when user/task authorization covers that communication. Do not launch nested coding agents through gc run as a substitute for managed teammates.",
+    ),
+    (
+        "delivery",
+        "Use gc review for recorded commands and changes, gc contract for structured result validation, and workspace artifacts/evidence for actual checks. gc pr inspects checks/reviews; publication requires user authorization. Use gc worktree --help for isolated work, preview cleanup and inspect ownership before applying it. gc skill capture/save records a reusable workflow after review. Settings, auth, policy, serve/ACP and companion manage the harness; never silently change security or expose network listeners to complete unrelated tasks.",
+    ),
     (
         "files",
         "Prefer native read/edit/write: bounded reads return revisions; edits and replacing writes require expected. preview:true shows proposed changes; validate:true requires supported syntax checks. gc file --help exposes the same engine. Read before editing; retain the returned revision. Use gc structure --help for lazy AST edits. Verify changed content before reporting success.",
@@ -62,7 +120,7 @@ pub fn request(value: &Value) -> Result<Value, String> {
             .iter()
             .find(|(id, _)| *id == r.topic)
             .ok_or("Unknown topic; search guidance first")?;
-        return Ok(json!({"protocol":1,"topic":topic,"recipe":text}));
+        return Ok(json!({"protocol":2,"topic":topic,"recipe":text}));
     }
     if !matches!(r.action.as_str(), "search" | "catalogue") {
         return Err("Guidance supports search, catalogue and read".into());
@@ -71,19 +129,18 @@ pub fn request(value: &Value) -> Result<Value, String> {
     let commands: Vec<_> = crate::help::catalogue()
         .into_iter()
         .filter(|(c, d)| format!("{c} {d}").to_lowercase().contains(&q))
-        .take(24)
-        .map(|(c, d)| json!({"command":c,"purpose":d}))
+        .map(|(c, d)| json!({"command":c,"purpose":d,"surface":if c.starts_with("gc") { "cli" } else { "human_ui_or_launch_option" }}))
         .collect();
     let actions: Vec<_> = crate::actions::references().into_iter()
         .filter(|(command, purpose)| format!("{command} {purpose}").to_lowercase().contains(&q))
-        .take(24).map(|(command,purpose)|json!({"command":command,"purpose":purpose})).collect();
+        .map(|(command,purpose)|json!({"command":command,"purpose":purpose})).collect();
     let topics: Vec<_> = RECIPES
         .iter()
         .filter(|(id, text)| format!("{id} {text}").to_lowercase().contains(&q))
         .map(|(id, _)| *id)
         .collect();
     Ok(
-        json!({"protocol":1,"commands":commands,"human_actions":actions,"topics":topics,"command_limit":24,"discovery":"Run quoted $GC_BIN <command> --help for exact inputs and effects. Listed integrations may require configuration; inspect their status before use. state capabilities discovers installed extension schemas."}),
+        json!({"protocol":2,"commands":commands,"human_actions":actions,"topics":topics,"complete_catalogue":true,"discovery":"Run quoted $GC_BIN <command> --help for exact inputs and effects. Listed integrations may require configuration; inspect their status before use. state capabilities discovers installed extension schemas."}),
     )
 }
 pub fn command(args: &[String]) -> Result<(), String> {
@@ -117,6 +174,47 @@ pub fn command(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn protocol_upgrades_saved_prompts_once_and_preserves_prefix() {
+        let old = "Saved custom instructions".to_string();
+        let upgraded = model_context(old.clone());
+        assert!(upgraded.starts_with(&old));
+        assert_eq!(model_context(upgraded.clone()), upgraded);
+        assert!(MODEL_PROTOCOL.len() <= 1200);
+        for topic in ["checklist", "research", "integrations", "sessions", "delivery"] {
+            assert!(request(&json!({"action":"read","topic":topic})).is_ok());
+        }
+    }
+
+    #[test]
+    fn catalogue_does_not_silently_drop_features() {
+        let result = request(&json!({"action":"catalogue"})).unwrap();
+        assert_eq!(result["commands"].as_array().unwrap().len(), crate::help::catalogue().len());
+        assert_eq!(result["human_actions"].as_array().unwrap().len(), crate::actions::references().len());
+    }
+
+    #[test]
+    fn reminders_are_bounded_and_reset_on_progress() {
+        use crate::session::Record;
+        let board = crate::todo::Board::default();
+        let mut records = vec![Record::User("work".into())];
+        for i in 0..11 {
+            records.push(Record::ToolResult { name:"read".into(), call_id:i.to_string(), body:"ok".into() });
+        }
+        assert!(progress_reminder(&records, &board).is_none());
+        records.push(Record::ToolResult { name:"read".into(), call_id:"12".into(), body:"ok".into() });
+        let reminder = progress_reminder(&records, &board).unwrap();
+        records.push(Record::System(reminder.into()));
+        assert!(progress_reminder(&records, &board).is_none());
+        records.push(Record::Custom {kind:"state/todo".into(),data:None});
+        for i in 0..12 {
+            records.push(Record::ToolResult { name:"read".into(), call_id:i.to_string(), body:"ok".into() });
+        }
+        assert!(progress_reminder(&records, &board).is_none());
+        records.push(Record::User("next".into()));
+        assert!(progress_reminder(&records, &board).is_none());
+    }
+
     #[test]
     fn recipes_and_catalogue_are_discoverable() {
         for (topic, _) in RECIPES {

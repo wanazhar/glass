@@ -361,7 +361,7 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
              BEFORE context fills up, and after any milestone on a long task: list the \
              specific facts, file paths, and next steps you would need to resume cold. \
              Call `state` with no arguments to read back what is currently recorded. \
-             Use todo.ops for atomic checklist batches: init/add items (title,phase), update by returned ID (status,blocker,owner), remove/clear/configure. Read todo:{} for tasks/revision. Mark progress honestly; completed is not verified. \
+             For multi-step work, create and maintain todo before substantive work; skip simple conversation. Use todo.ops for atomic checklist batches: init/add items (title,phase), update by returned ID (status,blocker,owner), remove/clear/configure. Read todo:{} for tasks/revision. Mark progress honestly; completed is not verified. \
              When a write might be retried, send `request_id`: a repeat of an id \
              already applied returns that receipt instead of writing again, and \
              reusing an id for different notes is rejected."

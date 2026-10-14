@@ -20,6 +20,14 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         self.server.bodies.append(body)
+        systems = '\n'.join(str(m.get('content', '')) for m in body.get('messages', []) if m.get('role') == 'system')
+        if 'You are planning a coding task.' in systems:
+            assert '[GC workflow protocol 2]' not in systems, systems
+        else:
+            assert systems.count('[GC workflow protocol 2]') == 1, systems
+            assert 'create state.todo before substantive work' in systems, systems
+            assert 'Availability comes from advertised schemas' in systems, systems
+
         results = [message for message in body.get('messages', []) if message.get('role') == 'tool']
         mode = self.server.mode
         self.send_response(200)
@@ -28,6 +36,21 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
         if mode == 'busy':
             self.server.gate.wait(10)
             delta = {'content': 'BUSY_CHECKLIST_DONE'}
+        elif mode == 'guidance':
+            if not results:
+                delta = self.tool('discover-guidance', {'guidance': {'action': 'catalogue'}})
+            elif len(results) == 1:
+                catalogue = json.loads(results[-1]['content'])
+                assert catalogue['protocol'] == 2 and catalogue['complete_catalogue']
+                assert len(catalogue['commands']) > 24
+                assert {'checklist', 'research', 'integrations', 'delivery', 'sessions'} <= set(catalogue['topics'])
+                delta = self.tool('read-guidance', {'guidance': {'action':'read', 'topic':'checklist'}})
+            elif len(results) == 2:
+                recipe = json.loads(results[-1]['content'])['recipe']
+                args = json.loads(recipe.split('Example state arguments: ',1)[1].split('. Use returned',1)[0])
+                delta = self.tool('recipe-checklist', args)
+            else:
+                delta = {'content': 'GUIDANCE_ROUTE_DONE'}
         elif mode == 'legacy':
             if not results:
                 delta = {'tool_calls':[{'index':0,'id':'legacy-add','function':{'name':'todo','arguments':json.dumps({'action':'add','item':'Legacy native task'})}}]}
@@ -178,4 +201,10 @@ with tempfile.TemporaryDirectory(prefix='gc-native-checklist-') as tmp:
         print('PASS approved plan seeds native checklist', flush=True)
     finally:
         terminal.close()
+    server.mode = 'guidance'
+    server.bodies = []
+    result = run('Discover the checklist workflow and use its recipe')
+    assert result['text'] == 'GUIDANCE_ROUTE_DONE', result
+    assert len(server.bodies) == 4
+    print('PASS complete catalogue, recipe retrieval and executable checklist example', flush=True)
     server.shutdown()

@@ -134,3 +134,5 @@ Native state operations can be used without enabling the adapter. For old sessio
 `/todo` offers **Import legacy checklist**, which reads the latest textual todo
 snapshot retained in that conversation. Existing tasks are replaced only after an
 explicit selection. If no snapshot survives, GC reports that it cannot recover it.
+
+See [Model guidance](model-guidance.md) for automatic checklist instructions, progress reminders and workflow discovery.

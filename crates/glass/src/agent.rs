@@ -2115,6 +2115,11 @@ impl<'a> Agent<'a> {
             call_id: call.id.clone(),
             body: output.body,
         });
+        if !self.read_only
+            && let Some(reminder) = crate::guidance::progress_reminder(&self.session.records, &self.state.todo)
+        {
+            self.session.append(Record::System(reminder.into()));
+        }
     }
 
     /// The system prompt to send with a request.
@@ -2132,7 +2137,7 @@ impl<'a> Agent<'a> {
         }
         let system = latest_system_checkpoint(&self.session.history_records())
             .unwrap_or_else(|| self.system_prompt());
-        crate::neuralnets::refresh_context(system, self.project_instructions.as_deref())
+        crate::guidance::model_context(crate::neuralnets::refresh_context(system, self.project_instructions.as_deref()))
     }
 
     /// Assemble the system prompt: base, then mod contributions, then skills.

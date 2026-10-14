@@ -1624,7 +1624,7 @@ fn make_metered(
 ) -> Result<Box<dyn provider::Provider>, String> {
     let key = auth::resolve(cfg)?;
     let inner =
-        provider::build(&cfg.provider, &cfg.base_url, key, model).map_err(|e| e.to_string())?;
+        provider::build(&cfg.provider, &cfg.base_url, key, model, cfg.adaptive_pacing).map_err(|e| e.to_string())?;
     Ok(Box::new(budget::Metered {
         inner,
         ledger,
@@ -3313,6 +3313,19 @@ fn repl(
                 }
                 warmer.begin_turn();
                 ui_println!("\x1b[90mmodel: {name}\x1b[0m");
+            }
+            continue;
+        }
+
+        if text == "/pacing" {
+            if let Some(index) = modal::choose(&keys, "Provider pacing", "Adaptive spacing is optional. Server Retry-After and reset deadlines always apply. Changes apply to subsequent requests; saved with an active workspace profile. Otherwise set adaptive_pacing in config.toml to persist.", &[
+                format!("{}Adaptive · learn spacing from provider pressure", if cfg.adaptive_pacing { "✓ " } else { "" }),
+                format!("{}Maximum frequency · disable learned and burst spacing", if !cfg.adaptive_pacing { "✓ " } else { "" }),
+            ]) {
+                cfg.adaptive_pacing = index == 0;
+                *runtime_config.lock().unwrap() = cfg.clone();
+                if let Err(error) = profiles::update_active(&cfg) { modal::info(&keys, "Profile save error", &error); }
+                warmer.begin_turn();
             }
             continue;
         }

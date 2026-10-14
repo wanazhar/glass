@@ -129,6 +129,20 @@ includes delegated work and survives model switches.
 
 ## Request pacing
 
+Adaptive pacing is enabled by default. For stable providers, set
+`adaptive_pacing = false` in `config.toml` to remove learned backoff and the
+200 ms burst spacing. `/pacing` in Settings switches between **Adaptive** and
+**Maximum frequency** for subsequent requests. Active workspace profiles save
+this preference with their provider settings; without a profile, the menu change
+lasts for the current process. `gc settings` shows the effective value.
+
+Both modes honor explicit server `Retry-After` and exhausted request-limit reset
+deadlines. Failure retries retain their existing bounded recovery policy.
+Disabling adaptation does not increase a provider's quota. Other GC processes
+with adaptation enabled keep their own policy while sharing server cooldowns.
+Older pacing records did not distinguish server deadlines from learned delays;
+those existing combined deadlines are conservatively honored until they expire.
+
 GC coordinates request starts across models and teammates using the same endpoint
 and credentials across GC processes on the same machine. The first two requests can start immediately.
 Further requests in a tight burst have a minimum 200 ms spacing. Ordinary model

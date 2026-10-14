@@ -17,7 +17,10 @@ pub struct Profile {
     pub theme: usize,
     #[serde(default)]
     pub animation: usize,
+    #[serde(default = "enabled")]
+    pub adaptive_pacing: bool,
 }
+fn enabled() -> bool { true }
 #[derive(Default, Serialize, Deserialize)]
 pub struct Store {
     pub profiles: BTreeMap<String, Profile>,
@@ -56,10 +59,12 @@ impl Profile {
             system_prompt: cfg.system_prompt.clone(),
             theme: glass_tui::theme::current(),
             animation: glass_tui::theme::current_animation(),
+            adaptive_pacing: cfg.adaptive_pacing,
         }
     }
     pub fn apply(&self, cfg: &mut config::Config) -> Result<(), String> {
         crate::provider::validate_endpoint(&self.base_url).map_err(|e| e.to_string())?;
+        cfg.adaptive_pacing = self.adaptive_pacing;
         cfg.provider = self.provider.clone();
         cfg.base_url = self.base_url.clone();
         cfg.model = self.model.clone();

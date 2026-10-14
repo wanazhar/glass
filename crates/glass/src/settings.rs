@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 fn values(c:&config::Config)->BTreeMap<String,Value> {
     let value=json!({"provider":c.provider,"model":c.model,"connection":c.connection,
         "base_url_fingerprint":crate::workspace::hash(c.base_url.as_bytes()),
-        "max_tokens":c.max_tokens,"reasoning_budget":c.reasoning_budget,"cost_limit":c.cost_limit,
+        "adaptive_pacing":c.adaptive_pacing,"max_tokens":c.max_tokens,"reasoning_budget":c.reasoning_budget,"cost_limit":c.cost_limit,
         "mods":c.mods,"extension_fingerprints":c.extensions.iter().map(|s|crate::workspace::hash(s.as_bytes())).collect::<Vec<_>>(),
         "system_prompt_fingerprint":crate::workspace::hash(c.system_prompt.as_bytes()),"system_prompt_bytes":c.system_prompt.len(),
         "trust":format!("{:?}",c.trust),"sandbox":format!("{:?}",c.sandbox),

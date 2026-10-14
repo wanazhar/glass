@@ -340,6 +340,7 @@ const BUILTIN: &[(&str, &str, &str, bool)] = &[
         false,
     ),
     ("theme", "", "Choose a terminal color palette", false),
+    ("pacing", "", "Choose adaptive provider pacing or maximum frequency", false),
     ("animation", "", "Preview and choose the activity animation", false),
     (
         "dashboard",

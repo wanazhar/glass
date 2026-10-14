@@ -102,6 +102,8 @@ pub struct Config {
     pub hyperlinks: String,
     /// Explicit model capability override; compatible transport does not imply vision.
     pub image_input: bool,
+    /// Learn request spacing from provider pressure. Server cooldowns always apply.
+    pub adaptive_pacing: bool,
     pub system_prompt: String,
 }
 
@@ -139,6 +141,7 @@ impl Default for Config {
             mermaid: false,
             hyperlinks: "auto".into(),
             image_input: true,
+            adaptive_pacing: true,
             system_prompt: BASE_SYSTEM_PROMPT.to_string(),
         }
     }
@@ -250,6 +253,7 @@ struct Raw {
     cost_limit: Option<f64>,
     pricing: Option<PricingRaw>,
     image_input: Option<bool>,
+    adaptive_pacing: Option<bool>,
     system_prompt: Option<String>,
     mods: Option<Vec<String>>,
     extensions: Option<Vec<String>>,
@@ -307,6 +311,7 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
         cfg.base_url = v;
     }
     if let Some(v) = raw.image_input { cfg.image_input = v; }
+    if let Some(v) = raw.adaptive_pacing { cfg.adaptive_pacing = v; }
     if let Some(v) = raw.model {
         cfg.model = v;
     }
@@ -756,6 +761,14 @@ mod tests {
         assert_eq!(load(&p).unwrap().log_fsync, "always");
         let p = write(&d, "bad.toml", "log_fsync = \"sometimes\"\n");
         assert!(load(&p).unwrap_err().to_string().contains("log_fsync"));
+    }
+
+    #[test]
+    fn adaptive_pacing_defaults_on_and_can_be_disabled() {
+        let d = scratch("adaptive-pacing");
+        assert!(load(&d.join("missing.toml")).unwrap().adaptive_pacing);
+        let p = write(&d, "pacing.toml", "adaptive_pacing = false\n");
+        assert!(!load(&p).unwrap().adaptive_pacing);
     }
 
     #[test]

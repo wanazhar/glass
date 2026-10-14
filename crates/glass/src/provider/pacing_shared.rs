@@ -4,7 +4,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use super::{Error, pacing::State};
 #[derive(Default, Serialize, Deserialize)]
-struct Record { last: u64, previous: u64, cooldown: u64, gap: u64, healthy: u8 }
+struct Record { #[serde(default)] version: u8, last: u64, previous: u64, cooldown: u64, #[serde(default)] server_cooldown: u64, gap: u64, healthy: u8 }
 pub(super) struct Shared { file: File, record: Record }
 fn now_ms() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64 }
 impl Shared {
@@ -56,12 +56,14 @@ impl Shared {
         let past=|value:u64| (value>0 && value<=wall).then(|| now.checked_sub(Duration::from_millis(wall.saturating_sub(value).min(86400000)))).flatten();
         state.last=past(self.record.last); state.previous=past(self.record.previous);
         state.cooldown=(self.record.cooldown>wall && self.record.cooldown-wall<=86400000).then(||now+Duration::from_millis((self.record.cooldown-wall).min(86400000)));
+        let server = if self.record.version == 0 { self.record.cooldown.max(self.record.server_cooldown) } else { self.record.server_cooldown };
+        state.server_cooldown=(server>wall && server-wall<=86400000).then(||now+Duration::from_millis(server-wall));
         state.gap=Duration::from_millis(self.record.gap.min(60000)); state.healthy=self.record.healthy.min(7);
     }
     pub(super) fn save(&mut self, state: &State) -> Result<(), Error> {
         let wall=now_ms(); let now=Instant::now();
         let past=|value:Option<Instant>| value.map(|t|wall.saturating_sub(now.saturating_duration_since(t).as_millis() as u64)).unwrap_or(0);
-        self.record=Record{last:past(state.last),previous:past(state.previous),cooldown:state.cooldown.map(|t|wall+t.saturating_duration_since(now).as_millis() as u64).unwrap_or(0),gap:state.gap.as_millis() as u64,healthy:state.healthy};
+        self.record=Record{version:1,last:past(state.last),previous:past(state.previous),cooldown:state.cooldown.map(|t|wall+t.saturating_duration_since(now).as_millis() as u64).unwrap_or(0),server_cooldown:state.server_cooldown.map(|t|wall+t.saturating_duration_since(now).as_millis() as u64).unwrap_or(0),gap:state.gap.as_millis() as u64,healthy:state.healthy};
         let write=|| -> std::io::Result<()> { self.file.seek(SeekFrom::Start(0))?; self.file.set_len(0)?; serde_json::to_writer(&mut self.file,&self.record)?; self.file.flush() };
         let mut write=write; write().map_err(|error|Error::Config(format!("provider pacing state: {error}")))
     }

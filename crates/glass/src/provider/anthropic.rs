@@ -18,6 +18,7 @@ const DEFAULT_WINDOW: u32 = 200_000;
 
 pub struct Anthropic {
     pub base_url: String,
+    pub adaptive_pacing: bool,
     pub api_key: String,
     pub model: String,
 }
@@ -101,6 +102,7 @@ impl Anthropic {
     ) -> Self {
         Self {
             base_url: base_url.into(),
+            adaptive_pacing: true,
             api_key: api_key.into(),
             model: model.into(),
         }
@@ -267,7 +269,7 @@ impl Provider for Anthropic {
     fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
         let body = self.build_body(req);
 
-        let pacing_key = super::pacing::acquire(&self.base_url, &self.api_key)?;
+        let pacing_key = super::pacing::acquire(&self.base_url, &self.api_key, self.adaptive_pacing)?;
         let resp = http_agent()
             .post(format!(
                 "{}/v1/messages",
